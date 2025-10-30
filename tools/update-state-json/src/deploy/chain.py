@@ -17,10 +17,9 @@ def prepare_config(inputs: DeploymentInputs) -> None:
     # Update chain id
     update_toml_key(cfg_path, "chain_chain_id", inputs.chain_id)
 
-    # TODO: should not be hardcoded
-    update_toml_key(cfg_path, "validator_sender_operator_commit_eth", "0x883FD4817fC1f4060F490375373e6bb5CC8b9e2A")
-    update_toml_key(cfg_path, "validator_sender_operator_prove", "0x4bD3B5134Bf77398dE26BaD475740C1dbF1a853d")
-    update_toml_key(cfg_path, "validator_sender_operator_execute", "0x69474D7f42b6d881BA4099431CF799B22e53D2C7")
+    update_toml_key(cfg_path, "validator_sender_operator_commit_eth", inputs.validator_sender_operator_commit_eth)
+    update_toml_key(cfg_path, "validator_sender_operator_prove", inputs.validator_sender_operator_prove)
+    update_toml_key(cfg_path, "validator_sender_operator_execute", inputs.validator_sender_operator_execute)
 
     # These keys are not present in the template, but we need to set them anyway
     deploy_contracts_cfg_path = os.path.join(inputs.l1_contracts_dir, "script-config/config-deploy-l2-contracts.toml")

@@ -13,6 +13,9 @@ class DeploymentInputs:
     l1_rpc_url: str
     deployer_key: str
     governor_key: str
+    validator_sender_operator_commit_eth: str
+    validator_sender_operator_prove: str
+    validator_sender_operator_execute: str
     chain_id: int
 
     # Optional configs
@@ -44,6 +47,9 @@ class DeploymentInputs:
             l1_rpc_url=require("L1_RPC_URL"),
             deployer_key=require("DEPLOYER_PRIVATE_KEY"),
             governor_key=require("GOVERNOR_PRIVATE_KEY"),
+            validator_sender_operator_commit_eth=require("VALIDATOR_SENDER_OPERATOR_COMMIT_ETH"),
+            validator_sender_operator_prove=require("VALIDATOR_SENDER_OPERATOR_PROVE"),
+            validator_sender_operator_execute=require("VALIDATOR_SENDER_OPERATOR_EXECUTE"),
             chain_id=int(require("CHAIN_ID"), 0),
             enable_token_multiplier_update=parse_bool("ENABLE_TOKEN_MULTIPLIER_SETTER", False),
             run_make_permanent_rollup=parse_bool("RUN_MAKE_PERMANENT_ROLLUP", False),

@@ -8,16 +8,35 @@ from utils import run_command
 
 
 def clone_repository(dir: str, branch: str) -> None:
+    # Check if dir exists. If it does, just check out the correct branch
+    try:
+        subprocess.run(
+            ["git", "-C", dir, "rev-parse"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        # Directory exists, just checkout the branch
+        run_command("Checkout contracts branch", shlex.join(["git", "-C", dir, "checkout", branch]), ".", {})
+        return
+    except subprocess.CalledProcessError:
+        # Directory does not exist, proceed to clone
+        pass
+
     run_command("Clone contracts repository", shlex.join(["git", "clone", "--depth", "1", "--branch", branch, "--single-branch", '-q', "git@github.com:matter-labs/era-contracts.git", dir]), ".", {})
 
 def build_contracts(contracts_dir: str, inputs: DeploymentInputs) -> None:
     run_command("Install deps", "yarn install --silent", contracts_dir, inputs.base_env())
     run_command("Update submodules", "git submodule update --init --recursive -q", contracts_dir, inputs.base_env())
     # Only build for EVM, not for zksync
-    run_command("Build DA contracts", "yarn", f"{contracts_dir}/da-contracts", inputs.base_env())
-    run_command("Build L1 contracts", "forge build --skip '*/l1-contracts/test/*' && forge build --zksync --skip '*/l1-contracts/test/*'", f"{contracts_dir}/l1-contracts", inputs.base_env())
-    run_command("Build L2 contracts", "forge build --zksync", f"{contracts_dir}/l2-contracts", inputs.base_env()) # Needed for DA validator, one of the scripts reads zkout artifacts there
-    # run_command("Build System contracts", shlex.join(["yarn", "--cwd", "system-contracts", "build:foundry"]), contracts_dir, inputs.base_env())
+    run_command("Build DA contracts", "yarn build:foundry", f"{contracts_dir}/da-contracts", inputs.base_env())
+    run_command("Build L1 contracts", "forge build --skip '*/l1-contracts/test/*'", f"{contracts_dir}/l1-contracts", inputs.base_env())
+    
+    # Some deploy scripts read zkout for some reason
+    run_command("Build L1 contracts", "forge build --zksync --skip '*/l1-contracts/test/*'", f"{contracts_dir}/l1-contracts", inputs.base_env())
+    run_command("Build L2 contracts", "forge build --zksync", f"{contracts_dir}/l2-contracts", inputs.base_env())
+    
+    # System contracts are not needed
 
 # For some god forsaken reason `register-zk-chain.toml` is not provided in the templates, so we have to hardcode it here
 register_zk_chain_toml_template = """# Template for register-zk-chain.toml

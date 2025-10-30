@@ -11,8 +11,14 @@ THIS TOOL IS NOT MEANT TO BE USED FOR ANY KIND OF ACTUAL DEPLOYMENTS OUTSIDE OF 
 This is by design.
 Do not try to change it.
 
+## Known issues
+
+The tool might crash on the first time sometimes with zksolc compilation failure. I don't know why, but it
+works on the second try. Just re-run it.
+
 ## Maintaining guidelines
 
+The tool intentionally doesn't have any dependencies.
 NO EXTERNAL DEPENDENCIES ALLOWED.
 We should be able to run the script having `python3` only.
 
