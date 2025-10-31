@@ -1,0 +1,19 @@
+{
+  "latest": "/latest",
+  "zero-div-fix-2": "/zero-div-fix-2",
+  "v0.9.2": "/v0.9.2",
+  "v0.10.0": "/v0.10.0",
+  "v0.10.1": "/v0.10.1",
+  "temp": "/temp",
+  "v0.11.0": "/v0.11.0",
+  "temp-for-stage-rollup": "/temp-for-stage-rollup",
+  "v0.11.1": "/v0.11.1",
+  "fix": "/fix",
+  "v0.12.0": "/v0.12.0",
+  "v0.12.1": "/v0.12.1",
+  "rebuild-new-timestamp": "/rebuild-new-timestamp",
+  "pre": "/pre",
+  "v0.13.0": "/v0.13.0",
+  "hot-fix-revm": "/hot-fix-revm",
+  "rb-temp": "/rb-temp"
+}
