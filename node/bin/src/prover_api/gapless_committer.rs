@@ -78,7 +78,6 @@ impl PipelineComponent for GaplessCommitter {
                             } else {
                                 L1SenderCommand::SendToL1(CommitCommand::new(
                                     stored_batch.batch_envelope(),
-                                    self.da_input_mode,
                                 ))
                             };
                             latency_tracker.enter_state(GenericComponentState::WaitingSend);

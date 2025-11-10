@@ -310,6 +310,7 @@ impl Batcher {
             batch_number,
             self.chain_id,
             self.chain_address,
+            unimplemented!()
         )?;
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes

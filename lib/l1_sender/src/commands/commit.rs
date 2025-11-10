@@ -9,25 +9,14 @@ use zksync_os_contract_interface::IExecutor;
 
 #[derive(Debug)]
 pub struct CommitCommand {
-<<<<<<< HEAD
-    input: BatchEnvelope<FriProof>,
-}
-
-impl CommitCommand {
-    pub fn new(input: BatchEnvelope<FriProof>) -> Self {
-        Self { input }
-=======
     input: SignedBatchEnvelope<FriProof>,
-    da_input_mode: BatchDaInputMode,
 }
 
 impl CommitCommand {
-    pub fn new(input: SignedBatchEnvelope<FriProof>, da_input_mode: BatchDaInputMode) -> Self {
+    pub fn new(input: SignedBatchEnvelope<FriProof>) -> Self {
         Self {
             input,
-            da_input_mode,
         }
->>>>>>> main
     }
 }
 

@@ -79,7 +79,7 @@ impl From<&StoredBatchInfo> for IExecutor::StoredBatchInfo {
 
 // TODO: consider reusing structure from zksync os
 /// User-friendly version of [`crate::L2DACommitmentScheme`] with statically known possible variants.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum DACommitmentScheme {
     None,
     EmptyNoDA,
@@ -100,6 +100,20 @@ impl From<DACommitmentScheme> for IExecutor::L2DACommitmentScheme {
                 IExecutor::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256
             }
             DACommitmentScheme::BlobsZKsyncOS => IExecutor::L2DACommitmentScheme::BLOBS_ZKSYNC_OS,
+        }
+    }
+}
+
+impl From<IExecutor::L2DACommitmentScheme> for DACommitmentScheme {
+    fn from(value: IExecutor::L2DACommitmentScheme) -> Self {
+        match value {
+            IExecutor::L2DACommitmentScheme::NONE => DACommitmentScheme::None,
+            IExecutor::L2DACommitmentScheme::EMPTY_NO_DA => DACommitmentScheme::EmptyNoDA,
+            IExecutor::L2DACommitmentScheme::PUBDATA_KECCAK256 => DACommitmentScheme::PubdataKeccak256,
+            IExecutor::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256 => DACommitmentScheme::BlobsAndPubdataKeccak256,
+            IExecutor::L2DACommitmentScheme::BLOBS_ZKSYNC_OS => DACommitmentScheme::BlobsZKsyncOS,
+            // TODO: remove panic
+            IExecutor::L2DACommitmentScheme::__Invalid => panic!(),
         }
     }
 }
@@ -150,7 +164,7 @@ impl From<IExecutor::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             priority_operations_hash: value.priorityOperationsHash,
             dependency_roots_rolling_hash: value.dependencyRootsRollingHash,
             l2_to_l1_logs_root_hash: value.l2LogsTreeRoot,
-            l2_da_validator: value.l2DaValidator,
+            l2_da_commitment_scheme: value.daCommitmentScheme.into(),
             da_commitment: value.daCommitment,
             first_block_timestamp: value.firstBlockTimestamp,
             last_block_timestamp: value.lastBlockTimestamp,
