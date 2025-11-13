@@ -1,14 +1,28 @@
 use serde::{Deserialize, Serialize};
 
 /// The chain pubdata mode.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum PubdataMode {
-    Blobs,
-    Calldata,
-    Validium,
+    Blobs = 0,
+    Calldata = 1,
+    Validium = 2,
 }
 
 impl PubdataMode {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(PubdataMode::Blobs),
+            1 => Some(PubdataMode::Calldata),
+            2 => Some(PubdataMode::Validium),
+            _ => None,
+        }
+    }
+
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
     pub fn da_commitment_scheme(&self) -> zksync_os_contract_interface::models::DACommitmentScheme {
         match self {
             Self::Blobs => zksync_os_contract_interface::models::DACommitmentScheme::BlobsZKsyncOS,

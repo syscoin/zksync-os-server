@@ -310,7 +310,7 @@ impl Batcher {
             batch_number,
             self.chain_id,
             self.chain_address,
-            unimplemented!(),
+            existing_batch.batch.pubdata_mode,
         )?;
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes

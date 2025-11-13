@@ -68,6 +68,7 @@ pub(crate) fn seal_batch(
             batch_info,
             first_block_number: block_number_from,
             last_block_number: block_number_to,
+            pubdata_mode,
             tx_count: blocks
                 .iter()
                 .map(|(block_output, _, _, _)| block_output.tx_results.len())

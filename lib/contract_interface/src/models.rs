@@ -97,9 +97,7 @@ impl From<DACommitmentScheme> for crate::L2DACommitmentScheme {
         match value {
             DACommitmentScheme::None => crate::L2DACommitmentScheme::NONE,
             DACommitmentScheme::EmptyNoDA => crate::L2DACommitmentScheme::EMPTY_NO_DA,
-            DACommitmentScheme::PubdataKeccak256 => {
-                crate::L2DACommitmentScheme::PUBDATA_KECCAK256
-            }
+            DACommitmentScheme::PubdataKeccak256 => crate::L2DACommitmentScheme::PUBDATA_KECCAK256,
             DACommitmentScheme::BlobsAndPubdataKeccak256 => {
                 crate::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256
             }
@@ -113,14 +111,14 @@ impl From<crate::L2DACommitmentScheme> for DACommitmentScheme {
         match value {
             crate::L2DACommitmentScheme::NONE => DACommitmentScheme::None,
             crate::L2DACommitmentScheme::EMPTY_NO_DA => DACommitmentScheme::EmptyNoDA,
-            crate::L2DACommitmentScheme::PUBDATA_KECCAK256 => {
-                DACommitmentScheme::PubdataKeccak256
-            }
+            crate::L2DACommitmentScheme::PUBDATA_KECCAK256 => DACommitmentScheme::PubdataKeccak256,
             crate::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256 => {
                 DACommitmentScheme::BlobsAndPubdataKeccak256
             }
             crate::L2DACommitmentScheme::BLOBS_ZKSYNC_OS => DACommitmentScheme::BlobsZKsyncOS,
-            crate::L2DACommitmentScheme::__Invalid => panic!("Invalid IExecutor::L2DACommitmentScheme from l1"),
+            crate::L2DACommitmentScheme::__Invalid => {
+                panic!("Invalid IExecutor::L2DACommitmentScheme from l1")
+            }
         }
     }
 }
@@ -136,7 +134,9 @@ impl Into<zk_ee::common_structs::DACommitmentScheme> for DACommitmentScheme {
             DACommitmentScheme::BlobsAndPubdataKeccak256 => {
                 zk_ee::common_structs::DACommitmentScheme::BlobsAndPubdataKeccak256
             }
-            DACommitmentScheme::BlobsZKsyncOS => zk_ee::common_structs::DACommitmentScheme::BlobsZKsyncOS,
+            DACommitmentScheme::BlobsZKsyncOS => {
+                zk_ee::common_structs::DACommitmentScheme::BlobsZKsyncOS
+            }
         }
     }
 }
