@@ -18,12 +18,4 @@ impl PubdataMode {
             Self::Validium => zksync_os_contract_interface::models::DACommitmentScheme::EmptyNoDA,
         }
     }
-
-    pub fn da_commitment_scheme_zksync_os(&self) -> zk_ee::common_structs::DACommitmentScheme {
-        match self {
-            Self::Blobs => zk_ee::common_structs::DACommitmentScheme::BlobsZKsyncOS,
-            Self::Calldata => zk_ee::common_structs::DACommitmentScheme::BlobsAndPubdataKeccak256,
-            Self::Validium => zk_ee::common_structs::DACommitmentScheme::EmptyNoDA,
-        }
-    }
 }

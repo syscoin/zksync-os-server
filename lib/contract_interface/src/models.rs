@@ -77,47 +77,66 @@ impl From<&StoredBatchInfo> for IExecutor::StoredBatchInfo {
     }
 }
 
-// TODO: consider reusing structure from zksync os
 /// User-friendly version of [`crate::L2DACommitmentScheme`] with statically known possible variants.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum DACommitmentScheme {
+    /// Invalid option
     None,
+    /// Empty(`0`) commitment, used for validium
     EmptyNoDA,
+    /// Keccak of stateDiffHash and keccak(pubdata), used by 3rd party DA solutions
     PubdataKeccak256,
+    /// This commitment includes blobs data and pubdata hash, ZKsync OS always outputs empty blobs, and it's used only for calldata with ZKsync OS
     BlobsAndPubdataKeccak256,
+    /// Keccak of blob versioned hashes filled with pubdata, used for blobs DA with ZKsync OS
     BlobsZKsyncOS,
 }
 
-impl From<DACommitmentScheme> for IExecutor::L2DACommitmentScheme {
+impl From<DACommitmentScheme> for crate::L2DACommitmentScheme {
     fn from(value: DACommitmentScheme) -> Self {
         match value {
-            DACommitmentScheme::None => IExecutor::L2DACommitmentScheme::NONE,
-            DACommitmentScheme::EmptyNoDA => IExecutor::L2DACommitmentScheme::EMPTY_NO_DA,
+            DACommitmentScheme::None => crate::L2DACommitmentScheme::NONE,
+            DACommitmentScheme::EmptyNoDA => crate::L2DACommitmentScheme::EMPTY_NO_DA,
             DACommitmentScheme::PubdataKeccak256 => {
-                IExecutor::L2DACommitmentScheme::PUBDATA_KECCAK256
+                crate::L2DACommitmentScheme::PUBDATA_KECCAK256
             }
             DACommitmentScheme::BlobsAndPubdataKeccak256 => {
-                IExecutor::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256
+                crate::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256
             }
-            DACommitmentScheme::BlobsZKsyncOS => IExecutor::L2DACommitmentScheme::BLOBS_ZKSYNC_OS,
+            DACommitmentScheme::BlobsZKsyncOS => crate::L2DACommitmentScheme::BLOBS_ZKSYNC_OS,
         }
     }
 }
 
-impl From<IExecutor::L2DACommitmentScheme> for DACommitmentScheme {
-    fn from(value: IExecutor::L2DACommitmentScheme) -> Self {
+impl From<crate::L2DACommitmentScheme> for DACommitmentScheme {
+    fn from(value: crate::L2DACommitmentScheme) -> Self {
         match value {
-            IExecutor::L2DACommitmentScheme::NONE => DACommitmentScheme::None,
-            IExecutor::L2DACommitmentScheme::EMPTY_NO_DA => DACommitmentScheme::EmptyNoDA,
-            IExecutor::L2DACommitmentScheme::PUBDATA_KECCAK256 => {
+            crate::L2DACommitmentScheme::NONE => DACommitmentScheme::None,
+            crate::L2DACommitmentScheme::EMPTY_NO_DA => DACommitmentScheme::EmptyNoDA,
+            crate::L2DACommitmentScheme::PUBDATA_KECCAK256 => {
                 DACommitmentScheme::PubdataKeccak256
             }
-            IExecutor::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256 => {
+            crate::L2DACommitmentScheme::BLOBS_AND_PUBDATA_KECCAK256 => {
                 DACommitmentScheme::BlobsAndPubdataKeccak256
             }
-            IExecutor::L2DACommitmentScheme::BLOBS_ZKSYNC_OS => DACommitmentScheme::BlobsZKsyncOS,
-            // TODO: remove panic
-            IExecutor::L2DACommitmentScheme::__Invalid => panic!(),
+            crate::L2DACommitmentScheme::BLOBS_ZKSYNC_OS => DACommitmentScheme::BlobsZKsyncOS,
+            crate::L2DACommitmentScheme::__Invalid => panic!("Invalid IExecutor::L2DACommitmentScheme from l1"),
+        }
+    }
+}
+
+impl Into<zk_ee::common_structs::DACommitmentScheme> for DACommitmentScheme {
+    fn into(self) -> zk_ee::common_structs::DACommitmentScheme {
+        match self {
+            DACommitmentScheme::None => zk_ee::common_structs::DACommitmentScheme::None,
+            DACommitmentScheme::EmptyNoDA => zk_ee::common_structs::DACommitmentScheme::EmptyNoDA,
+            DACommitmentScheme::PubdataKeccak256 => {
+                zk_ee::common_structs::DACommitmentScheme::PubdataKeccak256
+            }
+            DACommitmentScheme::BlobsAndPubdataKeccak256 => {
+                zk_ee::common_structs::DACommitmentScheme::BlobsAndPubdataKeccak256
+            }
+            DACommitmentScheme::BlobsZKsyncOS => zk_ee::common_structs::DACommitmentScheme::BlobsZKsyncOS,
         }
     }
 }
@@ -132,12 +151,19 @@ pub struct CommitBatchInfo {
     pub priority_operations_hash: B256,
     pub dependency_roots_rolling_hash: B256,
     pub l2_to_l1_logs_root_hash: B256,
+    #[serde(default = "default_l2_da_commitment_scheme")]
     pub l2_da_commitment_scheme: DACommitmentScheme,
     pub da_commitment: B256,
     pub first_block_timestamp: u64,
     pub last_block_timestamp: u64,
     pub chain_id: u64,
     pub operator_da_input: Vec<u8>,
+}
+
+// `l2_da_commitment_scheme` is not present in storage for old batches, by default we use `BlobsAndPubdataKeccak256`.
+// It corresponds to da commitment used in these batches before adding different DACommitmentScheme options
+fn default_l2_da_commitment_scheme() -> DACommitmentScheme {
+    DACommitmentScheme::BlobsAndPubdataKeccak256
 }
 
 impl From<CommitBatchInfo> for IExecutor::CommitBatchInfoZKsyncOS {

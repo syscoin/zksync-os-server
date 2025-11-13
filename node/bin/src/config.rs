@@ -10,7 +10,6 @@ use smart_config::{
 };
 use std::{path::PathBuf, time::Duration};
 use zksync_os_batch_verification;
-use zksync_os_contract_interface::models::BatchDaInputMode;
 use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
@@ -283,9 +282,9 @@ pub struct L1SenderConfig {
     #[config(default_t = 2)]
     pub max_priority_fee_per_gas_gwei: u64,
 
-    /// Max priority fee per gas we are willing to spend (in gwei).
+    /// Max fee per blob gas we are willing to spend (in gwei).
     #[config(default_t = 1)]
-    pub max_fee_per_blob_gas_wei: u64,
+    pub max_fee_per_blob_gas_gwei: u64,
 
     /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
     #[config(default_t = 16)]
@@ -613,7 +612,7 @@ impl L1SenderConfig {
             operator_pk,
             max_fee_per_gas_gwei: self.max_fee_per_gas_gwei,
             max_priority_fee_per_gas_gwei: self.max_priority_fee_per_gas_gwei,
-            max_fee_per_blob_gas_wei: self.max_fee_per_blob_gas_wei,
+            max_fee_per_blob_gas_gwei: self.max_fee_per_blob_gas_gwei,
             command_limit: self.command_limit,
             poll_interval: self.poll_interval,
             phantom_data: Default::default(),

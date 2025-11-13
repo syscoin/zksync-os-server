@@ -22,7 +22,6 @@ pub struct BatchInfo {
     /// L1 protocol upgrade transaction that was finalized in this batch. Missing for the vast
     /// majority of batches.
     pub upgrade_tx_hash: Option<B256>,
-    pub da_commitment_scheme: zk_ee::common_structs::DACommitmentScheme,
     /// Blobs sidecar that should be sent with commit operation.
     pub blob_sidecar: Option<BlobTransactionSidecar>,
 }
@@ -139,7 +138,6 @@ impl BatchInfo {
             chain_address,
             upgrade_tx_hash,
             blob_sidecar: da_fields.blob_sidecar,
-            da_commitment_scheme: pubdata_mode.da_commitment_scheme_zksync_os(),
         }
     }
 
@@ -150,7 +148,7 @@ impl BatchInfo {
             chain_id: U256::from(commit_info.chain_id),
             first_block_timestamp: commit_info.first_block_timestamp,
             last_block_timestamp: commit_info.last_block_timestamp,
-            da_commitment_scheme: self.da_commitment_scheme,
+            da_commitment_scheme: commit_info.l2_da_commitment_scheme.into(),
             pubdata_commitment: Bytes32::from(commit_info.da_commitment.0),
             number_of_layer_1_txs: U256::from(commit_info.number_of_layer1_txs),
             priority_operations_hash: Bytes32::from(commit_info.priority_operations_hash.0),

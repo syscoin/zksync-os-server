@@ -135,14 +135,14 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     if let Some(blob_sidecar) = cmd.blob_sidecar() {
                         let fee_per_blob_gas = provider.get_blob_base_fee().await?;
 
-                        if fee_per_blob_gas > config.max_fee_per_blob_gas_wei as u128 {
+                        if fee_per_blob_gas > config.max_fee_per_blob_gas_gwei as u128 {
                             tracing::warn!(
-                                max_fee_per_blob_gas = config.max_fee_per_blob_gas_wei as u128,
+                                max_fee_per_blob_gas = config.max_fee_per_blob_gas_gwei as u128,
                                 fee_per_blob_gas = fee_per_blob_gas,
                                 "L1 sender's configured maxPriorityFeePerGas is lower than the one estimated from network"
                             );
                         }
-                        tx_request.set_max_fee_per_blob_gas(config.max_fee_per_blob_gas_wei as u128);
+                        tx_request.set_max_fee_per_blob_gas(config.max_fee_per_blob_gas_gwei as u128);
                         tx_request.set_blob_sidecar(blob_sidecar);
                     };
 

@@ -55,7 +55,7 @@ pub(crate) fn seal_batch(
             .iter()
             .map(|(_, _, _, prover_input)| prover_input.as_slice())
             .collect(),
-        pubdata_mode.da_commitment_scheme_zksync_os(),
+        pubdata_mode.da_commitment_scheme().into(),
         blocks
             .iter()
             .map(|(block_output, _, _, _)| block_output.pubdata.as_slice())

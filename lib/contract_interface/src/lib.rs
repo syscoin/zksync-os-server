@@ -123,6 +123,15 @@ alloy::sol! {
         function getPubdataPricingMode() external view returns (PubdataPricingMode);
     }
 
+    // Taken from `common/Config.sol`
+    enum L2DACommitmentScheme {
+        NONE,
+        EMPTY_NO_DA,
+        PUBDATA_KECCAK256,
+        BLOBS_AND_PUBDATA_KECCAK256,
+        BLOBS_ZKSYNC_OS
+    }
+
     // Taken from `IExecutor.sol`
     interface IExecutor {
         struct StoredBatchInfo {
@@ -135,15 +144,6 @@ alloy::sol! {
             bytes32 l2LogsTreeRoot;
             uint256 timestamp;
             bytes32 commitment;
-        }
-
-        // Taken from `common/Config.sol`
-        enum L2DACommitmentScheme {
-            NONE,
-            EMPTY_NO_DA,
-            PUBDATA_KECCAK256,
-            BLOBS_AND_PUBDATA_KECCAK256,
-            BLOBS_ZKSYNC_OS
         }
 
         struct CommitBatchInfoZKsyncOS {
