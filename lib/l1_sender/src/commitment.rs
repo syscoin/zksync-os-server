@@ -161,6 +161,23 @@ impl BatchInfo {
                 .unwrap_or(Bytes32::ZERO),
             interop_root_rolling_hash: Bytes32::from(commit_info.dependency_roots_rolling_hash.0),
         };
+
+        if commit_info.l2_da_commitment_scheme == zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256 {
+            let mut hasher = alloy::primitives::Keccak256::new();
+            hasher.update(system_batch_output.chain_id.to_be_bytes::<32>());
+            hasher.update(&system_batch_output.first_block_timestamp.to_be_bytes());
+            hasher.update(&system_batch_output.last_block_timestamp.to_be_bytes());
+            hasher.update([0u8; 20]);
+            hasher.update(system_batch_output.pubdata_commitment.as_u8_ref());
+            hasher.update(system_batch_output.number_of_layer_1_txs.to_be_bytes::<32>());
+            hasher.update(system_batch_output.priority_operations_hash.as_u8_ref());
+            hasher.update(system_batch_output.l2_logs_tree_root.as_u8_ref());
+            hasher.update(system_batch_output.upgrade_tx_hash.as_u8_ref());
+            hasher.update(system_batch_output.interop_root_rolling_hash.as_u8_ref());
+            return B256::from(hasher.finalize());
+        }
+
+
         B256::from(system_batch_output.hash())
     }
 
