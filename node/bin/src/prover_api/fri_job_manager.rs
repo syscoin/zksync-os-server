@@ -15,7 +15,7 @@
 //! `ComponentStateLatencyTracker`: Only tracks `Processing` / `WaitingSend` states
 
 use crate::prover_api::fri_proof_verifier;
-use crate::prover_api::metrics::{PROVER_METRICS, ProverStage, ProverType};
+use crate::prover_api::metrics::{PROVER_API_METRICS, PROVER_METRICS, ProverStage, ProverType};
 use crate::prover_api::proof_storage::{ProofStorage, StoredFailedProof};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use alloy::primitives::Bytes;
@@ -170,6 +170,7 @@ impl FriJobManager {
                 ?min_inbound_age,
                 "Assigned a timed out job"
             );
+            PROVER_API_METRICS.timed_out_jobs_reassigned[&ProverStage::Fri].inc();
             return Some((fri_job, prover_input));
         }
 
