@@ -23,6 +23,14 @@ impl ProofCommand {
     pub fn new(batches: Vec<SignedBatchEnvelope<FriProof>>, proof: SnarkProof) -> Self {
         Self { batches, proof }
     }
+
+    pub fn batch_from(&self) -> u64 {
+        self.batches.first().unwrap().batch_number()
+    }
+
+    pub fn batch_to(&self) -> u64 {
+        self.batches.last().unwrap().batch_number()
+    }
 }
 
 impl SendToL1 for ProofCommand {

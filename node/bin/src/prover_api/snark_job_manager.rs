@@ -1,9 +1,11 @@
 use crate::prover_api::fri_job_manager::FriJob;
 use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::Mutex;
 use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::batcher_model::{
     FriProof, RealSnarkProof, SignedBatchEnvelope, SnarkProof,
@@ -34,6 +36,10 @@ use zksync_os_types::ProvingVersion;
 pub struct SnarkJobManager {
     // == state ==
     jobs: ProverJobMap<FriProof>,
+    // Buffer for out-of-order completions - ensures sequential delivery downstream
+    completion_buffer: Mutex<BTreeMap<u64, ProofCommand>>,
+    // Next expected batch number to send downstream
+    next_batch_to_send: Mutex<Option<u64>>,
     // outbound
     prove_batches_sender: Sender<ProofCommand>,
     // config
@@ -62,6 +68,8 @@ impl SnarkJobManager {
         );
         Self {
             jobs,
+            completion_buffer: Mutex::new(BTreeMap::new()),
+            next_batch_to_send: Mutex::new(None),
             prove_batches_sender,
             max_fris_per_snark,
             latency_tracker,
@@ -71,6 +79,11 @@ impl SnarkJobManager {
     /// Adds a pending job to the queue.
     /// Awaits if queue is full (ProverJobMap.max_assigned_batch_range).
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<FriProof>) {
+        let batch_number = batch_envelope.batch_number();
+        tracing::info!(
+            batch_number,
+            "SNARK job manager: incoming FRI proof for batch"
+        );
         self.jobs.add_job(batch_envelope).await
     }
 
@@ -239,12 +252,63 @@ impl SnarkJobManager {
         }
     }
 
+    /// Buffers proof commands and sends them downstream in order.
+    /// Only sends commands when they form a sequential chain from the last sent batch.
     async fn send_downstream(&self, proof_command: ProofCommand) -> anyhow::Result<()> {
-        self.latency_tracker
-            .enter_state(GenericComponentState::WaitingSend);
-        self.prove_batches_sender.send(proof_command).await?;
-        self.latency_tracker
-            .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+        let batch_from = proof_command.batch_from();
+        let batch_to = proof_command.batch_to();
+
+        tracing::info!(
+            batch_from,
+            batch_to,
+            "SNARK job manager: proof completed, buffering for sequential delivery"
+        );
+
+        let mut buffer = self.completion_buffer.lock().await;
+        let mut next_batch = self.next_batch_to_send.lock().await;
+
+        // Initialize next_batch_to_send if this is the first proof
+        if next_batch.is_none() {
+            *next_batch = Some(batch_from);
+        }
+
+        // Add to buffer
+        buffer.insert(batch_from, proof_command);
+
+        // Send all sequential proofs from the buffer
+        while let Some(&expected) = next_batch.as_ref() {
+            if let Some(command) = buffer.remove(&expected) {
+                let command_batch_to = command.batch_to();
+
+                tracing::info!(
+                    batch_from = command.batch_from(),
+                    batch_to = command_batch_to,
+                    "SNARK job manager: sending proof downstream"
+                );
+
+                self.latency_tracker
+                    .enter_state(GenericComponentState::WaitingSend);
+                self.prove_batches_sender.send(command).await?;
+                self.latency_tracker
+                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+
+                // Update next expected batch
+                *next_batch = Some(command_batch_to + 1);
+            } else {
+                // Gap in sequence, wait for missing batch
+                break;
+            }
+        }
+
+        if !buffer.is_empty() {
+            tracing::info!(
+                buffered_count = buffer.len(),
+                next_expected = ?next_batch,
+                buffered_batches = ?buffer.keys().collect::<Vec<_>>(),
+                "SNARK job manager: proofs buffered, waiting for sequential batch"
+            );
+        }
+
         Ok(())
     }
 }
