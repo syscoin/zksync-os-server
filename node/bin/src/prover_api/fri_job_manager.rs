@@ -52,7 +52,7 @@ pub struct FailedFriProof {
     pub proof_bytes: Bytes,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FriJob {
     pub batch_number: u64,
     pub vk_hash: String,

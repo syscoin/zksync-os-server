@@ -1,22 +1,14 @@
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy, Debug)]
-pub struct JobStatus {
+#[derive(Clone, Debug)]
+pub struct JobMetadata {
+    pub batch_number: u64,
+    pub vk_hash: String,
+    pub tx_count: usize,
     pub added_at: Instant,
     pub assigned_at: Option<Instant>,
     pub current_attempt: usize, // 0 = never assigned, 1+ = assigned N times
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct CompletionStatistics {
-    /// Number of attempts it took to finally prove. For normal execution, should be `1`
-    pub attempts_took: usize,
-    /// Time since last assignment
-    pub prove_time: Duration,
-    /// Total time spent in Prover Job Map
-    #[allow(dead_code)]
-    pub total_time: Duration,
 }
 
 pub enum QueueStatistics {
@@ -49,9 +41,12 @@ impl Debug for QueueStatistics {
     }
 }
 
-impl JobStatus {
-    pub fn new_pending() -> Self {
+impl JobMetadata {
+    pub fn new_pending(batch_number: u64, vk_hash: String, tx_count: usize) -> Self {
         Self {
+            batch_number,
+            vk_hash,
+            tx_count,
             added_at: Instant::now(),
             assigned_at: None,
             current_attempt: 0,
@@ -63,14 +58,56 @@ impl JobStatus {
         self.assigned_at = Some(assigned_at);
         self.current_attempt += 1;
     }
+}
 
-    pub fn completion_statistics(&self) -> CompletionStatistics {
-        CompletionStatistics {
-            attempts_took: self.current_attempt,
-            prove_time: self
-                .assigned_at
-                .map_or_else(Duration::default, |assigned_at| assigned_at.elapsed()),
-            total_time: self.added_at.elapsed(),
+/// Statistics about a batch of jobs for logging and metrics
+/// For FRI jobs - always one batch; for SNARK - can be multiple consecutive batches
+#[derive(Debug)]
+#[allow(dead_code)] // used for debug
+pub struct JobBatchStats {
+    pub batch_number_range: String,
+    pub vk_hash: String,
+    pub max_attempts: usize,
+    pub max_time_since_added: Duration,
+    pub total_txs: usize,
+    pub max_time_since_last_assignment: Option<Duration>,
+}
+
+impl JobBatchStats {
+    pub fn new(metadata_list: &[JobMetadata]) -> Self {
+        assert!(!metadata_list.is_empty());
+
+        let first = &metadata_list[0];
+        let batch_numbers: Vec<u64> = metadata_list.iter().map(|m| m.batch_number).collect();
+        let max_attempts = metadata_list
+            .iter()
+            .map(|m| m.current_attempt)
+            .max()
+            .unwrap();
+
+        let max_time_since_last_assignment: Option<Duration> = metadata_list
+            .iter()
+            .flat_map(|m| m.assigned_at.map(|a| a.elapsed()))
+            .max();
+
+        JobBatchStats {
+            batch_number_range: Self::format_batch_range(&batch_numbers),
+            vk_hash: first.vk_hash.clone(),
+            max_attempts,
+            max_time_since_added: first.added_at.elapsed(),
+            total_txs: metadata_list.iter().map(|m| m.tx_count).sum(),
+            max_time_since_last_assignment,
+        }
+    }
+    fn format_batch_range(batch_numbers: &[u64]) -> String {
+        match batch_numbers.len() {
+            0 => String::from("none"),
+            1 => format!("{}", batch_numbers[0]),
+            _ => format!(
+                "{}-{}",
+                batch_numbers[0],
+                batch_numbers[batch_numbers.len() - 1]
+            ),
         }
     }
 }

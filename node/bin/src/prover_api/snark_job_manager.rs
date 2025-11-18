@@ -92,10 +92,7 @@ impl SnarkJobManager {
             .await;
 
         if batches_with_real_proofs.is_empty() {
-            tracing::trace!(
-                prover_id,
-                "no SNARK prove jobs are available for pick up",
-            );
+            tracing::trace!(prover_id, "no SNARK prove jobs are available for pick up",);
             return Ok(None);
         }
 
