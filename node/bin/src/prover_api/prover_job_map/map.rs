@@ -1,8 +1,9 @@
 use super::models::{
     JobBatchStats, JobEntry, JobMetadata, NonEmptyQueueStatistics, QueueStatistics,
 };
+use super::tracked_lock::TrackedLockGuard;
 use crate::prover_api::fri_job_manager::{FriJob, JobState};
-use crate::prover_api::metrics::{PROVER_METRICS, ProverStage, ProverType};
+use crate::prover_api::metrics::{JobMapMethod, PROVER_METRICS, ProverStage, ProverType};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
@@ -64,7 +65,7 @@ impl<T: Clone> ProverJobMap<T> {
     /// Awaits if adding this job exceeds `max_assigned_batch_range` until space is available.
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<T>) {
         let batch_number = batch_envelope.batch_number();
-        let mut jobs = self.jobs.lock().await;
+        let mut jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
 
         // Wait until there's space available (await if batch range limit would be exceeded)
         while self.is_queue_full(&jobs) {
@@ -81,7 +82,7 @@ impl<T: Clone> ProverJobMap<T> {
             drop(jobs);
             self.space_available.notified().await;
             // Re-acquire lock after notification
-            jobs = self.jobs.lock().await;
+            jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
         }
 
         let entry = JobEntry {
@@ -106,11 +107,7 @@ impl<T: Clone> ProverJobMap<T> {
     /// Returns None if no eligible job is found.
     ///
     /// Used for FRI jobs (one batch == one job)
-    pub async fn pick_job(
-        &self,
-        min_age: Duration,
-        prover_id: &str,
-    ) -> Option<(FriJob, T)> {
+    pub async fn pick_job(&self, min_age: Duration, prover_id: &str) -> Option<(FriJob, T)> {
         let now = Instant::now();
         let mut result = self
             .pick_jobs_while(1, prover_id, |entry| {
@@ -142,7 +139,7 @@ impl<T: Clone> ProverJobMap<T> {
         F: FnMut(&JobEntry<T>) -> bool,
     {
         let now = Instant::now();
-        let mut jobs = self.jobs.lock().await;
+        let mut jobs = self.lock_with_tracking(JobMapMethod::PickJobsWhile).await;
 
         let mut selected_jobs = Vec::new();
         for (_, entry) in jobs.iter_mut() {
@@ -237,14 +234,16 @@ impl<T: Clone> ProverJobMap<T> {
 
     /// If a job is present for a given batch_number, returns the corresponding BatchMetadata
     pub async fn get_job_batch_metadata(&self, batch_number: u64) -> Option<BatchMetadata> {
-        let jobs = self.jobs.lock().await;
+        let jobs = self
+            .lock_with_tracking(JobMapMethod::GetJobBatchMetadata)
+            .await;
         jobs.get(&batch_number)
             .map(|entry| entry.batch_envelope.batch.clone())
     }
 
     /// If a job is present for given batch_number, returns (vk, prover_input)
     pub async fn get_prover_input(&self, batch_number: u64) -> Option<(&'static str, T)> {
-        let jobs = self.jobs.lock().await;
+        let jobs = self.lock_with_tracking(JobMapMethod::GetProverInput).await;
         jobs.get(&batch_number).map(|entry| {
             (
                 entry
@@ -286,7 +285,9 @@ impl<T: Clone> ProverJobMap<T> {
         prover_type: ProverType,
         prover_id: &str,
     ) -> Option<Vec<SignedBatchEnvelope<T>>> {
-        let mut jobs = self.jobs.lock().await;
+        let mut jobs = self
+            .lock_with_tracking(JobMapMethod::CompleteManyJobs)
+            .await;
         // First, verify all jobs exist -
         // it's possible a different job with an overlapping set of proofs was submitted.
         for batch_number in batch_number_from..=batch_number_to {
@@ -322,7 +323,8 @@ impl<T: Clone> ProverJobMap<T> {
                     // time since last assignment is proving time
                     .observe(assignment_info.time_since_last_assignment);
                 if stats.total_txs > 0 {
-                    PROVER_METRICS.prove_time_per_tx[&(self.prover_stage, prover_type, prover_id.to_string())]
+                    PROVER_METRICS.prove_time_per_tx
+                        [&(self.prover_stage, prover_type, prover_id.to_string())]
                         .observe(
                             assignment_info.time_since_last_assignment / stats.total_txs as u32,
                         );
@@ -397,7 +399,7 @@ impl<T: Clone> ProverJobMap<T> {
     }
 
     pub async fn status(&self) -> Vec<JobState> {
-        let jobs = self.jobs.lock().await;
+        let jobs = self.lock_with_tracking(JobMapMethod::Status).await;
         jobs.iter()
             .map(|(batch_number, entry)| JobState {
                 fri_job: FriJob {
@@ -417,5 +419,26 @@ impl<T: Clone> ProverJobMap<T> {
                 added_seconds_ago: entry.metadata.added_at.elapsed().as_secs(),
             })
             .collect() // Already sorted by BTreeMap ordering
+    }
+
+    const WARN_AT_ACQUIRE_TIME_MS: u64 = 500;
+    /// Acquire the lock with tracking of acquisition time and hold time
+    async fn lock_with_tracking(&self, method: JobMapMethod) -> TrackedLockGuard<'_, T> {
+        let start = Instant::now();
+        let guard = self.jobs.lock().await;
+        let acquire_time = start.elapsed();
+        if acquire_time > Duration::from_millis(Self::WARN_AT_ACQUIRE_TIME_MS) {
+            tracing::warn!(
+                acquire_time_ms = acquire_time.as_millis(),
+                ?method,
+                ?self.prover_stage,
+                "Contention on job map lock"
+            );
+        }
+
+        PROVER_METRICS.job_map_lock_acquire_time[&(self.prover_stage, method)]
+            .observe(acquire_time);
+
+        TrackedLockGuard::new(guard, Instant::now(), self.prover_stage, method)
     }
 }

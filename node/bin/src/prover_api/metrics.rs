@@ -17,6 +17,12 @@ pub struct ProverMetrics {
         LabeledFamily<(ProverStage, ProverType, String), Histogram<Duration>, 3>,
     #[metrics(labels = ["stage", "type"], buckets = Buckets::values(&[1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 50.0]))]
     pub proved_after_attempts: LabeledFamily<(ProverStage, ProverType), Histogram, 2>,
+    /// Time spent waiting to acquire the lock in ProverJobMap
+    #[metrics(unit = Unit::Seconds, labels = ["stage", "method"], buckets = Buckets::LATENCIES)]
+    pub job_map_lock_acquire_time: LabeledFamily<(ProverStage, JobMapMethod), Histogram<Duration>, 2>,
+    /// Time spent holding the lock in ProverJobMap
+    #[metrics(unit = Unit::Seconds, labels = ["stage", "method"], buckets = Buckets::LATENCIES)]
+    pub job_map_lock_hold_time: LabeledFamily<(ProverStage, JobMapMethod), Histogram<Duration>, 2>,
 }
 
 #[derive(Debug, Metrics)]
@@ -56,6 +62,17 @@ pub enum PickJobResult {
     NoJob,
     /// Request failed with error
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
+#[metrics(label = "method", rename_all = "snake_case")]
+pub enum JobMapMethod {
+    AddJob,
+    PickJobsWhile,
+    CompleteManyJobs,
+    GetJobBatchMetadata,
+    GetProverInput,
+    Status,
 }
 
 #[vise::register]

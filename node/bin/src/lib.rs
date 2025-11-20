@@ -879,6 +879,7 @@ fn run_fake_fri_provers(
         workers = config.fake_fri_provers.workers,
         compute_time = ?config.fake_fri_provers.compute_time,
         min_task_age = ?config.fake_fri_provers.min_age,
+        timeout_frequency = ?config.fake_fri_provers.timeout_frequency,
         "Initializing fake FRI provers"
     );
     let fake_provers_pool = FakeFriProversPool::new(
@@ -886,6 +887,7 @@ fn run_fake_fri_provers(
         config.fake_fri_provers.workers,
         config.fake_fri_provers.compute_time,
         config.fake_fri_provers.min_age,
+        config.fake_fri_provers.timeout_frequency,
     );
     tasks.spawn(
         fake_provers_pool

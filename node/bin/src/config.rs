@@ -465,6 +465,13 @@ pub struct FakeFriProversConfig {
     /// This gives real provers a head start when picking jobs
     #[config(default_t = Duration::from_millis(3000))]
     pub min_age: Duration,
+
+    /// Probability (0.0 to 1.0) that a job will timeout/be dropped instead of submitting a proof.
+    /// 0.0 means never timeout (default behavior).
+    /// For example, 0.1 means 10% of jobs will be dropped.
+    /// Used to test queuing behavior on timeout.
+    #[config(default_t = 0.0)]
+    pub timeout_frequency: f64,
 }
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
