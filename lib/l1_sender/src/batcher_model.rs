@@ -50,6 +50,8 @@ impl BatchMetadata {
             .vk_hash())
     }
 
+    /// As a temporary flexibility measure, we allow to set different versions for the same execution version.
+    /// For details see doc comment to `from_forward_run_execution_version`
     pub fn proving_version(&self) -> anyhow::Result<ProvingVersion> {
         let forward_run_execution_version = ExecutionVersion::try_from(self.execution_version)?;
         Ok(ProvingVersion::from_forward_run_execution_version(

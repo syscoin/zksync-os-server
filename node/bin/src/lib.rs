@@ -32,7 +32,7 @@ use crate::prover_api::fake_fri_provers_pool::FakeFriProversPool;
 use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proving_pipeline_step::FriProvingPipelineStep;
 use crate::prover_api::gapless_committer::GaplessCommitter;
-use crate::prover_api::gapless_committer_passthrough::GaplessCommitterPassthrough;
+use crate::prover_api::gapless_l1_prove_sender::GaplessL1ProofSender;
 use crate::prover_api::proof_storage::ProofStorage;
 use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
@@ -705,7 +705,7 @@ async fn run_main_node_pipeline(
             to_address: node_state_on_startup.l1_state.validator_timelock,
         })
         .pipe(snark_proving_step)
-        .pipe(GaplessCommitterPassthrough::new(starting_batch_number))
+        .pipe(GaplessL1ProofSender::new(starting_batch_number))
         .pipe(L1Sender::<_, ProofCommand> {
             provider: l1_provider.clone(),
             config: config.l1_sender_config.clone().into(),
