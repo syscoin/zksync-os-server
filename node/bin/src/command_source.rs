@@ -17,6 +17,7 @@ pub struct MainNodeCommandSource<Replay> {
     pub rebuild_options: Option<RebuildOptions>,
     pub block_time: Duration,
     pub max_transactions_in_block: usize,
+    pub drop_blocks_from_height: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ impl<Replay: ReadReplay> PipelineComponent for MainNodeCommandSource<Replay> {
             self.block_time,
             self.max_transactions_in_block,
             self.rebuild_options,
+            self.drop_blocks_from_height,
         );
 
         while let Some(command) = stream.next().await {
@@ -105,33 +107,51 @@ fn command_source(
     block_time: Duration,
     max_transactions_in_block: usize,
     rebuild_options: Option<RebuildOptions>,
+    drop_blocks_from_height: Option<u64>,
 ) -> BoxStream<BlockCommand> {
     let last_block_in_wal = block_replay_wal.latest_record();
+
+    // Determine the effective last block to replay, considering drop_blocks_from_height
+    let effective_last_block_in_wal = if let Some(drop_height) = drop_blocks_from_height {
+        assert!(
+            drop_height > block_to_start,
+            "drop_blocks_from_height must be > block_to_start, got {drop_height} <= {block_to_start}"
+        );
+        assert!(
+            drop_height <= last_block_in_wal + 1,
+            "drop_blocks_from_height must be <= last_block_in_wal + 1, got {drop_height} > {}",
+            last_block_in_wal + 1
+        );
+        drop_height - 1
+    } else {
+        last_block_in_wal
+    };
+
     tracing::info!(
         last_block_in_wal,
+        effective_last_block_in_wal,
         block_to_start,
         ?rebuild_options,
+        ?drop_blocks_from_height,
         "starting command source"
     );
 
     let (replay_end, rebuild_stream): (u64, BoxStream<BlockCommand>) =
         if let Some(rebuild_options) = rebuild_options {
+            let rebuild_from = rebuild_options.rebuild_from_block;
             assert!(
-                rebuild_options.rebuild_from_block >= block_to_start,
-                "rebuild_from_block must be >= block_to_start, got {} < {}",
-                rebuild_options.rebuild_from_block,
-                block_to_start
+                rebuild_from >= block_to_start,
+                "rebuild_from_block must be >= block_to_start, got {rebuild_from} < {block_to_start}"
             );
 
             assert!(
-                rebuild_options.rebuild_from_block <= last_block_in_wal,
-                "rebuild_from_block must be <= last_block_in_wal, got {} > {}",
-                rebuild_options.rebuild_from_block,
-                last_block_in_wal
+                rebuild_from <= effective_last_block_in_wal,
+                "rebuild_from_block must be <= effective_last_block_in_wal, got {rebuild_from} > {effective_last_block_in_wal}"
             );
 
-            let command_iterator =
-                (rebuild_options.rebuild_from_block..=last_block_in_wal).map(move |block_number| {
+            let command_iterator = (rebuild_options.rebuild_from_block
+                ..=effective_last_block_in_wal)
+                .map(move |block_number| {
                     let replay_record = block_replay_wal
                         .get_replay_record(block_number)
                         .expect("Replay record must exist for rebuild");
@@ -146,7 +166,10 @@ fn command_source(
                 futures::stream::iter(command_iterator).boxed(),
             )
         } else {
-            (last_block_in_wal, futures::stream::empty().boxed())
+            (
+                effective_last_block_in_wal,
+                futures::stream::empty().boxed(),
+            )
         };
 
     // Stream of replay commands from WAL
@@ -155,8 +178,10 @@ fn command_source(
         .stream(block_to_start, replay_end)
         .map(|record| BlockCommand::Replay(Box::new(record)));
 
+    // Start producing from drop_blocks_from_height if set, otherwise from last_block_in_wal + 1
+    let produce_start_block = drop_blocks_from_height.unwrap_or(last_block_in_wal + 1);
     let produce_stream: BoxStream<BlockCommand> =
-        futures::stream::unfold(last_block_in_wal + 1, move |block_number| async move {
+        futures::stream::unfold(produce_start_block, move |block_number| async move {
             Some((
                 BlockCommand::Produce(ProduceCommand {
                     block_number,

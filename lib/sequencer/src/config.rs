@@ -28,6 +28,12 @@ pub struct SequencerConfig {
     /// Maximum number of blocks to produce
     /// None for indefinite block production (normal operations)
     pub max_blocks_to_produce: Option<u64>,
+
+    /// Drop blocks in BlockReplayStorage starting from this block number.
+    /// When set, the node will replay blocks up to (but not including) this number,
+    /// then switch to producing new blocks starting from this number.
+    /// Must ensure no committed blocks exist above this height.
+    pub drop_blocks_from_height: Option<u64>,
 }
 
 impl SequencerConfig {

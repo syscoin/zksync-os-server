@@ -261,6 +261,16 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
+    if let Some(drop_height) = config.sequencer_config.drop_blocks_from_height {
+        assert!(
+            drop_height > node_startup_state.last_l1_committed_block,
+            "drop_blocks_from_height must be > last_l1_committed_block, got {} <= {}. \
+             Cannot drop blocks that have already been committed to L1.",
+            drop_height,
+            node_startup_state.last_l1_committed_block
+        );
+    }
+
     let finality_storage = Finality::new(FinalityStatus {
         last_committed_block: last_l1_committed_block,
         last_committed_batch: l1_state.last_committed_batch,
@@ -646,6 +656,7 @@ async fn run_main_node_pipeline(
                 .block_rebuild
                 .clone()
                 .map(Into::into),
+            drop_blocks_from_height: config.sequencer_config.drop_blocks_from_height,
         })
         .pipe(Sequencer {
             block_context_provider,

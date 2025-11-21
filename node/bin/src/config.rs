@@ -220,6 +220,13 @@ pub struct SequencerConfig {
     /// Block rebuild options.
     #[config(nest)]
     pub block_rebuild: Option<RebuildBlocksConfig>,
+
+    /// Drop blocks in BlockReplayStorage starting from this block number.
+    /// When set, the node will replay blocks up to (but not including) this number,
+    /// then switch to producing new blocks starting from this number.
+    /// Must ensure no committed blocks exist above this height.
+    #[config(default_t = None)]
+    pub drop_blocks_from_height: Option<u64>,
 }
 
 impl SequencerConfig {
@@ -631,6 +638,7 @@ impl From<SequencerConfig> for zksync_os_sequencer::config::SequencerConfig {
             block_gas_limit: c.block_gas_limit,
             block_pubdata_limit_bytes: c.block_pubdata_limit_bytes,
             max_blocks_to_produce: c.max_blocks_to_produce,
+            drop_blocks_from_height: c.drop_blocks_from_height,
         }
     }
 }
