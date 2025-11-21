@@ -309,6 +309,11 @@ pub(super) async fn status(State(state): State<AppState>) -> Response {
     Json(status).into_response()
 }
 
+pub(super) async fn snark_status(State(state): State<AppState>) -> Response {
+    let status = state.snark_job_manager.status().await;
+    Json(status).into_response()
+}
+
 pub(super) async fn unassign_fri_job(
     Path(batch_number): Path<u64>,
     State(state): State<AppState>,

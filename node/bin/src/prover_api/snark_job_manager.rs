@@ -247,6 +247,10 @@ impl SnarkJobManager {
         }
         any_unassigned
     }
+
+    pub async fn status(&self) -> Vec<crate::prover_api::fri_job_manager::JobState> {
+        self.jobs.status().await
+    }
 }
 
 const POLL_INTERVAL_MS: u64 = 1000;

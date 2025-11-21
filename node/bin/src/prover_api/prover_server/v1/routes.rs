@@ -6,8 +6,9 @@ use axum::{
 use crate::prover_api::prover_server::{
     AppState,
     v1::handlers::{
-        get_failed_fri_proof, peek_fri_job, peek_snark_job, pick_fri_job, pick_snark_job, status,
-        submit_fri_proof, submit_snark_proof, unassign_fri_job, unassign_snark_job,
+        get_failed_fri_proof, peek_fri_job, peek_snark_job, pick_fri_job, pick_snark_job,
+        snark_status, status, submit_fri_proof, submit_snark_proof, unassign_fri_job,
+        unassign_snark_job,
     },
 };
 
@@ -25,4 +26,5 @@ pub(in crate::prover_api::prover_server) fn v1_routes() -> Router<AppState> {
         .route("/SNARK/{from}/{to}/peek", get(peek_snark_job))
         .route("/SNARK/{from}/{to}/unassign", post(unassign_snark_job))
         .route("/status/", get(status))
+        .route("/status/snark", get(snark_status))
 }
