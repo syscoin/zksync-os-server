@@ -16,9 +16,6 @@ use super::ProtocolUpgradeBuilder;
 use super::default_upgrade::DefaultUpgrade;
 use super::interfaces;
 
-// We assume that chain has this ID.
-const CHAIN_ID: u64 = 270;
-
 /// Object that helps with preparation and execution of protocol upgrades in integration tests.
 ///
 /// Tester assumes that governance is an EOA account, and uses impersonation
@@ -105,7 +102,10 @@ impl UpgradeTester {
             let current_l2_block = self.tester.l2_zk_provider.get_block_number().await?;
             self.tester
                 .l2_zk_provider
-                .wait_finalized_with_timeout(current_l2_block, Duration::from_secs(60))
+                .wait_finalized_with_timeout(
+                    current_l2_block,
+                    crate::assert_traits::DEFAULT_TIMEOUT,
+                )
                 .await?;
             tracing::info!("Current L2 block is finalized, proceeding with patch upgrade");
         } else {
@@ -134,7 +134,10 @@ impl UpgradeTester {
                 .await?;
             self.tester
                 .l2_zk_provider
-                .wait_finalized_with_timeout(tx.block_number.unwrap(), Duration::from_secs(60))
+                .wait_finalized_with_timeout(
+                    tx.block_number.unwrap(),
+                    crate::assert_traits::DEFAULT_TIMEOUT,
+                )
                 .await?;
         } else {
             self.wait_for_upgrade_finalization(upgrade_contract.upgrade_tx_l2_hash())
@@ -150,15 +153,21 @@ impl UpgradeTester {
         let bridgehub = tester.l2_zk_provider.get_bridgehub_contract().await?;
         let bridgehub = interfaces::Bridgehub::new(bridgehub, tester.l1_provider.clone());
         let ctm = bridgehub
-            .chainTypeManager(U256::from(CHAIN_ID))
+            .chainTypeManager(U256::from(zksync_os_server::config_constants::CHAIN_ID))
             .call()
             .await?;
         let ctm = interfaces::ChainTypeManager::new(ctm, tester.l1_provider.clone());
-        let raw_protocol_version = ctm.getProtocolVersion(U256::from(CHAIN_ID)).call().await?;
+        let raw_protocol_version = ctm
+            .getProtocolVersion(U256::from(zksync_os_server::config_constants::CHAIN_ID))
+            .call()
+            .await?;
         let protocol_version = ProtocolSemanticVersion::try_from(raw_protocol_version)
             .expect("invalid protocol version stored in CTM");
 
-        let diamond_proxy = bridgehub.getZKChain(U256::from(CHAIN_ID)).call().await?;
+        let diamond_proxy = bridgehub
+            .getZKChain(U256::from(zksync_os_server::config_constants::CHAIN_ID))
+            .call()
+            .await?;
         let diamond_proxy = interfaces::ZkChain::new(diamond_proxy, tester.l1_provider.clone());
 
         let l1_chain_admin = diamond_proxy.getAdmin().call().await?;
@@ -173,7 +182,8 @@ impl UpgradeTester {
         // Bytecode supplier is a bit special: right now it's not discoverable
         // The value is hardcoded, keep it aligned with `node/bin/src/config.rs`, it must correspond
         // to the value stored in `zkos-l1-state.json`.
-        let bytecode_supplier_address = "0x883498218f553d748e48b43595a7d29a82939f01".parse()?;
+        let bytecode_supplier_address =
+            zksync_os_server::config_constants::BYTECODE_SUPPLIER_ADDRESS.parse()?;
         anyhow::ensure!(
             !tester
                 .l1_provider
@@ -233,7 +243,7 @@ impl UpgradeTester {
         // The genesis transaction has to be in the first block, so we wait for block 1 to be finalized.
         self.tester
             .l2_zk_provider
-            .wait_finalized_with_timeout(1, Duration::from_secs(60))
+            .wait_finalized_with_timeout(1, crate::assert_traits::DEFAULT_TIMEOUT)
             .await?;
         Ok(())
     }
@@ -251,7 +261,10 @@ impl UpgradeTester {
             .expect("Upgrade tx can't be in the first block");
         self.tester
             .l2_zk_provider
-            .wait_finalized_with_timeout(block_before_upgrade, Duration::from_secs(60))
+            .wait_finalized_with_timeout(
+                block_before_upgrade,
+                crate::assert_traits::DEFAULT_TIMEOUT,
+            )
             .await
             .context("Block before upgrade transaction was not finalized")?;
         Ok(())
@@ -267,7 +280,10 @@ impl UpgradeTester {
         let upgrade_block_number = pending_tx.block_number.expect("Upgrade tx must be mined");
         self.tester
             .l2_zk_provider
-            .wait_finalized_with_timeout(upgrade_block_number, Duration::from_secs(60))
+            .wait_finalized_with_timeout(
+                upgrade_block_number,
+                crate::assert_traits::DEFAULT_TIMEOUT,
+            )
             .await
             .context("Block before upgrade transaction was not finalized")?;
         Ok(())
