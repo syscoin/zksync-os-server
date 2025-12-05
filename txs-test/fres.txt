@@ -1,0 +1,26 @@
+Flow: ("same_transfer", 100). Block number: 23. computaional_native_used: 76655100. seconds: 25.399658791. native/ms: 3017.9579
+Flow: ("same_transfer", 200). Block number: 25. computaional_native_used: 152565100. seconds: 38.084267031. native/ms: 4005.9876
+Flow: ("same_transfer", 500). Block number: 27. computaional_native_used: 380295100. seconds: 68.814457191. native/ms: 5526.3838
+Flow: ("same_transfer", 1000). Block number: 29. computaional_native_used: 759845100. seconds: 116.130453778. native/ms: 6543.0305
+Flow: ("same_transfer", 1500). Block number: 31. computaional_native_used: 1139395100. seconds: 167.158767143. native/ms: 6816.2449
+Flow: ("same_transfer", 2000). Block number: 33. computaional_native_used: 1518945100. seconds: 215.188911937. native/ms: 7058.6588
+
+
+Flow: ("random_transfer", 100). Block number: 35. computaional_native_used: 88569100. seconds: 25.916548546. native/ms: 3417.4728
+Flow: ("random_transfer", 200). Block number: 37. computaional_native_used: 176393100. seconds: 38.586552221. native/ms: 4571.3620
+Flow: ("random_transfer", 500). Block number: 39. computaional_native_used: 439865100. seconds: 72.529031031. native/ms: 6064.6764
+Flow: ("random_transfer", 1000). Block number: 41. computaional_native_used: 878985100. seconds: 123.85618688. native/ms: 7096.8203
+Flow: ("random_transfer", 1500). Block number: 43. computaional_native_used: 1318105100. seconds: 179.720347096. native/ms: 7334.2007
+Flow: ("random_transfer", 2000). Block number: 47. computaional_native_used: 1757225100. seconds: 237.304540195. native/ms: 7404.9367
+
+
+Flow: ("factory", 100). Block number: 100. computaional_native_used: 197788800. seconds: 32.411559277. native/ms: 6102.4154
+Flow: ("factory", 200). Block number: 103. computaional_native_used: 394832500. seconds: 47.122506706. native/ms: 8378.8518
+Flow: ("factory", 500). Block number: 106. computaional_native_used: 985963600. seconds: 117.051815422. native/ms: 8423.3089
+Flow: ("factory", 1000). Block number: 109. computaional_native_used: 1971182100. seconds: 214.718000631. native/ms: 9180.3300
+
+
+Flow: ("modexp", 10). Block number: 9. computaional_native_used: 218227580. seconds: 45.710877499. native/ms: 4774.0842
+Flow: ("modexp", 20). Block number: 12. computaional_native_used: 435838460. seconds: 32.896037998. native/ms: 13248.9651
+Flow: ("modexp", 50). Block number: 15. computaional_native_used: 1089029600. seconds: 59.157741091. native/ms: 18408.9112
+Flow: ("modexp", 100). Block number: 18. computaional_native_used: 2176928900. seconds: 101.18823053. native/ms: 21513.6572

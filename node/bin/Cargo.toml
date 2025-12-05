@@ -92,3 +92,6 @@ jsonrpsee = { workspace = true, default-features = false, features = [
 rand.workspace = true
 
 sentry.workspace = true
+
+zksync_os_runner.workspace = true
+risc_v_simulator_0_4_3.workspace = true

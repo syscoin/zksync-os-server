@@ -1,0 +1,16 @@
+[package]
+name = "txs-test"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+alloy = { workspace = true, default-features = true, features = ["rand"]}
+anyhow.workspace = true
+rand.workspace = true

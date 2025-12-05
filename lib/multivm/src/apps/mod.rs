@@ -132,6 +132,11 @@ pub mod v5 {
         "/multiblock_batch.bin"
     ));
 
+    pub const MULTIBLOCK_BATCH_BENCHMARKING: &[u8] = include_bytes!(concat!(
+        env!("ZKSYNC_OS_0_2_4_SOURCE_PATH"),
+        "/multiblock_batch_benchmarking.bin"
+    ));
+
     pub fn multiblock_batch_path(base_dir: &Path) -> PathBuf {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -146,6 +151,25 @@ pub mod v5 {
 
             let full_path = dir_path.join("multiblock_batch.bin");
             std::fs::write(&full_path, MULTIBLOCK_BATCH).unwrap();
+            full_path
+        })
+        .clone()
+    }
+
+    pub fn multiblock_batch_benchmarking_path(base_dir: &Path) -> PathBuf {
+        static PATH: OnceLock<PathBuf> = OnceLock::new();
+
+        PATH.get_or_init(|| {
+            let dir_path = base_dir.join(
+                module_path!()
+                    .rsplit_once("::")
+                    .expect("failed to get module name")
+                    .1,
+            );
+            std::fs::create_dir_all(&dir_path).unwrap();
+
+            let full_path = dir_path.join("multiblock_batch_benchmarking.bin");
+            std::fs::write(&full_path, MULTIBLOCK_BATCH_BENCHMARKING).unwrap();
             full_path
         })
         .clone()

@@ -4,7 +4,7 @@ use crate::execution::vm_wrapper::VmWrapper;
 use crate::model::blocks::{InvalidTxPolicy, PreparedBlockCommand, SealPolicy};
 use crate::model::debug_formatting::BlockOutputDebug;
 use alloy::consensus::Transaction;
-use alloy::primitives::TxHash;
+use alloy::primitives::{TxHash, address};
 use futures::StreamExt;
 use std::pin::Pin;
 use tokio::time::Sleep;
@@ -140,6 +140,11 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
                                             tracing::info!(block = ctx.block_number, "upgrade tx executed, but seal policy requires full exhaustion");
                                         }
                                     }
+                                }
+                                if matches!(command.seal_policy, SealPolicy::Decide(_, _)) &&
+                                    executed_txs.last().unwrap().signer() == address!("0xD56da2e2Ef0C2AfF4c6aC0f73f05C794C3C9f162") {
+                                    tracing::warn!(block = ctx.block_number, tx_hash = %executed_txs.last().unwrap().hash(), "force closing block");
+                                    break SealReason::Other;
                                 }
                                 match command.seal_policy {
                                     SealPolicy::Decide(_, limit) if executed_txs.len() >= limit => {

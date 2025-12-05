@@ -1,4 +1,5 @@
 use alloy::primitives::Address;
+use std::path::PathBuf;
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
@@ -83,6 +84,19 @@ pub(crate) fn seal_batch(
                 )
             }
         };
+
+    use risc_v_simulator_0_4_3::abstractions::non_determinism::QuasiUARTSource;
+    let path: PathBuf = "./db/node1".into();
+    let (_proof_output, effective_cycles) = zksync_os_runner::run_and_get_effective_cycles(
+        zksync_os_multivm::apps::v5::multiblock_batch_path(&path.join("app_bins")),
+        None,
+        1 << 36,
+        QuasiUARTSource::new_with_reads(batch_prover_input.clone()),
+    );
+    tracing::info!(
+        "Effective cycles for batch {batch_number} (blocks {block_number_from}-{block_number_to}): {:?}",
+        effective_cycles
+    );
 
     let protocol_version = blocks.first().unwrap().1.protocol_version.clone();
     // Sanity check: all blocks in the batch should have the same protocol version

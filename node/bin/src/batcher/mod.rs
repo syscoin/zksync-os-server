@@ -171,6 +171,8 @@ impl PipelineComponent for Batcher {
                     .await
                     .map_err(|e| anyhow::anyhow!("Failed to send sidecar: {e}"))?;
             }
+
+            // tracing::error!("{}", serde_json::to_string(&batch_envelope.data).unwrap());
             output
                 .send(batch_envelope)
                 .await
