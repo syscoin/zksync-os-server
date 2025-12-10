@@ -17,6 +17,12 @@ pub struct SystemTransactionEnvelope<T: SystemTxType> {
     pub inner: SystemTransaction<T>,
 }
 
+impl<T: SystemTxType> SystemTransactionEnvelope<T> {
+    pub fn hash(&self) -> &B256 {
+        todo!("not implemented")
+    }
+}
+
 impl<T: SystemTxType> Typed2718 for SystemTransactionEnvelope<T> {
     fn ty(&self) -> u8 {
         T::TX_TYPE

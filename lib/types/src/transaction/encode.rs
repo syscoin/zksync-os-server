@@ -1,6 +1,7 @@
-use crate::transaction::L1TxType;
 use crate::transaction::l1::L1Envelope;
 use crate::transaction::l2::L2Transaction;
+use crate::transaction::system::envelope::SystemTransactionEnvelope;
+use crate::transaction::{L1TxType, SystemTxType};
 use crate::{ZkEnvelope, ZkTransaction};
 use alloy::consensus::Transaction;
 use alloy::eips::Encodable2718;
@@ -18,6 +19,12 @@ pub trait ZksyncOsEncode {
 }
 
 impl<T: L1TxType> ZksyncOsEncode for L1Envelope<T> {
+    fn encode(self) -> EncodedTx {
+        EncodedTx::Abi(TransactionData::from(self).abi_encode())
+    }
+}
+
+impl<T: SystemTxType> ZksyncOsEncode for SystemTransactionEnvelope<T> {
     fn encode(self) -> EncodedTx {
         EncodedTx::Abi(TransactionData::from(self).abi_encode())
     }
@@ -176,6 +183,30 @@ impl From<L2Transaction> for TransactionData {
             factory_deps: vec![],
             paymaster_input: vec![],
             reserved_dynamic: encoded_access_list,
+        }
+    }
+}
+
+impl<T: SystemTxType> From<SystemTransactionEnvelope<T>> for TransactionData {
+    fn from(system_tx: SystemTransactionEnvelope<T>) -> Self {
+        let system_tx = system_tx.inner;
+        TransactionData {
+            tx_type: U256::from(T::TX_TYPE),
+            from: todo!(),
+            to: system_tx.destination,
+            gas_limit: U256::from(system_tx.gas_limit),
+            pubdata_price_limit: todo!(),
+            max_fee_per_gas: todo!(),
+            max_priority_fee_per_gas: todo!(),
+            paymaster: todo!(),
+            nonce: U256::from(system_tx.nonce),
+            value: todo!(),
+            reserved: todo!(),
+            data: system_tx.data.to_vec(),
+            signature: todo!(),
+            factory_deps: todo!(),
+            paymaster_input: todo!(),
+            reserved_dynamic: todo!(),
         }
     }
 }
