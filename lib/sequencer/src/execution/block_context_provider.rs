@@ -16,7 +16,7 @@ use zksync_os_mempool::{
 };
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
-    ExecutionVersion, InteropRootsEnvelope, L1PriorityEnvelope, L2Envelope,
+    ExecutionVersion, InteropRootsTransaction, L1PriorityEnvelope, L2Envelope,
     ProtocolSemanticVersion, PubdataMode, UpgradeTransaction, ZkEnvelope,
 };
 
@@ -334,7 +334,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
         for tx in &replay_record.transactions {
             match tx.envelope() {
                 ZkEnvelope::InteropRoots(_interop_tx) => {
-                    todo!("handle interop txs");
+                    unimplemented!("handle interop txs");
                 }
                 ZkEnvelope::L1(l1_tx) => {
                     self.next_l1_priority_id = l1_tx.priority_id() + 1;
