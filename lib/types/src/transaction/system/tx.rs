@@ -13,7 +13,6 @@ use crate::transaction::SystemTxType;
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
 pub struct SystemTransaction<T: SystemTxType> {
     pub initiator: Address,
-    pub nonce: u64,
     pub gas_limit: u64,
     pub destination: Address,
     pub data: Bytes,
@@ -28,7 +27,8 @@ impl<T: SystemTxType> Transaction for SystemTransaction<T> {
     }
 
     fn nonce(&self) -> u64 {
-        self.nonce
+        // todo: check if this is correct
+        0
     }
 
     fn gas_limit(&self) -> u64 {
@@ -107,14 +107,10 @@ impl<T: SystemTxType> Typed2718 for SystemTransaction<T> {
 
 impl<T: SystemTxType> RlpEcdsaEncodableTx for SystemTransaction<T> {
     fn rlp_encoded_fields_length(&self) -> usize {
-        self.nonce.length()
-            + self.gas_limit.length()
-            + self.destination.length()
-            + self.data.length()
+        self.gas_limit.length() + self.destination.length() + self.data.length()
     }
 
     fn rlp_encode_fields(&self, out: &mut dyn BufMut) {
-        self.nonce.encode(out);
         self.gas_limit.encode(out);
         self.destination.encode(out);
         self.data.encode(out);
@@ -131,7 +127,6 @@ impl<T: SystemTxType> RlpEcdsaDecodableTx for SystemTransaction<T> {
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy::rlp::Result<Self> {
         Ok(Self {
             initiator: Decodable::decode(buf)?,
-            nonce: Decodable::decode(buf)?,
             gas_limit: Decodable::decode(buf)?,
             destination: Decodable::decode(buf)?,
             data: Decodable::decode(buf)?,

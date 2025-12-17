@@ -199,7 +199,7 @@ impl<T: SystemTxType> From<SystemTransactionEnvelope<T>> for TransactionData {
             max_fee_per_gas: U256::from(system_tx.max_fee_per_gas()),
             max_priority_fee_per_gas: U256::from(system_tx.max_priority_fee_per_gas().unwrap_or(0)),
             paymaster: Address::ZERO,
-            nonce: U256::from(system_tx.nonce),
+            nonce: U256::ZERO,
             value: U256::ZERO,
             reserved: [U256::ZERO, U256::ZERO, U256::ZERO, U256::ZERO],
             data: system_tx.data.to_vec(),
