@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use zksync_os_types::{
-    InteropRootsTransaction, L1PriorityEnvelope, L2Envelope, UpgradeTransaction, ZkTransaction,
+    InteropRootsTransaction, L1PriorityEnvelope, L2Envelope, UpgradeTransaction, ZkTransaction, ZkTxType,
 };
 
 pub trait TxStream: Stream {
@@ -29,6 +29,7 @@ pub struct BestTransactionsStream<'a> {
     peeked_tx: Option<ZkTransaction>,
     peeked_upgrade_info: Option<UpgradeTransaction>,
     txs_already_provided: bool,
+    first_tx_is_interop: bool,
 }
 
 /// Convenience method to stream best L2 transactions
@@ -50,6 +51,7 @@ pub fn best_transactions<'a>(
         peeked_tx: None,
         peeked_upgrade_info: None,
         txs_already_provided: false,
+        first_tx_is_interop: false,
     }
 }
 
@@ -80,11 +82,13 @@ impl Stream for BestTransactionsStream<'_> {
                 }
             }
 
-            // todo: ensure this is correct ordering of transactions
-            match this.interop_transactions.poll_recv(cx) {
-                Poll::Ready(Some(tx)) => return Poll::Ready(Some(ZkTransaction::from(tx))),
-                Poll::Pending => {}
-                Poll::Ready(None) => todo!("channel closed"),
+            if this.first_tx_is_interop {
+                // todo: ensure this is correct ordering of transactions
+                match this.interop_transactions.poll_recv(cx) {
+                    Poll::Ready(Some(tx)) => return Poll::Ready(Some(ZkTransaction::from(tx))),
+                    Poll::Pending => {}
+                    Poll::Ready(None) => todo!("channel closed"),
+                }
             }
 
             match this.l1_transactions.poll_recv(cx) {
@@ -123,30 +127,43 @@ impl TxStream for BestTransactionsStream<'_> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum PeekedTxType {
+    Upgrade(UpgradeTransaction),
+    Interop,
+    Regular,
+}
+
 impl BestTransactionsStream<'_> {
     /// Waits until there is a next transaction and returns a reference to it.
     /// Does not consume the transaction, it will be returned on the next poll.
     /// Returns `None` if the stream is closed.
-    /// Returns `Some(None)` if there is a transaction in the stream, but it's not an upgrade transaction.
-    /// Returns `Some(Some(upgrade_tx))` if the next transaction is an upgrade transaction.
+    /// Returns `Some(PeekedTxType::Regular)` if there is a transaction in the stream, but it's not an upgrade or interop transaction.
+    /// Returns `Some(PeekedTxType::Upgrade(upgrade_tx))` if the next transaction is an upgrade transaction.
+    /// Returns `Some(PeekedTxType::Interop)` if the next transaction is an interop transaction.
     // TODO: this interface leaks implementation details about the internal structure, and in general
     // this information is only needed for the `BlockContextProvider` which already has access to the stream.
     // This was introduced only because upgrade transaction can appear after we started waiting for the
     // first tx, and we need protocol upgrade info to initialize block context.
     // Consider refactoring this later.
-    pub async fn wait_peek(&mut self) -> Option<Option<UpgradeTransaction>> {
+    pub async fn wait_peek(&mut self) -> Option<PeekedTxType> {
         if self.peeked_tx.is_none() {
             self.peeked_tx = self.next().await;
             self.txs_already_provided = true; // TODO: implicit expectation that this method is _guaranteed_ to be called before using the stream.
         }
 
-        // Return `None` if the stream is closed.
-        #[allow(clippy::question_mark)]
-        if self.peeked_tx.is_none() {
-            return None;
+        match &self.peeked_tx {
+            None => None,
+            Some(tx) => match tx.tx_type() {
+                ZkTxType::InteropRoots => {
+                    self.first_tx_is_interop = true;
+                    Some(PeekedTxType::Interop)
+                },
+                ZkTxType::Upgrade => Some(PeekedTxType::Upgrade(self.peeked_upgrade_info.clone().expect("upgrade transaction should be available"))),
+                ZkTxType::L1 => Some(PeekedTxType::Regular),
+                ZkTxType::L2(_) => Some(PeekedTxType::Regular),
+            }
         }
-
-        Some(self.peeked_upgrade_info.clone())
     }
 }
 

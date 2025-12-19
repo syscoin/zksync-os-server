@@ -62,6 +62,8 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
     };
     let mut deadline: Option<Pin<Box<Sleep>>> = None; // will arm after 1st tx success
 
+    let interop_roots_amount = 0;
+
     /* ---------- main loop ------------------------------------------ */
     // seal_reason must only be used for observability - handling must remain generic
     let seal_reason = loop {
@@ -97,6 +99,19 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
                             signer=?tx.inner.signer(),
                             "Executing transaction..."
                         );
+
+                        if command.is_interop_only_block && tx.tx_type() != ZkTxType::InteropRoots {
+                            match command.seal_policy {
+                                SealPolicy::Decide(..) | SealPolicy::UntilExhausted { allowed_to_finish_early: true } => {
+                                    break SealReason::InteropOnlyBlock;
+                                }
+                                SealPolicy::UntilExhausted { allowed_to_finish_early: false } => {
+                                    // We trust that the execution stream will not break protocol invariants.
+                                    tracing::info!(block = ctx.block_number, "interop-only block contains non-interop transaction, but seal policy requires full exhaustion");
+                                }
+                            }
+                        }
+
                         all_processed_txs.push(tx.clone());
                         match runner.execute_next_tx(tx.clone().encode())
                             .await
@@ -141,6 +156,11 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
                                         }
                                     }
                                 }
+
+                                if tx_type == ZkTxType::InteropRoots {
+                                    interop_roots_amount += tx;
+                                }
+
                                 match command.seal_policy {
                                     SealPolicy::Decide(_, limit) if executed_txs.len() >= limit => {
                                     tracing::debug!(block = ctx.block_number,
@@ -361,6 +381,8 @@ pub enum SealReason {
     Blobs,
     // We executed upgrade transaction
     UpgradeTx,
+    // Block contains only interop transactions
+    InteropOnlyBlock,
     Other,
 }
 

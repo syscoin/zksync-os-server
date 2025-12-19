@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 use zksync_os_interface::types::{BlockContext, BlockHashes, BlockOutput};
 use zksync_os_mempool::{
-    CanonicalStateUpdate, L2TransactionPool, PoolUpdateKind, ReplayTxStream, best_transactions,
+    CanonicalStateUpdate, L2TransactionPool, PeekedTxType, PoolUpdateKind, ReplayTxStream, best_transactions
 };
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
@@ -127,10 +127,13 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
 
                 let timestamp = (millis_since_epoch() / 1000) as u64;
 
+
+                let is_interop_only_block = matches!(peeked_tx, Some(PeekedTxType::Interop));
+
                 // Check if we peeked an upgrade transaction info.
                 // It is possible that we peek an upgrade with version <= self.protocol_version
                 // since we do not consume patch upgrades when replaying/rebuilding blocks. Such upgrade can be safely skipped.
-                let force_preimages = if let Some(Some(upgrade_tx)) = peeked_tx
+                let force_preimages = if let Some(PeekedTxType::Upgrade(upgrade_tx)) = peeked_tx
                     && upgrade_tx.protocol_version > self.protocol_version
                 {
                     tracing::info!(
@@ -204,6 +207,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages,
+                    is_interop_only_block,
                 }
             }
             BlockCommand::Replay(record) => {
@@ -233,6 +237,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     expected_block_output_hash: Some(record.block_output_hash),
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: record.force_preimages,
+                    is_interop_only_block: false,
                 }
             }
             BlockCommand::Rebuild(rebuild) => {
@@ -313,6 +318,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: rebuild.replay_record.force_preimages,
+                    is_interop_only_block: false,
                 }
             }
         };
