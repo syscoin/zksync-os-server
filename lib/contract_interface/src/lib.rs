@@ -42,6 +42,15 @@ alloy::sol! {
         bytes32[] sides;
     }
 
+    event NewInteropRoot (
+        uint256 indexed chainId,
+        uint256 indexed blockNumber,
+        uint256 indexed logId,
+        bytes32[] sides
+    );
+
+    function addInteropRootsInBatch(InteropRoot[] calldata interopRootsInput);
+
     // `ZKChainStorage.sol`
     enum PubdataPricingMode {
         Rollup,
