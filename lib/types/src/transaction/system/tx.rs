@@ -22,7 +22,7 @@ pub struct SystemTransaction<T: SystemTxType> {
 
 impl<T: SystemTxType> SystemTransaction<T> {
     pub fn calculate_hash(&self) -> B256 {
-        keccak256(&self.encoded_2718())
+        keccak256(self.encoded_2718())
     }
 }
 
