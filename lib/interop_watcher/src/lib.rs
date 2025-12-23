@@ -131,7 +131,7 @@ impl L1InteropRootsWatcher {
 
         // temporary implementation where we send each interop root separately
         for interop_root in interop_roots {
-            let interop_root_envelope = InteropRootEnvelope::from_interop_root(interop_root);
+            let interop_root_envelope = InteropRootsEnvelope::from_interop_root(interop_root);
             self.output.send(interop_root_envelope).await?;
         }
 
