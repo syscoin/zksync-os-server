@@ -200,7 +200,7 @@ impl BatchInfo {
                             .upgrade_tx_hash
                             .map(|h| Bytes32::from_array(h.0))
                             .unwrap_or(Bytes32::ZERO),
-                        interop_root_rolling_hash: Bytes32::from(
+                        interop_roots_rolling_hash: Bytes32::from(
                             commit_info.dependency_roots_rolling_hash.0,
                         ),
                     };

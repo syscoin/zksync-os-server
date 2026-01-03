@@ -42,7 +42,7 @@ use crate::replay_transport::replay_server;
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::network::{Ethereum, EthereumWallet};
-use alloy::primitives::{BlockNumber, address};
+use alloy::primitives::BlockNumber;
 use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use anyhow::{Context, Result};
@@ -556,6 +556,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             Duration::from_secs(5),
             interop_transactions_sender,
         )
+        .await
+        .expect("failed to start interop roots watcher")
         .run()
         .map(report_exit("Interop roots watcher")),
     );

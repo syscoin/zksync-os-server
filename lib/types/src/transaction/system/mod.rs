@@ -4,8 +4,7 @@ use crate::transaction::{system::envelope::SystemTransactionEnvelope, tx::System
 use alloy::primitives::{Address, Bytes, address};
 use alloy::sol_types::SolCall;
 use serde::{Deserialize, Serialize};
-use zksync_os_contract_interface::IMessageRoot::addChainBatchRootCall;
-use zksync_os_contract_interface::InteropRoot;
+use zksync_os_contract_interface::{IMessageRoot::addInteropRootCall, InteropRoot};
 //use zksync_os_contract_interface::IMessageRoot::addInteropRootsInBatchCall;
 
 pub mod envelope;
@@ -20,10 +19,10 @@ pub type InteropRootsEnvelope = SystemTransactionEnvelope<InteropRootsTxType>;
 
 impl InteropRootsEnvelope {
     pub fn from_interop_root(interop_root: InteropRoot) -> Self {
-        let calldata = addChainBatchRootCall {
+        let calldata = addInteropRootCall {
             chainId: interop_root.chainId,
-            batchNumber: interop_root.blockOrBatchNumber,
-            messageRoot: interop_root.sides[0],
+            blockOrBatchNumber: interop_root.blockOrBatchNumber,
+            sides: interop_root.sides,
         }
         .abi_encode();
 
