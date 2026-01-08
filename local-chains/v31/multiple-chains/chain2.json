@@ -14,6 +14,9 @@
         "operator_execute_pk": "0xd2cae51a3de908992bfe2eb2bde6d53e9af3ecdab8f0d26699a258f7d9107b2d"
     },
     "rpc": {
-        "address": "0.0.0.0:3051"
+        "address": "0.0.0.0:4050"
+    },
+    "mempool": {
+        "minimal_protocol_basefee": 0
     }
 }
