@@ -1,11 +1,11 @@
 {
     "genesis": {
-        "bridgehub_address": "0x8aeec25f84d73c079b318881e445404a3b0cd2d2",
-        "bytecode_supplier_address": "0xabf0447fd9281124968e259e9b9062041e0c98fc"
+        "bridgehub_address": "0xf7478d9a67818964cebfe8a4b76e2b72b0bf790d",
+        "bytecode_supplier_address": "0xaa22a7bcb533db51540e39fcf9d311464faea0a5"
     },
     "l1_sender": {
-        "operator_commit_pk": "0x2c096b29fdfa333428eca566906cc8c89ecf715f99d15fd94967509a240c4de2",
-        "operator_prove_pk": "0xb02977208bae4f76545b488dc1964ba3afa014b8bb14963a1e20dc1ebde07579",
-        "operator_execute_pk": "0xf2658e1bd579b90a9ffe659ddcc76b6a178db1692aae304bb2ea01c3a1fa651a"
+        "operator_commit_pk": "0xb83bd9e5c1952dd3b28c36ab82d977d126915012ffd364f9b4dc45a8745aa387",
+        "operator_prove_pk": "0x5d52d0da0bd90e235744df340dc1391f9a1d8d2068e7a832c1ff5c93945fbaea",
+        "operator_execute_pk": "0x89c0d4553e4cdf9142d06906faf5a9828b61b782dddbb4896d1161e408e3767c"
     }
 }
