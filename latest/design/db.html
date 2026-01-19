@@ -163,18 +163,38 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="database-schema-overview"><a class="header" href="#database-schema-overview">Database Schema Overview</a></h1>
-<p>All persistent data is stored across multiple RocksDB databases:</p>
+<p>Primary persistent node state is split across these RocksDB databases and proof files:</p>
 <ul>
 <li>block_replay_wal</li>
-<li>preimages</li>
+<li>preimages_full_diffs</li>
 <li>repository</li>
-<li>state</li>
+<li>state_full_diffs</li>
 <li>tree</li>
+<li>batch (<code>ExecutedBatchStorage</code>, RocksDB label <code>executed_batch_storage</code>)</li>
+<li>raft</li>
+<li>priority_txs_tree</li>
+</ul>
+<!-- SYSCOIN: Compact-DA HA producers retain the authentication epoch without running a batcher. -->
+<ul>
+<li>batch_work_queue (batchers and compact-DA-capable HA producers); bitcoin_da_status (batchers)</li>
 <li>proofs (JSON files, not RocksDB)</li>
 </ul>
+<!-- SYSCOIN: These stores form one protocol/genesis-bound recovery set. -->
+<p>Back up or move the complete node database directory while the node is stopped;
+do not restore, clear, or copy one store independently unless a documented
+recovery procedure explicitly permits it. In particular, pre-reset V31 state is
+not valid V32 input, even when the chain ID is unchanged.</p>
+<!-- SYSCOIN: Authenticate the complete storage root before any child database is opened. -->
+<p>The root contains a <code>database_identity.json</code> marker that binds protocol version, both chain IDs,
+L1 genesis, the diamond proxy, and L2 genesis. The regular JSON marker is bounded to 16 KiB, created
+with no-overwrite semantics, and synced before any child RocksDB is opened. A missing marker is
+accepted only for a fresh otherwise-empty root. An identity mismatch, malformed or interrupted
+marker, or unmarked legacy store fails startup; move or reset the entire directory rather than
+replacing an individual marker or RocksDB. Host/operator filesystem mutation is outside this
+deployment-mismatch guard’s trust boundary.</p>
 <hr />
 <h2 id="1-block_replay_wal"><a class="header" href="#1-block_replay_wal">1. block_replay_wal</a></h2>
-<p>Write-ahead log containing recent (non-compacted) block data.</p>
+<p>Write-ahead log containing recent block data.</p>
 <div class="table-wrapper"><table><thead><tr><th>Column</th><th>Key</th><th>Value</th></tr></thead><tbody>
 <tr><td>block_output_hash</td><td>block number</td><td>Block output hash</td></tr>
 <tr><td>context</td><td>block number</td><td>Binary-encoded BlockContext (BlockMetadataFromOracle)</td></tr>
@@ -185,9 +205,8 @@
 </tbody></table>
 </div>
 <hr />
-<h2 id="2-preimages"><a class="header" href="#2-preimages">2. preimages</a></h2>
+<h2 id="2-preimages_full_diffs"><a class="header" href="#2-preimages_full_diffs">2. preimages_full_diffs</a></h2>
 <div class="table-wrapper"><table><thead><tr><th>Column</th><th>Key</th><th>Value</th></tr></thead><tbody>
-<tr><td>meta</td><td>‘block’</td><td>Latest block ID</td></tr>
 <tr><td>storage</td><td>hash</td><td>Preimage for the hash</td></tr>
 </tbody></table>
 </div>
@@ -205,11 +224,12 @@
 </tbody></table>
 </div>
 <hr />
-<h2 id="4-state"><a class="header" href="#4-state">4. state</a></h2>
-<p>Data compacted from the write-ahead log.</p>
+<h2 id="4-state_full_diffs"><a class="header" href="#4-state_full_diffs">4. state_full_diffs</a></h2>
+<p>Every storage write, keyed by hashed key and block number: a read at block B is a single
+reverse seek from <code>hashed_key || B</code>.</p>
 <div class="table-wrapper"><table><thead><tr><th>Column</th><th>Key</th><th>Value</th></tr></thead><tbody>
-<tr><td>meta</td><td>‘base_block’</td><td>Base block number for this state snapshot</td></tr>
-<tr><td>storage</td><td>key</td><td>Value (compacted storage)</td></tr>
+<tr><td>data</td><td>hashed_key (32 bytes) || block number (8 bytes, big-endian)</td><td>Storage value</td></tr>
+<tr><td>meta</td><td>‘latest_block’</td><td>Latest block number</td></tr>
 </tbody></table>
 </div>
 <hr />
@@ -222,7 +242,31 @@
 </div>
 <p>Note: The ‘default’ column also stores a serialized Manifest at key ‘0’.</p>
 <hr />
-<h2 id="6-proofs"><a class="header" href="#6-proofs">6. proofs</a></h2>
+<h2 id="6-batch--executed_batch_storage"><a class="header" href="#6-batch--executed_batch_storage">6. batch / executed_batch_storage</a></h2>
+<p>The node opens this RocksDB at <code>&lt;rocks_db_path&gt;/batch</code>; its internal metrics /
+schema label is <code>executed_batch_storage</code>.</p>
+<div class="table-wrapper"><table><thead><tr><th>Column</th><th>Key</th><th>Value</th></tr></thead><tbody>
+<tr><td>BatchInfo</td><td>batch number (u64, big-endian)</td><td>JSON <code>PersistedBatch</code></td></tr>
+<tr><td>FirstBlockIndex</td><td>first block number (u64, big-endian)</td><td>batch number (u64, big-endian)</td></tr>
+<tr><td>Latest</td><td><code>latest_batch</code></td><td>highest appended batch number</td></tr>
+</tbody></table>
+</div><!-- SYSCOIN: Document the bounded startup checks without reviving a full-store recovery walk. -->
+<p>This store anchors committed-batch discovery, stable batch RPC responses, and
+restart recovery. Preserve it with the repository, replay WAL, state, and tree;
+a malformed latest cursor, or a nonzero cursor without the canonical genesis,
+fails startup rather than being repaired by deleting only this directory.</p>
+<hr />
+<h2 id="7-raft"><a class="header" href="#7-raft">7. raft</a></h2>
+<p>When consensus is enabled, this database persists Raft logs, votes, committed
+log metadata, membership/state-machine metadata, and the applied-WAL anchor.
+Retain it with the replay WAL. Clearing it is a coordinated consensus operation,
+not a general database reset.</p>
+<hr />
+<h2 id="8-priority_txs_tree"><a class="header" href="#8-priority_txs_tree">8. priority_txs_tree</a></h2>
+<p>Stores the cached priority-operation Merkle tree and its last processed block.
+It must remain aligned with executed/replayed block state.</p>
+<hr />
+<h2 id="9-proofs"><a class="header" href="#9-proofs">9. proofs</a></h2>
 <p>Stored as JSON files in a separate directory:
 ../shared/fri_batch_envelopes</p>
 

@@ -169,12 +169,146 @@
         .route("/prover-jobs/v1/SNARK/pick", post(pick_snark_job))
         .route("/prover-jobs/v1/SNARK/submit", post(submit_snark_proof))
 </code></pre>
+<h2 id="real-snark-readiness"><a class="header" href="#real-snark-readiness">Real SNARK readiness</a></h2>
+<!-- SYSCOIN: downstream multi-worker aggregation policy. -->
+<p>Before a main-node batcher starts either proof producer, it reads <code>getVerifier()</code> from the active
+settlement-layer diamond at the sampled startup block. The selected wrapper must explicitly report
+<code>IS_TESTNET_VERIFIER=true</code> for the in-process fake pools. An external real-prover API instead
+requires <code>IS_TESTNET_VERIFIER=false</code>, a completed/nonzero canonical V8 key, and an on-chain
+<code>verificationKeyHash()</code> equal to the server’s compiled key. Mixed real/fake producers, missing or
+malformed marker calls, and key mismatches fail startup. A batcher-disabled node, external node, or
+main-node batcher intentionally configured with no proof producer does not perform this gate.</p>
+<h3 id="startup-recovery-phases"><a class="header" href="#startup-recovery-phases">Startup recovery phases</a></h3>
+<!-- SYSCOIN: Split protected prover draining from public readiness while retaining one fail-closed
+stage-owned liveness lease. -->
+<p>Production startup advances through one monotonic <code>Recovering -&gt; Drainable -&gt; Ready</code> phase source:</p>
+<div class="table-wrapper"><table><thead><tr><th>Phase</th><th>Prover service</th><th>Public node readiness</th><th>Recovery invariant</th></tr></thead><tbody>
+<tr><td><code>Recovering</code></td><td>When the external service is enabled, its configured address is reserved without a TCP listen backlog.</td><td>Remains HTTP 503.</td><td>The durable SNARK journal is checked against canonical committed metadata, replayable wrappers pass the active on-chain verifier preflight, and replay ownership is reconstructed.</td></tr>
+<tr><td><code>Drainable</code></td><td>If enabled, only the loopback prover listener opens behind the buffering HTTPS proxy.</td><td>Remains HTTP 503.</td><td>Journal replay and its supervised forwarding/reaping paths are live, so workers may safely drain bounded proving work while FRI recovery continues.</td></tr>
+<tr><td><code>Ready</code></td><td>If enabled, the protected prover listener remains live.</td><td>May leave HTTP 503 after the independent database gate is also ready.</td><td>Every startup batch has been canonically classified with one explicit owner or recovery disposition; wrappers do not all need to be completed.</td></tr>
+</tbody></table>
+</div><!-- SYSCOIN: Durable FRI storage is the restart overflow queue; the configured map span bounds
+resident work rather than the amount of crash-recoverable history. -->
+<p>During <code>Drainable</code>, the startup loader keeps accepted FRI files on durable disk and admits only a
+bounded, canonical-order window into the in-memory job map. The server feeds that work in order to
+external Airbender workers or the configured in-process fake workers. As workers complete ranges
+and free map capacity, the loader admits the next disk-backed work without expanding the RAM bound.
+Reaching <code>Ready</code> therefore means the complete startup inventory is canonically classified and
+exclusively owned by the journal, memory queue, durable pending set, or another explicit recovery
+state; it does not mean that every recovered FRI has already become a completed SNARK wrapper.</p>
+<p>Accepted real wrappers remain journaled until confirmation, and restart validation reconstructs the
+committed V32 log/message/multichain execute root before reuse. The phase source remains a live lease
+rather than a one-time flag: if the proving stage exits, the prover listener and node readiness task
+fail critically instead of serving from a retained <code>Drainable</code> or <code>Ready</code> value.</p>
+<!-- SYSCOIN: Bound the accepted-wrapper recovery authority identically online and at restart. -->
+<p>Each durable SNARK record is limited to 256 MiB, while the complete unconfirmed journal is limited
+to 8 GiB and 65,536 ranges. The live publisher reserves both count and serialized bytes before
+publication, so it cannot create a state that restart rejects only for exceeding either ceiling;
+an identical retry at the exact ceiling consumes no additional capacity. If confirmation stalls
+long enough to reach the aggregate limit, wrapper persistence returns a retryable error and retains
+the exact lease/proof until older confirmed records are retired. Operators must not delete journal
+files to recover throughput—the bound deliberately trades progress during an extended settlement
+outage for a restart working set that remains safe on the 64-GiB production hosts.</p>
+<!-- SYSCOIN: Recovery rejects ambiguous ownership and unsupported proof boundaries instead of
+silently discarding durable work or waiting forever. -->
+<p>A canonical metadata or ownership inconsistency, an encountered future non-V32 proving-version
+boundary unsupported by this V32 recovery lane, or a real singleton that can never acquire a
+compatible companion fails startup closed. A V32 tail singleton that can pair with the next
+canonical batch remains explicitly pending. Operators must preserve the entire configured
+<code>prover_api.proof_storage.path</code>, including its <code>snark_journal</code> subdirectory, across ordinary
+restarts and must not switch between fake and real proving while retaining that recovery state.</p>
+<p><code>/SNARK/pick</code> assigns a range only when it contains at least two consecutive compatible real FRI
+proofs and either reaches <code>prover_api.target_fris_per_snark</code> or its oldest proof has waited
+<code>prover_api.max_snark_batch_wait</code>. The range never exceeds <code>prover_api.max_fris_per_snark</code>
+(hard-capped at 100), and never crosses a gap or proving-version boundary. Protocol-upgrade
+metadata does not create an additional proof boundary; the committed upgrade hash is already
+bound by the batch public input.</p>
+<!-- SYSCOIN: Separate resident stages avoid GPU cache teardown without weakening global leasing. -->
+<p>The canonical fleet runs three standalone GPU FRI workers continuously and a separate standalone
+CPU SNARK worker for combining and wrapping. FRI workers only request FRI jobs, so their proving
+state remains resident between jobs. The CPU worker calls <code>/SNARK/pick</code> only when idle. A
+<code>204 No Content</code> response leaves it idle, while a returned range is already atomically leased to
+that worker. The server therefore remains authoritative for readiness, range selection, and
+reassignment across all workers and sequencers, without competing local timers or duplicate
+speculative wrapping.</p>
+<!-- SYSCOIN: Bound authenticated transport admission independently from cryptographic lanes. -->
+<p>The node buffers at most three authenticated FRI submission bodies and one authenticated SNARK
+submission body concurrently, each at most 10 MiB and under a 120-second total body-read deadline.
+The lanes are separate, so SNARK uploads cannot starve FRI verification admission or vice versa;
+pick, status, and bounded debug-peek requests do not consume these body slots. Configure an nginx
+front end with <code>proxy_request_buffering off</code> and <code>client_body_timeout 120s</code> so node authentication
+and its total deadline cover the streamed public upload.</p>
+<!-- SYSCOIN: A bounded response also needs a bounded trusted drain independent of client pace. -->
+<p>The application prover listener is loopback-only. Generated nginx config keeps response buffering
+enabled, ignores upstream attempts to disable it, and permits a 384 MiB temporary spool for each
+response. Each FRI worker advertises that same complete decompressed-response capacity, the node
+clamps it to 384 MiB, and the queue filters exact base64/JSON size before creating a lease. This is
+a current deployment capacity gate, not a canonical V8 witness bound: a larger job remains
+unassigned until the worker limit, node clamp, and proxy spool are raised together. The tokenless
+FRI peek remains independently capped at 64 MiB; SNARK responses remain capped at 256 MiB.</p>
+<p>Nginx therefore drains the node response and releases any scarce pick permit without waiting for
+the remote prover to read the buffered copy. An unbuffered tunnel or direct container-network bind
+is not a supported remote ingress; provision nginx temporary storage for all three concurrent FRI
+responses, with each per-response spool at least as large as the node clamp. The generated public
+vhost returns 404 for tokenless FRI/SNARK peek and failed-proof debug routes; operators may use
+those diagnostics only through the node’s trusted loopback.</p>
+<p>The production default <code>prover_api.snark_job_timeout</code> is two hours. This is a lease timeout, not an
+aggregation delay: it gives a CPU combine/wrap job enough time to complete before the server makes
+the same range available to another eligible SNARK worker. Operators should initially size this for
+the cold path and reduce it only after measuring cold- and warm-path wrapping times on the deployed
+host.</p>
+<!-- SYSCOIN: The assignment span is a live RAM operating bound, not a restart-backlog bound. -->
+<p>The production default <code>prover_api.max_assigned_batch_range</code> is 256. This bounds the difference
+between the oldest and newest work resident or leased in the in-memory map; it does not need to
+cover the complete durable FRI restart backlog. The default retains one active 100-FRI SNARK lease,
+a complete next 100-FRI aggregate, and at least 56 batches of headroom while disk-backed recovery
+waits for workers to free capacity. Deployments with more concurrent SNARK workers must size the
+RAM bound for their active leases and operating headroom, not for every proof retained on disk.</p>
+<!-- SYSCOIN: Durable capacity is the multi-worker queue's bounded-recovery overflow invariant. -->
+<p>Generated production configs set <code>prover_api.proof_storage.batch_with_proof_capacity</code> to 8 GiB.
+The API accepts proof request bodies up to 10 MiB, while the canonical on-disk JSON hex encoding
+can approximately double the decoded proof bytes; the upstream 1 GiB development default cannot
+reliably retain the expected production restart backlog. <code>PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES</code>
+may raise this independent disk bound, but GPU mode rejects values below 8 GiB. Operators must
+provision at least that much free space and preserve the proof-storage tree as one recovery unit;
+the 256-batch in-memory span does not cap how much valid backlog disk recovery may stream.</p>
+<p>SYSCOIN’s V32 / Execution V7 / Proving V8 interop priority lane bypasses only the target-or-age
+delay when that same contiguous range contains an InteropCenter bundle and already has at least
+two real FRI proofs.
+The signal is reconstructed from canonical batch metadata: a service log on shard zero from the
+L2-to-L1 messenger whose caller key is the V32 InteropCenter and whose hash matches a retained
+message preimage beginning with the pinned interop bundle identifier. Those <code>logs</code> and <code>messages</code>
+are part of the existing stored batch envelope, so the signal survives FRI storage and queue
+rehydration without a new API or on-disk field. A direct messenger call cannot opt into the
+priority lane merely by copying the bundle prefix.</p>
+<h3 id="interop-companion-batching"><a class="header" href="#interop-companion-batching">Interop companion batching</a></h3>
+<!-- SYSCOIN: downstream low-traffic companion policy for stock Airbender min-two aggregation. -->
+<p>An authenticated bundle seals its source batch immediately. The next block is also sealed as a
+one-block successor batch, producing the second distinct FRI needed by the stock minimum-two
+SNARK rule. Real upgrade, system, L1, or L2 traffic wins during the configured
+<code>sequencer.interop_companion_idle_delay</code> (250 ms by default). If the edge still settles on
+Gateway when that grace period expires, the sequencer produces one real zero-transaction block;
+the batcher isolates it as the successor FRI, and the interop-priority SNARK range can be released
+as soon as both FRI proofs are accepted.</p>
+<p>The companion state is reconstructed from canonical replay and committed-but-unexecuted batches,
+so it does not require a second durable marker. A proving-version boundary expires the old tail:
+protocol and security upgrades retain absolute priority and are never delayed to manufacture a
+compatible companion.</p>
+<p>Direct-L1 chains do not use the empty fallback. Era priority mode rejects a batch containing zero
+L1 and zero L2 transactions, and activation can race local block production. A direct-L1 interop
+tail therefore has no idle-time SLA: it waits for commit-valid real traffic (an L1 priority
+transaction while priority mode is active) or for priority-mode deactivation. Operators must not
+interpret the 250 ms Gateway grace period as a bound on FRI proving, SNARK wrapping, DA finality,
+or settlement inclusion.</p>
+<p>Fake SNARK proving retains its immediate behavior. Jobs held for aggregation remain visible
+through <code>/status</code>; a real pick returns no job until both the two-proof minimum and the target,
+age, or interop condition are met.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../design/rpc.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../design/devp2p.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -188,7 +322,7 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../design/rpc.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../design/devp2p.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
