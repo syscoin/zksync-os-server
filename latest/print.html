@@ -173,15 +173,14 @@
 <h2 id="running-the-system"><a class="header" href="#running-the-system">Running the System</a></h2>
 <p>These guides help you set up and operate the server in different environments.</p>
 <ul>
-<li><a href="guides/running_with_l1.html">Run against Layer 1 (L1)</a> — Local dev chain and Sepolia testnet setup, environment variables, common pitfalls.</li>
-<li><a href="guides/updating.html">Updating Contracts</a> — Rebuilding and deploying custom contracts, migration flow, testing.</li>
+<li><a href="./guides/local_setup_update.html">Updating local chains: genesis and L1 state</a> - local chain and setup, genesis and L1 state update guide.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="setup"><a class="header" href="#setup">Setup</a></h1>
 <ul>
 <li><a href="setup/prerequisites.html">Prerequisites</a></li>
 <li><a href="setup/local_run.html">Local Run</a></li>
 <li><a href="setup/docker.html">Docker Setup</a></li>
-<li><a href="setup/external_node.html">External Node</a></li>
+<li><a href="setup/multi_node_consensus.html">Multi-Node Consensus</a></li>
 <li><a href="setup/local_explorer.html">Otterscan (Local Explorer)</a></li>
 <li><a href="setup/exposed_ports.html">Exposed Ports</a></li>
 <li><a href="setup/faq.html">FAQ</a></li>
@@ -230,8 +229,9 @@ sudo apt-get install -y build-essential pkg-config cmake clang lldb lld libssl-d
 ./run_local.sh ./local-chains/v30.2/multi_chain --logs-dir ./logs
 </code></pre>
 <h3 id="manual-setup"><a class="header" href="#manual-setup">Manual setup</a></h3>
-<p>To run node locally, first launch <code>anvil</code>:</p>
-<pre><code>anvil --load-state ./local-chains/v30.2/default/zkos-l1-state.json --port 8545
+<p>To run node locally, first decompress state and launch <code>anvil</code>:</p>
+<pre><code>gzip -dfk ./local-chains/v30.2/l1-state.json.gz
+anvil --load-state ./local-chains/v30.2/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10
 </code></pre>
 <p>then launch the server:</p>
 <pre><code>cargo run
@@ -266,31 +266,198 @@ Ephemeral mode runs the node using a temporary, isolated state directory, allowi
 <pre><code>sudo docker build -t zksync_os_sequencer .
 sudo docker run -d --name sequencer -p 3050:3050 -p 3124:3124 -p 3312:3312 -e batcher_maximum_in_flight_blocks=15  -v /mnt/localssd/db:/db   zksync_os_sequencer
 </code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="external-node"><a class="header" href="#external-node">External node</a></h1>
-<p>Setting the <code>block_replay_download_address</code> environment variable puts the node in external node mode, which means it
-receives block replays from another node instead of producing its own blocks. The node will get priority transactions
-from L1 and check that they match the ones in the replay but it won’t change L1 state.</p>
-<p>To run the external node locally, you need to set its services’ ports so they don’t overlap with the main node.</p>
-<p>For example:</p>
-<pre><code class="language-bash">block_replay_download_address=localhost:3053 \
-block_replay_server_address=0.0.0.0:3054 \
-sequencer_rocks_db_path=./db/en sequencer_prometheus_port=3313 rpc_address=0.0.0.0:3051 \
-cargo run --release
+<div style="break-before: page; page-break-before: always;"></div><h1 id="multi-node-consensus"><a class="header" href="#multi-node-consensus">Multi-node consensus</a></h1>
+<p>This document describes the two node roles in a multi-node setup:</p>
+<ol>
+<li><strong>ConsensusNode</strong>: participates in Raft consensus and can become leader at any time.</li>
+<li><strong>ExternalNode</strong>: does <strong>not</strong> participate in consensus; it downloads canonized blocks from <code>ZksProtocol</code> and replays them locally.</li>
+</ol>
+<p>A ConsensusNode will propose blocks when it is leader and will follow canonized blocks when it is a replica. An ExternalNode only replays canonized blocks and never proposes.</p>
+<blockquote>
+<p><strong>Batcher subsystem (L1 settlement) is not yet highly available.</strong> The batcher pipeline — proof generation, L1 batch submission — must be enabled on exactly one consensus node via <code>batcher_enabled=true</code> (which is the default). The other consensus nodes should set <code>batcher_enabled=false</code>. This choice is independent of <code>consensus_bootstrap</code> and the current Raft leader: the batcher-enabled node may be a leader or a follower. Leader failover works for block production. If the node running the batcher fails, another node will be elected leader and continue producing blocks, but those blocks will not be submitted to L1 until the original batcher node restarts or the cluster is manually reconfigured to enable the batcher on a different node.</p>
+</blockquote>
+<h3 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h3>
+<p>Before starting any node, an L1 must be running at <code>general_l1_rpc_url</code> (defaults to <code>http://localhost:8545</code>) with the chain’s contract state preloaded. The <code>run_local.sh</code> script does this automatically; to do it manually for the v30.2 default chain:</p>
+<pre><code class="language-bash">gzip -d &lt; ./local-chains/v30.2/l1-state.json.gz &gt; /tmp/l1-state.json
+anvil --load-state /tmp/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10
+</code></pre>
+<p>The default ports used by ConsensusNode #1 below (<code>3050</code> RPC, <code>3060</code> p2p, <code>3071</code> status server, <code>3124</code> prover API, <code>3312</code> Prometheus) must be free on the host. In this example ConsensusNode #1 is also the only batcher-enabled node, so ConsensusNode #2 and #3 set <code>BATCHER_ENABLED=false</code> and <code>PROVER_API_ENABLED=false</code>. Each node keeps its status server enabled on a unique port so failover can be checked through <code>/status</code>.</p>
+<p><strong>ConsensusNode</strong></p>
+<p>Requirements:</p>
+<ul>
+<li>Networking must be enabled (Raft RPC is transported over <code>lib/network</code>).</li>
+<li><code>consensus_enabled=true</code> and a list of Raft peer IDs (<code>consensus_peer_ids</code>).</li>
+<li>Set <code>consensus_bootstrap=true</code> on each consensus node that may initialize cluster membership.
+It is safe to set this on all consensus nodes; the first initializer wins.</li>
+<li>Local Raft node ID is always derived from <code>network_secret_key</code>.</li>
+<li><code>consensus_peer_ids</code> must include that derived local ID.</li>
+</ul>
+<p>Example: three-node consensus (local dev, leader failover)</p>
+<p>Use three enodes in <code>network_boot_nodes</code> and three peer IDs in <code>consensus_peer_ids__json</code>.
+All three nodes may use <code>consensus_bootstrap=true</code>, and exactly one consensus node should leave <code>batcher_enabled=true</code>.</p>
+<p>For convenience, define these first:</p>
+<pre><code class="language-bash">ENODE_1="enode://246e07030b4c48b8f28ab1fdf797a02308b0ca724696b695aabee48ea48298ff221144a0c0f14ebf030aea6d5fb6b31bd3a02676204bb13e78336bb824e32f1d@127.0.0.1:3060"
+ENODE_2="enode://d2db8005d59694a5b79b7c58d4d375c60c9323837e852bbbfd05819621c48a4218cefa37baf39a164e2a6f6c1b34c379c4a72c7480b5fbcc379d1befb881e8fc@127.0.0.1:3061"
+ENODE_3="enode://2991880ae3ff81b881c86f54d2af0ee85a325231bb75f903f06f432020101614dbfbc75ddec885f5e101fed272bee661f492fb6dd80147b656da990635a7e581@127.0.0.1:3062"
+PEER_IDS_JSON='[
+  "0x246e07030b4c48b8f28ab1fdf797a02308b0ca724696b695aabee48ea48298ff221144a0c0f14ebf030aea6d5fb6b31bd3a02676204bb13e78336bb824e32f1d",
+  "0xd2db8005d59694a5b79b7c58d4d375c60c9323837e852bbbfd05819621c48a4218cefa37baf39a164e2a6f6c1b34c379c4a72c7480b5fbcc379d1befb881e8fc",
+  "0x2991880ae3ff81b881c86f54d2af0ee85a325231bb75f903f06f432020101614dbfbc75ddec885f5e101fed272bee661f492fb6dd80147b656da990635a7e581"
+]'
+BOOT_NODES="${ENODE_1},${ENODE_2},${ENODE_3}"
+</code></pre>
+<p>ConsensusNode #1:</p>
+<pre><code class="language-bash">NETWORK_ENABLED=true \
+NETWORK_SECRET_KEY=0af6153646bbf600f55ce455e1995283542b1ae25ce2622ce1fda443927c5308 \
+NETWORK_ADDRESS=127.0.0.1 \
+NETWORK_PORT=3060 \
+NETWORK_BOOT_NODES="${BOOT_NODES}" \
+CONSENSUS_ENABLED=true \
+CONSENSUS_BOOTSTRAP=true \
+CONSENSUS_PEER_IDS__JSON="${PEER_IDS_JSON}" \
+GENERAL_ROCKS_DB_PATH="db/en-1" \
+cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v30.2/default/config.yaml
+</code></pre>
+<p>ConsensusNode #2:</p>
+<pre><code class="language-bash">NETWORK_ENABLED=true \
+NETWORK_SECRET_KEY=c2c8042b03801e2e14b395ed24f970ead7646a9ff315b54f747bcefdb99afda7 \
+NETWORK_ADDRESS=127.0.0.1 \
+NETWORK_PORT=3061 \
+NETWORK_BOOT_NODES="${BOOT_NODES}" \
+CONSENSUS_ENABLED=true \
+CONSENSUS_BOOTSTRAP=true \
+CONSENSUS_PEER_IDS__JSON="${PEER_IDS_JSON}" \
+BATCHER_ENABLED=false \
+PROVER_API_ENABLED=false \
+STATUS_SERVER_ADDRESS=0.0.0.0:3072 \
+RPC_ADDRESS=0.0.0.0:3051 \
+OBSERVABILITY_PROMETHEUS_PORT=3313 \
+GENERAL_ROCKS_DB_PATH="db/en-2" \
+cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v30.2/default/config.yaml
+</code></pre>
+<p>ConsensusNode #3:</p>
+<pre><code class="language-bash">NETWORK_ENABLED=true \
+NETWORK_SECRET_KEY=8b50ece5c94762fb0b8dcd2f859fb0132b86c0540c388806b6a03e0b1c25978d \
+NETWORK_ADDRESS=127.0.0.1 \
+NETWORK_PORT=3062 \
+NETWORK_BOOT_NODES="${BOOT_NODES}" \
+CONSENSUS_ENABLED=true \
+CONSENSUS_BOOTSTRAP=true \
+CONSENSUS_PEER_IDS__JSON="${PEER_IDS_JSON}" \
+BATCHER_ENABLED=false \
+PROVER_API_ENABLED=false \
+STATUS_SERVER_ADDRESS=0.0.0.0:3073 \
+RPC_ADDRESS=0.0.0.0:3052 \
+OBSERVABILITY_PROMETHEUS_PORT=3314 \
+GENERAL_ROCKS_DB_PATH="db/en-3" \
+cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v30.2/default/config.yaml
+</code></pre>
+<p>Failover check:</p>
+<ol>
+<li>Start all three nodes and wait until one is leader.</li>
+<li>Stop the leader process.</li>
+<li>Verify one of the remaining two nodes becomes leader (after election timeout).</li>
+<li>Restart the stopped node and verify it rejoins as follower.</li>
+</ol>
+<p><strong>ExternalNode</strong></p>
+<p>External nodes do not participate in Raft. They download canonized blocks using the existing p2p protocol and replay them locally.</p>
+<p>Example (local dev):</p>
+<p>Main Node:</p>
+<pre><code class="language-bash">network_enabled=true \
+network_secret_key=0af6153646bbf600f55ce455e1995283542b1ae25ce2622ce1fda443927c5308 \
+network_boot_nodes=enode://246e07030b4c48b8f28ab1fdf797a02308b0ca724696b695aabee48ea48298ff221144a0c0f14ebf030aea6d5fb6b31bd3a02676204bb13e78336bb824e32f1d@127.0.0.1:3060,enode://d2db8005d59694a5b79b7c58d4d375c60c9323837e852bbbfd05819621c48a4218cefa37baf39a164e2a6f6c1b34c379c4a72c7480b5fbcc379d1befb881e8fc@127.0.0.1:3060 \
+cargo run
+</code></pre>
+<p>External Node:</p>
+<pre><code class="language-bash">RUST_LOG="info,zksync_os_storage_api=debug" \
+network_enabled=true \
+network_secret_key=c2c8042b03801e2e14b395ed24f970ead7646a9ff315b54f747bcefdb99afda7 \
+network_address=127.0.0.1 \
+network_port=3061 \
+network_boot_nodes="enode://246e07030b4c48b8f28ab1fdf797a02308b0ca724696b695aabee48ea48298ff221144a0c0f14ebf030aea6d5fb6b31bd3a02676204bb13e78336bb824e32f1d@127.0.0.1:3060,enode://d2db8005d59694a5b79b7c58d4d375c60c9323837e852bbbfd05819621c48a4218cefa37baf39a164e2a6f6c1b34c379c4a72c7480b5fbcc379d1befb881e8fc@127.0.0.1:3060" \
+general_main_node_rpc_url="http://127.0.0.1:3050" \
+general_node_role=external \
+observability_prometheus_port=3313 \
+general_rocks_db_path="db/en" \
+status_server_enabled=false \
+rpc_address=0.0.0.0:3051 \
+cargo run
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="batch-verification-2fa"><a class="header" href="#batch-verification-2fa">Batch verification (2FA)</a></h1>
-<p>Batch verification requires each batch generated by main node to be signed-of by
-certain number of designated ENs before its committed on L1. To enable it configure as follows.</p>
-<p>Main node / sequencer:</p>
+<p>Batch verification, also referred to as 2FA, adds independent approval to batch commits.
+Instead of trusting the main node alone, you require external nodes (ENs) to confirm that they
+can reproduce a batch and sign it before the batch is treated as ready to commit.</p>
+<p>2FA serves two different purposes depending on how it is configured:</p>
 <ul>
-<li><code>batch_verification_server_enabled=true</code> – enable</li>
-<li><code>batch_verification_threshold</code> – required number of ENs to sign each batch</li>
-<li><code>batch_verification_accepted_signers</code> – comma separated list of eth addresses corresponding to EN keys</li>
+<li>L2-only: a data-availability and recoverability safeguard. The main node only moves batches
+forward after independent ENs have reproduced them.</li>
+<li>Settlement-layer backed: if a <code>MultisigCommitter</code> is present on the settlement layer, the same
+signatures are also used by the settlement-layer commit path. This adds an execution-correctness
+check that is separate from the proof system.</li>
 </ul>
-<p>Participating ENs:</p>
+<h2 id="l2-only-mode"><a class="header" href="#l2-only-mode">L2-only mode</a></h2>
+<p>L2-only mode is for data availability. In this setup:</p>
 <ul>
-<li><code>batch_verification_client_enabled=true</code> – enable</li>
-<li><code>batch_verification_connect_address</code> – ip and port of main node verification server (eg. <code>10.10.1.1:1234</code>)</li>
-<li><code>batch_verification_signing_key</code> – EN private key</li>
+<li>the main node broadcasts batch verification requests to verifier peers over the p2p network;</li>
+<li>selected ENs receive those requests and sign approvals from their local replay state;</li>
+<li>the main node requires enough EN approvals before the batch can move forward.</li>
+</ul>
+<p>The value of this mode is that committed batches must already be reproducible by the participating
+ENs. If the main node is lost, committed L2 data should already exist on those ENs.</p>
+<h2 id="settlement-layer-backed-mode"><a class="header" href="#settlement-layer-backed-mode">Settlement-layer-backed mode</a></h2>
+<p>If the chain’s settlement layer uses a <code>MultisigCommitter</code> for <code>ValidatorTimelock</code>, batch
+verification also has a settlement-layer-backed component.</p>
+<p>In that case the main node reads the settlement-layer validator set and threshold on startup and
+uses them for batch commit submission. This changes the behavior in two important ways:</p>
+<ul>
+<li>the settlement-layer validator set becomes the signer allowlist used for commit submission;</li>
+<li>the effective threshold is the higher of the local <code>batch_verification_threshold</code> and the
+settlement-layer threshold.</li>
+</ul>
+<p>This mode is not primarily about data availability. It adds assurance that batch execution was
+accepted by the configured validator set, independently of the proof system.</p>
+<h2 id="how-to-use-2fa"><a class="header" href="#how-to-use-2fa">How To Use 2FA</a></h2>
+<p>Use 2FA with ENs that are operationally independent from the main node. The point is not just to
+run extra processes, but to require approval from separate nodes that can independently replay the
+same batch.</p>
+<p>Each participating EN should have its own signing key. The corresponding signer addresses should
+match the allowlist that the main node accepts:</p>
+<ul>
+<li>in L2-only mode, that allowlist comes from <code>batch_verification_accepted_signers</code>;</li>
+<li>in settlement-layer-backed mode, it comes from the settlement-layer validator set.</li>
+</ul>
+<p>The EN signing keys do not submit transactions themselves. The main node collects signatures and,
+when settlement-layer-backed mode is active, includes them in the settlement-layer commit flow.</p>
+<h2 id="main-node-configuration"><a class="header" href="#main-node-configuration">Main Node Configuration</a></h2>
+<p>Enable and configure the main node / sequencer with these options:</p>
+<ul>
+<li><code>batch_verification_server_enabled</code>
+Enables batch verification request collection on the main node. Without this, the main node
+does not collect EN signatures.</li>
+<li><code>batch_verification_threshold</code>
+Minimum number of EN signatures required by the main node. If settlement-layer-backed mode is
+active, the effective threshold is <code>max(local threshold, settlement-layer threshold)</code>.</li>
+<li><code>batch_verification_accepted_signers</code>
+Comma-separated list of accepted signer addresses for L2-only mode. These should correspond to
+the EN signing keys. If the settlement layer provides a non-empty validator set or a non-zero
+threshold through <code>MultisigCommitter</code>, that settlement-layer validator set takes precedence over
+this local list.</li>
+<li><code>batch_verification_request_timeout</code>
+How long the main node waits for responses during a single signature collection attempt.</li>
+<li><code>batch_verification_retry_delay</code>
+Delay between collection attempts when the main node retries.</li>
+<li><code>batch_verification_total_timeout</code>
+Overall time budget for collecting enough signatures for a batch.</li>
+</ul>
+<h2 id="2fa-en-configuration"><a class="header" href="#2fa-en-configuration">2FA EN Configuration</a></h2>
+<p>Each EN that participates in 2FA needs these options:</p>
+<ul>
+<li><code>batch_verification_client_enabled</code>
+Enables the EN verifier role on the p2p network.</li>
+<li><code>batch_verification_signing_key</code>
+Private key used by the EN to sign batch approvals. Its address must be present in the local
+accepted signer list for L2-only mode, or in the settlement-layer validator set for
+settlement-layer-backed mode.</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="otterscan-local-explorer"><a class="header" href="#otterscan-local-explorer">Otterscan (Local Explorer)</a></h1>
 <p>Server supports <code>ots_</code> namespace and hence can be used in combination
@@ -302,7 +469,7 @@ block explorer. To run a local instance as a Docker container (bound to <code>ht
 <div style="break-before: page; page-break-before: always;"></div><h1 id="exposed-ports"><a class="header" href="#exposed-ports">Exposed Ports</a></h1>
 <ul>
 <li><code>3050</code> - L2 JSON RPC</li>
-<li><code>3053</code> - Block replay server (transport for EN)</li>
+<li><code>3060</code> - P2P communication (e.g. replay transport)</li>
 <li><code>3124</code> - Prover API (e.g. <code>127.0.0.1/prover-jobs/status</code>) (only enabled if <code>prover_api_component_enabled</code> is set to
 <code>true</code>)</li>
 <li><code>3312</code> - Prometheus</li>
@@ -408,6 +575,118 @@ a special meaning:
 </ul>
 </li>
 <li><code>ots_</code> namespace is used for Otterscan integration (meant for local development only)</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="devp2p--zks-protocol"><a class="header" href="#devp2p--zks-protocol">devp2p / <code>zks</code> Protocol</a></h1>
+<p>The <code>lib/network</code> crate integrates ZKsync OS-specific peer-to-peer traffic into the node’s
+devp2p / RLPx network stack.</p>
+<p>Its purpose is not to replace the node’s general networking. Instead, it adds a <code>zks/&lt;version&gt;</code>
+subprotocol that is used for two zkSync OS-specific flows:</p>
+<ol>
+<li>replay streaming from a main node to an external node</li>
+<li>batch-verification request / response exchange between a main node and verifier-capable
+external nodes</li>
+</ol>
+<h2 id="high-level-model"><a class="header" href="#high-level-model">High-level model</a></h2>
+<p>At runtime, each node is configured locally as either:</p>
+<ul>
+<li>a <code>MainNode</code></li>
+<li>an <code>ExternalNode</code></li>
+</ul>
+<p>That local role determines how the node behaves on each negotiated <code>zks</code> connection:</p>
+<ul>
+<li>the main node serves replay data and receives <code>VerifyBatchResult</code></li>
+<li>the external node requests replay data and may optionally authenticate as a verifier</li>
+</ul>
+<p>There is currently no explicit “remote role negotiation” on top of devp2p. The local node chooses
+its behavior from config and then expects the remote peer to behave compatibly on the negotiated
+<code>zks</code> connection.</p>
+<h2 id="module-split"><a class="header" href="#module-split">Module split</a></h2>
+<ul>
+<li><code>service.rs</code>
+Owns the network manager, registers <code>zks</code> protocol handlers, consumes protocol events, tracks
+peer sessions, and dispatches <code>VerifyBatch</code> requests to eligible peers.</li>
+<li><code>protocol/</code>
+Contains the RLPx subprotocol implementation itself.
+<ul>
+<li><code>handler.rs</code>: bridges reth’s protocol hooks into per-connection tasks</li>
+<li><code>mn.rs</code>: main-node side of one <code>zks</code> connection</li>
+<li><code>en.rs</code>: external-node side of one <code>zks</code> connection</li>
+<li><code>events.rs</code>: protocol events and live connection handles</li>
+<li><code>handler_shared_state.rs</code>: shared handler runtime state such as the active-connection limit</li>
+</ul>
+</li>
+<li><code>session.rs</code>
+Tracks higher-level peer session facts derived from protocol events, such as replay progress and
+verifier authorization state.</li>
+<li><code>wire/</code>
+Defines the <code>zks</code> wire messages carried over devp2p.</li>
+</ul>
+<h2 id="replay-flow"><a class="header" href="#replay-flow">Replay flow</a></h2>
+<p>Replay is the baseline <code>zks</code> protocol behavior.</p>
+<ol>
+<li>The EN negotiates a <code>zks/&lt;version&gt;</code> capability over devp2p.</li>
+<li>The EN sends <code>GetBlockReplays</code>.</li>
+<li>The MN streams <code>BlockReplays</code>.</li>
+<li>The EN forwards received replay records into its local pipeline.</li>
+</ol>
+<p>Replay record encoding is versioned. Older protocol versions only support replay transport.</p>
+<h2 id="batch-verification-flow"><a class="header" href="#batch-verification-flow">Batch verification flow</a></h2>
+<p><code>zks/3</code> adds verifier-related messages on top of replay streaming.</p>
+<ol>
+<li>An EN that is configured as a verifier sends <code>VerifierRoleRequest</code>.</li>
+<li>The MN replies with <code>VerifierChallenge</code>.</li>
+<li>The EN signs the challenge and sends <code>VerifierAuth</code>.</li>
+<li>The MN emits authorization events and tracks verifier eligibility for that peer session.</li>
+<li>When the MN wants external verification for a batch, <code>service.rs</code> selects eligible peers and
+sends <code>VerifyBatch</code> over live <code>zks/3</code> connections.</li>
+<li>The EN-side verifier validates the request and sends back <code>VerifyBatchResult</code>.</li>
+<li>The MN forwards those results into the batch-verification pipeline, which validates request ids,
+signatures, and signer membership before counting them.</li>
+</ol>
+<h3 id="sequence"><a class="header" href="#sequence">Sequence</a></h3>
+<pre class="mermaid">sequenceDiagram
+    participant EN as External Node
+    participant MN as Main Node
+    participant VS as Verifier Service
+    participant BV as Batch Verification Pipeline
+
+    Note over EN,MN: devp2p negotiates zks/&lt;version&gt;
+
+    alt EN is verifier-capable on zks/3
+        EN-&gt;&gt;MN: VerifierRoleRequest
+        MN-&gt;&gt;EN: VerifierChallenge
+        EN-&gt;&gt;MN: VerifierAuth
+        Note over MN: Peer session marked authorized if signer is accepted
+    end
+
+    EN-&gt;&gt;MN: GetBlockReplays
+    loop replay stream
+        MN-&gt;&gt;EN: BlockReplays
+        Note over EN: replay records forwarded into local pipeline
+    end
+
+    Note over MN,BV: Main node decides a batch needs external verification
+    BV-&gt;&gt;MN: VerifyBatch request
+    MN-&gt;&gt;EN: VerifyBatch
+    EN-&gt;&gt;VS: forward request
+    VS--&gt;&gt;EN: Approved / Refused
+    EN-&gt;&gt;MN: VerifyBatchResult
+    MN-&gt;&gt;BV: forward result
+    Note over BV: request id, signature, and signer membership are validated here
+</pre>
+<h2 id="why-session-tracking-exists"><a class="header" href="#why-session-tracking-exists">Why session tracking exists</a></h2>
+<p>The network service needs more than “is this peer connected right now?”</p>
+<p>For verification dispatch, it needs to know whether a peer:</p>
+<ul>
+<li>requested replay</li>
+<li>has been sent replay far enough to verify a given batch</li>
+<li>successfully authenticated as a verifier on the current connection</li>
+</ul>
+<p>That derived state is kept in <code>PeerSessionStore</code>. Live send handles stay in the connection
+registry. Dispatch joins those two views:</p>
+<ul>
+<li><code>PeerSessionStore</code> answers “who is eligible?”</li>
+<li><code>ConnectionRegistry</code> answers “how do I send to them right now?”</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="prover-api"><a class="header" href="#prover-api">Prover API</a></h1>
 <pre><code>        .route("/prover-jobs/v1/status", get(status))
@@ -613,226 +892,611 @@ This state is defined in zksync-era’s genesis.json and is consumed by the zkSt
 Because L1 has this canonical reference, it can validate that the L2 started correctly.</p>
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
 <p>Genesis = load predefined state from genesis.json -&gt; deploy 3 core contracts -&gt; process L1 events to finalize initialization -&gt; produce block 0.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="base-token-price-updater"><a class="header" href="#base-token-price-updater">Base token price updater</a></h1>
+<p>Base token price updater is a service that periodically fetches USD prices of tokens that are required to properly
+calculate fee parameters. There are 3 options for token price source: CoinGecko, CoinMarketCap (3rd party APIs),
+or Forced  which instantiates a client that returns prices that are configured, by default price randomly fluctuate a
+little to simulate real world scenario (fluctuation can be disabled).</p>
+<h2 id="price-source-configuration"><a class="header" href="#price-source-configuration">Price source configuration</a></h2>
+<p>Source is configured in <code>ExternalPriceApiClientConfig</code>. For example, CoinGecko can be configured as follows:</p>
+<pre><code class="language-yaml">external_price_api_client:
+  source: "Coingecko"
+  coingecko_api_key: "&lt;key&gt;"
+</code></pre>
+<p>For forced config it’s essential to provide prices for all required tokens:</p>
+<ul>
+<li>chain base token</li>
+<li>base token of the settlement layer (ETH for L1, ZK for Gateway)</li>
+<li>ETH</li>
+</ul>
+<p>So for the chain that uses USDC as base token and settles on gateway forced configuration can look like this:</p>
+<pre><code class="language-yaml">external_price_api_client:
+  source: "Forced"
+  forced_prices:
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": 1.0    # USDC
+    "0x0000000000000000000000000000000000000001": 3000.0 # ETH
+    "0x66a5cfb2e9c529f14fe6364ad1075df3a649c0a5": 0.035  # ZK
+</code></pre>
+<p>In simple case, when chain base token is ETH and settlement layer is L1, only ETH price is required:</p>
+<pre><code class="language-yaml">external_price_api_client:
+  source: "Forced"
+  forced_prices:
+    "0x0000000000000000000000000000000000000001": 3000.0 # ETH
+</code></pre>
+<h2 id="token-multiplier-setter"><a class="header" href="#token-multiplier-setter">Token multiplier setter</a></h2>
+<p>For chains with base token different from ETH it’s recommended to configure a token multiplier setter signer,
+then the component will also periodically update “ETH:token” price ratio on L1. Component and node will
+still work without it but there will be a warning in logs and ratio on L1 won’t change meaning that price
+for L1-&gt;L2 txs can eventually get outdated.</p>
+<p>You can use either a local private key or a GCP KMS key via the <code>token_multiplier_setter_sk</code> field:</p>
+<pre><code class="language-yaml"># Option 1: Local private key (plain hex string)
+base_token_price_updater:
+  token_multiplier_setter_sk: "&lt;private_key_in_hex&gt;"
+
+# Option 2: GCP KMS key (structured object)
+base_token_price_updater:
+  token_multiplier_setter_sk:
+    type: gcp_kms
+    resource: "projects/{project}/locations/{location}/keyRings/{ring}/cryptoKeys/{key}/cryptoKeyVersions/{version}"
+</code></pre>
+<h2 id="mainnet-recommendation"><a class="header" href="#mainnet-recommendation">Mainnet recommendation</a></h2>
+<p>For mainnet it’s recommended to use one of 3rd party sources so that the fees are accurate
+and correspond to an up-to-date token price; and provide an API key to avoid getting rate-limited.</p>
+<p><strong>Also, it’s highly recommended to set <code>fallback_prices</code> configuration.</strong>
+It sets predefined fallback prices for tokens in case external API fetching fails on startup.
+If it’s missing and the price fetching fails on startup, then <strong>block sequencing will be blocked</strong>.</p>
+<p>Configuration is similar to <code>forced_prices</code>. And should contain prices for all required tokens.</p>
+<pre><code class="language-yaml">base_token_price_updater:
+  fallback_prices:
+    "0x0000000000000000000000000000000000000001": 3000.0 # ETH
+</code></pre>
+<h2 id="testnet-recommendation"><a class="header" href="#testnet-recommendation">Testnet recommendation</a></h2>
+<p>For testnets it’s usually acceptable to use Forced source with reasonable prices configured.
+In case you want fees to behave as on mainnet, you can still use 3rd party source and set config:</p>
+<ul>
+<li><code>base_token_addr_override</code> - mainnet token address that source can provide price for; in case base token is ETH it can be omitted.</li>
+<li><code>base_token_decimals_override</code> - token decimals (since token is on mainnet but node connects to testnet it cannot get the decimals from L1);
+in case base token is ETH or ZK it can be omitted.
+Similarly, you can set <code>gateway_base_token_addr_override</code> to ZK mainnet address in case settlement layer is Gateway.</li>
+</ul>
+<p>Example configuration for a chain that settles to Gateway, and chain’s base token is USDC:</p>
+<pre><code class="language-yaml">base_token_price_updater:
+  base_token_addr_override: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" # USDC
+  base_token_decimals_override: 6 # USDC decimals
+  gateway_base_token_addr_override: "0x66a5cfb2e9c529f14fe6364ad1075df3a649c0a5" # ZK
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="zksync-os-fee-model"><a class="header" href="#zksync-os-fee-model">ZKSync OS Fee model</a></h1>
+<p>ZKSync OS fee model is designed in a way to ensure that it describes well L2-specific costs (pubdata costs, ZK proving costs),
+while trying to keep it both simple and similar to Ethereum model. Internally VM keeps track of three resources:
+gas (similar to EVM), native (resource that reflects proving costs), pubdata (number of bytes to be posted on L1).</p>
+<p>There are three parameters in block context that define fees:</p>
+<ul>
+<li><code>native_price</code> – price for one unit of native</li>
+<li><code>eip1559_basefee</code> – price for one unit of gas</li>
+<li><code>pubdata_price</code> – price for one byte of pubdata
+All three are specified in base token units, e.g. wei for ETH-based chains.</li>
+</ul>
+<p>VM uses the following reasoning when calculating <code>gas_used</code>. Firstly, it calculates EVM gas used and effective gas price.
+<code>evm_gas_used * effective_gas_price</code> gives it a number of base token units to be charged in EVM case. Secondly, it calculates native and pubdata costs:
+<code>native_price * native_used + pubdata_price * pubdata_used</code>. Finally, it takes the maximum of two values and uses it as total fee and returns
+<code>gas_used</code> such that <code>gas_used * effective_gas_price</code> equals total fee.</p>
+<h2 id="fee-configuration-and-calculation"><a class="header" href="#fee-configuration-and-calculation">Fee configuration and calculation</a></h2>
+<h3 id="native-price"><a class="header" href="#native-price">Native price</a></h3>
+<p>Since native reflects ZK proving costs, it should be calculated based on 2 things:</p>
+<ul>
+<li>prover machine cost</li>
+<li>prover performance (how many native units it processes per second)</li>
+</ul>
+<p>Native price is configured with <code>FeeConfig::native_price_usd</code> (<code>fee_native_price_usd</code>).
+Node converts config parameter to base token units and uses the result as <code>native_price</code>.</p>
+<h3 id="base-fee"><a class="header" href="#base-fee">Base fee</a></h3>
+<p>The idea behind calculating base fee is to choose it in a way such that in most cases</p>
+<ul>
+<li>the resulting gas used should be equal to evm gas used</li>
+<li>total fee should not be much higher than what operator spends in reality</li>
+</ul>
+<p>Luckily, for the most opcodes the ratio between evm gas cost and native cost does not differ a lot.
+However, for some precompiles, e.g. modexp, the ratio native:gas is higher than for regular opcodes.</p>
+<p>So, base fee is calculated as <code>eip1559_basefee = native_price * native_per_gas</code>,
+where <code>native_per_gas</code> can be configured via <code>FeeConfig::native_per_gas</code> (<code>fee_native_per_gas</code>).
+The default value is chosen such that the two properties above hold in most cases,
+that is if a transaction doesn’t use many precompiles that are expensive in terms of native and does not require publishing a lot of pubdata.</p>
+<h3 id="pubdata-price"><a class="header" href="#pubdata-price">Pubdata price</a></h3>
+<p>Pubdata price depends on what DA chain uses. If chain is a validium then price is set to 0.
+For rollups that settle to L1:</p>
+<ul>
+<li>if blobs are used, then L1 blob price is used for calculation</li>
+<li>if calldata is used, then L1 gas price is used for calculation
+If rollup settles to Gateway, then gateway pubdate price is used.</li>
+</ul>
+<p>Pricing for blobs case is special because calculation of blob commitments is proven so it results in additional proving costs,
+thus pubdata price also depends on native price.
+Also, if chain settles frequently and posts blob that is not full then operator still needs to pay for the full blob.
+Node calculates a statistic for a fill ratio of submitted blobs and uses it to adjust pubdata price accordingly.</p>
+<p>Blob price is not stable on Ethereum testnets, and can grow a lot sometimes.
+At some point it can be the case that pubdata price is high enough so that gas costs for small transactions are higher than block gas limit.
+To circumvent this issue, node has a configuration parameter <code>FeeConfig::pubdata_price_cap</code> (<code>fee_pubdata_price_cap</code>).
+If it’s set, then pubdata price is capped by the value, allowing the node to operate normally even if blob price is very high.
+For ETH-based testnet chains we recommend to set <code>10_000_000_000_000</code>. If base token price is different from ETH, then the value should be adjusted accordingly.</p>
+<h3 id="config-overrides"><a class="header" href="#config-overrides">Config overrides</a></h3>
+<p>Config allows to set constant overrides for base_fee, native_price, and pubdata_price.
+Config variable are <code>fee_base_fee_override</code>, <code>fee_native_price_override</code>, and <code>fee_pubdata_price_override</code> respectively.
+If set, node uses the override values instead of calculating the parameters as described above.
+It can be used if operator prefers to not have a dynamic fee model, or for testing purposes.</p>
+<h3 id="eip-1559"><a class="header" href="#eip-1559">EIP-1559</a></h3>
+<p>EIP-1559 rules for base fee calculation does not make much sense for ZKSync OS,
+because the operator costs doesn’t depend on block gas usage and sequencer supports big max TPS that should be enough for most situations.
+However, a small part of EIP-1559 is still applied:</p>
+<ul>
+<li><code>native_price</code> and <code>base_fee</code> can change between subsequent blocks max by 12.5%</li>
+<li><code>pubdata_price</code> can increase between subsequent blocks max by 50%
+It’s needed for smooth transitions in case of sudden changes in parameters that affect fee calculation,
+otherwise it may lead to poor UX, e.g. txs can stuck in mempool, fail with out of gas, etc.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="zks_getproof"><a class="header" href="#zks_getproof"><code>zks_getProof</code></a></h1>
+<p>Returns a Merkle proof for a given account storage slot, verifiable against the L1 batch commitment.</p>
+<h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
+<div class="table-wrapper"><table><thead><tr><th>#</th><th>Name</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td>1</td><td><code>address</code></td><td><code>Address</code></td><td>The account address.</td></tr>
+<tr><td>2</td><td><code>keys</code></td><td><code>H256[]</code></td><td>Array of storage keys to prove.</td></tr>
+<tr><td>3</td><td><code>l1BatchNumber</code></td><td><code>uint64</code></td><td>The L1 batch number against which the proof should be generated. The proof is for the state <strong>after</strong> this batch.</td></tr>
+</tbody></table>
+</div>
+<h2 id="response"><a class="header" href="#response">Response</a></h2>
+<pre><code class="language-json">{
+  "address": "0x...",
+  "stateCommitmentPreimage": {
+    "nextFreeSlot": "0x...",
+    "blockNumber": "0x...",
+    "last256BlockHashesBlake": "0x...",
+    "lastBlockTimestamp": "0x..."
+  },
+  "storageProofs": [
+    {
+      "key": "0x...",
+      "proof": { ... }
+    }
+  ],
+  "l1VerificationData": {
+    "batchNumber": 2,
+    "numberOfLayer1Txs": 0,
+    "priorityOperationsHash": "0x...",
+    "dependencyRootsRollingHash": "0x...",
+    "l2ToL1LogsRootHash": "0x...",
+    "commitment": "0x..."
+  }
+}
+</code></pre>
+<h3 id="address"><a class="header" href="#address"><code>address</code></a></h3>
+<p>The account address, as provided in the request. Included in the response so the verifier can derive the flat storage key (<code>blake2s(address_padded32_be || key)</code>) without external context.</p>
+<h3 id="statecommitmentpreimage"><a class="header" href="#statecommitmentpreimage"><code>stateCommitmentPreimage</code></a></h3>
+<p>The preimage fields needed to recompute the L1 state commitment from the Merkle root. These are constant per batch and shared across all storage proofs in the response.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>nextFreeSlot</code></td><td><code>uint64</code></td><td>The next available leaf index in the state tree after this batch. Part of the tree commitment.</td></tr>
+<tr><td><code>blockNumber</code></td><td><code>uint64</code></td><td>The last L2 block number in this batch.</td></tr>
+<tr><td><code>last256BlockHashesBlake</code></td><td><code>H256</code></td><td><code>blake2s</code> of the concatenation of the last 256 block hashes (each as 32 bytes).</td></tr>
+<tr><td><code>lastBlockTimestamp</code></td><td><code>uint64</code></td><td>Timestamp of the last L2 block in this batch.</td></tr>
+</tbody></table>
+</div>
+<h3 id="storageproofsi"><a class="header" href="#storageproofsi"><code>storageProofs[i]</code></a></h3>
+<p>Each entry corresponds to one requested storage slot.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>key</code></td><td><code>H256</code></td><td>The storage slot (as provided in the input). The verifier derives the tree key as `blake2s(address_padded32_be</td></tr>
+<tr><td><code>proof</code></td><td><code>object</code></td><td>The proof object. The <code>type</code> field discriminates between existing and non-existing proofs (see below).</td></tr>
+</tbody></table>
+</div>
+<p>The <code>proof</code> object always contains a <code>type</code> field:</p>
+<ul>
+<li><code>"existing"</code> — the slot exists in the tree. Additional fields: <code>index</code>, <code>value</code>, <code>nextIndex</code>, <code>siblings</code>.</li>
+<li><code>"nonExisting"</code> — the slot has never been written to (value is implicitly zero). Additional fields: <code>leftNeighbor</code>, <code>rightNeighbor</code>.</li>
+</ul>
+<h4 id="proof-when-type--existing"><a class="header" href="#proof-when-type--existing"><code>proof</code> when <code>type</code> = <code>"existing"</code></a></h4>
+<p>Returned when the storage slot has been written to at least once.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>type</code></td><td><code>string</code></td><td><code>"existing"</code></td></tr>
+<tr><td><code>index</code></td><td><code>uint64</code></td><td>The leaf index in the tree.</td></tr>
+<tr><td><code>value</code></td><td><code>H256</code></td><td>The storage value.</td></tr>
+<tr><td><code>nextIndex</code></td><td><code>uint64</code></td><td>The linked-list pointer to the next leaf (by key order).</td></tr>
+<tr><td><code>siblings</code></td><td><code>H256[]</code></td><td>The Merkle path (see <a href="design/zks_getProof.html#siblings">Siblings</a> below).</td></tr>
+</tbody></table>
+</div>
+<p>The leaf key used in the tree is not included explicitly — the verifier derives it as <code>blake2s(address_padded32_be || key)</code> from the <code>address</code> and <code>key</code> fields in the response.</p>
+<h4 id="proof-when-type--nonexisting"><a class="header" href="#proof-when-type--nonexisting"><code>proof</code> when <code>type</code> = <code>"nonExisting"</code></a></h4>
+<p>Returned when the storage slot has never been written to (value is implicitly zero). Proves non-membership by showing two consecutive leaves in the key-sorted linked list that bracket the queried key.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>type</code></td><td><code>string</code></td><td><code>"nonExisting"</code></td></tr>
+<tr><td><code>leftNeighbor</code></td><td><code>LeafWithProof</code></td><td>The leaf with the largest key smaller than the queried key.</td></tr>
+<tr><td><code>rightNeighbor</code></td><td><code>LeafWithProof</code></td><td>The leaf with the smallest key larger than the queried key. <code>leftNeighbor.nextIndex</code> must equal <code>rightNeighbor.index</code>.</td></tr>
+</tbody></table>
+</div>
+<h4 id="leafwithproof"><a class="header" href="#leafwithproof"><code>LeafWithProof</code></a></h4>
+<p>Used within non-existing proofs to represent a neighbor leaf and its Merkle path.</p>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>index</code></td><td><code>uint64</code></td><td>The leaf index in the tree.</td></tr>
+<tr><td><code>leafKey</code></td><td><code>H256</code></td><td>The leaf’s key (the <code>blake2s</code> derived flat storage key).</td></tr>
+<tr><td><code>value</code></td><td><code>H256</code></td><td>The leaf’s value.</td></tr>
+<tr><td><code>nextIndex</code></td><td><code>uint64</code></td><td>The linked-list pointer to the next leaf.</td></tr>
+<tr><td><code>siblings</code></td><td><code>H256[]</code></td><td>The Merkle path (see <a href="design/zks_getProof.html#siblings">Siblings</a> below).</td></tr>
+</tbody></table>
+</div>
+<h3 id="l1verificationdata"><a class="header" href="#l1verificationdata"><code>l1VerificationData</code></a></h3>
+<p>The remaining fields of <code>StoredBatchInfo</code> that, together with the state commitment derived from the proof, allow the caller to reconstruct the full struct and verify it against L1:</p>
+<pre><code class="language-solidity">struct StoredBatchInfo {
+    uint64  batchNumber;                  // l1VerificationData
+    bytes32 batchHash;                    // = stateCommitment (derived from proof)
+    uint64  indexRepeatedStorageChanges;   // always 0 (ZKsync OS)
+    uint256 numberOfLayer1Txs;            // l1VerificationData
+    bytes32 priorityOperationsHash;       // l1VerificationData
+    bytes32 dependencyRootsRollingHash;   // l1VerificationData
+    bytes32 l2ToL1LogsRootHash;           // l1VerificationData
+    uint256 timestamp;                    // always 0 (ZKsync OS)
+    bytes32 commitment;                   // l1VerificationData
+}
+</code></pre>
+<div class="table-wrapper"><table><thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>batchNumber</code></td><td><code>uint64</code></td><td>The L1 batch number.</td></tr>
+<tr><td><code>numberOfLayer1Txs</code></td><td><code>uint256</code></td><td>Number of priority (L1 → L2) transactions in this batch.</td></tr>
+<tr><td><code>priorityOperationsHash</code></td><td><code>H256</code></td><td>Rolling hash of priority operations.</td></tr>
+<tr><td><code>dependencyRootsRollingHash</code></td><td><code>H256</code></td><td>Rolling hash of dependency roots.</td></tr>
+<tr><td><code>l2ToL1LogsRootHash</code></td><td><code>H256</code></td><td>Root hash of L2 → L1 log Merkle tree.</td></tr>
+<tr><td><code>commitment</code></td><td><code>H256</code></td><td>Batch auxiliary commitment.</td></tr>
+</tbody></table>
+</div>
+<p>Two fields of <code>StoredBatchInfo</code> are fixed constants in ZKsync OS and therefore omitted from the response: <code>indexRepeatedStorageChanges</code> is always <code>0</code> and <code>timestamp</code> is always <code>0</code>.</p>
+<h2 id="tree-structure"><a class="header" href="#tree-structure">Tree Structure</a></h2>
+<p>The state tree is a fixed-depth (64) binary Merkle tree using Blake2s-256 as the hash function. Leaves are allocated left-to-right by insertion order and linked together in a sorted linked list by key.</p>
+<h3 id="key-derivation"><a class="header" href="#key-derivation">Key derivation</a></h3>
+<p>The flat storage key for a slot is derived as:</p>
+<pre><code>flat_key = blake2s(address_padded32_be || storage_key)
+</code></pre>
+<p>where <code>address_padded32_be</code> is the 20-byte address zero-padded on the left to 32 bytes.</p>
+<h3 id="leaf-hashing"><a class="header" href="#leaf-hashing">Leaf hashing</a></h3>
+<pre><code>leaf_hash = blake2s(key || value || next_index_le8)
+</code></pre>
+<p>where <code>key</code> and <code>value</code> are 32 bytes each, and <code>next_index_le8</code> is the <code>next</code> pointer encoded as 8 bytes little-endian.</p>
+<p>An empty (unoccupied) leaf has <code>key = 0</code>, <code>value = 0</code>, <code>next = 0</code>.</p>
+<h3 id="node-hashing"><a class="header" href="#node-hashing">Node hashing</a></h3>
+<pre><code>node_hash = blake2s(left_child_hash || right_child_hash)
+</code></pre>
+<h3 id="siblings"><a class="header" href="#siblings">Siblings</a></h3>
+<p>The <code>siblings</code> array is an ordered list of sibling hashes forming the Merkle path from leaf to root.</p>
+<p><strong>Order.</strong> <code>siblings[0]</code> is the sibling at the leaf level (depth 64). Subsequent entries move toward the root. A full (uncompressed) path has 64 entries, with the last entry being the sibling at depth 1 (one level below the root). At each level, if the current index is even the node is a left child; if odd it is a right child. The index is halved (integer division) after each level.</p>
+<p><strong>Empty subtree compression.</strong> The tree has depth 64 but is sparsely populated — most subtrees are entirely empty. The hash of an empty subtree at each level is deterministic:</p>
+<pre><code>emptyHash[0] = blake2s(0x00{32} || 0x00{32} || 0x00{8})    // empty leaf hash (72 zero bytes)
+emptyHash[i] = blake2s(emptyHash[i-1] || emptyHash[i-1])    // for i = 1..63
+</code></pre>
+<p>If trailing siblings (toward the root) are equal to the corresponding <code>emptyHash</code> for that level, they are omitted. The verifier reconstructs them: if <code>siblings</code> has fewer than 64 entries, the missing entries at positions <code>len(siblings)</code> through <code>63</code> are filled with <code>emptyHash[len(siblings)]</code>, <code>emptyHash[len(siblings)+1]</code>, etc.</p>
+<p>For example, if a leaf is at index 5 in a tree with 100 occupied leaves, siblings at levels ~7 and above will all be empty subtree hashes, so the array will contain only ~7 entries instead of 64.</p>
+<h2 id="verification"><a class="header" href="#verification">Verification</a></h2>
+<pre><code class="language-coq">deriveFlatKey (address, storageKey) → H256 :=
+    blake2s(leftPad32(address) || storageKey)
+
+hashLeaf (leafKey, value, nextIndex) → H256 :=
+    blake2s(leafKey || value || nextIndex.to_le_bytes(8))
+
+emptyHash (0) → H256 := blake2s(0x00{72})
+emptyHash (i) → H256 := blake2s(emptyHash(i-1) || emptyHash(i-1))
+
+padSiblings (siblings) → H256[64] :=
+    siblings ++ [emptyHash(i) for i in len(siblings)..63]
+
+walkMerklePath (leafHash, index, siblings) → H256 :=
+    fullPath ← padSiblings(siblings)
+    current ← leafHash
+    idx ← index
+    for sibling in fullPath:
+        current ← if even(idx) then blake2s(current || sibling)
+                                else blake2s(sibling || current)
+        idx ← idx / 2
+    assert idx = 0
+    current
+
+verifyExistingProof (address, storageProof) → (H256, H256) :=
+    let flatKey = deriveFlatKey(address, storageProof.key) in
+    let p = storageProof.proof in
+    let stateRoot = walkMerklePath(hashLeaf(flatKey, p.value, p.nextIndex),
+                                   p.index, p.siblings) in
+    (stateRoot, p.value)
+
+verifyNonExistingProof (address, storageProof) → (H256, H256) :=
+    let flatKey = deriveFlatKey(address, storageProof.key) in
+    let left = storageProof.proof.leftNeighbor in
+    let right = storageProof.proof.rightNeighbor in
+    let leftRoot = walkMerklePath(hashLeaf(left.leafKey, left.value, left.nextIndex),
+                                  left.index, left.siblings) in
+    let rightRoot = walkMerklePath(hashLeaf(right.leafKey, right.value, right.nextIndex),
+                                   right.index, right.siblings) in
+    assert leftRoot = rightRoot
+    assert left.leafKey &lt; flatKey &lt; right.leafKey
+    assert left.nextIndex = right.index
+    (leftRoot, 0x00{32})
+
+computeStateCommitment (stateRoot, preimage) → H256 :=
+    blake2s(
+        stateRoot
+        || preimage.nextFreeSlot.to_be_bytes(8)
+        || preimage.blockNumber.to_be_bytes(8)
+        || preimage.last256BlockHashesBlake
+        || preimage.lastBlockTimestamp.to_be_bytes(8)
+    )
+</code></pre>
+<h3 id="full-verification"><a class="header" href="#full-verification">Full verification</a></h3>
+<p>A client verifies a storage proof end-to-end in three steps:</p>
+<ol>
+<li>
+<p><strong>Verify the Merkle proof</strong> — walk <code>storageProofs</code> to recover the tree root, hash it with <code>stateCommitmentPreimage</code> to get the <code>stateCommitment</code>.</p>
+</li>
+<li>
+<p><strong>Reconstruct <code>StoredBatchInfo</code></strong> — place <code>stateCommitment</code> into the <code>batchHash</code> field, fill the remaining fields from <code>l1VerificationData</code>, set <code>indexRepeatedStorageChanges = 0</code> and <code>timestamp = 0</code>.</p>
+</li>
+<li>
+<p><strong>Compare against L1</strong> — compute <code>keccak256(abi.encode(StoredBatchInfo))</code> and compare with the hash fetched from L1 by calling <code>storedBatchHash(batchNumber)</code> on the diamond proxy contract. This is a single <code>eth_call</code>, no event scanning required.</p>
+</li>
+</ol>
+<p>If the hashes match, the storage values are proven to be part of the state committed on L1.</p>
+<pre><code class="language-coq">verify (response, onChainHash) :=
+    -- onChainHash = diamondProxy.storedBatchHash(batchNumber)  (fetched by caller via eth_call)
+
+    -- Step 1: verify each Merkle proof and collect the tree root
+    let stateRoots = []
+    forall storageProof in response.storageProofs:
+        let (stateRoot, value) =
+            match storageProof.proof.type with
+            | "existing"    =&gt; verifyExistingProof(response.address, storageProof)
+            | "nonExisting" =&gt; verifyNonExistingProof(response.address, storageProof)
+        in
+        stateRoots.append(stateRoot)
+
+    -- All proofs must agree on the same tree root
+    assert all elements of stateRoots are equal
+    let stateRoot = stateRoots[0]
+
+    -- Step 2: compute state commitment from tree root + preimage
+    let stateCommitment = computeStateCommitment(stateRoot, response.stateCommitmentPreimage)
+
+    -- Step 3: reconstruct StoredBatchInfo and check against L1
+    let storedBatchInfo = StoredBatchInfo {
+        batchNumber:                 response.l1VerificationData.batchNumber,
+        batchHash:                   stateCommitment,
+        indexRepeatedStorageChanges: 0,
+        numberOfLayer1Txs:           response.l1VerificationData.numberOfLayer1Txs,
+        priorityOperationsHash:      response.l1VerificationData.priorityOperationsHash,
+        dependencyRootsRollingHash:  response.l1VerificationData.dependencyRootsRollingHash,
+        l2ToL1LogsRootHash:          response.l1VerificationData.l2ToL1LogsRootHash,
+        timestamp:                   0,
+        commitment:                  response.l1VerificationData.commitment,
+    }
+
+    let computedHash = keccak256(abi.encode(storedBatchInfo))
+    assert computedHash = onChainHash
+</code></pre>
+<p>Where <code>onChainHash</code> is obtained by the caller via <code>diamondProxy.storedBatchHash(batchNumber)</code> — a single <code>eth_call</code>, no event scanning required.</p>
+<p>Alternatively, the caller can obtain <code>onChainHash</code> by scanning <code>BlockCommit</code> events emitted by the diamond proxy for the relevant batch number.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="gateway-migration"><a class="header" href="#gateway-migration">Gateway Migration</a></h1>
+<p>This document describes how the server handles a chain migrating its settlement layer (SL) — either from L1 to the Gateway, or from the Gateway back to L1.</p>
+<h2 id="background"><a class="header" href="#background">Background</a></h2>
+<p>A ZKsync chain always settles somewhere: it commits, proves, and executes batches against a single settlement layer. That layer is discovered at startup by calling <code>getSettlementLayer()</code> on the L1 diamond proxy:</p>
+<ul>
+<li><code>address(0)</code> → the chain is settling on L1 directly.</li>
+<li>Any other address → the chain is settling on the Gateway (that address is the Gateway diamond proxy).</li>
+</ul>
+<p>A migration changes which layer the chain settles on. The two directions are:</p>
+<ul>
+<li><strong>L1 → Gateway</strong> (<code>MigrateToGateway</code> event on L1).</li>
+<li><strong>Gateway → L1</strong> (<code>MigrateFromGateway</code> event on L1).</li>
+</ul>
+<p>Both directions are handled identically by the node.</p>
+<h2 id="key-invariant"><a class="header" href="#key-invariant">Key Invariant</a></h2>
+<p>At any point in time the node commits, proves, and executes batches on exactly one settlement layer. Submitting a commit transaction to the wrong layer after a migration causes it to be rejected or creates an inconsistent state. The migration machinery therefore ensures:</p>
+<ol>
+<li>No new commit transactions are submitted to the old SL once migration is triggered.</li>
+<li>The node restarts only after the in-flight pipeline is in a safe state.</li>
+<li>After restart the node seamlessly picks up on the new SL.</li>
+</ol>
+<h2 id="components"><a class="header" href="#components">Components</a></h2>
+<p>Five components participate in migration handling. They are only active on protocol version ≥ v31.</p>
+<h3 id="gatewaymigrationwatcher-libl1_watcher"><a class="header" href="#gatewaymigrationwatcher-libl1_watcher"><code>GatewayMigrationWatcher</code> (<code>lib/l1_watcher</code>)</a></h3>
+<p>Watches the <code>ServerNotifier</code> contract on L1 for <code>MigrateToGateway</code> and <code>MigrateFromGateway</code> events. Both events carry an indexed <code>chainId</code> field; the watcher applies a <code>topic1</code> filter so it only receives events for the local chain.</p>
+<p>On detection it does two things:</p>
+<ol>
+<li>Writes <code>GatewayMigrationState::InProgress { migration_number }</code> to the shared watch channel so that <code>MigrationGate</code> knows a migration is underway and what migration number to look for.</li>
+<li>Constructs a <code>SetSLChainId</code> system transaction with the new settlement layer chain ID and inserts it into <code>SlChainIdSubpool</code> so the sequencer will execute it in the next available block.</li>
+</ol>
+<p>The starting L1 block for event scanning is found by binary search on <code>IChainAssetHandler::migrationNumber(chainId)</code>, which avoids re-processing old events after a restart.</p>
+<h3 id="slchainidsubpool-libmempool"><a class="header" href="#slchainidsubpool-libmempool"><code>SlChainIdSubpool</code> (<code>lib/mempool</code>)</a></h3>
+<p>A specialised mempool subpool that holds at most one pending <code>SetSLChainId</code> system transaction at a time. The sequencer drains it like any other subpool; <code>on_canonical_state_change</code> is called after each block is finalised to remove the executed transaction and record the migration number in the block context cursors.</p>
+<h3 id="migrationgate-nodebin"><a class="header" href="#migrationgate-nodebin"><code>MigrationGate</code> (<code>node/bin</code>)</a></h3>
+<p>A pipeline component inserted between <code>UpgradeGatekeeper</code> and the L1 commit sender (<code>L1Sender&lt;CommitCommand&gt;</code>). Under normal operation it is transparent; it only activates during migration.</p>
+<p>For each incoming <code>L1SenderCommand&lt;CommitCommand&gt;</code> the gate inspects the <code>BatchMetadata</code>:</p>
+<ul>
+<li>If <code>set_sl_chain_id_migration_number</code> is <code>Some(n)</code> <strong>and</strong> the shared <code>GatewayMigrationState</code> is <code>InProgress { migration_number: n }</code>, this is the triggering batch.</li>
+</ul>
+<p>When a triggering batch is detected the gate:</p>
+<ol>
+<li>Records the batch number and sends it to <code>SettlementLayerWatcher</code> via the <code>migration_triggered</code> watch channel. This is done <strong>before</strong> pausing so that the watcher can immediately start checking preconditions.</li>
+<li>Calls <code>wait_for(Stable)</code> on the <code>GatewayMigrationState</code> watch receiver, blocking all subsequent commit submissions until either migration is fully finalised (see <code>MigrationFinalizedWatcher</code>) or the node is restarted by <code>SettlementLayerWatcher</code>.</li>
+</ol>
+<p>The triggering batch itself is forwarded only after the wait resolves (either on the restarted node, where the initial state is <code>Stable</code>, or in the unlikely case that <code>MigrationFinalizedWatcher</code> signals completion on the same node).</p>
+<p><code>BatchMetadata.set_sl_chain_id_migration_number</code> is populated by <code>seal_batch</code> in <code>node/bin/src/batcher/batch_builder.rs</code>: it scans all <code>ReplayRecord</code> transactions in the batch and records the migration number of the first <code>SetSLChainId</code> system transaction found, excluding the <code>u64::MAX</code> sentinel used for protocol upgrades.</p>
+<h3 id="settlementlayerwatcher-libl1_watcher"><a class="header" href="#settlementlayerwatcher-libl1_watcher"><code>SettlementLayerWatcher</code> (<code>lib/l1_watcher</code>)</a></h3>
+<p>Polls <code>getSettlementLayer()</code> on the L1 diamond proxy at regular intervals and terminates the process (via <code>std::process::exit(1)</code>) so that the process manager restarts the node. The crash is only triggered when <strong>all three</strong> of the following conditions are satisfied simultaneously:</p>
+<div class="table-wrapper"><table><thead><tr><th>Condition</th><th>Why</th></tr></thead><tbody>
+<tr><td><code>getSettlementLayer()</code> has changed from the startup value</td><td>The L1 side of the migration has completed.</td></tr>
+<tr><td><code>migration_triggered</code> is <code>Some(N)</code> — the gate has detected the <code>SetSLChainId</code> batch</td><td>The L2 side of the migration (<code>SetSLChainId</code>) has been executed and is queued for commitment; the new SL chain ID is known at L2.</td></tr>
+<tr><td><code>get_total_batches_executed() ≥ N − 1</code></td><td>All batches that existed before the migration batch are fully executed (committed, proved, and executed) on L1. This guarantees the old SL has no in-flight work the new SL would have to replay.</td></tr>
+</tbody></table>
+</div>
+<p>Waiting for all three conditions prevents a premature crash that would leave partially-executed batches stranded on the old settlement layer.</p>
+<h3 id="migrationfinalizedwatcher-libl1_watcher"><a class="header" href="#migrationfinalizedwatcher-libl1_watcher"><code>MigrationFinalizedWatcher</code> (<code>lib/l1_watcher</code>)</a></h3>
+<p>Watches for <code>MigrationFinalized(uint256 indexed chainId, uint256 migrationNumber, ...)</code> events on <code>IChainAssetHandler</code> on the <strong>current</strong> settlement layer. The <code>chainId</code> index allows a <code>topic1</code> filter, so only events for the local chain are returned.</p>
+<p>On detection it sends <code>GatewayMigrationState::Stable</code> to the shared watch channel, which unblocks <code>MigrationGate.wait_for(Stable)</code>.</p>
+<p>On a node that started before the migration (SL = L1) and has not yet been restarted, <code>MigrationFinalizedWatcher</code> watches L1. If <code>MigrationFinalized</code> is emitted on the Gateway instead, it will not be seen here; the node will instead be restarted by <code>SettlementLayerWatcher</code>, and the new node (SL = Gateway) will have a fresh watcher pointing at Gateway.</p>
+<p>The starting SL block for event scanning is also found by binary search on <code>IChainAssetHandler::migrationNumber</code>.</p>
+<h2 id="full-flow-l1--gateway"><a class="header" href="#full-flow-l1--gateway">Full Flow: L1 → Gateway</a></h2>
+<pre><code>L1                              Node (old, SL=L1)             Node (new, SL=GW)
+─────────────────────────────   ─────────────────────────────  ──────────────────────────────
+Admin tx triggers migration
+  └─► MigrateToGateway event
+        │
+        ├──────────────────────► GatewayMigrationWatcher
+        │                           sets InProgress{M}
+        │                           inserts SetSLChainId(GW, M)
+        │                           into SlChainIdSubpool
+        │
+        │                        Sequencer executes SetSLChainId
+        │                        in block X → batch N
+        │                           │
+        │                        MigrationGate sees batch N
+        │                           sends migration_triggered=Some(N)
+        │                           enters wait_for(Stable)
+        │
+getSettlementLayer() changes ──► SettlementLayerWatcher polls:
+        │                           ✓ SL changed
+        │                           ✓ migration_triggered = Some(N)
+        │                           waiting for executed ≥ N-1...
+        │
+L1 executes batch N-1 ──────────► executed ≥ N-1 satisfied
+                                    → std::process::exit(1)
+                                                                 Node starts, SL=GW
+                                                                 MigrationFinalizedWatcher
+                                                                   watches GW for
+                                                                   MigrationFinalized(chainId)
+MigrationFinalized on GW ─────────────────────────────────────►    sets Stable
+                                                                 MigrationGate unblocked
+                                                                 commits resume on GW
+</code></pre>
+<h2 id="shared-state"><a class="header" href="#shared-state">Shared State</a></h2>
+<p>All migration components communicate through two <code>tokio::sync::watch</code> channels created at startup:</p>
+<div class="table-wrapper"><table><thead><tr><th>Channel</th><th>Type</th><th>Producer</th><th>Consumer</th></tr></thead><tbody>
+<tr><td><code>migration_state</code></td><td><code>GatewayMigrationState</code></td><td><code>GatewayMigrationWatcher</code> (→ <code>InProgress</code>), <code>MigrationFinalizedWatcher</code> (→ <code>Stable</code>)</td><td><code>MigrationGate</code></td></tr>
+<tr><td><code>migration_triggered</code></td><td><code>Option&lt;u64&gt;</code></td><td><code>MigrationGate</code> (→ <code>Some(batch_number)</code>)</td><td><code>SettlementLayerWatcher</code></td></tr>
+</tbody></table>
+</div>
+<p>Both channels are created unconditionally (initial values: <code>Stable</code> and <code>None</code>) so that on pre-v31 chains the batcher pipeline compiles and runs unchanged — the senders are simply never written to.</p>
+<h2 id="startup-recovery"><a class="header" href="#startup-recovery">Startup Recovery</a></h2>
+<p>After a crash-restart the node calls <code>L1State::fetch</code>, which re-evaluates <code>getSettlementLayer()</code> and sets up providers accordingly. If the migration has already completed:</p>
+<ul>
+<li><code>settlement_layer_address</code> will be non-zero, and the Gateway RPC URL must be configured.</li>
+<li><code>GatewayMigrationWatcher</code> starts scanning from the block where <code>migrationNumber</code> first reached <code>next_cursors.migration_number</code> (determined by binary search), so it will re-detect the migration event if it has not yet processed it.</li>
+<li><code>MigrationFinalizedWatcher</code> similarly starts from the first SL block where <code>migrationNumber</code> matches, and will immediately signal <code>Stable</code> if <code>MigrationFinalized</code> has already been emitted.</li>
+<li><code>MigrationGate</code> starts with <code>migration_state = Stable</code> and <code>migration_triggered = None</code>; it will re-arm if <code>GatewayMigrationWatcher</code> re-detects the event.</li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="guides"><a class="header" href="#guides">Guides</a></h1>
 <ul>
-<li><a href="guides/running_with_l1.html">Run against Layer 1 (L1)</a></li>
-<li><a href="guides/updating.html">Updating Contracts</a></li>
+<li><a href="guides/./local_setup_update.html">Update local setup: genesis and L1 state</a></li>
 </ul>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="generate-new-genesis-and-l1-state"><a class="header" href="#generate-new-genesis-and-l1-state">Generate new genesis and L1 state</a></h1>
-<p>THIS GUIDE IS A DRAFT VERSION FOR THE NEW TOOLING AND WILL BE SIGNIFICANTLY UPDATED SOON.</p>
-<h2 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h2>
-<p>Make sure you have the following tools installed:</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="updating-local-chains-with-new-genesis-and-l1-state"><a class="header" href="#updating-local-chains-with-new-genesis-and-l1-state">Updating local chains with new genesis and L1 state</a></h1>
+<p>This guide describes how to update <a href="https://github.com/matter-labs/zksync-os-server/tree/main/local-chains">local chains</a>
+setup for a particular protocol version with the new genesis, L1 state, and all required dependencies including
+chain configs, wallets and contracts YAML files.</p>
+<p>There are two ways to update the local setup:</p>
+<ol>
+<li><a href="guides/local_setup_update.html#updating-with-github-actions">using GitHub Actions (recommended way for most users)</a></li>
+<li><a href="guides/local_setup_update.html#updating-locally">running the update scripts locally (on self-hosted setups, next protocol version development, or when experimenting with custom contracts)</a></li>
+</ol>
+<div id="admonition-info" class="admonition admonish-info" role="note" aria-labelledby="admonition-info-title">
+<div class="admonition-title">
+<div id="admonition-info-title">
+<p>Info</p>
+</div>
+<a class="admonition-anchor-link" href="guides/local_setup_update.html#admonition-info"></a>
+</div>
+<div>
+<p><strong>Use automated update through GitHub Actions if:</strong></p>
 <ul>
-<li><code>anvil</code> v1.5.1 -&gt; incredibly important to have exactly this <code>anvil</code> version, otherwise the state file won’t load</li>
-<li><code>forge</code> and <code>cast</code> v0.0.4 -&gt; incredibly important to have exactly these versions, otherwise contracts won’t deploy correctly</li>
-<li><code>git</code></li>
-<li><code>cargo</code></li>
-<li><code>yarn</code></li>
-<li><code>python3</code></li>
+<li>you’re iterating on the next protocol version and need to update the server setup with the new version of contracts</li>
+<li>you need to regenerate local chains setup due to the tooling changes, e.g. anvil updates, new scripts, etc.</li>
 </ul>
-<p>Make sure port 8545 is free on your machine.</p>
-<h2 id="prepare-environment"><a class="header" href="#prepare-environment">Prepare environment</a></h2>
-<p>Make sure you have cloned the following repositories:</p>
+<p><strong>Run scripts locally if:</strong></p>
 <ul>
-<li><code>zksync-os-server</code>: <code>main</code> or your custom branch you’re working on.</li>
-<li><code>zkstack_cli</code> tool: <code>git clone https://github.com/matter-labs/zksync-era/ --branch zkstack-for-zksync-os --recurse-submodules</code></li>
-<li><code>era-contracts</code>: <code>git clone https://github.com/matter-labs/era-contracts/ --branch zkos-v0.30.2 --recurse-submodules</code></li>
+<li>you are experimenting with custom contracts locally and want to update your local setup</li>
+<li>you are self-hosted user wanting to update your server setup with the custom version of contracts</li>
 </ul>
-<p>Clone repository with the scripts:</p>
-<pre><code class="language-shell">git clone https://github.com/matter-labs/zksync-os-workflows.git
-</code></pre>
-<p>Take the latest execution version from:
-https://github.com/matter-labs/zksync-os-server/blob/main/lib/types/src/protocol/execution_version.rs#L10
-As of today (17.12.2025), it should be 5.</p>
-<h2 id="prepare-python-environment"><a class="header" href="#prepare-python-environment">Prepare python environment</a></h2>
-<p>Create python virtual environment and install dependencies:</p>
-<pre><code class="language-shell">cd zksync-os-workflows
-python3 -m venv venv
-source venv/bin/activate
-pip install -r ./scripts_python/requirements.txt
-</code></pre>
-<p>If pyyaml installation fails due to cython, run:</p>
-<pre><code class="language-shell">pip install setuptools
-pip install "cython&lt;3"
-pip install --no-build-isolation pyyaml==6.0
-pip install -r ./scripts_python/requirements.txt
-</code></pre>
-<h2 id="re-generate-l1-state-and-genesis"><a class="header" href="#re-generate-l1-state-and-genesis">Re-generate L1 state and genesis</a></h2>
-<p>Inside <code>zksync-os-workflows</code> repo, run:</p>
-<pre><code class="language-shell">WORKSPACE=${PWD} \
-  REPO_DIR=../zksync-os-server \
-  ERA_CONTRACTS_PATH=../era-contracts \
-  ZKSYNC_ERA_PATH=../zksync-era \
-  ZKSYNC_OS_EXECUTION_VERSION=5 \
-    ./scripts_python/update_server.py
-</code></pre>
-<p><strong>Forge/cast requirements:</strong>
-Currently the script requires concrete version of forge/cast (0.0.4) - this is due to the current version of contracts (v29/v30) still using
-old compiler, and new compiler resulting in different hashes.</p>
-<p>If you run locally, and don’t care about contract hash matches, you can comment it out in the script, and use any version of forge/cast.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="running-with-l1"><a class="header" href="#running-with-l1">Running with L1</a></h1>
-<p>IMPORTANT: THIS GUIDE IS OUTDATED. PLEASE USE <a href="guides/./generate_l1_state.html">generate L1 state guide</a> INSTEAD.
-USE THIS GUIDE ONLY AS A GENERAL REFERENCE, BRANCHES AND VERSIONS MIGHT ARE OUTDATED.</p>
-<h2 id="simplest-no-contract-changes-etc"><a class="header" href="#simplest-no-contract-changes-etc">Simplest (no contract changes etc)</a></h2>
-<p>If you’re not doing any contract changes, and simply want to hook up to L1, start anvil with pre-created state.</p>
-<p>This repo includes a pre-setup L1 state <code>zkos-l1-state.json</code> that can be loaded into <code>anvil</code>. The state was generated by <code>zkstack init</code> and essentially consists of all L1 contracts deployed and initialized with L2 genesis.
-The state comes with some L1 priority transactions that were generated by the old genesis logic and are hence failing in the new implementation.
-It also comes with a deposit transaction that makes <code>0x36615cf349d7f6344891b1e7ca7c72883f5dc049</code> into a rich account (&gt;10k ETH) (to regenerate it, see “Regenerate zkos-l1-state.json` below)</p>
-<p>Before you run an L1 node, make sure you have a <code>1.5.1</code> version of <code>anvil</code> installed (see <a href="https://getfoundry.sh/">foundry guide</a>). Then:</p>
-<pre><code>anvil --load-state ./local-chains/v30.2/default/zkos-l1-state.json --port 8545
-...
-Listening on 127.0.0.1:8545
-...
-</code></pre>
-<h2 id="advanced-contract-changes-multi-setup-etc"><a class="header" href="#advanced-contract-changes-multi-setup-etc">Advanced (contract changes, multi setup, etc)</a></h2>
-<p>If you want to have more custom setup (for example you did some changes in L1 contracts, or want to run multiple sequencers hooked up to the same L1).</p>
-<p>The high level steps are:</p>
+</div>
+</div>
+<p>Follow the appropriate section below depending on your use case.</p>
+<hr />
+<h2 id="updating-with-github-actions"><a class="header" href="#updating-with-github-actions">Updating with GitHub Actions</a></h2>
+<p>For the general guidelines about the GitHub Actions workflow to perform the local chains update, please refer to the
+<strong><a href="https://matter-labs.github.io/zksync-os-scripts/latest/github-actions.html">General GitHub Actions guidelines</a></strong>.
+Especially important are the sections about:</p>
 <ul>
-<li>Start L1 (anvil)</li>
-<li>setup ecosystem and configs using zkstack cli from zksync-era</li>
-<li>update necessary config</li>
-<li>start sequencers</li>
+<li><a href="https://matter-labs.github.io/zksync-os-scripts/latest/github-actions.html#how-to-run-the-workflows">how to run the workflows</a></li>
+<li><a href="https://matter-labs.github.io/zksync-os-scripts/latest/github-actions.html#outputs-and-artifacts">outputs and artifacts</a></li>
 </ul>
-<h3 id="start-l1"><a class="header" href="#start-l1">Start L1</a></h3>
-<p>Start local L1 – by running <code>anvil</code>.</p>
-<h3 id="setup-ecosystem-and-chain-configs"><a class="header" href="#setup-ecosystem-and-chain-configs">Setup ecosystem and chain configs</a></h3>
-<p>Use <code>zksync-os-integration</code> branch from<code>zksync-era</code>.</p>
-<p>IMPORTANT: the contracts deployed will come from the zksync-era/contracts directory. So if you want to test any changes to contracts, you have to put them there.</p>
-<p>Make sure that your zkstack was compiled from ‘main’ branch of era, and is relatively fresh (after September 10).</p>
-<p>Run this from the directory <strong>above</strong> zksync-era.</p>
-<pre><code>mkdir zkstack-playground &amp;&amp; cd zkstack-playground
-zkstack ecosystem create --ecosystem-name local-v1 --l1-network localhost --chain-name era1 --chain-id 270 --prover-mode no-proofs --wallet-creation random --link-to-code ../../zksync-era --l1-batch-commit-data-generator-mode rollup --start-containers false   --base-token-address 0x0000000000000000000000000000000000000001 --base-token-price-nominator 1 --base-token-price-denominator 1 --evm-emulator false
-</code></pre>
-<p>For validium, use <code>--l1-batch-commit-data-generator-mode validium</code> instead.</p>
-<p>This will create a ‘local-v1’ ecosystem directory, with one chain ‘era1’.</p>
-<h3 id="fund-l1-accounts"><a class="header" href="#fund-l1-accounts">Fund L1 accounts</a></h3>
-<p>Now we’re ready to compile contracts and deploy them to L1.</p>
-<p>Before the step below, you might want to fund some of the wallet accounts above.
-If you’re running on local L1, you can use the script below. Do not forget to use different PRIVKEY in case you have initialized the anvil with a different mnemonic.
-If you’re running on sepolia, zkstack will tell you which accounts to fund.</p>
-<pre><code class="language-shell">RPC_URL=http://localhost:8545
-PRIVKEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-find . -type f -name 'wallets.yaml' | while read -r file; do
-  echo "Processing $file …"
-
-  # extract all addresses (strips leading spaces and the "address:" prefix)
-  grep -E '^[[:space:]]*address:' "$file" \
-    | sed -E 's/^[[:space:]]*address:[[:space:]]*//' \
-    | while read -r addr; do
-
-      if [[ $addr =~ ^0x[0-9a-fA-F]{40}$ ]]; then
-        echo "→ Sending 10 ETH to $addr"
-        cast send "$addr" \
-          --value 10ether \
-          --private-key "$PRIVKEY" \
-          --rpc-url "$RPC_URL"
-      else
-        echo "⚠️  Skipping invalid address: '$addr'" &gt;&amp;2
-      fi
-
-    done
-done
-</code></pre>
-<h3 id="deploy-l1-contracts"><a class="header" href="#deploy-l1-contracts">Deploy L1 contracts</a></h3>
-<pre><code>cd local_v1
-zkstack ecosystem init --deploy-paymaster=false --deploy-erc20=false --observability=false \
-  --deploy-ecosystem --l1-rpc-url=http://localhost:8545 --chain era1 --zksync-os
-</code></pre>
-<h3 id="start-sequencer"><a class="header" href="#start-sequencer">Start sequencer</a></h3>
-<p>After this, you can finally run the sequencer:</p>
-<pre><code>general_zkstack_cli_config_dir=../zkstack-playground/local_v1/chains/era1 cargo run --release
-</code></pre>
-<p>the <code>general_zkstack_cli_config_dir</code> config option will read the YAML files and set the proper addresses and private keys.
-Alternatively, you need to set:</p>
+<p>Then, follow the instructions in the <strong><a href="https://matter-labs.github.io/zksync-os-scripts/latest/scripts/update_server.html#github-actions">Server Update GitHub workflow guide</a></strong>
+to perform the update of the local chains setup through GitHub Actions.</p>
+<p>As the result of the workflow execution, you will get the updated local chains setup available as:</p>
 <ul>
-<li><code>l1_sender_operator_commit_sk</code> to the operator private key of <code>wallets.yaml</code> of <code>zkstack</code> tool output,</li>
-<li><code>l1_sender_operator_prove_sk</code> and <code>l1_sender_operator_execute_sk</code> to respective wallets from <code>wallets.yaml</code>,</li>
-<li><code>l1_sender_bridgehub_address</code> to <code>bridgehub_proxy_addr</code> in <code>contracts.yaml</code> of <code>zkstack</code> tool output</li>
-<li>(if running validium) <code>l1_sender_da_input_mode</code> to <code>validium</code></li>
+<li>git patch published as a workflow artifact that you can download and apply locally using <code>git apply</code> command</li>
+<li>new commit on your custom development branch</li>
+<li>new pull request with the update</li>
 </ul>
-<h3 id="restarting"><a class="header" href="#restarting">Restarting</a></h3>
-<p>If you restart anvil, you have to repeat a subset of steps from above, to re-create the bridgehub contracts:</p>
-<ul>
-<li>fund the accounts (shell script)</li>
-<li>re-run ecosystem init</li>
-<li>you might also want to restart the sequencer - it will figure out the state on L1, and commit missing batches.</li>
-</ul>
-<h2 id="regenerate-l1-state"><a class="header" href="#regenerate-l1-state">Regenerate L1 state</a></h2>
-<p>Note: There is an <a href="https://github.com/mm-zk/zksync_tools/tree/main/zkos/update_state_json">experimental tool</a> that can run these commands for you. If it turns out to be useful, we might make it more permanent.</p>
-<p>L1 state is checked in into this repo under <code>zkos-l1-state.json</code>. To regenerate it from scratch, run the following commands:</p>
-<pre><code>anvil -m "stuff slice staff easily soup parent arm payment cotton trade scatter struggle" --state ./local-chains/v30.2/default/zkos-l1-state.json
-</code></pre>
-<p>Note that we pass this mnemonic to have <code>0x36615cf349d7f6344891b1e7ca7c72883f5dc049</code> rich wallet - legacy from era.</p>
-<p>Then deploy the contracts using legacy tooling (see above).
-After that, add a deposit transaction to the state - integration and load tests expect that <code>0x36615cf349d7f6344891b1e7ca7c72883f5dc049</code> has L2 funds. For this, use <code>generate-deposit</code> tool in this repo.
-Make sure to provide correct <code>bridgehub_addres</code> (you can find it in <code>configs/contracts.yaml</code>) and chain id:</p>
-<pre><code>&gt; cargo run --bin zksync_os_generate_deposit -- --bridgehub &lt;BRIDGEHUB_ADDRESS&gt; --chain-id &lt;CHAIN_ID&gt;
-L1 balance: 9879999865731420184000
-Successfully submitted L1-&gt;L2 deposit tx with hash '0xb8544a2a9bc55713f1f94acf3711c23d07e02917f44885b05e20b13af1402283'
-
-Process finished with exit code 0
-
-</code></pre>
-<p>Now stop anvil (ctrl+c) - the state will be saved to the file. Rerun it with <code>--load-state ./local-chains/v30.2/default/zkos-l1-state.json</code>  (<code>--load-state</code> - not <code>--state</code>, otherwise it will be overwritten). Commit the new file in git.</p>
-<p>Update values in <code>L1SenderConfig</code>:</p>
-<ul>
-<li><code>bridgehub_address</code> -&gt; <code>bridgehub_proxy_addr</code> in <code>contracts.yaml</code> of <code>zkstack</code> tool output</li>
-<li><code>operator_commit_sk</code> -&gt; <code>operator_private_key</code> in <code>wallets.yaml</code></li>
-<li><code>operator_prove_sk</code>, <code>operator_execute_sk</code> -&gt; <code>prove_operator</code> and <code>execute_operarator</code> keys from wallets.yaml</li>
-</ul>
-<h2 id="running-multiple-chains"><a class="header" href="#running-multiple-chains">Running multiple chains</a></h2>
-<h3 id="create-a-new-chain-era2"><a class="header" href="#create-a-new-chain-era2">Create a new chain (era2)</a></h3>
-<pre><code class="language-shell">zkstack ecosystem create --ecosystem-name local-v1 --l1-network localhost --chain-name era2 --chain-id 271 --prover-mode no-proofs --wallet-creation random --link-to-code ../../zksync-era --l1-batch-commit-data-generator-mode rollup --start-containers false   --base-token-address 0x0000000000000000000000000000000000000001 --base-token-price-nominator 1 --base-token-price-denominator 1 --evm-emulator false
-</code></pre>
-<p>Make sure to fund the accounts again (see the script in the docs above).</p>
-<p>Init new chain (deploying contacts etc):</p>
-<pre><code class="language-shell">zkstack chain init --deploy-paymaster=false  \
-  --l1-rpc-url=http://localhost:8545 --chain era2 \
-  --server-db-url=postgres://invalid --server-db-name=invalid
-</code></pre>
-<p>And start the sequencer.</p>
-<pre><code class="language-shell">general_zkstack_cli_config_dir=../zkstack-playground/local_v1/chains/era2 cargo run --release
-</code></pre>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="updates"><a class="header" href="#updates">Updates</a></h1>
-<h2 id="verification-keys"><a class="header" href="#verification-keys">Verification keys</a></h2>
-<p>If you did any change to zkos binary (for example including a binary from the new version of zkos), you should do following steps:</p>
-<ul>
-<li>commit it here &amp; an inside zksync-airbender-prover (you’ll be committing multiblock_batch.bin binary).</li>
-<li>generate verification keys and update era-contracts
-<ul>
-<li>you can use the tool from https://github.com/mm-zk/zksync_tools/tree/main/zkos/generate_vk</li>
-<li>you need to find the latest era-contracts tag that we used (probably on top of <a href="https://github.com/matter-labs/era-contracts/tree/zksync-os-stable">zksync-os-stable branch</a>)</li>
-<li>once the script generate the change, commit it into era-contracts repo.</li>
-</ul>
-</li>
-</ul>
-<p>Then follow instructions below for era-contracts updates.</p>
-<h2 id="updating-era-contracts"><a class="header" href="#updating-era-contracts">Updating era contracts</a></h2>
-<p>If you do any change to era-contracts, we should update zkos-l1-state.json (especially if this is a breaking change – be careful with those when we’re in production).</p>
-<ul>
-<li>commit your change to era-contracts, and generate a new release/tag (we name them as zkos-v0.29.3 for example)</li>
-<li>go to zksync-era, checkout zksync-os-integration, and update the contracts dependency there (this step will hopefully disappear soon)</li>
-<li>then you can run the tool from: https://github.com/mm-zk/zksync_tools/tree/main/zkos/update_state_json
-<ul>
-<li>this tool will generate state.json (and genesis.json if needed), and if you run it with COMMIT_CHANGES=true, it will also create a branch in zksync-os-server.</li>
-</ul>
-</li>
-<li>check that the server is still working (start anvil with new state, and run a clear server).</li>
-<li>commit your change to zksync-os-server and optionally create a new release.</li>
-</ul>
-<p>WARNING: instructions above assume that you didn’t change genesis hash (any change to L2Upgrade Handler, ComplexUpgrader or WrappedBasedToken might change it).
-If you did, then you have to regenerate hashes, which is a longer process.</p>
-<h2 id="updating-genesis"><a class="header" href="#updating-genesis">Updating genesis</a></h2>
-<p>There are 3 contracts that are part of genesis – L2ComplexUpgrader, L2GenesisUpgrade, L2WrappedBaseToken. If any of them have changed, you’ll have to regenerage genesis.</p>
-<p>Currently it is a little bit of a frustrating process, but we plan to improve it in near future.</p>
-<ul>
-<li>Step 1: run parts from updating era contracts: Run the tool above, and confirm that genesis.json was really updated.</li>
-<li>Step 2: compute “genesis hash” - when you start the server <strong>with new genesis.json</strong> created in the step above - add a print here: https://github.com/matter-labs/zksync-os-server/blob/main/node/bin/src/batcher/util.rs#L36 to get the hash value.</li>
-<li>Step 3: Put the new hash value into: https://github.com/matter-labs/zksync-era/blob/zksync-os-integration/etc/env/file_based/genesis.yaml</li>
-<li>Step 4: Re-run the Step 1. Make sure to use zksync-era with the Step3, as new genesis is used inside CTM registration, so it will impact the state.json contents.</li>
-<li>Step 5: check that everything works – you should be able to run anvil with the new state (<code>anvil --load_state ./local-chains/v30.2/default/zkos-l1-state.json</code>) and zksync-os-server <strong>with new genesis.json</strong> (it normally loads it from local directory).</li>
-</ul>
-<p>https://github.com/matter-labs/zksync-os-server/blob/main/node/bin/src/batcher/util.rs#L36</p>
+<div id="admonition-tip" class="admonition admonish-tip" role="note" aria-labelledby="admonition-tip-title">
+<div class="admonition-title">
+<div id="admonition-tip-title">
+<p>Tip</p>
+</div>
+<a class="admonition-anchor-link" href="guides/local_setup_update.html#admonition-tip"></a>
+</div>
+<div>
+<p>If you are planning to merge your local chains update into the <code>main</code> branch,
+please prefer automated update through GitHub Actions
+as it is more reliable, tested in CI and less error-prone than the manual update.</p>
+</div>
+</div>
+<hr />
+<h2 id="updating-locally"><a class="header" href="#updating-locally">Updating locally</a></h2>
+<p>To perform a local update of the local chains setup, you can run the update scripts locally on your machine.</p>
+<h3 id="compatibility-between-protocol-versions"><a class="header" href="#compatibility-between-protocol-versions">Compatibility between protocol versions</a></h3>
+<p>Before performing the update, please make sure to check the
+<strong><a href="https://matter-labs.github.io/zksync-os-scripts/latest/protocol-compatibility.html">protocol compatibility</a></strong>
+tables to make sure that you are using compatible versions of the protocol (contracts), server, and tooling.</p>
+<div id="admonition-warning" class="admonition admonish-warning" role="note" aria-labelledby="admonition-warning-title">
+<div class="admonition-title">
+<div id="admonition-warning-title">
+<p>Warning</p>
+</div>
+<a class="admonition-anchor-link" href="guides/local_setup_update.html#admonition-warning"></a>
+</div>
+<div>
+<p><strong>Using incompatible versions of the protocol, server, or tooling may lead to unexpected errors during the update process.</strong>
+Carefully check the compatibility tables and make sure to use compatible versions of all components before proceeding with the update.</p>
+<p>These tables are <strong>the source of truth</strong> for the compatibility of different versions of the protocol, server, and tooling.
+If you notice that the tables are outdated, please report it to the team, and/or contribute to updating the documentation with the correct information.</p>
+</div>
+</div>
+<h3 id="prerequisites-and-environment"><a class="header" href="#prerequisites-and-environment">Prerequisites and environment</a></h3>
+<p>The scripts are located in the <a href="https://github.com/matter-labs/zksync-os-scripts">matter-labs/zksync-os-scripts</a> repository.</p>
+<p>Go through the <a href="https://matter-labs.github.io/zksync-os-scripts/latest/prerequisites.html">Prerequisites</a> guide to set up your environment.</p>
+<div id="admonition-info-1" class="admonition admonish-info" role="note" aria-labelledby="admonition-info-1-title">
+<div class="admonition-title">
+<div id="admonition-info-1-title">
+<p>Info</p>
+</div>
+<a class="admonition-anchor-link" href="guides/local_setup_update.html#admonition-info-1"></a>
+</div>
+<div>
+<p>There is a <a href="https://matter-labs.github.io/zksync-os-scripts/latest/prerequisites.html#quick-install-recommended">Quick install</a> section
+that goes through all required dependencies setup for Unix-like system, and it is recommended to use it as a reference.</p>
+</div>
+</div>
+<h3 id="re-generate-local-state"><a class="header" href="#re-generate-local-state">Re-generate local state</a></h3>
+<p>It is recommended to go through the full <strong><a href="https://matter-labs.github.io/zksync-os-scripts/latest/scripts/update_server.html">Server Update guide</a></strong> first.</p>
+<div id="admonition-tip-1" class="admonition admonish-tip" role="note" aria-labelledby="admonition-tip-1-title">
+<div class="admonition-title">
+<div id="admonition-tip-1-title">
+<p>Tip</p>
+</div>
+<a class="admonition-anchor-link" href="guides/local_setup_update.html#admonition-tip-1"></a>
+</div>
+<div>
+<p>You can directly jump to the <strong><a href="https://matter-labs.github.io/zksync-os-scripts/latest/scripts/update_server.html#local-use">Local Use</a></strong>
+section of the guide if you already know what the script does.</p>
+</div>
+</div>
+<p>As the result, you will get the updated local chains setup available in the <code>local-chains/</code> directory of your server repository.</p>
+<hr />
 
                     </main>
 
