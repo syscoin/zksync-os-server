@@ -176,8 +176,9 @@
 ./run_local.sh ./local-chains/v30.2/multi_chain --logs-dir ./logs
 </code></pre>
 <h3 id="manual-setup"><a class="header" href="#manual-setup">Manual setup</a></h3>
-<p>To run node locally, first launch <code>anvil</code>:</p>
-<pre><code>anvil --load-state ./local-chains/v30.2/default/zkos-l1-state.json --port 8545
+<p>To run node locally, first decompress state and launch <code>anvil</code>:</p>
+<pre><code>gzip -dfk ./local-chains/v30.2/l1-state.json.gz
+anvil --load-state ./local-chains/v30.2/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10
 </code></pre>
 <p>then launch the server:</p>
 <pre><code>cargo run
@@ -217,7 +218,7 @@ Ephemeral mode runs the node using a temporary, isolated state directory, allowi
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../setup/docker.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../setup/besu.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -231,7 +232,7 @@ Ephemeral mode runs the node using a temporary, isolated state directory, allowi
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../setup/docker.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../setup/besu.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
