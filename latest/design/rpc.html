@@ -181,6 +181,54 @@ a special meaning:
 </li>
 <li><code>ots_</code> namespace is used for Otterscan integration (meant for local development only)</li>
 </ul>
+<!-- SYSCOIN: Downstream RPC retention, capture capacities, and trusted-JS opt-in. -->
+<h2 id="local-rpc-capture-and-retention-capacities"><a class="header" href="#local-rpc-capture-and-retention-capacities">Local RPC capture and retention capacities</a></h2>
+<p>Installed log, block, and pending-transaction filters share
+<code>rpc.max_active_filters</code> (default <code>4096</code>). Installed log filters also have an
+aggregate address/topic-alternative cap, <code>rpc.max_filter_terms</code> (default <code>1024</code>).
+Both values must be nonzero. Uninstalling or expiring a filter releases its slot;
+stateless <code>eth_getLogs</code> retains its existing query limits.</p>
+<p>Native call tracing, including explorer tracing, remains available with the debug
+namespace. One request, including replayed transaction prefixes, has cumulative
+<code>rpc.call_tracer_max_capture_bytes</code> (default <code>64 MiB</code>) and
+<code>rpc.call_tracer_max_frames</code> (default <code>100000</code>) capacities. Exhaustion returns an
+explicit error rather than a partial trace. These account for logical capture
+data, not total process RSS or VM execution memory; zero rejects capture.</p>
+<p>Arbitrary JavaScript tracers additionally require
+<code>rpc.enable_custom_js_tracers: true</code> (default <code>false</code>). Enable this only for trusted
+tracer authors on an access-controlled endpoint. Initialization is included in
+the existing time/allocation accounting, and Boa’s loop limit remains in place,
+but between-hook checks cannot interrupt every interpreter operation. Allocation
+measurement also depends on jemalloc support. This is not a hard sandbox for
+untrusted JavaScript; native tracers do not require the opt-in.</p>
+<!-- SYSCOIN: Downstream policy provenance and local capture/admission boundaries. -->
+<h2 id="optional-policy-service"><a class="header" href="#optional-policy-service">Optional policy service</a></h2>
+<p>When <code>tx_validator.policy_service.url</code> is configured, supported unsigned <code>eth_call</code>
+and <code>eth_estimateGas</code> executions consult policy. Their caller-supplied <code>from</code>
+cannot claim the <code>bypass_from</code> exemptions reserved for authenticated transaction
+and protocol execution. L1-shaped public simulations are rejected while policy
+is configured because that VM path does not run validator hooks; actual L1
+protocol execution and simulations without policy retain their existing behavior.
+Debug and multi-transaction simulations using <code>NopValidator</code> likewise fail closed.
+The initial highest-gas estimate probe is policy-validated before execution
+outcomes can be returned; the final resolved estimate is validated again because
+gas-sensitive execution can differ. Intermediate search probes omit policy calls.</p>
+<p>RPC-side policy simulation during signed transaction submission shares
+<code>rpc.max_concurrent_blocking_rpcs</code> with the other heavy RPC work. At capacity it
+returns a retriable server-busy error, without queuing another policy worker.
+Disconnecting a caller does not free that slot until its blocking worker exits;
+the subsequent synchronous receipt wait does not occupy a simulation slot.</p>
+<p>Policy trace capture has local operator capacities:
+<code>tx_validator.policy_service.max_trace_bytes</code> (default <code>8 MiB</code>) and
+<code>max_trace_frames</code> (default <code>16384</code>). Capture charges cumulative calldata and
+frame storage before copying; the frame cap also bounds tree / deployment-vector
+growth. These are capture capacities, not new consensus transaction limits or
+exact process-RSS guarantees. Exhaustion rejects validation without sending a
+partial tree to <code>/judge</code>; zero fails closed rather than disabling the limit.
+The validator reports a denial and logs the local capture-capacity reason without
+including captured calldata; it does not disguise the outcome as a partial allow.
+Authenticated exempt transactions skip both policy calls and unnecessary capture.
+Operators using policy should size these capacities for their legitimate workload.</p>
 
                     </main>
 
@@ -190,7 +238,7 @@ a special meaning:
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../design/prover_api.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../design/devp2p.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -204,7 +252,7 @@ a special meaning:
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../design/prover_api.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../design/devp2p.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

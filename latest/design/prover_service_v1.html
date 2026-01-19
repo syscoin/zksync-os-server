@@ -1,0 +1,637 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Senior prover service V1 - ZKsync OS Server Developer Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../css/version-box.css">
+        <link rel="stylesheet" href=".././css/mdbook-admonish.css">
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ZKsync OS Server Developer Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs/src/design/prover_service_v1.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="zksys-senior-prover-service-v1"><a class="header" href="#zksys-senior-prover-service-v1">zkSYS senior prover service V1</a></h1>
+<p>This is an opt-in implementation and release plan for one shared sequencer, senior
+Sentry FRI workers, and independently endorsed SNARK wrapping for both the child
+and Gateway chains. It is <strong>not enabled by the
+existing launch scripts</strong>. It builds on the reproduced V32/V8 guest and production
+verification key. The canonical fixture regeneration marker remains in force.
+Contract tests with mock settlement prove accounting and authorization behavior;
+they do not qualify a deployed Gateway or the packaged multi-role fixture.</p>
+<h2 id="agreed-economics"><a class="header" href="#agreed-economics">Agreed economics</a></h2>
+<p>The audited issuance curve and supply cap are unchanged. There is no new fixed
+50% pool. Passive weight is native stake plus the existing 100,000 Sentry base
+weight. An authenticated membership observation must establish at least 210,240
+Core blocks of age before a Sentry can subscribe for proving service.</p>
+<p>Registration and probation contribute <strong>zero bonus weight</strong> to the denominator.
+Completing the configured quota of distinct, accepted, nonempty canonical batch
+duties admits the account for a future period. The first senior tier has a 35,000
+bonus; at 525,600 blocks the bonus is 100,000. Completing a quota is evidence of
+accepted work, not proof of exclusive GPU ownership, independent control, or a
+particular hardware capacity.</p>
+<p>Admission uses the subscription registered for the destination period, including
+its operator and beneficiary. Completed duties remain bound to their original
+subscription. Adjacent subscriptions can therefore carry qualification across a
+renewal or operator rotation without changing the admission cutoff or reopening
+a frozen period.</p>
+<p>For an admitted period, the reward denominator is passive weight plus its frozen
+admitted bonus total. A recipient’s positive duties release only its own bonus
+fraction. Missing bonus is never reassigned or minted later. A report cannot
+remove another recipient, alter a frozen denominator, or erase earlier positives.
+Membership removal stops future renewal while preserving already earned credit.
+Removing an account from a <strong>future</strong> admission period can still increase future
+shares. This design does not claim to remove that exclusion incentive or make a
+single sequencer a fair dispatcher.</p>
+<p>Period accounting is bounded and can be advanced in chunks. Passive claims are
+independent of finalized service reports. If activation misses the first period,
+an irreversible abort preserves passive accounting and native withdrawals and
+permanently prevents late service bonuses for that configuration. The legacy
+registry <code>weightOf</code> and <code>totalWeight</code> remain potential/legacy views; consumers of
+service mode must use the issuer’s effective reward views.</p>
+<h2 id="contract-boundaries"><a class="header" href="#contract-boundaries">Contract boundaries</a></h2>
+<pre class="mermaid">flowchart LR
+    Child[Child shared service registry] --&gt;|proved complete roster| Roster[Gateway roster receiver]
+    Roster --&gt; ChildCoordinator[Child wrapper coordinator on Gateway]
+    ChildCoordinator --&gt; ChildGate[Child proof gate on Gateway]
+    ChildGate --&gt; ChildNative[Child native timelock and Executor]
+    ChildGate --&gt;|authenticated interop receipt| Child
+    Roster --&gt;|proved forwarded roster| RootRoster[NEVM roster receiver]
+    RootRoster --&gt; RootCoordinator[Gateway wrapper coordinator on NEVM]
+    RootCoordinator --&gt; RootGate[Gateway proof gate on NEVM]
+    RootGate --&gt; RootNative[Gateway native timelock and Executor]
+    RootGate --&gt; Sink[NEVM message sink]
+    Sink --&gt;|canonical Bridgehub receipt| Child
+    Child --&gt; Issuer[One child issuer and bonus ledger]
+</pre>
+<p><code>ZkSysMembershipRegistry.applyL1SentryNodeUpdates</code> consumes source block height
+and timestamp sampled by the NEVM registry bridge. Older observations cannot
+resurrect a removed node. This is the sole membership update API for the initial
+deployment; there is no legacy update entrypoint. The observation mapping uses
+one reserved proxy storage slot.</p>
+<p><code>ZkSysProverServiceRegistryV1</code> requires the account and nominated operator to sign
+the same EIP-712 subscription before reserving that operator. The subscription
+binds distinct operator and beneficiary fields and a bounded period interval;
+accepted work carries operator-signed receipts. Both enrollment signatures
+support ERC-1271. Every subscription must set <code>services=3</code>, enrolling the same
+operator for FRI and SNARK wrapping; single-service subscriptions are rejected.
+A batch can supply at most one canonical duty credit; a slot cannot
+be counted twice. Retry attempts and splitting an aggregate do not create another
+credit for the same batch. An empty companion can settle, but earns no duty credit.</p>
+<p>The child registry owns one enrollment, one quota bitmap per account and period,
+and one bonus admission ledger for both execution chains. Each lane has an
+immutable chain ID, settlement diamond and production VK; the configured shared
+sequencer is required in every subscription and package. Canonical batch dedup
+includes its execution chain and diamond, while quota slots are shared across
+chains. A child duty and a Gateway duty may complete one quota; they cannot reuse
+the same slot or create a second bonus pool. Bootstrap Gateway proofs never
+overwrite the child’s production VK pin. The shared sequencer must be nonzero in
+every configuration, including child-only deployments. The optional child-only
+configuration uses zero Gateway chain ID, address and VK fields; a foundational
+Gateway deployment must enable both lanes.</p>
+<p>Only the local immutable acceptance adapter can install accepted reports. Child
+proof acceptance comes from the child’s fixed gate on Gateway through the existing
+interop message verifier at <code>0x10009</code>. Gateway proof acceptance comes from its
+fixed gate on NEVM: <code>ZkSysRootServiceMessageSinkV1</code> records that gate’s message in
+the same transaction, and anyone can pay the canonical Bridgehub relay to the
+child receiver. The receiver requires the root sink’s canonical alias and exact
+lane, policy and report bindings. An address comparison across chains or a signed
+post-proof attestation cannot replace either path. Root relay retries do not add
+credit. Bootstrap and service activation have separate authenticated domains.</p>
+<p>Each settlement chain runs its own full <code>ZkSysProofGateV1</code>, priority guard and
+wrapper coordinator. The NEVM gate has the same joint sequencer/wrapper
+authorization and native proof binding as the child’s gate on Gateway. It is the
+sole configured timelock prover for Gateway and runs Gateway’s native verifier
+exactly once. Both native proof lanes contribute to the same child accounting.</p>
+<p>The child computes a complete, sorted wrapper roster from the qualified shared
+service pool. Completing the FRI quota installs the operator as a wrapper candidate;
+there is no separate wrapper enrollment. Paginated publication is permissionless and cannot omit
+qualified accounts or substitute an operator/payee. Admission closes ahead of
+the period so the roster can be proved to Gateway and its root entropy prepared.
+This cutoff and the receipt grace must cover measured cross-chain proof latency.</p>
+<p>An account that previously completed a full quota for this sequencer can renew
+its shared-service wrapper eligibility during an idle period, provided its senior membership
+is still fresh. Renewal adds no bonus admission, success credit, or denominator
+weight. This keeps capable verified wrappers available when sparse demand has not
+produced another FRI quota. A newcomer or a partial qualifier cannot use renewal.
+Roster messages bind the issuer clock and first service period as well as the
+chain, registry, policy, root, and count.</p>
+<p><code>ZkSysQualifiedRosterReceiverV1</code> first verifies the child registry’s roster message
+on Gateway. Its permissionless forwarding call emits that exact origin payload
+through Gateway’s native messenger. A second receiver on NEVM verifies the fixed
+Gateway receiver’s message against Gateway’s native Mailbox. It cannot accept an
+unproved root or substitute a different clock. Both coordinators select from the
+same complete qualified roster, with independent domain-bound draws and counters.</p>
+<p><code>ZkSysRootDrawV1</code> first verifies the Gateway coordinator’s canonical message, then
+sets a target relative to the <strong>actual NEVM block number</strong>. A delayed relayed head
+cannot substitute for this causal ordering. Anyone may capture the result after
+the configured confirmations and relay it to the aliased Gateway receiver. The
+root source cannot replace a captured result. At least one independent keeper
+must capture each available result before the 256-block <code>blockhash</code> window expires.
+If all keepers selectively withhold capture, expired-draw recovery permits bias.
+Native PoW producer bias also remains; these contracts do not verify ChainLocks.</p>
+<p>The Gateway coordinator already executes on NEVM and uses
+<code>ZkSysNativeRootDrawV1</code> directly. Only that fixed coordinator can request a draw;
+its target is a future actual NEVM block, with the same immutable capture and
+expired-uncaptured retry rules. This removes an unnecessary message round trip
+without creating an owner-controlled randomness oracle.</p>
+<p>The coordinator prepares one draw per fixed service roster. For each package it
+uses the period seed and a counter that advances only on acceptance. Manifest,
+range, and retry edits cannot change the current draw. Timed turns walk the fixed
+roster without repeats until all candidates have had a turn, then cycle again.
+The selected operator and sequencer endorse the same typed package with fixed
+beneficiaries. Anyone can relay it. A repair replaces frozen work commitments
+while keeping the counter, selected schedule, and original turn clock.</p>
+<p>Activation requires both gates’ authenticated activation messages, the exact
+first-period roster root, and each lane’s production VK before the child deadline.
+Until both arrive, the child service remains inactive and all bonus weight stays
+zero. A missed deadline permanently preserves passive accounting through the
+issuer’s existing abort path. The root gate’s activation transaction is not enough:
+its Bridgehub message must actually reach the child before the deadline.
+At least one authenticated child bootstrap receipt must establish the child’s VK
+before activation; its report may be empty if all qualifying duties came from
+Gateway. Gateway qualification cannot establish or overwrite that child pin.</p>
+<p>The first roster is transported by native bootstrap proofs before coordinator
+installation. After a gate activates, its ready first roster may jointly authorize
+proofs before the first paid period starts, allowing those proofs to carry the
+activation message. At rollover, <code>openingRoster()</code> always prefers the ready
+current roster. If that roster or draw is still in transit, it selects the newest
+cached ready past roster for recovery proofs. A future draw cannot hide a usable
+past roster. These proofs can transport the next roster, draw or priority request,
+so proving does not depend on a message that requires that same proof to arrive.</p>
+<p>The gate freezes <code>transitionWork</code> when opening any such prestart or recovery
+package. Its report must remain empty through repair and submission, even if a
+period boundary passes before completion. Native transaction-bearing batches may
+still be proved, but the gate emits no accepted-reward message for that package.
+It advances the canonical parent, priority cursor and wrapper counter normally.
+Once the current roster and draw arrive, the next package resumes ordinary work
+credit. A complete lack of any qualified roster still prevents activation; stale
+recovery wrappers preserve proving availability without renewing their bonus.</p>
+<p><code>ZkSysProofGateV1</code> accepts only the V32/V8 production proof lane, pins the verifier
+router and its selected PLONK implementation, and rejects testnet proof mode. It
+checks exact proof calldata, the full native BatchOutput preimages, canonical
+transaction counts, batch statements, report hash, parent, range, and both
+endorsements. It then invokes the existing timelock/Executor proof verification exactly once.
+The adapter checks authorization and public-data bindings; it does not perform
+an additional cryptographic proof verification.
+Any failure rolls back coordinator acceptance and produces no accepted receipt.
+Commit/execute ordering, execution delays, and native withdrawal proofs stay in
+their existing contracts.</p>
+<p><code>ZkSysRootPrioritySourceV1</code> reads the child’s canonical NEVM Mailbox priority tree
+and its existing request timestamps. The pinned native patch exposes two read-only
+getters for request timestamps and exact tree height; it changes no guest state,
+proof statement, or verification key. It does change the native facet and selector
+identities, so deployment cuts must be derived from the current combined source.
+Inherited crypto-validation records retain their original source scope and do not
+certify that new deployment. Anyone can pay to relay a checkpoint through
+the existing Bridgehub to <code>ZkSysPriorityCheckpointReceiverV1</code> on Gateway. Only the
+canonical alias of that immutable root source can install a checkpoint. The source
+finds the overdue prefix by a bounded binary search over native append-order
+timestamps. All existing priority requests must drain before guard construction,
+which requires the native priority cursor to equal the total request count and
+all verified batches to be executed. Timestamp coverage begins at the source’s
+immutable deployment cursor.</p>
+<p>The mandatory <code>ZkSysPriorityGuardV1</code> freezes a fresh authenticated checkpoint when
+the sequencer opens each bootstrap or service package. Bootstrap submission now
+requires <code>openBootstrapPackage</code> with a zero proof hash before proving. The guard
+requires the next bounded overdue prefix, capped by its immutable package limit,
+and permits younger requests already covered by that checkpoint. A permissionless
+<code>publishPrefixWitness</code> call proves the contiguous priority-tree leaves and binds
+their exact per-batch counts and native rolling hashes. The gate compares those
+bindings with the existing native BatchOutput preimages, then calls native proof
+verification once. Failed native verification rolls back both guard and wrapper
+acceptance. The guard advances a separate verified priority cursor so delayed
+execution cannot credit the same prefix again.</p>
+<p>Later queue arrivals do not invalidate an in-flight proof. Work expires after the
+immutable proof window; <code>refreshPriorityCheckpoint</code> then requires a fresh root
+checkpoint and new prefix witness while retaining the wrapper clock and selection.
+An empty package remains legal only when the frozen overdue requirement is empty.
+Snapshot freshness, inclusion delay, proof duration, and the per-package cap are
+explicit deployment policy. A backlog drains in ordered bounded chunks as packages
+are proved; this is a progress condition, not a wall-clock inclusion guarantee.
+The rule covers root priority requests, not ordinary off-chain mempool submissions.</p>
+<p>The Gateway gate’s guard reads a second <code>ZkSysRootPrioritySourceV1</code> directly on
+NEVM, scoped to Gateway’s own canonical Mailbox. The child guard continues to use
+the authenticated checkpoint receiver on Gateway. Each lane has its own verified
+cursor, native tree witness and bounded overdue prefix; the shared reward quota
+does not merge priority queues or duplicate native verification.</p>
+<p>In the Gateway topology, root priority requests may be overdue before Gateway has
+forwarded them to the child Mailbox. The guard sees the root checkpoint and stops
+child proof progress until a valid prefix can be included. It cannot compel the
+parent Gateway sequencer to forward requests or checkpoints. Missing keepers,
+withheld checkpoints, unavailable root proofs, and unavailable Gateway delivery
+therefore fail closed. Production qualification must exercise these message paths
+and the oldest-request backlog under real root/Gateway delays.</p>
+<p>The gate requires itself to be the only timelock <code>PROVER_ROLE</code> member. That is
+<strong>not</strong> a proof that the diamond has no other validators: its validator mapping
+is not enumerable. Deployment must audit every validator assignment, alternate
+timelock, permissionless validator, and emergency path. Chain upgrade and
+verifier governance remain trusted authorities. Do not advertise joint
+authorization unless the complete deployed bypass audit passes.</p>
+<h2 id="trusted-operator-and-rental-boundaries"><a class="header" href="#trusted-operator-and-rental-boundaries">Trusted operator and rental boundaries</a></h2>
+<p>The <strong>zksync-airbender-prover</strong> repository owns <code>scripts/prover-rental</code>: the
+Runpod v2 controller, reusable GPU worker, continuous supervisor, and trusted
+Sentry lease handoff. This server checkout retains compatibility entry points;
+set <code>ZKSYNC_AIRBENDER_PROVER_DIR</code> to the prover checkout when the repositories
+are not adjacent. The supervisor rents after finding eligible work, processes
+one lease at a time, checks for wrapping before taking another FRI job, and
+reuses the pod until an idle grace period expires. A failed endpoint is not
+evidence that its queue is empty. Tests exercise both stages through a mocked
+provider and node. Defaults are dry-run;
+the policy intentionally has no guessed hardware, runtime, price, image, or CUDA
+values. An independently supervised watchdog and durable journal are required
+before live creation. Ambiguous creation is reconciled without a second POST.</p>
+<p>The rented GPU receives an immutable hash-pinned payload and narrowly scoped
+object capabilities. The genuine sequencer lease, account keys, endorsement keys,
+and Runpod key remain on the trusted host. Returning a file with the right hash
+does not establish proof validity. The trusted Sentry resubmits the returned bytes
+with the retained lease through the existing verifier-backed API and preserves
+them across nonterminal responses.</p>
+<p><code>scripts/prover-service</code> prepares portable manifests and exact typed wallet
+requests from native batch/output preimages and proof bytes. Canonical settlement
+reads authenticate the committed batch hashes; the pinned CPU FRI verifier checks
+the batch statements and reviewed program commitment; the production native SNARK
+verifier checks the final aggregate before endorsement. This wrapping flow
+requires no execution node (EN). Native EN operation remains separately supported;
+it is not a wrapper prerequisite. Producer metadata alone cannot replace these
+proof and canonical-state checks.
+Rust V1 bindings
+share the Solidity encodings. These tools do not transform diagnostic <code>prover_id</code>
+strings or Basic Auth into on-chain Sentry identity. The current v1 API remains a
+compute lease API.</p>
+<p>The opt-in <code>dispatcher.py</code> adapter now uses that API on the trusted sequencer
+host. It verifies account-signed subscriptions, operator bindings, fresh senior
+membership and deployment parameters at one finalized child-chain block. It
+checks its supplied accounts against the complete on-chain FRI enrollment
+enumeration at that block, with explicit eligibility exclusions for stale or
+removed members, then authenticates per-job operator readiness with EIP-712. A protected, exclusively
+locked journal assigns nonempty native batches in sorted per-account round-robin
+order, retaining cursor, slots, exact leases, signed offers and retry history.
+Both execution queues share that account cursor and quota bitmap. Enrollment and
+readiness use the child registry domain; native batch statements and proof
+packages use the selected lane’s execution and settlement domains. A retry stays
+in its original lane and cannot consume a second quota slot through the other
+queue.
+Only verifier-backed FRI acceptance or recovery of the identical retained proof
+and metadata can produce an accepted duty. Safe exports omit BasicAuth and lease
+capabilities. The adapter is an EOA/file-handoff workflow with one journal per
+sequencer/period/phase, not a public worker server. Its fixed snapshot is bounded
+to 256 enrolled accounts and 2,000 retained attempts. The entire eligible roster’s
+quota must fit that attempt limit; initialization rejects
+an impossible assessment. Reserve additional retry capacity operationally.
+Enrollment and quota sizing against the actual network are release requirements.
+Enrollment must precede initialization; later applicants wait for the next assessment snapshot
+and receive no failure mark. An active journal must never be reset to add them. A trusted sequencer can still omit
+readiness requests or withhold delivery, so fairness assumes honest operation of
+this dispatcher and its authenticated handoff transport.</p>
+<p>No job, unsigned reservations and empty work do not count as offered service.
+The journal reports genuine signed opportunities separately from native proof
+successes and indicates whether each account received its full quota. Sparse
+demand creates neither synthetic failures nor admission credit. The bonus lane
+continues to require the specified genuine accepted work; protocol-level policy
+for comparing availability under insufficient demand remains a launch decision.</p>
+<p>The read-only <code>/v1/SNARK/{from}/{to}/evidence</code> endpoint exports canonical stored
+batch/output preimages from retained proof metadata. It has the existing bounded
+peek admission, checks contiguous V32/V8 identities, and refuses the zero VK
+sentinel. It exports neither lease capabilities nor raw proofs. This is producer
+evidence for reconstructing statements and checking canonical committed hashes;
+it is not itself proof verification or an independent replay result.
+<code>ProofCommand::service_submission</code> validates a
+completed sidecar against its exact retained native metadata and proof bytes and
+constructs the gate call.</p>
+<p>The node’s opt-in <code>service_publication</code> configuration replaces its proof sender
+with a durable external-wallet handoff on each execution lane. It writes the
+exact native proof bytes, batch outputs and reviewed deployment pins to a private
+<code>work.json</code>. After a relayer returns a matching <code>relay.json</code>, the node reconstructs
+the exact gate call and verifies its successful transaction, acceptance event,
+historical contract code and configuration, canonical block and configured
+confirmation depth before advancing those batches to native execution. A file
+or a native proved frontier alone cannot authorize advancement. Recovery retains
+the original proof until this same receipt check succeeds. Commit and execute
+remain in their existing pipeline stages; the service proof sender needs no
+node-owned proof wallet. Bootstrap uses zero coordinator pins. When the reviewed
+coordinator is later installed, recovery preserves each outstanding bootstrap
+record’s original bytes and zero pins while checking its unchanged gate, policy,
+VK and native proof identity.</p>
+<p>The opt-in <code>relay.py</code> consumes that exact native payload and completed sidecar.
+It pins the reviewed gate/coordinator code and reads phase, parent, frozen work,
+wrapper index/turn, deadline and signing domain at one canonical settlement
+block before simulating the exact gate call. Wallet signing and broadcast require
+explicit execution. The raw signed transaction and its deterministic hash are
+durable before sending; restart only reconciles or rebroadcasts those same bytes.
+Stale work is not reendorsed, and another relayer’s acceptance does not release a
+still-pending local wallet nonce. Receipt events and canonical confirmations
+complete the journal. This is a trusted-wallet RPC handoff with a dedicated nonce
+journal. Its handoff export connects the confirmed wallet journal to the node’s
+retained work; it does not bypass the node’s independent receipt check.</p>
+<p>The wrapper also verifies the complete signed dispatch history against its own
+enrollment-block pin, retained checkpoints, and known readiness/duty receipts.
+This checks roster completeness, the shared account cursor and quota, retry
+continuity, exact accepted-duty coverage, and hashes of the actual native FRI
+inputs. Known omissions and inconsistencies refuse endorsement. A signed history
+cannot prove that the sequencer disclosed every off-ledger request or rejected
+proof honestly; independent observations remain necessary to detect those cases.
+The audit introduces no new reward rule or duty points.</p>
+<p><code>keeper.py</code> prepares and simulates unsigned package opening, repair and fixed
+maintenance calls. For external service SNARK work it validates the actual native
+commitments, frozen package, selected wrapper, current turn and priority witness
+before producing a compute permit. The rental pool pins the lane’s keeper
+configuration and revalidates that permit before launch, then checks that the
+runtime and reserve still fit the deadline immediately before provider creation.
+Selected-wrapper keys and native leases remain on trusted hosts. A provider can
+still start late or fail, and a competing state change can invalidate work after
+the last check; these checks do not guarantee paid work or a provider invoice cap.</p>
+<p>After service activation, <code>coordinator.py</code> retains the native SNARK lease and
+evidence, snapshots and signs the dispatcher manifest/audit, and opens the package
+through durable maintenance transactions. It sends a signed turn-bound inbox
+envelope to the currently selected operator. That operator’s <code>wrapper.py</code> watcher
+checks the audit, pinned CPU FRI verifier and canonical chain state, then queues
+SNARK work in the same warm pool used for FRI. It checks the native SNARK before
+returning an authenticated result and, only while still selected, its endorsement.
+The coordinator rechecks the result, submits its original native lease, matches
+the node’s publication record, and relays the dual-endorsed package. Both journals
+retain exact signed bytes across ambiguous sends, and the node still independently
+verifies the confirmed gate receipt before advancing execution. Maintenance and
+proof-relay transactions use separate nonce accounts.</p>
+<p>The <a href="https://github.com/syscoin/zksync-os-server/blob/codex/senior-prover-service/scripts/prover-service/keeper-operator-guide.md">keeper operator guide</a>
+documents configuration, automatic operation, and manual recovery. The automation
+does not register subscriptions, publish or relay cross-chain rosters and draws,
+invent priority-tree witnesses, or authorize an unreviewed image/VK. Operators
+supply the complete roster artifacts, independently pinned audit trust, actual
+native priority preimages/paths, and authenticated inbox transport; existing
+cross-chain capture and relay keepers must continue running. Bootstrap remains
+the explicit pre-activation keeper path.
+Prestart and rollover control packages require empty duty reports, so their FRI
+compute must not consume the dispatcher’s paid assessment slots. Their ordinary
+compute costs do not create service credit.</p>
+<h2 id="release-gates-still-requiring-completion"><a class="header" href="#release-gates-still-requiring-completion">Release gates still requiring completion</a></h2>
+<ol>
+<li>Qualify the deployed service contracts against the reproduced V32/V8 guest,
+production verifier and compiled VK, preserving the release’s exact source
+and generated-artifact checks. Separately complete atomic canonical fixture
+regeneration and snapshot/restore acceptance. The fixture marker, unset
+binding and empty trusted-descriptor registry continue to prohibit packaged
+fixture certification; ordinary deployment-source materialization does not
+require that fixture or certify a service launch.</li>
+<li>Exercise the authenticated dispatcher with the real enrolled roster, native
+verifier, and operator delivery transport. Admission and renewal cannot be
+treated as a fair availability assessment until genuine usable duties are
+offered to the full roster. The implemented journal exposes sparse demand
+without declaring failure; finish the protocol-level assessment policy before
+making availability or penalty claims. No enrollment or synthetic workload
+can qualify a service account.</li>
+<li>Exercise the implemented coordinator, CPU-verifying selected wrapper, sidecar,
+and durable relayer with
+the reviewed production wallet RPC and deployed gate. Mocked tests cover stale
+turns, repaired manifests, process crashes, ambiguous sends, receipt replay
+and restart after acceptance; qualify real Gateway roots, native-proof gas,
+nonce ownership and confirmation policy before enabling that publication lane.
+No in-flight transaction authorization may be replaced blindly.</li>
+<li>Exercise both real child/Gateway/NEVM proof lanes, complete roster publication
+and forwarding, both period draws, both accepted-receipt paths, and both
+activation messages before the child deadline. Qualify bootstrap transport and
+nonrewarded prestart/rollover recovery packages with actual native messages.
+Measure the lead/grace windows and run independent root capture and relay
+keepers. Prove that either missing activation cannot lock passive principal.</li>
+<li>Qualify the implemented root-priority guard against real NEVM/Gateway queues,
+including checkpoint delivery, delayed root-request forwarding, prefix witness
+construction, expired-proof recovery, and backlog drain. Deploy the patched
+native timestamp/tree-height getters and prove that existing requests are
+drained before constructing the guard. Contract tests alone do not
+establish parent-Gateway inclusion or a deployed deadline guarantee.</li>
+<li>Perform the deployed validator/prover/emergency-path audit and production
+verifier integration test. Preserve all native final withdrawal checks.</li>
+<li>Qualify the final hardware and immutable image, including cold setup, FRI,
+combination/compression, wrapping, artifact return, and forced termination.
+Provider outages can prevent termination; software budgets are not an absolute
+provider invoice cap. No real rental or GPU proof was run by these unit tests.</li>
+<li>Test sequencer checkpoint recovery and Gateway unsettled-history recovery.
+The launch still has one producer and no multi-sequencer fork choice. Ordinary
+RPC receipts and fast interop retain their existing provisional-history
+assumptions.</li>
+</ol>
+<p>Native transaction fees still go to the current collector. No fee split, burn to
+native SYS conversion, new bounty, new slashing rule, or standing GPU subsidy is
+introduced. Those changes require separately specified accounting.</p>
+<h2 id="review-scope"><a class="header" href="#review-scope">Review scope</a></h2>
+<p>The implementation review covers token mint/cap authority, issuer schedule and
+budget accounting, passive/service separation, reward registry callbacks, native
+staking withdrawal liveness, membership ordering, report replay/deduplication,
+draw causality, wrapper repair/rotation, both gates’ proof/statement bindings,
+shared cross-chain quota accounting, and nonrewarded control-proof recovery.
+Reserved proxy storage layouts are preserved. Existing versioned replay wire
+formats and the guest are unchanged. This is an engineering review with focused
+regression tests, not an independent third-party security audit or launch signoff.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../design/prover_api.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../design/db.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../design/prover_api.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../design/db.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../js/version-box.js"></script>
+        <script src="../js/mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>
