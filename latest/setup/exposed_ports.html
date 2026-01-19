@@ -163,11 +163,12 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="exposed-ports"><a class="header" href="#exposed-ports">Exposed Ports</a></h1>
+<!-- SYSCOIN: The prover application port is intentionally not remotely exposed. -->
 <ul>
 <li><code>3050</code> - L2 JSON RPC</li>
-<li><code>3053</code> - Block replay server (transport for EN)</li>
-<li><code>3124</code> - Prover API (e.g. <code>127.0.0.1/prover-jobs/status</code>) (only enabled if <code>prover_api_component_enabled</code> is set to
-<code>true</code>)</li>
+<li><code>3060</code> - P2P communication (e.g. replay transport)</li>
+<li><code>3124</code> - Loopback-only prover API (only enabled with the prover component); remote workers must
+use the generated buffering HTTPS proxy in the same network namespace</li>
 <li><code>3312</code> - Prometheus</li>
 </ul>
 

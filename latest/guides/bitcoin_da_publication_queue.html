@@ -1,0 +1,352 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Bounded Bitcoin DA recovery publication - ZKsync OS Server Developer Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../css/version-box.css">
+        <link rel="stylesheet" href=".././css/mdbook-admonish.css">
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ZKsync OS Server Developer Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs/src/guides/bitcoin_da_publication_queue.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="bounded-bitcoin-da-recovery-publication"><a class="header" href="#bounded-bitcoin-da-recovery-publication">Bounded Bitcoin DA recovery publication</a></h1>
+<p>The default <code>batcher.bitcoin_da_publication_window: 1</code> retains the existing
+publication and sequential recovery behavior. The opt-in coordinator supports a
+window of two to eight outstanding publications, not a burst of 32 wallet calls.
+Start with two on a reviewed testnet rollout.</p>
+<h2 id="shared-wallet-rollout-requirements"><a class="header" href="#shared-wallet-rollout-requirements">Shared-wallet rollout requirements</a></h2>
+<p>Upgrade <strong>every</strong> normal Edge publisher, normal Gateway publisher, and Gateway
+recovery publisher using the Core wallet before enabling this mode. They must run
+on the same host and use the same private physical directory on a local filesystem
+with working OS file locks. A shared wallet across hosts, network filesystems,
+unmodified publishers, manual wallet spends, or other uncoordinated writers is not
+supported by this coordinator.</p>
+<p>Quiesce all writers before first activation. Core must be out of initial block
+download, with its saved mempool fully loaded and empty, before the coordinator
+initializes. An empty mempool while Core is still loading is not sufficient.
+Wait for existing publications to mine; do not delete Core mempool or wallet state.</p>
+<p>All writers must use matching values for these settings:</p>
+<pre><code class="language-yaml">batcher:
+  bitcoin_da_publication_window: 2
+  bitcoin_da_publication_state_path: /absolute/private/shared-wallet-directory
+  bitcoin_da_publication_mempool_count_limit: 20
+  bitcoin_da_publication_mempool_vbytes_limit: 75000
+  bitcoin_da_publication_vbytes_reserve: 25000
+</code></pre>
+<p>The directory must be private (0700 on Unix); files are private (0600). Symlink
+aliases are rejected. The journal binds the chain genesis, sanitized RPC endpoint,
+wallet name, window, and advisory budgets. A mismatch stops publication. Existing
+RPC URL, credentials, wallet, and finality settings remain required; do not put
+credentials in this journal or in a support report.</p>
+<p>The count and vbyte values above are deliberately conservative <strong>whole-mempool
+testnet budgets</strong>, not universal production defaults or discovered Core policy.
+Unrelated transactions consume this headroom too. Operators must review them
+against the actual node policy and workload. Automatic wallet input selection can
+make a transaction larger than the configured vbyte estimate. These checks are
+advisory backpressure; Core remains the final admission authority. This feature
+does not raise ancestor/descendant limits, bypass policy, change confirmations, or
+guarantee that a particular candidate will be admitted.</p>
+<p>Increasing the window does not increase these budgets, the fee policy, finality
+requirements, or the paid-republication attempt limit. A window of eight is an
+upper bound on outstanding transactions shared by all cooperating writers, not a
+guarantee that eight transactions will fit the available mempool headroom. The
+fund-and-broadcast calls remain serialized.</p>
+<h2 id="changing-an-existing-shared-policy"><a class="header" href="#changing-an-existing-shared-policy">Changing an existing shared policy</a></h2>
+<p>Changing configuration alone does not migrate an existing coordinator. The
+journal’s exact policy match remains mandatory; writers configured for different
+windows refuse to use the same journal. Older binaries that support only windows
+up to four cannot run with a window of eight.</p>
+<p>An existing-policy change requires a separately reviewed, coordinated operator
+procedure: positively stop every writer behind effective restart interlocks,
+hold the existing shared wallet lock, and authenticate the exact old and new
+policies and canonical chain identity. A widening may change only the window,
+preserving every pending row (including duplicate hashes or transaction IDs), the
+genesis, mined anchor, and all recovery clocks and paid-attempt reservations. Do
+not create a fresh coordinator or clear state. Unknown transaction outcomes must
+be investigated, not migrated around. Keep durable before/after evidence and
+once-only completion records; an interrupted or uncertain transition must remain
+fenced for operator review. This feature does not provide an automatic migration
+or rollback API.</p>
+<h2 id="what-is-durable"><a class="header" href="#what-is-durable">What is durable</a></h2>
+<p>The coordinator serializes the entire fund-and-broadcast RPC. It writes and fsyncs
+an outstanding entry before calling the wallet, then durably records the returned
+transaction ID. Normal publication has priority over recovery when waiting for a
+free slot. Normal publication adopts a known journal receipt before checking new
+capacity or headroom, including after a crash before per-batch progress was saved.
+That receipt-only guard cannot broadcast another transaction. Normal duplicate
+hashes are not resubmitted. If another writer has already retired the mined entry,
+normal publication can recognize matching hash/transaction metadata directly from
+Core without waiting for new capacity. A missing or failed Core lookup supplies no
+receipt; archive availability alone cannot establish publication. DA finality is
+still checked separately under the unchanged policy.</p>
+<p>Once the existing recovery deadline and paid-attempt claim allow it, forced
+recovery may submit another transaction for a still-unconfirmed or evicted hash.
+It requires a free slot and headroom before consuming an attempt, retains every
+original transaction ID, and counts each transaction against the same window.
+Overwrite is not RBF or cancellation: a full window still blocks new wallet calls,
+even for recovery, until exact canonical mining releases capacity. It does not
+block adoption of a receipt already recorded in the journal.</p>
+<p>A known transaction frees a funding slot only when Core’s wallet receipt identifies
+that exact transaction ID in a canonical mined block. This works even after Core
+prunes the blob metadata. A prior transaction with the same blob hash cannot free
+it. Receipt reads are bounded and raw transaction bodies are not logged or retained.
+The journal retains the highest mined block anchor;
+a later canonical-chain mismatch stops all writers for investigation. Mining can
+free a funding slot before the DA finality policy is satisfied. The commit gate
+still waits for <strong>all</strong> own and forwarded references in the current command to
+satisfy the unchanged finality policy.</p>
+<h2 id="reusing-a-publication-after-metadata-expiry"><a class="header" href="#reusing-a-publication-after-metadata-expiry">Reusing a publication after metadata expiry</a></h2>
+<p>Core’s expiring blob metadata is not a record of every historical publication.
+On Tanenbaum (NEVM chain 5700), with the one-confirmation policy, both the normal
+publisher and finality gate check current NEVM hash registration before querying
+Core blob metadata. A fresh, exact 32-byte hash response from the <code>0x63</code>
+precompile satisfies this settlement path’s registered-hash requirement and
+prevents another publication. This path does not require the original Core block
+or a block-locator RPC.</p>
+<p>A previously observed registration only suppresses fees; it cannot complete the
+gate after the fresh lookup fails. Failed or malformed lookups wait without
+querying Core or spending, even if Core metadata might still be available.
+Only a successful empty native response follows the existing Core finality and
+bounded recovery path; an unavailable response is not proof of absence.</p>
+<p>This fallback does not apply to mainnet, ChainLock policy, or confirmation
+thresholds above one. It does not change proof verification, recover missing
+payloads from an unauthenticated source, or clear an unknown wallet outcome.
+The existing native hash precompile is sufficient; no new Geth RPC, database
+migration, or index rebuild is required.</p>
+<p>The existing per-hash recovery clocks, cooldowns, and paid-attempt reservations are
+unchanged. Headroom is checked before claiming an attempt. Once a wallet RPC has
+been attempted, a failure still consumes that attempt and its cooldown. There is
+no same-attempt retry, clock reset, or attempt refund.</p>
+<h2 id="unknown-outcomes-and-recovery"><a class="header" href="#unknown-outcomes-and-recovery">Unknown outcomes and recovery</a></h2>
+<p>A timeout, cancellation, malformed response, or failed result persistence can
+leave Core processing or retaining the transaction even after the caller stops
+waiting. Its outstanding entry therefore remains a <strong>global wallet-writer fence</strong>
+across restarts. It does not expire, and a missing mempool entry or an older mined
+publication of the same blob hash does not clear it. All RPC errors are handled
+conservatively in this first version, including policy errors raced after the
+advisory preflight.</p>
+<p>Stop and investigate the exact wallet transaction and canonical-chain evidence
+when this happens. This version does not automatically reconcile an unknown
+transaction ID. Do not delete or edit the journal, clear attempt markers, reset
+clocks, disable coordination, downgrade a writer, or switch it to the legacy path
+to work around the fence. Such actions would discard the evidence that prevents
+duplicate fees or concurrent wallet execution. Any recovery or rollback requires
+all writers quiesced and a reviewed, positive reconciliation of outstanding work.</p>
+<p>The queue is only a throughput control for the current bounded commit command.
+It does not sweep arbitrary historical blobs, alter archive authentication, or
+change when a batch is safe to commit.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guides/zksys-membership-keeper.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../guides/local_setup_update.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guides/zksys-membership-keeper.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../guides/local_setup_update.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../js/version-box.js"></script>
+        <script src="../js/mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>

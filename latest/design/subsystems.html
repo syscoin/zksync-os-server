@@ -182,7 +182,16 @@ batches and proofs to L1.</li>
 <li>For each batch, computes the Prover Input (runs RiscV binary (<code>app.bin</code>) and records its input as a stream of
 <code>Vec&lt;u32&gt;</code> - see <code>batcher/mod.rs</code>)</li>
 <li>This process requires Merkle Tree with materialized root hashes and proofs at every block boundary.</li>
-<li>Runs L1 senders for each of <code>commit</code> / <code>prove</code> / <code>execute</code></li>
+<li>Runs L1 senders for each of <code>commit</code> / <code>prove</code> / <code>execute</code>
+Each sender must have exclusive use of its operator address on the settlement layer.
+Do not submit other transactions from that address or run another active sender with it.
+Startup recovery may replace stale transactions to its configured target, including
+transactions with different calldata; it cannot identify unrelated work sent to that
+same target. Forced resubmission also replaces pending transactions.
+Before rebroadcasting an orphaned transaction, the sender checks the exact nonce for
+competing transactions. Gateway provides <code>eth_getTransactionBySenderAndNonce</code>; a Syscoin
+NEVM RPC without that method must expose <code>txpool_contentFrom</code> on its trusted operator
+endpoint. If neither lookup is available, the sender fails closed instead of resending.</li>
 <li>Runs Priority Tree Manager that applies new L1-&gt;L2 transactions to the dynamic Merkle tree and prepares <code>execute</code> commands.
 It’s run both for main node and ENs. ENs don’t send <code>execute</code> txs to L1, but they need to keep the tree up to date,
 so that if the node become main, it doesn’t need to build the tree from scratch.</li>

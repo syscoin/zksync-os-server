@@ -1,0 +1,35 @@
+{
+  "status": "templates-and-recipe-staged-not-installed-not-started",
+  "reference_scope": "dated Tanenbaum mock-testnet staging snapshot; live host inventory remains in the operator-only record",
+  "source_commit": "f638db92e5c5ea31507e089b61f122fd95cf9083",
+  "source_path": "/home/ubuntu/zksync-os-server-v32-public-20261006",
+  "runtime_path": "/home/ubuntu/gateway_v32_public_20261006",
+  "stage_path": "/home/ubuntu/v32-services-prep-20261006",
+  "artifacts_sha256": {
+    "zksys-v32-gateway.service": "757028d30fbbaef6c0812f4d4aa71e3d9b23d3a03f09c094a1e080a0502722ce",
+    "zksys-v32-edge.service": "8d284e7f88d1b60a97ea5662c84a348843d7e2311418f075878bd13e0aaecfca",
+    "generate-edge-prebuilt-adapter.py": "a44ce5c40a309f224cf0cceaf8443d03af417683da05d57130df40b9a04f179c",
+    "test-edge-prebuilt-adapter.py": "38b12b6da896d9a0147750ccbe400b9ed0d81c60e435821a82a57b3f8bafb790",
+    "INSTALLATION-GATES.md": "ab3e507a98555a6abd837b13800002c021442a65954535e2a776a537aeb90b57"
+  },
+  "canonical_source_sha256": {
+    "scripts/gateway-launch/generate-os-server-configs.sh": "2d577a78adbae9812b52f1103765bbe2a5468bfac75a7c844415f3ab2781746e",
+    "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh": "34bba80585b9fdc26cc6b6165a493655400bf4018f4f1345148d7b5a052ab28d",
+    "scripts/gateway-launch/_execute_operator_lock.sh": "7c426d363ca0aaa03c843e6779493628e6fed7f394460f14ecb1ab1f30ac3b89"
+  },
+  "gateway_binary_observed": {
+    "size": 161921304,
+    "sha256": "1b159028d092bb5145d528a7d2391cdcb0ea73e8c67e4119141e6b14def833cf",
+    "context_stamp": "3e24100f3991e821ebed9efa8747a2a08fddcf4e8a175fe9aba866babee51477",
+    "canonical_build_and_help": "passed as reported by root; size/SHA/stamp independently read from exact fresh runtime"
+  },
+  "edge_binary": "pending-fresh-contracts-config-then-normal-canonical-build-prebuilt-and-exec-prebuilt-help",
+  "fresh_canonical_start_scripts": "absent-at-staging-check",
+  "adapter_generation": "not-run; no fabricated generated-script hash",
+  "offline_transform_tests": "8 passed on macOS and exact sequencer Ubuntu host; exact prefix/mode/config/lock/cookie/context and ambiguity rejection",
+  "systemd_verify": "passed on sequencer systemd 255 with both staged unit files; exit 0, no install/reload/start",
+  "service_install_start_daemon_reload": "not-done",
+  "private_local_mirror_protection": "exact six stage files mode0600; parent staging directory mode0700; repository reference copies contain no custody secrets",
+  "migration_handoff_gate": "canonical owned temporary Gateway/validator/foreground jobs complete and exit; final configs/checkpoints valid; no independent listener adoption or PID/stamp bypass",
+  "parent_install_authorization": "pending"
+}
