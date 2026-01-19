@@ -163,19 +163,37 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="docker"><a class="header" href="#docker">Docker</a></h1>
-<pre><code>sudo docker build -t zksync_os_sequencer .
-sudo docker run -d --name sequencer -p 3050:3050 -p 3124:3124 -p 3312:3312 -e batcher_maximum_in_flight_blocks=15  -v /mnt/localssd/db:/db   zksync_os_sequencer
+<pre><code>sudo docker build --pull --no-cache -t zksync_os_sequencer .
+sudo docker run -d --name sequencer -p 3050:3050 -p 3312:3312 -e batcher_maximum_in_flight_blocks=15  -v /mnt/localssd/db:/db   zksync_os_sequencer
 </code></pre>
+<!-- SYSCOIN: Port publishing cannot reach a listener bound to the container's own loopback. -->
+<p>Do not publish prover port <code>3124</code> directly. For remote workers, run the generated buffering HTTPS
+proxy in the node’s network namespace (or use host networking with the host proxy) so it alone can
+reach the loopback prover listener.</p>
+<p>Release images must refresh both the locked Rust TLS dependencies and the system
+CA store. The Dockerfile disables emSign ECC Root CA - G3 by its exact certificate
+SHA-256 fingerprint, rebuilds Debian’s CA bundle, and checks the effective SSL
+trust store during the build. Other emSign roots are retained. <code>--pull --no-cache</code>
+ensures a release build refreshes the base image and package metadata instead of
+reusing an older CA-install layer.</p>
+<p>Native installations and custom CA bundles require the same root removal before
+deployment; rebuild/restart clients after changing their trust store. Check the
+effective store with <code>python3 scripts/check-trust-store.py</code>. On Debian, running
+the script as root with <code>--refresh-system</code> disables the matching packaged root
+and regenerates the system bundle. A custom <code>SSL_CERT_FILE</code> or <code>SSL_CERT_DIR</code> is
+still checked and must independently exclude the distrusted root. The Rust
+<code>rustls-webpki</code> update also rejects the eight compromised intermediate public
+keys; refreshing the root bundle alone does not replace that verifier fix.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../setup/local_run.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../setup/besu.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../setup/external_node.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../setup/multi_node_consensus.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -185,11 +203,11 @@ sudo docker run -d --name sequencer -p 3050:3050 -p 3124:3124 -p 3312:3312 -e ba
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../setup/local_run.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../setup/besu.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../setup/external_node.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../setup/multi_node_consensus.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
