@@ -1,0 +1,49 @@
+# SYSCOIN: Stage only. Install/start after the canonical migration-owned
+# Gateway process has exited and the explicit public-cutover fence is approved.
+# SYSCOIN: Dated Tanenbaum mock-testnet reference; never copy to mainnet.
+[Unit]
+Description=Syscoin v32 Tanenbaum Gateway (mock proving)
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/zksync-os-server-v32-public-20261006
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.foundry/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=GATEWAY_DIR=/home/ubuntu/gateway_v32_public_20261006
+Environment=GATEWAY_CHAIN_NAME=gateway
+Environment=EDGE_CHAIN_NAME=zksys
+Environment=GATEWAY_CHAIN_ID=57001
+Environment=EDGE_CHAIN_ID=57057
+Environment=PROTOCOL_VERSION=v32.0
+Environment=L1_NETWORK=tanenbaum
+Environment=L1_CHAIN_ID=5700
+Environment=L1_RPC_URL=http://127.0.0.1:8545
+Environment=PROVER_MODE=no-proofs
+Environment=GATEWAY_PROVER_MODE=no-proofs
+Environment=EDGE_PROVER_MODE=no-proofs
+Environment=SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER=true
+Environment=BITCOIN_DA_COOKIE_FILE=/home/ubuntu/.syscoin/testnet3/.cookie
+Environment=SYSCOIN_DATADIR=/home/ubuntu/.syscoin
+Environment=SYSCOIN_NETWORK=testnet3
+Environment=OS_SERVER_NOFILE_TARGET=1048576
+# SYSCOIN: Never inherit staging bypass or launcher-owned PID/lock context.
+UnsetEnvironment=ZKSYNC_OS_STATIC_BUILD_CONTEXT GATEWAY_RUNTIME_OWNER_PID GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD CARGO_BUILD_TARGET
+UMask=0077
+LimitNOFILE=1048576
+ExecStart=/usr/bin/bash /home/ubuntu/gateway_v32_public_20261006/os-server-configs/gateway/start-node.sh
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=300
+KillMode=control-group
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

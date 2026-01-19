@@ -1,0 +1,376 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>zkSYS Sentry membership keeper - ZKsync OS Server Developer Docs</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon.svg">
+        <link rel="shortcut icon" href="../favicon.png">
+        <link rel="stylesheet" href="../css/variables.css">
+        <link rel="stylesheet" href="../css/general.css">
+        <link rel="stylesheet" href="../css/chrome.css">
+        <link rel="stylesheet" href="../css/print.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="../fonts/fonts.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="highlight-css" href="../highlight.css">
+        <link rel="stylesheet" id="tomorrow-night-css" href="../tomorrow-night.css">
+        <link rel="stylesheet" id="ayu-highlight-css" href="../ayu-highlight.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../css/version-box.css">
+        <link rel="stylesheet" href=".././css/mdbook-admonish.css">
+
+        <!-- MathJax -->
+        <script async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+        <!-- Provide site root to javascript -->
+        <script>
+            var path_to_root = "../";
+            var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "navy" : "light";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc.js"></script>
+    </head>
+    <body>
+    <div id="body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                var theme = localStorage.getItem('mdbook-theme');
+                var sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            var theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            var sidebar = null;
+            var sidebar_toggle = document.getElementById("sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+            }
+            sidebar_toggle.checked = sidebar === 'visible';
+            html.classList.remove('sidebar-visible');
+            html.classList.add("sidebar-" + sidebar);
+        </script>
+
+        <nav id="sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="menu-bar-hover-placeholder"></div>
+                <div id="menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="sidebar-toggle" class="icon-button" for="sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="sidebar">
+                            <i class="fa fa-bars"></i>
+                        </label>
+                        <button id="theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="theme-list">
+                            <i class="fa fa-paint-brush"></i>
+                        </button>
+                        <ul id="theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="ayu">Ayu</button></li>
+                        </ul>
+                        <button id="search-toggle" class="icon-button" type="button" title="Search. (Shortkey: s)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="S" aria-controls="searchbar">
+                            <i class="fa fa-search"></i>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ZKsync OS Server Developer Docs</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <i id="print-button" class="fa fa-print"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs" title="Git repository" aria-label="Git repository">
+                            <i id="git-repository-button" class="fa fa-github"></i>
+                        </a>
+                        <a href="https://github.com/matter-labs/zksync-os-server/tree/main/docs/src/guides/zksys-membership-keeper.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="search-wrapper" class="hidden">
+                    <form id="searchbar-outer" class="searchbar-outer">
+                        <input type="search" id="searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="searchresults-outer" aria-describedby="searchresults-header">
+                    </form>
+                    <div id="searchresults-outer" class="searchresults-outer hidden">
+                        <div id="searchresults-header" class="searchresults-header"></div>
+                        <ul id="searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="content" class="content">
+                    <main>
+                        <h1 id="zksys-sentry-membership-keeper"><a class="header" href="#zksys-sentry-membership-keeper">zkSYS Sentry membership keeper</a></h1>
+<p>The keeper discovers Core Sentry addresses, reconciles the NEVM bridge with the
+zkSYS membership registry, and activates mature Sentry reward weights. A node
+still needs its own NEVM address registered on Core. The issuer’s rewards must
+be distributed and claimed separately. Start early enough for the initial
+priority operations to reach zkSYS and activate before issuer <code>startTime()</code>.</p>
+<p>The command defaults to reporting only. <code>--send</code> enables signed transactions;
+<code>--watch</code> repeatedly runs it. Run exactly one keeper per signer and state
+directory. The state directory, config, keystore and password files contain
+sensitive data. In particular, <code>transactions.json</code> holds signed spend
+authorizations; back up and protect it, and do not erase it after a timeout.
+The keeper records signed bytes before broadcast. If an acknowledged transaction
+disappears, it retries those same bytes only when no receipt or transaction is
+found and the signer nonce is still unused. Retries use persisted exponential
+backoff from one to ten minutes, including across restarts. A consumed or
+conflicting nonce stops the keeper for reconciliation. It does not automatically
+replace a nonce or recover an unrelated reverted transaction.</p>
+<p>A finalized activation revert is archived as superseded only when a finalized
+snapshot at or after the revert confirms the intended membership weight is active
+and has no pending Sentry increase. Other failures remain queued for investigation.</p>
+<h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
+<p>Provision an existing, absolute, owner-only state directory (<code>chmod 700</code>) and an
+owner-only config JSON file. Independently attest the exact networks, deployed
+addresses, proxy implementations and runtime bytecode hashes. A signer on each
+chain needs native SYS for gas; the L1 signer also funds priority-operation
+base costs. Neither signer needs admin permissions. Use separate dedicated
+keystores and budget funds. Choose gas limits after measuring actual priority
+operations on the target release, not from deposit defaults. Example schema:</p>
+<pre><code class="language-json">{
+  "l1_chain_id": 5700,
+  "l2_chain_id": 57057,
+  "l1_genesis": "&lt;NEVM genesis hash&gt;",
+  "l2_genesis": "&lt;zkSYS genesis hash&gt;",
+  "bridge": "&lt;L1 registry bridge proxy&gt;",
+  "bridgehub": "&lt;L1 Bridgehub&gt;",
+  "diamond": "&lt;L1 zkSYS chain diamond&gt;",
+  "membership": "&lt;L2 membership registry proxy&gt;",
+  "weights": "&lt;L2 reward weight registry proxy&gt;",
+  "issuer": "&lt;L2 issuer proxy&gt;",
+  "l1_alias": "&lt;L1 bridge alias on L2&gt;",
+  "l1_signer": "&lt;L1 keeper EOA&gt;",
+  "l2_signer": "&lt;L2 keeper EOA&gt;",
+  "refund": "&lt;reviewed L2 refund recipient&gt;",
+  "l1_keystore": "/secure/l1-keystore.json",
+  "l1_password_file": "/secure/l1-password",
+  "l2_keystore": "/secure/l2-keystore.json",
+  "l2_password_file": "/secure/l2-password",
+  "max_batch_size": 512,
+  "l1_gas_limit": 1000000,
+  "l1_gas_price": 1000000000,
+  "priority_gas_limit": 5000000,
+  "gas_per_pubdata": 800,
+  "max_priority_fee": 1000000000000000000,
+  "max_l1_transaction_cost": 2000000000000000000,
+  "l2_gas_limit": 1000000,
+  "l2_gas_price": 1000000000,
+  "max_l2_transaction_cost": 10000000000000000,
+  "diamond_facets": [
+    {"selector": "&lt;facetAddress(bytes4) selector&gt;", "address": "&lt;getters facet&gt;", "code_hash": "&lt;getters runtime hash&gt;"},
+    {"selector": "&lt;bridgehubRequestL2Transaction selector&gt;", "address": "&lt;mailbox facet&gt;", "code_hash": "&lt;mailbox runtime hash&gt;"},
+    {"selector": "&lt;l2TransactionBaseCost selector&gt;", "address": "&lt;mailbox facet&gt;", "code_hash": "&lt;mailbox runtime hash&gt;"}
+  ],
+  "code_checks": [
+    {"chain": "l1", "address": "&lt;bridge&gt;", "code_hash": "&lt;proxy runtime hash&gt;", "implementation": "&lt;bridge implementation&gt;", "implementation_code_hash": "&lt;bridge implementation hash&gt;"},
+    {"chain": "l1", "address": "&lt;bridgehub&gt;", "code_hash": "&lt;proxy runtime hash&gt;", "implementation": "&lt;bridgehub implementation&gt;", "implementation_code_hash": "&lt;bridgehub implementation hash&gt;"},
+    {"chain": "l1", "address": "&lt;diamond&gt;", "code_hash": "&lt;runtime hash&gt;"},
+    {"chain": "l2", "address": "&lt;membership&gt;", "code_hash": "&lt;proxy runtime hash&gt;", "implementation": "&lt;membership implementation&gt;", "implementation_code_hash": "&lt;implementation hash&gt;"},
+    {"chain": "l2", "address": "&lt;weights&gt;", "code_hash": "&lt;proxy runtime hash&gt;", "implementation": "&lt;weights implementation&gt;", "implementation_code_hash": "&lt;implementation hash&gt;"},
+    {"chain": "l2", "address": "&lt;issuer&gt;", "code_hash": "&lt;proxy runtime hash&gt;", "implementation": "&lt;issuer implementation&gt;", "implementation_code_hash": "&lt;implementation hash&gt;"}
+  ]
+}
+</code></pre>
+<p>All angle-bracket values and example gas/fee values must be replaced with
+reviewed deployment-specific values. Hashes are Ethereum Keccak-256 hashes of
+deployed runtime bytecode. The batch size defaults to 512 addresses, the bridge’s
+maximum; an operator may configure a smaller positive value. The keeper verifies L1 and L2 chain IDs/genesis,
+registry wiring, bridge alias and code hashes. It checks EIP-1967 implementation
+slots for the registry bridge, Bridgehub and the three L2 contracts. The required
+diamond selector entries pin the getter, priority-request and fee-quote facets
+and their runtime hashes. This is not a full diamond or governance audit: the
+getter is itself contract code and other selector changes may affect behavior.
+Independently attest the full diamond and monitor upgrades before enabling sends.</p>
+<p>Set <code>ZKSYS_CORE_RPC_URL</code>, <code>ZKSYS_L1_RPC_URL</code>, and <code>ZKSYS_L2_RPC_URL</code> to the
+private authenticated endpoints. When needed, set their corresponding
+<code>ZKSYS_CORE_RPC_AUTHORIZATION</code>, <code>ZKSYS_L1_RPC_AUTHORIZATION</code>, and
+<code>ZKSYS_L2_RPC_AUTHORIZATION</code> environment variables. Run from the checked-out
+server release, replacing the placeholders consistently:</p>
+<pre><code class="language-sh">python3 scripts/zksys-membership-keeper.py \
+  --state-dir /secure/zksys-keeper-state --bridge '&lt;L1 registry bridge proxy&gt;' \
+  --membership '&lt;L2 membership registry proxy&gt;' --l1-chain-id 5700 --l2-chain-id 57057
+</code></pre>
+<p>Review the report first. Once identity, funding and end-to-end test gates are
+satisfied, run the same command with <code>--send --config /secure/keeper.json --watch --interval 60</code> under a supervised service. During private launch
+bootstrap, add <code>--sync-only</code> to send and confirm membership updates without the
+keeper activating reward weights. Once the keeper reports <code>sync_only_idle</code>, the
+issuer administrator can configure service accounting while active reward weight
+is still zero. Remove <code>--sync-only</code> and reuse the same state directory to activate
+eligible weights and continue syncing changes.</p>
+<p>The sync-only switch controls this keeper, not other callers: anyone can activate
+an eligible pending weight. Keep bootstrap private, or configure accounting
+before publishing membership updates, to preserve the zero-weight requirement.
+If an activation transaction is already in the keeper’s journal, sync-only stops
+instead of rebroadcasting it; switching modes cannot cancel a broadcast.</p>
+<p>Arrange service startup after
+Core, NEVM and zkSYS RPC readiness and their contract bootstrap; keep the private
+state directory persistent across restarts. Do not start multiple service
+instances sharing a signer, even if they use different state directories. The
+launch scripts do not install or start this service.</p>
+<p>For a Linux systemd deployment, an operator can adapt this example after
+reviewing the config and the checks below. Use a dedicated service account and
+an owner-only environment file containing the RPC URLs and authorization headers.
+This is a template; replace the release path and contract addresses, then install
+and enable it through the operator’s normal deployment process.</p>
+<pre><code class="language-ini">[Unit]
+Description=zkSYS Sentry membership keeper
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=zksys-keeper
+Group=zksys-keeper
+WorkingDirectory=/opt/zksync-os-server
+EnvironmentFile=/etc/zksys-keeper/rpc.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/zksync-os-server/scripts/zksys-membership-keeper.py --state-dir /var/lib/zksys-keeper --bridge &lt;L1-bridge-address&gt; --membership &lt;L2-membership-address&gt; --l1-chain-id 5700 --l2-chain-id 57057 --send --config /etc/zksys-keeper/config.json --watch --interval 60
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+</code></pre>
+<p>The dedicated account must be able to read the private config, keystores and
+password files and write its state directory; <code>cast</code> must be present on PATH.
+The watch loop reports per-pass failures and keeps running, so process restart
+alone is not an alert: monitor its error output and reconciliation status.</p>
+<p>The outbox is serial: while an L1 request or activation waits for finality,
+discovery continues, but new updates, including urgent removals, wait. Monitor
+oldest unsent removal, finality lag, transaction failures, insufficient funds,
+process health and stale discovery; set and enforce an operator-owned maximum
+lag. A live <code>--watch</code> process does not establish successful synchronization.
+The current exact receipt-block state checks fail closed if a later transaction
+in the same block supersedes a delivered update or activation; operator
+reconciliation is required. Before launch, test initial sync, removals, address
+changes, delayed delivery, failed L2 execution, restart after ambiguous
+broadcast, finality outage, signer/funding failures and serial-outbox backlog on
+the intended Gateway topology. The focused mock tests do not establish this
+acceptance.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guides/reference-assets/v32-public-tanenbaum-20261006/INSTALLATION-GATES.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
+
+                            <a rel="next prefetch" href="../guides/bitcoin_da_publication_queue.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guides/reference-assets/v32-public-tanenbaum-20261006/INSTALLATION-GATES.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
+
+                    <a rel="next prefetch" href="../guides/bitcoin_da_publication_queue.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
+            </nav>
+
+        </div>
+
+
+
+        <script>
+            window.playground_line_numbers = true;
+        </script>
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+        <script src="../ace.js"></script>
+        <script src="../editor.js"></script>
+        <script src="../mode-rust.js"></script>
+        <script src="../theme-dawn.js"></script>
+        <script src="../theme-tomorrow_night.js"></script>
+
+        <script src="../elasticlunr.min.js"></script>
+        <script src="../mark.min.js"></script>
+        <script src="../searcher.js"></script>
+
+        <script src="../clipboard.min.js"></script>
+        <script src="../highlight.js"></script>
+        <script src="../book.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../js/version-box.js"></script>
+        <script src="../js/mermaid-init.js"></script>
+
+
+    </div>
+    </body>
+</html>
