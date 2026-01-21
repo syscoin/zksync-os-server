@@ -1,6 +1,6 @@
 use crate::metrics::L1_STATE_METRICS;
 use crate::models::BatchDaInputMode;
-use crate::{Bridgehub, PubdataPricingMode, ZkChain};
+use crate::{Bridgehub, MultisigCommitter, PubdataPricingMode, ZkChain};
 use alloy::eips::BlockId;
 use alloy::primitives::{Address, U256, address};
 use alloy::providers::{DynProvider, Provider};
@@ -12,16 +12,31 @@ use std::time::Duration;
 const L2_BRIDGEHUB_ADDRESS: Address = address!("0x0000000000000000000000000000000000010002");
 
 #[derive(Clone, Debug)]
+pub struct BatchVerificationSLConfig {
+    pub threshold: u64,
+    pub validators: Vec<Address>,
+}
+
+#[derive(Clone, Debug)]
+pub enum BatchVerificationSL {
+    Disabled,
+    Enabled(BatchVerificationSLConfig),
+}
+
+#[derive(Clone, Debug)]
 pub struct L1State {
     pub bridgehub_l1: Bridgehub<DynProvider>,
     pub bridgehub_sl: Bridgehub<DynProvider>,
     pub diamond_proxy_l1: ZkChain<DynProvider>,
     pub diamond_proxy_sl: ZkChain<DynProvider>,
     pub validator_timelock_sl: Address,
+    pub batch_verification: BatchVerificationSL,
     pub last_committed_batch: u64,
     pub last_proved_batch: u64,
     pub last_executed_batch: u64,
     pub da_input_mode: BatchDaInputMode,
+    pub l1_chain_id: u64,
+    pub sl_chain_id: u64,
 }
 
 impl L1State {
@@ -61,16 +76,44 @@ impl L1State {
             v => panic!("unexpected pubdata pricing mode: {}", v as u8),
         };
 
+        let batch_verification = match MultisigCommitter::try_new(
+            validator_timelock_sl,
+            diamond_proxy_sl.provider().clone(),
+            *diamond_proxy_sl.address(),
+        )
+        .await
+        .context("failed to check MultisigCommitter interface")?
+        {
+            Some(multisig_committer) => {
+                let threshold = multisig_committer
+                    .get_signing_threshold()
+                    .await
+                    .context("failed to get signing threshold")?;
+                let validators = multisig_committer
+                    .get_validators()
+                    .await
+                    .context("failed to get validators")?;
+                BatchVerificationSL::Enabled(BatchVerificationSLConfig {
+                    threshold,
+                    validators,
+                })
+            }
+            None => BatchVerificationSL::Disabled,
+        };
+
         Ok(Self {
             bridgehub_l1,
             bridgehub_sl,
             diamond_proxy_l1,
             diamond_proxy_sl,
             validator_timelock_sl,
+            batch_verification,
             last_committed_batch,
             last_proved_batch,
             last_executed_batch,
             da_input_mode,
+            l1_chain_id,
+            sl_chain_id,
         })
     }
 
@@ -131,10 +174,13 @@ impl L1State {
             diamond_proxy_l1: this.diamond_proxy_l1,
             diamond_proxy_sl: this.diamond_proxy_sl,
             validator_timelock_sl: this.validator_timelock_sl,
+            batch_verification: this.batch_verification,
             last_committed_batch,
             last_proved_batch,
             last_executed_batch,
             da_input_mode: this.da_input_mode,
+            l1_chain_id: this.l1_chain_id,
+            sl_chain_id: this.sl_chain_id,
         })
     }
 
