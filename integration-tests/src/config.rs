@@ -41,11 +41,14 @@ impl<'a> ChainLayout<'a> {
         }
     }
 
-    fn base_dir(self) -> PathBuf {
+    fn protocol_dir(self) -> PathBuf {
         workspace_dir()
             .join("local-chains")
             .join(self.protocol_version())
-            .join(self.dir())
+    }
+
+    fn base_dir(self) -> PathBuf {
+        self.protocol_dir().join(self.dir())
     }
 
     fn config_path(self) -> PathBuf {
@@ -59,7 +62,7 @@ impl<'a> ChainLayout<'a> {
     }
 
     fn l1_state_path(self) -> PathBuf {
-        self.base_dir().join("zkos-l1-state.json")
+        self.protocol_dir().join("l1-state.json.gz")
     }
 
     /// Genesis input is always taken from `<version>/default/genesis.json`

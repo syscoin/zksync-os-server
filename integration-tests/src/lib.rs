@@ -32,7 +32,7 @@ pub mod provider;
 pub mod upgrade;
 mod utils;
 
-/// L1 chain id as expected by contracts deployed in `zkos-l1-state.json`
+/// L1 chain id as expected by contracts deployed in `l1-state.json.gz`
 const L1_CHAIN_ID: u64 = 31337;
 
 /// Set of private keys for batch verification participants.
