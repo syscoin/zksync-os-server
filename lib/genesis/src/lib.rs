@@ -24,7 +24,9 @@ use zksync_os_types::{ConfigFormat, L1UpgradeEnvelope, ProtocolSemanticVersion};
 /// Address of the BaseTokenHolder contract at 0x10011
 const L2_BASE_TOKEN_HOLDER_ADDR: Address = {
     let mut bytes = [0u8; 20];
-    bytes[18] = 0x01;
+    // 0x10011 = 0x00010011 in 4 bytes = bytes[17]=0x01, bytes[18]=0x00, bytes[19]=0x11
+    bytes[17] = 0x01;
+    bytes[18] = 0x00;
     bytes[19] = 0x11;
     Address::new(bytes)
 };
