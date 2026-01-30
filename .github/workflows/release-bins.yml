@@ -140,6 +140,13 @@ jobs:
         with:
           version: '${{ env.FOUNDRY_VERSION }}'
 
+      # Temporary measure - install prebuilt version of anvil based off of https://github.com/foundry-rs/foundry/pull/13244
+      - name: Install custom anvil
+        shell: 'bash -ex {0}'
+        run: |
+          wget https://github.com/itegulov/foundry/releases/download/v1.6.0-compressed-state/anvil -O $(which anvil)
+          chmod +x $(which anvil)
+
       - name: Check executable
         env:
           TIMEOUT: 60

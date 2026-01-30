@@ -5,26 +5,29 @@ This project requires:
 * The **Foundry nightly toolchain**
 * The **Rust toolchain**
 
-### Install Foundry (v1.5.1)
+### Install Foundry (v1.6.0-5bcdddc06a)
 
-Install [Foundry](https://getfoundry.sh/) v1.5.1:
+To install [Foundry](https://getfoundry.sh/):
 
 ```bash
 # Download the Foundry installer
 curl -L https://foundry.paradigm.xyz | bash
 
 # Install forge, cast, anvil, chisel
-# Ensure you are using the 1.5.1 stable release
-foundryup -i 1.5.1
+# Temporarily we require custom version of anvil that supports compressed state.
+# Hopefully https://github.com/foundry-rs/foundry/pull/13244 will get accepted, then we will
+# be able to switch to nightly.
+foundryup -r itegulov/foundry -C 5bcdddc06abe5b0cd8e9bc1de8ddfb7202a95ed1
 ```
 
-Verify your installation:
+Verify your installation reports correct version:
 
 ```bash
-anvil --version
+$ anvil --version
+anvil Version: 1.6.0-dev
+Commit SHA: 5bcdddc06abe5b0cd8e9bc1de8ddfb7202a95ed1
+...
 ```
-
-The output should include a `anvil Version: 1.5.1`.
 
 ### Install Rust
 
