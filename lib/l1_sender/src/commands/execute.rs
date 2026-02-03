@@ -106,6 +106,16 @@ impl ExecuteCommand {
                 // IMPORTANT: the struct is not correct, it only works while the array is empty
                 let logs: Vec<u8> = Default::default();
                 let messages: Vec<Vec<u8>> = Default::default();
+                // todo: populate when settling on gateway like below
+                // let logs: Vec<IExecutor::L2Log> = vec![IExecutor::L2Log {
+                //     l2ShardId: 0,
+                //     isService: false,
+                //     txNumberInBatch: 0,
+                //     sender: Default::default(),
+                //     key: Default::default(),
+                //     value: Default::default(),
+                // }];
+                // let messages: Vec<Vec<u8>> = vec![vec![]];
                 let message_roots: Vec<FixedBytes<32>> = Default::default();
 
                 (

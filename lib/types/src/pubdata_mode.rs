@@ -51,7 +51,7 @@ impl PubdataMode {
             }
             Self::Validium => zksync_os_contract_interface::models::DACommitmentScheme::EmptyNoDA,
             Self::RelayedL2Calldata => {
-                zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256
+                zksync_os_contract_interface::models::DACommitmentScheme::BlobsZKsyncOS
             }
         }
     }
