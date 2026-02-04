@@ -109,7 +109,7 @@ impl<BatchStorage: WriteBatch, Finality: WriteFinality> ProcessL1Event
         let batch_number = report.batchNumber;
         let latest_persisted_batch = self.batch_storage.latest_batch();
         if batch_number <= latest_persisted_batch {
-            tracing::debug!(
+            tracing::info!(
                 batch_number,
                 "discovered already persisted batch, validating"
             );
@@ -135,10 +135,11 @@ impl<BatchStorage: WriteBatch, Finality: WriteFinality> ProcessL1Event
             // discovering more reverted batches.
             tracing::warn!(
                 batch_number,
+                latest_persisted_batch,
                 "non-sequential batch discovered; assuming revert and skipping"
             );
         } else {
-            tracing::debug!(batch_number, "discovered committed batch");
+            tracing::info!(batch_number, "discovered committed batch");
             let committed_batch = self.parse_committed_batch(report, log).await?;
             // Wait until discovered batch is executed. Note: this will `await` for the entire time
             // between L1 commit and L1 execute (potentially minutes or even hours).
