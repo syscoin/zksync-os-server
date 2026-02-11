@@ -105,7 +105,7 @@ pub(crate) fn seal_batch(
             computational_native_used: Some(
                 blocks
                     .iter()
-                    .map(|(block_output, _, _, _)| block_output.computaional_native_used)
+                    .map(|(block_output, _, _, _)| block_output.computational_native_used)
                     .sum(),
             ),
         },

@@ -50,6 +50,7 @@ impl From<ReplayWireFormatV1> for ReplayRecord {
                 mix_hash,
                 execution_version: 1, // hardcoded for v1
                 blob_fee: U256::ZERO,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -104,6 +105,7 @@ impl From<ReplayWireFormatV2> for ReplayRecord {
                 mix_hash,
                 execution_version,
                 blob_fee: U256::ZERO,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -156,6 +158,7 @@ impl From<ReplayWireFormatV3> for ReplayRecord {
                 mix_hash,
                 execution_version,
                 blob_fee: U256::ZERO,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -211,6 +214,7 @@ impl From<ReplayWireFormatV5> for ReplayRecord {
                 mix_hash,
                 execution_version,
                 blob_fee,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -264,6 +268,7 @@ impl From<ReplayWireFormatV4> for ReplayRecord {
                 mix_hash,
                 execution_version,
                 blob_fee,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -320,6 +325,7 @@ impl From<ReplayWireFormatV6> for ReplayRecord {
                 mix_hash,
                 execution_version,
                 blob_fee,
+                code_size_limit: None,
             },
             starting_l1_priority_id,
             transactions: transactions.into_iter().map(|tx| tx.into()).collect(),
@@ -360,6 +366,7 @@ impl From<ReplayRecord> for ReplayWireFormatV6 {
             mix_hash,
             execution_version,
             blob_fee,
+            code_size_limit: _,
         } = block_context;
         Self {
             block_context: super::v6::BlockContext {

@@ -9,6 +9,7 @@ use zk_os_forward_system_0_2_6::run::RunBlockForward as RunBlockForwardV5Simulat
 use zk_os_forward_system_dev::run::RunBlockForward as RunBlockForwardV6;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::AnyTracer;
+use zksync_os_interface::tracing::NopValidator;
 use zksync_os_interface::traits::{
     EncodedTx, PreimageSource, ReadStorage, RunBlock, SimulateTx, TxResultCallback, TxSource,
 };
@@ -51,6 +52,7 @@ pub fn run_block<
                     AbiTxSource::new(tx_source),
                     tx_result_callback,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -65,6 +67,7 @@ pub fn run_block<
                     tx_source,
                     tx_result_callback,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -85,6 +88,7 @@ pub fn run_block<
                     tx_source,
                     tx_result_callback,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -99,6 +103,7 @@ pub fn run_block<
                     tx_source,
                     tx_result_callback,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -127,6 +132,7 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
                     storage,
                     preimage_source,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -140,6 +146,7 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
                     storage,
                     preimage_source,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -159,6 +166,7 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
                     storage,
                     preimage_source,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
@@ -172,6 +180,7 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
                     storage,
                     preimage_source,
                     tracer,
+                    &mut NopValidator::default(),
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
