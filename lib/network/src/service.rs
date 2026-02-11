@@ -2,6 +2,7 @@ use crate::config::NetworkConfig;
 use crate::protocol::{ProtocolEvent, ProtocolState, ZksProtocolHandler};
 use crate::version::ZksProtocolV1;
 use crate::wire::replays::RecordOverride;
+use alloy::primitives::BlockNumber;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, Hardforks};
 use reth_discv5::discv5;
 use reth_eth_wire::HelloMessageWithProtocols;
@@ -34,6 +35,7 @@ impl NetworkService {
         config: NetworkConfig,
         node_role: NodeRole,
         replay: impl ReadReplay + Clone,
+        starting_block: BlockNumber,
         record_overrides: Vec<RecordOverride>,
         client: impl ChainSpecProvider<ChainSpec: Hardforks> + BlockNumReader + 'static,
         replay_sender: mpsc::UnboundedSender<ReplayRecord>,
@@ -91,6 +93,7 @@ impl NetworkService {
             .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV1, _> {
                 replay,
                 node_role,
+                starting_block,
                 record_overrides,
                 state: ProtocolState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS),
                 replay_sender,

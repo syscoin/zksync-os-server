@@ -3,6 +3,7 @@
 use crate::version::AnyZksProtocolVersion;
 use crate::wire::message::{ZKS_PROTOCOL, ZksMessage};
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
+use alloy::primitives::BlockNumber;
 use alloy::primitives::bytes::BytesMut;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
@@ -28,6 +29,8 @@ pub struct ZksProtocolHandler<P: AnyZksProtocolVersion, Replay: Clone> {
     pub replay: Replay,
     /// Node's role in the network.
     pub node_role: NodeRole,
+    /// Block number to start streaming from.
+    pub starting_block: BlockNumber,
     /// All overrides to pass through when requesting records.
     pub record_overrides: Vec<RecordOverride>,
     /// Current state of the protocol.
@@ -44,6 +47,7 @@ impl<P: AnyZksProtocolVersion, Replay: Clone> ZksProtocolHandler<P, Replay> {
         ZksProtocolConnectionHandler {
             replay: self.replay.clone(),
             node_role: self.node_role.clone(),
+            starting_block: self.starting_block,
             record_overrides: self.record_overrides.clone(),
             state: self.state.clone(),
             replay_sender: self.replay_sender.clone(),
@@ -160,6 +164,8 @@ pub struct ZksProtocolConnectionHandler<P: AnyZksProtocolVersion, Replay: Clone>
     replay: Replay,
     /// Node's role in the network.
     node_role: NodeRole,
+    /// Block number to start streaming from.
+    starting_block: BlockNumber,
     /// All overrides to pass through when requesting records.
     record_overrides: Vec<RecordOverride>,
     /// Current state of the protocol.
@@ -216,7 +222,7 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay + Clone> ConnectionHandler
             } else {
                 State::WantsToRequest {
                     message: ZksMessage::<P>::get_block_replays(
-                        self.replay.latest_record() + 1,
+                        self.starting_block,
                         self.record_overrides,
                     ),
                 }

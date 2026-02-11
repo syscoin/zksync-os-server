@@ -276,46 +276,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         config.tx_validator_config.clone().into(),
     );
 
-    // Channel between NetworkService and Sequencer
-    let (replay_sender, replays_for_sequencer) = tokio::sync::mpsc::unbounded_channel();
-    if config.network_config.enabled {
-        tracing::info!("initializing p2p networking");
-
-        let network_service = NetworkService::new(
-            config.network_config.clone().into(),
-            node_role.clone(),
-            block_replay_storage.clone(),
-            // This will be gone once we migrate away from record overrides
-            config
-                .sequencer_config
-                .en_replay_record_overrides
-                .iter()
-                .map(|(block_number, db_key)| RecordOverride {
-                    block_number: *block_number,
-                    db_key: db_key.clone(),
-                })
-                .collect(),
-            // todo: pass starting block here?
-            // starting_block,
-            zk_provider_factory,
-            replay_sender,
-        )
-        .await
-        .expect("failed to create network service");
-        network_service.run(&mut tasks, stop_receiver.clone());
-    } else if node_role.is_main() {
-        tracing::info!(
-            "p2p networking is disabled; to enable set `network.enabled=true` and populate `network.secret_key`"
-        );
-    } else {
-        panic!(
-            "EN cannot run without p2p networking; to fix: \
-            set `network.enabled=true` to enable p2p networking, \
-            populate `network.secret_key` with a 256-bit ECDSA key (can be randomly generated locally), \
-            populate `network.boot_nodes` with at least one known node from the chain"
-        );
-    }
-
     let (last_l1_committed_block, last_l1_proved_block, last_l1_executed_block) =
         commit_proof_execute_block_numbers(&l1_state, &committed_batch_provider).await;
 
@@ -358,6 +318,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // `starting_block` - the block number to go through the pipeline.
     let starting_block = if node_startup_state.l1_state.last_committed_batch > 0 {
+        // todo: ideally this should be searched through p2p networking instead of RPC
+        //       but too many things depend on this being initialized here right now
+        //       once refactored we can get rid of `main_node_rpc_url` config param
         let last_matching_block =
             if let Some(main_node_rpc_url) = &config.general_config.main_node_rpc_url {
                 find_last_matching_main_node_block(&repositories, main_node_rpc_url)
@@ -397,6 +360,45 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .send(upgrade_tx)
             .await
             .expect("failed to send genesis upgrade transaction to sequencer");
+    }
+
+    // Channel between NetworkService and Sequencer
+    let (replay_sender, replays_for_sequencer) = tokio::sync::mpsc::unbounded_channel();
+    if config.network_config.enabled {
+        tracing::info!("initializing p2p networking");
+
+        let network_service = NetworkService::new(
+            config.network_config.clone().into(),
+            node_role.clone(),
+            block_replay_storage.clone(),
+            starting_block,
+            // This will be gone once we migrate away from record overrides
+            config
+                .sequencer_config
+                .en_replay_record_overrides
+                .iter()
+                .map(|(block_number, db_key)| RecordOverride {
+                    block_number: *block_number,
+                    db_key: db_key.clone(),
+                })
+                .collect(),
+            zk_provider_factory,
+            replay_sender,
+        )
+        .await
+        .expect("failed to create network service");
+        network_service.run(&mut tasks, stop_receiver.clone());
+    } else if node_role.is_main() {
+        tracing::info!(
+            "p2p networking is disabled; to enable set `network.enabled=true` and populate `network.secret_key`"
+        );
+    } else {
+        panic!(
+            "EN cannot run without p2p networking; to fix: \
+            set `network.enabled=true` to enable p2p networking, \
+            populate `network.secret_key` with a 256-bit ECDSA key (can be randomly generated locally), \
+            populate `network.boot_nodes` with at least one known node from the chain"
+        );
     }
 
     tracing::info!("Initializing L1 Watchers");
