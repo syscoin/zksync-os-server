@@ -16,13 +16,6 @@ pub struct SequencerConfig {
     /// Path to the directory where block dumps for unexpected failures will be saved.
     pub block_dump_path: PathBuf,
 
-    /// Where to serve block replays
-    pub block_replay_server_address: String,
-
-    /// Where to download replays instead of actually running blocks.
-    /// Setting this makes the node into an external node.
-    pub block_replay_download_address: Option<String>,
-
     /// Max gas used per block
     pub block_gas_limit: u64,
 

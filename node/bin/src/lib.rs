@@ -12,10 +12,8 @@ mod node_state_on_startup;
 mod priority_tree_steps;
 pub mod prover_api;
 mod prover_input_generator;
-mod replay_transport;
 mod state_initializer;
 pub mod tree_manager;
-pub mod zkstack_config;
 
 use zksync_os_mempool::InteropRootsTxPool;
 
@@ -40,7 +38,6 @@ use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
 use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
 use crate::prover_input_generator::ProverInputGenerator;
-use crate::replay_transport::replay_server;
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
@@ -55,6 +52,7 @@ use ruint::aliases::U256;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use zksync_os_base_token_adjuster::BaseTokenPriceUpdater;
@@ -92,8 +90,8 @@ use zksync_os_storage::db::{BlockReplayStorage, ExecutedBatchStorage};
 use zksync_os_storage::in_memory::Finality;
 use zksync_os_storage::lazy::RepositoryManager;
 use zksync_os_storage_api::{
-    FinalityStatus, ReadFinality, ReadReplay, ReadRepository, ReadStateHistory, WriteReplay,
-    WriteRepository, WriteState,
+    FinalityStatus, ReadFinality, ReadReplay, ReadRepository, ReadStateHistory, ReplayRecord,
+    WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
     InteropRootsLogIndex, ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState,
@@ -277,34 +275,35 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         config.tx_validator_config.clone().into(),
     );
 
+    // Channel between NetworkService and Sequencer
+    let (replay_sender, replays_for_sequencer) = tokio::sync::mpsc::unbounded_channel();
     if config.network_config.enabled {
         tracing::info!("initializing p2p networking");
-        // Channel between NetworkService and Sequencer (not actually used by sequencer for now)
-        let (replay_sender, mut replays_for_sequencer) = tokio::sync::mpsc::unbounded_channel();
 
         let network_service = NetworkService::new(
             config.network_config.clone().into(),
             node_role.clone(),
             block_replay_storage.clone(),
+            // todo: pass overrides here?
+            // record_overrides: config.sequencer_config.en_replay_record_overrides.clone(),
+            // todo: pass starting block here?
+            // starting_block,
             zk_provider_factory,
             replay_sender,
         )
         .await
         .expect("failed to create network service");
         network_service.run(&mut tasks, stop_receiver.clone());
-
-        // Consume replays to avoid channel from growing unbounded
-        tasks.spawn(async move {
-            while let Some(replay) = replays_for_sequencer.recv().await {
-                tracing::info!(
-                    block_number = replay.block_context.block_number,
-                    "received p2p replay record"
-                );
-            }
-        });
-    } else {
+    } else if node_role.is_main() {
         tracing::info!(
             "p2p networking is disabled; to enable set `network.enabled=true` and populate `network.secret_key`"
+        );
+    } else {
+        panic!(
+            "EN cannot run without p2p networking; to fix: \
+            set `network.enabled=true` to enable p2p networking, \
+            populate `network.secret_key` with a 256-bit ECDSA key (can be randomly generated locally), \
+            populate `network.boot_nodes` with at least one known node from the chain"
         );
     }
 
@@ -650,16 +649,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     );
 
     // ========== Start Sequencer ===========
-    if config.sequencer_config.block_replay_server_enabled {
-        tasks.spawn(
-            replay_server(
-                block_replay_storage.clone(),
-                config.sequencer_config.block_replay_server_address.clone(),
-            )
-            .map(report_exit("replay server")),
-        );
-    }
-
     let repositories_clone = repositories.clone();
     tasks.spawn(async move {
         repositories_clone
@@ -732,6 +721,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         // External Node
         run_en_pipeline(
             &config,
+            replays_for_sequencer,
             committed_batch_provider.clone(),
             node_startup_state,
             block_replay_storage.clone(),
@@ -739,7 +729,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             block_context_provider,
             state.clone(),
             tree_db,
-            starting_block,
             repositories.clone(),
             finality_storage.clone(),
             stop_receiver.clone(),
@@ -980,6 +969,7 @@ async fn run_main_node_pipeline(
 #[allow(clippy::too_many_arguments)]
 async fn run_en_pipeline(
     config: &Config,
+    replays_for_sequencer: UnboundedReceiver<ReplayRecord>,
     committed_batch_provider: CommittedBatchProvider,
     node_state_on_startup: NodeStateOnStartup,
     block_replay_storage: impl WriteReplay + Clone,
@@ -987,7 +977,6 @@ async fn run_en_pipeline(
     block_context_provider: BlockContextProvider<impl L2TransactionPool>,
     state: impl ReadStateHistory + WriteState + Clone,
     tree: MerkleTree<RocksDBWrapper>,
-    starting_block: u64,
     repositories: impl WriteRepository + Clone,
     finality: impl ReadFinality + Clone,
     stop_receiver: watch::Receiver<bool>,
@@ -1003,14 +992,8 @@ async fn run_en_pipeline(
 
     Pipeline::new()
         .pipe(ExternalNodeCommandSource {
-            starting_block,
-            record_overrides: config.sequencer_config.en_replay_record_overrides.clone(),
             up_to_block: config.sequencer_config.en_sync_up_to_block,
-            replay_download_address: config
-                .sequencer_config
-                .block_replay_download_address
-                .clone()
-                .expect("EN must have replay_download_address"),
+            replays_for_sequencer,
             stop_receiver: stop_receiver.clone(),
         })
         .pipe(Sequencer {

@@ -166,7 +166,7 @@ fn log_all_errors(errors: ParseErrors) -> anyhow::Error {
 }
 
 /// "Umbrella" config for the node.
-/// If variable is shared i.e. used by multiple components OR does not belong to any specific component (e.g. `zkstack_cli_config_dir`)
+/// If variable is shared i.e. used by multiple components OR does not belong to any specific component
 /// then it belongs here.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
@@ -209,9 +209,6 @@ pub struct GeneralConfig {
     /// and repositories (see `repositories` package in this crate)
     #[config(default_t = 512)]
     pub blocks_to_retain_in_memory: usize,
-
-    /// If set - initialize the configs based off the values from the yaml files from that directory.
-    pub zkstack_cli_config_dir: Option<String>,
 
     /// **IMPORTANT: It must be set for an external node. However, setting this DOES NOT make the node into an external node.
     /// [`GeneralConfig::role`] is the source of truth for node type. **
@@ -310,19 +307,6 @@ pub struct RebuildBlocksConfig {
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
 pub struct SequencerConfig {
-    /// Where to download replays instead of actually running blocks.
-    /// **Setting this makes the node into an external node.**
-    #[config(default_t = None)]
-    pub block_replay_download_address: Option<String>,
-
-    /// Whether to enable block replays server
-    #[config(default_t = true)]
-    pub block_replay_server_enabled: bool,
-
-    /// Where to serve block replays (EN syncing protocol)
-    #[config(default_t = "0.0.0.0:3053".into())]
-    pub block_replay_server_address: String,
-
     /// Defines the block time for the sequencer.
     /// One of the block Seal Criteria. Only affects the Main Node.
     #[config(default_t = Duration::from_millis(250))]
@@ -956,8 +940,6 @@ impl From<&Config> for zksync_os_sequencer::config::SequencerConfig {
             block_time: c.sequencer_config.block_time,
             max_transactions_in_block: c.sequencer_config.max_transactions_in_block,
             block_dump_path: c.sequencer_config.block_dump_path.clone(),
-            block_replay_server_address: c.sequencer_config.block_replay_server_address.clone(),
-            block_replay_download_address: c.sequencer_config.block_replay_download_address.clone(),
             block_gas_limit: c.sequencer_config.block_gas_limit,
             block_pubdata_limit_bytes: c.sequencer_config.block_pubdata_limit_bytes,
             max_blocks_to_produce: c.sequencer_config.max_blocks_to_produce,
