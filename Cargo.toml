@@ -84,11 +84,11 @@ zksync_os_interface = { version = "0.0.13" }
 # Historical versions of zksync-os that are kept to be able to replay old blocks and simulate calls on them. Only
 # forward system dependencies are expected to be in this section.
 
-zk_os_forward_system_0_0_26 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.0.27-interface-v0.0.13", features = [
+zk_os_forward_system_0_0_27 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.0.27-interface-v0.0.13", features = [
     "evm-compatibility",
     "no_print",
 ] }
-zk_os_forward_system_0_1_0 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.1.1-interface-v0.0.13", features = [
+zk_os_forward_system_0_1_1 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.1.1-interface-v0.0.13", features = [
     "production",
     "no_print",
     # We had an issue in this version - it's compilable only with the testing feature.
@@ -97,7 +97,7 @@ zk_os_forward_system_0_1_0 = { package = "forward_system", git = "https://github
 ], default-features = false }
 # v0.2.x is not historical yet, but we use a separate version for simulation so that `eth_estimateGas` can work with
 # 0-balance accounts. The fix was not a part of v0.2.5 and unfortunately cannot be included without changing `app.bin`.
-zk_os_forward_system_0_2_6 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.6-simulation-only-rc1", features = [
+zk_os_forward_system_0_2_7 = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-simulation-only-interface-v0.0.13", features = [
     "production",
     "no_print",
 ], default-features = false }
@@ -122,14 +122,14 @@ zk_os_forward_system_0_2_6 = { package = "forward_system", git = "https://github
 #
 # When a new version is released this version gets downgraded to the "previous version" section above.
 
-zk_os_forward_system = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.5-rc1", features = [
+zk_os_forward_system = { package = "forward_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-interface-v0.0.13", features = [
     "production",
     "no_print",
 ], default-features = false }
-zk_ee = { git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.5-rc1" }
-zk_os_basic_system = { package = "basic_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.5-rc1" }
-zk_os_api = { package = "zksync_os_api", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.5-rc1" }
-zk_os_evm_interpreter = { package = "evm_interpreter", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.5-rc1" }
+zk_ee = { git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-interface-v0.0.13" }
+zk_os_basic_system = { package = "basic_system", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-interface-v0.0.13" }
+zk_os_api = { package = "zksync_os_api", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-interface-v0.0.13" }
+zk_os_evm_interpreter = { package = "evm_interpreter", git = "https://github.com/matter-labs/zksync-os", tag = "v0.2.7-interface-v0.0.13" }
 execution_utils = { git = "https://github.com/matter-labs/zksync-airbender.git", tag = "v0.5.2" }
 full_statement_verifier = { git = "https://github.com/matter-labs/zksync-airbender.git", tag = "v0.5.2" }
 zksync_os_prover_service = { git = "https://github.com/matter-labs/zksync-airbender-prover.git", tag = "v0.7.0" }

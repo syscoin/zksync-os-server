@@ -10,6 +10,17 @@ fn parse_git_tag(package_id: &PackageId) -> anyhow::Result<String> {
     Ok(tag.to_string())
 }
 
+pub fn execution_version_from_tag(tag: &str) -> String {
+    match tag {
+        "v0.0.27-interface-v0.0.13" => String::from("V3"),
+        "v0.1.1-interface-v0.0.13" => String::from("V4"),
+        "v0.2.7-interface-v0.0.13" => String::from("V5"),
+        "v0.2.7-simulation-only-interface-v0.0.13" => String::from("V5_SIMULATION"),
+        "dev-20260211-3" => String::from("V6"),
+        _ => panic!("Unsupported ZKsync OS execution version: {tag}"),
+    }
+}
+
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let metadata = MetadataCommand::new().exec().unwrap();
@@ -26,6 +37,8 @@ fn main() {
                 return;
             }
         };
+
+        println!("tag: {tag}");
 
         let dir = format!("{manifest_dir}/apps/{tag}");
         std::fs::create_dir_all(&dir).expect("failed to create directory");
@@ -46,10 +59,7 @@ fn main() {
             std::fs::write(path, body).expect("failed to write file");
         }
 
-        let snake_case_version = tag
-            .trim_start_matches("v")
-            .replace('.', "_")
-            .replace("-rc1", "");
-        println!("cargo:rustc-env=ZKSYNC_OS_{snake_case_version}_SOURCE_PATH={dir}");
+        let execution_version = execution_version_from_tag(&tag);
+        println!("cargo:rustc-env=ZKSYNC_OS_{execution_version}_SOURCE_PATH={dir}");
     }
 }
