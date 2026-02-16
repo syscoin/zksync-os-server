@@ -39,7 +39,7 @@ impl NetworkService {
         starting_block: BlockNumber,
         record_overrides: Vec<RecordOverride>,
         client: impl ChainSpecProvider<ChainSpec: Hardforks> + BlockNumReader + 'static,
-        replay_sender: mpsc::UnboundedSender<ReplayRecord>,
+        replay_sender: mpsc::Sender<ReplayRecord>,
     ) -> Result<Self, NetworkError> {
         match NatResolver::Any.external_addr().await {
             None => {

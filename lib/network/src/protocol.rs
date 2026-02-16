@@ -5,8 +5,9 @@ use crate::wire::message::{ZKS_PROTOCOL, ZksMessage};
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
 use alloy::primitives::BlockNumber;
 use alloy::primitives::bytes::BytesMut;
+use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use reth_eth_wire::capability::SharedCapabilities;
 use reth_eth_wire::multiplex::ProtocolConnection;
 use reth_eth_wire::protocol::Protocol;
@@ -19,6 +20,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use zksync_os_storage_api::{ReadReplay, ReadReplayExt, ReplayRecord};
 use zksync_os_types::NodeRole;
@@ -35,7 +37,7 @@ pub struct ZksProtocolHandler<P: AnyZksProtocolVersion, Replay: Clone> {
     pub record_overrides: Vec<RecordOverride>,
     /// Current state of the protocol.
     pub state: ProtocolState,
-    pub replay_sender: mpsc::UnboundedSender<ReplayRecord>,
+    pub replay_sender: mpsc::Sender<ReplayRecord>,
     pub _phantom: PhantomData<P>,
 }
 
@@ -170,7 +172,7 @@ pub struct ZksProtocolConnectionHandler<P: AnyZksProtocolVersion, Replay: Clone>
     record_overrides: Vec<RecordOverride>,
     /// Current state of the protocol.
     state: ProtocolState,
-    replay_sender: mpsc::UnboundedSender<ReplayRecord>,
+    replay_sender: mpsc::Sender<ReplayRecord>,
     /// Owned permit that corresponds to a taken active connection slot.
     permit: OwnedSemaphorePermit,
     _phantom: PhantomData<P>,
@@ -240,7 +242,7 @@ pub struct ZksConnection<P: AnyZksProtocolVersion, Replay> {
     conn: ProtocolConnection,
     /// Current connection state.
     state: State<P, Replay>,
-    replay_sender: mpsc::UnboundedSender<ReplayRecord>,
+    replay_sender: mpsc::Sender<ReplayRecord>,
     /// Owned permit that corresponds to a taken active connection slot.
     _permit: OwnedSemaphorePermit,
 }
@@ -250,7 +252,10 @@ enum State<P: AnyZksProtocolVersion, Replay> {
     /// Wants to send peer the request for streaming replay records.
     WantsToRequest { message: ZksMessage<P> },
     /// Waits for peer to send replay records.
-    WaitingForRecords,
+    WaitingForRecords {
+        /// Optional [`Future`] that is sending last received replay record.
+        fut: Option<BoxFuture<'static, Result<(), SendError<ReplayRecord>>>>,
+    },
 
     // MN states
     /// Waits for peer to request streaming replay records.
@@ -277,7 +282,7 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
         let peer_id = this.peer_id;
         if let State::WantsToRequest { message } = &this.state {
             let encoded = message.encoded();
-            this.state = State::WaitingForRecords;
+            this.state = State::WaitingForRecords { fut: None };
             return Poll::Ready(Some(encoded));
         }
 
@@ -296,6 +301,14 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
                     }
                     Poll::Pending => {}
                 }
+            }
+            // Make sure we do not have in-progress Future before trying to receive the next message
+            if let State::WaitingForRecords { fut: Some(fut) } = &mut this.state {
+                if ready!(fut.poll_unpin(cx)).is_err() {
+                    tracing::trace!("network replay channel is closed");
+                    break;
+                }
+                this.state = State::WaitingForRecords { fut: None };
             }
             let maybe_msg = ready!(this.conn.poll_next_unpin(cx));
             let Some(next) = maybe_msg else { break };
@@ -322,11 +335,11 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
                             );
                             State::WantsToRequest { message }
                         }
-                        State::WaitingForRecords => {
+                        State::WaitingForRecords { fut } => {
                             tracing::info!(
                                 "ignoring request as local node is also waiting for records"
                             );
-                            State::WaitingForRecords
+                            State::WaitingForRecords { fut }
                         }
                         State::WaitingForRequest { replay } => State::Responding {
                             stream: replay
@@ -344,6 +357,26 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
                     };
                 }
                 ZksMessage::BlockReplays(message) => {
+                    match &this.state {
+                        State::WaitingForRecords { fut: None } => {
+                            // We are waiting for records and there is no in-progress future as expected,
+                            // proceed with
+                        }
+                        State::WaitingForRecords { fut: Some(_) } => {
+                            unreachable!("we should not have in-progress future at this point");
+                        }
+                        _ => {
+                            tracing::info!("unrequested replay record received; terminating");
+                            break;
+                        }
+                    }
+                    // todo: logic below relies on there being one record per message
+                    //       we can (and should) adapt it to handle multiple records in the future
+                    assert_eq!(
+                        message.records.len(),
+                        1,
+                        "only 1 record per message is supported right now"
+                    );
                     for record in message.records {
                         tracing::debug!(
                             block_number = record.block_number(),
@@ -356,10 +389,9 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
                                 break;
                             }
                         };
-                        if this.replay_sender.send(record).is_err() {
-                            tracing::trace!("network replay channel is closed");
-                            break;
-                        }
+                        let sender = this.replay_sender.clone();
+                        let fut = async move { sender.send(record).await }.boxed();
+                        this.state = State::WaitingForRecords { fut: Some(fut) };
                     }
                 }
             }
