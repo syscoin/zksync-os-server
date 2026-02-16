@@ -11,6 +11,7 @@ use reth_network::error::NetworkError;
 use reth_network::{NetworkConfig as RethNetworkConfig, NetworkManager};
 use reth_provider::BlockNumReader;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
@@ -99,7 +100,7 @@ impl NetworkService {
             .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV1, _> {
                 replay,
                 node_role,
-                starting_block,
+                starting_block: Arc::new(RwLock::new(starting_block)),
                 record_overrides,
                 state: ProtocolState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS),
                 replay_sender,
