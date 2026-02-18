@@ -160,18 +160,13 @@ impl<Finality: ReadFinality> BatchVerificationClient<Finality> {
             "Connected to main sequencer for batch verification",
         );
 
-        // Send heartbeat every 5s
-        let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
-        // Skip first immediate tick
-        heartbeat.tick().await;
-
         loop {
             latency_tracker.enter_state(BatchVerificationClientState::WaitingRecv);
             tokio::select! {
                 block = input.recv() => {
                     match block {
                         Some((block_output, replay_record, tree_data)) => {
-                            // we remove blocks from cache based on incoming singing requests.
+                            // we remove blocks from cache based on incoming signing requests.
                             // this prevent memory exhaustion / leak
                             self.block_cache.insert(
                                 replay_record.block_context.block_number,
@@ -213,17 +208,6 @@ impl<Finality: ReadFinality> BatchVerificationClient<Finality> {
                             anyhow::bail!("Server has disconnected verification client");
                         }
                     }
-                }
-                _ = heartbeat.tick() => {
-                    tracing::trace!("sending batch verification heartbeat");
-                    // todo: send a special heartbeat message instead
-                    writer.send(
-                        BatchVerificationResponse {
-                            request_id: 42,
-                            batch_number: 1,
-                            result: BatchVerificationResult::Refused("heartbeat".to_string())
-                        }
-                    ).await?;
                 }
             }
         }
@@ -420,7 +404,11 @@ impl AsyncWrite for ChannelWriter {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        self.tx.close();
         Poll::Ready(Ok(()))
     }
 }
