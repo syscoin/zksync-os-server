@@ -72,6 +72,7 @@ async fn l1_deposit() -> anyhow::Result<()> {
         .await?;
     let l1_deposit_request = bridgehub
         .request_l2_transaction_direct(
+            // TODO: after v31 we can mint only the tx_base_cost
             amount + tx_base_cost,
             alice,
             amount,
