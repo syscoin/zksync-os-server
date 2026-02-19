@@ -225,8 +225,6 @@ impl RepositoryDb {
                 for tx_hash in &old_repo_block.body.transactions {
                     // Deletes only `InitiatorAndNonceToHash` entry.
                     // `Tx`, `TxMeta` and `TxReceipt` entries are preserved so that the transaction and its receipt are still queryable by hash.
-                    batch.delete_cf(RepositoryCF::TxReceipt, &tx_hash.0);
-
                     let tx = self
                         .get_transaction(*tx_hash)?
                         .expect("tx to rollback must be present in DB");
