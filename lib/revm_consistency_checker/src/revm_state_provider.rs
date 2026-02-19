@@ -114,7 +114,7 @@ where
         if let Some(diff) = self.state_block_number.checked_sub(number)
             && diff < 256
         {
-            Ok(self.block_hashes.0[255 - diff as usize].into())
+            Ok(self.block_hashes.0[256 - diff as usize].into())
         } else {
             Ok(B256::default())
         }
