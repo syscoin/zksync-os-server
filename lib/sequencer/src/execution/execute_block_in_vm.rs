@@ -13,9 +13,7 @@ use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::types::{BlockContext, BlockOutput};
 use zksync_os_metadata::NODE_SEMVER_VERSION;
 use zksync_os_observability::ComponentStateHandle;
-use zksync_os_storage_api::{
-    MeteredViewState, OverriddenStateView, ReadStateHistory, ReplayRecord, WriteState,
-};
+use zksync_os_storage_api::{MeteredViewState, OverriddenStateView, ReplayRecord, ViewState};
 use zksync_os_types::{SystemTxType, ZkTransaction, ZkTxType, ZksyncOsEncode};
 // Note that this is a pure function without a container struct (e.g. `struct BlockExecutor`)
 // MAINTAIN this to ensure the function is completely stateless - explicit or implicit.
@@ -23,9 +21,9 @@ use zksync_os_types::{SystemTxType, ZkTransaction, ZkTxType, ZksyncOsEncode};
 // a side effect of this is that it's harder to pass config values (normally we'd just pass the whole config object)
 // please be mindful when adding new parameters here
 
-pub async fn execute_block<R: ReadStateHistory + WriteState>(
+pub async fn execute_block_in_vm<V: ViewState>(
     mut command: PreparedBlockCommand<'_>,
-    state: R,
+    state_view: V,
     latency_tracker: &ComponentStateHandle<SequencerState>,
 ) -> Result<(BlockOutput, ReplayRecord, Vec<(TxHash, InvalidTransaction)>), BlockDump> {
     tracing::debug!(command = ?command, block_number=command.block_context.block_number, "Executing command");
@@ -33,13 +31,6 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
     let ctx = command.block_context;
 
     /* ---------- VM & state ----------------------------------------- */
-    let state_view = state
-        .state_view_at(ctx.block_number - 1)
-        .map_err(|e| BlockDump {
-            ctx,
-            txs: Vec::new(),
-            error: e.to_string(),
-        })?;
     // Inject any forced preimages into the state view, these are expected to be added to the persistent state
     // after the block is executed.
     let state_view_with_force_preimages =

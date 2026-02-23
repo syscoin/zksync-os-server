@@ -23,7 +23,19 @@ pub struct OverriddenStateView<V: ViewState> {
 }
 
 impl<V: ViewState> OverriddenStateView<V> {
-    pub fn new(inner: V, state_overrides: StateOverride) -> Self {
+    pub fn new(
+        inner: V,
+        overrides: HashMap<B256, B256>,
+        preimage_overrides: HashMap<B256, Vec<u8>>,
+    ) -> Self {
+        Self {
+            inner,
+            overrides,
+            preimage_overrides,
+        }
+    }
+
+    pub fn with_state_overrides(inner: V, state_overrides: StateOverride) -> Self {
         let (overrides, preimage_overrides) = build_state_override_maps(&inner, state_overrides);
 
         Self {

@@ -98,7 +98,7 @@ impl PipelineComponent for Batcher {
             }
             tracing::debug!(
                 block_number = next_block_number,
-                "skipping already executed block"
+                "skipping already executed on L1 block {next_block_number} (first unexecuted on L1 block is {first_expected_block})"
             );
             input
                 .recv()

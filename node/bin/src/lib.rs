@@ -84,7 +84,9 @@ use zksync_os_revm_consistency_checker::node::RevmConsistencyChecker;
 use zksync_os_rpc::{RpcStorage, run_jsonrpsee_server};
 use zksync_os_rpc_api::eth::EthApiClient;
 use zksync_os_sequencer::execution::block_context_provider::BlockContextProvider;
-use zksync_os_sequencer::execution::{FeeParams, FeeProvider, Sequencer};
+use zksync_os_sequencer::execution::{
+    BlockApplier, BlockCanonizer, BlockExecutor, FeeParams, FeeProvider, LoopbackConsensus,
+};
 use zksync_os_status_server::run_status_server;
 use zksync_os_storage::db::{BlockReplayStorage, ExecutedBatchStorage};
 use zksync_os_storage::in_memory::Finality;
@@ -162,7 +164,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 .expect("Missing `main_node_rpc_url` in external node config");
             load_remote_config(&main_node_rpc_url, &config.genesis_config)
                 .await
-                .unwrap()
+                .expect("Cannot load remote config from Main Node")
         };
     let fee_collector_address: &'static str = config
         .sequencer_config
@@ -608,6 +610,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         l2_mempool.clone(),
         block_hashes_for_next_block,
         previous_block_timestamp,
+        starting_block,
+        config.sequencer_config.block_time,
+        config.sequencer_config.max_transactions_in_block,
         chain_id,
         config.sequencer_config.block_gas_limit,
         config.sequencer_config.block_pubdata_limit_bytes,
@@ -718,7 +723,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             tree_db,
             finality_storage.clone(),
             chain_id,
-            stop_receiver.clone(),
             tx_acceptance_state_sender,
             sidecar_sender,
             committed_batch_provider.clone(),
@@ -741,6 +745,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             stop_receiver.clone(),
             tx_acceptance_state_sender,
             chain_id,
+            starting_block,
         )
         .await;
     };
@@ -805,7 +810,6 @@ async fn run_main_node_pipeline(
     tree: MerkleTree<RocksDBWrapper>,
     finality: impl ReadFinality + Clone,
     chain_id: u64,
-    _stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     sidecar_sender: tokio::sync::mpsc::Sender<BlobTransactionSidecar>,
     committed_batch_provider: CommittedBatchProvider,
@@ -865,25 +869,38 @@ async fn run_main_node_pipeline(
             .join(INTERNAL_CONFIG_FILE_NAME),
     );
 
+    let (replays_to_execute_sender, replays_to_execute) = tokio::sync::mpsc::channel(128);
+    let (consensus_sender, consensus_replays) = tokio::sync::mpsc::channel(128);
+
     Pipeline::new()
         .pipe(MainNodeCommandSource {
             block_replay_storage: block_replay_storage.clone(),
             starting_block,
-            block_time: config.sequencer_config.block_time,
-            max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
             rebuild_options: config
                 .sequencer_config
                 .block_rebuild
                 .clone()
                 .map(Into::into),
+            replays_to_execute,
         })
-        .pipe(Sequencer {
+        .pipe(BlockExecutor {
             block_context_provider,
+            state: state.clone(),
+            config: config.into(),
+            tx_acceptance_state_sender,
+        })
+        .pipe(BlockCanonizer {
+            consensus: LoopbackConsensus {
+                sender: consensus_sender,
+                receiver: consensus_replays,
+            },
+            canonized_blocks_for_execution: replays_to_execute_sender,
+        })
+        .pipe(BlockApplier {
             state: state.clone(),
             replay: block_replay_storage.clone(),
             repositories: repositories.clone(),
             config: config.into(),
-            tx_acceptance_state_sender,
         })
         .pipe_opt(
             config
@@ -989,6 +1006,7 @@ async fn run_en_pipeline(
     stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
+    _starting_block: u64,
 ) {
     let internal_config_manager = init_and_report_internal_config_manager(
         config
@@ -999,17 +1017,21 @@ async fn run_en_pipeline(
 
     Pipeline::new()
         .pipe(ExternalNodeCommandSource {
-            up_to_block: config.sequencer_config.en_sync_up_to_block,
             replays_for_sequencer,
+            up_to_block: config.sequencer_config.en_sync_up_to_block,
             stop_receiver: stop_receiver.clone(),
         })
-        .pipe(Sequencer {
+        .pipe(BlockExecutor {
             block_context_provider,
+            state: state.clone(),
+            config: config.into(),
+            tx_acceptance_state_sender,
+        })
+        .pipe(BlockApplier {
             state: state.clone(),
             replay: block_replay_storage.clone(),
             repositories: repositories.clone(),
             config: config.into(),
-            tx_acceptance_state_sender,
         })
         .pipe_opt(
             config

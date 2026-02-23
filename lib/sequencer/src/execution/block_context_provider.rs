@@ -44,6 +44,9 @@ pub struct BlockContextProvider<Mempool> {
     l2_mempool: Mempool,
     block_hashes_for_next_block: BlockHashes,
     previous_block_timestamp: u64,
+    next_block_number: u64,
+    block_time: Duration,
+    max_transactions_in_block: usize,
     chain_id: u64,
     gas_limit: u64,
     pubdata_limit: u64,
@@ -71,6 +74,9 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
         l2_mempool: Mempool,
         block_hashes_for_next_block: BlockHashes,
         previous_block_timestamp: u64,
+        next_block_number: u64,
+        block_time: Duration,
+        max_transactions_in_block: usize,
         chain_id: u64,
         gas_limit: u64,
         pubdata_limit: u64,
@@ -92,6 +98,9 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
             l2_mempool,
             block_hashes_for_next_block,
             previous_block_timestamp,
+            next_block_number,
+            block_time,
+            max_transactions_in_block,
             chain_id,
             gas_limit,
             pubdata_limit,
@@ -111,7 +120,8 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
         block_command: BlockCommand,
     ) -> anyhow::Result<PreparedBlockCommand> {
         let prepared_command = match block_command {
-            BlockCommand::Produce(produce_command) => {
+            BlockCommand::Produce(_) => {
+                let block_number = self.next_block_number;
                 // Create stream:
                 // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
                 // - L1 transactions first, then L2 transactions.
@@ -131,7 +141,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                 if peeked_tx.is_none() {
                     return Err(anyhow::anyhow!(
                         "BestTransactionsStream closed unexpectedly for block {}",
-                        produce_command.block_number
+                        block_number
                     ));
                 }
 
@@ -144,7 +154,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     && upgrade_tx.protocol_version > self.protocol_version
                 {
                     tracing::info!(
-                        block_number = produce_command.block_number,
+                        block_number,
                         upgrade_tx = ?upgrade_tx,
                         "including protocol upgrade transaction in the block"
                     );
@@ -179,7 +189,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     eip1559_basefee,
                     native_price,
                     pubdata_price,
-                    block_number: produce_command.block_number,
+                    block_number,
                     timestamp,
                     chain_id: self.chain_id,
                     coinbase: self.fee_collector_address,
@@ -197,8 +207,8 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                     block_context,
                     tx_source: Box::pin(best_txs),
                     seal_policy: SealPolicy::Decide(
-                        produce_command.block_time,
-                        produce_command.max_transactions_in_block,
+                        self.block_time,
+                        self.max_transactions_in_block,
                     ),
                     invalid_tx_policy: InvalidTxPolicy::RejectAndContinue,
                     metrics_label: "produce",
@@ -212,6 +222,12 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                 }
             }
             BlockCommand::Replay(record) => {
+                anyhow::ensure!(
+                    self.next_block_number == record.block_context.block_number,
+                    "blocks received our of order: {} in component state, {} in resolved ReplayRecord",
+                    self.next_block_number,
+                    record.block_context.block_number
+                );
                 anyhow::ensure!(
                     self.previous_block_timestamp == record.previous_block_timestamp,
                     "inconsistent previous block timestamp: {} in component state, {} in resolved ReplayRecord",
@@ -403,6 +419,7 @@ impl<Mempool: L2TransactionPool> BlockContextProvider<Mempool> {
                 .try_into()
                 .unwrap(),
         );
+        self.next_block_number += 1;
         self.previous_block_timestamp = block_output.header.timestamp;
         self.fee_provider.on_canonical_state_change(replay_record);
 

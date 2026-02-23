@@ -1,12 +1,14 @@
 use crate::ReplayRecord;
 use alloy::primitives::{BlockNumber, Sealed};
 use futures::Stream;
+use futures::future::BoxFuture;
 use futures::stream::{BoxStream, StreamExt};
 use pin_project::pin_project;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::task::Poll;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
 use zksync_os_interface::types::BlockContext;
 
@@ -87,6 +89,37 @@ pub trait ReadReplayExt: ReadReplay {
             }
         });
         Box::pin(stream)
+    }
+
+    /// Forwards replay records in range [`start`, `end`] to the provided channel after mapping them.
+    fn forward_range_with<'a, T, F>(
+        &'a self,
+        start: u64,
+        end: u64,
+        output: mpsc::Sender<T>,
+        mut f: F,
+    ) -> BoxFuture<'a, anyhow::Result<()>>
+    where
+        T: Send + 'static,
+        F: FnMut(ReplayRecord) -> T + Send + 'a,
+        Self: Sized + 'a,
+    {
+        Box::pin(async move {
+            let latest = self.latest_record();
+            assert!(
+                latest >= end,
+                "Requested range end {end} exceeds latest record {latest}"
+            );
+            for block_num in start..=end {
+                if let Some(record) = self.get_replay_record(block_num)
+                    && output.send(f(record)).await.is_err()
+                {
+                    tracing::warn!("Replay output channel closed, stopping replay forwarder");
+                    break;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Streams replay records with block_number ≥ `start`, in ascending block order.
