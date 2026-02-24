@@ -165,7 +165,7 @@ impl BatchInfo {
         let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
         match protocol_version.minor {
             // v30 and v31 use different packed layouts for batch output hash:
-            // v31 inserts number_of_layer2_txs between L1 tx count and priority_operations_hash.
+            // v31 inserts number_of_layer2_txs between L1 tx count and priority_operations_hash and sl_chain_id at the end.
             30 => B256::from(keccak256(
                 (
                     U256::from(commit_info.chain_id),
