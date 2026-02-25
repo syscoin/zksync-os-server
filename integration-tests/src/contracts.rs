@@ -61,6 +61,83 @@ alloy::sol!(
     "test-contracts/out/P256GasRecorder.sol/P256GasRecorder.json"
 );
 
+alloy::sol!(
+    /// Tests post-Cancun SELFDESTRUCT gas via calibrated gas limit.
+    #[sol(rpc)]
+    SelfdestructGasTest,
+    "test-contracts/out/SelfdestructGasTest.sol/SelfdestructGasTest.json"
+);
+
+alloy::sol!(
+    /// Tests EIP-2929 address warming behavior for tx.origin, tx.to, coinbase, and precompiles.
+    #[sol(rpc)]
+    AddressWarmingTest,
+    "test-contracts/out/AddressWarmingTest.sol/AddressWarmingTest.json"
+);
+
+alloy::sol!(
+    /// Tests that warm/cold access status persists after a call frame reverts (EIP-2929).
+    #[sol(rpc)]
+    WarmAfterRevertTest,
+    "test-contracts/out/WarmAfterRevertTest.sol/WarmAfterRevertTest.json"
+);
+
+alloy::sol!(
+    /// Delegate-calls every precompile with various inputs and stores
+    /// keccak256(success ++ gasUsed ++ returnData) per call in storage.
+    #[sol(rpc)]
+    PrecompileDelegateCallTest,
+    "test-contracts/out/PrecompileDelegateCallTest.sol/PrecompileDelegateCallTest.json"
+);
+
+alloy::sol!(
+    /// Exercises SELFDESTRUCT + DELEGATECALL edge cases and stores
+    /// keccak256 of observable state per test case.
+    #[sol(rpc)]
+    SelfdestructDelegateCallTest,
+    "test-contracts/out/SelfdestructDelegateCallTest.sol/SelfdestructDelegateCallTest.json"
+);
+
+alloy::sol!(
+    /// Exercises novel SELFDESTRUCT + DELEGATECALL + constructor combos
+    /// and stores keccak256 of observable state per test case.
+    #[sol(rpc)]
+    SelfdestructComboTest,
+    "test-contracts/out/SelfdestructComboTest.sol/SelfdestructComboTest.json"
+);
+
+alloy::sol!(
+    /// Deploys raw EVM bytecode contracts (impossible to generate via Solidity)
+    /// and exercises them against the REVM consistency checker.
+    #[sol(rpc)]
+    RawBytecodeTest,
+    "test-contracts/out/RawBytecodeTest.sol/RawBytecodeTest.json"
+);
+
+alloy::sol!(
+    /// Deploys raw EVM bytecode (CALLCODE, PC, JUMPDEST validation, etc.)
+    /// that Solidity's codegen can never produce.
+    #[sol(rpc)]
+    RawEvmEdgeCaseTest,
+    "test-contracts/out/RawEvmEdgeCaseTest.sol/RawEvmEdgeCaseTest.json"
+);
+
+alloy::sol!(
+    /// Tests SELFDESTRUCT NEWACCOUNT (25,000) gas charge post-Cancun.
+    /// Measures gas for SELFDESTRUCT to empty vs non-empty beneficiary.
+    #[sol(rpc)]
+    SelfdestructNewAccountGasTest,
+    "test-contracts/out/SelfdestructNewAccountGasTest.sol/SelfdestructNewAccountGasTest.json"
+);
+
+alloy::sol!(
+    /// Tests BLOCKHASH opcode behavior across various scenarios and stores
+    /// keccak256 of results per test case for REVM consistency checking.
+    #[sol(rpc)]
+    BlockHashTest,
+    "test-contracts/out/BlockHashTest.sol/BlockHashTest.json"
+);
+
 alloy::sol! {
     #[sol(rpc)]
     interface IBaseToken {
