@@ -1,10 +1,11 @@
 name: Load test
 
 on:
-  schedule:
-    - cron: "0 2 * * *" # daily at 02:00 UTC
   workflow_dispatch:
   pull_request:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -22,9 +23,6 @@ env:
   SERVER_LOGFILE: zksync-os-server-benchmark.log
   LOADBASE_OUT_DIR: loadbase-artifacts
   LOADBASE_LOGFILE: loadbase.log
-  LOADBASE_PUSHGATEWAY_URL: ${{ secrets.LOADBASE_PUSHGATEWAY_URL }}
-  LOADBASE_PUSHGATEWAY_USERNAME: ${{ secrets.LOADBASE_PUSHGATEWAY_USERNAME }}
-  LOADBASE_PUSHGATEWAY_PASSWORD: ${{ secrets.LOADBASE_PUSHGATEWAY_PASSWORD }}
 
 jobs:
   benchmark:
@@ -37,7 +35,7 @@ jobs:
         uses: ./.github/actions/runner-setup
 
       - name: Install bencher CLI
-        uses: bencherdev/bencher@main
+        uses: bencherdev/bencher@8151077aa7b1bceaac11c4b308265417cae60e2b # v0.5.10
 
       - name: Decompress anvil state
         run: gzip -dfk ./local-chains/v30.2/l1-state.json.gz
@@ -51,7 +49,8 @@ jobs:
       - name: Run server
         env:
           LOG_USE_COLOR: "false"
-        run: cargo run --release --bin zksync-os-server > "${SERVER_LOGFILE}" 2>&1 &
+          general_ephemeral: "true"
+        run: ./target/release/zksync-os-server > "${SERVER_LOGFILE}" 2>&1 &
 
       - name: Wait for server
         run: |
@@ -75,13 +74,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "../${LOADBASE_OUT_DIR}"
-          DURATION="5m"
-          MAX_IN_FLIGHT="52"
-          WALLETS="100"
+          DURATION="3m"
+          MAX_IN_FLIGHT="25"
+          WALLETS="30"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            DURATION="2m"
-            MAX_IN_FLIGHT="52"
-            WALLETS="100"
+            DURATION="90s"
+            MAX_IN_FLIGHT="15"
+            WALLETS="20"
           fi
           cargo run --release -- \
             --rpc-url "${RPC_URL}" \
@@ -97,14 +96,13 @@ jobs:
       - name: Track performance with bencher.dev
         env:
           BENCHER_API_TOKEN: ${{ secrets.BENCHER_API_TOKEN }}
-          BENCHER_PROJECT: antonbaliasnikov-s-project
+          BENCHER_PROJECT: zksync-os-server
           BENCHER_ADAPTER: json
           BENCHER_TESTBED: github-actions
         run: |
           bencher run \
             --branch "${{ github.head_ref || github.ref_name }}" \
-            --if-branch "${{ github.head_ref || github.ref_name }}" \
-            --else-if-branch main \
+            --start-point main \
             --err \
             --github-actions "${{ secrets.GITHUB_TOKEN }}" \
             --file "${LOADBASE_OUT_DIR}/bencher.json"
@@ -147,43 +145,6 @@ jobs:
               echo "</details>"
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Push metrics to Pushgateway
-        if: env.LOADBASE_PUSHGATEWAY_URL != ''
-        run: |
-          SUMMARY_JSON="${LOADBASE_OUT_DIR}/summary.json"
-          METRIC_FILE=$(mktemp)
-          RUN_INSTANCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          MEDIAN_TPS10=$(jq -r '.summary.median_tps10' "${SUMMARY_JSON}")
-          P95_TPS10=$(jq -r '.summary.p95_tps10' "${SUMMARY_JSON}")
-          MEDIAN_INC_P50=$(jq -r '.summary.median_include_p50_10s_s' "${SUMMARY_JSON}")
-          FINAL_INCLUDED=$(jq -r '.summary.final_included' "${SUMMARY_JSON}")
-          SAMPLE_COUNT=$(jq -r '.summary.sample_count' "${SUMMARY_JSON}")
-          RECEIPT_TIMEOUTS=$(jq -r '.summary.receipt_timeouts // 0' "${SUMMARY_JSON}")
-          RECEIPT_ERRORS=$(jq -r '.summary.receipt_errors // 0' "${SUMMARY_JSON}")
-
-          {
-            echo "loadbase_median_tps10 ${MEDIAN_TPS10}"
-            echo "loadbase_p95_tps10 ${P95_TPS10}"
-            echo "loadbase_median_include_p50_10s_seconds ${MEDIAN_INC_P50}"
-            echo "loadbase_final_included ${FINAL_INCLUDED}"
-            echo "loadbase_sample_count ${SAMPLE_COUNT}"
-            echo "loadbase_receipt_timeouts ${RECEIPT_TIMEOUTS}"
-            echo "loadbase_receipt_errors ${RECEIPT_ERRORS}"
-          } > "${METRIC_FILE}"
-
-          PUSH_URL="${LOADBASE_PUSHGATEWAY_URL%/}/metrics/job/loadbase_benchmark/instance/${RUN_INSTANCE}"
-          if [ -n "${LOADBASE_PUSHGATEWAY_USERNAME}" ] && [ -n "${LOADBASE_PUSHGATEWAY_PASSWORD}" ]; then
-            curl --fail --show-error --silent \
-              --user "${LOADBASE_PUSHGATEWAY_USERNAME}:${LOADBASE_PUSHGATEWAY_PASSWORD}" \
-              --data-binary "@${METRIC_FILE}" \
-              "${PUSH_URL}"
-          else
-            curl --fail --show-error --silent \
-              --data-binary "@${METRIC_FILE}" \
-              "${PUSH_URL}"
-          fi
-          echo "Pushed metrics to Pushgateway."
 
       - name: Upload benchmark artifacts
         if: always() && !cancelled()

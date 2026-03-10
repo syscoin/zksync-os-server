@@ -201,14 +201,14 @@ fn write_bencher_json(
         "sequencer/tps10_p95": {
             "throughput": { "value": summary.p95_tps10 }
         },
-        "sequencer/include_latency_p50_s": {
-            "latency": { "value": summary.median_include_p50_10s_s }
+        "sequencer/include_latency_p50": {
+            "seconds": { "value": summary.median_include_p50_10s_s }
         },
         "sequencer/receipt_timeouts": {
-            "latency": { "value": metadata.receipt_timeouts as f64 }
+            "count": { "value": metadata.receipt_timeouts as f64 }
         },
         "sequencer/receipt_errors": {
-            "latency": { "value": metadata.receipt_errors as f64 }
+            "count": { "value": metadata.receipt_errors as f64 }
         }
     });
 
@@ -371,11 +371,11 @@ mod tests {
         assert_eq!(parsed["sequencer/tps10_median"]["throughput"]["value"], 42.5);
         assert_eq!(parsed["sequencer/tps10_p95"]["throughput"]["value"], 55.0);
         assert_eq!(
-            parsed["sequencer/include_latency_p50_s"]["latency"]["value"],
+            parsed["sequencer/include_latency_p50"]["seconds"]["value"],
             0.123
         );
-        assert_eq!(parsed["sequencer/receipt_timeouts"]["latency"]["value"], 3.0);
-        assert_eq!(parsed["sequencer/receipt_errors"]["latency"]["value"], 1.0);
+        assert_eq!(parsed["sequencer/receipt_timeouts"]["count"]["value"], 3.0);
+        assert_eq!(parsed["sequencer/receipt_errors"]["count"]["value"], 1.0);
     }
 
     #[test]
