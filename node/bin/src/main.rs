@@ -9,11 +9,11 @@ use zksync_os_metadata::NODE_VERSION;
 use zksync_os_observability::prometheus::PrometheusExporterConfig;
 use zksync_os_server::config::{
     BaseTokenPriceUpdaterConfig, BatchVerificationConfig, BatcherConfig, Config, ConfigArgs,
-    ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig, GenesisConfig,
-    InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig, NetworkConfig,
-    ObservabilityConfig, ProofStorageConfig, ProverApiConfig, ProverInputGeneratorConfig,
-    RebuildBlocksConfig, RpcConfig, SequencerConfig, StateBackendConfig, StatusServerConfig,
-    TxValidatorConfig,
+    ConsensusConfig, ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig,
+    GenesisConfig, InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig,
+    NetworkConfig, ObservabilityConfig, ProofStorageConfig, ProverApiConfig,
+    ProverInputGeneratorConfig, RebuildBlocksConfig, RpcConfig, SequencerConfig,
+    StateBackendConfig, StatusServerConfig, TxValidatorConfig,
 };
 use zksync_os_server::default_protocol_version::{DEFAULT_ROCKS_DB_PATH, PROTOCOL_VERSION};
 use zksync_os_server::{INTERNAL_CONFIG_FILE_NAME, run};
@@ -262,6 +262,12 @@ async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse network config");
 
+    let consensus_config = repo
+        .single::<ConsensusConfig>()
+        .expect("Failed to load consensus config")
+        .parse()
+        .expect("Failed to parse consensus config");
+
     let genesis_config = repo
         .single::<GenesisConfig>()
         .expect("Failed to load genesis config")
@@ -401,6 +407,7 @@ async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
     Config {
         general_config,
         network_config,
+        consensus_config,
         genesis_config,
         rpc_config,
         mempool_config,
@@ -438,7 +445,6 @@ fn enable_ephemeral_mode(config: &mut Config) -> Option<TempDir> {
         path = %tempdir_path.display(),
         "Ephemeral mode enabled. Using temporary directory for RocksDB and proof storage"
     );
-
     // Update config to use temporary directory
     config.general_config.rocks_db_path = tempdir_path.join("node");
     config.prover_api_config.proof_storage = ProofStorageConfig {

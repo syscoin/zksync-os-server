@@ -3,6 +3,7 @@
 use crate::version::AnyZksProtocolVersion;
 use crate::wire::message::{ZKS_PROTOCOL, ZksMessage};
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
+use crate::raft::wire::RaftWireMessage;
 use alloy::primitives::BlockNumber;
 use alloy::primitives::bytes::BytesMut;
 use futures::future::BoxFuture;
@@ -364,8 +365,24 @@ impl<P: AnyZksProtocolVersion, Replay: ReadReplay> Stream for ZksConnection<P, R
                     msg
                 }
                 Err(error) => {
-                    tracing::info!(%error, "error decoding peer message");
-                    break;
+                    let preview_len = next.len().min(64);
+                    let preview_hex = next[..preview_len]
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>();
+                    let raft_decode = RaftWireMessage::decode(&next[..]).ok();
+                    tracing::warn!(
+                        %error,
+                        msg_len = next.len(),
+                        msg_preview_len = preview_len,
+                        msg_preview_hex = %preview_hex,
+                        looks_like_raft = raft_decode.is_some(),
+                        "error decoding peer message; ignoring message"
+                    );
+                    if let Some(raft_msg) = raft_decode {
+                        tracing::debug!(?raft_msg, "non-zks payload decodes as raft message");
+                    }
+                    continue;
                 }
             };
 

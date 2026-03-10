@@ -1,5 +1,6 @@
 use crate::config::NetworkConfig;
 use crate::protocol::{ProtocolEvent, ProtocolState, ZksProtocolHandler};
+use crate::raft::protocol::RaftProtocolHandler;
 use crate::version::{ZksProtocolV1, ZksProtocolV2};
 use crate::wire::replays::RecordOverride;
 use alloy::primitives::BlockNumber;
@@ -48,7 +49,18 @@ impl NetworkService {
         zks_config: ZksProtocolConfig,
         replay: impl ReadReplay + Clone,
         client: impl ChainSpecProvider<ChainSpec: Hardforks> + BlockNumReader + 'static,
+        raft_handler: Option<RaftProtocolHandler>,
     ) -> Result<Self, NetworkError> {
+        let node_role = zks_config.node_role;
+        tracing::info!(
+            node_role = %node_role,
+            listen_addr = %config.address,
+            listen_port = config.port,
+            boot_nodes_count = config.boot_nodes.len(),
+            "initializing p2p network service"
+        );
+        tracing::debug!(boot_nodes = ?config.boot_nodes, "configured p2p boot nodes");
+
         match NatResolver::Any.external_addr().await {
             None => {
                 tracing::info!("could not resolve external IP (STUN)");
@@ -58,6 +70,7 @@ impl NetworkService {
             }
         };
         let rlpx_address = SocketAddr::V4(SocketAddrV4::new(config.address, config.port));
+        tracing::info!(%rlpx_address, "using rlpx/discovery listen address");
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let cfg_builder = RethNetworkConfig::builder(config.secret_key)
             .boot_nodes(config.boot_nodes.clone())
@@ -117,9 +130,15 @@ impl NetworkService {
             .required_block_hashes(vec![])
             // Set network id to ZKsync OS chain's id, otherwise we might connect to unrelated peers
             .network_id(Some(client.chain_spec().chain_id()));
-        let net_cfg =
-            Self::register_rlpx_sub_protocols(cfg_builder, zks_config, replay, protocol_tx)
-                .build(client);
+        let mut net_cfg =
+            Self::register_rlpx_sub_protocols(cfg_builder, zks_config, replay, protocol_tx);
+        if let Some(raft_handler) = raft_handler {
+            tracing::info!("registering raft sub-protocol with network service");
+            net_cfg = net_cfg.add_rlpx_sub_protocol(raft_handler);
+        } else {
+            tracing::info!("raft sub-protocol is not registered");
+        }
+        let net_cfg = net_cfg.build(client);
         tracing::debug!(?net_cfg, "starting p2p network service");
         // Create network manager. We are not interested in `txpool` because transaction gossip is
         // disabled. `request_handler` is also unused as it is specific to `eth` protocol.
@@ -167,17 +186,27 @@ impl NetworkService {
 
     /// Consume the service by registering it as an endless task that drives the network state.
     pub fn run(mut self, tasks: &mut JoinSet<()>, stop_receiver: watch::Receiver<bool>) {
+        tracing::info!("starting p2p network manager tasks");
         tasks.spawn(self.network_manager);
         tasks.spawn(async move {
             while !*stop_receiver.borrow() {
                 let Some(event) = self.protocol_rx.recv().await else {
                     break;
                 };
-                // For now events are only used for diagnostical reasons (new connection got
-                // established or max connections reached). In the future we might have other events
-                // that we would want to process here somehow.
-                tracing::trace!(?event, "received zks protocol event");
+                // todo: does it need to say "zk"? I thought both protocols are handled here
+                match event {
+                    ProtocolEvent::Established { direction, peer_id } => {
+                        tracing::info!(?direction, %peer_id, "zks protocol connection established");
+                    }
+                    ProtocolEvent::MaxActiveConnectionsExceeded { max_connections } => {
+                        tracing::warn!(
+                            max_connections,
+                            "zks protocol connection rejected: max active connections reached"
+                        );
+                    }
+                }
             }
+            tracing::debug!("p2p protocol event loop exited");
         });
     }
 }

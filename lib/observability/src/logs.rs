@@ -39,7 +39,6 @@ impl Display for LogFormat {
 pub struct Logs {
     format: LogFormat,
     log_directives: Option<String>,
-    disable_default_logs: bool,
     use_color: bool,
 }
 
@@ -48,7 +47,6 @@ impl Logs {
         Self {
             format,
             log_directives: None,
-            disable_default_logs: false,
             use_color,
         }
     }
@@ -66,18 +64,7 @@ impl Logs {
     ///
     /// [1]: https://docs.rs/tracing-subscriber/0.3.18/tracing_subscriber/filter/targets/struct.Targets.html#filtering-with-targets
     pub(super) fn build_filter(&self) -> EnvFilter {
-        let mut directives = if self.disable_default_logs {
-            "".to_string()
-        } else {
-            "INFO,\
-            zksync_os_server=DEBUG,\
-            zksync_os_sequencer=DEBUG,\
-            zksync_os_priority_tree=DEBUG,\
-            zksync_os_merkle_tree=DEBUG,\
-            zksync_os_revm_consistency_checker=DEBUG,\
-            "
-            .to_string()
-        };
+        let mut directives = "".to_string();
         if let Some(log_directives) = &self.log_directives {
             directives.push_str(log_directives);
         } else if let Ok(env_directives) = std::env::var(EnvFilter::DEFAULT_ENV) {
@@ -88,11 +75,6 @@ impl Logs {
 
     pub fn with_log_directives(mut self, log_directives: Option<String>) -> Self {
         self.log_directives = log_directives;
-        self
-    }
-
-    pub fn disable_default_logs(mut self) -> Self {
-        self.disable_default_logs = true;
         self
     }
 

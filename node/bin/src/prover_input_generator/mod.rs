@@ -72,7 +72,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             s.map(|(block_output, replay_record, tree)| {
                 let block_number = replay_record.block_context.block_number;
 
-                tracing::debug!(
+                tracing::info!(
                     block_number,
                     "ProverInputGenerator started processing block {} with {} transactions",
                     block_number,
@@ -105,9 +105,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             .map_err(|e| anyhow::anyhow!(e))
             .try_for_each(|(block_output, replay_record, prover_input, tree)| async {
                 latency_tracker.enter_state(GenericComponentState::WaitingSend);
-                tracing::debug!(
+                tracing::info!(
                     block_number = block_output.header.number,
-                    "sending block with prover input to batcher",
+                    "ProverInputGenerator generated input for block {}. Sending downstream.",
+                    block_output.header.number,
                 );
                 output
                     .send((block_output, replay_record, prover_input, tree))

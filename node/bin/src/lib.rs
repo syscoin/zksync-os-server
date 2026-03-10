@@ -85,7 +85,8 @@ use zksync_os_network::service::{NetworkService, ZksProtocolConfig};
 use zksync_os_observability::GENERAL_METRICS;
 use zksync_os_pipeline::Pipeline;
 use zksync_os_raft::{
-    BlockCanonizationEngine, ConsensusRuntimeParts, LeadershipSignal, loopback_consensus,
+    BlockCanonizationEngine, ConsensusRuntimeParts, LeadershipSignal, init_consensus,
+    loopback_consensus,
 };
 use zksync_os_reth_compat::provider::ZkProviderFactory;
 use zksync_os_revm_consistency_checker::node::RevmConsistencyChecker;
@@ -109,6 +110,7 @@ use zksync_os_types::{
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
+const RAFT_DB_NAME: &str = "raft";
 const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
@@ -386,8 +388,26 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let ConsensusRuntimeParts {
         canonization_engine,
         leadership,
-        ..
-    } = loopback_consensus();
+        network_protocol,
+        bootstrapper,
+        status,
+    } = if config.consensus_config.enabled {
+        init_consensus(
+            config
+                .consensus_config
+                .clone()
+                .into_raft_consensus_config(
+                    &config.network_config,
+                    config.general_config.rocks_db_path.join(RAFT_DB_NAME),
+                )
+                .expect("failed to build raft consensus config"),
+        )
+        .await
+        .expect("failed to initialize consensus engine")
+    } else {
+        tracing::info!("openraft consensus is disabled - assuming perpetual leader role");
+        loopback_consensus()
+    };
     if config.network_config.enabled {
         tracing::info!("initializing p2p networking");
 
@@ -410,10 +430,16 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             },
             block_replay_storage.clone(),
             zk_provider_factory,
+            network_protocol.into_protocol_handler(),
         )
         .await
         .expect("failed to create network service");
         network_service.run(&mut tasks, stop_receiver.clone());
+
+        bootstrapper
+            .bootstrap_if_needed()
+            .await
+            .expect("failed to run raft bootstrap process");
     } else if node_role.is_main() {
         tracing::info!(
             "p2p networking is disabled; to enable set `network.enabled=true` and populate `network.secret_key`"
@@ -853,6 +879,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             run_status_server(
                 config.status_server_config.address.clone(),
                 stop_receiver.clone(),
+                status.into_raft_status_rx(),
             )
             .map(report_exit("Status server")),
         );
