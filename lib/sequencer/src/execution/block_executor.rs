@@ -8,6 +8,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
+use zksync_os_interface::tracing::{NopTracer, NopValidator};
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
@@ -109,7 +110,7 @@ where
                 .sync_with_base_and_build_view_for_block(&self.state, block_number)?;
 
             let (block_output, replay_record, purged_txs, strict_subpool_cleanup) =
-                execute_block_in_vm(prepared_command, exec_view, &latency_tracker)
+                execute_block_in_vm(prepared_command, exec_view, &latency_tracker, NopTracer, NopValidator)
                     .await
                     .map_err(|dump| {
                         let error = anyhow::anyhow!("{}", dump.error);
