@@ -1,10 +1,12 @@
-use alloy::eips::{BlockNumberOrTag, Encodable2718};
 use alloy::eips::eip1898::LenientBlockNumberOrTag;
+use alloy::eips::{BlockNumberOrTag, Encodable2718};
 use alloy::network::{ReceiptResponse, TransactionBuilder, TransactionResponse, TxSigner};
 use alloy::primitives::{TxHash, U128, U256, address};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use alloy::rpc::types::trace::otterscan::{BlockDetails, OtsBlockTransactions, TransactionsWithReceipts};
+use alloy::rpc::types::trace::otterscan::{
+    BlockDetails, OtsBlockTransactions, TransactionsWithReceipts,
+};
 use regex::Regex;
 use std::time::Duration;
 use zksync_os_integration_tests::Tester;
@@ -127,14 +129,21 @@ async fn get_client_version() -> anyhow::Result<()> {
 async fn ots_get_api_level_and_has_code() -> anyhow::Result<()> {
     let tester = Tester::setup().await?;
 
-    let api_level: u64 = tester.l2_provider.client().request("ots_getApiLevel", ()).await?;
+    let api_level: u64 = tester
+        .l2_provider
+        .client()
+        .request("ots_getApiLevel", ())
+        .await?;
     assert_eq!(api_level, 8);
 
     let random_address = address!("0x1234567890123456789012345678901234567890");
     let has_code_before: bool = tester
         .l2_provider
         .client()
-        .request("ots_hasCode", (random_address, Option::<LenientBlockNumberOrTag>::None))
+        .request(
+            "ots_hasCode",
+            (random_address, Option::<LenientBlockNumberOrTag>::None),
+        )
         .await?;
     assert!(!has_code_before);
 
@@ -143,7 +152,9 @@ async fn ots_get_api_level_and_has_code() -> anyhow::Result<()> {
         .await?
         .expect_successful_receipt()
         .await?;
-    let contract_address = deploy_tx_receipt.contract_address.expect("no contract deployed");
+    let contract_address = deploy_tx_receipt
+        .contract_address
+        .expect("no contract deployed");
 
     let has_code_latest: bool = tester
         .l2_provider
@@ -202,7 +213,9 @@ async fn ots_get_block_details_and_transactions() -> anyhow::Result<()> {
         .client()
         .request(
             "ots_getBlockDetails",
-            (LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(block_number)),),
+            (LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(
+                block_number,
+            )),),
         )
         .await?;
     assert_eq!(block_details.block.transaction_count, 2);
@@ -223,14 +236,19 @@ async fn ots_get_block_details_and_transactions() -> anyhow::Result<()> {
     assert_eq!(block_transactions.fullblock.transaction_count, 2);
     assert_eq!(block_transactions.receipts.len(), 2);
     assert_eq!(block_transactions.fullblock.block.transactions.len(), 2);
-    assert!(block_transactions
-        .receipts
-        .iter()
-        .all(|receipt| receipt.receipt.inner.logs.is_none()));
-    assert!(block_transactions
-        .receipts
-        .iter()
-        .all(|receipt| receipt.receipt.inner.logs_bloom.is_none()));
+    assert!(
+        block_transactions
+            .receipts
+            .iter()
+            .all(|receipt| receipt.receipt.inner.logs.is_none())
+    );
+    assert!(
+        block_transactions.receipts.iter().all(|receipt| receipt
+            .receipt
+            .inner
+            .logs_bloom
+            .is_none())
+    );
 
     Ok(())
 }
@@ -273,7 +291,11 @@ async fn ots_search_transactions_and_lookup_by_sender_nonce() -> anyhow::Result<
         .client()
         .request(
             "ots_searchTransactionsBefore",
-            (sender, LenientBlockNumberOrTag::new(BlockNumberOrTag::Latest), 10usize),
+            (
+                sender,
+                LenientBlockNumberOrTag::new(BlockNumberOrTag::Latest),
+                10usize,
+            ),
         )
         .await?;
     assert_eq!(before.txs.len(), before.receipts.len());
