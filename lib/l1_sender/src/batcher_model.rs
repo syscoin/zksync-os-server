@@ -20,7 +20,8 @@ use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion};
 ///    instead of putting computed CommitBatchInfo/StoredBatchInfo here (L1 contract-specific classes),
 ///    we may want to include lower-level fields
 ///
-///  This struct is serialized in `ProofStorage`. Changing it requires clearing batch storage,
+///  This struct is serialized in `ProofStorage`.
+///  Changing it requires clearing proof storage to avoid reading the old format,
 ///  which is acceptable since it is only used for caching/debug purposes.
 ///
 #[derive(Clone, Debug, Serialize, Deserialize)]
