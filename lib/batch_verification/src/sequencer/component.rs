@@ -532,7 +532,7 @@ mod tests {
         let sig = BatchSignature::sign_batch(
             &batch.batch.previous_stored_batch_info,
             &batch.batch.batch_info,
-            Address::ZERO,
+            DUMMY_ADDRESS.parse().unwrap(),
             CHAIN_ID,
             MULTISIG_COMMITTER_DUMMY.parse().unwrap(),
             &batch.batch.protocol_version,
@@ -569,7 +569,7 @@ mod tests {
             threshold,
             response_channels: response_channels.clone(),
             server,
-            chain_address: Address::ZERO,
+            chain_address: DUMMY_ADDRESS.parse().unwrap(),
             l1_chain_id: CHAIN_ID,
             multisig_committer: MULTISIG_COMMITTER_DUMMY.parse().unwrap(),
             last_committed_batch_number,
