@@ -1,4 +1,3 @@
-use alloy::primitives::Address;
 use zksync_os_batch_types::BatchInfo;
 use zksync_os_contract_interface::models::{L2Log, StoredBatchInfo};
 use zksync_os_interface::types::BlockOutput;
@@ -21,7 +20,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     prev_batch_info: StoredBatchInfo,
     batch_number: u64,
     chain_id: u64,
-    chain_address_sl: Address,
     pubdata_mode: PubdataMode,
     sl_chain_id: u64,
     read_state: &ReadState,
@@ -45,7 +43,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
             })
             .collect(),
         chain_id,
-        chain_address_sl,
         batch_number,
         pubdata_mode,
         sl_chain_id,

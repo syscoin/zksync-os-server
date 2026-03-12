@@ -85,7 +85,6 @@ impl<BatchStorage: WriteBatch, Finality: WriteFinality>
         // todo: stop using this struct once fully migrated from S3
         let last_executed_batch_info = BatchInfo {
             commit_info: committed_batch.commit_info,
-            chain_address: Default::default(),
             upgrade_tx_hash: committed_batch.upgrade_tx_hash,
             blob_sidecar: None,
         };

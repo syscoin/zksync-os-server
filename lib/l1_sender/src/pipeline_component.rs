@@ -16,6 +16,7 @@ pub struct L1Sender<F: TxFiller<Ethereum>, P: Provider<Ethereum>, C> {
     pub provider: FillProvider<F, P>,
     pub config: L1SenderConfig<C>,
     pub to_address: Address,
+    pub chain_address: Address,
     pub gateway: bool,
 }
 
@@ -41,6 +42,7 @@ where
             input,
             output,
             self.to_address,
+            self.chain_address,
             self.provider,
             self.config,
             self.gateway,

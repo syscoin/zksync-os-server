@@ -1,5 +1,5 @@
 use alloy::consensus::{BlobTransactionSidecar, SidecarBuilder, SimpleCoder};
-use alloy::primitives::{Address, B256, BlockNumber, U256, keccak256};
+use alloy::primitives::{B256, BlockNumber, U256, keccak256};
 use alloy::sol_types::SolValue;
 use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
@@ -18,10 +18,6 @@ const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 pub struct BatchInfo {
     #[serde(flatten)]
     pub commit_info: CommitBatchInfo,
-    /// Chain's diamond proxy address on L1.
-    // todo: this should not be a part of this struct as this is static information for the entire chain
-    //       but we cannot remove it without breaking backwards compatibility
-    pub chain_address: Address,
     /// L1 protocol upgrade transaction that was finalized in this batch. Missing for the vast
     /// majority of batches.
     pub upgrade_tx_hash: Option<B256>,
@@ -39,7 +35,6 @@ impl BatchInfo {
             &zksync_os_merkle_tree::TreeBatchOutput,
         )>,
         chain_id: u64,
-        chain_address: Address,
         batch_number: u64,
         pubdata_mode: PubdataMode,
         sl_chain_id: u64,
@@ -179,7 +174,6 @@ impl BatchInfo {
         };
         Self {
             commit_info,
-            chain_address,
             upgrade_tx_hash,
             blob_sidecar: da_fields.blob_sidecar,
         }

@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::B256;
 /// This module is for sharing various testing utilities and helpers.
 use tokio::sync::watch;
 use zksync_os_batch_types::BatchInfo;
@@ -72,7 +72,6 @@ pub fn dummy_batch_metadata(batch_number: u64, from: u64, to: u64) -> BatchMetad
         },
         batch_info: BatchInfo {
             commit_info: dummy_commit_batch_info(batch_number, from, to),
-            chain_address: Address::ZERO,
             upgrade_tx_hash: None,
             blob_sidecar: None,
         },

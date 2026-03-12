@@ -464,7 +464,7 @@ impl<T: Clone> ProverJobMap<T> {
 mod tests {
     use super::*;
     use crate::prover_api::metrics::ProverStage;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::B256;
     use std::time::Duration;
     use zksync_os_batch_types::BatchInfo;
     use zksync_os_contract_interface::models::{
@@ -505,7 +505,6 @@ mod tests {
                     operator_da_input: vec![],
                     sl_chain_id: 2,
                 },
-                chain_address: Address::ZERO,
                 upgrade_tx_hash: None,
                 blob_sidecar: None,
             },

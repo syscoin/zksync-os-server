@@ -1,7 +1,7 @@
 use crate::batcher_metrics::BatchExecutionStage;
 use crate::batcher_model::{FriProof, SignedBatchEnvelope, SnarkProof};
 use crate::commands::SendToL1;
-use alloy::primitives::{B256, Bytes, U256, keccak256};
+use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolCall;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -31,9 +31,9 @@ impl SendToL1 for ProofCommand {
     const MINED_STAGE: BatchExecutionStage = BatchExecutionStage::ProveL1TxMined;
     const PASSTHROUGH_STAGE: BatchExecutionStage = BatchExecutionStage::ProveL1Passthrough;
 
-    fn solidity_call(&self, _gateway: bool) -> Bytes {
+    fn solidity_call(&self, chain_address: Address, _gateway: bool) -> Bytes {
         proveBatchesSharedBridgeCall::new((
-            self.batches.first().unwrap().batch.batch_info.chain_address,
+            chain_address,
             U256::from(self.batches.first().unwrap().batch_number()),
             U256::from(self.batches.last().unwrap().batch_number()),
             self.to_calldata_suffix().into(),

@@ -1,7 +1,7 @@
 use crate::batcher_metrics::BatchExecutionStage;
 use crate::batcher_model::{FriProof, SignedBatchEnvelope};
 use crate::commands::SendToL1;
-use alloy::primitives::{Bytes, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use alloy::sol_types::{SolCall, SolValue};
 use std::fmt::Display;
 use zksync_os_contract_interface::models::PriorityOpsBatchInfo;
@@ -36,9 +36,9 @@ impl SendToL1 for ExecuteCommand {
 
     const PASSTHROUGH_STAGE: BatchExecutionStage = BatchExecutionStage::ExecuteL1Passthrough;
 
-    fn solidity_call(&self, gateway: bool) -> Bytes {
+    fn solidity_call(&self, chain_address: Address, gateway: bool) -> Bytes {
         IExecutor::executeBatchesSharedBridgeCall::new((
-            self.batches.first().unwrap().batch.batch_info.chain_address,
+            chain_address,
             U256::from(self.batches.first().unwrap().batch_number()),
             U256::from(self.batches.last().unwrap().batch_number()),
             self.to_calldata_suffix(gateway).into(),

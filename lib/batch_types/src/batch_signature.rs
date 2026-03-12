@@ -63,6 +63,7 @@ impl BatchSignature {
     pub async fn sign_batch(
         prev_batch_info: &StoredBatchInfo,
         batch_info: &BatchInfo,
+        chain_address: Address,
         sl_chain_id: u64,
         multisig_committer: Address,
         protocol_version: &ProtocolSemanticVersion,
@@ -71,6 +72,7 @@ impl BatchSignature {
         let digest = eip712_multisig_digest(
             prev_batch_info,
             batch_info,
+            chain_address,
             sl_chain_id,
             multisig_committer,
             protocol_version,
@@ -83,6 +85,7 @@ impl BatchSignature {
         self,
         prev_batch_info: &StoredBatchInfo,
         batch_info: &BatchInfo,
+        chain_address: Address,
         sl_chain_id: u64,
         multisig_committer: Address,
         protocol_version: &ProtocolSemanticVersion,
@@ -93,6 +96,7 @@ impl BatchSignature {
                 .recover_address_from_prehash(&eip712_multisig_digest(
                     prev_batch_info,
                     batch_info,
+                    chain_address,
                     sl_chain_id,
                     multisig_committer,
                     protocol_version,
@@ -126,6 +130,7 @@ sol! {
 fn eip712_multisig_digest(
     prev_batch_info: &StoredBatchInfo,
     batch_info: &BatchInfo,
+    chain_address: Address,
     sl_chain_id: u64,
     multisig_committer: Address,
     protocol_version: &ProtocolSemanticVersion,
@@ -137,7 +142,7 @@ fn eip712_multisig_digest(
     );
 
     let message = CommitBatchesMultisig {
-        chainAddress: batch_info.chain_address,
+        chainAddress: chain_address,
         processBatchFrom: U256::from(batch_info.batch_number),
         processBatchTo: U256::from(batch_info.batch_number),
         batchData: batch_data.into(),
