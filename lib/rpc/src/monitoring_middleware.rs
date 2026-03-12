@@ -204,6 +204,17 @@ fn log_and_report(
     API_METRICS.request_size[method].observe(request_size);
     API_METRICS.response_size[method].observe(output_size_bytes);
 
+    if elapsed > Duration::from_secs(1) {
+        tracing::warn!(
+            method,
+            ?kind,
+            ?elapsed,
+            request_size,
+            output_size_bytes,
+            "slow rpc request"
+        );
+    }
+
     debug_dispatch!(
         targets: match method {
             "eth_call" => "rpc::monitoring::eth::call",
