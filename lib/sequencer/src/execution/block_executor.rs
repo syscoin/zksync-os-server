@@ -155,6 +155,22 @@ pub async fn execute_block<R: ReadStateHistory + WriteState>(
                         executed_txs.push(tx);
                         cumulative_gas_used += res.gas_used;
                         if tx_type == ZkTxType::Upgrade {
+                            if !res.status {
+                                let tx_hash = executed_txs.last().unwrap().hash();
+                                tracing::error!(
+                                    block_number = ctx.block_number,
+                                    ?tx_hash,
+                                    revert_output = ?res.output,
+                                    "Upgrade transaction reverted"
+                                );
+                                return Err(BlockDump {
+                                    ctx,
+                                    txs: all_processed_txs.clone(),
+                                    error: format!("upgrade tx {tx_hash} reverted"),
+                                });
+                            } else {
+                                tracing::info!("Upgrade transaction succeeded");
+                            }
                             match &command.seal_policy {
                                 SealPolicy::Decide(..) | SealPolicy::UntilExhausted { allowed_to_finish_early: true } => {
                                     tracing::debug!(block_number = ctx.block_number, "sealing block as upgrade tx was executed");
