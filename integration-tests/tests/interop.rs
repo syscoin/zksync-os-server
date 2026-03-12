@@ -456,7 +456,6 @@ async fn test_interop_l2_to_l1_message_verification() -> Result<()> {
 }
 
 #[test(tokio::test)]
-#[ignore = "temporarily disabled"]
 async fn test_interop_bundle_send() -> Result<()> {
     // This test validates the first part of the interop flow:
     // setting up two chains and sending an interop bundle from chain A to chain B
@@ -465,9 +464,11 @@ async fn test_interop_bundle_send() -> Result<()> {
 
     let chain_a = multi_chain.chain_a();
     let chain_b = multi_chain.chain_b();
+    let gateway = multi_chain.chain(0);
 
     let chain_a_id = chain_a.l2_provider.get_chain_id().await?;
     let chain_b_id = chain_b.l2_provider.get_chain_id().await?;
+    let gw_chain_id = gateway.l2_provider.get_chain_id().await?;
 
     let sender = chain_a.l2_wallet.default_signer().address();
 
@@ -561,10 +562,12 @@ async fn test_interop_bundle_send() -> Result<()> {
     )
     .await?;
 
-    // Wait for interop root to get included on chain B
+    let gw_block_number = get_gw_block_number(&log_proof.proof);
+
+    // Wait for interop root to get included on chain B, keyed by gateway chain + GW block
     chain_b
         .l2_provider
-        .expect_interop_root_inclusion(chain_a_id, log_proof.batch_number)
+        .expect_interop_root_inclusion(gw_chain_id, gw_block_number)
         .await?;
 
     // Build MessageInclusionProof
