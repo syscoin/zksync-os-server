@@ -224,9 +224,11 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
             .resolve_block_number(block_id)?
             .ok_or(EthError::BlockNotFound(block_id))?;
         let latest_block_number = self.storage.repository().get_latest_block();
-        if upper_block_number == 0 {
-            upper_block_number = latest_block_number + 1;
-        }
+        // The scan range uses an exclusive upper bound, so shift it by one to include the
+        // requested anchor block.
+        upper_block_number = upper_block_number
+            .saturating_add(1)
+            .min(latest_block_number.saturating_add(1));
         let lower_block_number = upper_block_number.saturating_sub(MAX_BLOCKS_TO_SCAN);
         let (txs, receipts, has_more) = self.search_transactions_impl(
             address,
@@ -236,7 +238,7 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         Ok(TransactionsWithReceipts {
             txs,
             receipts,
-            first_page: upper_block_number == latest_block_number,
+            first_page: upper_block_number == latest_block_number.saturating_add(1),
             last_page: !has_more,
         })
     }

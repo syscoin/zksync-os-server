@@ -1,13 +1,16 @@
-use alloy::eips::Encodable2718;
-use alloy::network::{ReceiptResponse, TransactionBuilder, TxSigner};
+use alloy::eips::{BlockNumberOrTag, Encodable2718};
+use alloy::eips::eip1898::LenientBlockNumberOrTag;
+use alloy::network::{ReceiptResponse, TransactionBuilder, TransactionResponse, TxSigner};
 use alloy::primitives::{TxHash, U128, U256, address};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
+use alloy::rpc::types::trace::otterscan::{BlockDetails, OtsBlockTransactions, TransactionsWithReceipts};
 use regex::Regex;
 use std::time::Duration;
 use zksync_os_integration_tests::Tester;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_integration_tests::contracts::EventEmitter;
+use zksync_os_rpc_api::types::ZkApiTransaction;
 use zksync_os_server::config::FeeConfig;
 
 #[test_log::test(tokio::test)]
@@ -117,6 +120,192 @@ async fn get_client_version() -> anyhow::Result<()> {
     let client_version = tester.l2_provider.get_client_version().await?;
     let regex = Regex::new(r"^zksync-os/v(\d+)\.(\d+)\.(\d+)")?;
     assert!(regex.is_match(&client_version));
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+async fn ots_get_api_level_and_has_code() -> anyhow::Result<()> {
+    let tester = Tester::setup().await?;
+
+    let api_level: u64 = tester.l2_provider.client().request("ots_getApiLevel", ()).await?;
+    assert_eq!(api_level, 8);
+
+    let random_address = address!("0x1234567890123456789012345678901234567890");
+    let has_code_before: bool = tester
+        .l2_provider
+        .client()
+        .request("ots_hasCode", (random_address, Option::<LenientBlockNumberOrTag>::None))
+        .await?;
+    assert!(!has_code_before);
+
+    let deploy_tx_receipt = EventEmitter::deploy_builder(tester.l2_provider.clone())
+        .send()
+        .await?
+        .expect_successful_receipt()
+        .await?;
+    let contract_address = deploy_tx_receipt.contract_address.expect("no contract deployed");
+
+    let has_code_latest: bool = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_hasCode",
+            (contract_address, Option::<LenientBlockNumberOrTag>::None),
+        )
+        .await?;
+    assert!(has_code_latest);
+
+    let deploy_block_number = deploy_tx_receipt
+        .block_number
+        .expect("deploy receipt has no block number");
+    let has_code_before_deploy: bool = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_hasCode",
+            (
+                contract_address,
+                Some(LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(
+                    deploy_block_number - 1,
+                ))),
+            ),
+        )
+        .await?;
+    assert!(!has_code_before_deploy);
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+async fn ots_get_block_details_and_transactions() -> anyhow::Result<()> {
+    let tester = Tester::builder()
+        .block_time(Duration::from_secs(2))
+        .build()
+        .await?;
+
+    let first = EventEmitter::deploy_builder(tester.l2_provider.clone())
+        .send()
+        .await?;
+    let second = EventEmitter::deploy_builder(tester.l2_provider.clone())
+        .send()
+        .await?;
+
+    let first_receipt = first.expect_successful_receipt().await?;
+    let second_receipt = second.expect_successful_receipt().await?;
+    let block_number = second_receipt
+        .block_number
+        .expect("deploy receipt has no block number");
+    assert_eq!(first_receipt.block_number, Some(block_number));
+
+    let block_details: BlockDetails = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_getBlockDetails",
+            (LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(block_number)),),
+        )
+        .await?;
+    assert_eq!(block_details.block.transaction_count, 2);
+    assert!(block_details.total_fees > U256::ZERO);
+
+    let block_transactions: OtsBlockTransactions<ZkApiTransaction> = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_getBlockTransactions",
+            (
+                LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(block_number)),
+                0usize,
+                2usize,
+            ),
+        )
+        .await?;
+    assert_eq!(block_transactions.fullblock.transaction_count, 2);
+    assert_eq!(block_transactions.receipts.len(), 2);
+    assert_eq!(block_transactions.fullblock.block.transactions.len(), 2);
+    assert!(block_transactions
+        .receipts
+        .iter()
+        .all(|receipt| receipt.receipt.inner.logs.is_none()));
+    assert!(block_transactions
+        .receipts
+        .iter()
+        .all(|receipt| receipt.receipt.inner.logs_bloom.is_none()));
+
+    Ok(())
+}
+
+#[test_log::test(tokio::test)]
+async fn ots_search_transactions_and_lookup_by_sender_nonce() -> anyhow::Result<()> {
+    let tester = Tester::setup().await?;
+    let sender = tester.l2_wallet.default_signer().address();
+
+    let first = tester
+        .l2_provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(address!("0xa5d85D1D865F89a23A95d4F5F74850f289Dbc5f9"))
+                .value(U256::from(1)),
+        )
+        .await?
+        .expect_successful_receipt()
+        .await?;
+    let second = tester
+        .l2_provider
+        .send_transaction(
+            TransactionRequest::default()
+                .to(address!("0xb5d85D1D865F89a23A95d4F5F74850f289Dbc5f9"))
+                .value(U256::from(2)),
+        )
+        .await?
+        .expect_successful_receipt()
+        .await?;
+
+    let tx_hash: Option<TxHash> = tester
+        .l2_provider
+        .client()
+        .request("ots_getTransactionBySenderAndNonce", (sender, 0u64))
+        .await?;
+    assert_eq!(tx_hash, Some(first.transaction_hash));
+
+    let before: TransactionsWithReceipts<ZkApiTransaction> = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_searchTransactionsBefore",
+            (sender, LenientBlockNumberOrTag::new(BlockNumberOrTag::Latest), 10usize),
+        )
+        .await?;
+    assert_eq!(before.txs.len(), before.receipts.len());
+    assert!(
+        before
+            .txs
+            .iter()
+            .any(|tx| tx.tx_hash() == first.transaction_hash)
+    );
+    assert!(
+        before
+            .txs
+            .iter()
+            .any(|tx| tx.tx_hash() == second.transaction_hash)
+    );
+
+    let first_block = first.block_number.expect("tx receipt has no block number");
+    let after: TransactionsWithReceipts<ZkApiTransaction> = tester
+        .l2_provider
+        .client()
+        .request(
+            "ots_searchTransactionsAfter",
+            (
+                sender,
+                LenientBlockNumberOrTag::new(BlockNumberOrTag::Number(first_block - 1)),
+                10usize,
+            ),
+        )
+        .await?;
+    assert_eq!(after.txs.len(), after.receipts.len());
+    assert!(after.txs.iter().all(|tx| tx.from() == sender));
+
     Ok(())
 }
 
