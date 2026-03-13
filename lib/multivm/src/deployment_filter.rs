@@ -20,6 +20,12 @@ pub enum Config {
     AllowList(HashSet<Address>),
 }
 
+impl Config {
+    pub fn allow_list(addresses: impl IntoIterator<Item = Address>) -> Self {
+        Self::AllowList(addresses.into_iter().collect())
+    }
+}
+
 /// Tracer that detects unauthorized contract deployments.
 ///
 /// On `on_new_execution_frame`, checks if the frame is a Constructor and the caller
@@ -106,5 +112,110 @@ impl TxValidator for Validator {
             return Err(InvalidTransaction::FilteredByValidator);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    const AUTHORIZED: Address = address!("0x1111111111111111111111111111111111111111");
+    const UNAUTHORIZED: Address = address!("0x2222222222222222222222222222222222222222");
+
+    /// Minimal `EvmRequest` implementation for testing.
+    struct MockRequest {
+        caller: Address,
+        modifier: CallModifier,
+    }
+
+    impl EvmRequest for MockRequest {
+        fn resources(&self) -> EvmResources {
+            EvmResources::default()
+        }
+        fn caller(&self) -> Address {
+            self.caller
+        }
+        fn callee(&self) -> Address {
+            Address::ZERO
+        }
+        fn modifier(&self) -> CallModifier {
+            self.modifier
+        }
+        fn input(&self) -> &[u8] {
+            &[]
+        }
+        fn nominal_token_value(&self) -> U256 {
+            U256::ZERO
+        }
+    }
+
+    /// Test harness that wires up a Tracer + Validator with a given config.
+    struct Harness {
+        tracer: Tracer,
+        validator: Validator,
+    }
+
+    impl Harness {
+        fn new(config: Config) -> Self {
+            let flag = Arc::new(AtomicBool::new(false));
+            let tracer = Tracer::new(flag.clone(), config);
+            let validator = Validator::new(flag);
+            Self { tracer, validator }
+        }
+
+        /// Simulate a new transaction boundary.
+        fn begin_tx(&mut self) {
+            EvmTracer::begin_tx(&mut self.tracer, &[]);
+            TxValidator::begin_tx(&mut self.validator, &[]).unwrap();
+        }
+
+        /// Simulate a frame entering execution.
+        fn frame(&mut self, caller: Address, modifier: CallModifier) {
+            let request = MockRequest { caller, modifier };
+            self.tracer.on_new_execution_frame(request);
+        }
+
+        /// Finish the transaction and return the validator result.
+        fn finish_tx(&mut self) -> TxValidationResult {
+            self.validator.finish_tx()
+        }
+    }
+
+    #[test]
+    fn unauthorized_constructor_is_rejected() {
+        let mut h = Harness::new(Config::allow_list(vec![AUTHORIZED]));
+        h.begin_tx();
+        h.frame(UNAUTHORIZED, CallModifier::Constructor);
+        assert!(matches!(
+            h.finish_tx(),
+            Err(InvalidTransaction::FilteredByValidator)
+        ));
+    }
+
+    #[test]
+    fn allowed_address_constructor_is_accepted() {
+        let mut h = Harness::new(Config::allow_list(vec![AUTHORIZED]));
+        h.begin_tx();
+        h.frame(AUTHORIZED, CallModifier::Constructor);
+        assert!(h.finish_tx().is_ok());
+    }
+
+    #[test]
+    fn non_constructor_frames_are_ignored() {
+        let mut h = Harness::new(Config::allow_list(vec![AUTHORIZED]));
+        h.begin_tx();
+        h.frame(UNAUTHORIZED, CallModifier::NoModifier);
+        h.frame(UNAUTHORIZED, CallModifier::Delegate);
+        h.frame(UNAUTHORIZED, CallModifier::Static);
+        assert!(h.finish_tx().is_ok());
+    }
+
+    #[test]
+    fn unrestricted_config_allows_everything() {
+        let mut h = Harness::new(Config::Unrestricted);
+        h.begin_tx();
+        h.frame(UNAUTHORIZED, CallModifier::Constructor);
+        assert!(h.finish_tx().is_ok());
     }
 }

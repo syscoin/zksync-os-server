@@ -18,6 +18,7 @@ use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_mempool::SubPoolLimit;
+use zksync_os_multivm::deployment_filter;
 use zksync_os_network::{NodeRecord, SecretKey};
 use zksync_os_observability::LogFormat;
 use zksync_os_observability::opentelemetry::OpenTelemetryLevel;
@@ -1018,16 +1019,15 @@ impl From<&Config> for zksync_os_sequencer::config::SequencerConfig {
             max_blocks_to_produce: c.sequencer_config.max_blocks_to_produce,
             interop_roots_per_tx: c.sequencer_config.interop_roots_per_tx,
             deployment_filter: if c.sequencer_config.deployment_filter.enabled {
-                zksync_os_multivm::deployment_filter::Config::AllowList(
+                deployment_filter::Config::allow_list(
                     c.sequencer_config
                         .deployment_filter
                         .allowed_deployers
                         .iter()
-                        .copied()
-                        .collect(),
+                        .copied(),
                 )
             } else {
-                zksync_os_multivm::deployment_filter::Config::Unrestricted
+                deployment_filter::Config::Unrestricted
             },
         }
     }
