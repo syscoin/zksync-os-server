@@ -2,10 +2,12 @@
 
 use alloy::{
     eips::eip1559::Eip1559Estimation,
+    network::EthereumWallet,
     primitives::{Address, Bytes, FixedBytes, U256, address, keccak256},
     providers::utils::Eip1559Estimator,
-    providers::{PendingTransactionBuilder, Provider},
-    rpc::types::TransactionRequest,
+    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
+    rpc::types::{TransactionReceipt, TransactionRequest},
+    signers::local::LocalSigner,
     sol,
     sol_types::{SolCall, SolType, SolValue},
 };
@@ -14,6 +16,7 @@ use test_log::test;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
 use zksync_os_integration_tests::assert_traits::ProviderAssert;
+use zksync_os_integration_tests::dyn_wallet_provider::EthDynProvider;
 use zksync_os_integration_tests::{
     MultiChainTester, Tester, assert_traits::ReceiptAssert, contracts::TestERC20,
     provider::ZksyncApi,
@@ -108,6 +111,18 @@ sol! {
             bytes32[] calldata _proof
         ) external view returns (bool);
     }
+
+    #[sol(rpc)]
+    interface IGWAssetTrackerSettlement {
+        function wrappedZKToken() external view returns (address);
+        function agreeToPaySettlementFees(uint256 chainId) external;
+    }
+
+    #[sol(rpc)]
+    interface IWrappedBaseToken {
+        function deposit() external payable;
+        function approve(address spender, uint256 amount) external returns (bool);
+    }
 }
 
 /// Helper to format ERC-7930 interoperable address with just address (no chain reference)
@@ -192,60 +207,154 @@ fn build_second_bridge_calldata(
     Bytes::from(result)
 }
 
-/// Setup test environment: deploy token and prepare for interop transfer
-async fn setup_token_on_chain_a(
-    provider: &zksync_os_integration_tests::dyn_wallet_provider::EthDynProvider,
-    sender: Address,
+/// Setup test environment: deploy token on L1 and deposit to Chain A via the bridge.
+///
+/// This is the correct approach for tokens used in interop bundles on gateway-settled
+/// chains. Tokens deposited from L1 populate `GWAssetTracker.chainBalance`, which is
+/// required for `_decreaseChainBalance` to succeed when the interop bundle is processed.
+///
+/// Native L2 tokens (deployed directly on L2) cannot be used here because
+/// `GWAssetTracker.registerNewTokenIfNeeded` always reverts, leaving their
+/// chain balance at zero.
+async fn setup_l1_token_on_chain_a(
+    chain_a: &Tester,
+    l2_recipient: Address,
 ) -> Result<(
-    TestERC20::TestERC20Instance<zksync_os_integration_tests::dyn_wallet_provider::EthDynProvider>,
+    TestERC20::TestERC20Instance<EthDynProvider>,
     U256,
     [u8; 32],
 )> {
-    // Deploy ERC20 token
-    let initial_supply = U256::from(1_000_000) * U256::from(10).pow(U256::from(18));
-    let token_address = TestERC20::deploy_builder(
-        provider,
+    let deposit_amount = U256::from(1_000_000) * U256::from(10).pow(U256::from(18));
+
+    // Deploy TestERC20 on L1 and mint to the L1 wallet.
+    let l1_token = TestERC20::deploy(
+        chain_a.l1_provider().clone(),
         U256::ZERO,
         "Test Token".to_string(),
         "TEST".to_string(),
     )
-    // fixme: temporary measure while v31 zksync-os does not support estimation with gasPrice=0
-    .max_fee_per_gas(1_000_000_000)
-    .max_priority_fee_per_gas(0)
-    .deploy()
-    .await?;
-    let token = TestERC20::new(token_address, provider.clone());
+    .await
+    .context("deploy L1 ERC20")?;
 
-    // Mint tokens to sender
-    token
-        .mint(sender, initial_supply)
-        // fixme: temporary measure while v31 zksync-os does not support estimation with gasPrice=0
-        .max_fee_per_gas(1_000_000_000)
-        .max_priority_fee_per_gas(0)
+    l1_token
+        .mint(chain_a.l1_wallet().default_signer().address(), deposit_amount)
         .send()
         .await?
         .expect_successful_receipt()
         .await?;
 
-    let balance = token.balanceOf(sender).call().await?;
-    assert_eq!(balance, initial_supply, "Token minting failed");
+    // Deposit the full supply from L1 to Chain A. This routes through
+    // handleChainBalanceIncreaseOnGateway on the gateway, populating
+    // GWAssetTracker.chainBalance[chainA][assetId].
+    let l1_receipt =
+        deposit_erc20_to_chain(chain_a, &l1_token, l2_recipient, deposit_amount).await?;
 
-    // Register token with Native Token Vault
-    let chain_id = provider.get_chain_id().await?;
-    let vault = IL2NativeTokenVault::new(L2_NATIVE_TOKEN_VAULT_ADDRESS, provider);
-    vault
-        .ensureTokenIsRegistered(*token.address())
-        // fixme: temporary measure while v31 zksync-os does not support estimation with gasPrice=0
-        .max_fee_per_gas(1_000_000_000)
-        .max_priority_fee_per_gas(0)
+    // Wait for the L2 priority transaction to be included and succeed.
+    let l1_to_l2_tx_log = l1_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| log.log_decode::<NewPriorityRequest>().ok())
+        .next()
+        .expect("no L1->L2 log produced by ERC20 deposit tx");
+    PendingTransactionBuilder::new(
+        chain_a.l2_zk_provider.root().clone(),
+        l1_to_l2_tx_log.inner.txHash,
+    )
+    .expect_successful_receipt()
+    .await
+    .context("L2 part of ERC20 deposit")?;
+
+    // Asset ID for L1-origin tokens: keccak256(l1ChainId, NTV_ADDRESS, l1TokenAddress).
+    let l1_chain_id = chain_a.l1_provider().get_chain_id().await?;
+    let asset_id = compute_asset_id(l1_chain_id, *l1_token.address());
+
+    // Resolve the L2 token address that the NTV minted during the deposit.
+    let vault = IL2NativeTokenVault::new(L2_NATIVE_TOKEN_VAULT_ADDRESS, &chain_a.l2_provider);
+    let l2_token_addr = vault
+        .tokenAddress(FixedBytes::<32>::from(asset_id))
+        .call()
+        .await?;
+    let l2_token = TestERC20::new(l2_token_addr, chain_a.l2_provider.clone());
+
+    Ok((l2_token, deposit_amount, asset_id))
+}
+
+/// Deposit an L1 ERC20 token to a chain via the bridge.
+///
+/// Mirrors the `deposit_erc20` helper in `erc20.rs` but derives the chain ID
+/// directly from the RPC instead of from a static config, so it works with any
+/// chain in a multi-chain test setup.
+async fn deposit_erc20_to_chain(
+    chain: &Tester,
+    l1_erc20: &TestERC20::TestERC20Instance<EthDynProvider>,
+    to: Address,
+    amount: U256,
+) -> Result<TransactionReceipt> {
+    let chain_id = chain.l2_provider.get_chain_id().await?;
+    let bridgehub = Bridgehub::new(
+        chain.l2_zk_provider.get_bridgehub_contract().await?,
+        chain.l1_provider().clone(),
+        chain_id,
+    );
+
+    let max_priority_fee_per_gas = chain.l1_provider().get_max_priority_fee_per_gas().await?;
+    let base_fees = chain
+        .l1_provider()
+        .estimate_eip1559_fees_with(Eip1559Estimator::new(|base_fee_per_gas, _| {
+            Eip1559Estimation {
+                max_fee_per_gas: base_fee_per_gas * 3 / 2,
+                max_priority_fee_per_gas: 0,
+            }
+        }))
+        .await?;
+    let max_fee_per_gas = base_fees.max_fee_per_gas + max_priority_fee_per_gas;
+
+    let l2_gas_limit = 1_500_000_u64;
+    let tx_base_cost = bridgehub
+        .l2_transaction_base_cost(
+            max_fee_per_gas + max_priority_fee_per_gas,
+            l2_gas_limit,
+            REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+        )
+        .await?;
+
+    let shared_bridge_address = bridgehub.shared_bridge_address().await?;
+
+    // Approve the bridge to spend the L1 tokens.
+    l1_erc20
+        .approve(shared_bridge_address, amount)
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(max_priority_fee_per_gas)
         .send()
         .await?
         .expect_successful_receipt()
         .await?;
 
-    let asset_id = compute_asset_id(chain_id, *token.address());
+    let second_bridge_calldata = (*l1_erc20.address(), amount, to).abi_encode();
 
-    Ok((token, initial_supply, asset_id))
+    let deposit_request = bridgehub
+        .request_l2_transaction_two_bridges(
+            tx_base_cost,
+            U256::ZERO,
+            l2_gas_limit,
+            REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+            to,
+            shared_bridge_address,
+            U256::ZERO,
+            second_bridge_calldata,
+        )
+        .value(tx_base_cost)
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(max_priority_fee_per_gas)
+        .into_transaction_request();
+
+    chain
+        .l1_provider()
+        .send_transaction(deposit_request)
+        .await?
+        .expect_successful_receipt()
+        .await
+        .context("L1 ERC20 deposit transaction")
 }
 
 /// Extracts the gateway chain block number from an `UntilMsgRoot` log proof.
@@ -478,8 +587,8 @@ async fn test_interop_bundle_send() -> Result<()> {
     fund_wallet_via_l1_deposit(chain_a, sender, deposit_amount).await?;
     fund_wallet_via_l1_deposit(chain_b, sender, deposit_amount).await?;
 
-    let (token, _initial_supply, asset_id) =
-        setup_token_on_chain_a(&chain_a.l2_provider, sender).await?;
+    let (token, _deposited_amount, asset_id) =
+        setup_l1_token_on_chain_a(chain_a, sender).await?;
 
     let amount_to_send = U256::from(100) * U256::from(10).pow(U256::from(18));
 
