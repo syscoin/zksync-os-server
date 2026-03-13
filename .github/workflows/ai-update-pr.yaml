@@ -70,8 +70,15 @@ jobs:
             ```
             ## Summary
 
-            <2-4 sentences: what changed, why, any important implementation notes>
+            <Use Markdown, not plain text. Prefer a short intro sentence followed by 2-5 bullets covering what changed, why, and important implementation notes. Use backticks for identifiers, emphasis sparingly for key points, and links when they add value.>
             ```
+
+            The `## Summary` section should be easy to scan in GitHub:
+            - Use short paragraphs or bullet lists instead of a single dense block
+            - Prefer `- [x]` bullets for file- or behavior-level changes
+            - Use inline code for workflow names, config keys, scripts, and paths
+            - Preserve any useful existing Markdown content from the author when it still applies
+            - Do not add filler headings or boilerplate text
 
             Preserve useful content the author already wrote in the existing body.
 
