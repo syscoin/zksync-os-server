@@ -1,6 +1,6 @@
 use crate::watcher::{L1Watcher, L1WatcherError};
 use crate::{L1WatcherConfig, ProcessL1Event, util};
-use alloy::primitives::{Address, BlockNumber, ChainId, U256};
+use alloy::primitives::{Address, B256, BlockNumber, ChainId, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::Log;
 use alloy::sol_types::SolEvent;
@@ -19,7 +19,6 @@ const INITIAL_LOOKBEHIND_BLOCKS: u64 = 100_000;
 pub trait MigrationProcessor: Send + Sync + 'static {
     type Event: SolEvent + Send + Sync + 'static;
 
-    fn chain_id(event: &Self::Event) -> ChainId;
     fn migration_number(event: &Self::Event) -> u64;
 }
 
@@ -30,10 +29,6 @@ pub struct L1;
 impl MigrationProcessor for Gateway {
     type Event = MigrateFromGateway;
 
-    fn chain_id(event: &Self::Event) -> ChainId {
-        event.chainId.try_into().unwrap()
-    }
-
     fn migration_number(event: &Self::Event) -> u64 {
         event.migrationNumber.try_into().unwrap()
     }
@@ -42,10 +37,6 @@ impl MigrationProcessor for Gateway {
 impl MigrationProcessor for L1 {
     type Event = MigrateToGateway;
 
-    fn chain_id(event: &Self::Event) -> ChainId {
-        event.chainId.try_into().unwrap()
-    }
-
     fn migration_number(event: &Self::Event) -> u64 {
         event.migrationNumber.try_into().unwrap()
     }
@@ -53,6 +44,12 @@ impl MigrationProcessor for L1 {
 
 pub struct GatewayMigrationWatcher<T> {
     server_notifier_contract: Address,
+    /// The L2 chain ID this node belongs to. Passed as topic1 in `eth_getLogs` so only
+    /// events for this chain are returned by the RPC node.
+    l2_chain_id: ChainId,
+    /// The chain ID of the new settlement layer this watcher is watching migrations toward.
+    /// Used as the argument to `setSettlementLayerChainId` when an event fires.
+    new_sl_chain_id: ChainId,
     sl_chain_id_subpool: SlChainIdSubpool,
 
     _marker: PhantomData<T>,
@@ -63,6 +60,7 @@ impl<T: MigrationProcessor> GatewayMigrationWatcher<T> {
         zk_chain: ZkChain<DynProvider>,
         bridgehub: Bridgehub<DynProvider>,
         chain_id: u64,
+        new_sl_chain_id: ChainId,
         current_migration_number: u64,
         config: L1WatcherConfig,
         sl_chain_id_subpool: SlChainIdSubpool,
@@ -90,8 +88,20 @@ impl<T: MigrationProcessor> GatewayMigrationWatcher<T> {
             }
         })?;
 
+        tracing::error!(
+            event_signature = T::Event::SIGNATURE,
+            selector = %T::Event::SIGNATURE_HASH,
+            contract = %server_notifier_contract,
+            l2_chain_id = chain_id,
+            new_sl_chain_id = new_sl_chain_id,
+            starting_l1_block = next_l1_block,
+            "gateway migration watcher starting"
+        );
+
         let this = Self {
             server_notifier_contract,
+            l2_chain_id: chain_id,
+            new_sl_chain_id,
             sl_chain_id_subpool,
             _marker: PhantomData,
         };
@@ -118,9 +128,23 @@ impl<T: MigrationProcessor> ProcessL1Event for GatewayMigrationWatcher<T> {
         self.server_notifier_contract
     }
 
+    fn topic1_filter(&self) -> Option<B256> {
+        // Filter by the indexed chainId topic so the RPC node returns only events for our chain.
+        Some(B256::from(U256::from(self.l2_chain_id)))
+    }
+
     async fn process_event(&mut self, tx: T::Event, _log: Log) -> Result<(), L1WatcherError> {
-        let envelope =
-            SystemTxEnvelope::set_sl_chain_id(T::chain_id(&tx), T::migration_number(&tx));
+        let migration_number = T::migration_number(&tx);
+
+        tracing::error!(
+            event_signature = T::Event::SIGNATURE,
+            l2_chain_id = self.l2_chain_id,
+            new_sl_chain_id = self.new_sl_chain_id,
+            migration_number,
+            "gateway migration event caught"
+        );
+
+        let envelope = SystemTxEnvelope::set_sl_chain_id(self.new_sl_chain_id, migration_number);
 
         self.sl_chain_id_subpool.insert(envelope).await;
         Ok(())

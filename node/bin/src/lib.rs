@@ -515,36 +515,75 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
         && config.l1_watcher_config.enable_gw_migration_watcher
     {
-        // in case l1 chain id is not equal to sl chain id(which indicates we are currently settling on GW), we watch for migration events of type GW -> L1, and L1 -> GW otherwise.
-        if node_startup_state.l1_state.l1_chain_id != node_startup_state.l1_state.sl_chain_id {
+        // When settling on L1 (l1_chain_id == sl_chain_id), only watch for L1 -> GW migrations.
+        //
+        // When settling on GW (l1_chain_id != sl_chain_id), watch for GW -> L1 migrations AND
+        // also watch for L1 -> GW migrations. The second watcher handles the case where the node
+        // started (or the watcher was enabled) after the migration to GW had already occurred,
+        // so the MigrateToGateway event was never caught and the SetSLChainId system tx was
+        // never included in a block.
+        let l1_chain_id = node_startup_state.l1_state.l1_chain_id;
+        let sl_chain_id = node_startup_state.l1_state.sl_chain_id;
+
+        if l1_chain_id != sl_chain_id {
+            // Currently settling on GW (sl_chain_id is GW's chain ID).
+            //
+            // Watch for future GW -> L1 migrations (new SL = L1).
             tasks.spawn(
                 GatewayMigrationWatcher::<Gateway>::create_watcher(
                     node_startup_state.l1_state.diamond_proxy_l1.clone(),
                     node_startup_state.l1_state.bridgehub_l1.clone(),
                     chain_id,
+                    l1_chain_id,
                     next_migration_number,
                     config.l1_watcher_config.clone().into(),
                     sl_chain_id_subpool.clone(),
                 )
                 .await
-                .expect("failed to start L1 chain id update watcher")
+                .expect("failed to start GW -> L1 migration watcher")
                 .run()
-                .map(report_exit("L1 chain id update watcher")),
+                .map(report_exit("GW -> L1 migration watcher")),
             );
-        } else {
+            // Also watch for L1 -> GW migrations (new SL = GW = sl_chain_id). This catches
+            // the case where the node started after the migration to GW had already occurred,
+            // so the MigrateToGateway event was never processed and SetSLChainId was never
+            // included in a block.
             tasks.spawn(
                 GatewayMigrationWatcher::<L1>::create_watcher(
                     node_startup_state.l1_state.diamond_proxy_l1.clone(),
                     node_startup_state.l1_state.bridgehub_l1.clone(),
                     chain_id,
+                    sl_chain_id,
                     next_migration_number,
                     config.l1_watcher_config.clone().into(),
                     sl_chain_id_subpool.clone(),
                 )
                 .await
-                .expect("failed to start L1 chain id update watcher")
+                .expect("failed to start L1 -> GW migration watcher")
                 .run()
-                .map(report_exit("L1 chain id update watcher")),
+                .map(report_exit("L1 -> GW migration watcher")),
+            );
+        } else {
+            // Currently settling on L1. Watch for future L1 -> GW migrations.
+            // TODO: the new SL chain ID (GW's chain ID) is not known at startup when settling
+            // on L1. This requires adding a `gateway_chain_id` config field to handle correctly.
+            // For now this watcher is a no-op until a migration event fires — at which point
+            // the wrong chain ID would be used. This path should be fixed before a future GW
+            // migration is planned.
+            tasks.spawn(
+                GatewayMigrationWatcher::<L1>::create_watcher(
+                    node_startup_state.l1_state.diamond_proxy_l1.clone(),
+                    node_startup_state.l1_state.bridgehub_l1.clone(),
+                    chain_id,
+                    sl_chain_id,
+                    next_migration_number,
+                    config.l1_watcher_config.clone().into(),
+                    sl_chain_id_subpool.clone(),
+                )
+                .await
+                .expect("failed to start L1 -> GW migration watcher")
+                .run()
+                .map(report_exit("L1 -> GW migration watcher")),
             );
         }
     }

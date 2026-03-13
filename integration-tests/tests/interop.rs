@@ -46,6 +46,8 @@ sol! {
             bytes[] calldata _bundleAttributes
         ) external payable returns (bytes32);
 
+        function interopProtocolFee() external view returns (uint256);
+
         struct InteropCallStarter {
             bytes to;
             bytes data;
@@ -527,10 +529,14 @@ async fn test_interop_bundle_send() -> Result<()> {
     let interop_center = IInteropCenter::new(L2_INTEROP_CENTER_ADDRESS, &chain_a.l2_provider);
     let destination_chain_id = format_evm_v1(chain_b_id);
 
+    // The InteropCenter charges interopProtocolFee per call as msg.value (when not using fixed ZK fees).
+    let protocol_fee = interop_center.interopProtocolFee().call().await?;
+    let bundle_value = protocol_fee * U256::from(calls.len());
+
     // Send sendBundle transaction
     let receipt = interop_center
         .sendBundle(destination_chain_id.clone(), calls, bundle_attributes)
-        .value(U256::ZERO)
+        .value(bundle_value)
         .gas(10_000_000)
         .max_fee_per_gas(1_000_000_000)
         .max_priority_fee_per_gas(0)
@@ -541,9 +547,12 @@ async fn test_interop_bundle_send() -> Result<()> {
         .await
         .context("sendBundle on chain A")?;
 
-    // Extract bundle data from the L1Messenger log (log #3)
-    let l1_messenger_log = receipt.logs().get(3).expect("L1Messenger log not found");
-    assert_eq!(l1_messenger_log.address(), L1_MESSENGER_ADDRESS.as_slice());
+    // Extract bundle data from the L1Messenger log.
+    let l1_messenger_log = receipt
+        .logs()
+        .iter()
+        .find(|log| log.address() == L1_MESSENGER_ADDRESS)
+        .expect("L1Messenger log not found");
 
     // Decode the log data as bytes (it's ABI-encoded)
     let bundle_with_prefix: Bytes =
