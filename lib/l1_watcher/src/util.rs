@@ -1,10 +1,10 @@
 use crate::watcher::L1WatcherError;
 use alloy::consensus::Transaction;
 use alloy::eips::BlockId;
-use alloy::primitives::{Address, B256, BlockNumber, TxHash};
+use alloy::primitives::{Address, B256, BlockNumber, TxHash, U256, keccak256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::Filter;
-use alloy::sol_types::SolEvent;
+use alloy::sol_types::{SolEvent, SolValue};
 use anyhow::Context;
 use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
@@ -13,7 +13,7 @@ use std::time::Duration;
 use zksync_os_batch_types::{BatchInfo, DiscoveredCommittedBatch};
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
-use zksync_os_contract_interface::models::CommitBatchInfo;
+use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
 use zksync_os_contract_interface::{IExecutor, ZkChain};
 use zksync_os_types::ProtocolSemanticVersion;
 
@@ -335,6 +335,66 @@ pub struct CommittedBatch {
 }
 
 impl CommittedBatch {
+    /// Calculate keccak256 hash of BatchOutput part of public input.
+    /// Mirrors `BatchInfo::public_input_hash` but uses the owned `protocol_version`.
+    pub fn public_input_hash(&self) -> B256 {
+        let commit_info = &self.commit_info;
+        let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
+        match self.protocol_version.minor {
+            30 => B256::from(keccak256(
+                (
+                    U256::from(commit_info.chain_id),
+                    commit_info.first_block_timestamp,
+                    commit_info.last_block_timestamp,
+                    U256::from(commit_info.l2_da_commitment_scheme as u8),
+                    commit_info.da_commitment,
+                    U256::from(commit_info.number_of_layer1_txs),
+                    commit_info.priority_operations_hash,
+                    commit_info.l2_to_l1_logs_root_hash,
+                    upgrade_tx_hash,
+                    commit_info.dependency_roots_rolling_hash,
+                )
+                    .abi_encode_packed(),
+            )),
+            31 => B256::from(keccak256(
+                (
+                    U256::from(commit_info.chain_id),
+                    commit_info.first_block_timestamp,
+                    commit_info.last_block_timestamp,
+                    U256::from(commit_info.l2_da_commitment_scheme as u8),
+                    commit_info.da_commitment,
+                    U256::from(commit_info.number_of_layer1_txs),
+                    U256::from(commit_info.number_of_layer2_txs),
+                    commit_info.priority_operations_hash,
+                    commit_info.l2_to_l1_logs_root_hash,
+                    upgrade_tx_hash,
+                    commit_info.dependency_roots_rolling_hash,
+                    U256::from(commit_info.sl_chain_id),
+                )
+                    .abi_encode_packed(),
+            )),
+            _ => panic!("Unsupported protocol version: {}", self.protocol_version),
+        }
+    }
+
+    /// Convert into `StoredBatchInfo` suitable for L1 operations.
+    /// Mirrors `BatchInfo::into_stored` but uses the owned `protocol_version`.
+    /// `last_block_timestamp` is set to `Some(0)` intentionally — the field is unused.
+    pub fn into_stored(self) -> StoredBatchInfo {
+        let commitment = self.public_input_hash();
+        let commit_info = self.commit_info;
+        StoredBatchInfo {
+            batch_number: commit_info.batch_number,
+            state_commitment: commit_info.new_state_commitment,
+            number_of_layer1_txs: commit_info.number_of_layer1_txs,
+            priority_operations_hash: commit_info.priority_operations_hash,
+            dependency_roots_rolling_hash: commit_info.dependency_roots_rolling_hash,
+            l2_to_l1_logs_root_hash: commit_info.l2_to_l1_logs_root_hash,
+            commitment,
+            last_block_timestamp: Some(0),
+        }
+    }
+
     /// Fetches extra information that is not available inside `CommitBatchInfo` from L1 to construct
     /// `CommitedBatch`. Requires `l1_block_id` where the batch was committed.
     pub async fn fetch(
@@ -416,4 +476,93 @@ pub async fn fetch_commit_calldata(
             .expect("mined transaction has no block number"),
     );
     CommittedBatch::fetch(zk_chain, commit_batch_info, l1_block_id).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme};
+    use zksync_os_types::ProtocolSemanticVersion;
+
+    fn make_committed_batch(minor: u64) -> CommittedBatch {
+        CommittedBatch {
+            commit_info: CommitBatchInfo {
+                batch_number: 1,
+                new_state_commitment: B256::ZERO,
+                number_of_layer1_txs: 0,
+                number_of_layer2_txs: 0,
+                priority_operations_hash: B256::ZERO,
+                dependency_roots_rolling_hash: B256::ZERO,
+                l2_to_l1_logs_root_hash: B256::ZERO,
+                l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
+                da_commitment: B256::ZERO,
+                first_block_timestamp: 0,
+                first_block_number: None,
+                last_block_timestamp: 0,
+                last_block_number: None,
+                chain_id: 1,
+                operator_da_input: vec![],
+                sl_chain_id: 1,
+            },
+            upgrade_tx_hash: None,
+            protocol_version: ProtocolSemanticVersion::new(0, minor, 0),
+        }
+    }
+
+    #[test]
+    fn public_input_hash_matches_batch_info_v30() {
+        use zksync_os_batch_types::BatchInfo;
+
+        let cb = make_committed_batch(30);
+        let bi = BatchInfo {
+            commit_info: cb.commit_info.clone(),
+            upgrade_tx_hash: cb.upgrade_tx_hash,
+            blob_sidecar: None,
+        };
+        assert_eq!(
+            cb.public_input_hash(),
+            bi.public_input_hash(&cb.protocol_version)
+        );
+    }
+
+    #[test]
+    fn public_input_hash_matches_batch_info_v31() {
+        use zksync_os_batch_types::BatchInfo;
+
+        let cb = make_committed_batch(31);
+        let bi = BatchInfo {
+            commit_info: cb.commit_info.clone(),
+            upgrade_tx_hash: cb.upgrade_tx_hash,
+            blob_sidecar: None,
+        };
+        assert_eq!(
+            cb.public_input_hash(),
+            bi.public_input_hash(&cb.protocol_version)
+        );
+    }
+
+    #[test]
+    fn into_stored_matches_batch_info() {
+        use zksync_os_batch_types::BatchInfo;
+
+        let cb = make_committed_batch(31);
+        let bi = BatchInfo {
+            commit_info: cb.commit_info.clone(),
+            upgrade_tx_hash: cb.upgrade_tx_hash,
+            blob_sidecar: None,
+        };
+        let expected = bi.into_stored(&cb.protocol_version);
+        let actual = cb.into_stored();
+        assert_eq!(actual.batch_number, expected.batch_number);
+        assert_eq!(actual.commitment, expected.commitment);
+        assert_eq!(actual.state_commitment, expected.state_commitment);
+        assert_eq!(
+            actual.priority_operations_hash,
+            expected.priority_operations_hash
+        );
+        assert_eq!(
+            actual.l2_to_l1_logs_root_hash,
+            expected.l2_to_l1_logs_root_hash
+        );
+    }
 }
