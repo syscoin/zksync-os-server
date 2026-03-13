@@ -395,6 +395,24 @@ pub struct SequencerConfig {
     #[config(default, with = Serde![*])]
     /// List of (block_number, db_key) pairs to override when downloading replay records.
     pub en_replay_record_overrides: Vec<(u64, Bytes)>,
+
+    /// Deployment filter configuration.
+    #[config(nest)]
+    pub deployment_filter: DeploymentFilterConfig,
+}
+
+/// Configuration for the deployment filter.
+/// When enabled, only transactions from allowed deployers can deploy contracts.
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
+#[config(derive(Default))]
+pub struct DeploymentFilterConfig {
+    /// Whether the deployment filter is enabled.
+    #[config(default_t = false)]
+    pub enabled: bool,
+
+    /// List of addresses allowed to deploy contracts.
+    #[config(default, with = Serde![*])]
+    pub allowed_deployers: Vec<Address>,
 }
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
@@ -999,6 +1017,18 @@ impl From<&Config> for zksync_os_sequencer::config::SequencerConfig {
             block_pubdata_limit_bytes: c.sequencer_config.block_pubdata_limit_bytes,
             max_blocks_to_produce: c.sequencer_config.max_blocks_to_produce,
             interop_roots_per_tx: c.sequencer_config.interop_roots_per_tx,
+            deployment_filter: if c.sequencer_config.deployment_filter.enabled {
+                zksync_os_multivm::deployment_filter::Config::AllowList(
+                    c.sequencer_config
+                        .deployment_filter
+                        .allowed_deployers
+                        .iter()
+                        .copied()
+                        .collect(),
+                )
+            } else {
+                zksync_os_multivm::deployment_filter::Config::Unrestricted
+            },
         }
     }
 }

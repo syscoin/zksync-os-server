@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
+use zksync_os_multivm::deployment_filter;
 use zksync_os_types::NodeRole;
 
 #[derive(Clone, Debug)]
@@ -28,4 +29,8 @@ pub struct SequencerConfig {
 
     /// Max number of interop roots to be included in a single transaction
     pub interop_roots_per_tx: usize,
+
+    /// Deployment filter configuration.
+    /// When enabled, only transactions from allowed deployers can deploy contracts.
+    pub deployment_filter: deployment_filter::Config,
 }

@@ -6,10 +6,12 @@ use crate::execution::utils::save_dump;
 use crate::model::blocks::{BlockCommand, BlockCommandType};
 use anyhow::Context;
 use async_trait::async_trait;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
-use zksync_os_interface::tracing::{NopTracer, NopValidator};
 use zksync_os_interface::types::BlockOutput;
+use zksync_os_multivm::deployment_filter;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
@@ -109,10 +111,22 @@ where
             let exec_view = state_overlay_buffer
                 .sync_with_base_and_build_view_for_block(&self.state, block_number)?;
 
-            let (block_output, replay_record, purged_txs, strict_subpool_cleanup) =
-                execute_block_in_vm(prepared_command, exec_view, &latency_tracker, NopTracer, NopValidator)
+            let is_produce = matches!(cmd_type, BlockCommandType::Produce);
+            let (block_output, replay_record, purged_txs, strict_subpool_cleanup) = {
+                // Deployment filter only applies to Produce commands, not Replay/Rebuild.
+                let filter_config = if is_produce {
+                    self.config.deployment_filter.clone()
+                } else {
+                    deployment_filter::Config::Unrestricted
+                };
+                let unauthorized_flag = Arc::new(AtomicBool::new(false));
+                let tracer =
+                    deployment_filter::Tracer::new(unauthorized_flag.clone(), filter_config);
+                let validator = deployment_filter::Validator::new(unauthorized_flag);
+                execute_block_in_vm(prepared_command, exec_view, &latency_tracker, tracer, validator)
                     .await
-                    .map_err(|dump| {
+            }
+            .map_err(|dump| {
                         let error = anyhow::anyhow!("{}", dump.error);
                         tracing::info!("Saving dump..");
                         if let Err(err) = save_dump(self.config.block_dump_path.clone(), dump) {
@@ -120,7 +134,7 @@ where
                         }
                         error
                     })
-                    .context("execute_block")?;
+                    .context("execute_block_in_vm")?;
 
             let time_since_last_block = last_processed_block_at
                 .map(|last_processed_block_at| last_processed_block_at.elapsed());

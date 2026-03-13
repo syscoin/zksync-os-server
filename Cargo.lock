@@ -14361,6 +14361,7 @@ dependencies = [
  "test-casing",
  "tracing",
  "url",
+ "zksync_os_evm_errors",
  "zksync_os_interface",
  "zksync_os_types",
 ]

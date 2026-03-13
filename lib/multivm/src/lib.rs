@@ -17,6 +17,7 @@ use zksync_os_interface::types::{BlockOutput, TxOutput};
 
 mod adapter;
 pub mod apps;
+pub mod deployment_filter;
 
 pub use adapter::AbiTxSource;
 use zksync_os_types::ExecutionVersion;
