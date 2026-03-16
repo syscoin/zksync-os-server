@@ -568,10 +568,13 @@ impl MultiChainTesterBuilder {
     }
 
     pub async fn build(self) -> anyhow::Result<MultiChainTester> {
-        let chain_nodes = self.chains.unwrap_or_else(|| {
-            vec![MultiChainNode::Gateway, MultiChainNode::L1Settling]
-        });
-        ensure!(!chain_nodes.is_empty(), "at least one chain must be requested");
+        let chain_nodes = self
+            .chains
+            .unwrap_or_else(|| vec![MultiChainNode::Gateway, MultiChainNode::L1Settling]);
+        ensure!(
+            !chain_nodes.is_empty(),
+            "at least one chain must be requested"
+        );
 
         let l1 = AnvilL1::start(ChainLayout::MultiChain {
             protocol_version: NEXT_PROTOCOL_VERSION,
@@ -593,14 +596,13 @@ impl MultiChainTesterBuilder {
                 .genesis_config
                 .chain_id
                 .expect("Chain ID must be set in chain config");
-            let gateway_rpc_url = chain_config
-                .general_config
-                .gateway_rpc_url
-                .map(|existing_gateway_url| {
-                    l1_settling_rpc_url
-                        .clone()
-                        .unwrap_or(existing_gateway_url)
-                });
+            let gateway_rpc_url =
+                chain_config
+                    .general_config
+                    .gateway_rpc_url
+                    .map(|existing_gateway_url| {
+                        l1_settling_rpc_url.clone().unwrap_or(existing_gateway_url)
+                    });
             let ephemeral_state = chain_config.general_config.ephemeral_state;
             let l1_sender_config = chain_config.l1_sender_config.clone();
             let bridgehub_address = chain_config.genesis_config.bridgehub_address;
