@@ -36,6 +36,7 @@ mod network;
 mod prover_tester;
 pub mod provider;
 pub mod upgrade;
+pub mod version_restart;
 mod utils;
 
 /// L1 chain id as expected by contracts deployed in `l1-state.json.gz`

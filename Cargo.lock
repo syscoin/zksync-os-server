@@ -14128,6 +14128,7 @@ dependencies = [
  "futures",
  "regex",
  "reqwest",
+ "semver 1.0.26",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -14145,6 +14146,7 @@ dependencies = [
  "zksync_os_rpc_api",
  "zksync_os_server",
  "zksync_os_state_full_diffs",
+ "zksync_os_storage_api",
  "zksync_os_types",
 ]
 

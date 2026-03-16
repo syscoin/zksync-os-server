@@ -297,26 +297,22 @@ jobs:
           name: zksync-os-server-${{ github.sha }}
           path: .
 
-      - name: Build loadbase
-        run: cargo build --manifest-path loadbase/Cargo.toml --release --bin loadbase
+      - name: Make server binary executable
+        run: chmod +x "./zksync-os-server-${{ github.sha }}"
 
-      - name: Run latest -> previous minor -> latest version upgrade scenario
+      - name: Run version restart integration tests
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          CURRENT_BIN="${PWD}/zksync-os-server-${{ github.sha }}"
-          LOADBASE_PATH="${PWD}/loadbase/target/release/loadbase"
-          RELEASE_DIR="${RUNNER_TEMP}/version-upgrade-test-release"
-          SHARED_DB="${RUNNER_TEMP}/version-upgrade-test-db"
-          LOG_DIR="${RUNNER_TEMP}/version-upgrade-test-logs"
-          ./.github/scripts/run-version-upgrade-test.sh
+          ZKSYNC_OS_SERVER_BIN: ${{ github.workspace }}/zksync-os-server-${{ github.sha }}
+          WORKSPACE_DIR: ${{ github.workspace }}
+        run: cargo test -p zksync_os_integration_tests --test version_restart -- --nocapture
 
-      - name: Upload version upgrade logs
+      - name: Upload version upgrade artifacts
         if: always() && !cancelled()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f3 # v6.0.0
         with:
-          name: version-upgrade-test-logs-${{ github.run_id }}
-          path: ${{ runner.temp }}/version-upgrade-test-logs
+          name: version-upgrade-test-artifacts-${{ github.run_id }}
+          path: server-binaries
           if-no-files-found: warn
           retention-days: 7
 
