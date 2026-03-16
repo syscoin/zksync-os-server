@@ -51,23 +51,6 @@ pub mod v6 {
         super::materialize_app(base_dir, "v6", "multiblock_batch.bin", MULTIBLOCK_BATCH)
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn app_paths_are_scoped_to_the_requested_base_dir() {
-            let dir_a = tempfile::tempdir().unwrap();
-            let dir_b = tempfile::tempdir().unwrap();
-
-            let path_a = singleblock_batch_path(dir_a.path());
-            let path_b = singleblock_batch_path(dir_b.path());
-
-            assert_ne!(path_a, path_b);
-            assert!(path_a.exists());
-            assert!(path_b.exists());
-        }
-    }
 }
 
 pub mod v7 {
@@ -110,21 +93,27 @@ pub mod v7 {
         super::materialize_app(base_dir, "v7", "multiblock_batch.bin", MULTIBLOCK_BATCH)
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+}
 
-        #[test]
-        fn app_paths_are_scoped_to_the_requested_base_dir() {
-            let dir_a = tempfile::tempdir().unwrap();
-            let dir_b = tempfile::tempdir().unwrap();
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use test_casing::test_casing;
 
-            let path_a = singleblock_batch_path(dir_a.path());
-            let path_b = singleblock_batch_path(dir_b.path());
+    const PATH_FNS: [fn(&Path) -> PathBuf; 2] = [
+        super::v6::singleblock_batch_path,
+        super::v7::singleblock_batch_path,
+    ];
 
-            assert_ne!(path_a, path_b);
-            assert!(path_a.exists());
-            assert!(path_b.exists());
-        }
+    #[test_casing(2, PATH_FNS)]
+    fn app_paths_are_scoped_to_the_requested_base_dir(path_fn: fn(&Path) -> PathBuf) {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+
+        let path_a = path_fn(dir_a.path());
+        let path_b = path_fn(dir_b.path());
+        assert_ne!(path_a, path_b);
+        assert!(path_a.exists());
+        assert!(path_b.exists());
     }
 }
