@@ -36,7 +36,7 @@ impl AnyZksProtocolVersion for ZksProtocolV1 {
     const VERSION: ZksVersion = ZksVersion::Zks1;
 }
 
-/// Protocol version 2 updates interop root indexing to use log IDs instead of block/event indexes.
+/// Protocol version 2 updates replay records to use indexes for new watchers.
 #[derive(Debug, Clone)]
 pub struct ZksProtocolV2;
 
@@ -65,10 +65,10 @@ pub enum ZksVersion {
 
 impl ZksVersion {
     /// The latest known zks version
-    pub const LATEST: Self = Self::Zks2;
+    pub const LATEST: Self = Self::Zks1;
 
     /// All known zks versions
-    pub const ALL_VERSIONS: &'static [Self] = &[Self::Zks0, Self::Zks1, Self::Zks2];
+    pub const ALL_VERSIONS: &'static [Self] = &[Self::Zks0, Self::Zks1];
 
     /// Returns the max message id for the given version.
     const fn max_message_id(&self) -> u8 {

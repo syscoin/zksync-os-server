@@ -285,6 +285,13 @@ pub async fn find_l1_block_by_interop_root_id(
         return Ok(0);
     }
 
+    // Binary search via `eth_call` with historical block IDs is not supported on Anvil with
+    // `--load-state`. Fall back to block 0 so the watcher starts from genesis and catches up
+    // via `eth_getLogs`, which Anvil does support.
+    if bridgehub.provider().get_chain_id().await? == ANVIL_L1_CHAIN_ID {
+        return Ok(0);
+    }
+
     let message_root_address = bridgehub.message_root_address().await?;
     let message_root = Arc::new(MessageRoot::new(
         message_root_address,

@@ -344,7 +344,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 .next_l1_priority_id
                 .set(self.next_l1_priority_id);
         }
-        if let Some(last_interop_log_id) = outcome.last_interop_log_index {
+        if let Some(last_interop_log_id) = outcome.last_interop_log_id {
             self.next_interop_tx_allowed_after = Instant::now() + self.service_block_delay;
             self.next_interop_root_id = last_interop_log_id + 1;
         }
