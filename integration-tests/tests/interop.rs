@@ -2,12 +2,10 @@
 
 use alloy::{
     eips::eip1559::Eip1559Estimation,
-    network::EthereumWallet,
     primitives::{Address, Bytes, FixedBytes, U256, address, keccak256},
     providers::utils::Eip1559Estimator,
-    providers::{PendingTransactionBuilder, Provider, ProviderBuilder},
+    providers::{PendingTransactionBuilder, Provider},
     rpc::types::{TransactionReceipt, TransactionRequest},
-    signers::local::LocalSigner,
     sol,
     sol_types::{SolCall, SolType, SolValue},
 };
@@ -219,11 +217,7 @@ fn build_second_bridge_calldata(
 async fn setup_l1_token_on_chain_a(
     chain_a: &Tester,
     l2_recipient: Address,
-) -> Result<(
-    TestERC20::TestERC20Instance<EthDynProvider>,
-    U256,
-    [u8; 32],
-)> {
+) -> Result<(TestERC20::TestERC20Instance<EthDynProvider>, U256, [u8; 32])> {
     let deposit_amount = U256::from(1_000_000) * U256::from(10).pow(U256::from(18));
 
     // Deploy TestERC20 on L1 and mint to the L1 wallet.
@@ -237,7 +231,10 @@ async fn setup_l1_token_on_chain_a(
     .context("deploy L1 ERC20")?;
 
     l1_token
-        .mint(chain_a.l1_wallet().default_signer().address(), deposit_amount)
+        .mint(
+            chain_a.l1_wallet().default_signer().address(),
+            deposit_amount,
+        )
         .send()
         .await?
         .expect_successful_receipt()
@@ -587,8 +584,7 @@ async fn test_interop_bundle_send() -> Result<()> {
     fund_wallet_via_l1_deposit(chain_a, sender, deposit_amount).await?;
     fund_wallet_via_l1_deposit(chain_b, sender, deposit_amount).await?;
 
-    let (token, _deposited_amount, asset_id) =
-        setup_l1_token_on_chain_a(chain_a, sender).await?;
+    let (token, _deposited_amount, asset_id) = setup_l1_token_on_chain_a(chain_a, sender).await?;
 
     let amount_to_send = U256::from(100) * U256::from(10).pow(U256::from(18));
 
