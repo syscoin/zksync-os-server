@@ -1,9 +1,9 @@
-//! Wire format version 2.
-//!
-//! Changes from v1: replaced `starting_interop_event_index: InteropRootsLogIndex`
-//! with `starting_interop_root_id: u64`. Added `starting_migration_number: u64`.
-//!
 //! Do not change this file under any circumstances. Copy it instead. May be deleted when obsolete.
+
+// Difference from v1:
+// - Added `starting_migration_number` field to `ReplayRecord`.
+// - Added `starting_interop_fee_number` field to `ReplayRecord`.
+// - Replaced `starting_interop_event_index: InteropRootsLogIndex` with `starting_interop_root_id: u64`.
 
 use crate::wire::{BlockHashes, ForcedPreimage};
 use alloy::primitives::{Address, B256, U256};
