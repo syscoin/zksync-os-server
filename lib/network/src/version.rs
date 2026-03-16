@@ -59,7 +59,7 @@ pub enum ZksVersion {
     Zks0 = 0,
     /// The `zks` protocol version 1.
     Zks1 = 1,
-    /// The `zks` protocol version 2. Uses log IDs for interop root indexing.
+    /// The `zks` protocol version 2.
     Zks2 = 2,
 }
 
