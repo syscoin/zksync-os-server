@@ -4,7 +4,7 @@ use std::time::Duration;
 use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::MarkingTxStream;
 use zksync_os_storage_api::ReplayRecord;
-use zksync_os_types::{InteropRootsLogIndex, L1TxSerialId, ProtocolSemanticVersion};
+use zksync_os_types::{L1TxSerialId, ProtocolSemanticVersion};
 
 /// `BlockCommand`s drive the sequencer execution.
 /// Produced by `CommandProducer` - first blocks are `Replay`ed from block replay storage
@@ -96,7 +96,7 @@ pub struct PreparedBlockCommand<'a> {
     /// Contract preimages to be included before the block execution.
     /// Can be non-empty e.g. when processing upgrade transactions.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
-    pub starting_interop_event_index: InteropRootsLogIndex,
+    pub starting_interop_root_id: u64,
     pub starting_migration_number: u64,
     pub starting_interop_fee_number: u64,
     pub interop_roots_per_block: u64,

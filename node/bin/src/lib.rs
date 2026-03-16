@@ -101,8 +101,7 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    InteropRootsLogIndex, ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState,
-    UpgradeInfo, UpgradeMetadata,
+    ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata,
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -468,11 +467,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .as_ref()
         .map_or(0, |record| record.starting_l1_priority_id);
 
-    let next_interop_event_index = first_replay_record
+    let next_interop_root_id = first_replay_record
         .as_ref()
-        .map_or(InteropRootsLogIndex::default(), |record| {
-            record.starting_interop_event_index.clone()
-        });
+        .map_or(0u64, |record| record.starting_interop_root_id);
 
     let next_migration_number = first_replay_record
         .as_ref()
@@ -516,7 +513,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             InteropWatcher::create_watcher(
                 node_startup_state.l1_state.bridgehub_sl.clone(), // TODO: what bridgehub to use here?
                 config.l1_watcher_config.clone().into(),
-                next_interop_event_index.clone(),
+                next_interop_root_id,
                 interop_roots_subpool.clone(),
             )
             .await
@@ -680,7 +677,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     );
     let block_context_provider = BlockContextProvider::new(
         next_l1_priority_id,
-        next_interop_event_index,
+        next_interop_root_id,
         next_migration_number,
         next_interop_fee_number,
         pool,

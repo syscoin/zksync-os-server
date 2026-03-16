@@ -9,9 +9,7 @@ use zksync_os_interface::types::{BlockContext, BlockHashes, BlockOutput};
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{MarkingTxStream, Pool};
 use zksync_os_storage_api::ReplayRecord;
-use zksync_os_types::{
-    ExecutionVersion, InteropRootsLogIndex, ProtocolSemanticVersion, ZkEnvelope,
-};
+use zksync_os_types::{ExecutionVersion, ProtocolSemanticVersion, ZkEnvelope};
 
 /// Component that turns `BlockCommand`s into `PreparedBlockCommand`s.
 /// Last step in the stream where `Produce` and `Replay` are differentiated.
@@ -25,7 +23,7 @@ use zksync_os_types::{
 ///  this is easily fixable if needed.
 pub struct BlockContextProvider<Subpool> {
     next_l1_priority_id: u64,
-    next_interop_event_index: InteropRootsLogIndex,
+    next_interop_root_id: u64,
     next_migration_number: u64,
     next_interop_fee_number: u64,
     pool: Pool<Subpool>,
@@ -52,7 +50,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         next_l1_priority_id: u64,
-        next_interop_event_index: InteropRootsLogIndex,
+        next_interop_root_id: u64,
         next_migration_number: u64,
         next_interop_fee_number: u64,
         pool: Pool<Subpool>,
@@ -73,7 +71,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     ) -> Self {
         Self {
             next_l1_priority_id,
-            next_interop_event_index,
+            next_interop_root_id,
             next_migration_number,
             next_interop_fee_number,
             pool,
@@ -184,7 +182,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages,
-                    starting_interop_event_index: self.next_interop_event_index.clone(),
+                    starting_interop_root_id: self.next_interop_root_id,
                     starting_migration_number: self.next_migration_number,
                     starting_interop_fee_number: self.next_interop_fee_number,
                     interop_roots_per_block: self.interop_roots_per_block,
@@ -225,7 +223,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: Some(record.block_output_hash),
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: record.force_preimages,
-                    starting_interop_event_index: record.starting_interop_event_index.clone(),
+                    starting_interop_root_id: record.starting_interop_root_id,
                     starting_migration_number: record.starting_migration_number,
                     starting_interop_fee_number: record.starting_interop_fee_number,
                     interop_roots_per_block: self.interop_roots_per_block,
@@ -309,7 +307,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: rebuild.replay_record.force_preimages,
-                    starting_interop_event_index: self.next_interop_event_index.clone(),
+                    starting_interop_root_id: self.next_interop_root_id,
                     starting_migration_number: self.next_migration_number,
                     starting_interop_fee_number: self.next_interop_fee_number,
                     interop_roots_per_block: self.interop_roots_per_block,
@@ -346,12 +344,9 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 .next_l1_priority_id
                 .set(self.next_l1_priority_id);
         }
-        if let Some(last_interop_log_index) = outcome.last_interop_log_index {
+        if let Some(last_interop_log_id) = outcome.last_interop_log_index {
             self.next_interop_tx_allowed_after = Instant::now() + self.service_block_delay;
-            self.next_interop_event_index = InteropRootsLogIndex {
-                block_number: last_interop_log_index.block_number,
-                index_in_block: last_interop_log_index.index_in_block + 1,
-            };
+            self.next_interop_root_id = last_interop_log_id + 1;
         }
 
         if let Some(last_migration_number) = outcome.last_migration_number {

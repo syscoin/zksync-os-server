@@ -48,7 +48,7 @@ impl TryFrom<v0::ReplayRecord> for StorageReplayRecord {
             protocol_version: ProtocolSemanticVersion::new(0, 0, 0),
             block_output_hash: Default::default(),
             force_preimages: vec![],
-            starting_interop_event_index: InteropRootsLogIndex::default(),
+            starting_interop_root_id: 0,
             starting_migration_number: 0,
             starting_interop_fee_number: 0,
         })
@@ -106,7 +106,8 @@ impl From<StorageReplayRecord> for v1::ReplayRecord {
                     preimage: Bytes::from(preimage),
                 })
                 .collect(),
-            starting_interop_event_index: value.starting_interop_event_index,
+            // v1 format uses InteropRootsLogIndex; default it since log_id is not recoverable
+            starting_interop_event_index: InteropRootsLogIndex::default(),
         }
     }
 }
@@ -153,7 +154,8 @@ impl TryFrom<v1::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
-            starting_interop_event_index: value.starting_interop_event_index,
+            // v1 format has InteropRootsLogIndex; map to 0 since block/index is not the log_id
+            starting_interop_root_id: 0,
             starting_migration_number: 0,
             starting_interop_fee_number: 0,
         })
@@ -190,6 +192,26 @@ impl From<InterfaceBlockContext> for v2::BlockContext {
     }
 }
 
+impl From<v2::BlockContext> for InterfaceBlockContext {
+    fn from(value: v2::BlockContext) -> Self {
+        Self {
+            chain_id: value.chain_id,
+            block_number: value.block_number,
+            block_hashes: InterfaceBlockHashes(value.block_hashes.0),
+            timestamp: value.timestamp,
+            eip1559_basefee: value.eip1559_basefee,
+            pubdata_price: value.pubdata_price,
+            native_price: value.native_price,
+            coinbase: value.coinbase,
+            gas_limit: value.gas_limit,
+            pubdata_limit: value.pubdata_limit,
+            mix_hash: value.mix_hash,
+            execution_version: value.execution_version,
+            blob_fee: value.blob_fee,
+        }
+    }
+}
+
 impl From<StorageReplayRecord> for v2::ReplayRecord {
     fn from(value: StorageReplayRecord) -> Self {
         Self {
@@ -211,29 +233,9 @@ impl From<StorageReplayRecord> for v2::ReplayRecord {
                     preimage: Bytes::from(preimage),
                 })
                 .collect(),
-            starting_interop_event_index: value.starting_interop_event_index,
+            starting_interop_root_id: value.starting_interop_root_id,
             starting_migration_number: value.starting_migration_number,
             starting_interop_fee_number: value.starting_interop_fee_number,
-        }
-    }
-}
-
-impl From<v2::BlockContext> for InterfaceBlockContext {
-    fn from(value: v2::BlockContext) -> Self {
-        Self {
-            chain_id: value.chain_id,
-            block_number: value.block_number,
-            block_hashes: InterfaceBlockHashes(value.block_hashes.0),
-            timestamp: value.timestamp,
-            eip1559_basefee: value.eip1559_basefee,
-            pubdata_price: value.pubdata_price,
-            native_price: value.native_price,
-            coinbase: value.coinbase,
-            gas_limit: value.gas_limit,
-            pubdata_limit: value.pubdata_limit,
-            mix_hash: value.mix_hash,
-            execution_version: value.execution_version,
-            blob_fee: value.blob_fee,
         }
     }
 }
@@ -260,7 +262,7 @@ impl TryFrom<v2::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
-            starting_interop_event_index: value.starting_interop_event_index,
+            starting_interop_root_id: value.starting_interop_root_id,
             starting_migration_number: value.starting_migration_number,
             starting_interop_fee_number: value.starting_interop_fee_number,
         })

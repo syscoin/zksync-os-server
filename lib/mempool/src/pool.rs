@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
-    InteropRootsLogIndex, L1TxSerialId, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
+    L1TxSerialId, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
 
 /// General pool that provides unified access to all transaction sources in the system.
@@ -273,8 +273,8 @@ pub struct StreamOutcome<'a> {
 
 #[derive(Debug, Default)]
 pub struct StateChangeOutcome {
-    /// Last interop log index that was imported after canonical state change.
-    pub last_interop_log_index: Option<InteropRootsLogIndex>,
+    /// Last interop log_id that was imported after canonical state change.
+    pub last_interop_log_index: Option<u64>,
     /// Last L1 priority ID that was executed after canonical state change.
     pub last_l1_priority_id: Option<L1TxSerialId>,
     /// Last migration number that was executed after canonical state change.

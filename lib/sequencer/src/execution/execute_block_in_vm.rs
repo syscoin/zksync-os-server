@@ -371,7 +371,7 @@ pub async fn execute_block_in_vm<V: ViewState>(
             command.protocol_version,
             block_hash_output,
             command.force_preimages,
-            command.starting_interop_event_index,
+            command.starting_interop_root_id,
             command.starting_migration_number,
             command.starting_interop_fee_number,
         ),

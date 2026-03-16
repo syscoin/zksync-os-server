@@ -1,16 +1,14 @@
-//! We need to not accidentally change the replay wire format but there is no way in Rust to get a
-//! stable unique ID for a type, so instead we define it in this separate file.
+//! Wire format version 2.
+//!
+//! Changes from v1: replaced `starting_interop_event_index: InteropRootsLogIndex`
+//! with `starting_interop_root_id: u64`. Added `starting_migration_number: u64`.
 //!
 //! Do not change this file under any circumstances. Copy it instead. May be deleted when obsolete.
-
-// Difference from v1:
-// - Added `starting_migration_number` field to `ReplayRecord`.
-// - Added `starting_interop_fee_number` field to `ReplayRecord`.
 
 use crate::wire::{BlockHashes, ForcedPreimage};
 use alloy::primitives::{Address, B256, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use zksync_os_types::{InteropRootsLogIndex, L1TxSerialId, ProtocolSemanticVersion, ZkEnvelope};
+use zksync_os_types::{L1TxSerialId, ProtocolSemanticVersion, ZkEnvelope};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 pub struct ReplayRecord {
@@ -21,7 +19,7 @@ pub struct ReplayRecord {
     pub protocol_version: ProtocolSemanticVersion,
     pub block_output_hash: B256,
     pub force_preimages: Vec<ForcedPreimage>,
-    pub starting_interop_event_index: InteropRootsLogIndex,
+    pub starting_interop_root_id: u64,
     pub starting_migration_number: u64,
     pub starting_interop_fee_number: u64,
 }

@@ -14,7 +14,7 @@ use zksync_os_batch_types::{BatchInfo, DiscoveredCommittedBatch};
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::CommitBatchInfo;
-use zksync_os_contract_interface::{IExecutor, ZkChain};
+use zksync_os_contract_interface::{Bridgehub, IExecutor, MessageRoot, ZkChain};
 use zksync_os_types::ProtocolSemanticVersion;
 
 pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
@@ -173,14 +173,14 @@ pub async fn find_l1_commit_block_by_batch_number(
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<BlockNumber> {
+    if batch_number == 0 {
+        // For genesis (no batches committed yet) return 0: the watcher will scan forward from there.
+        return Ok(0);
+    }
+
     if zk_chain.provider().get_chain_id().await? == ANVIL_L1_CHAIN_ID {
         // Binary search may error on Anvil with `--load-state` - as it doesn't support `eth_call`
         // for historical blocks. We run linear search as a fallback.
-        if batch_number == 0 {
-            // For genesis we must return L1 block where `zk_chain` got deployed. For Anvil it's okay
-            // to return 0 here as the chain should not be long anyway.
-            return Ok(0);
-        }
         return find_last_matching_event::<ReportCommittedBatchRangeZKsyncOS>(
             *zk_chain.address(),
             zk_chain.provider(),
@@ -266,6 +266,9 @@ pub async fn find_l1_execute_block_by_batch_number(
     zk_chain: ZkChain<DynProvider>,
     batch_number: u64,
 ) -> anyhow::Result<BlockNumber> {
+    if batch_number == 0 {
+        return Ok(0);
+    }
     // Execution cannot be reverted, so unlike in `find_l1_commit_block_by_batch_number`, we do not need
     // to take L1 reverts into account here.
     find_l1_block_by_predicate(Arc::new(zk_chain), 0, move |zk, block| async move {
@@ -273,6 +276,55 @@ pub async fn find_l1_execute_block_by_batch_number(
         Ok(res >= batch_number)
     })
     .await
+}
+
+/// Finds the first L1 block where `totalPublishedInteropRoots >= next_interop_root_id`.
+/// Uses binary search for efficiency.
+pub async fn find_l1_block_by_interop_root_id(
+    bridgehub: Bridgehub<DynProvider>,
+    next_interop_root_id: u64,
+) -> anyhow::Result<BlockNumber> {
+    if next_interop_root_id == 0 {
+        return Ok(0);
+    }
+
+    let message_root_address = bridgehub.message_root_address().await?;
+    let message_root = Arc::new(MessageRoot::new(
+        message_root_address,
+        bridgehub.provider().clone(),
+    ));
+
+    let latest = message_root.provider().get_block_number().await?;
+
+    let guarded_predicate =
+        async |message_root: Arc<MessageRoot<DynProvider>>, block: u64| -> anyhow::Result<bool> {
+            if !message_root.code_exists_at_block(block.into()).await? {
+                return Ok(false);
+            }
+            let res = message_root
+                .total_published_interop_roots(block.into())
+                .await?;
+            Ok(res >= next_interop_root_id)
+        };
+
+    if !guarded_predicate(message_root.clone(), latest).await? {
+        anyhow::bail!(
+            "Condition not satisfied up to latest block: contract not deployed yet \
+             or target not reached.",
+        );
+    }
+
+    let (mut lo, mut hi) = (0, latest);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if guarded_predicate(message_root.clone(), mid).await? {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    Ok(lo)
 }
 
 /// Fetches and decodes stored batch data for batch `batch_number` that is expected to have been

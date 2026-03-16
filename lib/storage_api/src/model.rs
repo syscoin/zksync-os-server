@@ -3,8 +3,7 @@ use alloy::rlp::{RlpDecodable, RlpEncodable};
 use serde::{Deserialize, Serialize};
 use zksync_os_interface::types::BlockContext;
 use zksync_os_types::{
-    InteropRootsLogIndex, L1TxSerialId, ProtocolSemanticVersion, ZkEnvelope, ZkReceiptEnvelope,
-    ZkTransaction,
+    L1TxSerialId, ProtocolSemanticVersion, ZkEnvelope, ZkReceiptEnvelope, ZkTransaction,
 };
 
 #[derive(Debug, Clone, RlpEncodable, RlpDecodable)]
@@ -51,9 +50,9 @@ pub struct ReplayRecord {
     pub block_output_hash: B256,
     /// Forced preimages to be included before the block execution.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
-    /// Event index(block number and index in block) of the interop root tx executed first in the block
-    /// If there is no interop root tx in the block, equals to the previous block's value
-    pub starting_interop_event_index: InteropRootsLogIndex,
+    /// Log id of the first interop root included in this block.
+    /// If there is no interop root tx in the block, equals to the previous block's value.
+    pub starting_interop_root_id: u64,
     /// Migration number at the beginning of the block. If there is no migration event in the block, equals to the previous block's value
     pub starting_migration_number: u64,
     /// Interop fee update number at the beginning of the block. If there is no interop fee update
@@ -72,7 +71,7 @@ impl PartialEq for ReplayRecord {
             && self.protocol_version == other.protocol_version
             && self.block_output_hash == other.block_output_hash
             && self.force_preimages == other.force_preimages
-            && self.starting_interop_event_index == other.starting_interop_event_index
+            && self.starting_interop_root_id == other.starting_interop_root_id
             && self.starting_migration_number == other.starting_migration_number
             && self.starting_interop_fee_number == other.starting_interop_fee_number
     }
@@ -89,7 +88,7 @@ impl ReplayRecord {
         protocol_version: ProtocolSemanticVersion,
         block_output_hash: B256,
         force_preimages: Vec<(B256, Vec<u8>)>,
-        starting_interop_event_index: InteropRootsLogIndex,
+        starting_interop_root_id: u64,
         starting_migration_number: u64,
         starting_interop_fee_number: u64,
     ) -> Self {
@@ -113,7 +112,7 @@ impl ReplayRecord {
             protocol_version,
             block_output_hash,
             force_preimages,
-            starting_interop_event_index,
+            starting_interop_root_id,
             starting_migration_number,
             starting_interop_fee_number,
         }

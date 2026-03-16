@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 
+use alloy::primitives::ruint::FromUintError;
 use alloy::rpc::types::{Log, Topic, ValueOrArray};
 use alloy::sol_types::SolEvent;
 use alloy::{primitives::Address, providers::DynProvider};
 use zksync_os_contract_interface::IMessageRoot::NewInteropRoot;
 use zksync_os_contract_interface::{Bridgehub, InteropRoot};
 use zksync_os_mempool::subpools::interop_roots::InteropRootsSubpool;
-use zksync_os_types::{IndexedInteropRoot, InteropRootsLogIndex};
+use zksync_os_types::IndexedInteropRoot;
 
+use crate::util::find_l1_block_by_interop_root_id;
 use crate::watcher::{L1Watcher, L1WatcherError};
 use crate::{L1WatcherConfig, ProcessRawEvents};
 
 pub struct InteropWatcher {
     contract_address: Address,
-    starting_interop_event_index: InteropRootsLogIndex,
+    starting_interop_root_id: u64,
     interop_roots_subpool: InteropRootsSubpool,
 }
 
@@ -21,32 +23,33 @@ impl InteropWatcher {
     pub async fn create_watcher(
         bridgehub: Bridgehub<DynProvider>,
         config: L1WatcherConfig,
-        starting_interop_event_index: InteropRootsLogIndex,
+        starting_interop_root_id: u64,
         interop_roots_subpool: InteropRootsSubpool,
     ) -> anyhow::Result<L1Watcher> {
         let contract_address = bridgehub.message_root_address().await?;
 
         tracing::info!(
             contract_address = ?contract_address,
-            starting_interop_event_index = ?starting_interop_event_index,
+            starting_interop_root_id,
             "initializing interop watcher"
         );
 
+        let next_l1_block =
+            find_l1_block_by_interop_root_id(bridgehub.clone(), starting_interop_root_id).await?;
+
         let this = Self {
             contract_address,
-            starting_interop_event_index,
+            starting_interop_root_id,
             interop_roots_subpool,
         };
 
-        let l1_watcher = L1Watcher::new(
+        Ok(L1Watcher::new(
             bridgehub.provider().clone(),
-            this.starting_interop_event_index.block_number,
+            next_l1_block,
             config.max_blocks_to_process,
             config.poll_interval,
             Box::new(this),
-        );
-
-        Ok(l1_watcher)
+        ))
     }
 }
 
@@ -72,7 +75,7 @@ impl ProcessRawEvents for InteropWatcher {
             let sol_event = NewInteropRoot::decode_log(&log.inner)
                 .expect("failed to decode log")
                 .data;
-            indexes.insert(sol_event.blockNumber, log);
+            indexes.insert(sol_event.logId, log);
         }
 
         indexes.into_values().collect()
@@ -81,16 +84,16 @@ impl ProcessRawEvents for InteropWatcher {
     async fn process_raw_event(&mut self, log: Log) -> Result<(), L1WatcherError> {
         let event = NewInteropRoot::decode_log(&log.inner)?.data;
 
-        let event_log_index = InteropRootsLogIndex {
-            block_number: log.block_number.unwrap(),
-            index_in_block: log.log_index.unwrap(),
-        };
+        let log_id: u64 = event
+            .logId
+            .try_into()
+            .map_err(|e: FromUintError<u64>| L1WatcherError::Other(e.into()))?;
 
-        if event_log_index < self.starting_interop_event_index {
+        if log_id < self.starting_interop_root_id {
             tracing::debug!(
-                log_id = ?event.logId,
-                starting_interop_event_index = ?self.starting_interop_event_index,
-                "skipping interop root event before starting index",
+                log_id,
+                starting_interop_root_id = self.starting_interop_root_id,
+                "skipping interop root event before starting id",
             );
             return Ok(());
         }
@@ -102,7 +105,7 @@ impl ProcessRawEvents for InteropWatcher {
 
         self.interop_roots_subpool
             .add_root(IndexedInteropRoot {
-                log_index: event_log_index,
+                log_id,
                 root: interop_root,
             })
             .await;
