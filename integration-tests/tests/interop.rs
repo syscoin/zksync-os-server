@@ -386,11 +386,11 @@ async fn test_interop_l2_to_l1_message_verification() -> Result<()> {
     // 3 chains: chain_l1_settling() == chain(0), chain_gateway_a() == chain(1), chain_gateway_b() == chain(2)
     let multi_chain = MultiChainTester::setup_gateway().await?;
     let chain_a = multi_chain.chain_gateway_a();
+    let chain_b = multi_chain.chain_gateway_b();
 
     let gateway = multi_chain.chain_l1_settling();
 
     let chain_a_id = chain_a.l2_provider.get_chain_id().await?;
-    let chain_b_id = chain_b.l2_provider.get_chain_id().await?;
     let gw_chain_id = gateway.l2_provider.get_chain_id().await?;
     let sender = chain_a.l2_wallet.default_signer().address();
 
