@@ -17,6 +17,7 @@ fn proving_version_from_tag(tag: &str) -> Option<String> {
     match tag {
         "v0.2.8-interface-v0.0.14" => Some(String::from("V6")),
         "dev-20260311" => Some(String::from("V7")),
+        "dev-2026-03-16" => Some(String::from("V7")),
         _ => None,
     }
 }
