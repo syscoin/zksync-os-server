@@ -39,7 +39,23 @@ macro_rules! impl_to_rpc_result {
     };
 }
 
-impl_to_rpc_result!(EthSendRawTransactionError);
+impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTransactionError> {
+    fn to_rpc_result(self) -> RpcResult<Ok> {
+        self.map_err(|err| match err {
+            // Backpressure: use -32003 (TransactionRejected) so clients can distinguish
+            // "node is overloaded, retry later" from -32603 "server has a bug".
+            // Include a structured `data` field with machine-readable reason and retry hint.
+            EthSendRawTransactionError::NotAcceptingTransactions(reason) => {
+                rpc_err_with_json_data(-32003, err.to_string(), reason.to_rpc_data())
+            }
+            EthSendRawTransactionError::PoolError(_) => {
+                rpc_error_with_code(-32003, err.to_string())
+            }
+            // All other variants are client errors or internal bugs.
+            _ => internal_rpc_err(err.to_string()),
+        })
+    }
+}
 impl_to_rpc_result!(EthFilterError);
 impl_to_rpc_result!(EthError);
 impl_to_rpc_result!(ZksError);
@@ -113,6 +129,22 @@ pub fn rpc_error_with_code(
     rpc_err(code, msg, None)
 }
 
+/// Constructs a JSON-RPC error with a structured JSON object in the `data` field.
+pub fn rpc_err_with_json_data(
+    code: i32,
+    msg: impl Into<String>,
+    data: serde_json::Value,
+) -> jsonrpsee::types::error::ErrorObject<'static> {
+    jsonrpsee::types::error::ErrorObject::owned(
+        code,
+        msg.into(),
+        Some(
+            jsonrpsee::core::to_json_raw_value(&data)
+                .expect("serializing serde_json::Value can't fail"),
+        ),
+    )
+}
+
 /// Constructs a JSON-RPC error, consisting of `code`, `message` and optional `data`.
 pub fn rpc_err(
     code: i32,
@@ -127,6 +159,70 @@ pub fn rpc_err(
                 .expect("serializing String can't fail")
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tx_handler::EthSendRawTransactionError;
+    use jsonrpsee::types::error::INTERNAL_ERROR_CODE;
+    use zksync_os_types::{NotAcceptingReason, OverloadCause};
+
+    const TRANSACTION_REJECTED_CODE: i32 = -32003;
+
+    #[test]
+    fn not_accepting_overloaded_returns_32003() {
+        let err =
+            EthSendRawTransactionError::NotAcceptingTransactions(NotAcceptingReason::Overloaded {
+                cause: OverloadCause::ProverQueueFull,
+                retry_after_ms: 5_000,
+            });
+        let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
+        assert_eq!(rpc_err.code(), TRANSACTION_REJECTED_CODE);
+    }
+
+    #[test]
+    fn not_accepting_block_production_disabled_returns_32003() {
+        let err = EthSendRawTransactionError::NotAcceptingTransactions(
+            NotAcceptingReason::BlockProductionDisabled,
+        );
+        let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
+        assert_eq!(rpc_err.code(), TRANSACTION_REJECTED_CODE);
+    }
+
+    #[test]
+    fn decode_error_returns_internal_error() {
+        let err = EthSendRawTransactionError::FailedToDecodeSignedTransaction;
+        let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
+        // Decode failure is a client error, not a backpressure signal
+        assert_eq!(rpc_err.code(), INTERNAL_ERROR_CODE);
+    }
+
+    #[test]
+    fn overloaded_error_data_contains_reason_and_retry() {
+        let err =
+            EthSendRawTransactionError::NotAcceptingTransactions(NotAcceptingReason::Overloaded {
+                cause: OverloadCause::ProverQueueFull,
+                retry_after_ms: 5_000,
+            });
+        let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
+        let data_raw = rpc_err.data().expect("data field must be present");
+        let data: serde_json::Value = serde_json::from_str(data_raw.get()).unwrap();
+        assert_eq!(data["reason"], "prover_queue_full");
+        assert_eq!(data["retry_after_ms"], 5000u64);
+    }
+
+    #[test]
+    fn block_production_disabled_data_has_no_retry() {
+        let err = EthSendRawTransactionError::NotAcceptingTransactions(
+            NotAcceptingReason::BlockProductionDisabled,
+        );
+        let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
+        let data_raw = rpc_err.data().expect("data field must be present");
+        let data: serde_json::Value = serde_json::from_str(data_raw.get()).unwrap();
+        assert_eq!(data["reason"], "block_production_disabled");
+        assert!(data.get("retry_after_ms").is_none());
+    }
 }
 
 /// Represents a reverted transaction and its output data.

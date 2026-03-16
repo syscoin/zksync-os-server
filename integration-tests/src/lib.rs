@@ -399,6 +399,7 @@ pub struct TesterBuilder {
     fee_config: Option<FeeConfig>,
     gas_price_scale_factor: Option<f64>,
     estimate_gas_pubdata_price_factor: Option<f64>,
+    max_blocks_to_produce: Option<u64>,
 }
 
 impl TesterBuilder {
@@ -433,6 +434,12 @@ impl TesterBuilder {
         self
     }
 
+    /// Stop accepting transactions after this many blocks have been produced.
+    pub fn max_blocks_to_produce(mut self, limit: u64) -> Self {
+        self.max_blocks_to_produce = Some(limit);
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<Tester> {
         let l1 = AnvilL1::start(ChainLayout::Default {
             protocol_version: PROTOCOL_VERSION,
@@ -455,6 +462,9 @@ impl TesterBuilder {
             }
             if let Some(factor) = self.estimate_gas_pubdata_price_factor {
                 config.rpc_config.estimate_gas_pubdata_price_factor = factor;
+            }
+            if let Some(limit) = self.max_blocks_to_produce {
+                config.sequencer_config.max_blocks_to_produce = Some(limit);
             }
         };
 
