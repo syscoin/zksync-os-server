@@ -78,22 +78,34 @@ jobs:
             ```
             ## Summary
 
-            <Use Markdown, not plain text. Prefer a short intro sentence followed by 2-5 bullets covering what changed, why, and important implementation notes. Use backticks for identifiers, emphasis sparingly for key points, and links when they add value.>
+            <1-2 short sentences describing the overall outcome. Keep this concise and high signal.>
+
+            ## What?
+
+            - [x] <Concrete change 1>
+            - [x] <Concrete change 2>
+
+            ## Why?
+
+            <1 short paragraph or 2-4 bullets explaining why this change was introduced, what problem it solves, or what requirement drove it. Do NOT repeat the implementation details from `## What?`.>
             ```
 
-            The `## Summary` section should be easy to scan in GitHub:
-            - Use short paragraphs or bullet lists instead of a single dense block
-            - Prefer `- [x]` bullets for file- or behavior-level changes
+            The body should be easy to scan in GitHub:
+            - Keep `## Summary` short and concise
+            - Use `## What?` for the concrete implementation changes
+            - Use `- [x]` bullets in `## What?` for file-, behavior-, or workflow-level changes
+            - Use `## Why?` only for motivation, context, or the requirement behind the change
+            - Do not restate `## What?` in `## Why?`
             - Use inline code for workflow names, config keys, scripts, and paths
             - Preserve any useful existing Markdown content from the author when it still applies
             - Do not add filler headings or boilerplate text
 
             Preserve useful content the author already wrote in the existing body.
 
-            If the change is NOT breaking, `## Summary` is the entire body.
+            If the change is NOT breaking, the body should normally contain only `## Summary`, `## What?`, and `## Why?`.
 
             Exception: if the existing PR title already includes `!` but you believe the change is NOT actually
-            breaking, keep the title unchanged and append this warning block after `## Summary` instead of adding
+            breaking, keep the title unchanged and append this warning block after `## Why?` instead of adding
             breaking rollout sections:
 
             ```
