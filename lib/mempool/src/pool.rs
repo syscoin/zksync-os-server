@@ -15,9 +15,7 @@ use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_storage_api::ReplayRecord;
-use zksync_os_types::{
-    L1TxSerialId, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
-};
+use zksync_os_types::{L1TxSerialId, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction};
 
 /// General pool that provides unified access to all transaction sources in the system.
 ///
