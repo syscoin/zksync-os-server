@@ -15,12 +15,28 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 use std::fmt::Debug;
 use zksync_os_storage_api::ReplayRecord as StorageReplayRecord;
 
-/// A request for a peer to return block replays starting at the requested block number.
-/// The peer MUST start streaming indefinite number of [`BlockReplays`] responses.
+/// A request for a peer to start streaming block replays from `starting_block` indefinitely.
+/// Used by v0 and v1 where the MN streams records without bound.
+///
+/// Do not change this struct — its RLP layout is part of the v0/v1 wire format.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 pub struct GetBlockReplays {
     /// The block number that the peer should start returning replay blocks from.
     pub starting_block: u64,
+    /// Records for which DB keys should be overridden. Used only for debugging.
+    pub record_overrides: Vec<RecordOverride>,
+}
+
+/// A request for a peer to return exactly `record_count` block replays starting at
+/// `starting_block`, then stop. Used by v2 for on-demand batch fetching.
+///
+/// Do not change this struct — its RLP layout is part of the v2 wire format.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
+pub struct GetBlockReplaysV2 {
+    /// The block number that the peer should start returning replay blocks from.
+    pub starting_block: u64,
+    /// Number of records to return.
+    pub record_count: u64,
     /// Records for which DB keys should be overridden. Used only for debugging.
     pub record_overrides: Vec<RecordOverride>,
 }
@@ -35,7 +51,7 @@ pub struct RecordOverride {
     pub db_key: Bytes,
 }
 
-/// The response to [`GetBlockReplays`], containing one or more consecutive replay records.
+/// The response to a `GetBlockReplays` request, containing one or more consecutive replay records.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RlpEncodable, RlpDecodable)]
 pub struct BlockReplays<T: WireReplayRecord> {
     pub records: Vec<T>,
