@@ -7,7 +7,7 @@ use alloy::network::EthereumWallet;
 use alloy::primitives::{Address, U256};
 use alloy::providers::{DynProvider, Provider, ProviderBuilder, WalletProvider};
 use alloy::signers::local::{LocalSigner, PrivateKeySigner};
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use backon::ConstantBuilder;
 use backon::Retryable;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -481,6 +481,26 @@ impl Drop for Tester {
 pub struct MultiChainTester {
     pub l1: AnvilL1,
     pub chains: Vec<Tester>,
+    chain_nodes: Vec<MultiChainNode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiChainNode {
+    Gateway,
+    L1Settling,
+    GatewaySettlingA,
+    GatewaySettlingB,
+}
+
+impl MultiChainNode {
+    fn chain_index(self) -> usize {
+        match self {
+            MultiChainNode::Gateway => 0,
+            MultiChainNode::L1Settling => 1,
+            MultiChainNode::GatewaySettlingA => 2,
+            MultiChainNode::GatewaySettlingB => 3,
+        }
+    }
 }
 
 impl MultiChainTester {
@@ -488,8 +508,17 @@ impl MultiChainTester {
         MultiChainTesterBuilder::default()
     }
 
-    pub async fn setup(num_chains: usize) -> anyhow::Result<Self> {
-        Self::builder().num_chains(num_chains).build().await
+    pub async fn setup(chains: Vec<MultiChainNode>) -> anyhow::Result<Self> {
+        Self::builder().chains(chains).build().await
+    }
+
+    pub async fn setup_gateway() -> anyhow::Result<Self> {
+        Self::setup(vec![
+            MultiChainNode::Gateway,
+            MultiChainNode::GatewaySettlingA,
+            MultiChainNode::GatewaySettlingB,
+        ])
+        .await
     }
 
     /// Get a specific chain by index
@@ -497,34 +526,52 @@ impl MultiChainTester {
         &self.chains[index]
     }
 
-    /// Get chain A (first chain)
-    pub fn chain_a(&self) -> &Tester {
-        self.chain(1)
+    fn chain_by_node(&self, node: MultiChainNode) -> &Tester {
+        let idx = self
+            .chain_nodes
+            .iter()
+            .position(|n| *n == node)
+            .expect("requested chain is not started");
+        self.chain(idx)
     }
 
-    /// Get chain B (second chain)
-    pub fn chain_b(&self) -> &Tester {
-        self.chain(2)
+    /// Get gateway chain
+    pub fn chain_gateway(&self) -> &Tester {
+        self.chain_by_node(MultiChainNode::Gateway)
+    }
+
+    /// Get L1-settling chain (default chain from multi-chain config)
+    pub fn chain_l1_settling(&self) -> &Tester {
+        self.chain_by_node(MultiChainNode::L1Settling)
+    }
+
+    /// Get gateway chain A
+    pub fn chain_gateway_a(&self) -> &Tester {
+        self.chain_by_node(MultiChainNode::GatewaySettlingA)
+    }
+
+    /// Get gateway chain B
+    pub fn chain_gateway_b(&self) -> &Tester {
+        self.chain_by_node(MultiChainNode::GatewaySettlingB)
     }
 }
 
 #[derive(Default)]
 pub struct MultiChainTesterBuilder {
-    num_chains: Option<usize>,
+    chains: Option<Vec<MultiChainNode>>,
 }
 
 impl MultiChainTesterBuilder {
-    pub fn num_chains(mut self, num_chains: usize) -> Self {
-        self.num_chains = Some(num_chains);
+    pub fn chains(mut self, chains: Vec<MultiChainNode>) -> Self {
+        self.chains = Some(chains);
         self
     }
 
     pub async fn build(self) -> anyhow::Result<MultiChainTester> {
-        let num_chains = self.num_chains.unwrap_or(2);
-        assert!(
-            num_chains >= 2,
-            "MultiChainTester requires at least 2 chains"
-        );
+        let chain_nodes = self.chains.unwrap_or_else(|| {
+            vec![MultiChainNode::Gateway, MultiChainNode::L1Settling]
+        });
+        ensure!(!chain_nodes.is_empty(), "at least one chain must be requested");
 
         let l1 = AnvilL1::start(ChainLayout::MultiChain {
             protocol_version: NEXT_PROTOCOL_VERSION,
@@ -532,13 +579,15 @@ impl MultiChainTesterBuilder {
         })
         .await?;
 
-        // Launch L2 chains using chain configurations from config files
+        // Launch selected L2 chains using chain configurations from config files.
         let mut chains: Vec<Tester> = Vec::new();
-        for i in 0..num_chains {
+        let mut l1_settling_rpc_url: Option<String> = None;
+        for chain_node in chain_nodes.iter().copied() {
+            let chain_index = chain_node.chain_index();
             // Load the chain config to get the chain ID, operator keys, and contract addresses
             let chain_config = load_chain_config(ChainLayout::MultiChain {
                 protocol_version: NEXT_PROTOCOL_VERSION,
-                chain_index: i,
+                chain_index,
             });
             let chain_id = chain_config
                 .genesis_config
@@ -547,7 +596,11 @@ impl MultiChainTesterBuilder {
             let gateway_rpc_url = chain_config
                 .general_config
                 .gateway_rpc_url
-                .map(|_| chains[0].l2_rpc_address.clone());
+                .map(|existing_gateway_url| {
+                    l1_settling_rpc_url
+                        .clone()
+                        .unwrap_or(existing_gateway_url)
+                });
             let ephemeral_state = chain_config.general_config.ephemeral_state;
             let l1_sender_config = chain_config.l1_sender_config.clone();
             let bridgehub_address = chain_config.genesis_config.bridgehub_address;
@@ -584,19 +637,26 @@ impl MultiChainTesterBuilder {
 
             tracing::info!(
                 "L2 chain {} started with chain_id {} on {}",
-                i,
+                chain_index,
                 chain_id,
                 tester.l2_rpc_address
             );
 
+            if chain_node == MultiChainNode::L1Settling {
+                l1_settling_rpc_url = Some(tester.l2_rpc_address.clone());
+            }
             chains.push(tester);
 
-            if i + 1 < num_chains {
+            if chains.len() < chain_nodes.len() {
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
 
-        Ok(MultiChainTester { l1, chains })
+        Ok(MultiChainTester {
+            l1,
+            chains,
+            chain_nodes,
+        })
     }
 }
 

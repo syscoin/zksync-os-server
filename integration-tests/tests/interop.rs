@@ -383,14 +383,14 @@ async fn test_interop_l2_to_l1_message_verification() -> Result<()> {
     // 3. Wait for the interop root to appear on chain B
     // 4. Call proveL2MessageInclusionShared on chain B and assert it returns true
 
-    // 3 chains: chain(0) is the gateway, chain_a() == chain(1), chain_b() == chain(2)
-    let multi_chain = MultiChainTester::setup(3).await?;
+    // 3 chains: chain_l1_settling() == chain(0), chain_gateway_a() == chain(1), chain_gateway_b() == chain(2)
+    let multi_chain = MultiChainTester::setup_gateway().await?;
+    let chain_a = multi_chain.chain_gateway_a();
 
-    let chain_a = multi_chain.chain_a();
-    let chain_b = multi_chain.chain_b();
-    let gateway = multi_chain.chain(0);
+    let gateway = multi_chain.chain_l1_settling();
 
     let chain_a_id = chain_a.l2_provider.get_chain_id().await?;
+    let chain_b_id = chain_b.l2_provider.get_chain_id().await?;
     let gw_chain_id = gateway.l2_provider.get_chain_id().await?;
     let sender = chain_a.l2_wallet.default_signer().address();
 
@@ -421,7 +421,7 @@ async fn test_interop_l2_to_l1_message_verification() -> Result<()> {
 
     let gw_block_number = get_gw_block_number(&log_proof.proof);
 
-    // Wait for interop root to become available on chain B, keyed by gateway chain + GW block
+    // Wait for interop root to become available on chain B, keyed by gateway chain + GW block.
     chain_b
         .l2_provider
         .expect_interop_root_inclusion(gw_chain_id, gw_block_number)
@@ -460,10 +460,10 @@ async fn test_interop_bundle_send() -> Result<()> {
     // This test validates the first part of the interop flow:
     // setting up two chains and sending an interop bundle from chain A to chain B
 
-    let multi_chain = MultiChainTester::setup(3).await?;
+    let multi_chain = MultiChainTester::setup_gateway().await?;
 
-    let chain_a = multi_chain.chain_a();
-    let chain_b = multi_chain.chain_b();
+    let chain_a = multi_chain.chain_gateway_a();
+    let chain_b = multi_chain.chain_gateway_b();
 
     let chain_a_id = chain_a.l2_provider.get_chain_id().await?;
     let chain_b_id = chain_b.l2_provider.get_chain_id().await?;
