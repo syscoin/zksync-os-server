@@ -2,15 +2,15 @@ general:
   ephemeral: true
   gateway_rpc_url: http://localhost:3052
 genesis:
-  bridgehub_address: '0x8e76138fd6e65187c7378ca3670f99497d4279de'
-  bytecode_supplier_address: '0x1d3c2847be5f4b4217e04c56926dd2c575436330'
+  bridgehub_address: '0x441a382b00cde871558a46149d34e9cd16349407'
+  bytecode_supplier_address: '0x7991be816c53a6401096c7dbb450375fdf5723fd'
   genesis_input_path: ./local-chains/v31.0/genesis.json
   chain_id: 6565
 l1_sender:
   pubdata_mode: RelayedL2Calldata
-  operator_commit_sk: '0xa4ff173a8588534c304f0b90a0e6ad2521e99a353a390d886a9823e498009224'
-  operator_prove_sk: '0xb98f20ef07e38236fd85c501791bc6e2cb92a42bedaa4beda68df657e8f6de8c'
-  operator_execute_sk: '0x82c6ef1f8b1461faef4b0c3d1d145622fd98316d5d029ee168ffbb43b7afb941'
+  operator_commit_sk: '0x9975c74b9b1b70f8aa5f1f52e1dcc74eba16dde3213c9be47a9c303fec7b860c'
+  operator_prove_sk: '0xa7860cb7e602e420fd27db3a18e1e117db1d87f29cdcafcb35c0d18d82013f7c'
+  operator_execute_sk: '0x4724e13df7e54a3e8052ce82077d94821e85f63b738b46e21e7fdf2c2baeadb4'
 l1_watcher:
   enable_gw_migration_watcher: true
 rpc:
