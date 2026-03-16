@@ -22,7 +22,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - name: Generate PR title and description with Claude
+      - name: Generate PR title and description
         id: generate
         uses: anthropics/claude-code-action@v1
         with:
@@ -66,6 +66,8 @@ jobs:
               leave it exactly as-is.
             - If the PR IS breaking and the existing title is missing the `!` marker, update the title to a
               breaking Conventional Commit even if the rest of the title is already conventional.
+            - If the existing title already includes the `!` marker and you believe the change is NOT actually
+              breaking, do NOT remove the marker and do NOT rewrite the title just to drop the breaking signal.
             - When adding the breaking marker, preserve the author's wording and scope as much as possible
               while making the title valid.
 
@@ -89,6 +91,17 @@ jobs:
             Preserve useful content the author already wrote in the existing body.
 
             If the change is NOT breaking, `## Summary` is the entire body.
+
+            Exception: if the existing PR title already includes `!` but you believe the change is NOT actually
+            breaking, keep the title unchanged and append this warning block after `## Summary` instead of adding
+            breaking rollout sections:
+
+            ```
+            <!-- ai-breaking-review: non-breaking-suspected -->
+            > [!WARNING]
+            > This PR is currently marked as breaking, but the automated review did not identify a deployment or compatibility break.
+            > Please confirm whether the `!` marker is intentional.
+            ```
 
             If the change IS breaking, append these two sections as real Markdown headings
             (write them as `##` headings directly — NOT inside `<!-- HTML comments -->`):

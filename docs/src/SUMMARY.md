@@ -31,4 +31,5 @@
 ---
 
 - [Guides](guides/index.md)
+  - [PR metadata automation](guides/pr_metadata_automation.md)
   - [Updating local chains: genesis and L1 state](guides/local_setup_update.md)
