@@ -424,12 +424,13 @@ impl Tester {
 
 #[cfg(feature = "prover-tests")]
 async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
+    let protocol_version = tester.chain_layout.protocol_version();
     let rocks_db_path = tester.tempdir.path().join("rocksdb");
-    let app_bin_path = match tester.chain_layout.protocol_version() {
-        "v30.2" => {
+    let app_bin_path = match protocol_version {
+        PROTOCOL_VERSION => {
             zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"))
         }
-        "v31.0" => {
+        PROTOCOL_VERSION_V31_0 => {
             zksync_os_multivm::apps::v7::multiblock_batch_path(&rocks_db_path.join("app_bins"))
         }
         _ => panic!("unsupported protocol version for prover tests"),
@@ -438,7 +439,8 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
     let output_dir = tester.tempdir.path().join("outputs");
     std::fs::create_dir_all(&output_dir).unwrap();
 
-    let path = download_prover_and_unpack(cfg!(feature = "gpu-prover-tests")).await;
+    let path =
+        download_prover_and_unpack(protocol_version, cfg!(feature = "gpu-prover-tests")).await;
 
     let mut command = tokio::process::Command::new(path);
     command
@@ -951,24 +953,42 @@ impl AnvilL1 {
 }
 
 #[cfg(feature = "prover-tests")]
-async fn download_prover_and_unpack(gpu: bool) -> String {
-    const RELEASE_VERSION: &str = "v0.7.1";
-    const RELEASE_BASE_URL: &str =
-        "https://github.com/matter-labs/zksync-airbender-prover/releases/download/v0.7.1";
+fn prover_release_for_protocol(protocol_version: &str) -> &'static str {
+    match protocol_version {
+        PROTOCOL_VERSION => "v0.7.1",
+        PROTOCOL_VERSION_V31_0 => "dev-20260317-v7",
+        _ => {
+            panic!("unsupported protocol version `{protocol_version}` for prover binary selection")
+        }
+    }
+}
+
+#[cfg(feature = "prover-tests")]
+async fn download_prover_and_unpack(protocol_version: &str, gpu: bool) -> String {
+    let release_version = prover_release_for_protocol(protocol_version);
+    let release_base_url = format!(
+        "https://github.com/matter-labs/zksync-airbender-prover/releases/download/{release_version}"
+    );
 
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let asset_name = match (os, arch, gpu) {
         ("linux", "x86_64", true) => {
-            "zksync-os-prover-service-v0.7.1-x86_64-unknown-linux-gnu-gpu.tar.gz"
+            format!(
+                "zksync-os-prover-service-{release_version}-x86_64-unknown-linux-gnu-gpu.tar.gz"
+            )
         }
         ("linux", "x86_64", false) => {
-            "zksync-os-prover-service-v0.7.1-x86_64-unknown-linux-gnu-cpu.tar.gz"
+            format!(
+                "zksync-os-prover-service-{release_version}-x86_64-unknown-linux-gnu-cpu.tar.gz"
+            )
         }
         ("macos", _, true) => {
-            panic!("GPU prover binary is not available for macOS in {RELEASE_VERSION}")
+            panic!("GPU prover binary is not available for macOS in {release_version}")
         }
-        ("macos", _, false) => "zksync-os-prover-service-v0.7.1-universal-apple-darwin-cpu.tar.gz",
+        ("macos", _, false) => {
+            format!("zksync-os-prover-service-{release_version}-universal-apple-darwin-cpu.tar.gz")
+        }
         ("linux", _, _) => panic!(
             "unsupported Linux architecture `{arch}` for prover binaries; supported architecture: x86_64"
         ),
@@ -992,9 +1012,9 @@ async fn download_prover_and_unpack(gpu: bool) -> String {
         return binary_path.display().to_string();
     }
 
-    let archive_path = dir.join(asset_name);
+    let archive_path = dir.join(&asset_name);
     if !std::fs::exists(archive_path.as_path()).expect("failed to check archive existence") {
-        let url = format!("{RELEASE_BASE_URL}/{asset_name}");
+        let url = format!("{release_base_url}/{asset_name}");
         tracing::info!(
             "downloading prover service archive from {url} to {}",
             archive_path.display()
