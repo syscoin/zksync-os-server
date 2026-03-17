@@ -9,7 +9,6 @@ use std::fmt::Debug;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 use zksync_os_l1_sender::batcher_model::{BatchMetadata, SignedBatchEnvelope};
-use zksync_os_types::{BackpressureHandle, OverloadCause};
 
 /// Concurrent map of prover jobs that support FRI and SNARK workflows.
 /// Imposes a limit on batch range
@@ -94,8 +93,6 @@ impl<T: Clone> ProverJobMap<T> {
         };
 
         jobs.insert(batch_number, entry);
-
-        self.maybe_signal_overloaded(&jobs);
 
         tracing::info!(
             batch_number,
@@ -329,7 +326,6 @@ impl<T: Clone> ProverJobMap<T> {
             "Job completed",
         );
 
-        self.maybe_signal_recovered(&jobs);
         drop(jobs);
         // Notify once for all completed jobs
         self.space_available.notify_waiters();
@@ -383,32 +379,6 @@ impl<T: Clone> ProverJobMap<T> {
         }
 
         Some(completed.into_iter().map(|e| e.batch_envelope).collect())
-    }
-
-    fn maybe_signal_overloaded(&self, jobs: &BTreeMap<u64, JobEntry<T>>) {
-        if self.batch_range_utilization(jobs) >= 0.80 {
-            let outstanding = jobs.len() as u64;
-            // Conservative estimate: 30s per outstanding job, capped at 5 minutes.
-            let retry_after_ms = outstanding.saturating_mul(30_000).min(300_000);
-            BackpressureHandle::global()
-                .set_overloaded(OverloadCause::ProverQueueFull, retry_after_ms);
-        }
-    }
-
-    fn maybe_signal_recovered(&self, jobs: &BTreeMap<u64, JobEntry<T>>) {
-        if self.batch_range_utilization(jobs) < 0.60 {
-            BackpressureHandle::global().clear_overloaded(OverloadCause::ProverQueueFull);
-        }
-    }
-
-    fn batch_range_utilization(&self, jobs: &BTreeMap<u64, JobEntry<T>>) -> f64 {
-        if self.max_assigned_batch_range == 0 || jobs.is_empty() {
-            return 0.0;
-        }
-        let min = *jobs.keys().next().unwrap();
-        let max = *jobs.keys().next_back().unwrap();
-        let range = (max - min + 1) as f64;
-        range / self.max_assigned_batch_range as f64
     }
 
     /// Check if the queue is full (range between the oldest and newest batch >= max_assigned_batch_range)

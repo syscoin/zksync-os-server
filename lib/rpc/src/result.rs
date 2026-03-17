@@ -45,17 +45,14 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
             // Backpressure: use TransactionRejected (-32003) so clients can distinguish
             // "node is overloaded, retry later" from -32603 "server has a bug".
             // Include a structured `data` field with machine-readable reason and retry hint.
-            EthSendRawTransactionError::NotAcceptingTransactions(reason) => {
-                rpc_err_with_json_data(
-                    EthRpcErrorCode::TransactionRejected.code(),
-                    err.to_string(),
-                    reason.to_rpc_data(),
-                )
-            }
-            EthSendRawTransactionError::PoolError(_) => rpc_error_with_code(
+            EthSendRawTransactionError::NotAcceptingTransactions(reason) => rpc_err_with_json_data(
                 EthRpcErrorCode::TransactionRejected.code(),
                 err.to_string(),
+                reason.to_rpc_data(),
             ),
+            EthSendRawTransactionError::PoolError(_) => {
+                rpc_error_with_code(EthRpcErrorCode::TransactionRejected.code(), err.to_string())
+            }
             // All other variants are client errors or internal bugs.
             _ => internal_rpc_err(err.to_string()),
         })
@@ -170,8 +167,8 @@ pub fn rpc_err(
 mod tests {
     use super::*;
     use crate::tx_handler::EthSendRawTransactionError;
-    use jsonrpsee::types::error::INTERNAL_ERROR_CODE;
     use alloy::rpc::types::error::EthRpcErrorCode;
+    use jsonrpsee::types::error::INTERNAL_ERROR_CODE;
     use zksync_os_types::{NotAcceptingReason, OverloadCause};
 
     #[test]

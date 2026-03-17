@@ -20,6 +20,12 @@ pub enum NotAcceptingReason {
 }
 
 /// The specific pipeline component that triggered the overload condition.
+///
+/// # Note
+/// These variants are placeholder stubs. They will be replaced by
+/// `StageStalled { stage: PipelineStage }` in the lag monitor redesign
+/// (see `docs/plans/2026-03-17-backpressure-lag-monitor.md`, Chunk A).
+/// No pipeline component currently signals these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum OverloadCause {
     #[error("prover queue is full")]
