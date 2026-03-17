@@ -233,7 +233,8 @@ impl From<StorageReplayRecord> for v2::ReplayRecord {
                     preimage: Bytes::from(preimage),
                 })
                 .collect(),
-            starting_interop_root_id: value.starting_interop_root_id,
+            // v2 format uses InteropRootsLogIndex; log_id is not recoverable from it
+            starting_interop_event_index: InteropRootsLogIndex::default(),
             starting_migration_number: value.starting_migration_number,
             starting_interop_fee_number: value.starting_interop_fee_number,
         }
@@ -262,7 +263,8 @@ impl TryFrom<v2::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
-            starting_interop_root_id: value.starting_interop_root_id,
+            // v2 format has InteropRootsLogIndex; map to 0 since block/index is not the log_id
+            starting_interop_root_id: 0,
             starting_migration_number: value.starting_migration_number,
             starting_interop_fee_number: value.starting_interop_fee_number,
         })
