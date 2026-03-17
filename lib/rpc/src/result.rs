@@ -42,15 +42,20 @@ macro_rules! impl_to_rpc_result {
 impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTransactionError> {
     fn to_rpc_result(self) -> RpcResult<Ok> {
         self.map_err(|err| match err {
-            // Backpressure: use -32003 (TransactionRejected) so clients can distinguish
+            // Backpressure: use TransactionRejected (-32003) so clients can distinguish
             // "node is overloaded, retry later" from -32603 "server has a bug".
             // Include a structured `data` field with machine-readable reason and retry hint.
             EthSendRawTransactionError::NotAcceptingTransactions(reason) => {
-                rpc_err_with_json_data(-32003, err.to_string(), reason.to_rpc_data())
+                rpc_err_with_json_data(
+                    EthRpcErrorCode::TransactionRejected.code(),
+                    err.to_string(),
+                    reason.to_rpc_data(),
+                )
             }
-            EthSendRawTransactionError::PoolError(_) => {
-                rpc_error_with_code(-32003, err.to_string())
-            }
+            EthSendRawTransactionError::PoolError(_) => rpc_error_with_code(
+                EthRpcErrorCode::TransactionRejected.code(),
+                err.to_string(),
+            ),
             // All other variants are client errors or internal bugs.
             _ => internal_rpc_err(err.to_string()),
         })
@@ -166,9 +171,8 @@ mod tests {
     use super::*;
     use crate::tx_handler::EthSendRawTransactionError;
     use jsonrpsee::types::error::INTERNAL_ERROR_CODE;
+    use alloy::rpc::types::error::EthRpcErrorCode;
     use zksync_os_types::{NotAcceptingReason, OverloadCause};
-
-    const TRANSACTION_REJECTED_CODE: i32 = -32003;
 
     #[test]
     fn not_accepting_overloaded_returns_32003() {
@@ -178,7 +182,7 @@ mod tests {
                 retry_after_ms: 5_000,
             });
         let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
-        assert_eq!(rpc_err.code(), TRANSACTION_REJECTED_CODE);
+        assert_eq!(rpc_err.code(), EthRpcErrorCode::TransactionRejected.code());
     }
 
     #[test]
@@ -187,7 +191,7 @@ mod tests {
             NotAcceptingReason::BlockProductionDisabled,
         );
         let rpc_err = Err::<(), _>(err).to_rpc_result().unwrap_err();
-        assert_eq!(rpc_err.code(), TRANSACTION_REJECTED_CODE);
+        assert_eq!(rpc_err.code(), EthRpcErrorCode::TransactionRejected.code());
     }
 
     #[test]
