@@ -67,8 +67,8 @@ use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_l1_sender::pipeline_component::L1Sender;
 use zksync_os_l1_sender::upgrade_gatekeeper::UpgradeGatekeeper;
 use zksync_os_l1_watcher::{
-    CommittedBatchProvider, Gateway, GatewayMigrationWatcher, L1, L1CommitWatcher,
-    L1ExecuteWatcher, L1TxWatcher, L1UpgradeTxWatcher,
+    CommittedBatchProvider, GatewayMigrationWatcher, L1CommitWatcher, L1ExecuteWatcher,
+    L1TxWatcher, L1UpgradeTxWatcher,
 };
 use zksync_os_l1_watcher::{InteropWatcher, L1PersistBatchWatcher};
 use zksync_os_mempool::Pool;
@@ -291,6 +291,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .root_info()
         .expect("Failed to get genesis root info");
     let tree_db = tree_at_genesis.tree;
+    let tree_for_rpc = Arc::new(tree_db.clone());
 
     // todo: this can take a while; ideally committed batches should be loaded in the background
     //       and then `get()` method can be made async so that it waits for relevant batch to load
@@ -506,56 +507,36 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         upgrade_subpool.insert(upgrade_tx).await;
     }
 
-    if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
-        && config.general_config.gateway_rpc_url.is_some()
-    {
+    if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
         tasks.spawn(
-            InteropWatcher::create_watcher(
-                node_startup_state.l1_state.bridgehub_sl.clone(), // TODO: what bridgehub to use here?
+            GatewayMigrationWatcher::create_watcher(
+                node_startup_state.l1_state.diamond_proxy_l1.clone(),
+                node_startup_state.l1_state.bridgehub_l1.clone(),
+                chain_id,
+                node_startup_state.l1_state.l1_chain_id,
+                config.general_config.gateway_chain_id,
+                next_migration_number,
                 config.l1_watcher_config.clone().into(),
-                next_interop_root_id,
-                interop_roots_subpool.clone(),
+                sl_chain_id_subpool.clone(),
             )
             .await
-            .expect("failed to start L1 interop roots watcher")
+            .expect("failed to start gateway migration watcher")
             .run()
-            .map(report_exit("L1 interop roots watcher")),
+            .map(report_exit("gateway migration watcher")),
         );
-    }
 
-    if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
-        && config.l1_watcher_config.enable_gw_migration_watcher
-    {
-        // in case l1 chain id is not equal to sl chain id(which indicates we are currently settling on GW), we watch for migration events of type GW -> L1, and L1 -> GW otherwise.
-        if node_startup_state.l1_state.l1_chain_id != node_startup_state.l1_state.sl_chain_id {
+        if config.general_config.gateway_rpc_url.is_some() {
             tasks.spawn(
-                GatewayMigrationWatcher::<Gateway>::create_watcher(
-                    node_startup_state.l1_state.diamond_proxy_sl.clone(),
+                InteropWatcher::create_watcher(
                     node_startup_state.l1_state.bridgehub_sl.clone(),
-                    chain_id,
-                    next_migration_number,
                     config.l1_watcher_config.clone().into(),
-                    sl_chain_id_subpool.clone(),
+                    next_interop_root_id,
+                    interop_roots_subpool.clone(),
                 )
                 .await
-                .expect("failed to start L1 chain id update watcher")
+                .expect("failed to start L1 interop roots watcher")
                 .run()
-                .map(report_exit("L1 chain id update watcher")),
-            );
-        } else {
-            tasks.spawn(
-                GatewayMigrationWatcher::<L1>::create_watcher(
-                    node_startup_state.l1_state.diamond_proxy_sl.clone(),
-                    node_startup_state.l1_state.bridgehub_sl.clone(),
-                    chain_id,
-                    next_migration_number,
-                    config.l1_watcher_config.clone().into(),
-                    sl_chain_id_subpool.clone(),
-                )
-                .await
-                .expect("failed to start L1 chain id update watcher")
-                .run()
-                .map(report_exit("L1 chain id update watcher")),
+                .map(report_exit("L1 interop roots watcher")),
             );
         }
     }
@@ -725,6 +706,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         finality_storage.clone(),
         persistent_batch_storage.clone(),
         state.clone(),
+        tree_for_rpc,
     );
     tasks.spawn(
         L1PersistBatchWatcher::create_watcher(
