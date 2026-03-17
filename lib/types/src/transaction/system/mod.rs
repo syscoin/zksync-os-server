@@ -213,8 +213,8 @@ mod tx_serde {
 }
 
 /// A helper struct to store the block number and index in block of published interop roots event.
-/// Kept for backward-compatibility with the v1 network wire format.
-#[derive(Default, Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq, PartialOrd, Ord)]
+/// Kept for backward-compatibility with the v1 and v2 network wire formats.
+#[derive(Default, Debug, Clone, Hash, Eq, PartialEq)]
 pub struct InteropRootsLogIndex {
     /// Block number from which event was published.
     pub block_number: u64,
