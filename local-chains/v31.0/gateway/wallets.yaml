@@ -1,1 +1,24 @@
-../multi_chain/wallets_506.yaml
+deployer:
+  address: 0x1820bc6be78ede067b82109db799ceb809d20f42
+  private_key: 0xec8a962d4bd6ac1c9800ea328072e3b738610dbd747d406d8e2a08df7e651bd0
+operator:
+  address: 0xeab91105fe3852780ea055259013eff9aff68a54
+  private_key: 0x8552181dd9d919a87f4ca3c94b52e9c15ea897a31373f72b31ca27ae1ed92e2a
+blob_operator:
+  address: 0xbb0327bf68c5a903d39c7fffad752875c09966ef
+  private_key: 0xf30e14573686b8a2a7c80eba2e284c69c75254a1ff750dd98f966e121cfebd90
+prove_operator:
+  address: 0x32db88a84e231b1bbc712ba1b5eac535c6d98bc6
+  private_key: 0x8ef943fed28eebc1ab567f0f9301819666525d8b72034ed547fdfe5788a9fe03
+execute_operator:
+  address: 0xe9f94ca208dbb8502b7d8ce4dfac810dc2aad250
+  private_key: 0xfdb0ec85093c93d9f292a4d0c17f1a7700fbe12f828c7cb29619d209999d66a2
+fee_account:
+  address: 0x7117540cfa8e61d5a66c8b9ebfe593285555c56a
+  private_key: 0x0a3aa3cf8d8175b5f73070f404ac9eadea609daf5ea650bd4f3fad5e672d0a47
+governor:
+  address: 0x0304cff863fce50039706d19e8f96eda7d4067cc
+  private_key: 0x391dd541076966bd1fa0bc0901eb55448fe27065e518ebe415574c05f998f3b3
+token_multiplier_setter:
+  address: 0x4f2768d0c76564a3207cc0ce99493b6512e4a1ef
+  private_key: 0x2ae97698fa0f6e1891bf6dc3f85378fc1387dfb8535568f56fc623710bbd371f
