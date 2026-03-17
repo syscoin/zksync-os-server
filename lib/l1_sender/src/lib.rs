@@ -73,10 +73,13 @@ pub async fn run_l1_sender<Input: SendToL1>(
     config: L1SenderConfig<Input>,
     gateway: bool,
 ) -> anyhow::Result<()> {
+    // Fire backpressure after 120 s in WaitingSend / WaitingL1Inclusion.
+    // This is well below TRANSACTION_TIMEOUT (300 s) so clients get a clear
+    // "retry later" signal before the hard abort.
     let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
         Input::NAME,
         L1SenderState::WaitingRecv,
-        config.l1_inclusion_backpressure_threshold,
+        Duration::from_secs(120),
     );
     let command_name = Input::NAME;
 

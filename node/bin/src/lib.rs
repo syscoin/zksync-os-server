@@ -859,16 +859,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
-    // =========== Block production watchdog ========
-    if let Some(stall_timeout) = config.sequencer_config.block_production_stall_timeout {
-        use zksync_os_storage_api::notifications::SubscribeToBlocks;
-        let block_rx = repositories.subscribe_to_blocks();
-        tasks.spawn(
-            run_block_production_watchdog(stall_timeout, block_rx)
-                .map(report_exit("Block production watchdog")),
-        );
-    }
-
     // =========== Start JSON RPC ========
 
     tasks.spawn(
@@ -1471,53 +1461,6 @@ async fn find_last_matching_main_node_block(
         }
     }
     Ok(left)
-}
-
-/// Watchdog that fires [`zksync_os_types::BackpressureHandle`] backpressure when no block
-/// has been produced for longer than `stall_timeout`.
-///
-/// The sequencer produces service blocks even when there are no user transactions,
-/// so a prolonged gap reliably indicates a genuine stall rather than an idle period.
-async fn run_block_production_watchdog(
-    stall_timeout: std::time::Duration,
-    mut block_rx: tokio::sync::broadcast::Receiver<
-        zksync_os_storage_api::notifications::BlockNotification,
-    >,
-) -> anyhow::Result<()> {
-    use zksync_os_types::BackpressureHandle;
-    const COMPONENT: &str = "block_production_watchdog";
-
-    let mut last_block_at = std::time::Instant::now();
-    let check_interval = stall_timeout / 4; // check 4× per stall window
-    let mut ticker = tokio::time::interval(check_interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            result = block_rx.recv() => {
-                match result {
-                    Ok(_) => {
-                        last_block_at = std::time::Instant::now();
-                        BackpressureHandle::global().clear_overloaded(COMPONENT);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // We're behind — blocks are being produced, definitely not stalled.
-                        last_block_at = std::time::Instant::now();
-                        BackpressureHandle::global().clear_overloaded(COMPONENT);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::warn!("Block subscription channel closed — stopping watchdog");
-                        return Ok(());
-                    }
-                }
-            }
-            _ = ticker.tick() => {
-                if last_block_at.elapsed() >= stall_timeout {
-                    BackpressureHandle::global().set_overloaded(COMPONENT, stall_timeout.as_millis() as u64);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
