@@ -72,10 +72,7 @@ impl ProcessRawEvents for InteropWatcher {
         let mut indexes = HashMap::new();
 
         for log in logs {
-            let sol_event = NewInteropRoot::decode_log(&log.inner)
-                .expect("failed to decode log")
-                .data;
-            indexes.insert(sol_event.logId, log);
+            indexes.insert(log.block_number, log);
         }
 
         indexes.into_values().collect()
