@@ -69,10 +69,10 @@ impl InteropRootsSubpool {
                             .rev() // reversing iterator as last element is the one received earliest
                             .collect();
 
-                        // Use the log_id of the first (smallest) root as the salt for uniqueness.
-                        let first_log_id = roots_to_consume[0].0;
+                        // Use the log_id of the last (largest) root as the salt for uniqueness.
+                        let last_log_id = roots_to_consume.last().expect("roots_to_consume is non-empty").0;
                         let roots = roots_to_consume.into_iter().map(|(_, r)| r).collect();
-                        let envelope = SystemTxEnvelope::import_interop_roots(roots, first_log_id);
+                        let envelope = SystemTxEnvelope::import_interop_roots(roots, last_log_id);
                         drop(notified);
                         return Some((envelope.into(), (inner, notify, cursor, buffer)));
                     }
@@ -121,18 +121,16 @@ impl InteropRootsSubpool {
             };
 
             let mut roots = Vec::with_capacity(roots_count as usize);
-            let mut first_log_id = None;
+            let mut tx_last_log_id = None;
             for _ in 0..roots_count {
                 let (id, root) = self.pop_wait().await;
-                if first_log_id.is_none() {
-                    first_log_id = Some(id);
-                }
                 roots.push(root);
-                last_log_id = Some(id);
+                tx_last_log_id = Some(id);
             }
+            last_log_id = tx_last_log_id;
             let envelope = SystemTxEnvelope::import_interop_roots(
                 roots,
-                first_log_id.expect("roots_count > 0"),
+                tx_last_log_id.expect("roots_count > 0"),
             );
 
             assert_eq!(&envelope, tx);
