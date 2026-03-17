@@ -39,7 +39,33 @@ macro_rules! impl_to_rpc_result {
     };
 }
 
-impl_to_rpc_result!(EthSendRawTransactionError);
+impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTransactionError> {
+    fn to_rpc_result(self) -> RpcResult<Ok> {
+        self.map_err(|err| match err {
+            EthSendRawTransactionError::NotAcceptingTransactions(
+                zksync_os_types::NotAcceptingReason::ComponentBackpressured {
+                    component,
+                    retry_after_ms,
+                },
+            ) => {
+                use serde_json::json;
+                let data = json!({
+                    "reason": "component_backpressured",
+                    "component": component,
+                    "retry_after_ms": retry_after_ms,
+                });
+                let data_raw = jsonrpsee::core::to_json_raw_value(&data)
+                    .expect("serializing backpressure data can't fail");
+                jsonrpsee::types::error::ErrorObject::owned(
+                    EthRpcErrorCode::TransactionRejected.code(),
+                    err.to_string(),
+                    Some(data_raw),
+                )
+            }
+            err => internal_rpc_err(err.to_string()),
+        })
+    }
+}
 impl_to_rpc_result!(EthFilterError);
 impl_to_rpc_result!(EthError);
 impl_to_rpc_result!(ZksError);

@@ -19,6 +19,8 @@ alloy-rlp.workspace = true
 serde.workspace = true
 semver.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
 num_enum.workspace = true
 bincode.workspace = true
 zksync_os_interface.workspace = true

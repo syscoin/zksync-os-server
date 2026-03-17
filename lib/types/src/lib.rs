@@ -4,6 +4,11 @@ pub use config_format::ConfigFormat;
 mod transaction_acceptance_state;
 pub use transaction_acceptance_state::{NotAcceptingReason, TransactionAcceptanceState};
 
+mod backpressure;
+pub use backpressure::{BackpressureCause, BackpressureHandle};
+#[cfg(test)]
+mod backpressure_tests;
+
 mod block;
 pub use block::BlockExt;
 

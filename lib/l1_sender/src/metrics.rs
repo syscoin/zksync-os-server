@@ -21,7 +21,9 @@ impl StateLabel for L1SenderState {
             L1SenderState::WaitingRecv => GenericComponentState::WaitingRecv,
             L1SenderState::WaitingSend => GenericComponentState::WaitingSend,
             L1SenderState::SendingToL1 => GenericComponentState::Processing,
-            L1SenderState::WaitingL1Inclusion => GenericComponentState::Processing,
+            // Waiting for L1 to mine the transaction: L1 network is downstream,
+            // so this is backpressure from our perspective.
+            L1SenderState::WaitingL1Inclusion => GenericComponentState::WaitingSend,
         }
     }
     fn specific(&self) -> &'static str {

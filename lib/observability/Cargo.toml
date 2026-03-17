@@ -29,6 +29,7 @@ itertools.workspace = true
 url.workspace = true
 vise.workspace = true
 vise-exporter.workspace = true
+zksync_os_types.workspace = true
 
 opentelemetry-semantic-conventions = { workspace = true, features = [
     "semconv_experimental",

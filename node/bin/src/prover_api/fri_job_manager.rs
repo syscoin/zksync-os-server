@@ -102,9 +102,10 @@ impl FriJobManager {
             max_assigned_batch_range,
             ProverStage::Fri,
         );
-        let latency_tracker = ComponentStateReporter::global().handle_for(
+        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
             "fri_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
+            assignment_timeout,
         );
         Self {
             jobs,

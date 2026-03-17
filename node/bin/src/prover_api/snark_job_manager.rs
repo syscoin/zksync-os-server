@@ -52,9 +52,10 @@ impl SnarkJobManager {
             max_assigned_batch_range,
             ProverStage::Snark,
         );
-        let latency_tracker = ComponentStateReporter::global().handle_for(
+        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
             "snark_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
+            assignment_timeout,
         );
         Self {
             jobs,

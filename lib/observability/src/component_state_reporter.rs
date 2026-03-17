@@ -6,17 +6,26 @@
 //!   `component_time_spent_in_state[component, GenericComponentState, specific_state]` with
 //!   time spent in the current state. Transitions are also finalized immediately on EnterState.
 //!
+//! ### Backpressure detection
+//! Components that call `handle_for_with_backpressure` supply a `backpressure_after` threshold.
+//! When the component stays in `WaitingSend` longer than this threshold the reporter calls
+//! [`zksync_os_types::BackpressureHandle::set_overloaded`].  The signal is cleared the moment
+//! the component leaves `WaitingSend`.
 //!
 use crate::generic_component_state::GenericComponentState;
 use crate::metrics::GENERAL_METRICS;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use zksync_os_types::BackpressureHandle;
 
 /// How often to report time spent in the current state for each component.
 /// Must be lower than reporting window in Prometheus (usually 15 or 30 seconds)
 const TICK_SECS: u64 = 2;
+
+/// Default retry-after hint sent to RPC clients when backpressure fires.
+const DEFAULT_RETRY_AFTER_MS: u64 = 5_000;
 
 /// Individual component state.
 /// Usually an `enum` - each state is reported as:
@@ -31,6 +40,8 @@ pub trait StateLabel: Send + Sync + 'static {
 struct ReporterMsg {
     component: &'static str,
     new_label: Box<dyn StateLabel>,
+    /// Set only on the first (registration) message.
+    backpressure_after: Option<Duration>,
 }
 
 /// `ComponentStateHandle` stores this per component
@@ -39,6 +50,12 @@ struct RegistryEntry {
     component: &'static str,
     current_state: Box<dyn StateLabel>,
     last_report_at: Instant,
+    /// When did this component enter `WaitingSend` (reset on every leave).
+    entered_waiting_send_at: Option<Instant>,
+    /// Threshold after which we call `BackpressureHandle::set_overloaded`.
+    backpressure_after: Option<Duration>,
+    /// Whether we have already fired backpressure for the current `WaitingSend` stretch.
+    backpressured: bool,
 }
 
 impl RegistryEntry {
@@ -51,6 +68,44 @@ impl RegistryEntry {
         )]
             .inc_by(secs);
         self.last_report_at = Instant::now();
+    }
+
+    /// Check whether we should fire (or clear) backpressure based on current state.
+    fn tick_backpressure(&mut self) {
+        let Some(threshold) = self.backpressure_after else {
+            return;
+        };
+        if self.current_state.generic() == GenericComponentState::WaitingSend
+            && let Some(entered_at) = self.entered_waiting_send_at
+            && !self.backpressured
+            && entered_at.elapsed() >= threshold
+        {
+            BackpressureHandle::global().set_overloaded(self.component, DEFAULT_RETRY_AFTER_MS);
+            self.backpressured = true;
+        }
+    }
+
+    /// Called whenever the component transitions to a new state.
+    fn on_transition(&mut self, new_label: Box<dyn StateLabel>) {
+        let leaving_waiting_send =
+            self.current_state.generic() == GenericComponentState::WaitingSend;
+        let entering_waiting_send = new_label.generic() == GenericComponentState::WaitingSend;
+
+        // Clear backpressure if we're leaving WaitingSend
+        if leaving_waiting_send && !entering_waiting_send {
+            self.entered_waiting_send_at = None;
+            if self.backpressured {
+                BackpressureHandle::global().clear_overloaded(self.component);
+                self.backpressured = false;
+            }
+        }
+
+        // Record when we enter WaitingSend
+        if entering_waiting_send && !leaving_waiting_send {
+            self.entered_waiting_send_at = Some(Instant::now());
+        }
+
+        self.current_state = new_label;
     }
 }
 
@@ -83,6 +138,34 @@ impl ComponentStateReporter {
         let _ = self.tx.try_send(ReporterMsg {
             component,
             new_label: Box::new(initial_state),
+            backpressure_after: None,
+        });
+
+        ComponentStateHandle {
+            component,
+            tx: self.tx.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Like `handle_for` but enables automatic backpressure detection.
+    ///
+    /// If the component stays in `WaitingSend` for longer than `backpressure_after`,
+    /// [`BackpressureHandle::set_overloaded`] is called, causing the RPC layer to start
+    /// rejecting new transactions with `-32003`.
+    pub fn handle_for_with_backpressure<S>(
+        &self,
+        component: &'static str,
+        initial_state: S,
+        backpressure_after: Duration,
+    ) -> ComponentStateHandle<S>
+    where
+        S: StateLabel,
+    {
+        let _ = self.tx.try_send(ReporterMsg {
+            component,
+            new_label: Box::new(initial_state),
+            backpressure_after: Some(backpressure_after),
         });
 
         ComponentStateHandle {
@@ -105,6 +188,7 @@ impl<S: StateLabel> ComponentStateHandle<S> {
         let _ = self.tx.try_send(ReporterMsg {
             component: self.component,
             new_label: Box::new(new_state),
+            backpressure_after: None,
         });
     }
 }
@@ -118,18 +202,28 @@ async fn run_reporter(mut rx: Receiver<ReporterMsg>) {
             _ = ticker.tick() => {
                 for (_, entry) in registry.iter_mut() {
                     entry.flush();
+                    entry.tick_backpressure();
                 }
             },
-            Some(ReporterMsg { component, new_label }) = rx.recv() => {
+            Some(ReporterMsg { component, new_label, backpressure_after }) = rx.recv() => {
                 if let Some(entry) = registry.get_mut(&component) {
                     // finalize the previous period up until now
                     entry.flush();
-                    entry.current_state = new_label;
+                    entry.on_transition(new_label);
+                    // Allow upgrading an existing entry's backpressure threshold on re-registration.
+                    if backpressure_after.is_some() {
+                        entry.backpressure_after = backpressure_after;
+                    }
                 } else {
+                    let is_waiting_send =
+                        new_label.generic() == GenericComponentState::WaitingSend;
                     registry.insert(component, RegistryEntry {
                         component,
                         current_state: new_label,
                         last_report_at: Instant::now(),
+                        entered_waiting_send_at: is_waiting_send.then(Instant::now),
+                        backpressure_after,
+                        backpressured: false,
                     });
                 }
             }
