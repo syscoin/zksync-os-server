@@ -143,6 +143,8 @@ pub struct Tester {
     node_record: NodeRecord,
     l2_rpc_address: String,
     batch_verification_url: String,
+    #[cfg(feature = "prover-tests")]
+    prover_api_url: String,
     gateway_rpc_url: Option<String>,
     chain_layout: ChainLayout<'static>,
     supporting_nodes: Vec<Tester>,
@@ -229,6 +231,8 @@ impl Tester {
         let l2_rpc_address = format!("0.0.0.0:{}", l2_locked_port.port);
         let l2_rpc_ws_url = format!("ws://localhost:{}", l2_locked_port.port);
         let prover_api_address = format!("0.0.0.0:{}", prover_api_locked_port.port);
+        #[cfg(feature = "prover-tests")]
+        let prover_api_url = format!("http://localhost:{}", prover_api_locked_port.port);
         let status_address = format!("0.0.0.0:{}", status_locked_port.port);
         let batch_verification_address = format!("0.0.0.0:{}", batch_verification_locked_port.port);
         let batch_verification_url =
@@ -349,48 +353,6 @@ impl Tester {
             zksync_os_server::run::<FullDiffsState>(stop_receiver, config).await;
         });
 
-        #[cfg(feature = "prover-tests")]
-        if enable_prover {
-            let base_url = format!("http://localhost:{}", prover_api_locked_port.port);
-            let app_bin_path =
-                zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"));
-            let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
-            let output_dir = tempdir.path().join("outputs");
-            std::fs::create_dir_all(&output_dir).unwrap();
-
-            let path = download_prover_and_unpack(cfg!(feature = "gpu-prover-tests")).await;
-
-            let mut child = tokio::process::Command::new(path)
-                .arg("--sequencer-urls")
-                .arg(base_url)
-                .arg("--app-bin-path")
-                .arg(app_bin_path)
-                .arg("--circuit-limit")
-                .arg("10000")
-                .arg("--output-dir")
-                .arg(output_dir)
-                .arg("--trusted-setup-file")
-                .arg(trusted_setup_file)
-                .arg("--iterations")
-                .arg("10")
-                .arg("--max-fris-per-snark")
-                .arg("1")
-                .arg("--disable-zk")
-                .spawn()
-                .expect("failed to spawn prover service");
-            tokio::task::spawn(async move {
-                let code = child
-                    .wait()
-                    .await
-                    .expect("failed to wait for prover service");
-                if code.success() {
-                    tracing::info!("prover service finished running");
-                } else {
-                    panic!("prover service terminated with exit code {}", code);
-                }
-            });
-        }
-
         let l2_wallet = EthereumWallet::new(
             // Private key for 0x36615cf349d7f6344891b1e7ca7c72883f5dc049
             LocalSigner::from_str(
@@ -449,6 +411,8 @@ impl Tester {
             main_task,
             l2_rpc_address: l2_rpc_address.replace("0.0.0.0:", "http://localhost:"),
             batch_verification_url,
+            #[cfg(feature = "prover-tests")]
+            prover_api_url,
             gateway_rpc_url,
             node_record,
             tempdir: tempdir.clone(),
@@ -456,6 +420,49 @@ impl Tester {
             supporting_nodes: Vec::new(),
         })
     }
+}
+
+#[cfg(feature = "prover-tests")]
+async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
+    let rocks_db_path = tester.tempdir.path().join("rocksdb");
+    let app_bin_path =
+        zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"));
+    let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
+    let output_dir = tester.tempdir.path().join("outputs");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let path = download_prover_and_unpack(cfg!(feature = "gpu-prover-tests")).await;
+
+    let mut command = tokio::process::Command::new(path);
+    command
+        .arg("--sequencer-urls")
+        .arg(sequencer_urls.join(","))
+        .arg("--app-bin-path")
+        .arg(app_bin_path)
+        .arg("--circuit-limit")
+        .arg("10000")
+        .arg("--output-dir")
+        .arg(output_dir)
+        .arg("--trusted-setup-file")
+        .arg(trusted_setup_file)
+        .arg("--iterations")
+        .arg(iterations.to_string())
+        .arg("--max-fris-per-snark")
+        .arg("1")
+        .arg("--disable-zk");
+
+    let mut child = command.spawn().expect("failed to spawn prover service");
+    tokio::task::spawn(async move {
+        let code = child
+            .wait()
+            .await
+            .expect("failed to wait for prover service");
+        if code.success() {
+            tracing::info!("prover service finished running");
+        } else {
+            panic!("prover service terminated with exit code {}", code);
+        }
+    });
 }
 
 async fn ensure_test_wallet_funded(
@@ -652,13 +659,20 @@ impl TesterBuilder {
                 };
                 let l1 = AnvilL1::start(chain_layout).await?;
                 let options = self.options;
-                Tester::launch_node(
+                let enable_prover = options.enable_prover;
+                let tester = Tester::launch_node(
                     l1,
-                    options.enable_prover,
+                    enable_prover,
                     Some(move |config: &mut Config| options.apply_to_config(config)),
                     chain_layout,
                 )
-                .await
+                .await?;
+                #[cfg(feature = "prover-tests")]
+                if enable_prover {
+                    spawn_prover_service(&tester, std::slice::from_ref(&tester.prover_api_url), 1)
+                        .await;
+                }
+                Ok(tester)
             }
             SettlementLayer::Gateway => {
                 let gateway_tester = GatewayTester::builder()
@@ -807,6 +821,15 @@ impl GatewayTesterBuilder {
             );
 
             chains.push(tester);
+        }
+
+        #[cfg(feature = "prover-tests")]
+        if self.chain_options.enable_prover {
+            let sequencer_urls = chains
+                .iter()
+                .map(|chain| chain.prover_api_url.clone())
+                .collect::<Vec<_>>();
+            spawn_prover_service(&chains[0], &sequencer_urls, chains.len()).await;
         }
 
         Ok(GatewayTester {
