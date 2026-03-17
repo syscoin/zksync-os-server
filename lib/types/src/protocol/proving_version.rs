@@ -65,7 +65,8 @@ impl ProvingVersion {
     const V6_VK_HASH: &'static str =
         "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337";
 
-    /// TODO: replace with the actual V7 VK hash once the proving circuit for v31 is finalized.
+    /// verification key hash generated from zksync-os dev-20260311, zksync-airbender v0.5.2 and zkos-wrapper v0.5.4
+    /// TODO: use proper zksync-os release once it's there
     const V7_VK_HASH: &'static str =
         "0x7790e7a955229d9379c783b638252c721c73a9d863ec0de57cd2ed3beb628f04";
 
@@ -91,6 +92,7 @@ impl ProvingVersion {
             Self::V4_VK_HASH => Ok(Self::V4),
             Self::V5_VK_HASH => Ok(Self::V5),
             Self::V6_VK_HASH => Ok(Self::V6),
+            Self::V7_VK_HASH => Ok(Self::V7),
             val => Err(ProvingVersionError::UnsupportedVkHash(val.to_string())),
         }
     }

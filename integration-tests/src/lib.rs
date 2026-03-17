@@ -156,6 +156,10 @@ impl Tester {
     pub fn l1_wallet(&self) -> &EthereumWallet {
         &self.l1.wallet
     }
+
+    pub fn supporting_nodes(&self) -> &[Tester] {
+        &self.supporting_nodes
+    }
 }
 
 impl Tester {
@@ -368,7 +372,7 @@ impl Tester {
                 .arg("--trusted-setup-file")
                 .arg(trusted_setup_file)
                 .arg("--iterations")
-                .arg("1")
+                .arg("10")
                 .arg("--max-fris-per-snark")
                 .arg("1")
                 .arg("--disable-zk")
