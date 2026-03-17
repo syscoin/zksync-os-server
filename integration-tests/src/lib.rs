@@ -425,8 +425,15 @@ impl Tester {
 #[cfg(feature = "prover-tests")]
 async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
     let rocks_db_path = tester.tempdir.path().join("rocksdb");
-    let app_bin_path =
-        zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"));
+    let app_bin_path = match tester.chain_layout.protocol_version() {
+        "v30.2" => {
+            zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"))
+        }
+        "v31.0" => {
+            zksync_os_multivm::apps::v7::multiblock_batch_path(&rocks_db_path.join("app_bins"))
+        }
+        _ => panic!("unsupported protocol version for prover tests"),
+    };
     let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
     let output_dir = tester.tempdir.path().join("outputs");
     std::fs::create_dir_all(&output_dir).unwrap();
