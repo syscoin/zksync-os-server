@@ -45,10 +45,9 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
         input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> Result<()> {
-        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
+        let latency_tracker = ComponentStateReporter::global().handle_for(
             "prover_input_generator",
             GenericComponentState::ProcessingOrWaitingRecv,
-            Duration::from_secs(60),
         );
 
         let read_state = self.read_state;

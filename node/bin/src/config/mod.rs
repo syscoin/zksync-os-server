@@ -372,6 +372,14 @@ pub struct SequencerConfig {
     #[config(default_t = Duration::from_millis(750))]
     pub service_block_delay: Duration,
 
+    /// If set, the RPC layer will stop accepting new transactions when no block has been produced
+    /// for this duration. Useful as a safety net: the sequencer produces service blocks even when
+    /// idle, so a prolonged gap reliably indicates a stall.
+    ///
+    /// `None` (default) disables the watchdog — recommended to explicitly set this in production.
+    #[config(default_t = None)]
+    pub block_production_stall_timeout: Option<Duration>,
+
     /// Enable REVM consistency checker.
     /// If enabled, an additional pipeline process will be executed after the sequencer.
     /// The process re-executes transactions on the REVM client and checks state diff consistency.
@@ -519,6 +527,12 @@ pub struct L1SenderConfig {
     /// External Nodes only replay blocks, so they may leave this unset.
     #[config(with = Serde![str])]
     pub pubdata_mode: Option<PubdataMode>,
+
+    /// How long an L1 sender may wait for L1 to mine its transaction (`WaitingL1Inclusion`)
+    /// before the RPC layer starts rejecting new transactions with -32003.
+    /// Must be lower than the hard L1 transaction timeout (300 s).
+    #[config(default_t = Duration::from_secs(120))]
+    pub l1_inclusion_backpressure_threshold: Duration,
 }
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
@@ -1016,6 +1030,7 @@ impl L1SenderConfig {
             command_limit: self.command_limit,
             poll_interval: self.poll_interval,
             fusaka_upgrade_timestamp: self.fusaka_upgrade_timestamp,
+            l1_inclusion_backpressure_threshold: self.l1_inclusion_backpressure_threshold,
             phantom_data: Default::default(),
         }
     }

@@ -28,5 +28,10 @@ pub struct L1SenderConfig<Input> {
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 
+    /// How long the L1 sender may stay in `WaitingL1Inclusion` (waiting for L1 to mine the tx)
+    /// before backpressure is signalled to the RPC layer.
+    /// Should be significantly lower than the hard `TRANSACTION_TIMEOUT` (300 s).
+    pub l1_inclusion_backpressure_threshold: Duration,
+
     pub phantom_data: PhantomData<Input>,
 }
