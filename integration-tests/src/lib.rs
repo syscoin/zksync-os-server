@@ -788,7 +788,7 @@ impl GatewayTesterBuilder {
         let l1 = AnvilL1::start(ChainLayout::Gateway { protocol_version }).await?;
         let gateway = Tester::launch_node(
             l1.clone(),
-            false,
+            self.chain_options.enable_prover,
             None::<fn(&mut Config)>,
             ChainLayout::Gateway { protocol_version },
         )
@@ -832,11 +832,10 @@ impl GatewayTesterBuilder {
 
         #[cfg(feature = "prover-tests")]
         if self.chain_options.enable_prover {
-            let sequencer_urls = chains
-                .iter()
-                .map(|chain| chain.prover_api_url.clone())
+            let sequencer_urls = std::iter::once(gateway.prover_api_url.clone())
+                .chain(chains.iter().map(|chain| chain.prover_api_url.clone()))
                 .collect::<Vec<_>>();
-            spawn_prover_service(&chains[0], &sequencer_urls, chains.len()).await;
+            spawn_prover_service(&gateway, &sequencer_urls, sequencer_urls.len()).await;
         }
 
         Ok(GatewayTester {
