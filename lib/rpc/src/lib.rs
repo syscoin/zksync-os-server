@@ -59,7 +59,6 @@ use zksync_os_rpc_api::pubsub::EthPubSubApiServer;
 use zksync_os_rpc_api::unstable::UnstableApiServer;
 use zksync_os_rpc_api::web3::Web3ApiServer;
 use zksync_os_rpc_api::zks::ZksApiServer;
-use zksync_os_types::TransactionAcceptanceState;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_jsonrpsee_server<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
@@ -70,7 +69,6 @@ pub async fn run_jsonrpsee_server<RpcStorage: ReadRpcStorage, Mempool: L2Subpool
     storage: RpcStorage,
     mempool: Mempool,
     genesis_input_source: Arc<dyn GenesisInputSource>,
-    acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     tx_forwarder: Option<DynProvider>,
     gateway_provider: Option<DynProvider>,
@@ -91,7 +89,6 @@ pub async fn run_jsonrpsee_server<RpcStorage: ReadRpcStorage, Mempool: L2Subpool
             mempool.clone(),
             eth_call_handler.clone(),
             chain_id,
-            acceptance_state,
             tx_forwarder,
         )
         .into_rpc(),

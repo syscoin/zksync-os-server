@@ -101,8 +101,7 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    InteropRootsLogIndex, ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState,
-    UpgradeInfo, UpgradeMetadata,
+    InteropRootsLogIndex, ProtocolSemanticVersion, PubdataMode, UpgradeInfo, UpgradeMetadata,
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -559,12 +558,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .map(report_exit("L1 transaction watcher")),
     );
 
-    // Transaction acceptance state - tracks whether we're accepting new transactions
-    // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
-    // External nodes: always accepts, but may be rejected on the main node side during forwarding
-    let (tx_acceptance_state_sender, tx_acceptance_state_receiver) =
-        watch::channel(TransactionAcceptanceState::Accepting);
-
     let main_node_provider = if let Some(url) = config.general_config.main_node_rpc_url.as_ref() {
         Some(
             ProviderBuilder::new()
@@ -811,7 +804,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             tree_db,
             finality_storage.clone(),
             chain_id,
-            tx_acceptance_state_sender,
             sidecar_sender,
             committed_batch_provider.clone(),
         )
@@ -831,7 +823,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             repositories.clone(),
             finality_storage.clone(),
             stop_receiver.clone(),
-            tx_acceptance_state_sender,
             chain_id,
         )
         .await;
@@ -859,7 +850,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             rpc_storage,
             l2_subpool,
             genesis_input_source,
-            tx_acceptance_state_receiver,
             last_constructed_block_ctx_receiver,
             main_node_provider,
             gateway_provider.map(|p| p.erased()),
@@ -890,7 +880,6 @@ async fn run_main_node_pipeline(
     tree: MerkleTree<RocksDBWrapper>,
     finality: impl ReadFinality + Clone,
     chain_id: u64,
-    tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     sidecar_sender: tokio::sync::mpsc::Sender<BlobTransactionSidecar>,
     committed_batch_provider: CommittedBatchProvider,
 ) {
@@ -965,7 +954,6 @@ async fn run_main_node_pipeline(
             block_context_provider,
             state: state.clone(),
             config: config.into(),
-            tx_acceptance_state_sender,
         })
         .pipe(BlockCanonizer {
             consensus: NoopCanonization::new(),
@@ -1084,7 +1072,6 @@ async fn run_en_pipeline(
     repositories: impl WriteRepository + Clone,
     finality: impl ReadFinality + Clone,
     stop_receiver: watch::Receiver<bool>,
-    tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
 ) {
     let internal_config_manager = init_and_report_internal_config_manager(
@@ -1104,7 +1091,6 @@ async fn run_en_pipeline(
             block_context_provider,
             state: state.clone(),
             config: config.into(),
-            tx_acceptance_state_sender,
         })
         .pipe(BlockApplier {
             state: state.clone(),

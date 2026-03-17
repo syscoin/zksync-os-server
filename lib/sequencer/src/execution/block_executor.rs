@@ -6,14 +6,14 @@ use crate::execution::utils::save_dump;
 use crate::model::blocks::{BlockCommand, BlockCommandType};
 use anyhow::Context;
 use async_trait::async_trait;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{OverlayBuffer, ReadStateHistory, ReplayRecord, WriteState};
-use zksync_os_types::{NotAcceptingReason, TransactionAcceptanceState};
+use zksync_os_types::{BackpressureHandle, NotAcceptingReason};
 
 /// Executes blocks, while only updating local in-memory state (mempool, block context).
 /// Does not persist anything to disk.
@@ -26,9 +26,6 @@ where
     pub block_context_provider: BlockContextProvider<Subpool>,
     pub state: State,
     pub config: SequencerConfig,
-    /// Controls transaction acceptance state.
-    /// When max_blocks_to_produce limit is reached, sequencer sends NotAccepting to stop RPC from accepting new txs.
-    pub tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
 }
 
 #[async_trait]
@@ -82,13 +79,7 @@ where
             if matches!(cmd, BlockCommand::Produce(_))
                 && let Some(limit) = self.config.max_blocks_to_produce
             {
-                check_block_production_limit(
-                    limit,
-                    produced_blocks_count,
-                    &self.tx_acceptance_state_sender,
-                    &latency_tracker,
-                )
-                .await;
+                check_block_production_limit(limit, produced_blocks_count, &latency_tracker).await;
                 produced_blocks_count += 1;
             }
             latency_tracker.enter_state(SequencerState::BlockContextTxs);
@@ -174,7 +165,6 @@ where
 async fn check_block_production_limit(
     limit: u64,
     already_produced_blocks_count: u64,
-    tx_acceptance_state_sender: &watch::Sender<TransactionAcceptanceState>,
     latency_tracker: &ComponentStateHandle<SequencerState>,
 ) {
     if already_produced_blocks_count >= limit {
@@ -184,10 +174,8 @@ async fn check_block_production_limit(
             "Reached max_blocks_to_produce limit, stopping transaction acceptance"
         );
 
-        // Signal to RPC that we're no longer accepting transactions
-        let _ = tx_acceptance_state_sender.send(TransactionAcceptanceState::NotAccepting(
-            NotAcceptingReason::BlockProductionDisabled,
-        ));
+        // Signal to RPC that we're no longer accepting transactions via the global handle
+        BackpressureHandle::global().stop_permanently(NotAcceptingReason::BlockProductionDisabled);
 
         latency_tracker.enter_state(SequencerState::ConfiguredBlockLimitReached);
         std::future::pending::<()>().await;

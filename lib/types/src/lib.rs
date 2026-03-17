@@ -1,3 +1,9 @@
+pub mod backpressure;
+pub use backpressure::BackpressureHandle;
+
+pub mod backpressure_metrics;
+pub use backpressure_metrics::BACKPRESSURE_METRICS;
+
 mod config_format;
 pub use config_format::ConfigFormat;
 

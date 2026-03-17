@@ -10,7 +10,10 @@ use tokio::sync::watch;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
-use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState};
+use zksync_os_types::{
+    BACKPRESSURE_METRICS, BackpressureHandle, L2Envelope, L2Transaction, NotAcceptingReason,
+    TransactionAcceptanceState,
+};
 
 /// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
 /// inexpensive.
@@ -30,9 +33,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         config: RpcConfig,
         storage: RpcStorage,
         mempool: Mempool,
-        acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<DynProvider>,
     ) -> Self {
+        let acceptance_state = BackpressureHandle::global().subscribe();
         Self {
             config,
             storage,
@@ -47,6 +50,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         tx_bytes: Bytes,
     ) -> Result<B256, EthSendRawTransactionError> {
         if let TransactionAcceptanceState::NotAccepting(reason) = &*self.acceptance_state.borrow() {
+            let cause_str = match reason {
+                NotAcceptingReason::BlockProductionDisabled => "block_production_disabled",
+                NotAcceptingReason::Overloaded { cause, .. } => cause.as_rpc_str(),
+            };
+            BACKPRESSURE_METRICS.tx_rejected_total[&cause_str].inc();
             return Err(EthSendRawTransactionError::NotAcceptingTransactions(
                 *reason,
             ));

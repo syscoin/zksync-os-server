@@ -26,6 +26,8 @@ chrono = { workspace = true, default-features = false, features = ["now"] }
 num.workspace = true
 
 serde_json.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+vise.workspace = true
 
 [dev-dependencies]
 

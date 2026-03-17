@@ -14855,6 +14855,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
+ "tokio",
+ "vise",
  "zksync_os_contract_interface",
  "zksync_os_interface",
 ]
