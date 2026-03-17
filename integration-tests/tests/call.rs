@@ -1,12 +1,15 @@
 use alloy::consensus::{BlobTransactionSidecar, BlobTransactionSidecarVariant};
 use alloy::eips::BlockId;
+use alloy::network::TransactionBuilder;
 use alloy::primitives::{U256, b256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::state::{AccountOverride, StateOverride};
 use std::collections::HashMap;
 use zksync_os_integration_tests::assert_traits::EthCallAssert;
-use zksync_os_integration_tests::contracts::{EventEmitter, SimpleRevert, TracingSecondary};
+use zksync_os_integration_tests::contracts::{
+    Counter, EventEmitter, SimpleRevert, TracingSecondary,
+};
 use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_GATEWAY, Tester, test_multisetup};
 
 #[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
@@ -204,6 +207,51 @@ async fn call_with_state_overrides(tester: Tester) -> anyhow::Result<()> {
     let out_overridden = tester.l2_provider.call(tx_req).overrides(overrides).await?;
     let overridden = U256::from_be_slice(&out_overridden);
     assert_eq!(overridden, U256::from(2));
+
+    Ok(())
+}
+
+#[test_multisetup([CURRENT_TO_L1])]
+async fn call_pubdata_exhaustion_detected(tester: Tester) -> anyhow::Result<()> {
+    // Test that `eth_call` detects when a transaction would revert due to pubdata costs
+    // even though execution succeeds with basefee=0.
+    //
+    // Strategy: call Counter.increment() which writes to storage (generating pubdata).
+    // Use gas_price=1 wei with a small gas_limit so the gas budget is far too low to cover
+    // the real pubdata cost. The heuristic should detect this and return a pubdata-specific
+    // revert error.
+    let counter = Counter::deploy(tester.l2_provider.clone()).await?;
+
+    let mut tx_req = counter.increment(U256::from(1)).into_transaction_request();
+    // Use a gas_price of 1 wei so effective_gas_price > 0 (triggers the check)
+    // and gas_limit of 100_000 so gas_budget = 100_000 wei (tiny).
+    tx_req.set_gas_limit(100_000);
+    tx_req.gas_price = Some(1);
+    tx_req.set_from(tester.l2_wallet.default_signer().address());
+
+    tester
+        .l2_provider
+        .call(tx_req)
+        .expect_to_fail("insufficient gas to cover pubdata cost")
+        .await;
+
+    Ok(())
+}
+
+#[test_multisetup([CURRENT_TO_L1])]
+async fn call_no_pubdata_check_without_gas_price(tester: Tester) -> anyhow::Result<()> {
+    // Test that the pubdata exhaustion check is NOT triggered when the caller does not
+    // specify a gas price (effective_gas_price=0). This is the normal `eth_call` path
+    // for read-only simulations.
+    let counter = Counter::deploy(tester.l2_provider.clone()).await?;
+
+    let mut tx_req = counter.increment(U256::from(1)).into_transaction_request();
+    // No gas_price set, so effective_gas_price=0 — the heuristic should be skipped.
+    tx_req.set_gas_limit(100_000);
+    tx_req.set_from(tester.l2_wallet.default_signer().address());
+
+    // This should succeed (no pubdata check applied)
+    tester.l2_provider.call(tx_req).await?;
 
     Ok(())
 }

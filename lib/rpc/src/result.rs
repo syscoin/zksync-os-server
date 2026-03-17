@@ -138,6 +138,16 @@ pub struct RevertError {
     ///
     /// Note: this is `None` if output was empty
     output: Option<Bytes>,
+    /// Optional pubdata exhaustion context for diagnostics
+    pubdata_context: Option<PubdataExhaustionContext>,
+}
+
+/// Diagnostic context for pubdata-related reverts.
+#[derive(Debug, Clone)]
+pub(crate) struct PubdataExhaustionContext {
+    pub(crate) pubdata_used: u64,
+    pub(crate) native_used: u64,
+    pub(crate) gas_limit: u64,
 }
 
 impl RevertError {
@@ -146,11 +156,27 @@ impl RevertError {
     /// Note: this is intended to wrap a VM output
     pub fn new(output: Bytes) -> Self {
         if output.is_empty() {
-            Self { output: None }
+            Self {
+                output: None,
+                pubdata_context: None,
+            }
         } else {
             Self {
                 output: Some(output),
+                pubdata_context: None,
             }
+        }
+    }
+
+    /// Creates a revert error for pubdata exhaustion (gas limit too low to cover pubdata costs).
+    pub fn for_pubdata_exhaustion(pubdata_used: u64, native_used: u64, gas_limit: u64) -> Self {
+        Self {
+            output: None,
+            pubdata_context: Some(PubdataExhaustionContext {
+                pubdata_used,
+                native_used,
+                gas_limit,
+            }),
         }
     }
 
@@ -163,6 +189,16 @@ impl RevertError {
 impl fmt::Display for RevertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("execution reverted")?;
+
+        if let Some(ctx) = &self.pubdata_context {
+            return write!(
+                f,
+                ": insufficient gas to cover pubdata cost \
+                 (pubdata_used: {} bytes, native_used: {}, gas_limit: {})",
+                ctx.pubdata_used, ctx.native_used, ctx.gas_limit
+            );
+        }
+
         if let Some(reason) = self
             .output
             .as_ref()
@@ -180,5 +216,48 @@ impl fmt::Display for RevertError {
             write!(f, ": {error}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revert_error_display_empty() {
+        let err = RevertError::new(Bytes::new());
+        assert_eq!(err.to_string(), "execution reverted");
+    }
+
+    #[test]
+    fn revert_error_display_pubdata_exhaustion() {
+        let err = RevertError::for_pubdata_exhaustion(1000, 500, 21000);
+        assert_eq!(
+            err.to_string(),
+            "execution reverted: insufficient gas to cover pubdata cost \
+             (pubdata_used: 1000 bytes, native_used: 500, gas_limit: 21000)"
+        );
+    }
+
+    #[test]
+    fn revert_error_display_pubdata_exhaustion_zero_values() {
+        let err = RevertError::for_pubdata_exhaustion(0, 0, 0);
+        assert_eq!(
+            err.to_string(),
+            "execution reverted: insufficient gas to cover pubdata cost \
+             (pubdata_used: 0 bytes, native_used: 0, gas_limit: 0)"
+        );
+    }
+
+    #[test]
+    fn revert_error_pubdata_has_no_output_data() {
+        let err = RevertError::for_pubdata_exhaustion(100, 200, 300);
+        assert!(err.output.is_none());
+    }
+
+    #[test]
+    fn revert_error_error_code() {
+        let err = RevertError::for_pubdata_exhaustion(100, 200, 300);
+        assert_eq!(err.error_code(), EthRpcErrorCode::ExecutionError.code());
     }
 }

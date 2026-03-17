@@ -4,6 +4,7 @@ use crate::js_tracer;
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use crate::sandbox::{call_trace_simulate, execute};
+use alloy::consensus::Transaction;
 use alloy::consensus::transaction::Recovered;
 use alloy::consensus::{SignableTransaction, TxEip1559, TxEip2930, TxLegacy, TxType};
 use alloy::eips::BlockId;
@@ -306,7 +307,17 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             .storage
             .state_at_block_number_or_latest(execution_env.block_context.block_number)?;
 
+        let real_basefee = execution_env.block_context.eip1559_basefee;
+        let real_pubdata_price = execution_env.block_context.pubdata_price;
+        let real_native_price = execution_env.block_context.native_price;
+
         execution_env.block_context.eip1559_basefee = U256::from(0);
+        let tx = &execution_env.transaction;
+        let gas_limit = tx.gas_limit();
+        let effective_gas_price = tx
+            .envelope()
+            .effective_gas_price(Some(real_basefee.saturating_to()));
+
         let res = match state_overrides {
             Some(overrides) => execute(
                 execution_env.transaction,
@@ -325,7 +336,30 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         match res.execution_result {
             ExecutionResult::Success(
                 ExecutionOutput::Call(return_bytes) | ExecutionOutput::Create(return_bytes, _),
-            ) => Ok(Bytes::from(return_bytes)),
+            ) => {
+                // Heuristic: would this tx revert with real fees due to pubdata costs?
+                // This approximates the bootloader's post-execution fee check by comparing
+                // `pubdata_price * pubdata_used + native_price * native_used` against
+                // `effective_gas_price * gas_limit`. The bootloader's exact formula may
+                // differ slightly (e.g. accounting for refunds), so this is a best-effort
+                // diagnostic for block explorers replaying reverted transactions.
+                //
+                // Only fires when the caller specified a non-zero gas price, meaning
+                // they want realistic fee accounting.
+                if effective_gas_price > 0 {
+                    let gas_budget = U256::from(effective_gas_price) * U256::from(gas_limit);
+                    let resource_cost = real_pubdata_price * U256::from(res.pubdata_used)
+                        + real_native_price * U256::from(res.native_used);
+                    if resource_cost > gas_budget {
+                        return Err(EthCallError::Revert(RevertError::for_pubdata_exhaustion(
+                            res.pubdata_used,
+                            res.native_used,
+                            gas_limit,
+                        )));
+                    }
+                }
+                Ok(Bytes::from(return_bytes))
+            }
             ExecutionResult::Revert(return_bytes) => {
                 let error = RevertError::new(Bytes::from(return_bytes));
                 Err(EthCallError::Revert(error))?
