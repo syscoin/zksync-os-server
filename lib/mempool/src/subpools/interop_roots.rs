@@ -70,7 +70,10 @@ impl InteropRootsSubpool {
                             .collect();
 
                         // Use the log_id of the last (largest) root as the salt for uniqueness.
-                        let last_log_id = roots_to_consume.last().expect("roots_to_consume is non-empty").0;
+                        let last_log_id = roots_to_consume
+                            .last()
+                            .expect("roots_to_consume is non-empty")
+                            .0;
                         let roots = roots_to_consume.into_iter().map(|(_, r)| r).collect();
                         let envelope = SystemTxEnvelope::import_interop_roots(roots, last_log_id);
                         drop(notified);
