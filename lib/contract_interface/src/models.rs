@@ -338,8 +338,11 @@ impl fmt::Debug for CommitBatchInfo {
             .field("l2_da_commitment_scheme", &self.l2_da_commitment_scheme)
             .field("da_commitment", &self.da_commitment)
             .field("first_block_timestamp", &self.first_block_timestamp)
+            .field("first_block_number", &self.first_block_number)
             .field("last_block_timestamp", &self.last_block_timestamp)
+            .field("last_block_number", &self.last_block_number)
             .field("chain_id", &self.chain_id)
+            .field("sl_chain_id", &self.sl_chain_id)
             // .field("operator_da_input", skipped to keep concise!)
             .finish()
     }
