@@ -188,11 +188,14 @@ fn compute_prover_input(
             .expect("proof gen failed")
         }
         ProvingVersion::V7 => {
-            let path = format!("./prover_input_logs/{}_{}_log.txt", replay_record.block_context.chain_id, replay_record.block_context.block_number);
+            let path = format!(
+                "./prover_input_logs/{}_{}_log.txt",
+                replay_record.block_context.chain_id, replay_record.block_context.block_number
+            );
             std::fs::create_dir_all(Path::new("./prover_input_logs/")).unwrap();
-            tree_view.set_read_storage_tree_dev_log_path(
-                Path::new(&path)
-            ).unwrap();
+            tree_view
+                .set_read_storage_tree_dev_log_path(Path::new(&path))
+                .unwrap();
 
             use zk_ee_dev::{
                 common_structs::ProofData, system::metadata::zk_metadata::BlockMetadataFromOracle,
