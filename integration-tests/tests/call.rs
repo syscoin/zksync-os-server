@@ -1,6 +1,7 @@
 use alloy::consensus::{BlobTransactionSidecar, BlobTransactionSidecarVariant};
 use alloy::eips::BlockId;
 use alloy::network::TransactionBuilder;
+use alloy::primitives::U128;
 use alloy::primitives::{U256, b256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
@@ -10,7 +11,10 @@ use zksync_os_integration_tests::assert_traits::EthCallAssert;
 use zksync_os_integration_tests::contracts::{
     Counter, EventEmitter, SimpleRevert, TracingSecondary,
 };
-use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_GATEWAY, Tester, test_multisetup};
+use zksync_os_integration_tests::{
+    CURRENT_TO_L1, NEXT_TO_GATEWAY, Tester, TesterBuilder, test_multisetup,
+};
+use zksync_os_server::config::FeeConfig;
 
 #[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
 async fn call_genesis(tester: Tester) -> anyhow::Result<()> {
@@ -212,23 +216,40 @@ async fn call_with_state_overrides(tester: Tester) -> anyhow::Result<()> {
 }
 
 #[test_multisetup([CURRENT_TO_L1])]
-async fn call_pubdata_exhaustion_detected(tester: Tester) -> anyhow::Result<()> {
+async fn call_pubdata_exhaustion_detected(builder: TesterBuilder) -> anyhow::Result<()> {
     // Test that `eth_call` detects when a transaction would revert due to pubdata costs
     // even though execution succeeds with basefee=0.
     //
-    // Strategy: call Counter.increment() which writes to storage (generating pubdata).
-    // Use gas_price=1 wei with a small gas_limit so the gas budget is far too low to cover
-    // the real pubdata cost. The heuristic should detect this and return a pubdata-specific
-    // revert error.
+    // Strategy: configure the node with a very high pubdata price. Then call
+    // Counter.increment() WITHOUT gas_price (so basefee=0 disables all fee checks
+    // inside the VM and execution succeeds). The post-execution heuristic uses the
+    // real basefee to compute gas_budget and detects the pubdata cost overrun.
+    // Use a high-enough pubdata_price that resource_cost > gas_budget, but low enough
+    // that eth_call (basefee=0, gas_price=0) can still execute the transaction.
+    // base_fee=25M, pubdata_price=1B/byte, native_price=1M, gas_limit=100K →
+    //   gas_budget  = 25M * 100K = 2.5T
+    //   resource_cost ≈ 1B * 200 bytes = 200B  (too low, need higher pubdata_price)
+    //
+    // Let's use base_fee = 25M, pubdata_price = 100B, native_price = 1M:
+    //   gas_budget  = 25M * 100K = 2.5 * 10^12
+    //   resource_cost ≈ 100B * 200 = 20 * 10^12 = 2 * 10^13
+    //   2 * 10^13 > 2.5 * 10^12 → triggers
+    let fee_config = FeeConfig {
+        native_price_usd: 3e-9,
+        base_fee_override: Some(U128::from(25_000_000u64)), // 25M wei
+        native_per_gas: 100,
+        pubdata_price_override: Some(U128::from(100_000_000_000u64)), // 100B wei/byte
+        native_price_override: Some(U128::from(1_000_000u64)),
+        pubdata_price_cap: None,
+    };
+    let tester = builder.fee_config(fee_config).build().await?;
     let counter = Counter::deploy(tester.l2_provider.clone()).await?;
 
     let mut tx_req = counter.increment(U256::from(1)).into_transaction_request();
-    // Use a gas_price of 1 wei so effective_gas_price > 0 (triggers the check)
-    // and gas_limit of 100_000 so gas_budget = 100_000 wei (tiny).
+    // No gas_price: basefee=0 in the VM → execution succeeds without fee checks.
+    // The heuristic uses real basefee (25M) to compute gas_budget.
     tx_req.set_gas_limit(100_000);
-    tx_req.gas_price = Some(1);
     tx_req.set_from(tester.l2_wallet.default_signer().address());
-
     tester
         .l2_provider
         .call(tx_req)

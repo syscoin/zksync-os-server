@@ -333,33 +333,42 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         .map_err(EthCallError::ForwardSubsystemError)?
         .map_err(EthCallError::InvalidTransaction)?;
 
+        // Heuristic: did (or would) this tx revert due to pubdata costs?
+        //
+        // The bootloader checks resource costs after EVM execution. When basefee=0
+        // (our eth_call trick) but the caller specified a non-zero gas price, the
+        // bootloader may still revert with opaque data. When basefee=0 and gas_price
+        // is also 0, execution succeeds but the tx would have reverted on-chain.
+        //
+        // In both cases we compare `pubdata_price * pubdata_used + native_price *
+        // native_used` against the gas budget to surface a human-readable error.
+        // The bootloader's exact formula may differ slightly (e.g. accounting for
+        // refunds), so this is a best-effort diagnostic for block explorers.
+        //
+        // When effective_gas_price is 0 we fall back to real_basefee so that plain
+        // `eth_call` (no fee fields) still detects pubdata-related failures.
+        let effective = if effective_gas_price > 0 {
+            U256::from(effective_gas_price)
+        } else {
+            real_basefee
+        };
+        if effective > U256::ZERO {
+            let gas_budget = effective * U256::from(gas_limit);
+            let resource_cost = real_pubdata_price * U256::from(res.pubdata_used)
+                + real_native_price * U256::from(res.native_used);
+            if resource_cost > gas_budget {
+                return Err(EthCallError::Revert(RevertError::for_pubdata_exhaustion(
+                    res.pubdata_used,
+                    res.native_used,
+                    gas_limit,
+                )));
+            }
+        }
+
         match res.execution_result {
             ExecutionResult::Success(
                 ExecutionOutput::Call(return_bytes) | ExecutionOutput::Create(return_bytes, _),
-            ) => {
-                // Heuristic: would this tx revert with real fees due to pubdata costs?
-                // This approximates the bootloader's post-execution fee check by comparing
-                // `pubdata_price * pubdata_used + native_price * native_used` against
-                // `effective_gas_price * gas_limit`. The bootloader's exact formula may
-                // differ slightly (e.g. accounting for refunds), so this is a best-effort
-                // diagnostic for block explorers replaying reverted transactions.
-                //
-                // Only fires when the caller specified a non-zero gas price, meaning
-                // they want realistic fee accounting.
-                if effective_gas_price > 0 {
-                    let gas_budget = U256::from(effective_gas_price) * U256::from(gas_limit);
-                    let resource_cost = real_pubdata_price * U256::from(res.pubdata_used)
-                        + real_native_price * U256::from(res.native_used);
-                    if resource_cost > gas_budget {
-                        return Err(EthCallError::Revert(RevertError::for_pubdata_exhaustion(
-                            res.pubdata_used,
-                            res.native_used,
-                            gas_limit,
-                        )));
-                    }
-                }
-                Ok(Bytes::from(return_bytes))
-            }
+            ) => Ok(Bytes::from(return_bytes)),
             ExecutionResult::Revert(return_bytes) => {
                 let error = RevertError::new(Bytes::from(return_bytes));
                 Err(EthCallError::Revert(error))?

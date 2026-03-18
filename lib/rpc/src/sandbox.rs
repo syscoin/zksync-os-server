@@ -98,6 +98,13 @@ pub fn call_trace(
         &mut tracer,
     )?;
 
+    debug_assert_eq!(
+        tracer.transactions.len(),
+        block_output.tx_results.len(),
+        "tracer recorded {} frames but VM returned {} results",
+        tracer.transactions.len(),
+        block_output.tx_results.len(),
+    );
     for (frame, tx_result) in tracer
         .transactions
         .iter_mut()
