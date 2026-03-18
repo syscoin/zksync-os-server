@@ -104,8 +104,14 @@ impl PipelineComponent for TreeManager {
             TREE_METRICS.processing_range.observe(count.max(1) as u64);
             TREE_METRICS.block_number.set(block_number);
             let tree_block = BlockMerkleTreeData {
-                block_start: MerkleTreeVersion::new(tree.clone(), block_number - 1),
-                block_end: MerkleTreeVersion::new(tree.clone(), block_number),
+                block_start: MerkleTreeVersion {
+                    tree: tree.clone(),
+                    block: block_number - 1,
+                },
+                block_end: MerkleTreeVersion {
+                    tree: tree.clone(),
+                    block: block_number,
+                },
             };
             latency_tracker.enter_state(GenericComponentState::WaitingSend);
             output

@@ -14045,17 +14045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zksync_os_derive_flat_storage_key"
-version = "0.17.1"
-dependencies = [
- "alloy",
- "anyhow",
- "clap",
- "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=dev-20260318-2)",
- "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.8-interface-v0.0.14)",
-]
-
-[[package]]
 name = "zksync_os_evm_errors"
 version = "0.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"

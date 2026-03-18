@@ -22,7 +22,6 @@ members = [
     "integration-tests",
     "integration-tests-macros",
     "tools/generate-deposit",
-    "tools/derive-flat-storage-key",
     "lib/observability",
     "lib/state_full_diffs",
     "lib/status",
