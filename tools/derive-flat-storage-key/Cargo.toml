@@ -1,0 +1,22 @@
+[package]
+name = "zksync_os_derive_flat_storage_key"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "derive-flat-storage-key"
+path = "src/main.rs"
+
+[dependencies]
+zk_ee.workspace = true
+zk_ee_dev.workspace = true
+
+alloy = { workspace = true, default-features = false, features = ["serde"] }
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -121,7 +121,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 fn compute_prover_input(
     replay_record: &ReplayRecord,
     state_handle: impl ReadStateHistory,
-    tree_view: MerkleTreeVersion<RocksDBWrapper>,
+    mut tree_view: MerkleTreeVersion<RocksDBWrapper>,
     da_commitment_scheme: DACommitmentScheme,
     app_bin_base_path: PathBuf,
     enable_logging: bool,
@@ -188,6 +188,12 @@ fn compute_prover_input(
             .expect("proof gen failed")
         }
         ProvingVersion::V7 => {
+            let path = format!("./prover_input_logs/{}_{}_log.txt", replay_record.block_context.chain_id, replay_record.block_context.block_number);
+            std::fs::create_dir_all(Path::new("./prover_input_logs/")).unwrap();
+            tree_view.set_read_storage_tree_dev_log_path(
+                Path::new(&path)
+            ).unwrap();
+
             use zk_ee_dev::{
                 common_structs::ProofData, system::metadata::zk_metadata::BlockMetadataFromOracle,
             };

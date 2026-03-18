@@ -284,10 +284,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     )
     .await;
 
-    let tree_at_genesis = MerkleTreeVersion {
-        tree: tree_db,
-        block: 0,
-    };
+    let tree_at_genesis = MerkleTreeVersion::new(tree_db, 0);
     let (genesis_root_hash, genesis_root_leaves) = tree_at_genesis
         .root_info()
         .expect("Failed to get genesis root info");
