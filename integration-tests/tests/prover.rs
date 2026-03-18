@@ -13,7 +13,10 @@ async fn prover(builder: TesterBuilder, test_case: TestCase) -> anyhow::Result<(
     if test_case.settlement_layer == SettlementLayer::Gateway {
         // Gateway comes with a pre-baked state and some batches are already fake-proven there.
         // So we expect the next batch to be proven with real flow.
-        let last_proven_batch = tester.prover_tester.last_proven_batch().await?;
+        let last_proven_batch = tester.supporting_nodes()[0]
+            .prover_tester
+            .last_proven_batch()
+            .await?;
         // We expect that first supporting node is gateway node.
         // Wait for the first batch to be proven on gateway node as well.
         tester.supporting_nodes()[0]
