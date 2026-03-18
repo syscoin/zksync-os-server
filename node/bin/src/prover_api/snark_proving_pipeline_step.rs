@@ -31,6 +31,7 @@ impl SnarkProvingPipelineStep {
         last_proved_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
+        backpressure_threshold: Option<Duration>,
     ) -> (Self, Arc<SnarkJobManager>) {
         let (proof_commands_sender, proof_commands_receiver) = mpsc::channel::<ProofCommand>(1);
 
@@ -39,6 +40,7 @@ impl SnarkProvingPipelineStep {
             max_fris_per_snark,
             assignment_timeout,
             max_assigned_batch_range,
+            backpressure_threshold,
         ));
 
         let result = Self {

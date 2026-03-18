@@ -19,6 +19,7 @@ use zksync_os_rocksdb::{RocksDB, RocksDBOptions, StalledWritesRetries};
 #[derive(Debug)]
 pub(crate) struct TreeManager {
     pub tree: MerkleTree<RocksDBWrapper>,
+    pub backpressure_threshold: Option<Duration>,
 }
 
 #[async_trait]
@@ -43,8 +44,11 @@ impl PipelineComponent for TreeManager {
         // will be removed once idempotency is handled on the framework level
         let mut last_processed_block = tree.latest_version()?.expect("tree wasn't initialized");
 
-        let latency_tracker =
-            ComponentStateReporter::global().handle_for("tree", GenericComponentState::WaitingRecv);
+        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
+            "tree",
+            GenericComponentState::WaitingRecv,
+            self.backpressure_threshold,
+        );
         loop {
             latency_tracker.enter_state(GenericComponentState::WaitingRecv);
 

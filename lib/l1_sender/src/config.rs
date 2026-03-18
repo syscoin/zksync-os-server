@@ -28,5 +28,9 @@ pub struct L1SenderConfig<Input> {
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 
+    /// How long to stay in `WaitingL1Inclusion` before backpressure fires.
+    /// `None` disables backpressure detection for this sender.
+    pub backpressure_threshold: Option<Duration>,
+
     pub phantom_data: PhantomData<Input>,
 }

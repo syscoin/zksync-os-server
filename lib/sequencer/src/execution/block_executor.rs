@@ -57,8 +57,11 @@ where
         mut input: PeekableReceiver<Self::Input>, // PeekableReceiver<BlockCommand>
         output: mpsc::Sender<Self::Output>, // Sender<(BlockOutput, ReplayRecord, BlockCommandType)>
     ) -> anyhow::Result<()> {
-        let latency_tracker = ComponentStateReporter::global()
-            .handle_for("block_executor", SequencerState::WaitingForCommand);
+        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
+            "block_executor",
+            SequencerState::WaitingForCommand,
+            self.config.backpressure_threshold,
+        );
 
         // Track how many Produce commands we've processed (for `sequencer_max_blocks_to_produce` config)
         let mut produced_blocks_count = 0u64;

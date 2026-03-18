@@ -46,6 +46,7 @@ impl SnarkJobManager {
         max_fris_per_snark: usize,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
+        backpressure_threshold: Option<Duration>,
     ) -> Self {
         let jobs = ProverJobMap::<FriProof>::new(
             assignment_timeout,
@@ -55,7 +56,7 @@ impl SnarkJobManager {
         let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
             "snark_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
-            assignment_timeout,
+            backpressure_threshold,
         );
         Self {
             jobs,

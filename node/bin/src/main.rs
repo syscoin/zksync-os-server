@@ -8,12 +8,12 @@ use zksync_os_internal_config::InternalConfigManager;
 use zksync_os_metadata::NODE_VERSION;
 use zksync_os_observability::prometheus::PrometheusExporterConfig;
 use zksync_os_server::config::{
-    BaseTokenPriceUpdaterConfig, BatchVerificationConfig, BatcherConfig, Config, ConfigArgs,
-    ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig, GenesisConfig,
-    InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig, NetworkConfig,
-    ObservabilityConfig, ProofStorageConfig, ProverApiConfig, ProverInputGeneratorConfig,
-    RebuildBlocksConfig, RpcConfig, SequencerConfig, StateBackendConfig, StatusServerConfig,
-    TxValidatorConfig,
+    BackpressureConfig, BaseTokenPriceUpdaterConfig, BatchVerificationConfig, BatcherConfig,
+    Config, ConfigArgs, ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig,
+    GenesisConfig, InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig,
+    NetworkConfig, ObservabilityConfig, ProofStorageConfig, ProverApiConfig,
+    ProverInputGeneratorConfig, RebuildBlocksConfig, RpcConfig, SequencerConfig,
+    StateBackendConfig, StatusServerConfig, TxValidatorConfig,
 };
 use zksync_os_server::default_protocol_version::{DEFAULT_ROCKS_DB_PATH, PROTOCOL_VERSION};
 use zksync_os_server::{INTERNAL_CONFIG_FILE_NAME, run};
@@ -380,6 +380,12 @@ async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse fee config");
 
+    let backpressure_config = repo
+        .single::<BackpressureConfig>()
+        .expect("Failed to load backpressure config")
+        .parse()
+        .expect("Failed to parse backpressure config");
+
     // Validate that operator signers resolve to different Ethereum addresses (Main Node only).
     // Resolving the address for GCP KMS keys requires a network call, but is necessary to catch
     // duplicates across different backends (e.g. a local key and a KMS key for the same address).
@@ -429,6 +435,7 @@ async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         interop_fee_updater_config,
         external_price_api_client_config,
         fee_config,
+        backpressure_config,
     }
 }
 

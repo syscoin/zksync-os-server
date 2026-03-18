@@ -31,6 +31,7 @@ impl FriProvingPipelineStep {
         last_proved_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
+        backpressure_threshold: Option<Duration>,
     ) -> (Self, Arc<FriJobManager>) {
         // Create channel for completed proofs - between FriProveManager and GaplessCommitter
         let (batches_with_proof_sender, batches_with_proof_receiver) =
@@ -41,6 +42,7 @@ impl FriProvingPipelineStep {
             proof_storage,
             assignment_timeout,
             max_assigned_batch_range,
+            backpressure_threshold,
         ));
 
         let result = Self {

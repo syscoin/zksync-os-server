@@ -53,6 +53,7 @@ pub struct Batcher<ReadState> {
     pub sidecar_sender: mpsc::Sender<BlobTransactionSidecar>,
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
+    pub backpressure_threshold: Option<std::time::Duration>,
 }
 
 #[async_trait]
@@ -73,8 +74,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
-        let latency_tracker = ComponentStateReporter::global()
-            .handle_for("batcher", GenericComponentState::WaitingRecv);
+        let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
+            "batcher",
+            GenericComponentState::WaitingRecv,
+            self.backpressure_threshold,
+        );
 
         // We use last executed batch as the starting point. Next immediate batch we process will be
         // `last_executed_batch + 1`.

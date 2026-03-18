@@ -327,6 +327,7 @@ impl Tester {
                 .external_price_api_client_config
                 .clone(),
             fee_config: Default::default(),
+            backpressure_config: Default::default(),
         };
 
         if let Some(ephemeral_state) = &config.general_config.ephemeral_state {

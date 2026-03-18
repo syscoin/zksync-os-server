@@ -148,16 +148,18 @@ impl ComponentStateReporter {
         }
     }
 
-    /// Like `handle_for` but enables automatic backpressure detection.
+    /// Like `handle_for` but enables automatic backpressure detection when `backpressure_after`
+    /// is `Some`.
     ///
-    /// If the component stays in `WaitingSend` for longer than `backpressure_after`,
+    /// If the component stays in `WaitingSend` for longer than the threshold,
     /// [`BackpressureHandle::set_overloaded`] is called, causing the RPC layer to start
-    /// rejecting new transactions with `-32003`.
+    /// rejecting new transactions with `-32003`.  `None` disables backpressure detection
+    /// (equivalent to calling `handle_for`).
     pub fn handle_for_with_backpressure<S>(
         &self,
         component: &'static str,
         initial_state: S,
-        backpressure_after: Duration,
+        backpressure_after: Option<Duration>,
     ) -> ComponentStateHandle<S>
     where
         S: StateLabel,
@@ -165,7 +167,7 @@ impl ComponentStateReporter {
         let _ = self.tx.try_send(ReporterMsg {
             component,
             new_label: Box::new(initial_state),
-            backpressure_after: Some(backpressure_after),
+            backpressure_after,
         });
 
         ComponentStateHandle {

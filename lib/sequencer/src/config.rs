@@ -28,4 +28,8 @@ pub struct SequencerConfig {
 
     /// Max number of interop roots to be included in a single transaction
     pub interop_roots_per_tx: usize,
+
+    /// How long the block executor may stay in `WaitingSend` before backpressure fires.
+    /// `None` disables backpressure detection for this component.
+    pub backpressure_threshold: Option<Duration>,
 }

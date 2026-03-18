@@ -54,6 +54,7 @@ pub struct Config {
     /// External Nodes never start that component and may omit this config entirely.
     pub external_price_api_client_config: Option<ExternalPriceApiClientConfig>,
     pub fee_config: FeeConfig,
+    pub backpressure_config: BackpressureConfig,
 }
 
 impl Config {
@@ -128,6 +129,9 @@ impl Config {
         schema
             .insert(&FeeConfig::DESCRIPTION, "fee")
             .expect("Failed to insert fee config");
+        schema
+            .insert(&BackpressureConfig::DESCRIPTION, "backpressure")
+            .expect("Failed to insert backpressure config");
         schema
     }
 
@@ -929,6 +933,49 @@ pub enum ExternalPriceApiClientConfig {
     },
 }
 
+/// Per-component backpressure thresholds.
+///
+/// Each field controls how long the named pipeline stage may stay in `WaitingSend`
+/// before the RPC layer starts rejecting new transactions with error code -32003.
+/// `None` (the default for every field) disables backpressure detection for that stage.
+///
+/// Example env vars:
+///   `backpressure_block_executor=30s`
+///   `backpressure_l1_sender=120s`
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
+#[config(derive(Default))]
+pub struct BackpressureConfig {
+    /// block_executor: WaitingSend = downstream (tree / canonizer) channel full.
+    #[config(default_t = None)]
+    pub block_executor: Option<Duration>,
+    /// batcher: WaitingSend = prover input pipeline channel full.
+    #[config(default_t = None)]
+    pub batcher: Option<Duration>,
+    /// tree: WaitingSend = downstream (batcher) channel full.
+    #[config(default_t = None)]
+    pub tree: Option<Duration>,
+    /// prover_input_generator: WaitingSend = fri_proving pipeline channel full.
+    #[config(default_t = None)]
+    pub prover_input_generator: Option<Duration>,
+    /// fri_job_manager: WaitingSend = gapless_committer channel full.
+    #[config(default_t = None)]
+    pub fri_job_manager: Option<Duration>,
+    /// snark_job_manager: WaitingSend = gapless_l1_proof_sender channel full.
+    #[config(default_t = None)]
+    pub snark_job_manager: Option<Duration>,
+    /// gapless_committer: WaitingSend = gapless_l1_proof_sender channel full.
+    #[config(default_t = None)]
+    pub gapless_committer: Option<Duration>,
+    /// gapless_l1_proof_sender: WaitingSend = L1Sender channel full.
+    #[config(default_t = None)]
+    pub gapless_l1_proof_sender: Option<Duration>,
+    /// commit / prove / execute (L1Sender): WaitingSend = waiting for L1 to mine the tx.
+    /// Semantically, `WaitingL1Inclusion` is mapped to `WaitingSend`.
+    /// Should be lower than the hard TRANSACTION_TIMEOUT (300 s).
+    #[config(default_t = None)]
+    pub l1_sender: Option<Duration>,
+}
+
 /// Fee-related configuration.
 #[derive(Debug, Clone, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
@@ -999,6 +1046,7 @@ impl From<&Config> for zksync_os_sequencer::config::SequencerConfig {
             block_pubdata_limit_bytes: c.sequencer_config.block_pubdata_limit_bytes,
             max_blocks_to_produce: c.sequencer_config.max_blocks_to_produce,
             interop_roots_per_tx: c.sequencer_config.interop_roots_per_tx,
+            backpressure_threshold: c.backpressure_config.block_executor,
         }
     }
 }
@@ -1007,6 +1055,7 @@ impl L1SenderConfig {
     fn into_lib_l1_sender_config<Input>(
         self,
         operator_signer: SignerConfig,
+        backpressure_threshold: Option<Duration>,
     ) -> zksync_os_l1_sender::config::L1SenderConfig<Input> {
         zksync_os_l1_sender::config::L1SenderConfig {
             operator_signer,
@@ -1016,38 +1065,42 @@ impl L1SenderConfig {
             command_limit: self.command_limit,
             poll_interval: self.poll_interval,
             fusaka_upgrade_timestamp: self.fusaka_upgrade_timestamp,
+            backpressure_threshold,
             phantom_data: Default::default(),
         }
     }
-}
 
-impl From<L1SenderConfig> for zksync_os_l1_sender::config::L1SenderConfig<CommitCommand> {
-    fn from(c: L1SenderConfig) -> Self {
-        let signer = c
+    pub fn into_commit_config(
+        self,
+        backpressure_threshold: Option<Duration>,
+    ) -> zksync_os_l1_sender::config::L1SenderConfig<CommitCommand> {
+        let signer = self
             .operator_commit_sk
             .clone()
             .expect("operator_commit_sk must be set on the Main Node");
-        c.into_lib_l1_sender_config(signer)
+        self.into_lib_l1_sender_config(signer, backpressure_threshold)
     }
-}
 
-impl From<L1SenderConfig> for zksync_os_l1_sender::config::L1SenderConfig<ProofCommand> {
-    fn from(c: L1SenderConfig) -> Self {
-        let signer = c
+    pub fn into_proof_config(
+        self,
+        backpressure_threshold: Option<Duration>,
+    ) -> zksync_os_l1_sender::config::L1SenderConfig<ProofCommand> {
+        let signer = self
             .operator_prove_sk
             .clone()
             .expect("operator_prove_sk must be set on the Main Node");
-        c.into_lib_l1_sender_config(signer)
+        self.into_lib_l1_sender_config(signer, backpressure_threshold)
     }
-}
 
-impl From<L1SenderConfig> for zksync_os_l1_sender::config::L1SenderConfig<ExecuteCommand> {
-    fn from(c: L1SenderConfig) -> Self {
-        let signer = c
+    pub fn into_execute_config(
+        self,
+        backpressure_threshold: Option<Duration>,
+    ) -> zksync_os_l1_sender::config::L1SenderConfig<ExecuteCommand> {
+        let signer = self
             .operator_execute_sk
             .clone()
             .expect("operator_execute_sk must be set on the Main Node");
-        c.into_lib_l1_sender_config(signer)
+        self.into_lib_l1_sender_config(signer, backpressure_threshold)
     }
 }
 

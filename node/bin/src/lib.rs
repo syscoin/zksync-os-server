@@ -966,7 +966,10 @@ async fn run_main_node_pipeline(
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() });
+        .pipe(TreeManager {
+            tree: tree.clone(),
+            backpressure_threshold: config.backpressure_config.tree,
+        });
     tracing::info!("Initializing ProofStorage");
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
         .await
@@ -977,6 +980,7 @@ async fn run_main_node_pipeline(
         node_state_on_startup.l1_state.last_proved_batch,
         config.prover_api_config.fri_job_timeout,
         config.prover_api_config.max_assigned_batch_range,
+        config.backpressure_config.fri_job_manager,
     );
 
     let (snark_proving_step, snark_job_manager) = SnarkProvingPipelineStep::new(
@@ -984,6 +988,7 @@ async fn run_main_node_pipeline(
         node_state_on_startup.l1_state.last_proved_batch,
         config.prover_api_config.snark_job_timeout,
         config.prover_api_config.max_assigned_batch_range,
+        config.backpressure_config.snark_job_manager,
     );
 
     if config.prover_api_config.enabled {
@@ -1015,6 +1020,7 @@ async fn run_main_node_pipeline(
             app_bin_base_path: config.general_config.rocks_db_path.join("app_bins").clone(),
             read_state: state.clone(),
             pubdata_mode,
+            backpressure_threshold: config.backpressure_config.prover_input_generator,
         })
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
@@ -1031,6 +1037,7 @@ async fn run_main_node_pipeline(
             sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
+            backpressure_threshold: config.backpressure_config.batcher,
         })
         .pipe(BatchVerificationPipelineStep::new(
             config.batch_verification_config.clone().into(),
@@ -1043,23 +1050,31 @@ async fn run_main_node_pipeline(
             last_committed_batch_number: node_state_on_startup.l1_state.last_committed_batch,
             proof_storage,
             batch_verification_l1_config: node_state_on_startup.l1_state.batch_verification.clone(),
+            backpressure_threshold: config.backpressure_config.gapless_committer,
         })
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
         .pipe(L1Sender::<_, _, CommitCommand> {
             provider: sl_provider.clone(),
-            config: config.l1_sender_config.clone().into(),
+            config: config
+                .l1_sender_config
+                .clone()
+                .into_commit_config(config.backpressure_config.l1_sender),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
         })
         .pipe(snark_proving_step)
         .pipe(GaplessL1ProofSender::new(
             node_state_on_startup.l1_state.last_executed_batch + 1,
+            config.backpressure_config.gapless_l1_proof_sender,
         ))
         .pipe(L1Sender::<_, _, ProofCommand> {
             provider: sl_provider.clone(),
-            config: config.l1_sender_config.clone().into(),
+            config: config
+                .l1_sender_config
+                .clone()
+                .into_proof_config(config.backpressure_config.l1_sender),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
         })
@@ -1075,7 +1090,10 @@ async fn run_main_node_pipeline(
         )
         .pipe(L1Sender {
             provider: sl_provider,
-            config: config.l1_sender_config.clone().into(),
+            config: config
+                .l1_sender_config
+                .clone()
+                .into_execute_config(config.backpressure_config.l1_sender),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
         })
@@ -1143,7 +1161,10 @@ async fn run_en_pipeline(
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() })
+        .pipe(TreeManager {
+            tree: tree.clone(),
+            backpressure_threshold: config.backpressure_config.tree,
+        })
         .pipe_if(
             config.batch_verification_config.client_enabled,
             BatchVerificationClient::new(

@@ -96,6 +96,7 @@ impl FriJobManager {
         proof_storage: ProofStorage,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
+        backpressure_threshold: Option<Duration>,
     ) -> Self {
         let jobs = ProverJobMap::<ProverInput>::new(
             assignment_timeout,
@@ -105,7 +106,7 @@ impl FriJobManager {
         let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
             "fri_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
-            assignment_timeout,
+            backpressure_threshold,
         );
         Self {
             jobs,

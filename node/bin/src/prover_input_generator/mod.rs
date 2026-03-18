@@ -26,6 +26,7 @@ pub struct ProverInputGenerator<ReadState> {
     pub app_bin_base_path: PathBuf,
     pub read_state: ReadState,
     pub pubdata_mode: PubdataMode,
+    pub backpressure_threshold: Option<Duration>,
 }
 
 #[async_trait]
@@ -48,7 +49,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
         let latency_tracker = ComponentStateReporter::global().handle_for_with_backpressure(
             "prover_input_generator",
             GenericComponentState::ProcessingOrWaitingRecv,
-            Duration::from_secs(60),
+            self.backpressure_threshold,
         );
 
         let read_state = self.read_state;
