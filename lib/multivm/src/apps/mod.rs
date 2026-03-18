@@ -91,6 +91,20 @@ pub mod v7 {
     pub fn multiblock_batch_path(base_dir: &Path) -> PathBuf {
         super::materialize_app(base_dir, "v7", "multiblock_batch.bin", MULTIBLOCK_BATCH)
     }
+
+    pub const MULTIBLOCK_BATCH_LOGGING_ENABLED: &[u8] = include_bytes!(concat!(
+        env!("ZKSYNC_OS_V7_SOURCE_PATH"),
+        "/multiblock_batch_logging_enabled.bin"
+    ));
+
+    pub fn multiblock_batch_logging_enabled_path(base_dir: &Path) -> PathBuf {
+        super::materialize_app(
+            base_dir,
+            "v7",
+            "multiblock_batch_logging_enabled.bin",
+            MULTIBLOCK_BATCH_LOGGING_ENABLED,
+        )
+    }
 }
 
 #[cfg(test)]

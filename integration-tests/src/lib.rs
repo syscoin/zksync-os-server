@@ -431,7 +431,9 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
             zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"))
         }
         PROTOCOL_VERSION_V31_0 => {
-            zksync_os_multivm::apps::v7::multiblock_batch_path(&rocks_db_path.join("app_bins"))
+            zksync_os_multivm::apps::v7::multiblock_batch_logging_enabled_path(
+                &rocks_db_path.join("app_bins"),
+            )
         }
         _ => panic!("unsupported protocol version for prover tests"),
     };
