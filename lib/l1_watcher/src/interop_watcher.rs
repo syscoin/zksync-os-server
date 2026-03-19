@@ -72,7 +72,14 @@ impl ProcessRawEvents for InteropWatcher {
         let mut indexes = HashMap::new();
 
         for log in logs {
-            indexes.insert(log.block_number, log);
+            let event = match NewInteropRoot::decode_log(&log.inner) {
+                Ok(event) => event.data,
+                Err(err) => {
+                    tracing::error!(?log, error = ?err, "failed to decode interop root log");
+                    continue;
+                }
+            };
+            indexes.insert(event.logId, log);
         }
 
         indexes.into_values().collect()
