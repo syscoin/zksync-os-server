@@ -2,30 +2,30 @@ use alloy::eips::Encodable2718;
 use alloy::network::{ReceiptResponse, TransactionBuilder, TxSigner};
 use alloy::primitives::{Address, B256, TxHash, U128, U256, address};
 use alloy::providers::Provider;
-use alloy::rpc::types::{Filter, TransactionRequest};
+use alloy::rpc::types::{Filter, Log, TransactionRequest};
 use alloy::sol_types::SolEvent;
 use anyhow::Context as _;
 use regex::Regex;
 use std::time::Duration;
 use zksync_os_contract_interface::IExecutor::BlockCommit;
 use zksync_os_contract_interface::l1_discovery::L1State;
-use zksync_os_integration_tests::Tester;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_integration_tests::contracts::Counter::CounterInstance;
 use zksync_os_integration_tests::contracts::{Counter, EventEmitter};
 use zksync_os_integration_tests::dyn_wallet_provider::EthDynProvider;
 use zksync_os_integration_tests::provider::ZksyncApi;
+use zksync_os_integration_tests::{
+    CURRENT_TO_L1, NEXT_TO_GATEWAY, Tester, TesterBuilder, test_multisetup,
+};
 use zksync_os_rpc_api::types::BatchStorageProof;
 use zksync_os_server::config::FeeConfig;
 
-#[test_log::test(tokio::test)]
-async fn get_code() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn get_code(tester: Tester) -> anyhow::Result<()> {
     // Test that the node:
     // * can fetch deployed bytecode at the latest block
     // * can fetch deployed bytecode at the block where it was deployed
     // * cannot fetch deployed bytecode before the block where it was deployed
-    let tester = Tester::setup().await?;
-
     let deploy_tx_receipt = EventEmitter::deploy_builder(tester.l2_provider.clone())
         .send()
         .await?
@@ -75,15 +75,12 @@ async fn get_code() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn get_transaction_count() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+#[test_builder(|builder| builder.block_time(Duration::from_secs(5)))]
+async fn get_transaction_count(tester: Tester) -> anyhow::Result<()> {
     // Test that the node takes pending mempool transactions into account for `eth_getTransactionCount`
     // We set block time to 5 seconds to make sure that transaction spends >5 seconds in the mempool.
     // This gives us time to check that the node returns the correct transaction count.
-    let tester = Tester::builder()
-        .block_time(Duration::from_secs(5))
-        .build()
-        .await?;
     let alice = tester.l2_wallet.default_signer().address();
     let l2_provider = &tester.l2_provider;
 
@@ -108,28 +105,26 @@ async fn get_transaction_count() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn get_net_version() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn get_net_version(tester: Tester) -> anyhow::Result<()> {
     // Test that the node returns correct chain ID in `net_version` RPC call
-    let tester = Tester::setup().await?;
     let net_version = tester.l2_provider.get_net_version().await?;
     let chain_id = tester.l2_provider.get_chain_id().await?;
     assert_eq!(net_version, chain_id);
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn get_client_version() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn get_client_version(tester: Tester) -> anyhow::Result<()> {
     // Test that the node returns sensible value in `web3_clientVersion` RPC call
-    let tester = Tester::setup().await?;
     let client_version = tester.l2_provider.get_client_version().await?;
     let regex = Regex::new(r"^zksync-os/v(\d+)\.(\d+)\.(\d+)")?;
     assert!(regex.is_match(&client_version));
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn get_gas_price_uses_configured_scale_factor() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn get_gas_price_uses_configured_scale_factor(builder: TesterBuilder) -> anyhow::Result<()> {
     let known_base_fee: u128 = 100_000_000;
     let fee_config = FeeConfig {
         native_price_usd: 3e-9,
@@ -139,23 +134,21 @@ async fn get_gas_price_uses_configured_scale_factor() -> anyhow::Result<()> {
         native_price_override: Some(U128::from(1_000_000u64)),
         pubdata_price_cap: None,
     };
-    let tester = Tester::builder()
+    let tester = builder
         .fee_config(fee_config)
         .gas_price_scale_factor(2.0)
         .build()
         .await?;
 
     let gas_price = tester.l2_provider.get_gas_price().await?;
-    assert_eq!(gas_price, 200_000_000);
+    assert_eq!(gas_price, 2 * known_base_fee);
 
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn send_raw_transaction_sync() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
+async fn send_raw_transaction_sync(tester: Tester) -> anyhow::Result<()> {
     // Test that the node supports `eth_sendRawTransactionSync`
-    let tester = Tester::builder().build().await?;
-
     let alice = tester.l2_wallet.default_signer().address();
     let fees = tester.l2_provider.estimate_eip1559_fees().await?;
     // Create a transaction
@@ -193,11 +186,9 @@ async fn send_raw_transaction_sync() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn send_raw_transaction_sync_timeout() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn send_raw_transaction_sync_timeout(tester: Tester) -> anyhow::Result<()> {
     // Test that the node returns an error when `eth_sendRawTransactionSync` timeouts
-    let tester = Tester::builder().build().await?;
-
     let alice = tester.l2_wallet.default_signer().address();
     let fees = tester.l2_provider.estimate_eip1559_fees().await?;
     // Create a transaction
@@ -228,8 +219,8 @@ async fn send_raw_transaction_sync_timeout() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn estimate_gas_with_high_prices() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn estimate_gas_with_high_prices(builder: TesterBuilder) -> anyhow::Result<()> {
     // Tests the estimations are accurate with high fee overrides.
     // Following config has high pubdata price, that makes base token transfer to take >21000 gas.
     let fee_config = FeeConfig {
@@ -240,7 +231,7 @@ async fn estimate_gas_with_high_prices() -> anyhow::Result<()> {
         native_per_gas: 100, // doesn't matter
         pubdata_price_cap: None,
     };
-    let tester = Tester::builder()
+    let tester = builder
         .fee_config(fee_config)
         .estimate_gas_pubdata_price_factor(1.0)
         .build()
@@ -265,10 +256,9 @@ async fn estimate_gas_with_high_prices() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test_log::test(tokio::test)]
-async fn estimate_gas_without_balance() -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1])]
+async fn estimate_gas_without_balance(tester: Tester) -> anyhow::Result<()> {
     // Test that the node can estimate transaction's gas even if sender does not have enough balance.
-    let tester = Tester::setup().await?;
     let req = TransactionRequest::default()
         .to(address!("0xF8fF3e62E94807a5C687f418Fe36942dD3a24525"))
         .from(address!("0x38711eC715A5A32180427792Dc0e97f8E3303072"));
@@ -290,36 +280,28 @@ async fn estimate_gas_without_balance() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(skip(provider))]
-async fn wait_for_batch_commitment(
-    diamond_proxy_address: Address,
+async fn fetch_batch_commitment(
     provider: &EthDynProvider,
+    filter_id: U256,
     expected_batch_number: u64,
 ) -> B256 {
-    let filter = Filter::new()
-        .event_signature(BlockCommit::SIGNATURE_HASH)
-        .address(diamond_proxy_address);
+    let logs: Vec<Log> = provider
+        .get_filter_changes(filter_id)
+        .await
+        .expect("failed to get logs");
+    tracing::info!(logs.len = logs.len(), "queried logs filter");
 
-    loop {
-        tracing::debug!("querying batch commitment logs");
-
-        let logs = provider
-            .get_logs(&filter)
-            .await
-            .expect("failed to get logs");
-        for log in &logs {
-            let topics = log.inner.data.topics();
-            assert_eq!(topics.len(), 4);
-            let batch_number = U256::from_be_bytes(topics[1].0);
-            let batch_number =
-                u64::try_from(batch_number).expect("incorrect batch number in event");
-            if batch_number == expected_batch_number {
-                tracing::info!(batch_number, "successfully waited for batch");
-                return topics[2];
-            }
+    for log in &logs {
+        let topics = log.inner.data.topics();
+        assert_eq!(topics.len(), 4);
+        let batch_number = U256::from_be_bytes(topics[1].0);
+        let batch_number = u64::try_from(batch_number).expect("incorrect batch number in event");
+        if batch_number == expected_batch_number {
+            tracing::info!(batch_number, "successfully waited for batch");
+            return topics[2];
         }
-
-        tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    panic!("no logs for batch={expected_batch_number}: {logs:#?}");
 }
 
 #[tracing::instrument(skip(tester))]
@@ -342,11 +324,9 @@ async fn wait_for_proof(
     }
 }
 
-#[test_log::test(tokio::test)]
+#[test_multisetup([CURRENT_TO_L1])]
 #[tracing::instrument]
-async fn get_storage_proof() -> anyhow::Result<()> {
-    let tester = Tester::setup().await?;
-
+async fn get_storage_proof(tester: Tester) -> anyhow::Result<()> {
     let bridgehub_address = tester.l2_zk_provider.get_bridgehub_contract().await?;
     tracing::info!(?bridgehub_address);
     let chain_id = tester.l2_provider.get_chain_id().await?;
@@ -355,13 +335,24 @@ async fn get_storage_proof() -> anyhow::Result<()> {
     // Get L1 state which contains diamond proxy address
     let l1_state = L1State::fetch(
         tester.l1_provider().clone().erased(),
-        tester.l1_provider().clone().erased(),
+        tester.sl_provider().clone().erased(),
         bridgehub_address,
         chain_id,
     )
     .await?;
     let diamond_proxy_address = l1_state.diamond_proxy_address_sl();
     tracing::info!(?diamond_proxy_address);
+
+    // We can effectively use filters API to not rely on block ranges specified in `Filter` (without specifying the starting block,
+    // using `eth_getLogs` can and frequently does return no logs for logs sufficiently far in the past).
+    let block_commit_filter = Filter::new()
+        .event_signature(BlockCommit::SIGNATURE_HASH)
+        .address(diamond_proxy_address);
+    let filter_id = tester
+        .l1_provider()
+        .new_filter(&block_commit_filter)
+        .await?;
+    tracing::info!(?filter_id, "installed BlockCommit filter");
 
     let deploy_tx_receipt = Counter::deploy_builder(tester.l2_provider.clone())
         .send()
@@ -371,15 +362,30 @@ async fn get_storage_proof() -> anyhow::Result<()> {
     let contract_address = deploy_tx_receipt
         .contract_address()
         .expect("no contract deployed");
-    tracing::info!(?contract_address, "deployed counter");
+    let deploy_block_number = deploy_tx_receipt
+        .block_number
+        .expect("no block for successful receipt");
+    tracing::info!(?contract_address, deploy_block_number, "deployed counter");
+    let deploy_batch_number = tester
+        .l2_zk_provider
+        .wait_batch_number_by_block_number(deploy_block_number)
+        .await?;
+    tracing::info!(deploy_batch_number, "resolved batch for deployment tx");
 
     let queried_keys = [B256::repeat_byte(0), B256::repeat_byte(0x1f)];
-    let batch_number = 2;
+    // Here and below, the commitment *must* be available right away because `wait_batch_number_by_block_number()`
+    // only returns the batch number once the batch is completely finalized on L1.
     let batch_commitment =
-        wait_for_batch_commitment(diamond_proxy_address, tester.l1_provider(), batch_number).await;
+        fetch_batch_commitment(tester.l1_provider(), filter_id, deploy_batch_number).await;
     tracing::info!(?batch_commitment);
 
-    let proof = wait_for_proof(&tester, contract_address, &queried_keys, batch_number).await?;
+    let proof = wait_for_proof(
+        &tester,
+        contract_address,
+        &queried_keys,
+        deploy_batch_number,
+    )
+    .await?;
     tracing::info!(?proof, "got proof");
     let storage_view = proof
         .verify(contract_address, &queried_keys)
@@ -390,24 +396,34 @@ async fn get_storage_proof() -> anyhow::Result<()> {
 
     tracing::info!("writing to counter contract");
     let counter = CounterInstance::new(contract_address, tester.l2_provider.clone());
-    counter
+    let increment_receipt = counter
         .increment(U256::from(42))
         .send()
         .await?
         .expect_successful_receipt()
         .await?;
-    tracing::info!("written to counter");
+    let increment_block_number = increment_receipt
+        .block_number
+        .expect("no block for successful receipt");
+    tracing::info!(increment_block_number, "written to counter");
+    let increment_batch_number = tester
+        .l2_zk_provider
+        .wait_batch_number_by_block_number(increment_block_number)
+        .await?;
+    tracing::info!(increment_batch_number, "resolved batch for increment tx");
+    assert!(increment_batch_number > deploy_batch_number);
 
-    let new_batch_number = 3;
-    let new_batch_commitment = wait_for_batch_commitment(
-        diamond_proxy_address,
-        tester.l1_provider(),
-        new_batch_number,
-    )
-    .await;
+    let new_batch_commitment =
+        fetch_batch_commitment(tester.l1_provider(), filter_id, increment_batch_number).await;
     assert_ne!(new_batch_commitment, batch_commitment);
 
-    let proof = wait_for_proof(&tester, contract_address, &queried_keys, new_batch_number).await?;
+    let proof = wait_for_proof(
+        &tester,
+        contract_address,
+        &queried_keys,
+        increment_batch_number,
+    )
+    .await?;
     tracing::info!(?proof, "got proof");
     let storage_view = proof
         .verify(contract_address, &queried_keys)
