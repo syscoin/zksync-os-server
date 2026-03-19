@@ -104,8 +104,7 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    InteropRootsLogIndex, ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState,
-    UpgradeInfo, UpgradeMetadata,
+    ExecutionVersion, ProtocolSemanticVersion, PubdataMode, TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
