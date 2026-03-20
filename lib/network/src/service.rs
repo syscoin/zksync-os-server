@@ -92,6 +92,8 @@ impl NetworkService {
                     .vote_duration(Duration::from_secs(3600))
                     // Sets peer ban duration to 1 second, effectively disabling it
                     .ban_duration(Some(Duration::from_secs(1)))
+                    .request_timeout(Duration::from_secs(20))
+                    .query_peer_timeout(Duration::from_secs(20))
                     .build(),
                 ),
             )
