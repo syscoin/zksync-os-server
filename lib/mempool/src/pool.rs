@@ -225,19 +225,10 @@ impl<T: L2Subpool> Pool<T> {
             .interop_fee_subpool
             .on_canonical_state_change(interop_fee_txs, strict_subpool_cleanup)
             .await;
-        let last_migration_number = if strict_subpool_cleanup && upgrade_txs.is_empty() {
-            self.sl_chain_id_subpool
-                .on_canonical_state_change(sl_chain_id_txs)
-                .await
-        } else {
-            sl_chain_id_txs.iter().fold(None, |_, tx| {
-                if let SystemTxType::SetSLChainId(migration_number) = *tx.system_subtype() {
-                    Some(migration_number)
-                } else {
-                    None
-                }
-            })
-        };
+        let last_migration_number = self
+            .sl_chain_id_subpool
+            .on_canonical_state_change(sl_chain_id_txs)
+            .await;
         let last_l1_priority_id = self
             .l1_subpool
             .on_canonical_state_change(l1_transactions)

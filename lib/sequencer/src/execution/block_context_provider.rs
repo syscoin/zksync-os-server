@@ -45,7 +45,7 @@ pub struct BlockContextProvider<Subpool> {
     /// Protocol version to be used for the next produced block.
     /// Can change in runtime in case of upgrades.
     protocol_version: ProtocolSemanticVersion,
-    settlement_layer_chain_id: u64,
+    sl_chain_id_at_startup: u64,
     fee_collector_address: Address,
     last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
     fee_provider: FeeProvider,
@@ -70,7 +70,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         interop_roots_per_block: u64,
         service_block_delay: Duration,
         protocol_version: ProtocolSemanticVersion,
-        settlement_layer_chain_id: u64,
+        sl_chain_id_at_startup: u64,
         fee_collector_address: Address,
         last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
         fee_provider: FeeProvider,
@@ -93,7 +93,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             service_block_delay,
             next_interop_tx_allowed_after: Instant::now(),
             protocol_version,
-            settlement_layer_chain_id,
+            sl_chain_id_at_startup,
             fee_collector_address,
             last_constructed_block_ctx_sender,
             fee_provider,
@@ -152,17 +152,20 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     .try_into()
                     .context("Cannot instantiate a block for unsupported execution version")?;
 
-                let (tx_source, upgrade_followup_txs) = if best_txs.contains_upgrade_tx {
+                let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if best_txs
+                    .contains_upgrade_tx
+                {
                     let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
-                        self.settlement_layer_chain_id,
-                        self.next_migration_number,
+                        self.sl_chain_id_at_startup,
+                        // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                        u64::MAX,
                     );
                     let tx_source = MarkingTxStream::unmarkable(best_txs.stream.stream.chain(
                         futures::stream::once(async move { ZkTransaction::from(sl_chain_id_tx) }),
                     ));
-                    (tx_source, 1)
+                    (tx_source, true)
                 } else {
-                    (best_txs.stream, 0)
+                    (best_txs.stream, false)
                 };
 
                 let FeeParams {
@@ -202,7 +205,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages,
-                    upgrade_followup_txs,
+                    expect_sl_chain_id_tx_after_upgrade,
                     starting_interop_event_index: self.next_interop_event_index.clone(),
                     starting_migration_number: self.next_migration_number,
                     starting_interop_fee_number: self.next_interop_fee_number,
@@ -229,6 +232,19 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     self.previous_block_timestamp,
                     record.previous_block_timestamp
                 );
+
+                let expect_sl_chain_id_tx_after_upgrade = record
+                    .transactions
+                    .windows(2)
+                    .find(|window| {
+                        matches!(window[0].envelope(), ZkEnvelope::Upgrade(_))
+                            && matches!(
+                                window[1].as_system_tx_type(),
+                                Some(SystemTxType::SetSLChainId(_))
+                            )
+                    })
+                    .is_some();
+
                 PreparedBlockCommand {
                     block_context: record.block_context,
                     seal_policy: SealPolicy::UntilExhausted {
@@ -244,7 +260,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: Some(record.block_output_hash),
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: record.force_preimages,
-                    upgrade_followup_txs: count_upgrade_followup_txs(&record.transactions),
+                    expect_sl_chain_id_tx_after_upgrade,
                     starting_interop_event_index: record.starting_interop_event_index.clone(),
                     starting_migration_number: record.starting_migration_number,
                     starting_interop_fee_number: record.starting_interop_fee_number,
@@ -316,8 +332,19 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     }
                 };
 
+                let expect_sl_chain_id_tx_after_upgrade = txs
+                    .windows(2)
+                    .find(|window| {
+                        matches!(window[0].envelope(), ZkEnvelope::Upgrade(_))
+                            && matches!(
+                                window[1].as_system_tx_type(),
+                                Some(SystemTxType::SetSLChainId(_))
+                            )
+                    })
+                    .is_some();
+
                 PreparedBlockCommand {
-                    upgrade_followup_txs: count_upgrade_followup_txs(&txs),
+                    expect_sl_chain_id_tx_after_upgrade,
                     block_context,
                     tx_source: MarkingTxStream::unmarkable(futures::stream::iter(txs)),
                     seal_policy: SealPolicy::UntilExhausted {
@@ -384,17 +411,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
 
         // We update protocol version here, so that we take into account replay records with protocol version bumps.
         self.protocol_version = replay_record.protocol_version.clone();
-        if let Some(settlement_layer_chain_id) = replay_record
-            .transactions
-            .iter()
-            .filter_map(|tx| match tx.envelope() {
-                ZkEnvelope::System(system_tx) => system_tx.settlement_layer_chain_id(),
-                _ => None,
-            })
-            .last()
-        {
-            self.settlement_layer_chain_id = settlement_layer_chain_id;
-        }
 
         // Advance `block_hashes_for_next_block`.
         let last_block_hash = block_output.header.hash();
@@ -419,17 +435,4 @@ pub fn millis_since_epoch() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("Incorrect system time")
         .as_millis()
-}
-
-fn count_upgrade_followup_txs(txs: &[ZkTransaction]) -> u8 {
-    txs.windows(2)
-        .find(|window| {
-            matches!(window[0].envelope(), ZkEnvelope::Upgrade(_))
-                && matches!(
-                    window[1].as_system_tx_type(),
-                    Some(SystemTxType::SetSLChainId(_))
-                )
-        })
-        .map(|_| 1)
-        .unwrap_or(0)
 }

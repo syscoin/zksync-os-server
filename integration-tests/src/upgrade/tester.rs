@@ -330,12 +330,13 @@ impl UpgradeTester {
         const SYSTEM_CONTEXT_ADDRESS: Address =
             address!("0x000000000000000000000000000000000000800b");
 
-        let chain_id_raw = self
-            .tester
-            .l2_provider
-            .get_storage_at(SYSTEM_CONTEXT_ADDRESS, U256::ZERO)
+        let system_context =
+            interfaces::SystemContext::new(SYSTEM_CONTEXT_ADDRESS, self.tester.l2_provider.clone());
+        let chain_id = system_context
+            .currentSettlementLayerChainId()
+            .call()
             .await?;
-        let chain_id = U256::from_be_bytes(chain_id_raw.0).to::<u64>();
+        let chain_id = chain_id.to::<u64>();
         anyhow::ensure!(
             chain_id == self.settlement_layer_chain_id,
             "unexpected settlement layer chain id in SystemContext: expected {}, got {}",
