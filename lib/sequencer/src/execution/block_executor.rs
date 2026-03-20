@@ -77,7 +77,8 @@ where
             latency_tracker.enter_state(SequencerState::WaitingForCommand);
 
             let Some(cmd) = input.recv().await else {
-                anyhow::bail!("inbound channel closed");
+                tracing::info!("inbound channel closed");
+                return Ok(());
             };
             tracing::debug!("Command {cmd} received by BlockExecutor");
             let cmd_type = cmd.command_type();
@@ -104,7 +105,7 @@ where
                 block_number,
                 "Prepared context for block {block_number}. expected_block_output_hash: {:?}, starting_l1_priority_id: {}, timestamp: {}, execution_version: {}. Executing..",
                 prepared_command.expected_block_output_hash,
-                prepared_command.starting_l1_priority_id,
+                prepared_command.starting_cursors.l1_priority_id,
                 prepared_command.block_context.timestamp,
                 prepared_command.block_context.execution_version,
             );
