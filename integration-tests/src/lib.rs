@@ -26,6 +26,7 @@ use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
 use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_network::NodeRecord;
+pub use zksync_os_server::config::DeploymentFilterConfig;
 use zksync_os_server::config::{
     BatchVerificationConfig, Config, FakeFriProversConfig, FakeSnarkProversConfig, FeeConfig,
     GeneralConfig, NetworkConfig, ProofStorageConfig, ProverApiConfig, ProverInputGeneratorConfig,
@@ -474,16 +475,17 @@ impl Tester {
 #[cfg(feature = "prover-tests")]
 async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
     let protocol_version = tester.chain_layout.protocol_version();
-    let rocks_db_path = tester.tempdir.path().join("rocksdb");
     let app_bin_path = match protocol_version {
-        PROTOCOL_VERSION => {
-            zksync_os_multivm::apps::v6::multiblock_batch_path(&rocks_db_path.join("app_bins"))
-        }
-        PROTOCOL_VERSION_V31_0 => {
-            zksync_os_multivm::apps::v7::multiblock_batch_logging_enabled_path(
-                &rocks_db_path.join("app_bins"),
-            )
-        }
+        PROTOCOL_VERSION => utils::materialize_multiblock_batch_bin(
+            &tester.tempdir.path().join("app_bins"),
+            "v6",
+            zksync_os_multivm::apps::v6::MULTIBLOCK_BATCH,
+        ),
+        PROTOCOL_VERSION_V31_0 => utils::materialize_multiblock_batch_bin(
+            &tester.tempdir.path().join("app_bins"),
+            "v7",
+            zksync_os_multivm::apps::v7::MULTIBLOCK_BATCH_LOGGING_ENABLED,
+        ),
         _ => panic!("unsupported protocol version for prover tests"),
     };
     let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
@@ -806,6 +808,7 @@ pub struct GatewayTesterBuilder {
     protocol_version: &'static str,
     num_chains: Option<usize>,
     chain_options: NodeBuilderOptions,
+    deployment_filter: Option<DeploymentFilterConfig>,
 }
 
 impl Default for GatewayTesterBuilder {
@@ -814,6 +817,7 @@ impl Default for GatewayTesterBuilder {
             protocol_version: PROTOCOL_VERSION_V31_0,
             num_chains: None,
             chain_options: NodeBuilderOptions::default(),
+            deployment_filter: None,
         }
     }
 }
@@ -831,6 +835,12 @@ impl GatewayTesterBuilder {
 
     fn chain_options(mut self, chain_options: NodeBuilderOptions) -> Self {
         self.chain_options = chain_options;
+        self
+    }
+
+    /// Set the deployment filter config for all chains.
+    pub fn deployment_filter(mut self, config: DeploymentFilterConfig) -> Self {
+        self.deployment_filter = Some(config);
         self
     }
 
@@ -866,12 +876,17 @@ impl GatewayTesterBuilder {
             wait_for_gateway_readiness(&l1, &gateway, &chain_config).await?;
             let gateway_rpc_url = gateway_rpc_url.clone();
             let chain_options = self.chain_options.clone();
+            let deployment_filter = self.deployment_filter.clone();
+
             let tester = Tester::launch_node(
                 l1.clone(),
                 chain_options.enable_prover,
                 Some(move |config: &mut Config| {
                     config.general_config.gateway_rpc_url = Some(gateway_rpc_url.clone());
                     chain_options.apply_to_config(config);
+                    if let Some(deployment_filter) = deployment_filter {
+                        config.sequencer_config.tx_validator.deployment_filter = deployment_filter;
+                    }
                 }),
                 chain_layout,
             )
