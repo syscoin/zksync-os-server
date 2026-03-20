@@ -46,6 +46,11 @@ pub struct BlockContextProvider<Subpool> {
     /// Can change in runtime in case of upgrades.
     protocol_version: ProtocolSemanticVersion,
     sl_chain_id_at_startup: u64,
+    /// Whether the one-time `SetSLChainId` system transaction has already been included.
+    /// Initialized to `true` on restart when already post-v31, since it must have been
+    /// included in a prior run. Only `false` on fresh genesis at v31+ or pre-v31 chains
+    /// that haven't upgraded yet.
+    sl_chain_id_set: bool,
     fee_collector_address: Address,
     last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
     fee_provider: FeeProvider,
@@ -75,6 +80,9 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
         fee_provider: FeeProvider,
     ) -> Self {
+        // If we're already post-v31 and not on the very first block, the SetSLChainId tx
+        // must have been included in a previous run (or during genesis replay).
+        let sl_chain_id_set = protocol_version.is_post_v31() && next_block_number > 1;
         Self {
             next_l1_priority_id,
             next_interop_event_index,
@@ -94,6 +102,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             next_interop_tx_allowed_after: Instant::now(),
             protocol_version,
             sl_chain_id_at_startup,
+            sl_chain_id_set,
             fee_collector_address,
             last_constructed_block_ctx_sender,
             fee_provider,
@@ -152,9 +161,13 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     .try_into()
                     .context("Cannot instantiate a block for unsupported execution version")?;
 
-                let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if best_txs
-                    .contains_upgrade_tx
+                // Append a SetSLChainId system transaction exactly once: either when crossing
+                // the v31 boundary via upgrade, or on the first block of a fresh v31+ chain.
+                // After it fires once, `sl_chain_id_set` prevents it from ever triggering again.
+                let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if !self.sl_chain_id_set
+                    && self.protocol_version.is_post_v31()
                 {
+                    self.sl_chain_id_set = true;
                     let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
                         self.sl_chain_id_at_startup,
                         // We use `u64::MAX` as a placeholder, since it is not an actual migration

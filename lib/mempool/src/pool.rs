@@ -124,7 +124,6 @@ impl<T: L2Subpool> Pool<T> {
                     if let Some(tx) = upgrade.tx {
                         return Some(StreamOutcome {
                             upgrade_metadata,
-                            contains_upgrade_tx: true,
                             stream: MarkingTxStream::unmarkable(UpgradeTransactionsStream::one(tx)),
                         });
                     }
@@ -136,21 +135,18 @@ impl<T: L2Subpool> Pool<T> {
                     //       a micro-optimization. Given how rare it is, likely not worth the trouble.
                     return Some(StreamOutcome {
                         upgrade_metadata,
-                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
                     });
                 }
                 Some(_) = interop_related_stream.peek() => {
                     return Some(StreamOutcome {
                         upgrade_metadata,
-                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(interop_related_stream),
                     });
                 }
                 Some(_) = l1_l2_stream.peek() => {
                     return Some(StreamOutcome {
                         upgrade_metadata,
-                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::markable(l1_l2_stream, l2_marker),
                     });
                 }
@@ -271,8 +267,6 @@ pub struct StreamOutcome<'a> {
     /// this is `Some`, `stream` is not guaranteed to contain an upgrade transaction. The stream may
     /// contain other transaction types if the upgrade is a patch upgrade.
     pub upgrade_metadata: Option<UpgradeMetadata>,
-    /// Whether `stream` contains an upgrade transaction as its first item.
-    pub contains_upgrade_tx: bool,
     /// Non-empty stream of transactions.
     pub stream: MarkingTxStream<'a>,
 }
