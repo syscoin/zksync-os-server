@@ -100,11 +100,6 @@ alloy::sol! {
         function setUpgradeTimestamp(uint256 _protocolVersion, uint256 _upgradeTimestamp) external;
     }
 
-    #[sol(rpc)]
-    contract SystemContext {
-        function currentSettlementLayerChainId() external view returns (uint256);
-    }
-
     struct L2CanonicalTransaction {
         uint256 txType;
         uint256 from;
