@@ -892,7 +892,6 @@ impl GatewayTesterBuilder {
             let sequencer_urls = std::iter::once(gateway.prover_api_url.clone())
                 .chain(chains.iter().map(|chain| chain.prover_api_url.clone()))
                 .collect::<Vec<_>>();
-            let sequencer_urls: Vec<_> = sequencer_urls.into_iter().skip(1).collect();
             spawn_prover_service(&gateway, &sequencer_urls, sequencer_urls.len()).await;
         }
 
