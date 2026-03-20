@@ -2,7 +2,8 @@ use crate::config::NetworkConfig;
 use crate::protocol::{ProtocolEvent, ProtocolState, ZksProtocolHandler};
 use crate::version::{ZksProtocolV1, ZksProtocolV2};
 use crate::wire::replays::RecordOverride;
-use alloy::primitives::BlockNumber;
+use alloy::eips::eip2124::{ForkHash, ForkId};
+use alloy::primitives::{B256, BlockNumber, U256};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, Hardforks};
 use reth_discv5::discv5;
 use reth_eth_wire::HelloMessageWithProtocols;
@@ -58,6 +59,11 @@ impl NetworkService {
             }
         };
         let rlpx_address = SocketAddr::V4(SocketAddrV4::new(config.address, config.port));
+        let chain_id = client.chain_spec().chain_id();
+        let fork_id = ForkId {
+            hash: ForkHash::from(B256::from(U256::from(chain_id))),
+            next: chain_id,
+        };
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let cfg_builder = RethNetworkConfig::builder(config.secret_key)
             .boot_nodes(config.boot_nodes.clone())
@@ -80,20 +86,23 @@ impl NetworkService {
             // Setup Node Discovery Protocol v5 on `localhost:<port>:UDP` that points to RLPx socket
             // at `localhost:<port>:TCP`
             .discovery_v5(
-                reth_discv5::Config::builder(rlpx_address).discv5_config(
-                    discv5::ConfigBuilder::new(discv5::ListenConfig::from_ip(
-                        rlpx_address.ip(),
-                        config.port,
-                    ))
-                    // Require only 2 peers to agree on our external IP to update our local ENR
-                    .enr_peer_update_min(2)
-                    // 2 peers from above must agree on external IP within 1h from each other.
-                    // This can make the node less responsive to dynamic IP changes.
-                    .vote_duration(Duration::from_secs(3600))
-                    // Sets peer ban duration to 1 second, effectively disabling it
-                    .ban_duration(Some(Duration::from_secs(1)))
-                    .build(),
-                ),
+                reth_discv5::Config::builder(rlpx_address)
+                    .discv5_config(
+                        discv5::ConfigBuilder::new(discv5::ListenConfig::from_ip(
+                            rlpx_address.ip(),
+                            config.port,
+                        ))
+                        // Require only 2 peers to agree on our external IP to update our local ENR
+                        .enr_peer_update_min(2)
+                        // 2 peers from above must agree on external IP within 1h from each other.
+                        // This can make the node less responsive to dynamic IP changes.
+                        .vote_duration(Duration::from_secs(3600))
+                        // Sets peer ban duration to 1 second, effectively disabling it
+                        .ban_duration(Some(Duration::from_secs(1)))
+                        .build(),
+                    )
+                    // Specify custom fork id configuration
+                    .fork(b"zksync-os", fork_id),
             )
             .peer_config(
                 PeersConfig::default()
@@ -106,7 +115,10 @@ impl NetworkService {
                         medium: Duration::from_secs(60),
                         high: Duration::from_secs(60 * 2),
                         max: Duration::from_secs(60 * 3),
-                    }),
+                    })
+                    // Peers' fork id must match, otherwise we could discover peers from other
+                    // chains.
+                    .with_enforce_enr_fork_id(true),
             )
             // Use the same port for RLPx (TCP) and for discv5 (UDP)
             .listener_addr(rlpx_address)
