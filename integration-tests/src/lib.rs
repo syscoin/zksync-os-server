@@ -1045,7 +1045,7 @@ impl AnvilL1 {
 fn prover_release_for_protocol(protocol_version: &str) -> &'static str {
     match protocol_version {
         PROTOCOL_VERSION => "v0.7.1",
-        PROTOCOL_VERSION_V31_0 => "dev-20260318-v7",
+        PROTOCOL_VERSION_V31_0 => "dev-20260320",
         _ => {
             panic!("unsupported protocol version `{protocol_version}` for prover binary selection")
         }
