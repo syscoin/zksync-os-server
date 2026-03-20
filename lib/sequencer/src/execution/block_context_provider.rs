@@ -47,9 +47,10 @@ pub struct BlockContextProvider<Subpool> {
     protocol_version: ProtocolSemanticVersion,
     sl_chain_id_at_startup: u64,
     /// Whether the one-time `SetSLChainId` system transaction has already been included.
-    /// Initialized to `true` on restart when already post-v31, since it must have been
-    /// included in a prior run. Only `false` on fresh genesis at v31+ or pre-v31 chains
-    /// that haven't upgraded yet.
+    /// Initialized to `true` on restart when already at v31+, since it must have been
+    /// included in a prior run. Also set to `true` during replay when a v31 block is
+    /// encountered. Only `false` on fresh v31 genesis or pre-v31 chains that haven't
+    /// upgraded yet.
     sl_chain_id_set: bool,
     fee_collector_address: Address,
     last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
@@ -80,9 +81,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
         fee_provider: FeeProvider,
     ) -> Self {
-        // If we're already post-v31 and not on the very first block, the SetSLChainId tx
-        // must have been included in a previous run (or during genesis replay).
-        let sl_chain_id_set = protocol_version.is_post_v31() && next_block_number > 1;
+        // If we're already past v31 and not on the very first block, the SetSLChainId tx
+        // must have been included in a previous run. For v31 itself at block > 1, it was also
+        // already included (either via upgrade or genesis). This flag may also be updated
+        // during replay in `apply_block_output`.
+        let sl_chain_id_set = protocol_version.minor >= 31 && next_block_number > 1;
         Self {
             next_l1_priority_id,
             next_interop_event_index,
@@ -161,11 +164,12 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     .try_into()
                     .context("Cannot instantiate a block for unsupported execution version")?;
 
-                // Append a SetSLChainId system transaction exactly once: either when crossing
-                // the v31 boundary via upgrade, or on the first block of a fresh v31+ chain.
-                // After it fires once, `sl_chain_id_set` prevents it from ever triggering again.
+                // Append a SetSLChainId system transaction exactly once: when the protocol
+                // version is v31 (either via upgrade from v30, or on the first block of a
+                // fresh v31 chain). After it fires once, `sl_chain_id_set` prevents it from
+                // ever triggering again.
                 let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if !self.sl_chain_id_set
-                    && self.protocol_version.is_post_v31()
+                    && self.protocol_version.minor == 31
                 {
                     self.sl_chain_id_set = true;
                     let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
@@ -424,6 +428,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
 
         // We update protocol version here, so that we take into account replay records with protocol version bumps.
         self.protocol_version = replay_record.protocol_version.clone();
+        // If a replayed block is at v31, the SetSLChainId tx was already included — mark it as done
+        // to prevent the produce path from inserting a duplicate.
+        if self.protocol_version.minor == 31 {
+            self.sl_chain_id_set = true;
+        }
 
         // Advance `block_hashes_for_next_block`.
         let last_block_hash = block_output.header.hash();
