@@ -243,6 +243,10 @@ pub struct GeneralConfig {
     #[config(default_t = false, alias = "sandbox")]
     pub ephemeral: bool,
 
+    /// TODO
+    #[config(default_t = false)]
+    pub semi_ephemeral: bool,
+
     /// Path to ephemeral state to load at startup.
     #[config(default_t = None)]
     pub ephemeral_state: Option<PathBuf>,
