@@ -12,7 +12,7 @@ use crate::upgrade::interfaces::ChainAssetHandlerBase::ChainAssetHandlerBaseInst
 use crate::upgrade::interfaces::ChainTypeManagerV30::ChainTypeManagerV30Instance;
 use crate::upgrade::interfaces::FacetCut;
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy::primitives::{Address, B256, Bytes, TxKind, U256, address};
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider};
@@ -56,6 +56,8 @@ pub struct UpgradeTester {
     pub bytecode_supplier: interfaces::BytecodesSupplier::BytecodesSupplierInstance<EthDynProvider>,
     // Current protocol version
     pub protocol_version: ProtocolSemanticVersion,
+    // Current settlement layer chain id expected to be stored in SystemContext.
+    pub settlement_layer_chain_id: u64,
     // If chain settles to gateway
     pub settles_to_gateway: bool,
 }
@@ -66,6 +68,9 @@ impl UpgradeTester {
         let upgrade_tester = Self::fetch(tester).await?;
         upgrade_tester.enable_impersonation().await?;
         upgrade_tester.wait_for_genesis_upgrade().await?;
+        upgrade_tester
+            .assert_settlement_layer_chain_id_initialized()
+            .await?;
         Ok(upgrade_tester)
     }
 
@@ -168,6 +173,8 @@ impl UpgradeTester {
                 .await?;
         }
         tracing::info!("Upgrade tx is finalized on L1");
+
+        self.assert_settlement_layer_chain_id_initialized().await?;
 
         Ok(())
     }
@@ -274,6 +281,7 @@ impl UpgradeTester {
             l1_chain_admin_gateway,
             bytecode_supplier,
             protocol_version,
+            settlement_layer_chain_id: l1_state.sl_chain_id,
             settles_to_gateway,
         })
     }
@@ -315,6 +323,25 @@ impl UpgradeTester {
             .l2_zk_provider
             .wait_finalized_with_timeout(1, crate::assert_traits::DEFAULT_TIMEOUT)
             .await?;
+        Ok(())
+    }
+
+    pub async fn assert_settlement_layer_chain_id_initialized(&self) -> anyhow::Result<()> {
+        const SYSTEM_CONTEXT_ADDRESS: Address =
+            address!("0x000000000000000000000000000000000000800b");
+
+        let chain_id_raw = self
+            .tester
+            .l2_provider
+            .get_storage_at(SYSTEM_CONTEXT_ADDRESS, U256::ZERO)
+            .await?;
+        let chain_id = U256::from_be_bytes(chain_id_raw.0).to::<u64>();
+        anyhow::ensure!(
+            chain_id == self.settlement_layer_chain_id,
+            "unexpected settlement layer chain id in SystemContext: expected {}, got {}",
+            self.settlement_layer_chain_id,
+            chain_id
+        );
         Ok(())
     }
 

@@ -124,6 +124,7 @@ impl<T: L2Subpool> Pool<T> {
                     if let Some(tx) = upgrade.tx {
                         return Some(StreamOutcome {
                             upgrade_metadata,
+                            contains_upgrade_tx: true,
                             stream: MarkingTxStream::unmarkable(UpgradeTransactionsStream::one(tx)),
                         });
                     }
@@ -135,18 +136,21 @@ impl<T: L2Subpool> Pool<T> {
                     //       a micro-optimization. Given how rare it is, likely not worth the trouble.
                     return Some(StreamOutcome {
                         upgrade_metadata,
+                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
                     });
                 }
                 Some(_) = interop_related_stream.peek() => {
                     return Some(StreamOutcome {
                         upgrade_metadata,
+                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(interop_related_stream),
                     });
                 }
                 Some(_) = l1_l2_stream.peek() => {
                     return Some(StreamOutcome {
                         upgrade_metadata,
+                        contains_upgrade_tx: false,
                         stream: MarkingTxStream::markable(l1_l2_stream, l2_marker),
                     });
                 }
@@ -221,10 +225,19 @@ impl<T: L2Subpool> Pool<T> {
             .interop_fee_subpool
             .on_canonical_state_change(interop_fee_txs, strict_subpool_cleanup)
             .await;
-        let last_migration_number = self
-            .sl_chain_id_subpool
-            .on_canonical_state_change(sl_chain_id_txs)
-            .await;
+        let last_migration_number = if strict_subpool_cleanup && upgrade_txs.is_empty() {
+            self.sl_chain_id_subpool
+                .on_canonical_state_change(sl_chain_id_txs)
+                .await
+        } else {
+            sl_chain_id_txs.iter().fold(None, |_, tx| {
+                if let SystemTxType::SetSLChainId(migration_number) = *tx.system_subtype() {
+                    Some(migration_number)
+                } else {
+                    None
+                }
+            })
+        };
         let last_l1_priority_id = self
             .l1_subpool
             .on_canonical_state_change(l1_transactions)
@@ -267,6 +280,8 @@ pub struct StreamOutcome<'a> {
     /// this is `Some`, `stream` is not guaranteed to contain an upgrade transaction. The stream may
     /// contain other transaction types if the upgrade is a patch upgrade.
     pub upgrade_metadata: Option<UpgradeMetadata>,
+    /// Whether `stream` contains an upgrade transaction as its first item.
+    pub contains_upgrade_tx: bool,
     /// Non-empty stream of transactions.
     pub stream: MarkingTxStream<'a>,
 }

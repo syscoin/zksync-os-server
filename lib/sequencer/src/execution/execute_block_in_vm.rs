@@ -65,6 +65,7 @@ pub async fn execute_block_in_vm<V: ViewState>(
     };
     let mut deadline: Option<Pin<Box<Sleep>>> = None; // will arm after 1st tx attempt
     let mut interop_roots_count = 0;
+    let mut remaining_upgrade_followup_txs = command.upgrade_followup_txs;
 
     /* ---------- main loop ------------------------------------------ */
     // seal_reason must only be used for observability - handling must remain generic
@@ -171,20 +172,30 @@ pub async fn execute_block_in_vm<V: ViewState>(
                                     error: format!("upgrade tx {tx_hash} reverted"),
                                 });
                             }
-                            match &command.seal_policy {
-                                SealPolicy::Decide(..) | SealPolicy::UntilExhausted { allowed_to_finish_early: true } => {
-                                    tracing::debug!(block_number = ctx.block_number, "sealing block as upgrade tx was executed");
-                                    break SealReason::UpgradeTx;
-                                }
-                                SealPolicy::UntilExhausted { allowed_to_finish_early: false } => {
-                                    // We trust that the execution stream will not break protocol invariants.
-                                    tracing::info!(block_number = ctx.block_number, "upgrade tx executed, but seal policy requires full exhaustion");
+                            if remaining_upgrade_followup_txs > 0 {
+                                tracing::debug!(
+                                    block_number = ctx.block_number,
+                                    remaining_upgrade_followup_txs,
+                                    "upgrade tx executed, continuing with sequencer-injected follow-up txs"
+                                );
+                            } else {
+                                match &command.seal_policy {
+                                    SealPolicy::Decide(..) | SealPolicy::UntilExhausted { allowed_to_finish_early: true } => {
+                                        tracing::debug!(block_number = ctx.block_number, "sealing block as upgrade tx was executed");
+                                        break SealReason::UpgradeTx;
+                                    }
+                                    SealPolicy::UntilExhausted { allowed_to_finish_early: false } => {
+                                        // We trust that the execution stream will not break protocol invariants.
+                                        tracing::info!(block_number = ctx.block_number, "upgrade tx executed, but seal policy requires full exhaustion");
+                                    }
                                 }
                             }
                         }
 
                         // If the only transaction provided is an SL chain id update transaction, we need to seal the block.
                         if let Some(SystemTxType::SetSLChainId(_)) = executed_txs.last().unwrap().as_system_tx_type() {
+                            remaining_upgrade_followup_txs =
+                                remaining_upgrade_followup_txs.saturating_sub(1);
                             match &command.seal_policy {
                                 SealPolicy::Decide(..) | SealPolicy::UntilExhausted { allowed_to_finish_early: true } => {
                                     tracing::debug!(block_number = ctx.block_number, "sealing block as chain id update tx was executed");

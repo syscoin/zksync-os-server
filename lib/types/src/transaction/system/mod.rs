@@ -135,6 +135,15 @@ impl SystemTxEnvelope {
         }
     }
 
+    pub fn settlement_layer_chain_id(&self) -> Option<ChainId> {
+        let input = self.decoded_input();
+        if let SystemTxInput::SetSLChainId(chain_id, _) = input {
+            Some(chain_id)
+        } else {
+            None
+        }
+    }
+
     pub fn hash(&self) -> &B256 {
         &self.hash
     }

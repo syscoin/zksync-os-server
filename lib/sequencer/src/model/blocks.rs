@@ -96,6 +96,9 @@ pub struct PreparedBlockCommand<'a> {
     /// Contract preimages to be included before the block execution.
     /// Can be non-empty e.g. when processing upgrade transactions.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
+    /// Number of sequencer-injected transactions that are expected to execute immediately after an
+    /// upgrade transaction before the block is sealed.
+    pub upgrade_followup_txs: u8,
     pub starting_interop_event_index: InteropRootsLogIndex,
     pub starting_migration_number: u64,
     pub starting_interop_fee_number: u64,
