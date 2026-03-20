@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.17.2](https://github.com/matter-labs/zksync-os-server/compare/v0.17.1...v0.17.2) (2026-03-20)
+
+
+### Features
+
+* add trace logs to estimate gas with exec results ([#1044](https://github.com/matter-labs/zksync-os-server/issues/1044)) ([0bb4532](https://github.com/matter-labs/zksync-os-server/commit/0bb45329c4e428bc8d57dfc694d6ab1b8bee3ce2))
+* consensus integration 2/5: Consensus interface, raft dependency ([#958](https://github.com/matter-labs/zksync-os-server/issues/958)) ([6e88dea](https://github.com/matter-labs/zksync-os-server/commit/6e88dead05f265abf167aceca3e6e84dbf8ecb8f))
+* **multivm:** use in-memory app bins for PIG ([#1037](https://github.com/matter-labs/zksync-os-server/issues/1037)) ([49705f6](https://github.com/matter-labs/zksync-os-server/commit/49705f62fcbe7305e8512f0716f7bb2e2e7f7ebe))
+* **readctor `ReplayRecord`:** extract `BlockStartCursors` struct from flat cursor fields (eg `l1_priority_id`) ([#1034](https://github.com/matter-labs/zksync-os-server/issues/1034)) ([2b6ed46](https://github.com/matter-labs/zksync-os-server/commit/2b6ed46fb040cb44073f97f6e5d9374e936d63d4))
+* **rpc:** Implement `zks_getProof` ([#917](https://github.com/matter-labs/zksync-os-server/issues/917)) ([4c6b676](https://github.com/matter-labs/zksync-os-server/commit/4c6b67642b3213a6e29b27f91aa77293694a2a0e))
+* **rpc:** track JSON-RPC error counts by method and error code ([#1040](https://github.com/matter-labs/zksync-os-server/issues/1040)) ([ba5821a](https://github.com/matter-labs/zksync-os-server/commit/ba5821a6bd47abc396c30196f3af475d44fd37f3))
+* Sync l1 state with draft-v31 ([#1010](https://github.com/matter-labs/zksync-os-server/issues/1010)) ([2c9fa7a](https://github.com/matter-labs/zksync-os-server/commit/2c9fa7a4c79797712fa85ed668e3165ea64d1eeb))
+* **tx_validators:** add deployment filter to restrict contract deployments to an allow-list ([#1013](https://github.com/matter-labs/zksync-os-server/issues/1013)) ([f61b2ec](https://github.com/matter-labs/zksync-os-server/commit/f61b2ecc70ad91c6f666742ef57907949d0fadab))
+* Use gateway base token as SL token ([#1042](https://github.com/matter-labs/zksync-os-server/issues/1042)) ([025df77](https://github.com/matter-labs/zksync-os-server/commit/025df77f99402548db4ac204ec5c156f19060be1))
+
+
+### Bug Fixes
+
+* **l1_sender:** fix bug in `parallel_transactions` metric ([#996](https://github.com/matter-labs/zksync-os-server/issues/996)) ([3df0b64](https://github.com/matter-labs/zksync-os-server/commit/3df0b64424678b7cfc97ba97c11cddf1253cd08a))
+* **rpc:** Fix `zks_getProof` ([#1032](https://github.com/matter-labs/zksync-os-server/issues/1032)) ([352b7db](https://github.com/matter-labs/zksync-os-server/commit/352b7db30dd7fc4fac717c49f0d43d88f9a80993))
+* upgrade lz4_flex to 0.12.1 to address RUSTSEC-2026-0041 ([#1024](https://github.com/matter-labs/zksync-os-server/issues/1024)) ([22e1bee](https://github.com/matter-labs/zksync-os-server/commit/22e1bee73b34de5b99dfcb97986fac18e35ce2c4))
+
 ## [0.17.1](https://github.com/matter-labs/zksync-os-server/compare/v0.17.0...v0.17.1) (2026-03-16)
 
 
