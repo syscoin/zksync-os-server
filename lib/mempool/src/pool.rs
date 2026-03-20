@@ -101,17 +101,6 @@ impl<T: L2Subpool> Pool<T> {
                 // we might never poll and pick a rarer but important transaction type.
                 biased;
 
-                Some(_) = sl_chain_id_stream.peek() => {
-                    // todo: this will make sure that SL chain ID transaction is in its own block.
-                    //       But we only need to ensure that, if present, it is the first transaction
-                    //       in the block. In other words, we could chain it with `l1_l2_stream` as
-                    //       a micro-optimization. Given how rare it is, likely not worth the trouble.
-                    return Some(StreamOutcome {
-                        upgrade_metadata,
-                        stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
-                    });
-                }
-
                 // Upgrade branch is a bit special as it does not always produce a stream of
                 // transactions. Sometimes it only sets `upgrade_metadata` and some other stream
                 // needs to provide transactions. This is the reason behind `loop` above (which can
@@ -138,6 +127,16 @@ impl<T: L2Subpool> Pool<T> {
                             stream: MarkingTxStream::unmarkable(UpgradeTransactionsStream::one(tx)),
                         });
                     }
+                }
+                Some(_) = sl_chain_id_stream.peek() => {
+                    // todo: this will make sure that SL chain ID transaction is in its own block.
+                    //       But we only need to ensure that, if present, it is the first transaction
+                    //       in the block. In other words, we could chain it with `l1_l2_stream` as
+                    //       a micro-optimization. Given how rare it is, likely not worth the trouble.
+                    return Some(StreamOutcome {
+                        upgrade_metadata,
+                        stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
+                    });
                 }
                 Some(_) = interop_related_stream.peek() => {
                     return Some(StreamOutcome {
