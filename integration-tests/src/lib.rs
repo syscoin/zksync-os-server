@@ -643,6 +643,8 @@ struct NodeBuilderOptions {
     fee_config: Option<FeeConfig>,
     gas_price_scale_factor: Option<f64>,
     estimate_gas_pubdata_price_factor: Option<f64>,
+    // SYSCOIN: let tests inject Bitcoin DA-specific config without forking the shared harness.
+    config_overrides: Option<std::sync::Arc<dyn Fn(&mut Config) + Send + Sync>>,
 }
 
 impl NodeBuilderOptions {
@@ -662,6 +664,9 @@ impl NodeBuilderOptions {
         }
         if let Some(factor) = self.estimate_gas_pubdata_price_factor {
             config.rpc_config.estimate_gas_pubdata_price_factor = factor;
+        }
+        if let Some(f) = &self.config_overrides {
+            f(config);
         }
     }
 }
@@ -722,6 +727,15 @@ impl TesterBuilder {
 
     pub fn settlement_layer(mut self, settlement_layer: SettlementLayer) -> Self {
         self.settlement_layer = settlement_layer;
+        self
+    }
+
+    // SYSCOIN: expose per-test config overrides for Bitcoin DA integration coverage.
+    pub fn config_overrides(
+        mut self,
+        f: impl Fn(&mut Config) + Send + Sync + 'static,
+    ) -> Self {
+        self.options.config_overrides = Some(std::sync::Arc::new(f));
         self
     }
 

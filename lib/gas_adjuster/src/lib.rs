@@ -264,6 +264,8 @@ impl GasAdjuster {
             }
             PubdataMode::Validium => U256::from(0u32),
             PubdataMode::RelayedL2Calldata => self.gw_pubdata_price_statistics.median(),
+            // SYSCOIN: Bitcoin DA does not pay settlement-layer pubdata gas per byte.
+            PubdataMode::Bitcoin => U256::from(0u32),
         };
 
         if price <= U256::from(u128::MAX) {

@@ -9,6 +9,8 @@ pub enum PubdataMode {
     Calldata = 1,
     Validium = 2,
     RelayedL2Calldata = 3,
+    // SYSCOIN: publish pubdata through Syscoin Bitcoin DA.
+    Bitcoin = 4,
 }
 
 impl PubdataMode {
@@ -27,6 +29,7 @@ impl PubdataMode {
             Self::Calldata => Self::Calldata,
             Self::Validium => Self::Validium,
             Self::RelayedL2Calldata => Self::RelayedL2Calldata,
+            Self::Bitcoin => Self::Bitcoin,
         }
     }
 
@@ -36,6 +39,7 @@ impl PubdataMode {
             1 => Some(PubdataMode::Calldata),
             2 => Some(PubdataMode::Validium),
             3 => Some(PubdataMode::RelayedL2Calldata),
+            4 => Some(PubdataMode::Bitcoin),
             _ => None,
         }
     }
@@ -54,6 +58,30 @@ impl PubdataMode {
             Self::RelayedL2Calldata => {
                 zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256
             }
+            // SYSCOIN: Bitcoin DA uses the pubdata keccak commitment scheme only.
+            Self::Bitcoin => {
+                zksync_os_contract_interface::models::DACommitmentScheme::PubdataKeccak256
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PubdataMode;
+    use zksync_os_contract_interface::models::DACommitmentScheme;
+
+    // SYSCOIN: keep the Bitcoin enum mapping and commitment scheme stable.
+    #[test]
+    fn bitcoin_maps_to_pubdata_keccak256() {
+        assert_eq!(
+            PubdataMode::Bitcoin.da_commitment_scheme(),
+            DACommitmentScheme::PubdataKeccak256
+        );
+    }
+
+    #[test]
+    fn from_u8_recognizes_bitcoin() {
+        assert_eq!(PubdataMode::from_u8(4), Some(PubdataMode::Bitcoin));
     }
 }

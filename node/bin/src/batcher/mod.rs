@@ -4,6 +4,8 @@ use alloy::consensus::BlobTransactionSidecar;
 use alloy::primitives::Address;
 use anyhow::Context;
 use async_trait::async_trait;
+use bitcoin_da_client::SyscoinClient;
+use secrecy::ExposeSecret;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
@@ -322,6 +324,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         accumulator.report_accumulated_resources_to_metrics();
 
         let protocol_version = &blocks.first().as_ref().unwrap().1.protocol_version;
+        // SYSCOIN: preserve protocol-version adaptation before deciding whether to publish Bitcoin DA.
+        let pubdata_mode = self.pubdata_mode.adapt_for_protocol_version(protocol_version);
 
         /* ---------- seal the batch ---------- */
         let batch_envelope = batch_builder::seal_batch(
@@ -330,12 +334,13 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             batch_number,
             self.chain_id,
             self.chain_address_sl,
-            // we need to adapt pubdata mode depending on protocol version, to ensure automatic DA mode change during v30 upgrade
-            self.pubdata_mode
-                .adapt_for_protocol_version(protocol_version),
+            pubdata_mode,
             self.sl_chain_id,
             &self.read_state,
         )?;
+        if pubdata_mode == PubdataMode::Bitcoin {
+            self.publish_bitcoin_da(batch_number, &blocks).await?;
+        }
         Ok(batch_envelope)
     }
 
@@ -430,5 +435,78 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         }
 
         Ok(rebuilt_batch)
+    }
+
+    // SYSCOIN: publish each sealed batch to Syscoin Bitcoin DA and wait for finality.
+    async fn publish_bitcoin_da(
+        &self,
+        batch_number: u64,
+        blocks: &[(BlockOutput, ReplayRecord, TreeBatchOutput, ProverInput)],
+    ) -> anyhow::Result<()> {
+        let rpc_url = self
+            .batcher_config
+            .bitcoin_da_rpc_url
+            .as_deref()
+            .context("`batcher.bitcoin_da_rpc_url` must be set when using Bitcoin pubdata mode")?;
+        let rpc_user = self
+            .batcher_config
+            .bitcoin_da_rpc_user
+            .as_ref()
+            .context("`batcher.bitcoin_da_rpc_user` must be set when using Bitcoin pubdata mode")?;
+        let rpc_password = self
+            .batcher_config
+            .bitcoin_da_rpc_password
+            .as_ref()
+            .context("`batcher.bitcoin_da_rpc_password` must be set when using Bitcoin pubdata mode")?;
+
+        let client = SyscoinClient::new(
+            rpc_url,
+            rpc_user.expose_secret(),
+            rpc_password.expose_secret(),
+            &self.batcher_config.bitcoin_da_poda_url,
+            Some(self.batcher_config.bitcoin_da_request_timeout),
+            &self.batcher_config.bitcoin_da_wallet_name,
+        )?;
+        let _funding_address = client
+            .ensure_own_wallet_and_address(&self.batcher_config.bitcoin_da_address_label)
+            .await
+            .context("failed to initialize Bitcoin DA wallet/address")?;
+
+        let total_pubdata = blocks
+            .iter()
+            .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())
+            .collect::<Vec<_>>();
+        let version_hash = client
+            .create_blob(&total_pubdata)
+            .await
+            .with_context(|| format!("failed to publish Bitcoin DA blob for batch {batch_number}"))?;
+
+        tracing::info!(
+            batch_number,
+            version_hash,
+            pubdata_bytes = total_pubdata.len(),
+            "Published Bitcoin DA blob"
+        );
+
+        let start = Instant::now();
+        loop {
+            if client
+                .check_blob_finality(&version_hash)
+                .await
+                .with_context(|| format!("failed to check Bitcoin DA finality for batch {batch_number}"))?
+            {
+                tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
+                return Ok(());
+            }
+
+            if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
+                anyhow::bail!(
+                    "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
+                    self.batcher_config.bitcoin_da_finality_timeout
+                );
+            }
+
+            tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
+        }
     }
 }

@@ -52,6 +52,8 @@ sha2 = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true, default-features = false, features = ["trace", "color"] }
 regex.workspace = true
+# SYSCOIN: mock the Bitcoin DA RPC surface in integration tests.
+httpmock.workspace = true
 
 [features]
 prover-tests = ["dep:reqwest"]

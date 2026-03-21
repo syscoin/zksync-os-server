@@ -233,7 +233,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 PubdataMode::Calldata | PubdataMode::Blobs | PubdataMode::RelayedL2Calldata,
                 BatchDaInputMode::Validium,
             )
-            | (PubdataMode::Validium, BatchDaInputMode::Rollup) => {
+            // SYSCOIN: Bitcoin DA remains a rollup-style settlement mode.
+            | (PubdataMode::Validium | PubdataMode::Bitcoin, BatchDaInputMode::Rollup) => {
                 panic!(
                     "Pubdata mode doesn't correspond to pricing mode from the l1. \
                     L1 mode: {:?}, configured pubdata mode: {:?}",

@@ -39,7 +39,9 @@ use zksync_os_observability::GenericComponentState;
 use zksync_os_observability::StateLabel;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReadFinality, ReadStateHistory};
-use zksync_os_storage_api::{ReplayRecord, StateError, read_multichain_root};
+use zksync_os_storage_api::{
+    ReplayRecord, StateError, calculate_state_diffs_hash, read_multichain_root,
+};
 
 mod block_cache;
 mod metrics;
@@ -251,13 +253,22 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let state_view = self.read_state.state_view_at(request.last_block_number)?;
         let multichain_root = read_multichain_root(state_view);
+        // SYSCOIN: Bitcoin DA verification must reconstruct the short state-diff hash header.
+        let state_diffs_hash = if request.pubdata_mode == zksync_os_types::PubdataMode::Bitcoin {
+            Some(calculate_state_diffs_hash(
+                blocks.iter().map(|(block_output, replay_record, _)| (block_output, replay_record)),
+                &self.read_state,
+            )?)
+        } else {
+            None
+        };
 
         let batch_info = BatchInfo::new(
             blocks
                 .iter()
                 .map(|(block_output, replay_record, tree)| {
                     (
-                        *block_output,
+                        block_output,
                         &replay_record.block_context,
                         replay_record.transactions.as_slice(),
                         tree,
@@ -271,6 +282,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             self.l1_state.sl_chain_id,
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
+            state_diffs_hash,
         );
 
         let expected_commit_data = batch_info.commit_info.clone().into();

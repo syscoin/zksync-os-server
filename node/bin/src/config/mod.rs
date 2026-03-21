@@ -614,6 +614,43 @@ pub struct BatcherConfig {
     /// when recovering from corrupted state.
     #[config(default_t = true)]
     pub assert_rebuilt_batch_hashes: bool,
+
+    // SYSCOIN: Batcher settings for publishing and finalizing Bitcoin DA blobs.
+    /// Syscoin NEVM RPC endpoint used for Bitcoin DA publication.
+    /// Only required when `l1_sender.pubdata_mode` is `Bitcoin`.
+    pub bitcoin_da_rpc_url: Option<String>,
+
+    /// Auth user for the Syscoin NEVM RPC endpoint.
+    #[config(secret)]
+    pub bitcoin_da_rpc_user: Option<SecretString>,
+
+    /// Auth password for the Syscoin NEVM RPC endpoint.
+    #[config(secret)]
+    pub bitcoin_da_rpc_password: Option<SecretString>,
+
+    /// PoDA gateway base URL used as a fallback read path and network preset.
+    #[config(default_t = "https://poda.syscoin.org".into())]
+    pub bitcoin_da_poda_url: String,
+
+    /// Wallet name used by `syscoincreatenevmblob`.
+    #[config(default_t = "zksync-os".into())]
+    pub bitcoin_da_wallet_name: String,
+
+    /// Label for the operator funding address ensured on startup/publication.
+    #[config(default_t = "zksync-os-batcher".into())]
+    pub bitcoin_da_address_label: String,
+
+    /// Request timeout for Bitcoin DA RPC calls.
+    #[config(default_t = 60 * TimeUnit::Seconds)]
+    pub bitcoin_da_request_timeout: Duration,
+
+    /// How often to poll Bitcoin DA finality after publishing a blob.
+    #[config(default_t = 30 * TimeUnit::Seconds)]
+    pub bitcoin_da_finality_poll_interval: Duration,
+
+    /// Max time to wait for a published Bitcoin DA blob to become final.
+    #[config(default_t = 30 * TimeUnit::Minutes)]
+    pub bitcoin_da_finality_timeout: Duration,
 }
 
 /// Only used on the Main Node.

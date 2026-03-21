@@ -45,6 +45,8 @@ impl BatchInfo {
         sl_chain_id: u64,
         multichain_root: B256,
         protocol_version: &ProtocolSemanticVersion,
+        // SYSCOIN: Bitcoin DA commitments also include the short state-diff hash header.
+        state_diffs_hash: Option<B256>,
     ) -> Self {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
@@ -133,6 +135,7 @@ impl BatchInfo {
             &total_pubdata,
             pubdata_mode,
             last_block_context.execution_version,
+            state_diffs_hash,
         );
 
         /* ---------- new state commitment ---------- */
@@ -270,6 +273,7 @@ fn calculate_da_fields(
     pubdata: &[u8],
     pubdata_mode: PubdataMode,
     batch_execution_version: u32,
+    state_diffs_hash: Option<B256>,
 ) -> DAFields {
     let (da_commitment, operator_da_input, blob_sidecar) =
         match (pubdata_mode, batch_execution_version) {
@@ -305,6 +309,15 @@ fn calculate_da_fields(
 
                 (da_commitment, operator_da_input, None)
             }
+            (PubdataMode::Bitcoin, _) => {
+                // SYSCOIN: Bitcoin DA commits `stateDiffsHash || keccak256(full_pubdata)`.
+                let state_diffs_hash =
+                    state_diffs_hash.expect("state diffs hash required for bitcoin pubdata mode");
+                let full_pubdata_hash = keccak256(pubdata);
+                let operator_da_input = [state_diffs_hash.0, full_pubdata_hash.0].concat();
+                let da_commitment = keccak256(&operator_da_input);
+                (da_commitment, operator_da_input, None)
+            }
             (PubdataMode::Validium, _) => (B256::ZERO, vec![0u8; 32], None),
             (PubdataMode::Blobs, _) => {
                 // returns error in case of internal error during sidecar calculation
@@ -327,6 +340,29 @@ fn calculate_da_fields(
         da_commitment,
         operator_da_input,
         blob_sidecar,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_da_fields;
+    use alloy::primitives::{B256, keccak256};
+    use zksync_os_types::PubdataMode;
+
+    // SYSCOIN: guard the Bitcoin DA operator input layout expected on settlement.
+    #[test]
+    fn bitcoin_da_fields_use_short_state_diff_header() {
+        let pubdata = b"hello-bitcoin-da";
+        let state_diffs_hash = B256::from([0x11; 32]);
+
+        let fields = calculate_da_fields(pubdata, PubdataMode::Bitcoin, 6, Some(state_diffs_hash));
+
+        let full_pubdata_hash = keccak256(pubdata);
+        let expected_operator_da_input = [state_diffs_hash.0, full_pubdata_hash.0].concat();
+
+        assert_eq!(fields.operator_da_input, expected_operator_da_input);
+        assert_eq!(fields.da_commitment, keccak256(&expected_operator_da_input));
+        assert!(fields.blob_sidecar.is_none());
     }
 }
 

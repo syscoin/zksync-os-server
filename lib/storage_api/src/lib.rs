@@ -28,5 +28,8 @@ pub use state_override_view::OverriddenStateView;
 
 mod read_multichain_root;
 pub use read_multichain_root::read_multichain_root;
+// SYSCOIN: expose the shared Bitcoin DA state-diff hash helper.
+mod state_diff_hash;
+pub use state_diff_hash::calculate_state_diffs_hash;
 mod overlay_buffer;
 pub use overlay_buffer::{BlockOverlay, OverlayBuffer};
