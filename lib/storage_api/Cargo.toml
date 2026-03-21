@@ -23,6 +23,7 @@ zk_os_api.workspace = true
 alloy = { workspace = true, default-features = false, features = ["eips", "rlp", "rpc-types"] }
 # In order to use RlpDecodable, RlpEncodable alloy-rlp crate must be imported directly.
 alloy-rlp.workspace = true
+blake2.workspace = true
 futures.workspace = true
 serde.workspace = true
 thiserror.workspace = true

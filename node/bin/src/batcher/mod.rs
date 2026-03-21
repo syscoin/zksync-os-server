@@ -466,11 +466,14 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             &self.batcher_config.bitcoin_da_poda_url,
             Some(self.batcher_config.bitcoin_da_request_timeout),
             &self.batcher_config.bitcoin_da_wallet_name,
-        )?;
+        )
+        .map_err(|err| anyhow::anyhow!("failed to create Bitcoin DA client: {err}"))?;
         let _funding_address = client
             .ensure_own_wallet_and_address(&self.batcher_config.bitcoin_da_address_label)
             .await
-            .context("failed to initialize Bitcoin DA wallet/address")?;
+            .map_err(|err| {
+                anyhow::anyhow!("failed to initialize Bitcoin DA wallet/address: {err}")
+            })?;
 
         let total_pubdata = blocks
             .iter()
@@ -479,7 +482,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         let version_hash = client
             .create_blob(&total_pubdata)
             .await
-            .with_context(|| format!("failed to publish Bitcoin DA blob for batch {batch_number}"))?;
+            .map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to publish Bitcoin DA blob for batch {batch_number}: {err}"
+                )
+            })?;
 
         tracing::info!(
             batch_number,
@@ -493,7 +500,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             if client
                 .check_blob_finality(&version_hash)
                 .await
-                .with_context(|| format!("failed to check Bitcoin DA finality for batch {batch_number}"))?
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
+                    )
+                })?
             {
                 tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
                 return Ok(());

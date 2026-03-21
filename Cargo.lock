@@ -15009,6 +15009,7 @@ dependencies = [
  "anyhow",
  "auto_impl",
  "basic_system 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
+ "blake2",
  "futures",
  "pin-project 1.1.11",
  "semver 1.0.27",

@@ -256,7 +256,9 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         // SYSCOIN: Bitcoin DA verification must reconstruct the short state-diff hash header.
         let state_diffs_hash = if request.pubdata_mode == zksync_os_types::PubdataMode::Bitcoin {
             Some(calculate_state_diffs_hash(
-                blocks.iter().map(|(block_output, replay_record, _)| (block_output, replay_record)),
+                blocks
+                    .iter()
+                    .map(|(block_output, replay_record, _)| (*block_output, *replay_record)),
                 &self.read_state,
             )?)
         } else {
@@ -268,7 +270,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
                 .iter()
                 .map(|(block_output, replay_record, tree)| {
                     (
-                        block_output,
+                        *block_output,
                         &replay_record.block_context,
                         replay_record.transactions.as_slice(),
                         tree,

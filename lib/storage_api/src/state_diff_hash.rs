@@ -1,5 +1,5 @@
 // SYSCOIN: compute the short state-diff hash header used by Bitcoin DA commitments.
-use crate::{ReadStateHistory, ReplayRecord, ViewState};
+use crate::{ReadStateHistory, ReplayRecord, StateResult, ViewState};
 use alloy::primitives::ruint::aliases::B160;
 use alloy::primitives::B256;
 use blake2::{Blake2s256, Digest};
@@ -13,7 +13,7 @@ use zksync_os_interface::types::BlockOutput;
 pub fn calculate_state_diffs_hash<'a, ReadState, I>(
     blocks: I,
     read_state: &ReadState,
-) -> anyhow::Result<B256>
+) -> StateResult<B256>
 where
     ReadState: ReadStateHistory,
     I: IntoIterator<Item = (&'a BlockOutput, &'a ReplayRecord)>,
