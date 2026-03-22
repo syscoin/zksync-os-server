@@ -281,6 +281,7 @@ pub enum StateBackendConfig {
     Compacted,
 }
 
+// SYSCOIN
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 pub struct GenesisConfig {
     /// L1 address of `Bridgehub` contract. This address and chain ID is an entrypoint into L1 discoverability so most
