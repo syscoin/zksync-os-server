@@ -15,10 +15,25 @@ The goal topology is:
 ## Repos and prerequisites
 
 - `zksync-era` (upstream; linked to your contracts fork)
-- `bitcoin+-contracts`
+- `era-contracts`
 - `zksync-os-server`
 - `zksync-airbender` and `zksync-airbender-prover`
 - Syscoin L1 RPC and Bitcoin DA/PoDA connectivity
+
+Update the existing `zksync-era/contracts` subrepo to your `era-contracts` `zkOS` branch
+before building `zkstack` (local repo workflow).
+
+```bash
+export ZKSYNC_ERA_PATH=/path/to/zksync-era
+cd "${ZKSYNC_ERA_PATH}"
+git submodule update --init --recursive contracts
+
+# local-only update: repoint contracts subrepo to syscoin/era-contracts and move to zkOS branch
+cd contracts
+git remote set-url origin git@github.com:syscoin/era-contracts.git
+git fetch --all
+git checkout zkOS
+```
 
 Build `zkstack` from your `zksync-era` checkout:
 
