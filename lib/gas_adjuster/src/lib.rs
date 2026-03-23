@@ -7,6 +7,7 @@ use alloy::eips::eip4844::FIELD_ELEMENTS_PER_BLOB;
 use alloy::primitives::{U64, U256};
 use alloy::providers::{DynProvider, Provider};
 use anyhow::Context;
+use bitcoin_da_client::SyscoinClient;
 use metrics::METRICS;
 use num::rational::Ratio;
 use std::time::Duration;
@@ -46,6 +47,14 @@ pub struct GasAdjusterConfig {
     pub max_priority_fee_per_gas: u128,
     pub poll_period: Duration,
     pub pubdata_pricing_multiplier: f64,
+    // SYSCOIN
+    pub bitcoin_da_rpc_url: Option<String>,
+    pub bitcoin_da_rpc_user: Option<String>,
+    pub bitcoin_da_rpc_password: Option<String>,
+    pub bitcoin_da_poda_url: String,
+    pub bitcoin_da_wallet_name: String,
+    pub bitcoin_da_request_timeout: Duration,
+    pub bitcoin_da_fee_conf_target: u16,
 }
 
 impl GasAdjuster {
@@ -64,6 +73,7 @@ impl GasAdjuster {
             &sl_provider,
             current_block,
             config.max_base_fee_samples as u64,
+            &config,
         )
         .await?;
 
@@ -117,7 +127,7 @@ impl GasAdjuster {
         if current_block > last_processed_block {
             let n_blocks = current_block - last_processed_block;
             let fee_data =
-                Self::base_fee_history(&self.sl_provider, current_block, n_blocks).await?;
+                Self::base_fee_history(&self.sl_provider, current_block, n_blocks, &self.config).await?;
 
             // We shouldn't rely on provider to return consistent results, so we check that we have at least one new sample.
             if let Some(current_base_fee_per_gas) = fee_data.last().map(|fee| fee.base_fee_per_gas)
@@ -289,11 +299,18 @@ impl GasAdjuster {
         provider: &DynProvider,
         upto_block: u64,
         block_count: u64,
+        config: &GasAdjusterConfig,
     ) -> anyhow::Result<Vec<BaseFees>> {
         const FEE_HISTORY_MAX_REQUEST_CHUNK: usize = 1023;
 
         let mut history = Vec::with_capacity(block_count as usize);
         let from_block = upto_block.saturating_sub(block_count - 1);
+        // SYSCOIN
+        let fixed_blob_base_fee = if config.pubdata_mode == PubdataMode::Blobs {
+            Some(Self::bitcoin_blob_base_fee(config).await?)
+        } else {
+            None
+        };
 
         // Here we are requesting `fee_history` from blocks
         // `[from_block; upto_block]` in chunks of size `FEE_HISTORY_MAX_REQUEST_CHUNK`
@@ -326,12 +343,18 @@ impl GasAdjuster {
                 .pubdata_price_per_byte
                 .map(|v| v.into_iter().map(Some).collect())
                 .unwrap_or_else(|| vec![None; chunk_size as usize]);
+            // SYSCOIN
+            let blob_base_fee_per_gas = fee_history
+                .base
+                .base_fee_per_blob_gas
+                .into_iter()
+                .map(|fee| fixed_blob_base_fee.unwrap_or(fee));
             // We take `chunk_size` entries and drop data for the block after `chunk_end`.
             for ((base_fee_per_gas, base_fee_per_blob_gas), pubdata_price_per_byte) in fee_history
                 .base
                 .base_fee_per_gas
                 .into_iter()
-                .zip(fee_history.base.base_fee_per_blob_gas)
+                .zip(blob_base_fee_per_gas)
                 .zip(pubdata_price_per_byte)
                 .take(chunk_size as usize)
             {
@@ -345,6 +368,36 @@ impl GasAdjuster {
         }
 
         Ok(history)
+    }
+    // SYSCOIN
+    async fn bitcoin_blob_base_fee(config: &GasAdjusterConfig) -> anyhow::Result<u128> {
+        let rpc_url = config
+            .bitcoin_da_rpc_url
+            .as_deref()
+            .context("missing bitcoin_da_rpc_url for blob fee estimation")?;
+        let rpc_user = config
+            .bitcoin_da_rpc_user
+            .as_deref()
+            .context("missing bitcoin_da_rpc_user for blob fee estimation")?;
+        let rpc_password = config
+            .bitcoin_da_rpc_password
+            .as_deref()
+            .context("missing bitcoin_da_rpc_password for blob fee estimation")?;
+
+        let client = SyscoinClient::new(
+            rpc_url,
+            rpc_user,
+            rpc_password,
+            &config.bitcoin_da_poda_url,
+            Some(config.bitcoin_da_request_timeout),
+            &config.bitcoin_da_wallet_name,
+        )
+        .context("failed to construct Syscoin client for blob fee estimation")?;
+
+        client
+            .get_blob_base_fee(config.bitcoin_da_fee_conf_target)
+            .await
+            .context("failed to estimate Syscoin blob base fee")
     }
 }
 

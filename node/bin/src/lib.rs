@@ -606,6 +606,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             config.gas_adjuster_config.clone(),
             pubdata_mode,
             config.l1_sender_config.max_priority_fee_per_gas.0,
+            &config.batcher_config,
         );
         let gas_adjuster = GasAdjuster::new(
             sl_provider.clone().erased(),

@@ -47,6 +47,26 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
                 .json_body(json!({"result": "sys-mock-address", "error": null, "id": 1}));
         })
         .await;
+    let estimate_smart_fee = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_matches(r#""method"\s*:\s*"estimatesmartfee""#);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}));
+        })
+        .await;
+    let get_mempool_info = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_matches(r#""method"\s*:\s*"getmempoolinfo""#);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"result": {"mempoolminfee": 0.00002, "minrelaytxfee": 0.000015}, "error": null, "id": 1}));
+        })
+        .await;
     let create_blob = server
         .mock_async(|when, then| {
             when.method(POST)
@@ -118,6 +138,8 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
     assert!(loadwallet.hits_async().await > 0);
     assert!(getaddressesbylabel.hits_async().await > 0);
     assert!(getnewaddress.hits_async().await > 0);
+    assert!(estimate_smart_fee.hits_async().await > 0);
+    assert!(get_mempool_info.hits_async().await > 0);
     assert!(create_blob.hits_async().await > 0);
     assert!(check_finality.hits_async().await > 0);
 
@@ -156,6 +178,26 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
             then.status(200)
                 .header("content-type", "application/json")
                 .json_body(json!({"result": "sys-mock-address", "error": null, "id": 1}));
+        })
+        .await;
+    let estimate_smart_fee = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_matches(r#""method"\s*:\s*"estimatesmartfee""#);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}));
+        })
+        .await;
+    let get_mempool_info = server
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_matches(r#""method"\s*:\s*"getmempoolinfo""#);
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"result": {"mempoolminfee": 0.00002, "minrelaytxfee": 0.000015}, "error": null, "id": 1}));
         })
         .await;
     let create_blob = server
@@ -254,6 +296,8 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
     assert!(loadwallet.hits_async().await > 0);
     assert!(getaddressesbylabel.hits_async().await > 0);
     assert!(getnewaddress.hits_async().await > 0);
+    assert!(estimate_smart_fee.hits_async().await > 0);
+    assert!(get_mempool_info.hits_async().await > 0);
     assert!(create_blob.hits_async().await > 0);
     assert!(get_blob_data.hits_async().await > 0);
     assert!(get_block_count.hits_async().await > 0);

@@ -3,6 +3,7 @@ use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
 use alloy::primitives::{Address, Bytes, U128};
 use num::{BigInt, BigUint, rational::Ratio};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use smart_config::metadata::{SizeUnit, TimeUnit};
 use smart_config::value::SecretString;
@@ -845,6 +846,8 @@ pub struct GasAdjusterConfig {
     pub poll_period: Duration,
     #[config(default_t = 1.0)]
     pub pubdata_pricing_multiplier: f64,
+    #[config(default_t = 6)]
+    pub bitcoin_da_fee_conf_target: u16,
 }
 
 /// Configuration for the opentelemetry stack.
@@ -1184,6 +1187,7 @@ pub fn gas_adjuster_config(
     c: GasAdjusterConfig,
     pubdata_mode: PubdataMode,
     max_priority_fee_per_gas_wei: u128,
+    batcher_config: &BatcherConfig,
 ) -> zksync_os_gas_adjuster::GasAdjusterConfig {
     zksync_os_gas_adjuster::GasAdjusterConfig {
         pubdata_mode,
@@ -1193,6 +1197,20 @@ pub fn gas_adjuster_config(
         max_priority_fee_per_gas: max_priority_fee_per_gas_wei,
         poll_period: c.poll_period,
         pubdata_pricing_multiplier: c.pubdata_pricing_multiplier,
+        // SYSCOIN
+        bitcoin_da_rpc_url: batcher_config.bitcoin_da_rpc_url.clone(),
+        bitcoin_da_rpc_user: batcher_config
+            .bitcoin_da_rpc_user
+            .as_ref()
+            .map(|s| s.expose_secret().to_owned()),
+        bitcoin_da_rpc_password: batcher_config
+            .bitcoin_da_rpc_password
+            .as_ref()
+            .map(|s| s.expose_secret().to_owned()),
+        bitcoin_da_poda_url: batcher_config.bitcoin_da_poda_url.clone(),
+        bitcoin_da_wallet_name: batcher_config.bitcoin_da_wallet_name.clone(),
+        bitcoin_da_request_timeout: batcher_config.bitcoin_da_request_timeout,
+        bitcoin_da_fee_conf_target: c.bitcoin_da_fee_conf_target,
     }
 }
 
