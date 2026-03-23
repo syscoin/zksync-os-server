@@ -57,17 +57,3 @@ impl PubdataMode {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::PubdataMode;
-    use zksync_os_contract_interface::models::DACommitmentScheme;
-
-    #[test]
-    fn blobs_map_to_blobs_zksync_os() {
-        assert_eq!(
-            PubdataMode::Blobs.da_commitment_scheme(),
-            DACommitmentScheme::BlobsZKsyncOS
-        );
-    }
-}

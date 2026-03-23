@@ -250,8 +250,10 @@ impl GasAdjuster {
     pub fn pubdata_price(&self) -> U256 {
         let price = match self.config.pubdata_mode {
             PubdataMode::Blobs => {
-                // SYSCOIN: in this fork, blob mode is backed by Bitcoin DA rather than EIP-4844.
-                U256::from(0u32)
+                const BLOB_GAS_PER_BYTE: u128 = 1; // `BYTES_PER_BLOB` = `GAS_PER_BLOB` = 2 ^ 17.
+
+                let blob_base_fee_median = self.blob_base_fee_statistics.median();
+                U256::from(blob_base_fee_median * BLOB_GAS_PER_BYTE)
             }
             PubdataMode::Calldata => {
                 /// The amount of gas we need to pay for each non-zero pubdata byte.

@@ -242,7 +242,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             }
             _ => {}
         };
-        if let (PubdataMode::Calldata, true) = (
+        if let (PubdataMode::Blobs | PubdataMode::Calldata, true) = (
             pubdata_mode,
             config.general_config.gateway_rpc_url.is_some(),
         ) {
