@@ -1,0 +1,30 @@
+l1_sender:
+  pubdata_mode: Blobs
+  # Syscoin L1 is slow; reduce aggressive polling noise.
+  poll_interval: 10s
+
+l1_watcher:
+  poll_interval: 10s
+
+api:
+  # This is for eth_sendRawTransactionSync (L2 inclusion wait), not L1 finality.
+  # Keep above sequencer.block_time, but no need to tie to 2.5min L1 blocks.
+  send_raw_transaction_sync_timeout: 30s
+
+sequencer:
+  block_time: 10s
+  service_block_delay: 30s
+
+batcher:
+  batch_timeout: 40m
+  # Fill these per environment or via a local override file.
+  bitcoin_da_rpc_url: http://127.0.0.1:8369
+  bitcoin_da_rpc_user: __cookie__
+  bitcoin_da_rpc_password: CHANGE_ME
+  bitcoin_da_poda_url: https://poda.syscoin.org
+  bitcoin_da_wallet_name: zksync-os
+  bitcoin_da_address_label: zksync-os-batcher
+  # Slow-L1 conservative defaults.
+  bitcoin_da_request_timeout: 120s
+  bitcoin_da_finality_poll_interval: 30s
+  bitcoin_da_finality_timeout: 90m

@@ -1,0 +1,10 @@
+l1_sender:
+  pubdata_mode: RelayedL2Calldata
+
+# Keep child defaults conservative first; tune only after measurements.
+sequencer:
+  block_time: 250ms
+  service_block_delay: 750ms
+
+batcher:
+  batch_timeout: 1s
