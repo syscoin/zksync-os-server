@@ -54,7 +54,9 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
                 .body_matches(r#""method"\s*:\s*"syscoincreatenevmblob""#);
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(json!({"result": {"versionhash": "0xdeadbeef"}, "error": null, "id": 1}));
+                .json_body(
+                    json!({"result": {"versionhash": "0xdeadbeef"}, "error": null, "id": 1}),
+                );
         })
         .await;
     let check_finality = server
@@ -73,11 +75,10 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         .settlement_layer(SettlementLayer::Gateway)
         .block_time(Duration::from_millis(50))
         .config_overrides(move |config| {
-            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Bitcoin);
+            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
             config.batcher_config.batch_timeout = Duration::from_millis(100);
             config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
-            config.batcher_config.bitcoin_da_rpc_user =
-                Some(SecretString::new("user".into()));
+            config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
             config.batcher_config.bitcoin_da_rpc_password =
                 Some(SecretString::new("password".into()));
             config.batcher_config.bitcoin_da_poda_url = server_url.clone();
@@ -205,11 +206,10 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
         .settlement_layer(SettlementLayer::Gateway)
         .block_time(Duration::from_millis(50))
         .config_overrides(move |config| {
-            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Bitcoin);
+            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
             config.batcher_config.batch_timeout = Duration::from_millis(100);
             config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
-            config.batcher_config.bitcoin_da_rpc_user =
-                Some(SecretString::new("user".into()));
+            config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
             config.batcher_config.bitcoin_da_rpc_password =
                 Some(SecretString::new("password".into()));
             config.batcher_config.bitcoin_da_poda_url = server_url.clone();
@@ -217,8 +217,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
             config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
             config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
             config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
-            config.batcher_config.bitcoin_da_finality_mode =
-                BitcoinDaFinalityMode::Confirmations;
+            config.batcher_config.bitcoin_da_finality_mode = BitcoinDaFinalityMode::Confirmations;
             config.batcher_config.bitcoin_da_finality_confirmations = 5;
             config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
         })

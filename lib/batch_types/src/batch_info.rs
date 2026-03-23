@@ -45,8 +45,6 @@ impl BatchInfo {
         sl_chain_id: u64,
         multichain_root: B256,
         protocol_version: &ProtocolSemanticVersion,
-        // SYSCOIN: Bitcoin DA commitments also include the short state-diff hash header.
-        state_diffs_hash: Option<B256>,
     ) -> Self {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
@@ -135,7 +133,6 @@ impl BatchInfo {
             &total_pubdata,
             pubdata_mode,
             last_block_context.execution_version,
-            state_diffs_hash,
         );
 
         /* ---------- new state commitment ---------- */
@@ -273,7 +270,6 @@ fn calculate_da_fields(
     pubdata: &[u8],
     pubdata_mode: PubdataMode,
     batch_execution_version: u32,
-    state_diffs_hash: Option<B256>,
 ) -> DAFields {
     let (da_commitment, operator_da_input, blob_sidecar) =
         match (pubdata_mode, batch_execution_version) {
@@ -309,30 +305,21 @@ fn calculate_da_fields(
 
                 (da_commitment, operator_da_input, None)
             }
-            (PubdataMode::Bitcoin, _) => {
-                // SYSCOIN: Bitcoin DA commits `stateDiffsHash || keccak256(full_pubdata)`.
-                let state_diffs_hash =
-                    state_diffs_hash.expect("state diffs hash required for bitcoin pubdata mode");
-                let full_pubdata_hash = keccak256(pubdata);
-                let operator_da_input = [state_diffs_hash.0, full_pubdata_hash.0].concat();
-                let da_commitment = keccak256(&operator_da_input);
-                (da_commitment, operator_da_input, None)
-            }
             (PubdataMode::Validium, _) => (B256::ZERO, vec![0u8; 32], None),
             (PubdataMode::Blobs, _) => {
-                // returns error in case of internal error during sidecar calculation
+                // Build the blob-style chunk artifact locally, then use the Syscoin publication
+                // id for each chunk (`keccak(chunk_bytes)`) as the committed identifier.
                 let blob_sidecar: BlobTransactionSidecar =
                     SidecarBuilder::<SimpleCoder>::from_slice(pubdata)
                         .build()
                         .unwrap();
-                let versioned_hashes: Vec<u8> = blob_sidecar
-                    .versioned_hashes()
-                    .flat_map(|hash| hash.0.to_vec())
+                let blob_ids: Vec<u8> = blob_sidecar
+                    .blobs
+                    .iter()
+                    .flat_map(|blob| keccak256(blob.as_ref()).0)
                     .collect();
-                let da_commitment = keccak256(&versioned_hashes);
-
-                // we place zeroes into da input to publish blobs with commit transaction
-                let operator_da_input = vec![0u8; versioned_hashes.len()];
+                let da_commitment = keccak256(&blob_ids);
+                let operator_da_input = blob_ids;
                 (da_commitment, operator_da_input, Some(blob_sidecar))
             }
         };
@@ -346,23 +333,18 @@ fn calculate_da_fields(
 #[cfg(test)]
 mod tests {
     use super::calculate_da_fields;
-    use alloy::primitives::{B256, keccak256};
+    use alloy::primitives::keccak256;
     use zksync_os_types::PubdataMode;
 
-    // SYSCOIN: guard the Bitcoin DA operator input layout expected on settlement.
+    // SYSCOIN: blob mode now reuses the OS blob-style identifier commitment.
     #[test]
-    fn bitcoin_da_fields_use_short_state_diff_header() {
-        let pubdata = b"hello-bitcoin-da";
-        let state_diffs_hash = B256::from([0x11; 32]);
+    fn blob_da_fields_use_blob_style_identifier_commitment() {
+        let pubdata = b"hello-syscoin-da";
 
-        let fields = calculate_da_fields(pubdata, PubdataMode::Bitcoin, 6, Some(state_diffs_hash));
-
-        let full_pubdata_hash = keccak256(pubdata);
-        let expected_operator_da_input = [state_diffs_hash.0, full_pubdata_hash.0].concat();
-
-        assert_eq!(fields.operator_da_input, expected_operator_da_input);
-        assert_eq!(fields.da_commitment, keccak256(&expected_operator_da_input));
-        assert!(fields.blob_sidecar.is_none());
+        let fields = calculate_da_fields(pubdata, PubdataMode::Blobs, 6);
+        assert_eq!(fields.operator_da_input.len(), 32);
+        assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
+        assert!(fields.blob_sidecar.is_some());
     }
 }
 

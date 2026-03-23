@@ -6,9 +6,7 @@ use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::batcher_model::{
     BatchEnvelope, BatchForSigning, BatchMetadata, ProverInput,
 };
-use zksync_os_storage_api::{
-    ReadStateHistory, ReplayRecord, calculate_state_diffs_hash, read_multichain_root,
-};
+use zksync_os_storage_api::{ReadStateHistory, ReplayRecord, read_multichain_root};
 use zksync_os_types::{ProvingVersion, PubdataMode};
 
 /// Takes a vector of blocks and produces a batch envelope.
@@ -32,15 +30,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     let block_number_to = blocks.last().unwrap().1.block_context.block_number;
     let execution_version = blocks.first().unwrap().1.block_context.execution_version;
     let protocol_version = blocks.first().unwrap().1.protocol_version.clone();
-    // SYSCOIN: Bitcoin DA batches include the short state-diff hash in operator DA input.
-    let state_diffs_hash = if pubdata_mode == PubdataMode::Bitcoin {
-        Some(calculate_state_diffs_hash(
-            blocks.iter().map(|(block_output, replay_record, _, _)| (block_output, replay_record)),
-            read_state,
-        )?)
-    } else {
-        None
-    };
 
     let state_view = read_state.state_view_at(block_number_to)?;
     let multichain_root = read_multichain_root(state_view);
@@ -63,7 +52,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         sl_chain_id,
         multichain_root,
         &protocol_version,
-        state_diffs_hash,
     );
 
     let mut logs = Vec::new();

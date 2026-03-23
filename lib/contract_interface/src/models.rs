@@ -137,11 +137,11 @@ pub enum DACommitmentScheme {
     None,
     /// Empty(`0`) commitment, used for validium
     EmptyNoDA,
-    /// Keccak of stateDiffHash and keccak(pubdata), used by 3rd party DA solutions
+    /// Legacy keccak(pubdata/state diff) DA option. Unsupported in this fork.
     PubdataKeccak256,
     /// This commitment includes blobs data and pubdata hash, ZKsync OS always outputs empty blobs, and it's used only for calldata with ZKsync OS
     BlobsAndPubdataKeccak256,
-    /// Keccak of blob versioned hashes filled with pubdata, used for blobs DA with ZKsync OS
+    /// Keccak of chunk identifiers filled with pubdata, used for blob-style DA with ZKsync OS
     BlobsZKsyncOS,
 }
 

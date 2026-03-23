@@ -1,7 +1,7 @@
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::BatcherConfig;
 use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, keccak256};
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
@@ -324,11 +324,13 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         accumulator.report_accumulated_resources_to_metrics();
 
         let protocol_version = &blocks.first().as_ref().unwrap().1.protocol_version;
-        // SYSCOIN: preserve protocol-version adaptation before deciding whether to publish Bitcoin DA.
-        let pubdata_mode = self.pubdata_mode.adapt_for_protocol_version(protocol_version);
+        // SYSCOIN Preserve protocol-version adaptation before deciding whether to publish Syscoin DA.
+        let pubdata_mode = self
+            .pubdata_mode
+            .adapt_for_protocol_version(protocol_version);
 
         /* ---------- seal the batch ---------- */
-        let batch_envelope = batch_builder::seal_batch(
+        let mut batch_envelope = batch_builder::seal_batch(
             &blocks,
             prev_batch_info.clone(),
             batch_number,
@@ -338,8 +340,21 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.sl_chain_id,
             &self.read_state,
         )?;
-        if pubdata_mode == PubdataMode::Bitcoin {
-            self.publish_bitcoin_da(batch_number, &blocks).await?;
+        if pubdata_mode == PubdataMode::Blobs {
+            let blob_sidecar = batch_envelope
+                .batch
+                .batch_info
+                .blob_sidecar
+                .as_ref()
+                .context("missing blob sidecar for Syscoin-backed blob mode")?;
+            self.publish_bitcoin_da(
+                batch_number,
+                blob_sidecar,
+                &batch_envelope.batch.batch_info.operator_da_input,
+            )
+            .await?;
+            // Prevent the normal L1 sender from treating this as an EIP-4844 sidecar.
+            batch_envelope.batch.batch_info.blob_sidecar = None;
         }
         Ok(batch_envelope)
     }
@@ -441,23 +456,24 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
     async fn publish_bitcoin_da(
         &self,
         batch_number: u64,
-        blocks: &[(BlockOutput, ReplayRecord, TreeBatchOutput, ProverInput)],
+        blob_sidecar: &BlobTransactionSidecar,
+        expected_version_hashes: &[u8],
     ) -> anyhow::Result<()> {
-        let rpc_url = self
-            .batcher_config
-            .bitcoin_da_rpc_url
-            .as_deref()
-            .context("`batcher.bitcoin_da_rpc_url` must be set when using Bitcoin pubdata mode")?;
-        let rpc_user = self
-            .batcher_config
-            .bitcoin_da_rpc_user
-            .as_ref()
-            .context("`batcher.bitcoin_da_rpc_user` must be set when using Bitcoin pubdata mode")?;
+        let rpc_url =
+            self.batcher_config.bitcoin_da_rpc_url.as_deref().context(
+                "`batcher.bitcoin_da_rpc_url` must be set when using blob pubdata mode",
+            )?;
+        let rpc_user =
+            self.batcher_config.bitcoin_da_rpc_user.as_ref().context(
+                "`batcher.bitcoin_da_rpc_user` must be set when using blob pubdata mode",
+            )?;
         let rpc_password = self
             .batcher_config
             .bitcoin_da_rpc_password
             .as_ref()
-            .context("`batcher.bitcoin_da_rpc_password` must be set when using Bitcoin pubdata mode")?;
+            .context(
+                "`batcher.bitcoin_da_rpc_password` must be set when using blob pubdata mode",
+            )?;
 
         let client = SyscoinClient::new(
             rpc_url,
@@ -475,49 +491,89 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 anyhow::anyhow!("failed to initialize Bitcoin DA wallet/address: {err}")
             })?;
 
-        let total_pubdata = blocks
+        let expected_chunks = expected_version_hashes.chunks_exact(32);
+        anyhow::ensure!(
+            expected_chunks.remainder().is_empty(),
+            "bitcoin operator DA input must be a concatenation of 32-byte version hashes"
+        );
+
+        let expected_hashes: Vec<String> = expected_version_hashes
+            .chunks_exact(32)
+            .map(hex::encode)
+            .collect();
+        let blob_chunks: Vec<Vec<u8>> = blob_sidecar
+            .blobs
             .iter()
-            .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())
-            .collect::<Vec<_>>();
-        let version_hash = client
-            .create_blob(&total_pubdata)
-            .await
-            .map_err(|err| {
+            .map(|blob| blob.as_ref().to_vec())
+            .collect();
+        let local_blob_ids: Vec<u8> = blob_chunks
+            .iter()
+            .flat_map(|blob| keccak256(blob).0)
+            .collect();
+
+        anyhow::ensure!(
+            blob_chunks.len() == expected_hashes.len(),
+            "bitcoin publication blob count mismatch: built {}, committed {}",
+            blob_chunks.len(),
+            expected_hashes.len()
+        );
+        anyhow::ensure!(
+            local_blob_ids == expected_version_hashes,
+            "local Syscoin blob ids do not match committed operator DA input for batch {batch_number}"
+        );
+
+        let mut published_hashes = Vec::with_capacity(expected_hashes.len());
+        for (idx, (blob, expected_hash)) in blob_chunks
+            .iter()
+            .zip(expected_hashes.iter())
+            .enumerate()
+        {
+            let version_hash = client.create_blob(blob).await.map_err(|err| {
                 anyhow::anyhow!(
-                    "failed to publish Bitcoin DA blob for batch {batch_number}: {err}"
+                    "failed to publish Bitcoin DA blob {idx} for batch {batch_number}: {err}"
                 )
             })?;
+            let normalized_hash = version_hash.strip_prefix("0x").unwrap_or(&version_hash);
+            anyhow::ensure!(
+                normalized_hash.eq_ignore_ascii_case(expected_hash),
+                "Bitcoin DA version hash mismatch for batch {batch_number}, blob {idx}: expected {expected_hash}, got {normalized_hash}"
+            );
+            published_hashes.push(version_hash);
+        }
 
         tracing::info!(
             batch_number,
-            version_hash,
-            pubdata_bytes = total_pubdata.len(),
-            "Published Bitcoin DA blob"
+            version_hashes = ?published_hashes,
+            chunk_count = blob_chunks.len(),
+            "Published Bitcoin DA blobs"
         );
 
-        let start = Instant::now();
-        loop {
-            if client
-                .check_blob_finality(&version_hash)
-                .await
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
-                    )
-                })?
-            {
-                tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
-                return Ok(());
-            }
+        for version_hash in published_hashes {
+            let start = Instant::now();
+            loop {
+                if client
+                    .check_blob_finality(&version_hash)
+                    .await
+                    .map_err(|err| {
+                        anyhow::anyhow!(
+                            "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
+                        )
+                    })?
+                {
+                    tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
+                    break;
+                }
 
-            if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
-                anyhow::bail!(
-                    "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
-                    self.batcher_config.bitcoin_da_finality_timeout
-                );
-            }
+                if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
+                    anyhow::bail!(
+                        "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
+                        self.batcher_config.bitcoin_da_finality_timeout
+                    );
+                }
 
-            tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
+                tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
+            }
         }
+        Ok(())
     }
 }

@@ -731,10 +731,7 @@ impl TesterBuilder {
     }
 
     // SYSCOIN: expose per-test config overrides for Bitcoin DA integration coverage.
-    pub fn config_overrides(
-        mut self,
-        f: impl Fn(&mut Config) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn config_overrides(mut self, f: impl Fn(&mut Config) + Send + Sync + 'static) -> Self {
         self.options.config_overrides = Some(std::sync::Arc::new(f));
         self
     }

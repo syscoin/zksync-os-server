@@ -233,8 +233,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 PubdataMode::Calldata | PubdataMode::Blobs | PubdataMode::RelayedL2Calldata,
                 BatchDaInputMode::Validium,
             )
-            // SYSCOIN: Bitcoin DA remains a rollup-style settlement mode.
-            | (PubdataMode::Validium | PubdataMode::Bitcoin, BatchDaInputMode::Rollup) => {
+            | (PubdataMode::Validium, BatchDaInputMode::Rollup) => {
                 panic!(
                     "Pubdata mode doesn't correspond to pricing mode from the l1. \
                     L1 mode: {:?}, configured pubdata mode: {:?}",
@@ -243,7 +242,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             }
             _ => {}
         };
-        if let (PubdataMode::Blobs | PubdataMode::Calldata, true) = (
+        if let (PubdataMode::Calldata, true) = (
             pubdata_mode,
             config.general_config.gateway_rpc_url.is_some(),
         ) {
