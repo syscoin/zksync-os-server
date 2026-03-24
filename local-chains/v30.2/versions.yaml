@@ -3,8 +3,8 @@ general:
   verification_key: "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337"
 
 era-contracts:
-  tag: "zkos-v0.30.2"
-  sha: "9ddc915c85d1f44c79b5d55e160d384138ed5105"
+  # SHA is the source of truth (no tag dependency).
+  sha: "ae215e58aba08a266f7401265f484a56a67fb359"
 
 zkstack-cli:
   tag: "protocol-upgrade-v1.3.1"

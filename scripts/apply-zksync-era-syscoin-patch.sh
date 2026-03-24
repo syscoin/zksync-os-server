@@ -20,8 +20,9 @@ if [[ ! -f "${PATCH_FILE}" ]]; then
   exit 1
 fi
 
-if rg -n "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" >/dev/null 2>&1 \
-  && rg -n "Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" >/dev/null 2>&1; then
+if grep -q "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
+  && grep -q "Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
+  && grep -q "Mainnet => 57" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs"; then
   echo "zksync-era Syscoin patch appears already applied; skipping."
   exit 0
 fi

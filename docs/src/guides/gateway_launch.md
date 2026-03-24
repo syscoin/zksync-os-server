@@ -20,19 +20,59 @@ The goal topology is:
 - `zksync-airbender` and `zksync-airbender-prover`
 - Syscoin L1 RPC and Bitcoin DA/PoDA connectivity
 
-Update the existing `zksync-era/contracts` subrepo to your `era-contracts` `zkOS` branch
-before building `zkstack` (local repo workflow).
+Use `zksync-os-scripts` prerequisites as the single source of truth for tool versions:
+
+- `zksync-os-scripts/docs/src/prerequisites.md`
+
+For this run, target `v30.2` prerequisites from that file (including pinned Foundry-zksync).
+Do not use unpinned `foundryup-zksync` defaults for `v30.2`.
+
+Pick the toolchain version by reading:
+
+- `zksync-os-server/local-chains/<protocol_version>/versions.yaml`
+- then install matching tool versions from `zksync-os-scripts/docs/src/prerequisites.md`
+
+After installing prerequisites, verify versions before continuing:
+
+```bash
+source "$HOME/.cargo/env"
+uv --version
+node --version
+yarn --version
+cargo --version
+forge --version
+cast --version
+anvil --version || true
+anvil-zksync --version || true
+```
+
+Pin `zksync-era/contracts` by SHA from
+`zksync-os-server/local-chains/<protocol_version>/versions.yaml`
+before building `zkstack` (SHA is the source of truth; do not rely on tags).
 
 ```bash
 export ZKSYNC_ERA_PATH=/path/to/zksync-era
+export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server
+export PROTOCOL_VERSION=v30.2
+export VERSIONS_YAML="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
+export REQUIRED_CONTRACTS_SHA="$(python3 - <<'PY'
+import os, re
+text = open(os.environ["VERSIONS_YAML"], "r", encoding="utf-8").read()
+m = re.search(r"era-contracts:\s*(?:\n\s*#.*)*\n\s*sha:\s*\"([0-9a-f]{40})\"", text)
+if not m:
+    raise SystemExit("era-contracts sha not found in versions.yaml")
+print(m.group(1))
+PY
+)"
+
 cd "${ZKSYNC_ERA_PATH}"
 git submodule update --init --recursive contracts
 
-# local-only update: repoint contracts subrepo to syscoin/era-contracts and move to zkOS branch
+# local-only update: repoint contracts subrepo and checkout the exact required SHA
 cd contracts
 git remote set-url origin git@github.com:syscoin/era-contracts.git
 git fetch --all
-git checkout zkOS
+git checkout "${REQUIRED_CONTRACTS_SHA}"
 ```
 
 Build `zkstack` from your `zksync-era` checkout:
@@ -41,8 +81,42 @@ Build `zkstack` from your `zksync-era` checkout:
 # Apply Syscoin/Tanenbaum compatibility patch to upstream era first.
 bash /path/to/zksync-os-server/scripts/apply-zksync-era-syscoin-patch.sh /path/to/zksync-era
 
+# Verify patch effects using grep (works on minimal servers).
+grep -n "Tanenbaum" /path/to/zksync-era/core/lib/basic_types/src/network.rs
+grep -n "Tanenbaum" /path/to/zksync-era/zkstack_cli/crates/types/src/l1_network.rs
+grep -n "Mainnet => 57" /path/to/zksync-era/zkstack_cli/crates/types/src/l1_network.rs
+
 curl -L https://raw.githubusercontent.com/matter-labs/zksync-era/main/zkstack_cli/zkstackup/install | bash
 zkstackup --local
+```
+
+Generate `genesis.json` from the currently checked-out contracts before create.
+Do not copy a prebuilt file.
+
+```bash
+# Pick execution version from zksync-os-scripts:
+# - zksync-os-scripts/lib/protocol_version.py
+export EXECUTION_VERSION=5
+
+# REQUIRED_CONTRACTS_SHA is sourced from local-chains/<protocol_version>/versions.yaml above.
+ACTUAL_CONTRACTS_SHA="$(git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD)"
+test "${ACTUAL_CONTRACTS_SHA}" = "${REQUIRED_CONTRACTS_SHA}" || {
+  echo "ERROR: contracts SHA mismatch. expected=${REQUIRED_CONTRACTS_SHA} actual=${ACTUAL_CONTRACTS_SHA}"
+  exit 1
+}
+
+mkdir -p "${ZKSYNC_ERA_PATH}/etc/env/file_based"
+
+# Generate genesis from contract artifacts.
+if [ ! -d "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen" ]; then
+  echo "ERROR: missing genesis generator at contracts/tools/zksync-os-genesis-gen"
+  exit 1
+fi
+
+cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
+cargo run -- \
+  --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json" \
+  --execution-version "${EXECUTION_VERSION}"
 ```
 
 ## Environment
@@ -55,6 +129,17 @@ export L1_RPC_URL=http://localhost:8545
 export FOUNDRY_EVM_VERSION=shanghai
 export FOUNDRY_CHAIN_ID=${SYSCOIN_L1_CHAIN_ID}
 ```
+
+## Funding before `ecosystem init`
+
+Use explicit per-role funding before running any `init` command.
+This avoids non-interactive prompt failures when balances are too low.
+
+Operational baseline for this guide (Tanenbaum):
+
+- `deployer`: keep at least `5.5` tSYS at all times (`zkstack` hard-check is `>= 5`)
+- `governor`: fund at least `5.5` tSYS
+- `operator`, `blob_operator`, `prove_operator`, `execute_operator`, `fee_account`, `token_multiplier_setter`: fund `1` tSYS each
 
 `--prover-mode gpu` is the source of truth for non-mock proving in this flow.
 `zkstack` derives `testnet_verifier` from prover mode during deploy-input generation
@@ -94,12 +179,16 @@ cd gateway
 # configs/initial_deployments.yaml -> token_weth_address: 0xa66b2E50c2b805F31712beA422D0D9e7D0Fd0F35
 # Mainnet WETH
 # token_weth_address: 0xd3e822f3ef011Ca5f17D82C956D952D8d7C3A1BB
+#
+export FOUNDRY_EVM_VERSION=shanghai
+export FOUNDRY_CHAIN_ID=${SYSCOIN_L1_CHAIN_ID}
 
+cd gateway
 zkstack dev contracts
 
 zkstack ecosystem init \
   --zksync-os \
-  --update-submodules true \
+  --update-submodules false \
   --l1-rpc-url ${L1_RPC_URL} \
   --deploy-ecosystem true \
   --deploy-erc20 false \
@@ -107,6 +196,25 @@ zkstack ecosystem init \
   --ecosystem-only \
   --no-genesis \
   --observability false
+```
+
+
+If `ecosystem init` fails after partially deploying L1 contracts, deterministic Create2 addresses may
+already be occupied on that L1 for the current `create2_factory_salt`. Preferred recovery is a clean
+restart. If you must recover in-place, rotate `create2_factory_salt` in
+`configs/initial_deployments.yaml` before retrying:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import secrets, re
+p = Path("configs/initial_deployments.yaml")
+s = p.read_text()
+new_salt = "0x" + secrets.token_hex(32)
+s = re.sub(r"(?m)^create2_factory_salt:\s*0x[0-9a-fA-F]+$", f"create2_factory_salt: {new_salt}", s)
+p.write_text(s)
+print(f"updated create2_factory_salt={new_salt}")
+PY
 ```
 
 ## 3) Initialize Gateway chain
@@ -203,3 +311,15 @@ Use `mainnet-gateway.yaml` / `mainnet-child.yaml` on mainnet.
 - Always pass explicit flags (`--l1-network`, booleans like `--set-as-default true`).
 - Do not use `-a` on `ecosystem create` / `chain create`.
 - Keep deployer/governor sufficiently funded before each `init`; low-balance prompt paths can panic in non-interactive sessions.
+- For contracts SHA `ae215e58aba08a266f7401265f484a56a67fb359`, set `FOUNDRY_EVM_VERSION=shanghai`
+  before `zkstack ecosystem init` / `zkstack chain init`.
+- If `ecosystem init` fails with opcode-related reverts, first confirm:
+  - `git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD` matches `REQUIRED_CONTRACTS_SHA`.
+  - `echo "${FOUNDRY_EVM_VERSION}"` is `shanghai` in the same shell where `zkstack` runs.
+- If `ecosystem init` fails later with:
+  - `Function selector 'fd3ca9d3' not found in the ABI`
+  - (`fd3ca9d3` = `governanceAcceptOwnerAggregated(address,address)`)
+  this indicates a control-plane/contracts API mismatch:
+  - upstream `zkstack` expects `governanceAcceptOwnerAggregated` in `deploy-scripts/AdminFunctions.s.sol`
+  - current `syscoin/era-contracts` zkOS history uses `governanceAcceptOwner` / `governanceAcceptAdmin` and does not provide the aggregated entrypoint.
+  - fix by pinning a `zkstack`/`zksync-era` revision compatible with the selected contracts API (do not patch ad-hoc in deployment).
