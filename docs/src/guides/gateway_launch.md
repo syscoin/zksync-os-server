@@ -53,7 +53,7 @@ Resolve required `era-contracts` SHA from
 ```bash
 export ZKSYNC_ERA_PATH=/path/to/zksync-era
 export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server
-export PROTOCOL_VERSION=v30.2
+export PROTOCOL_VERSION=v31.0
 export VERSIONS_YAML="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
 export REQUIRED_CONTRACTS_SHA="$(python3 - <<'PY'
 import os, re
