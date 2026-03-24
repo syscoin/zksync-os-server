@@ -1,3 +1,16 @@
+diff --git a/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol b/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol
+index 826c1dcd2..f6d35cc8c 100644
+--- a/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol
++++ b/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol
+@@ -361,7 +359,7 @@
+         }
+         (address create2FactoryAddr, ) = getPermanentValues(getPermanentValuesPath());
+-        if (create2FactoryAddr.code.length == 0) {
++        if (create2FactoryAddr != address(0) && create2FactoryAddr.code.length == 0) {
+             savePermanentValues(hex"88923c4cbe9c208bdd041f7c19b2d0f7e16d312e3576f17934dd390b7a2c5cc5", address(0));
+         }
+     }
+
 diff --git a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
 index 4ee20aa08..f1c6fdf65 100644
 --- a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
@@ -938,12 +951,9 @@ index 4ef340ec2..15e3eb179 100644
      }
  }
 diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/vendor/Bytes.sol
-index 738453212..7a853eb80 100644
 --- a/l1-contracts/contracts/vendor/Bytes.sol
 +++ b/l1-contracts/contracts/vendor/Bytes.sol
-@@ -91,10 +91,12 @@ library Bytes {
-         start = Math.min(start, end);
- 
+@@ -93,8 +93,10 @@ library Bytes {
          // allocate and copy
 -        bytes memory result = new bytes(end - start);
 -        assembly ("memory-safe") {
@@ -953,13 +963,7 @@ index 738453212..7a853eb80 100644
 +        for (uint256 i = 0; i < newLength; ++i) {
 +            result[i] = buffer[start + i];
          }
-+
- 
-         return result;
-     }
-@@ -121,9 +123,11 @@ library Bytes {
-         start = Math.min(start, end);
- 
+@@ -123,10 +125,12 @@ library Bytes {
          // allocate and copy
 +        uint256 newLength = end - start;
 +        for (uint256 i = 0; i < newLength; ++i) {
@@ -972,3 +976,23 @@ index 738453212..7a853eb80 100644
          }
  
          return buffer;
+     }
+diff --git a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol b/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
+--- a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
++++ b/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
+@@ -256,12 +256,11 @@ abstract contract Create2FactoryUtils is Script {
+     function getPermanentValues(
+         string memory permanentValuesPath
+     ) public view returns (address create2FactoryAddr, bytes32 create2FactorySalt) {
+-        // Read create2 factory values from permanent values file
+         string memory permanentValuesToml = vm.readFile(permanentValuesPath);
+-
+-        bytes32 create2FactorySalt = permanentValuesToml.readBytes32("$.permanent_contracts.create2_factory_salt");
+-        address create2FactoryAddr;
++        create2FactorySalt = permanentValuesToml.readBytes32("$.permanent_contracts.create2_factory_salt");
+         if (vm.keyExistsToml(permanentValuesToml, "$.permanent_contracts.create2_factory_addr")) {
+             create2FactoryAddr = permanentValuesToml.readAddress("$.permanent_contracts.create2_factory_addr");
+         }
++        return (create2FactoryAddr, create2FactorySalt);
+     }
+ }

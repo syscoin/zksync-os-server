@@ -364,9 +364,24 @@ zkstack chain init \
   --l1-rpc-url ${L1_RPC_URL}
 ```
 
-## 6) Migrate child to Gateway
+## 6) Start Gateway runtime (required before migrate)
 
 ```bash
+# REQUIRED: migrate/finalize needs a live Gateway RPC endpoint.
+# Do not run migration commands until this process is running and healthy.
+cargo run --release -- \
+  --config /path/to/zksync-os-server/config-presets/testnet-gateway.yaml &
+
+# Wait until Gateway RPC responds before continuing.
+until curl -sS http://127.0.0.1:3050 >/dev/null; do sleep 1; done
+```
+
+## 7) Migrate child to Gateway
+
+```bash
+# If Gateway RPC is remote, set it in chains/gateway/configs/general.yaml
+# (api.web3_json_rpc.http_url) before running migrate/finalize.
+
 zkstack chain gateway migrate-to-gateway \
   --chain ${CHILD_CHAIN_NAME} \
   --gateway-chain-name gateway \
@@ -375,6 +390,13 @@ zkstack chain gateway migrate-to-gateway \
 zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain ${CHILD_CHAIN_NAME} \
   --gateway-chain-name gateway
+```
+
+## 8) Start child runtime after migration
+
+```bash
+cargo run --release -- \
+  --config /path/to/zksync-os-server/config-presets/testnet-child.yaml
 ```
 
 ## Runtime presets and overrides
@@ -401,6 +423,12 @@ cargo run --release -- \
 cargo run --release -- \
   --config /path/to/zksync-os-server/config-presets/testnet-child.yaml
 ```
+
+RocksDB persistence for these runtime commands:
+
+- default: `./db/node1`
+- override via env var: `general_rocks_db_path=/path/to/db`
+- or set `general.rocks_db_path` in your config override
 
 Use `mainnet-gateway.yaml` / `mainnet-child.yaml` on mainnet.
 
