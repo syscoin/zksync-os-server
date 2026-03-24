@@ -226,6 +226,45 @@ zkstack dev contracts
 # Do not hardcode Mainnet's asset id on Tanenbaum.
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 
+# DeployErc20 reads create2 settings from PERMANENT_VALUES_INPUT.
+# Materialize it from the ecosystem's generated initial deployments config.
+export PERMANENT_VALUES_INPUT="/script-config/permanent-values.toml"
+export TOKENS_CONFIG="/script-config/config-deploy-erc20.toml"
+
+CREATE2_FACTORY_SALT="$(python3 - <<'PY'
+import yaml
+from pathlib import Path
+import os
+p = Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"
+d = yaml.safe_load(p.read_text(encoding="utf-8"))
+print(d["create2_factory_salt"])
+PY
+)"
+
+# Prefer create2 factory from generated config if present; otherwise use
+# the deterministic factory address used by contracts tooling.
+CREATE2_FACTORY_ADDR="$(python3 - <<'PY'
+import yaml
+from pathlib import Path
+import os
+p = Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"
+d = yaml.safe_load(p.read_text(encoding="utf-8"))
+print(d.get("create2_factory_addr", "0x4e59b44847b379578588920cA78FbF26c0B4956C"))
+PY
+)"
+
+# Ensure the selected create2 factory is deployed on the target L1.
+if [ "$(cast code "${CREATE2_FACTORY_ADDR}" --rpc-url "${L1_RPC_URL}")" = "0x" ]; then
+  echo "ERROR: create2 factory has no code at ${CREATE2_FACTORY_ADDR}"
+  exit 1
+fi
+
+cat > script-config/permanent-values.toml <<EOF
+[permanent_contracts]
+create2_factory_salt = "${CREATE2_FACTORY_SALT}"
+create2_factory_addr = "${CREATE2_FACTORY_ADDR}"
+EOF
+
 cat > script-config/config-deploy-erc20.toml <<'EOF'
 additional_addresses_for_minting = []
 
@@ -234,7 +273,8 @@ name = "ZKSYS"
 symbol = "ZKSYS"
 decimals = 18
 implementation = "TestnetERC20Token.sol"
-mint = 1000000000000000000000000
+# Keep within TOML integer parser limits used by forge parsing.
+mint = 1000000000000000000
 EOF
 
 # Use the ecosystem deployer key.
