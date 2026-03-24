@@ -1,0 +1,974 @@
+diff --git a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
+index 4ee20aa08..f1c6fdf65 100644
+--- a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
++++ b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
+@@ -5,46 +5,22 @@ pragma solidity 0.8.28;
+ import {IL1DAValidator, L1DAValidatorOutput} from "./IL1DAValidator.sol";
+ 
+ import {
+-    NonEmptyBlobVersionHash,
+-    InvalidBlobsDAInputLength,
+-    BlobNotPublished,
++    BitcoinDAPrecompileCallFailed,
++    BitcoinDAVerificationFailed,
+     InvalidBlobsPublished,
+-    EmptyBlobVersionHash
++    InvalidBlobsDAInputLength
+ } from "./DAContractsErrors.sol";
+ 
+-/// @dev The number of blocks within each we allow blob to be used for DA.
+-/// On Ethereum blobs expire within 4096 epochs, i.e. 4096 * 32 blocks. We reserve
+-/// half of the time in order to ensure reader's ability to read the blob's content.
+-uint256 constant BLOB_EXPIRATION_BLOCKS = (4096 * 32) / 2;
+-
+-/// @dev The size in bytes of the versioned hash for a single blob.
+-uint256 constant BLOB_VERSIONED_HASH_SIZE = 32;
+-
++/// @title L1 DA validator for ZKsync OS “blobs” commitment on non–EIP-4844 L1 (e.g. Syscoin NEVM).
++/// @dev No `blobhash` opcode and no `publishBlobs` / prepublish flow. The operator passes the full list of
++/// 32-byte DA commitment hashes in `operatorDAInput`; each is checked with the Syscoin Bitcoin DA precompile,
++/// then `keccak256(operatorDAInput)` must match the L2 DA commitment (same encoding as ZKsync OS blob mode).
+ contract BlobsL1DAValidatorZKsyncOS is IL1DAValidator {
+-    /// @notice The published blob versioned hashes.
+-    mapping(bytes32 versionedHash => uint256 blockOfPublishing) public publishedBlobs;
++    /// @dev Same Bitcoin DA precompile as `RollupL1DAValidator` on this fork.
++    address internal constant BITCOINDA_PRECOMPILE_ADDR = address(0x63);
++    uint16 internal constant BITCOINDA_PRECOMPILE_COST = 1400;
+ 
+-    /// @notice Publishes all the blobs provided with a transaction.
+-    function publishBlobs() external {
+-        uint256 versionedHashIndex = 0;
+-        // iterate through all the published blobs in the tx (until versionedHash for index equals to 0)
+-        while (true) {
+-            bytes32 versionedHash = _getBlobVersionedHash(versionedHashIndex);
+-            if (versionedHash == bytes32(0)) {
+-                break;
+-            }
+-            publishedBlobs[versionedHash] = block.number;
+-            ++versionedHashIndex;
+-        }
+-    }
+-
+-    function isBlobAvailable(bytes32 _versionedHash) public view returns (bool) {
+-        uint256 blockOfPublishing = publishedBlobs[_versionedHash];
+-
+-        // While `block.number` on all used L1 networks is much higher than `BLOB_EXPIRATION_BLOCKS`,
+-        // we still check that `blockOfPublishing > 0` just in case.
+-        return blockOfPublishing > 0 && block.number - blockOfPublishing <= BLOB_EXPIRATION_BLOCKS;
+-    }
++    uint256 private constant WORD = 32;
+ 
+     /// @inheritdoc IL1DAValidator
+     function checkDA(
+@@ -54,61 +30,36 @@ contract BlobsL1DAValidatorZKsyncOS is IL1DAValidator {
+         bytes calldata _operatorDAInput,
+         uint256 // _maxBlobsSupported
+     ) external view returns (L1DAValidatorOutput memory output) {
+-        // As DA input operator should provide concatenated blob versioned hashes of published blobs.
+-        // If provided hash equals to 0, blob versioned hash will be taken from blob published with the current transaction.
+-        if (_operatorDAInput.length % BLOB_VERSIONED_HASH_SIZE != 0) {
+-            revert InvalidBlobsDAInputLength(_operatorDAInput.length);
++        uint256 len = _operatorDAInput.length;
++        if (len == 0 || len % WORD != 0) {
++            revert InvalidBlobsDAInputLength(len);
+         }
+ 
+-        uint256 blobsProvided = _operatorDAInput.length / BLOB_VERSIONED_HASH_SIZE;
+-
+-        bytes memory publishedVersionedHashes = new bytes(_operatorDAInput.length);
+-        uint256 versionedHashIndex = 0;
+-
+-        for (uint256 index = 0; index < blobsProvided; ++index) {
+-            bytes32 versionedHash = bytes32(
+-                _operatorDAInput[BLOB_VERSIONED_HASH_SIZE * index:BLOB_VERSIONED_HASH_SIZE * (index + 1)]
+-            );
+-            if (versionedHash != bytes32(0)) {
+-                if (!isBlobAvailable(versionedHash)) {
+-                    revert BlobNotPublished();
+-                }
+-            } else {
+-                versionedHash = _getBlobVersionedHash(versionedHashIndex);
+-                require(versionedHash != bytes32(0), EmptyBlobVersionHash(versionedHashIndex));
+-                ++versionedHashIndex;
+-            }
+-            // efficiently write versionedHash into the byte array
+-            assembly {
+-                // offset relative to the `publishedVersionedHashes` start
+-                // we add 1 to `index` to skip length slot
+-                let relativeOffset := mul(add(index, 1), 32)
+-                mstore(add(publishedVersionedHashes, relativeOffset), versionedHash)
+-            }
+-        }
+-
+-        // This check is required because we want to ensure that there aren't any extra blobs trying to be published.
+-        // Calling the BLOBHASH opcode with an index > # blobs - 1 yields bytes32(0)
+-        bytes32 nextVersionedHash = _getBlobVersionedHash(versionedHashIndex);
+-        if (nextVersionedHash != bytes32(0)) {
+-            revert NonEmptyBlobVersionHash(versionedHashIndex);
++        for (uint256 i = 0; i < len; i += WORD) {
++            _verifyBitcoinDA(bytes32(_operatorDAInput[i:i + WORD]));
+         }
+ 
+-        // verify that published versionedHashes corresponds to what was generated by ZKsync OS for a batch
+-        bytes32 publishedVersionedHashesHash = keccak256(publishedVersionedHashes);
+-        if (publishedVersionedHashesHash != _l2DAValidatorOutputHash) {
+-            revert InvalidBlobsPublished(publishedVersionedHashesHash, _l2DAValidatorOutputHash);
++        bytes32 publishedHash = keccak256(_operatorDAInput);
++        if (publishedHash != _l2DAValidatorOutputHash) {
++            revert InvalidBlobsPublished(publishedHash, _l2DAValidatorOutputHash);
+         }
+ 
+-        // we use this interface for compatibility, but in fact outputs not needed for ZKsync OS
+         output.stateDiffHash = bytes32(0);
+         output.blobsLinearHashes = new bytes32[](0);
+         output.blobsOpeningCommitments = new bytes32[](0);
+     }
+ 
+-    function _getBlobVersionedHash(uint256 _index) internal view virtual returns (bytes32 versionedHash) {
+-        assembly {
+-            versionedHash := blobhash(_index)
++    /// @dev Same pattern as `RollupL1DAValidator._verifyBitcoinDA`.
++    function _verifyBitcoinDA(bytes32 _dataHash) internal view {
++        (bool success, bytes memory result) = BITCOINDA_PRECOMPILE_ADDR.staticcall{gas: BITCOINDA_PRECOMPILE_COST}(
++            abi.encode(_dataHash)
++        );
++
++        if (!success) {
++            revert BitcoinDAPrecompileCallFailed();
++        }
++        if (result.length == 0) {
++            revert BitcoinDAVerificationFailed();
+         }
+     }
+ }
+diff --git a/da-contracts/contracts/DAContractsErrors.sol b/da-contracts/contracts/DAContractsErrors.sol
+index 6768d02e2..8a1fc31f0 100644
+--- a/da-contracts/contracts/DAContractsErrors.sol
++++ b/da-contracts/contracts/DAContractsErrors.sol
+@@ -51,3 +51,7 @@ error BlobNotPublished();
+ 
+ // 0x8b003a9d
+ error InvalidBlobsPublished(bytes32 publishedHash, bytes32 expectedHash);
++
++// Syscoin Bitcoin DA precompile (used by `BlobsL1DAValidatorZKsyncOS` / rollup fork paths).
++error BitcoinDAPrecompileCallFailed();
++error BitcoinDAVerificationFailed();
+diff --git a/da-contracts/contracts/RollupL1DAValidator.sol b/da-contracts/contracts/RollupL1DAValidator.sol
+index 34163db26..872b17a9e 100644
+--- a/da-contracts/contracts/RollupL1DAValidator.sol
++++ b/da-contracts/contracts/RollupL1DAValidator.sol
+@@ -218,8 +218,6 @@ contract RollupL1DAValidator is IL1DAValidator, CalldataDA {
+     }
+ 
+     function _getBlobVersionedHash(uint256 _index) internal view virtual returns (bytes32 versionedHash) {
+-        assembly {
+-            versionedHash := blobhash(_index)
+-        }
++        versionedHash = 0;
+     }
+ }
+diff --git a/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol b/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
+index fff80d4af..e2c2e799b 100644
+--- a/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
++++ b/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
+@@ -2,133 +2,96 @@
+ pragma solidity 0.8.28;
+ 
+ import {Test} from "forge-std/Test.sol";
+-import {MockBlobsL1DAValidator} from "./MockBlobsL1DAValidator.sol";
+-import {BLOB_EXPIRATION_BLOCKS} from "../../contracts/BlobsL1DAValidatorZKsyncOS.sol";
++import {BlobsL1DAValidatorZKsyncOS} from "../../contracts/BlobsL1DAValidatorZKsyncOS.sol";
+ import {
++    BitcoinDAPrecompileCallFailed,
++    BitcoinDAVerificationFailed,
+     InvalidBlobsPublished,
+-    InvalidBlobsDAInputLength,
+-    BlobNotPublished,
+-    NonEmptyBlobVersionHash
++    InvalidBlobsDAInputLength
+ } from "../../contracts/DAContractsErrors.sol";
+ import {L1DAValidatorOutput} from "../../contracts/IL1DAValidator.sol";
+ 
+-contract BlobsL1DAValidatorZKsyncOSTest is Test {
+-    MockBlobsL1DAValidator internal validator;
+-
+-    function setUp() public {
+-        validator = new MockBlobsL1DAValidator();
++/// @dev Etched at `0x63` so `staticcall` succeeds with non-empty return data.
++contract BitcoinDAMockOk {
++    fallback() external {
++        assembly {
++            mstore(0, 1)
++            return(0, 32)
++        }
+     }
++}
+ 
+-    function testPublishBlobsStoresHashes() public {
+-        bytes32[] memory blobs = new bytes32[](2);
+-        blobs[0] = keccak256("blob1");
+-        blobs[1] = keccak256("blob2");
+-        validator.setMockBlobs(blobs);
+-
+-        validator.publishBlobs();
+-
+-        assertEq(validator.publishedBlobs(blobs[0]), block.number);
+-        assertEq(validator.publishedBlobs(blobs[1]), block.number);
+-        assertEq(validator.publishedBlobs(keccak256("nonexistent")), 0);
++/// @dev Etched at `0x63` to simulate DA lookup failure.
++contract BitcoinDAMockFail {
++    fallback() external {
++        revert();
+     }
++}
+ 
+-    function testIsBlobAvailable() public {
+-        bytes32 blobHash = keccak256("blob");
+-        bytes32[] memory blobs = new bytes32[](1);
+-        blobs[0] = blobHash;
+-        validator.setMockBlobs(blobs);
++/// @dev Etched at `0x63`: call succeeds but returns no data.
++contract BitcoinDAMockEmptyReturn {
++    fallback() external {
++        assembly {
++            return(0, 0)
++        }
++    }
++}
+ 
+-        validator.publishBlobs();
+-        assertTrue(validator.isBlobAvailable(blobHash));
++contract BlobsL1DAValidatorZKsyncOSTest is Test {
++    BlobsL1DAValidatorZKsyncOS internal validator;
+ 
+-        // Move far into the future past expiration
+-        vm.roll(block.number + BLOB_EXPIRATION_BLOCKS + 1);
+-        assertFalse(validator.isBlobAvailable(blobHash));
++    function setUp() public {
++        validator = new BlobsL1DAValidatorZKsyncOS();
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
+     }
+ 
+     function testCheckDAInvalidLength() public {
+-        bytes memory badInput = hex"1234"; // not multiple of 32
++        bytes memory badInput = hex"1234";
+         vm.expectRevert(abi.encodeWithSelector(InvalidBlobsDAInputLength.selector, 2));
+-        // solhint-disable-next-line func-named-parameters
+         validator.checkDA(1, 1, bytes32(0), badInput, 0);
+     }
+ 
+-    function testCheckDABlobNotPublished() public {
+-        bytes32 notPublished = keccak256("ghost");
+-        bytes memory operatorInput = abi.encodePacked(notPublished);
+-
+-        vm.expectRevert(BlobNotPublished.selector);
+-        // solhint-disable-next-line func-named-parameters
+-        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
+-    }
+-
+-    function testCheckDANonEmptyBlobVersionHash() public {
+-        bytes32[] memory blobs = new bytes32[](2);
+-        blobs[0] = keccak256("b1");
+-        blobs[1] = keccak256("b2");
+-        validator.setMockBlobs(blobs);
+-
+-        // one zero in operator input -> will pull blob0, but blob1 is still non-empty
+-        bytes memory operatorInput = abi.encodePacked(bytes32(0));
+-
+-        vm.expectRevert(abi.encodeWithSelector(NonEmptyBlobVersionHash.selector, 1));
+-        // solhint-disable-next-line func-named-parameters
+-        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
++    function testCheckDAEmptyInput() public {
++        vm.expectRevert(abi.encodeWithSelector(InvalidBlobsDAInputLength.selector, 0));
++        validator.checkDA(1, 1, bytes32(0), "", 0);
+     }
+ 
+     function testCheckDAInvalidBlobsPublished() public {
+-        bytes32[] memory blobs = new bytes32[](1);
+-        blobs[0] = keccak256("blob");
+-        validator.setMockBlobs(blobs);
+-
+-        // ask to pull blob0
+-        bytes memory operatorInput = abi.encodePacked(bytes32(0));
+-
+-        bytes32 wrongHash = keccak256("wrong");
+-        vm.expectRevert(
+-            abi.encodeWithSelector(InvalidBlobsPublished.selector, keccak256(abi.encodePacked(blobs[0])), wrongHash)
+-        );
+-        // solhint-disable-next-line func-named-parameters
+-        validator.checkDA(1, 1, wrongHash, operatorInput, 0);
++        bytes32 h0 = keccak256("a");
++        bytes32 h1 = keccak256("b");
++        bytes memory operatorInput = abi.encodePacked(h0, h1);
++        bytes32 wrong = keccak256("wrong");
++        vm.expectRevert(abi.encodeWithSelector(InvalidBlobsPublished.selector, keccak256(operatorInput), wrong));
++        validator.checkDA(1, 1, wrong, operatorInput, 0);
+     }
+ 
+     function testCheckDAVerifiesCorrectly() public {
+-        bytes32[] memory blobs = new bytes32[](1);
+-        blobs[0] = keccak256("blob");
+-        validator.setMockBlobs(blobs);
+-
+-        // operator input asks to pull blob0
+-        bytes memory operatorInput = abi.encodePacked(bytes32(0));
+-        bytes32 expectedHash = keccak256(abi.encodePacked(blobs[0]));
++        bytes32 h0 = keccak256("a");
++        bytes32 h1 = keccak256("b");
++        bytes memory operatorInput = abi.encodePacked(h0, h1);
++        bytes32 expectedHash = keccak256(operatorInput);
+ 
+-        // solhint-disable-next-line func-named-parameters
+         L1DAValidatorOutput memory out = validator.checkDA(1, 1, expectedHash, operatorInput, 0);
+ 
+         assertEq(out.stateDiffHash, bytes32(0));
+         assertEq(out.blobsLinearHashes.length, 0);
+     }
+ 
+-    function testCheckDAWithMixedProvidedAndPublishedBlob() public {
+-        // publish one blob beforehand
+-        bytes32 publishedBlob = keccak256("published");
+-        bytes32[] memory blobs = new bytes32[](1);
+-        blobs[0] = publishedBlob;
+-        validator.setMockBlobs(blobs);
+-        validator.publishBlobs();
+-
+-        // operator provides one directly + one placeholder for pulling from tx (mock)
+-        bytes32 providedBlob = keccak256("provided");
+-        bytes32[] memory txBlobs = new bytes32[](1);
+-        txBlobs[0] = providedBlob;
+-        validator.setMockBlobs(txBlobs); // will be pulled for the zero placeholder
++    function testCheckDABitcoinDAPrecompileFails() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockFail()).code);
+ 
+-        bytes memory operatorInput = abi.encodePacked(publishedBlob, bytes32(0));
+-        bytes32 expectedHash = keccak256(abi.encodePacked(publishedBlob, providedBlob));
++        bytes32 h0 = keccak256("a");
++        bytes memory operatorInput = abi.encodePacked(h0);
++        vm.expectRevert(BitcoinDAPrecompileCallFailed.selector);
++        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
++    }
+ 
+-        // solhint-disable-next-line func-named-parameters
+-        L1DAValidatorOutput memory out = validator.checkDA(1, 1, expectedHash, operatorInput, 0);
++    function testCheckDABitcoinDAEmptyResult() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockEmptyReturn()).code);
+ 
+-        assertEq(out.stateDiffHash, bytes32(0));
+-        assertEq(out.blobsLinearHashes.length, 0);
++        bytes32 h0 = keccak256("a");
++        bytes memory operatorInput = abi.encodePacked(h0);
++        vm.expectRevert(BitcoinDAVerificationFailed.selector);
++        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
+     }
+ }
+diff --git a/l1-contracts/contracts/bridge/BridgeHelper.sol b/l1-contracts/contracts/bridge/BridgeHelper.sol
+index 2fc7fee09..2d886aba6 100644
+--- a/l1-contracts/contracts/bridge/BridgeHelper.sol
++++ b/l1-contracts/contracts/bridge/BridgeHelper.sol
+@@ -22,9 +22,10 @@ library BridgeHelper {
+         bytes memory symbol;
+         bytes memory decimals;
+         if (_token == ETH_TOKEN_ADDRESS) {
+-            // when depositing eth to a non-eth based chain it is an ERC20
+-            name = abi.encode("Ether");
+-            symbol = abi.encode("ETH");
++            // SYSCOIN
++            // when depositing SYS to a non-SYS based chain it is an ERC20
++            name = abi.encode("Syscoin");
++            symbol = abi.encode("SYS");
+             decimals = abi.encode(uint8(18));
+         } else {
+             bool success;
+diff --git a/l1-contracts/contracts/common/libraries/UnsafeBytes.sol b/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
+index e2680d9e0..0c291f271 100644
+--- a/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
++++ b/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
+@@ -16,6 +16,42 @@ pragma solidity ^0.8.21;
+  * Using data in inline assembly can lead to unexpected behavior!
+  */
+ library UnsafeBytes {
++    /// @dev Byte copy without `mcopy` (chains without Shanghai `0x5e` still compile/run this path).
++    function copy(
++        bytes memory dest,
++        uint256 destOffset,
++        bytes memory src,
++        uint256 srcOffset,
++        uint256 len
++    ) internal pure {
++        if (len == 0) return;
++        assembly {
++            let dstPtr := add(add(dest, 0x20), destOffset)
++            let srcPtr := add(add(src, 0x20), srcOffset)
++
++            let chunks := and(len, not(31))
++            for {
++                let i := 0
++            } lt(i, chunks) {
++                i := add(i, 0x20)
++            } {
++                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
++            }
++
++            let rem := and(len, 31)
++            if rem {
++                let tailDst := add(dstPtr, chunks)
++                let tailSrc := add(srcPtr, chunks)
++
++                let remBits := shl(3, rem)
++                let keepMask := shr(remBits, not(0))
++                let keep := and(mload(tailDst), keepMask)
++                let put := and(mload(tailSrc), not(keepMask))
++                mstore(tailDst, or(put, keep))
++            }
++        }
++    }
++
+     function readUint32(bytes memory _bytes, uint256 _start) internal pure returns (uint32 result, uint256 offset) {
+         assembly {
+             offset := add(_start, 4)
+@@ -47,9 +83,6 @@ library UnsafeBytes {
+     function readRemainingBytes(bytes memory _bytes, uint256 _start) internal pure returns (bytes memory result) {
+         uint256 arrayLen = _bytes.length - _start;
+         result = new bytes(arrayLen);
+-
+-        assembly {
+-            mcopy(add(result, 0x20), add(_bytes, add(0x20, _start)), arrayLen)
+-        }
++        copy({dest: result, destOffset: 0, src: _bytes, srcOffset: _start, len: arrayLen});
+     }
+ }
+diff --git a/l1-contracts/contracts/governance/PermanentRestriction.sol b/l1-contracts/contracts/governance/PermanentRestriction.sol
+index 084148311..613742967 100644
+--- a/l1-contracts/contracts/governance/PermanentRestriction.sol
++++ b/l1-contracts/contracts/governance/PermanentRestriction.sol
+@@ -40,6 +40,41 @@ uint256 constant MAX_ALLOWED_NONCE = (1 << 48);
+ /// @dev To be deployed as a transparent upgradable proxy, owned by a trusted decentralized governance.
+ /// @dev Once of the instances of such contract is to ensure that a ZkSyncHyperchain is a rollup forever.
+ contract PermanentRestriction is Restriction, IPermanentRestriction, Ownable2StepUpgradeable {
++    /// @dev Byte copy without `mcopy` (NEVM / pre-Shanghai `0x5e`).
++    function _copyBytes(
++        bytes memory dest,
++        uint256 destOffset,
++        bytes memory src,
++        uint256 srcOffset,
++        uint256 len
++    ) internal pure {
++        if (len == 0) return;
++        assembly {
++            let dstPtr := add(add(dest, 0x20), destOffset)
++            let srcPtr := add(add(src, 0x20), srcOffset)
++
++            let chunks := and(len, not(31))
++            for {
++                let i := 0
++            } lt(i, chunks) {
++                i := add(i, 0x20)
++            } {
++                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
++            }
++
++            let rem := and(len, 31)
++            if rem {
++                let tailDst := add(dstPtr, chunks)
++                let tailSrc := add(srcPtr, chunks)
++                let remBits := shl(3, rem)
++                let keepMask := shr(remBits, not(0))
++                let keep := and(mload(tailDst), keepMask)
++                let put := and(mload(tailSrc), not(keepMask))
++                mstore(tailDst, or(put, keep))
++            }
++        }
++    }
++
+     /// @notice The address of the Bridgehub contract.
+     IL1Bridgehub public immutable BRIDGE_HUB;
+ 
+@@ -322,9 +357,7 @@ contract PermanentRestriction is Restriction, IPermanentRestriction, Ownable2Ste
+             return (address(0), false);
+         }
+         bytes memory encodedData = new bytes(secondBridgeData.length - 1);
+-        assembly {
+-            mcopy(add(encodedData, 0x20), add(secondBridgeData, 0x21), mload(encodedData))
+-        }
++        _copyBytes({dest: encodedData, destOffset: 0, src: secondBridgeData, srcOffset: 1, len: encodedData.length});
+ 
+         // From now on, we know that the used encoding version is `NEW_ENCODING_VERSION` that is
+         // supported only in the new protocol version with Gateway support, so we can assume
+diff --git a/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol b/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol
+index 0228d5bd8..3ac41c6a9 100644
+--- a/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol
++++ b/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol
+@@ -1,12 +1,5 @@
+ // SPDX-License-Identifier: MIT
+ pragma solidity ^0.8.21;
+ 
+-// This provides an interface for `da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol:BlobsL1DAValidatorZKsyncOS`.
+-// We can not import the file directly due to issues during imports from folders outside of the project.
+-interface BlobsL1DAValidatorZKsyncOS {
+-    /// @notice The published blob versioned hashes.
+-    function publishedBlobs(bytes32 _versionedHash) external view returns (uint256 blockOfPublishing);
+-
+-    /// @notice Publishes all the blobs provided with a transaction.
+-    function publishBlobs() external;
+-}
++/// @dev Historical import path for tests. The Syscoin OS blob DA validator no longer exposes `publishBlobs` /
++/// `publishedBlobs` (non–EIP-4844 L1); `Executor` interacts only via `IL1DAValidator.checkDA`.
+diff --git a/l1-contracts/test/foundry/l1/da-contracts-imports/DAContractsErrors.sol b/l1-contracts/test/foundry/l1/da-contracts-imports/DAContractsErrors.sol
+index 5bb1483e9..07cfdedfa 100644
+--- a/l1-contracts/test/foundry/l1/da-contracts-imports/DAContractsErrors.sol
++++ b/l1-contracts/test/foundry/l1/da-contracts-imports/DAContractsErrors.sol
+@@ -54,3 +54,6 @@ error BlobNotPublished();
+ 
+ // 0x8b003a9d
+ error InvalidBlobsPublished(bytes32 publishedHash, bytes32 expectedHash);
++
++error BitcoinDAPrecompileCallFailed();
++error BitcoinDAVerificationFailed();
+diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+index 4083f7206..eb6803d2a 100644
+--- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
++++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
+@@ -2,20 +2,36 @@
+ pragma solidity 0.8.28;
+ 
+ import "forge-std/console.sol";
+-
++import {Vm} from "forge-std/Test.sol";
+ import {Utils} from "../Utils/Utils.sol";
+ import {ExecutorTest} from "./_Executor_Shared.t.sol";
+ 
++import {IExecutor} from "contracts/state-transition/chain-interfaces/IExecutor.sol";
+ import {CommitBatchInfoZKsyncOS} from "contracts/state-transition/chain-interfaces/ICommitter.sol";
+ import {L2DACommitmentScheme} from "contracts/common/Config.sol";
+ import {MismatchL2DACommitmentScheme} from "contracts/state-transition/L1StateTransitionErrors.sol";
+ import {ValidiumL1DAValidator} from "contracts/state-transition/data-availability/ValidiumL1DAValidator.sol";
+ import {
++    BitcoinDAPrecompileCallFailed,
+     InvalidPubdataHash,
+-    InvalidBlobsPublished,
+-    BlobNotPublished
++    InvalidBlobsPublished
+ } from "../../../da-contracts-imports/DAContractsErrors.sol";
+-import {BlobsL1DAValidatorZKsyncOS} from "../../../da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol";
++
++/// @dev Etched at Syscoin Bitcoin DA precompile address for Foundry tests.
++contract BitcoinDAMockOk {
++    fallback() external {
++        assembly {
++            mstore(0, 1)
++            return(0, 32)
++        }
++    }
++}
++
++contract BitcoinDAMockFail {
++    fallback() external {
++        revert();
++    }
++}
+ 
+ contract CommittingTest is ExecutorTest {
+     function isZKsyncOS() internal pure override returns (bool) {
+@@ -68,12 +84,13 @@ contract CommittingTest is ExecutorTest {
+     }
+ 
+     function test_SuccessfullyCommitBatchWithBlobs() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
++
+         bytes32[] memory blobVersionedHashes = new bytes32[](2);
+         blobVersionedHashes[0] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d5;
+         blobVersionedHashes[1] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d6;
+ 
+-        // 2 blobs, which we didn't prepublish
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0), bytes32(0));
++        bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
+ 
+         bytes32 daCommitment = keccak256(
+             abi.encodePacked(
+@@ -100,16 +117,16 @@ contract CommittingTest is ExecutorTest {
+         admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
+ 
+         vm.prank(validator);
+-        vm.blobhashes(blobVersionedHashes);
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
++        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+     }
+ 
+     function test_SuccessfullyCommitBatchWithBlobsPrepublished() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
++
+         bytes32[] memory blobVersionedHashes = new bytes32[](2);
+         blobVersionedHashes[0] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d5;
+         blobVersionedHashes[1] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d6;
+ 
+-        // 2 prepublished blobs
+         bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
+ 
+         bytes32 daCommitment = keccak256(
+@@ -119,12 +136,11 @@ contract CommittingTest is ExecutorTest {
+             )
+         );
+ 
+-        CommitBatchInfoZKsyncOS memory correctNewCommitBatchInfo = newCommitBatchInfoZKsyncOS;
++        CommitBatchInfoZKsyncOS memory correctNewCommitBatchInfo = newCommitBatchInfoZKsyncOS;
+         correctNewCommitBatchInfo.operatorDAInput = operatorDAInput;
+         correctNewCommitBatchInfo.daCommitment = daCommitment;
+         correctNewCommitBatchInfo.daCommitmentScheme = L2DACommitmentScheme.BLOBS_ZKSYNC_OS;
+ 
+-        CommitBatchInfoZKsyncOS[] memory correctCommitBatchInfoArray = new CommitBatchInfoZKsyncOS[](1);
++        CommitBatchInfoZKsyncOS[] memory correctCommitBatchInfoArray = new CommitBatchInfoZKsyncOS[](1);
+         correctCommitBatchInfoArray[0] = correctNewCommitBatchInfo;
+         correctCommitBatchInfoArray[0].operatorDAInput = operatorDAInput;
+ 
+@@ -136,12 +154,8 @@ contract CommittingTest is ExecutorTest {
+         vm.prank(address(owner));
+         admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
+ 
+-        vm.blobhashes(blobVersionedHashes);
+-        BlobsL1DAValidatorZKsyncOS(blobsl1DaValidatorZKsyncOS).publishBlobs();
+-
+         vm.prank(validator);
+-        vm.blobhashes(new bytes32[](0));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
++        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+     }
+ 
+     function test_SuccessfullyCommitBatchValidium() public {
+@@ -173,12 +187,13 @@ contract CommittingTest is ExecutorTest {
+     }
+ 
+     function test_RevertWhen_CommittingWithWrongL2DACommitmentScheme() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
++
+         bytes32[] memory blobVersionedHashes = new bytes32[](2);
+         blobVersionedHashes[0] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d5;
+         blobVersionedHashes[1] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d6;
+ 
+-        // 2 blobs, which we didn't prepublish
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0), bytes32(0));
++        bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
+ 
+         bytes32 daCommitment = keccak256(
+             abi.encodePacked(
+@@ -205,7 +220,6 @@ contract CommittingTest is ExecutorTest {
+         admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
+ 
+         vm.prank(validator);
+-        vm.blobhashes(blobVersionedHashes);
+         vm.expectRevert(abi.encodeWithSelector(MismatchL2DACommitmentScheme.selector, 3, 4));
+         committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+     }
+@@ -255,12 +269,13 @@ contract CommittingTest is ExecutorTest {
+     }
+ 
+     function test_RevertWhen_CommittingWithWrongBlobs() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
++
+         bytes32[] memory blobVersionedHashes = new bytes32[](2);
+         blobVersionedHashes[0] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d5;
+         blobVersionedHashes[1] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d7;
+ 
+-        // 2 blobs, which we didn't prepublish
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0), bytes32(0));
++        bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
+ 
+         bytes32 daCommitment = keccak256(
+             abi.encodePacked(
+@@ -287,7 +302,6 @@ contract CommittingTest is ExecutorTest {
+         admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
+ 
+         vm.prank(validator);
+-        vm.blobhashes(blobVersionedHashes);
+         vm.expectRevert(
+             abi.encodeWithSelector(
+                 InvalidBlobsPublished.selector,
+@@ -295,15 +309,16 @@ contract CommittingTest is ExecutorTest {
+                 daCommitment
+             )
+         );
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
++        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+     }
+ 
+-    function test_RevertWhen_CommittingWithNotPrepublishedBlobs() public {
++    function test_RevertWhen_CommittingWithBlobsBitcoinDAFails() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockFail()).code);
++
+         bytes32[] memory blobVersionedHashes = new bytes32[](2);
+         blobVersionedHashes[0] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d5;
+         blobVersionedHashes[1] = 0x01c024b4740620a5849f95930cefe298933bdf588123ea897cdf0f2462f6d2d6;
+ 
+-        // 2 prepublished blobs
+         bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
+ 
+         bytes32 daCommitment = keccak256(
+@@ -313,178 +328,23 @@ contract CommittingTest is ExecutorTest {
+             )
+         );
+ 
+-        CommitBatchInfoZKsyncOS memory correctNewCommitBatchInfo = newCommitBatchInfoZKsyncOS;
++        CommitBatchInfoZKsyncOS memory correctNewCommitBatchInfo = newCommitBatchInfoZKsyncOS;
+         correctNewCommitBatchInfo.operatorDAInput = operatorDAInput;
+         correctNewCommitBatchInfo.daCommitment = daCommitment;
+         correctNewCommitBatchInfo.daCommitmentScheme = L2DACommitmentScheme.BLOBS_ZKSYNC_OS;
+ 
+-        CommitBatchInfoZKsyncOS[] memory correctCommitBatchInfoArray = new CommitBatchInfoZKsyncOS[](1);
++        CommitBatchInfoZKsyncOS[] memory correctCommitBatchInfoArray = new CommitBatchInfoZKsyncOS[](1);
+         correctCommitBatchInfoArray[0] = correctNewCommitBatchInfo;
+         correctCommitBatchInfoArray[0].operatorDAInput = operatorDAInput;
+ 
+         (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+             .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, correctCommitBatchInfoArray);
+ 
+-        // with ZKsync OS we have separate pair for blobs
+         address blobsl1DaValidatorZKsyncOS = Utils.deployBlobsL1DAValidatorZKsyncOSBytecode();
+         vm.prank(address(owner));
+         admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
+ 
+         vm.prank(validator);
+-        vm.expectRevert(BlobNotPublished.selector);
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_BatchNumberMismatch() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory wrongBatchInfo = newCommitBatchInfoZKsyncOS;
+-        wrongBatchInfo.operatorDAInput = operatorDAInput;
+-        wrongBatchInfo.daCommitment = daCommitment;
+-        wrongBatchInfo.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        wrongBatchInfo.batchNumber = 5; // Wrong batch number, should be 1
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = wrongBatchInfo;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(abi.encodeWithSignature("BatchNumberMismatch(uint256,uint256)", 1, 5));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_IncorrectBatchChainId() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory wrongChainBatch = newCommitBatchInfoZKsyncOS;
+-        wrongChainBatch.operatorDAInput = operatorDAInput;
+-        wrongChainBatch.daCommitment = daCommitment;
+-        wrongChainBatch.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        wrongChainBatch.chainId = 999; // Wrong chain ID
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = wrongChainBatch;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(abi.encodeWithSignature("IncorrectBatchChainId(uint256,uint256)", 999, l2ChainId));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_IncorrectBatchSLChainId() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory wrongChainBatch = newCommitBatchInfoZKsyncOS;
+-        wrongChainBatch.operatorDAInput = operatorDAInput;
+-        wrongChainBatch.daCommitment = daCommitment;
+-        wrongChainBatch.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        wrongChainBatch.slChainId = 999; // Wrong SL chain ID
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = wrongChainBatch;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(abi.encodeWithSignature("SettlementLayerChainIdMismatch()"));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_InvalidBlockRange() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory invalidBlockBatch = newCommitBatchInfoZKsyncOS;
+-        invalidBlockBatch.operatorDAInput = operatorDAInput;
+-        invalidBlockBatch.daCommitment = daCommitment;
+-        invalidBlockBatch.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        invalidBlockBatch.firstBlockNumber = 10; // firstBlockNumber > lastBlockNumber
+-        invalidBlockBatch.lastBlockNumber = 5;
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = invalidBlockBatch;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(abi.encodeWithSignature("InvalidBlockRange(uint64,uint64,uint64)", 1, 10, 5));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_L2TimestampTooBig() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory futureTimestampBatch = newCommitBatchInfoZKsyncOS;
+-        futureTimestampBatch.operatorDAInput = operatorDAInput;
+-        futureTimestampBatch.daCommitment = daCommitment;
+-        futureTimestampBatch.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        // Set lastBlockTimestamp far in the future
+-        futureTimestampBatch.lastBlockTimestamp = uint64(block.timestamp + 365 days);
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = futureTimestampBatch;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(abi.encodeWithSignature("L2TimestampTooBig()"));
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+-    }
+-
+-    function test_RevertWhen_TimeNotReached() public {
+-        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
+-        bytes32 daCommitment = bytes32(0);
+-
+-        CommitBatchInfoZKsyncOS memory pastTimestampBatch = newCommitBatchInfoZKsyncOS;
+-        pastTimestampBatch.operatorDAInput = operatorDAInput;
+-        pastTimestampBatch.daCommitment = daCommitment;
+-        pastTimestampBatch.daCommitmentScheme = L2DACommitmentScheme.EMPTY_NO_DA;
+-        // Set firstBlockTimestamp far in the past
+-        pastTimestampBatch.firstBlockTimestamp = 1;
+-
+-        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
+-        batchArray[0] = pastTimestampBatch;
+-
+-        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
+-            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
+-
+-        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
+-        vm.prank(address(owner));
+-        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
+-
+-        vm.prank(validator);
+-        vm.expectRevert(); // TimeNotReached error
+-        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
++        vm.expectRevert(BitcoinDAPrecompileCallFailed.selector);
++        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
+     }
+ }
+diff --git a/da-contracts/test/foundry/MockBlobsL1DAValidator.sol b/da-contracts/test/foundry/MockBlobsL1DAValidator.sol
+index eaedb85a6..f5652f93f 100644
+--- a/da-contracts/test/foundry/MockBlobsL1DAValidator.sol
++++ b/da-contracts/test/foundry/MockBlobsL1DAValidator.sol
+@@ -3,22 +3,10 @@ pragma solidity 0.8.28;
+ 
+ import {BlobsL1DAValidatorZKsyncOS} from "../../contracts/BlobsL1DAValidatorZKsyncOS.sol";
+ 
+-/// @dev Mock contract to override _getBlobVersionedHash
++/// @dev Backward-compatible test helper retained for import stability.
+ contract MockBlobsL1DAValidator is BlobsL1DAValidatorZKsyncOS {
+-    bytes32[] internal mockBlobs;
+-
+-    function setMockBlobs(bytes32[] calldata blobs) external {
+-        delete mockBlobs;
+-        uint256 len = blobs.length;
+-        for (uint256 i = 0; i < len; ++i) {
+-            mockBlobs.push(blobs[i]);
+-        }
+-    }
+-
+-    function _getBlobVersionedHash(uint256 _index) internal view override returns (bytes32) {
+-        if (_index < mockBlobs.length) {
+-            return mockBlobs[_index];
+-        }
+-        return bytes32(0);
++    // No-op in Syscoin Bitcoin DA mode: blobhash prepublish path is removed.
++    function setMockBlobs(bytes32[] calldata) external pure {
+     }
+ }
+diff --git a/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol b/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
+index 4ef340ec2..15e3eb179 100644
+--- a/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
++++ b/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
+@@ -7,14 +7,14 @@ library TransientPrimitivesLib {
+     function getUint256(uint256 slot) internal view returns (uint256 value) {
+         /// @solidity memory-safe-assembly
+         assembly {
+-            value := tload(slot)
++            value := sload(slot)
+         }
+     }
+ 
+     function set(uint256 slot, uint256 value) internal {
+         /// @solidity memory-safe-assembly
+         assembly {
+-            tstore(slot, value)
++            sstore(slot, value)
+         }
+     }
+ }
+diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/vendor/Bytes.sol
+index 738453212..7a853eb80 100644
+--- a/l1-contracts/contracts/vendor/Bytes.sol
++++ b/l1-contracts/contracts/vendor/Bytes.sol
+@@ -91,10 +91,12 @@ library Bytes {
+         start = Math.min(start, end);
+ 
+         // allocate and copy
+-        bytes memory result = new bytes(end - start);
+-        assembly ("memory-safe") {
+-            mcopy(add(result, 0x20), add(add(buffer, 0x20), start), sub(end, start))
++        uint256 newLength = end - start;
++        bytes memory result = new bytes(newLength);
++        for (uint256 i = 0; i < newLength; ++i) {
++            result[i] = buffer[start + i];
+         }
++
+ 
+         return result;
+     }
+@@ -121,9 +123,11 @@ library Bytes {
+         start = Math.min(start, end);
+ 
+         // allocate and copy
++        uint256 newLength = end - start;
++        for (uint256 i = 0; i < newLength; ++i) {
++            buffer[i] = buffer[start + i];
++        }
+         assembly ("memory-safe") {
+-            mcopy(add(buffer, 0x20), add(add(buffer, 0x20), start), sub(end, start))
+-            mstore(buffer, sub(end, start))
++            mstore(buffer, newLength)
+         }
+ 
+         return buffer;

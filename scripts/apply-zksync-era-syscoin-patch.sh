@@ -20,17 +20,34 @@ if [[ ! -f "${PATCH_FILE}" ]]; then
   exit 1
 fi
 
-if grep -q "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
-  && grep -q "Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && grep -q "Mainnet => 57" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs"; then
+# Idempotency guard: if all marker changes are already present, skip apply.
+# Prefer rg when available (faster), otherwise fallback to grep.
+has_text() {
+  local needle="$1"
+  local file="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -q --fixed-strings "$needle" "$file"
+  else
+    grep -q --fixed-strings "$needle" "$file"
+  fi
+}
+
+if has_text "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
+  && has_text "Self::Mainnet => SLChainId(57)" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
+  && has_text "Self::Tanenbaum => SLChainId(5700)" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
+  && has_text "Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
+  && has_text "L1Network::Mainnet => 57" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
+  && has_text "L1Network::Tanenbaum => None" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
+  && has_text "L1Network::Tanenbaum | L1Network::Holesky => H256::zero()" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
+  && has_text "L1Network::Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs"; then
   echo "zksync-era Syscoin patch appears already applied; skipping."
   exit 0
 fi
 
 echo "Checking patch applicability..."
-git -C "${ERA_PATH}" apply --check "${PATCH_FILE}"
+git -C "${ERA_PATH}" apply --check --recount "${PATCH_FILE}"
 
 echo "Applying Syscoin/Tanenbaum compatibility patch..."
-git -C "${ERA_PATH}" apply "${PATCH_FILE}"
+git -C "${ERA_PATH}" apply --recount "${PATCH_FILE}"
 
 echo "Patch applied successfully."

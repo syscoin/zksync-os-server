@@ -46,9 +46,9 @@ anvil --version || true
 anvil-zksync --version || true
 ```
 
-Pin `zksync-era/contracts` by SHA from
+Resolve required `era-contracts` SHA from
 `zksync-os-server/local-chains/<protocol_version>/versions.yaml`
-before building `zkstack` (SHA is the source of truth; do not rely on tags).
+(SHA is the source of truth; do not rely on tags).
 
 ```bash
 export ZKSYNC_ERA_PATH=/path/to/zksync-era
@@ -65,14 +65,6 @@ print(m.group(1))
 PY
 )"
 
-cd "${ZKSYNC_ERA_PATH}"
-git submodule update --init --recursive contracts
-
-# local-only update: repoint contracts subrepo and checkout the exact required SHA
-cd contracts
-git remote set-url origin git@github.com:syscoin/era-contracts.git
-git fetch --all
-git checkout "${REQUIRED_CONTRACTS_SHA}"
 ```
 
 Build `zkstack` from your `zksync-era` checkout:
@@ -90,14 +82,22 @@ curl -L https://raw.githubusercontent.com/matter-labs/zksync-era/main/zkstack_cl
 zkstackup --local
 ```
 
-Generate `genesis.json` from the currently checked-out contracts before create.
+Run a hard preflight compile before any `ecosystem init` / `chain init`:
+
+```bash
+export FOUNDRY_EVM_VERSION=shanghai
+cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+forge build --skip test
+```
+
+If this fails with opcode errors such as `tload` / `tstore` / `mcopy`, stop and fix
+the pinned contracts SHA in `local-chains/<protocol_version>/versions.yaml` first.
+Do not continue with deployment in a partially compatible state.
+
+Generate `genesis.json` from the currently checked-out contracts before `ecosystem init`.
 Do not copy a prebuilt file.
 
 ```bash
-# Pick execution version from zksync-os-scripts:
-# - zksync-os-scripts/lib/protocol_version.py
-export EXECUTION_VERSION=5
-
 # REQUIRED_CONTRACTS_SHA is sourced from local-chains/<protocol_version>/versions.yaml above.
 ACTUAL_CONTRACTS_SHA="$(git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD)"
 test "${ACTUAL_CONTRACTS_SHA}" = "${REQUIRED_CONTRACTS_SHA}" || {
@@ -113,10 +113,12 @@ if [ ! -d "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen" ]; then
   exit 1
 fi
 
+# Ensure modern cargo/rustup toolchain is used (avoid old system cargo).
+export PATH="$HOME/.cargo/bin:$PATH"
+
 cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
-cargo run -- \
-  --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json" \
-  --execution-version "${EXECUTION_VERSION}"
+cargo run --release -- \
+  --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
 ```
 
 ## Environment
@@ -174,6 +176,7 @@ zkstack ecosystem create \
 
 ```bash
 cd gateway
+export GATEWAY_DIR="$(pwd)"
 # set weth address by updating yaml files before you deploy
 # Tanenbaum WETH
 # configs/initial_deployments.yaml -> token_weth_address: 0xa66b2E50c2b805F31712beA422D0D9e7D0Fd0F35
@@ -183,8 +186,108 @@ cd gateway
 export FOUNDRY_EVM_VERSION=shanghai
 export FOUNDRY_CHAIN_ID=${SYSCOIN_L1_CHAIN_ID}
 
-cd gateway
+# After `ecosystem create`, pin contracts to required SHA and apply Syscoin patch.
+cd "${ZKSYNC_ERA_PATH}"
+git submodule update --init contracts
+cd contracts
+git fetch origin "${REQUIRED_CONTRACTS_SHA}"
+git cat-file -e "${REQUIRED_CONTRACTS_SHA}^{commit}" || {
+  echo "ERROR: required era-contracts SHA not available: ${REQUIRED_CONTRACTS_SHA}"
+  exit 1
+}
+git checkout "${REQUIRED_CONTRACTS_SHA}"
+
+# Re-sync submodule URLs from .gitmodules and re-initialize recursively AFTER
+# checkout so nested refs/URLs match the pinned commit state.
+git submodule sync --recursive
+git submodule update --init --recursive
+
+# Ensure nested zksync-contracts submodule matches the exact SHA referenced by
+# the checked-out era-contracts commit.
+EXPECTED_NESTED_SHA="$(git ls-tree HEAD lib/@matterlabs/zksync-contracts | awk '{print $3}')"
+test "$(git -C lib/@matterlabs/zksync-contracts rev-parse HEAD)" = "${EXPECTED_NESTED_SHA}" || {
+  echo "ERROR: nested zksync-contracts SHA mismatch"
+  exit 1
+}
+
+bash /path/to/zksync-os-server/scripts/apply-era-contracts-syscoin-patch.sh "${ZKSYNC_ERA_PATH}/contracts"
+
+# Preflight compile and genesis generation from the pinned+patched contracts.
+cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+forge build --skip test
+cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
+export PATH="$HOME/.cargo/bin:$PATH"
+cargo run --release -- \
+  --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
+
 zkstack dev contracts
+
+# Deploy the Gateway ZK token as ZKSYS and derive zk_token_asset_id for CTM.
+# Do not hardcode Mainnet's asset id on Tanenbaum.
+cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+
+cat > script-config/config-deploy-erc20.toml <<'EOF'
+additional_addresses_for_minting = []
+
+[tokens.ZKSYS]
+name = "ZKSYS"
+symbol = "ZKSYS"
+decimals = 18
+implementation = "TestnetERC20Token.sol"
+mint = 1000000000000000000000000
+EOF
+
+# Use the ecosystem deployer key.
+# Replace this with your actual deployer private key for gateway/configs/wallets.yaml.
+export DEPLOYER_PRIVATE_KEY="REPLACE_WITH_DEPLOYER_PRIVATE_KEY_HEX_WITHOUT_0X"
+
+forge script deploy-scripts/tokens/DeployErc20.s.sol \
+  --legacy \
+  --ffi \
+  --rpc-url "${L1_RPC_URL}" \
+  --private-key "${DEPLOYER_PRIVATE_KEY}" \
+  --broadcast
+
+export ZKSYS_L1_TOKEN_ADDRESS="$(python3 - <<'PY'
+import re
+from pathlib import Path
+text = Path("script-out/output-deploy-erc20.toml").read_text(encoding="utf-8")
+# Parse address inside [tokens.ZKSYS] block.
+block = re.search(r'(?ms)^\[tokens\.ZKSYS\]\s*(.*?)^\[', text + "\n[", re.MULTILINE)
+if not block:
+    raise SystemExit("failed to find [tokens.ZKSYS] in output-deploy-erc20.toml")
+m = re.search(r'(?m)^address\s*=\s*"(0x[0-9a-fA-F]{40})"$', block.group(1))
+if not m:
+    raise SystemExit("failed to parse ZKSYS token address from output-deploy-erc20.toml")
+print(m.group(1))
+PY
+)"
+
+# NTV asset id formula: keccak256(abi.encode(chainId, L2_NATIVE_TOKEN_VAULT_ADDR, tokenAddress))
+export L2_NATIVE_TOKEN_VAULT_ADDR=0x0000000000000000000000000000000000010004
+export ZK_TOKEN_ASSET_ID="$(cast abi-encode \
+  "f(uint256,address,address)" \
+  "${SYSCOIN_L1_CHAIN_ID}" \
+  "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
+  "${ZKSYS_L1_TOKEN_ADDRESS}" | cast keccak)"
+
+python3 - <<'PY'
+from pathlib import Path
+import os, re
+p = Path("script-config/config-deploy-ctm.toml")
+s = p.read_text(encoding="utf-8")
+line = f'zk_token_asset_id = "{os.environ["ZK_TOKEN_ASSET_ID"]}"'
+if re.search(r'(?m)^zk_token_asset_id\s*=', s):
+    s = re.sub(r'(?m)^zk_token_asset_id\s*=.*$', line, s)
+else:
+    if not s.endswith("\n"):
+        s += "\n"
+    s += line + "\n"
+p.write_text(s, encoding="utf-8")
+print(f"configured zk_token_asset_id={os.environ['ZK_TOKEN_ASSET_ID']}")
+PY
+
+cd "${GATEWAY_DIR}"
 
 zkstack ecosystem init \
   --zksync-os \
@@ -311,11 +414,22 @@ Use `mainnet-gateway.yaml` / `mainnet-child.yaml` on mainnet.
 - Always pass explicit flags (`--l1-network`, booleans like `--set-as-default true`).
 - Do not use `-a` on `ecosystem create` / `chain create`.
 - Keep deployer/governor sufficiently funded before each `init`; low-balance prompt paths can panic in non-interactive sessions.
-- For contracts SHA `ae215e58aba08a266f7401265f484a56a67fb359`, set `FOUNDRY_EVM_VERSION=shanghai`
-  before `zkstack ecosystem init` / `zkstack chain init`.
+- For the selected contracts SHA from `zksync-os-server/local-chains/<protocol_version>/versions.yaml`,
+  set `FOUNDRY_EVM_VERSION=shanghai` before `zkstack ecosystem init` / `zkstack chain init`.
+- `zkstack ecosystem create` may run `git submodule update --init --recursive` on `link-to-code`.
+  If your `contracts` submodule has local patch edits, keep it clean for `ecosystem create`,
+  then re-pin `contracts` to `REQUIRED_CONTRACTS_SHA` and re-run
+  `apply-era-contracts-syscoin-patch.sh` immediately before `ecosystem init`.
+- If contracts checkout by SHA fails on a fresh clone, fetch by object ID first:
+  - `git -C "${ZKSYNC_ERA_PATH}/contracts" fetch origin "${REQUIRED_CONTRACTS_SHA}"`
+  - then `git -C "${ZKSYNC_ERA_PATH}/contracts" checkout "${REQUIRED_CONTRACTS_SHA}"`
 - If `ecosystem init` fails with opcode-related reverts, first confirm:
   - `git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD` matches `REQUIRED_CONTRACTS_SHA`.
   - `echo "${FOUNDRY_EVM_VERSION}"` is `shanghai` in the same shell where `zkstack` runs.
+- Do not use Mainnet's `zk_token_asset_id` on Tanenbaum.
+  Deploy `ZKSYS`, derive `zk_token_asset_id` with
+  `keccak256(abi.encode(chainId, 0x0000000000000000000000000000000000010004, tokenAddress))`,
+  and write it to `contracts/l1-contracts/script-config/config-deploy-ctm.toml` before `ecosystem init`.
 - If `ecosystem init` fails later with:
   - `Function selector 'fd3ca9d3' not found in the ABI`
   - (`fd3ca9d3` = `governanceAcceptOwnerAggregated(address,address)`)

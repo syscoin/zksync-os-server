@@ -89,17 +89,16 @@ index 1d6300f12..6ee8479bc 100644
              L1Network::Mainnet => None, // TODO: add mainnet address after it is known
          }
      }
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/common.rs
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/common.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/common.rs
-@@ -15,6 +15,6 @@ pub struct CommonEcosystemArgs {
-     #[clap(long, default_value_t = false, default_missing_value = "true")]
-     pub(crate) zksync_os: bool,
--    #[clap(long, default_value_t = true)]
-+    #[clap(long, default_value_t = true, default_missing_value = "true", num_args = 0..=1)]
-     pub(crate) update_submodules: bool,
-     #[clap(long, default_value_t = false, default_missing_value = "true")]
-     pub(crate) skip_contract_compilation_override: bool,
+@@ -68,6 +71,7 @@ impl L1Network {
+             L1Network::Mainnet => {
+                 // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
+                 H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
+                     .unwrap()
+             }
+-            L1Network::Holesky => H256::zero(),
++            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
+         }
+     }
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
 index 707872ea0..9ae443887 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
