@@ -232,10 +232,13 @@ EOF
 fi
 
 if [ "${REUSE_ECOSYSTEM}" = true ]; then
-  test -f "${GATEWAY_DIR}/ZkStack.yaml" || gl_die "reuse-ecosystem: missing ${GATEWAY_DIR}/ZkStack.yaml"
-  echo "reusing ecosystem at ${GATEWAY_DIR}"
+  :
 else
   "${SCRIPT_DIR}/gateway-ecosystem-create.sh"
+fi
+gl_resolve_gateway_dir_after_ecosystem_create
+if [ "${REUSE_ECOSYSTEM}" = true ]; then
+  echo "reusing ecosystem at ${GATEWAY_DIR}"
 fi
 
 if [ "${SKIP_FUND}" = false ]; then

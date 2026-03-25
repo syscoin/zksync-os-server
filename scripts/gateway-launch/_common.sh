@@ -137,6 +137,41 @@ gl_path_for_zkstack() {
   export PATH="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release:${HOME}/.foundry/bin:${HOME}/.cargo/bin:${PATH}"
 }
 
+# zkstack ecosystem create writes the workspace under GATEWAY_ECOSYSTEM_PARENT_DIR using a filesystem-safe
+# directory name (observed: '-' in --ecosystem-name becomes '_' on disk). Subshell ecosystem-create does not
+# export back to run-gateway-launch, so we re-resolve GATEWAY_DIR here.
+gl_resolve_gateway_dir_after_ecosystem_create() {
+  gl_require GATEWAY_DIR
+  local parent eco cand norm
+
+  parent="${GATEWAY_ECOSYSTEM_PARENT_DIR:-$(dirname "${GATEWAY_DIR}")}"
+  parent="$(cd "${parent}" && pwd)"
+  eco="${GATEWAY_ECOSYSTEM_NAME:-$(basename "${GATEWAY_DIR}")}"
+
+  if [ -f "${GATEWAY_DIR}/ZkStack.yaml" ]; then
+    GATEWAY_DIR="$(cd "$(dirname "${GATEWAY_DIR}")" && pwd)/$(basename "${GATEWAY_DIR}")"
+    export GATEWAY_DIR
+    return 0
+  fi
+
+  cand="${parent}/${eco}"
+  if [ -f "${cand}/ZkStack.yaml" ]; then
+    export GATEWAY_DIR="${cand}"
+    echo "gateway-launch: ecosystem directory ${GATEWAY_DIR}"
+    return 0
+  fi
+
+  norm="${eco//-/_}"
+  cand="${parent}/${norm}"
+  if [ -f "${cand}/ZkStack.yaml" ]; then
+    export GATEWAY_DIR="${cand}"
+    echo "gateway-launch: ecosystem directory ${GATEWAY_DIR} (zkstack normalized '${eco}' -> '${norm}')"
+    return 0
+  fi
+
+  gl_die "after ecosystem create: no ZkStack.yaml under ${parent}/${eco} or ${parent}/${norm} (set GATEWAY_DIR or GATEWAY_ECOSYSTEM_PARENT_DIR explicitly)"
+}
+
 # run-gateway-launch uses `exec > >(tee log)`: stdout is a pipe, not a TTY. zkstack/cliclack then
 # panics (select.rs NotConnected). util-linux `script` runs the command with a real PTY slave.
 gl_zkstack_pty() {
