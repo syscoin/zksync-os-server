@@ -23,6 +23,10 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 # Tanenbaum
 export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
+export BITCOIN_DA_RPC_URL=http://127.0.0.1:18370
+COOKIE="$(< ~/.syscoin/testnet3/.cookie)"
+export BITCOIN_DA_RPC_USER="${COOKIE%%:*}"
+export BITCOIN_DA_RPC_PASSWORD="${COOKIE#*:}"
 # Launcher sets Bitcoin DA `Confirmations` + `BITCOIN_DA_PODA_URL=https://poda.tanenbaum.io` unless you override.
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 
@@ -80,6 +84,7 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 | `GATEWAY_DIR` | default `~/gateway` |
 | `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
 | `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0; **tanenbaum** / **mainnet** you must set a key with native L1 balance |
+| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | Syscoin NEVM RPC connection used by the generated Gateway OS-server config in `Blobs` mode. These must be set before starting the Gateway node. |
 | `BITCOIN_DA_FINALITY_MODE` / `BITCOIN_DA_FINALITY_CONFIRMATIONS` | **tanenbaum** defaults: `Confirmations` / `6`. **mainnet** / **anvil**: set explicitly if you need non-default DA finality |
 | `BITCOIN_DA_PODA_URL` | **tanenbaum** default `https://poda.tanenbaum.io` |
 | `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
@@ -99,10 +104,10 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 
 ## After the script
 
-- **Gateway / edge nodes:** `cargo run --release -- --config config-presets/testnet-gateway.yaml` (and `testnet-child.yaml` for the edge). Presets live under `zksync-os-server/config-presets/`.
 - **Generated OS-server configs:** the launcher writes runnable layered configs under `"$GATEWAY_DIR/os-server-configs/"`.
-Gateway: `"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"`
-Edge: `"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"` (after `--with-edge`)
+- **Start the Gateway node with the generated launcher:** `"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"`
+- **Start the edge node with the generated launcher:** `"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"` (after `--with-edge`)
+- **Do not rely on the generic `config-presets/testnet-gateway.yaml` / `testnet-child.yaml` commands for this flow:** the generated launchers include the per-ecosystem paths and overlays produced by `run-gateway-launch.sh`.
 - **`--migrate-edge`:** requires the Gateway L2 RPC to be up **before** `zkstack chain gateway migrate-to-gateway` can succeed. The **edge node should remain stopped** until both `migrate-to-gateway` and `finalize-chain-migration-to-gateway` are done; start the edge only afterward with the generated gateway-linked config. If the node is remote, set `api.web3_json_rpc.http_url` on the gateway chain config. See [Edge chain flags](#edge-chain-what-runs-by-default) for when to pass **`--with-edge`** vs **`--migrate-edge`**.
 - **Provers:** Airbender per chain; not Era-only `zkstack prover`.
 - **`token_weth_address`** in `configs/initial_deployments.yaml` for non-local L1s as required by your ops.

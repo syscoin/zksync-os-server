@@ -28,7 +28,8 @@
 #
 # Env: ZKSYNC_ERA_PATH (optional), ZKSYNC_ERA_GIT_URL, ZKSYNC_ERA_CACHE_ROOT, PROTOCOL_VERSION, GATEWAY_DIR,
 #      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
-#      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA
+#      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, BITCOIN_DA_RPC_URL, BITCOIN_DA_RPC_USER,
+#      BITCOIN_DA_RPC_PASSWORD
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
 # `gl_zkstack_pty` in gateway-chain-init.sh wraps `zkstack chain init` with util-linux `script`.
@@ -64,6 +65,14 @@ Optional env:
   PROTOCOL_VERSION        default v31.0
   GATEWAY_DIR             default ~/gateway
   FUNDER_PRIVATE_KEY      for fund-wallets (Anvil defaults to dev key 0)
+  BITCOIN_DA_RPC_URL      Syscoin NEVM RPC for the generated gateway OS-server config (required for blob mode)
+  BITCOIN_DA_RPC_USER     Syscoin NEVM RPC auth user for the generated gateway OS-server config
+                        If using local Syscoin cookie auth, e.g.:
+                          COOKIE="$(< ~/.syscoin/testnet3/.cookie)"
+                          export BITCOIN_DA_RPC_USER="${COOKIE%%:*}"
+  BITCOIN_DA_RPC_PASSWORD Syscoin NEVM RPC auth password for the generated gateway OS-server config
+                        If using local Syscoin cookie auth, e.g.:
+                          export BITCOIN_DA_RPC_PASSWORD="${COOKIE#*:}"
   GATEWAY_LAUNCH_LOG      default ~/gateway-launch.log
 
 Options:
