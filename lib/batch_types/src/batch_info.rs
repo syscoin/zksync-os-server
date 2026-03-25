@@ -5,6 +5,7 @@ use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::ops;
 use std::ops::{Deref, DerefMut};
+use zk_os_basic_system::system_implementation::system::da_commitment_generator::blob_commitment_generator::blob_data_id;
 use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
 use zksync_os_interface::types::{BlockContext, BlockOutput};
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
@@ -307,8 +308,8 @@ fn calculate_da_fields(
             }
             (PubdataMode::Validium, _) => (B256::ZERO, vec![0u8; 32], None),
             (PubdataMode::Blobs, _) => {
-                // Build the blob-style chunk artifact locally, then use the Syscoin publication
-                // id for each chunk (`keccak(chunk_bytes)`) as the committed identifier.
+                // Build the blob-style chunk artifact locally, then use the shared OS blob
+                // identifier for each encoded chunk so the server matches the proving side.
                 let blob_sidecar: BlobTransactionSidecar =
                     SidecarBuilder::<SimpleCoder>::from_slice(pubdata)
                         .build()
@@ -316,7 +317,7 @@ fn calculate_da_fields(
                 let blob_ids: Vec<u8> = blob_sidecar
                     .blobs
                     .iter()
-                    .flat_map(|blob| keccak256(blob.as_ref()).0)
+                    .flat_map(|blob| blob_data_id(blob.as_slice()))
                     .collect();
                 let da_commitment = keccak256(&blob_ids);
                 let operator_da_input = blob_ids;
@@ -334,17 +335,43 @@ fn calculate_da_fields(
 mod tests {
     use super::calculate_da_fields;
     use alloy::primitives::keccak256;
+    use zk_os_basic_system::system_implementation::system::da_commitment_generator::blob_commitment_generator::{
+        ENCODABLE_BYTES_PER_BLOB, blob_data_id,
+    };
     use zksync_os_types::PubdataMode;
 
-    // SYSCOIN: blob mode now reuses the OS blob-style identifier commitment.
+    fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
+        let mut encoded = vec![0u8; 31];
+        encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
+        encoded.extend_from_slice(pubdata);
+        encoded
+            .chunks(ENCODABLE_BYTES_PER_BLOB)
+            .flat_map(blob_data_id)
+            .collect()
+    }
+
     #[test]
-    fn blob_da_fields_use_blob_style_identifier_commitment() {
+    fn blob_da_fields_match_os_chunk_ids_for_single_blob() {
         let pubdata = b"hello-syscoin-da";
 
         let fields = calculate_da_fields(pubdata, PubdataMode::Blobs, 6);
-        assert_eq!(fields.operator_da_input.len(), 32);
+        let expected_blob_ids = expected_blob_ids(pubdata);
+
+        assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert!(fields.blob_sidecar.is_some());
+        assert_eq!(fields.blob_sidecar.as_ref().unwrap().blobs.len(), 1);
+    }
+
+    #[test]
+    fn blob_da_fields_match_os_chunk_ids_for_multiple_blobs() {
+        let pubdata = vec![0x42; ENCODABLE_BYTES_PER_BLOB + 17];
+
+        let fields = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6);
+        let expected_blob_ids = expected_blob_ids(&pubdata);
+
+        assert_eq!(fields.operator_da_input, expected_blob_ids);
+        assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
+        assert_eq!(fields.blob_sidecar.as_ref().unwrap().blobs.len(), 2);
     }
 }
 
