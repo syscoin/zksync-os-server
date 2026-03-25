@@ -2206,7 +2206,7 @@ dependencies = [
 [[package]]
 name = "basic_bootloader"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "arrayvec",
  "basic_system 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -2317,7 +2317,7 @@ dependencies = [
 [[package]]
 name = "basic_system"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "arrayvec",
  "cfg-if",
@@ -2926,7 +2926,7 @@ dependencies = [
 [[package]]
 name = "callable_oracles"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "alloy-consensus",
  "basic_system 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -3615,7 +3615,7 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "ark-bls12-381",
  "ark-bn254",
@@ -3781,7 +3781,7 @@ source = "git+https://github.com/matter-labs/zksync-os?tag=v0.2.8-simulation-onl
 [[package]]
 name = "cycle_marker"
 version = "0.0.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 
 [[package]]
 name = "darling"
@@ -4520,7 +4520,7 @@ dependencies = [
 [[package]]
 name = "evm_interpreter"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "arrayvec",
  "crypto 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -4938,7 +4938,7 @@ dependencies = [
 [[package]]
 name = "forward_system"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "alloy",
  "arrayvec",
@@ -6852,7 +6852,7 @@ source = "git+https://github.com/matter-labs/zksync-os?tag=v0.2.8-simulation-onl
 [[package]]
 name = "modexp"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 
 [[package]]
 name = "modular-bitfield"
@@ -7713,7 +7713,7 @@ dependencies = [
 [[package]]
 name = "oracle_provider"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "risc_v_simulator 0.1.0 (git+https://github.com/matter-labs/zksync-airbender?tag=v0.4.3)",
  "zk_ee 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -11533,7 +11533,7 @@ dependencies = [
 [[package]]
 name = "storage_models"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "crypto 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
  "zk_ee 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -11764,7 +11764,7 @@ dependencies = [
 [[package]]
 name = "system_hooks"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "arrayvec",
  "cycle_marker 0.0.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -13992,7 +13992,7 @@ dependencies = [
 [[package]]
 name = "zk_ee"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "arrayvec",
  "bitflags 2.11.0",
@@ -14019,7 +14019,7 @@ dependencies = [
 [[package]]
 name = "zksync_os_api"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "alloy",
  "basic_system 0.1.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
@@ -14742,7 +14742,7 @@ dependencies = [
 [[package]]
 name = "zksync_os_runner"
 version = "0.1.0"
-source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#e6c763ebc66a1c927da2f61c473e28bc827bd5ee"
+source = "git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14#a6978125a16140b454d243aae3c95e1aaf307040"
 dependencies = [
  "cycle_marker 0.0.0 (git+https://github.com/syscoin/zksync-os?tag=v0.2.9-interface-v0.0.14)",
  "execution_utils 0.1.0 (git+https://github.com/matter-labs/zksync-airbender?tag=v0.4.3)",
