@@ -190,7 +190,12 @@ gl_fund_wallets_yaml() {
   export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
   export WALLETS_YAML_PATH
   python3 - <<'PY'
-import os, subprocess, yaml
+import json
+import os
+import subprocess
+import urllib.request
+
+import yaml
 from pathlib import Path
 
 w = yaml.safe_load(Path(os.environ["WALLETS_YAML_PATH"]).read_text())
@@ -205,17 +210,83 @@ def addr_hex(a):
     return s if s.startswith("0x") else "0x" + s
 
 
-for role, wei in [("deployer", int(6 * 10**18)), ("governor", int(11 * 10**18))]:
-    subprocess.run(
-        ["cast", "send", addr_hex(w[role]["address"]), "--value", str(wei), "--rpc-url", rpc, "--private-key", pk],
-        check=True,
+def rpc_call(method, params):
+    req = urllib.request.Request(
+        rpc,
+        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+        headers={"content-type": "application/json"},
     )
-for role in w:
-    if role in ("deployer", "governor", "test_wallet"):
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        payload = json.loads(resp.read().decode())
+    if payload.get("error") is not None:
+        raise SystemExit(f"rpc error for {method}: {payload['error']}")
+    return payload["result"]
+
+
+def wei_balance(address):
+    return int(rpc_call("eth_getBalance", [address, "pending"]), 16)
+
+
+def required_balance(role):
+    if role == "deployer":
+        return int(6 * 10**18)
+    if role == "governor":
+        return int(11 * 10**18)
+    return int(10**18)
+
+
+funder = subprocess.check_output(
+    ["cast", "wallet", "address", "--private-key", pk],
+    text=True,
+).strip()
+funder_balance = wei_balance(funder)
+starting_nonce = int(rpc_call("eth_getTransactionCount", [funder, "pending"]), 16)
+
+transfers = []
+for role, cfg in w.items():
+    if role == "test_wallet":
         continue
-    subprocess.run(
-        ["cast", "send", addr_hex(w[role]["address"]), "--value", str(10**18), "--rpc-url", rpc, "--private-key", pk],
-        check=True,
+    address = addr_hex(cfg["address"])
+    target = required_balance(role)
+    current = wei_balance(address)
+    deficit = max(0, target - current)
+    if deficit == 0:
+        print(f"wallet {role} already funded: current={current} target={target}")
+        continue
+    transfers.append((role, address, current, target, deficit))
+
+if not transfers:
+    print("all wallets already meet required balances; skipping funding")
+    raise SystemExit(0)
+
+total_deficit = sum(deficit for _, _, _, _, deficit in transfers)
+if funder_balance < total_deficit:
+    raise SystemExit(
+        f"funder {funder} has insufficient balance: balance={funder_balance} total_required={total_deficit}"
+    )
+
+for index, (role, address, current, target, deficit) in enumerate(transfers):
+    nonce = starting_nonce + index
+    result = subprocess.check_output(
+        [
+            "cast",
+            "send",
+            address,
+            "--value",
+            str(deficit),
+            "--rpc-url",
+            rpc,
+            "--private-key",
+            pk,
+            "--nonce",
+            str(nonce),
+            "--async",
+        ],
+        text=True,
+    ).strip()
+    print(
+        f"funding wallet {role}: current={current} target={target} deficit={deficit} "
+        f"nonce={nonce} tx={result}"
     )
 PY
 }
