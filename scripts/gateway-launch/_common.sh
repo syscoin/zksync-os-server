@@ -113,7 +113,7 @@ def addr_hex(a):
     return s if s.startswith("0x") else "0x" + s
 
 
-for role, wei in [("deployer", int(6 * 10**18)), ("governor", int(6 * 10**18))]:
+for role, wei in [("deployer", int(6 * 10**18)), ("governor", int(11 * 10**18))]:
     subprocess.run(
         ["cast", "send", addr_hex(w[role]["address"]), "--value", str(wei), "--rpc-url", rpc, "--private-key", pk],
         check=True,

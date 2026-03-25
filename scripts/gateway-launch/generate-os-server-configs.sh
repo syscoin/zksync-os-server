@@ -55,6 +55,7 @@ export BITCOIN_DA_FINALITY_CONFIRMATIONS
 python3 - <<'PY'
 from pathlib import Path
 import os
+import re
 import shutil
 import yaml
 
@@ -70,6 +71,72 @@ def load_yaml(path: Path):
 def write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def sync_zkstack_gateway_l2_rpc_in_yaml(tree, port: int) -> None:
+    """Set L2 JSON-RPC port inside zkstack chain general.yaml (any nesting depth)."""
+    port_s = str(port)
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            wr = obj.get("web3_json_rpc")
+            if isinstance(wr, dict):
+                if "http_port" in wr:
+                    wr["http_port"] = port
+                for k in ("http_url",):
+                    if k in wr and isinstance(wr[k], str):
+                        s = wr[k]
+                        s = re.sub(r"127\.0\.0\.1:\d+", f"127.0.0.1:{port_s}", s)
+                        s = re.sub(r"localhost:\d+", f"localhost:{port_s}", s)
+                        wr[k] = s
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for x in obj:
+                walk(x)
+
+    walk(tree)
+    if isinstance(tree, dict) and isinstance(tree.get("http_rpc_url"), str):
+        s = tree["http_rpc_url"]
+        s = re.sub(r"127\.0\.0\.1:\d+", f"127.0.0.1:{port_s}", s)
+        s = re.sub(r"localhost:\d+", f"localhost:{port_s}", s)
+        tree["http_rpc_url"] = s
+
+
+def patch_zkstack_gateway_chain_rpc_files(
+    gateway_dir: Path, gateway_chain_name: str, port: int
+) -> None:
+    """Match zkstack gateway chain YAML to GATEWAY_OS_RPC_PORT.
+
+    `zkstack chain init` writes chains/<gateway>/configs/general.yaml using the
+    zkstack-era default HTTP port (3050). OS-server's JSON-RPC binds to
+    GATEWAY_OS_RPC_PORT instead (e.g. 3052). Nothing updated the zkstack file, but
+    `zkstack chain gateway migrate-to-gateway` reads the gateway L2 URL from that YAML
+    (`l2_http_url`), so the port must match the running node.
+    """
+    cfg_dir = gateway_dir / "chains" / gateway_chain_name / "configs"
+    gen = cfg_dir / "general.yaml"
+    if gen.exists():
+        data = yaml.safe_load(gen.read_text(encoding="utf-8"))
+        if data is not None:
+            sync_zkstack_gateway_l2_rpc_in_yaml(data, port)
+            gen.write_text(
+                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
+    ext = cfg_dir / "external_node.yaml"
+    if ext.exists():
+        data = yaml.safe_load(ext.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("main_node_url"), str):
+            port_s = str(port)
+            mu = data["main_node_url"]
+            mu = re.sub(r"127\.0\.0\.1:\d+", f"127.0.0.1:{port_s}", mu)
+            mu = re.sub(r"localhost:\d+", f"localhost:{port_s}", mu)
+            data["main_node_url"] = mu
+            ext.write_text(
+                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
 
 
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
@@ -240,6 +307,12 @@ materialize_chain(
     status_port=os.environ["EDGE_STATUS_PORT"],
     prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
     gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
+)
+
+patch_zkstack_gateway_chain_rpc_files(
+    gateway_dir,
+    os.environ["GATEWAY_CHAIN_NAME"],
+    int(os.environ["GATEWAY_OS_RPC_PORT"]),
 )
 
 print(output_root)

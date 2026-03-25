@@ -15,11 +15,14 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 
-zkstack chain gateway migrate-to-gateway \
+gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v
+
+gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
   -v
 
-zkstack chain gateway finalize-chain-migration-to-gateway \
+gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
-  --gateway-chain-name "${GATEWAY_CHAIN_NAME}"
+  --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
+  --deploy-paymaster false
