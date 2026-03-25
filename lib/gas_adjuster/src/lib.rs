@@ -392,12 +392,12 @@ impl GasAdjuster {
             Some(config.bitcoin_da_request_timeout),
             &config.bitcoin_da_wallet_name,
         )
-        .context("failed to construct Syscoin client for blob fee estimation")?;
+        .map_err(|err| anyhow::anyhow!("failed to construct Syscoin client for blob fee estimation: {err}"))?;
 
         client
             .get_blob_base_fee(config.bitcoin_da_fee_conf_target)
             .await
-            .context("failed to estimate Syscoin blob base fee")
+            .map_err(|err| anyhow::anyhow!("failed to estimate Syscoin blob base fee: {err}"))
     }
 }
 
