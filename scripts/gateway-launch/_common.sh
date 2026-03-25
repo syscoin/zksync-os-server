@@ -201,6 +201,7 @@ from pathlib import Path
 w = yaml.safe_load(Path(os.environ["WALLETS_YAML_PATH"]).read_text())
 rpc = os.environ["L1_RPC_URL"]
 pk = os.environ["FUNDER_PRIVATE_KEY"]
+l1_network = os.environ.get("L1_NETWORK", "").lower()
 
 
 def addr_hex(a):
@@ -233,6 +234,12 @@ def required_balance(role):
     if role == "governor":
         return int(11 * 10**18)
     return int(10**18)
+
+
+default_send_timeout = "900" if l1_network in {"tanenbaum", "mainnet"} else "45"
+default_rpc_timeout = "120" if l1_network in {"tanenbaum", "mainnet"} else "45"
+send_timeout = os.environ.get("GATEWAY_FUND_TX_TIMEOUT", default_send_timeout)
+rpc_timeout = os.environ.get("GATEWAY_FUND_RPC_TIMEOUT", default_rpc_timeout)
 
 
 funder = subprocess.check_output(
@@ -276,6 +283,10 @@ for index, (role, address, current, target, deficit) in enumerate(transfers):
             str(deficit),
             "--rpc-url",
             rpc,
+            "--rpc-timeout",
+            rpc_timeout,
+            "--timeout",
+            send_timeout,
             "--private-key",
             pk,
             "--nonce",
