@@ -20,12 +20,6 @@ export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server   # optional; defaults to
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 anvil
 
 # Tanenbaum — local NEVM (same contract as Anvil: HTTP JSON-RPC on loopback)
-# sysgeth must expose HTTP; IPC-only (--authrpc/geth.ipc without --http) is NOT supported:
-# fund-wallets.sh, wait_for_rpc, Forge, and zkstack L1 calls all use Foundry --rpc-url (HTTP).
-# Example (adjust datadir / --nevmpub to your setup):
-#   sysgeth --datadir ~/.syscoin/testnet3/geth --tanenbaum --nevmpub tcp://127.0.0.1:1111 \
-#     --http --http.addr 127.0.0.1 --http.port 8545 \
-#     --http.api eth,net,web3,txpool --http.vhosts '*'
 export L1_RPC_URL=http://127.0.0.1:8545
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 tanenbaum
