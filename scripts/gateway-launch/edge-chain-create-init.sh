@@ -16,9 +16,10 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${EDGE_CHAIN_ID:=57057}"
 : "${EDGE_WALLET_CREATION:=}"
+: "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
 
 if [ -z "${EDGE_WALLET_CREATION}" ]; then
-  if [ -n "${EDGE_WALLET_PATH:-}" ]; then
+  if [ -f "${EDGE_WALLET_PATH}" ]; then
     EDGE_WALLET_CREATION="in-file"
   else
     EDGE_WALLET_CREATION="random"
@@ -46,6 +47,11 @@ zkstack chain create \
   --set-as-default false \
   --evm-emulator false \
   --zksync-os
+
+if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; then
+  cp "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
+  echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
+fi
 
 GATEWAY_CHAIN_NAME="${EDGE_CHAIN_NAME}" "${SCRIPT_DIR}/fund-wallets.sh"
 

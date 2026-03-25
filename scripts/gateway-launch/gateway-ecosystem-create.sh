@@ -23,9 +23,10 @@ gl_path_for_zkstack
 : "${GATEWAY_COMMIT_MODE:=rollup}"
 : "${L1_NETWORK:=localhost}"
 : "${GATEWAY_WALLET_CREATION:=}"
+: "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
 
 if [ -z "${GATEWAY_WALLET_CREATION}" ]; then
-  if [ -n "${GATEWAY_WALLET_PATH:-}" ]; then
+  if [ -f "${GATEWAY_WALLET_PATH}" ]; then
     GATEWAY_WALLET_CREATION="in-file"
   else
     GATEWAY_WALLET_CREATION="random"
@@ -65,3 +66,8 @@ zkstack ecosystem create \
 # Restore the versions.yaml-pinned contracts SHA before subsequent gateway-launch steps.
 gl_checkout_contracts_sha
 gl_assert_contracts_sha
+
+if [ "${GATEWAY_WALLET_CREATION}" = "random" ] && [ ! -f "${GATEWAY_WALLET_PATH}" ]; then
+  cp "${GATEWAY_DIR}/configs/wallets.yaml" "${GATEWAY_WALLET_PATH}"
+  echo "gateway-launch: persisted ecosystem wallets to ${GATEWAY_WALLET_PATH}"
+fi

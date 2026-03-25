@@ -64,8 +64,8 @@ Optional env:
   ZKSYNC_ERA_CACHE_ROOT   default ~/.cache/zksync-gateway-era
   PROTOCOL_VERSION        default v31.0
   GATEWAY_DIR             default ~/gateway
-  GATEWAY_WALLET_CREATION default random for new ecosystems; if GATEWAY_WALLET_PATH is set, defaults to in-file
-  GATEWAY_WALLET_PATH     wallet file to reuse when creating a brand new ecosystem with --wallet-creation in-file
+  GATEWAY_WALLET_CREATION default in-file when GATEWAY_WALLET_PATH exists, else random
+  GATEWAY_WALLET_PATH     default ${GATEWAY_DIR}.wallets.yaml; reused on fresh creates after first wallet generation
   FUNDER_PRIVATE_KEY      for fund-wallets (Anvil defaults to dev key 0)
   BITCOIN_DA_RPC_URL      Syscoin NEVM RPC for the generated gateway OS-server config (required for blob mode)
   BITCOIN_DA_RPC_USER     Syscoin NEVM RPC auth user for the generated gateway OS-server config
