@@ -12,7 +12,7 @@ use zksync_os_mempool::{MarkingTxStream, Pool};
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
     BlockStartCursors, ExecutionVersion, InteropRootsLogIndex, ProtocolSemanticVersion,
-    SystemTxEnvelope, SystemTxType, ZkEnvelope, ZkTransaction, ZkTxType,
+    SystemTxEnvelope, SystemTxType, ZkEnvelope, ZkTransaction,
 };
 
 /// Component that turns `BlockCommand`s into `PreparedBlockCommand`s.
@@ -162,42 +162,16 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if !self.sl_chain_id_set
                     && self.protocol_version.minor == 31
                 {
-                    let mut tx_stream = best_txs.stream.stream;
-                    let first_tx = tx_stream
-                        .next()
-                        .await
-                        .expect("best transaction stream is guaranteed to be non-empty");
-
                     // SYSCOIN: `Produce` blocks seal on policy rather than stream exhaustion, so
                     // tail-appending `SetSLChainId` to a long-lived stream can starve it forever.
-                    // Inject it at the front for fresh-v31 / patch-upgrade paths, but keep it
-                    // immediately after a real upgrade tx when that tx is first in the stream.
-                    let (tx_source, expect_after_upgrade) = if first_tx.tx_type() == ZkTxType::Upgrade
-                    {
-                        let sl_chain_id_tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(
-                            self.sl_chain_id_at_startup,
-                            // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                            u64::MAX,
-                        ));
-                        let tx_source = MarkingTxStream::unmarkable(
-                            futures::stream::once(async move { first_tx })
-                                .chain(futures::stream::once(async move { sl_chain_id_tx }))
-                                .chain(tx_stream),
-                        );
-                        (tx_source, true)
-                    } else {
-                        let sl_chain_id_tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(
-                            self.sl_chain_id_at_startup,
-                            // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                            u64::MAX,
-                        ));
-                        let tx_source = MarkingTxStream::unmarkable(
-                            futures::stream::once(async move { sl_chain_id_tx })
-                                .chain(futures::stream::once(async move { first_tx }))
-                                .chain(tx_stream),
-                        );
-                        (tx_source, false)
-                    };
+                    // Inject it through `MarkingTxStream` so the L2 invalidation marker is preserved.
+                    let sl_chain_id_tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(
+                        self.sl_chain_id_at_startup,
+                        // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                        u64::MAX,
+                    ));
+                    let (tx_source, expect_after_upgrade) =
+                        best_txs.stream.inject_sl_chain_id_tx(sl_chain_id_tx).await;
 
                     self.sl_chain_id_set = true;
                     (tx_source, expect_after_upgrade)
