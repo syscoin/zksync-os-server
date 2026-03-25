@@ -132,7 +132,7 @@ tanenbaum)
   gl_require L1_RPC_URL
   # Tanenbaum: no chainlocks on the DA path; use PoW confirmation-based finality unless overridden.
   : "${BITCOIN_DA_FINALITY_MODE:=Confirmations}"
-  : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=6}"
+  : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
   : "${BITCOIN_DA_PODA_URL:=https://poda.tanenbaum.io}"
   export BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL
   ;;
