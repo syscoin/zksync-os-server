@@ -150,8 +150,10 @@ gl_zkstack_pty() {
 gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
+  gl_require WALLETS_YAML_PATH
+  [ -f "${WALLETS_YAML_PATH}" ] || gl_die "missing wallets file ${WALLETS_YAML_PATH}"
   export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
-  export WALLETS_YAML_PATH="${WALLETS_YAML_PATH:-${GATEWAY_DIR}/configs/wallets.yaml}"
+  export WALLETS_YAML_PATH
   python3 - <<'PY'
 import os, subprocess, yaml
 from pathlib import Path
