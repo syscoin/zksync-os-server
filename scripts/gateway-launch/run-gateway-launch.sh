@@ -4,12 +4,13 @@
 # Usage:
 #   export ZKSYNC_ERA_PATH=/path/to/zksync-era
 #   export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server   # optional; defaults to this repo
-#   export L1_RPC_URL=https://...                           # required for tanenbaum | mainnet
+#   export L1_RPC_URL=http://127.0.0.1:8545                 # required for tanenbaum | mainnet — HTTP(S) only
+#     (Foundry cast/forge; IPC/unix not supported). Local Tanenbaum: sysgeth --http — see gateway_launch.md
 #   bash run-gateway-launch.sh --l1 anvil [options]
 #
 # Profiles (--l1):
 #   anvil       chain 9, L1_NETWORK=localhost, default L1_RPC_URL=http://127.0.0.1:8545
-#   tanenbaum   chain 5700, L1_NETWORK=tanenbaum, L1_RPC_URL required
+#   tanenbaum   chain 5700, L1_NETWORK=tanenbaum, L1_RPC_URL=http(s):// required (not IPC)
 #   mainnet     chain 57, L1_NETWORK=mainnet, L1_RPC_URL required
 #
 # Options:
@@ -54,7 +55,7 @@ run-gateway-launch.sh --l1 anvil|tanenbaum|mainnet [options]
 
 Required env:
   ZKSYNC_ERA_PATH=/path/to/zksync-era
-  L1_RPC_URL=...          (required for tanenbaum and mainnet)
+  L1_RPC_URL=http(s)://…  (required for tanenbaum and mainnet; HTTP(S) JSON-RPC only, not IPC)
 
 Optional env:
   ZKSYNC_OS_SERVER_PATH   defaults to zksync-os-server repo root
@@ -135,11 +136,20 @@ mainnet)
   export L1_NETWORK=mainnet
   gl_require L1_RPC_URL
   ;;
-*)
+  *)
   echo "invalid --l1: ${L1_PROFILE}" >&2
   exit 1
   ;;
 esac
+
+if [ "${L1_PROFILE}" != anvil ]; then
+  case "${L1_RPC_URL}" in
+  http://* | https://*) ;;
+  *)
+    gl_die "L1_RPC_URL must be http:// or https:// (Foundry cast/forge do not support IPC/unix). For local Tanenbaum, run sysgeth with --http and set e.g. http://127.0.0.1:8545. See docs/src/guides/gateway_launch.md"
+    ;;
+  esac
+fi
 
 export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-shanghai}"
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"

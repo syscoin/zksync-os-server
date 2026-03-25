@@ -19,9 +19,20 @@ export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server   # optional; defaults to
 # Disposable local L1 (starts Anvil + watch in background, logs to fixed paths)
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 anvil
 
-# Tanenbaum — you must set RPC (and funders; see below)
-export L1_RPC_URL=https://your-tanenbaum-rpc.example
+# Tanenbaum — local NEVM (same contract as Anvil: HTTP JSON-RPC on loopback)
+# sysgeth must expose HTTP; IPC-only (--authrpc/geth.ipc without --http) is NOT supported:
+# fund-wallets.sh, wait_for_rpc, Forge, and zkstack L1 calls all use Foundry --rpc-url (HTTP).
+# Example (adjust datadir / --nevmpub to your setup):
+#   sysgeth --datadir ~/.syscoin/testnet3/geth --tanenbaum --nevmpub tcp://127.0.0.1:1111 \
+#     --http --http.addr 127.0.0.1 --http.port 8545 \
+#     --http.api eth,net,web3,txpool --http.vhosts '*'
+export L1_RPC_URL=http://127.0.0.1:8545
+export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 tanenbaum
+
+# Tanenbaum — remote HTTPS RPC only if you accept provider rate limits / ops constraints
+# export L1_RPC_URL=https://…
+# bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 tanenbaum
 
 # Syscoin mainnet
 export L1_RPC_URL=https://your-mainnet-rpc.example
@@ -49,10 +60,12 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 | `--l1`     | `L1_CHAIN_ID` | `L1_NETWORK` (zkstack) | `L1_RPC_URL`        |
 |------------|-----------------|-------------------------|---------------------|
 | `anvil`    | 9               | `localhost`             | default `http://127.0.0.1:8545` |
-| `tanenbaum` | 5700           | `tanenbaum`             | **you must `export L1_RPC_URL`** |
-| `mainnet`  | 57              | `mainnet`               | **you must `export L1_RPC_URL`** |
+| `tanenbaum` | 5700           | `tanenbaum`             | **HTTP(S) `L1_RPC_URL`** (e.g. local `http://127.0.0.1:8545` with `sysgeth --http`, or remote HTTPS) |
+| `mainnet`  | 57              | `mainnet`               | **HTTP(S) `L1_RPC_URL`** |
 
-**Do not** run Anvil with chain id **5700** and `--l1-network tanenbaum`: `zkstack` only enables `with_slow()` for **`localhost`**; large L1 deploys stall on loopback without it. Use **real** Tanenbaum RPC, or Anvil **9** + **`anvil`**.
+**Do not** use **IPC / unix** URLs for `L1_RPC_URL` (e.g. `geth.ipc`): the launch path is built on Foundry **`cast` / `forge`** (`--rpc-url`), which require HTTP(S). Enable **`sysgeth --http`** for local Tanenbaum, same idea as Anvil’s **`http://127.0.0.1:8545`**.
+
+**Do not** run Anvil with chain id **5700** and `--l1-network tanenbaum`: `zkstack` only enables `with_slow()` for **`localhost`**; large L1 deploys stall on loopback without it. Use **real** Tanenbaum (NEVM HTTP or remote RPC), or Anvil **9** + **`anvil`**.
 
 **Local Anvil:** `anvil-local-start.sh` uses **`--mixed-mining`** with a long **`--block-time`** (default **`3600`**, override with **`GATEWAY_ANVIL_BLOCK_TIME`**). This is intentional: newer Anvil builds reject **`--mixed-mining`** without **`--block-time`**, while **`--block-time 1`** left **`forge script --broadcast`** stuck on **`DeployL1CoreContracts`** in practice: **`run-latest.json`** fills **`transactions`** but **`receipts` stay empty** while **`txpool_status`** shows **`pending = queued = 0`**. The long interval satisfies the newer CLI, and the background **watch** remains the effective miner by calling **`anvil_mine 1` every ~1s** during large deploys so mining still runs when the pool reads empty. **`--mixed-mining`** still helps the [foundry#10122](https://github.com/foundry-rs/foundry/issues/10122) class (concurrent / out-of-order nonces).
 
@@ -67,7 +80,8 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 | `REQUIRED_CONTRACTS_SHA` | optional override; else read from `versions.yaml` |
 | `GATEWAY_DIR` | default `~/gateway` |
 | `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
-| `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0 |
+| `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0; **tanenbaum** / **mainnet** you must set a key with native L1 balance |
+| `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
 | `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
 | `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
 
