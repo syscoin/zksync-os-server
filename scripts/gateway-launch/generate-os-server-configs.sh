@@ -14,6 +14,20 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_CHAIN_ID:=57057}"
 : "${GATEWAY_OS_RPC_PORT:=3052}"
 : "${EDGE_OS_RPC_PORT:=3050}"
+: "${GATEWAY_PROVER_API_PORT:=3124}"
+: "${EDGE_PROVER_API_PORT:=3125}"
+: "${GATEWAY_STATUS_PORT:=3071}"
+: "${EDGE_STATUS_PORT:=3072}"
+: "${GATEWAY_PROMETHEUS_PORT:=3312}"
+: "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${BITCOIN_DA_RPC_URL:=}"
+: "${BITCOIN_DA_RPC_USER:=}"
+: "${BITCOIN_DA_RPC_PASSWORD:=}"
+: "${BITCOIN_DA_PODA_URL:=https://poda.syscoin.org}"
+: "${BITCOIN_DA_WALLET_NAME:=zksync-os}"
+: "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"
+: "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
+: "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
 
 export GATEWAY_DIR
 export ZKSYNC_OS_SERVER_PATH
@@ -23,6 +37,20 @@ export GATEWAY_CHAIN_ID
 export EDGE_CHAIN_ID
 export GATEWAY_OS_RPC_PORT
 export EDGE_OS_RPC_PORT
+export GATEWAY_PROVER_API_PORT
+export EDGE_PROVER_API_PORT
+export GATEWAY_STATUS_PORT
+export EDGE_STATUS_PORT
+export GATEWAY_PROMETHEUS_PORT
+export EDGE_PROMETHEUS_PORT
+export BITCOIN_DA_RPC_URL
+export BITCOIN_DA_RPC_USER
+export BITCOIN_DA_RPC_PASSWORD
+export BITCOIN_DA_PODA_URL
+export BITCOIN_DA_WALLET_NAME
+export BITCOIN_DA_ADDRESS_LABEL
+export BITCOIN_DA_FINALITY_MODE
+export BITCOIN_DA_FINALITY_CONFIRMATIONS
 
 python3 - <<'PY'
 from pathlib import Path
@@ -60,6 +88,9 @@ def materialize_chain(
     chain_id: str,
     pubdata_mode: str,
     rpc_port: str,
+    prover_api_port: str,
+    status_port: str,
+    prometheus_port: str,
     gateway_rpc_url: str | None,
 ):
     source_dir = gateway_dir / "chains" / chain_name / "configs"
@@ -69,7 +100,7 @@ def materialize_chain(
     out_dir = output_root / chain_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    wallets = load_yaml(source_dir / "wallets.yaml")
+    wallets = load_yaml_base(source_dir / "wallets.yaml")
     operator_commit_sk = (
         wallets["blob_operator"]["private_key"]
         if pubdata_mode == "Blobs"
@@ -78,14 +109,10 @@ def materialize_chain(
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
 
-    config_lines = []
-    if gateway_rpc_url is not None:
-        config_lines.extend(
-            [
-                "general:",
-                f"  gateway_rpc_url: {gateway_rpc_url}",
-            ]
-        )
+    config_lines = [
+        "general:",
+        f"  rocks_db_path: {out_dir / 'db'}",
+    ]
     config_lines.extend(
         [
             "genesis:",
@@ -100,11 +127,27 @@ def materialize_chain(
             f"  operator_execute_sk: '{operator_execute_sk}'",
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
+            "prover_api:",
+            f"  address: 0.0.0.0:{prover_api_port}",
+            "status_server:",
+            f"  address: 0.0.0.0:{status_port}",
+            "observability:",
+            "  prometheus:",
+            f"    port: {prometheus_port}",
         ]
     )
     if pubdata_mode == "Blobs":
         config_lines.extend(
             [
+                "batcher:",
+                f"  bitcoin_da_rpc_url: {os.environ['BITCOIN_DA_RPC_URL']}",
+                f"  bitcoin_da_rpc_user: '{os.environ['BITCOIN_DA_RPC_USER']}'",
+                f"  bitcoin_da_rpc_password: '{os.environ['BITCOIN_DA_RPC_PASSWORD']}'",
+                f"  bitcoin_da_poda_url: {os.environ['BITCOIN_DA_PODA_URL']}",
+                f"  bitcoin_da_wallet_name: {os.environ['BITCOIN_DA_WALLET_NAME']}",
+                f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
+                f"  bitcoin_da_finality_mode: {os.environ['BITCOIN_DA_FINALITY_MODE']}",
+                f"  bitcoin_da_finality_confirmations: {os.environ['BITCOIN_DA_FINALITY_CONFIRMATIONS']}",
                 "external_price_api_client:",
                 "  source: Forced",
                 "  forced_prices:",
@@ -115,16 +158,66 @@ def materialize_chain(
 
     write_text(out_dir / "config.yaml", "\n".join(config_lines))
 
+    if gateway_rpc_url is not None:
+        write_text(
+            out_dir / "gateway-overlay.yaml",
+            "\n".join(
+                [
+                    "general:",
+                    f"  gateway_rpc_url: {gateway_rpc_url}",
+                    "",
+                ]
+            ),
+        )
+        write_text(
+            out_dir / "pre-migration-overlay.yaml",
+            "\n".join(
+                [
+                    "sequencer:",
+                    "  max_blocks_to_produce: 0",
+                    "",
+                ]
+            ),
+        )
+
     shutil.copy2(source_dir / "contracts.yaml", out_dir / "contracts.yaml")
     shutil.copy2(source_dir / "wallets.yaml", out_dir / "wallets.yaml")
     shutil.copy2(source_dir / "genesis.json", out_dir / "genesis.json")
 
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --release --manifest-path "{server_root / 'Cargo.toml'}" -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}"
+if [ -f "${{HOME}}/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "${{HOME}}/.cargo/env"
+fi
+cd "{server_root}"
+exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}"
+"""
+    if gateway_rpc_url is not None:
+        start_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "${{HOME}}/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "${{HOME}}/.cargo/env"
+fi
+cd "{server_root}"
+exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
+
+    if gateway_rpc_url is not None:
+        pre_migration_start_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+if [ -f "${{HOME}}/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "${{HOME}}/.cargo/env"
+fi
+cd "{server_root}"
+exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'pre-migration-overlay.yaml'}"
+"""
+        write_text(out_dir / "start-pre-migration-node.sh", pre_migration_start_script)
+        (out_dir / "start-pre-migration-node.sh").chmod(0o755)
 
 
 materialize_chain(
@@ -132,6 +225,9 @@ materialize_chain(
     chain_id=os.environ["GATEWAY_CHAIN_ID"],
     pubdata_mode="Blobs",
     rpc_port=os.environ["GATEWAY_OS_RPC_PORT"],
+    prover_api_port=os.environ["GATEWAY_PROVER_API_PORT"],
+    status_port=os.environ["GATEWAY_STATUS_PORT"],
+    prometheus_port=os.environ["GATEWAY_PROMETHEUS_PORT"],
     gateway_rpc_url=None,
 )
 
@@ -140,6 +236,9 @@ materialize_chain(
     chain_id=os.environ["EDGE_CHAIN_ID"],
     pubdata_mode="RelayedL2Calldata",
     rpc_port=os.environ["EDGE_OS_RPC_PORT"],
+    prover_api_port=os.environ["EDGE_PROVER_API_PORT"],
+    status_port=os.environ["EDGE_STATUS_PORT"],
+    prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
     gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
 )
 

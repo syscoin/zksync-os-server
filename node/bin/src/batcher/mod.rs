@@ -1,11 +1,11 @@
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
-use crate::config::BatcherConfig;
+use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
 use alloy::primitives::{Address, keccak256};
 use anyhow::Context;
 use async_trait::async_trait;
-use bitcoin_da_client::SyscoinClient;
+use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
 use secrecy::ExposeSecret;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -551,14 +551,25 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         for version_hash in published_hashes {
             let start = Instant::now();
             loop {
-                if client
-                    .check_blob_finality(&version_hash)
+                let finality_mode = match self.batcher_config.bitcoin_da_finality_mode {
+                    BitcoinDaFinalityMode::Chainlock => ClientBitcoinDaFinalityMode::Chainlock,
+                    BitcoinDaFinalityMode::Confirmations => {
+                        ClientBitcoinDaFinalityMode::Confirmations
+                    }
+                };
+                let is_final = client
+                    .check_blob_finality_with_mode(
+                        &version_hash,
+                        finality_mode,
+                        self.batcher_config.bitcoin_da_finality_confirmations,
+                    )
                     .await
                     .map_err(|err| {
                         anyhow::anyhow!(
                             "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
                         )
-                    })?
+                    })?;
+                if is_final
                 {
                     tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
                     break;

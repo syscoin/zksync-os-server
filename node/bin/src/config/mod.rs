@@ -294,6 +294,12 @@ pub enum StateBackendConfig {
     Compacted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BitcoinDaFinalityMode {
+    Chainlock,
+    Confirmations,
+}
+
 // SYSCOIN
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 pub struct GenesisConfig {
@@ -659,6 +665,14 @@ pub struct BatcherConfig {
     /// How often to poll Bitcoin DA finality after publishing a blob.
     #[config(default_t = 30 * TimeUnit::Seconds)]
     pub bitcoin_da_finality_poll_interval: Duration,
+
+    /// How Bitcoin DA publication finality should be determined.
+    #[config(with = Serde![str], default_t = BitcoinDaFinalityMode::Chainlock)]
+    pub bitcoin_da_finality_mode: BitcoinDaFinalityMode,
+
+    /// Number of confirmations required when `bitcoin_da_finality_mode` is `Confirmations`.
+    #[config(default_t = 5)]
+    pub bitcoin_da_finality_confirmations: u64,
 
     /// Max time to wait for a published Bitcoin DA blob to become final.
     #[config(default_t = 30 * TimeUnit::Minutes)]
