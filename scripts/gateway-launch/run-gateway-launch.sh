@@ -2,8 +2,8 @@
 # Single entry: Gateway ecosystem + L1 deploy + chain init + convert-to-gateway (+ optional edge chain / migrate).
 #
 # Usage:
-#   export ZKSYNC_ERA_PATH=/path/to/zksync-era
-#   export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server   # optional; defaults to this repo
+#   (from zksync-os-server clone) ZKSYNC_OS_SERVER_PATH defaults to this repo — zksync-era is cloned/pinned automatically if ZKSYNC_ERA_PATH is unset
+#   Optional: export ZKSYNC_ERA_PATH=/path/to/zksync-era
 #   export L1_RPC_URL=http://127.0.0.1:8545                 # required for tanenbaum | mainnet — HTTP(S) only
 #     (Foundry cast/forge; IPC/unix not supported). Local Tanenbaum: sysgeth --http — see gateway_launch.md
 #   bash run-gateway-launch.sh --l1 anvil [options]
@@ -26,8 +26,8 @@
 #   --log PATH           tee stdout/stderr here (default: ~/gateway-launch.log)
 #   -h, --help
 #
-# Env: PROTOCOL_VERSION, GATEWAY_DIR, GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID,
-#      FUNDER_PRIVATE_KEY (for fund; Anvil default is dev key 0), FOUNDRY_EVM_VERSION=shanghai,
+# Env: ZKSYNC_ERA_PATH (optional), ZKSYNC_ERA_GIT_URL, ZKSYNC_ERA_CACHE_ROOT, PROTOCOL_VERSION, GATEWAY_DIR,
+#      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
 #      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
@@ -54,11 +54,13 @@ usage() {
 run-gateway-launch.sh --l1 anvil|tanenbaum|mainnet [options]
 
 Required env:
-  ZKSYNC_ERA_PATH=/path/to/zksync-era
   L1_RPC_URL=http(s)://…  (required for tanenbaum and mainnet; HTTP(S) JSON-RPC only, not IPC)
 
 Optional env:
-  ZKSYNC_OS_SERVER_PATH   defaults to zksync-os-server repo root
+  ZKSYNC_OS_SERVER_PATH   defaults to zksync-os-server repo root (directory containing scripts/gateway-launch/)
+  ZKSYNC_ERA_PATH         override; if unset, zksync-era is git-cloned under ~/.cache/zksync-gateway-era/…
+  ZKSYNC_ERA_GIT_URL      default https://github.com/matter-labs/zksync-era.git
+  ZKSYNC_ERA_CACHE_ROOT   default ~/.cache/zksync-gateway-era
   PROTOCOL_VERSION        default v31.0
   GATEWAY_DIR             default ~/gateway
   FUNDER_PRIVATE_KEY      for fund-wallets (Anvil defaults to dev key 0)
@@ -118,8 +120,6 @@ echo "=== gateway-launch log: ${GATEWAY_LAUNCH_LOG} ==="
   usage 1
 }
 
-gl_require ZKSYNC_ERA_PATH
-
 case "${L1_PROFILE}" in
 anvil)
   export L1_CHAIN_ID=9
@@ -157,8 +157,11 @@ export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 : "${PROTOCOL_VERSION:=v31.0}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
-gl_assert_contracts_sha
-gl_assert_zksync_era_sha
+gl_ensure_zksync_era_workspace
+if [ ! -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ]; then
+  echo "gateway-launch: building zkstack CLI (first use for this pin)"
+  gl_build_zkstack_cli_release
+fi
 gl_path_for_zkstack
 
 wait_for_rpc() {

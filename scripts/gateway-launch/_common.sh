@@ -77,6 +77,61 @@ gl_assert_zksync_era_sha() {
     gl_die "zksync-era HEAD ${head} differs from REQUIRED_ZKSTACK_CLI_SHA ${REQUIRED_ZKSTACK_CLI_SHA} outside contracts: ${committed_delta}"
 }
 
+# Nightly toolchain for zkstack_cli (same discovery as preflight-zkstack-cli.sh).
+gl_detect_gateway_zkstack_nightly() {
+  if command -v rustup >/dev/null 2>&1; then
+    rustup toolchain list | awk '/^nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}/ {print $1}' | sort -V | tail -n 1
+  fi
+}
+
+# Apply Syscoin patch and build repo-local zkstack (release).
+gl_build_zkstack_cli_release() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require ZKSYNC_OS_SERVER_PATH
+  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"
+  # shellcheck source=/dev/null
+  source "${HOME}/.cargo/env" >/dev/null 2>&1 || true
+  local toolchain
+  toolchain="${GATEWAY_ZKSTACK_CARGO_TOOLCHAIN:-$(gl_detect_gateway_zkstack_nightly)}"
+  [ -n "${toolchain}" ] || gl_die "no nightly Rust toolchain found; install one with rustup"
+  (cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && cargo +"${toolchain}" build --release --locked -Znext-lockfile-bump -p zkstack)
+}
+
+# Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
+# If ZKSYNC_ERA_PATH is unset, uses ZKSYNC_ERA_CACHE_ROOT/PROTOCOL_VERSION/ZKSTACK_CLI_SHA (default cache ~/.cache/zksync-gateway-era).
+gl_ensure_zksync_era_workspace() {
+  gl_require ZKSYNC_OS_SERVER_PATH
+  gl_require PROTOCOL_VERSION
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  gl_require REQUIRED_CONTRACTS_SHA
+
+  local url="${ZKSYNC_ERA_GIT_URL:-https://github.com/matter-labs/zksync-era.git}"
+
+  if [ -z "${ZKSYNC_ERA_PATH:-}" ]; then
+    export ZKSYNC_ERA_PATH="${ZKSYNC_ERA_CACHE_ROOT:-${HOME}/.cache/zksync-gateway-era}/${PROTOCOL_VERSION}/${REQUIRED_ZKSTACK_CLI_SHA}"
+    echo "gateway-launch: ZKSYNC_ERA_PATH unset — using ${ZKSYNC_ERA_PATH}"
+  fi
+
+  if [ ! -d "${ZKSYNC_ERA_PATH}/.git" ]; then
+    mkdir -p "$(dirname "${ZKSYNC_ERA_PATH}")"
+    git clone "${url}" "${ZKSYNC_ERA_PATH}"
+  fi
+
+  local current_head
+  current_head="$(git -C "${ZKSYNC_ERA_PATH}" rev-parse HEAD)"
+  if ! git -C "${ZKSYNC_ERA_PATH}" merge-base --is-ancestor "${REQUIRED_ZKSTACK_CLI_SHA}" "${current_head}" 2>/dev/null; then
+    if [ -n "$(git -C "${ZKSYNC_ERA_PATH}" status --porcelain)" ]; then
+      gl_die "zksync-era has local changes; cannot check out REQUIRED_ZKSTACK_CLI_SHA ${REQUIRED_ZKSTACK_CLI_SHA}"
+    fi
+    git -C "${ZKSYNC_ERA_PATH}" fetch origin "${REQUIRED_ZKSTACK_CLI_SHA}"
+    git -C "${ZKSYNC_ERA_PATH}" checkout "${REQUIRED_ZKSTACK_CLI_SHA}"
+  fi
+
+  gl_checkout_contracts_sha
+  gl_assert_zksync_era_sha
+  gl_assert_contracts_sha
+}
+
 gl_path_for_zkstack() {
   gl_require ZKSYNC_ERA_PATH
   export PATH="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release:${HOME}/.foundry/bin:${HOME}/.cargo/bin:${PATH}"

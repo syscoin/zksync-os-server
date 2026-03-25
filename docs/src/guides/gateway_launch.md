@@ -12,26 +12,26 @@ Gateway + optional **edge** chain with `zkstack` (`--zksync-os`), `zksync-os-ser
 
 All steps are driven by **`scripts/gateway-launch/run-gateway-launch.sh`**. Sub-scripts in the same directory are for advanced / piecemeal use only.
 
+From a **`zksync-os-server` clone** (or set **`ZKSYNC_OS_SERVER_PATH`** to it), **`run-gateway-launch.sh`** will **git-clone and pin `zksync-era`** under **`~/.cache/zksync-gateway-era/<protocol>/<zkstack-cli.sha>/`** when **`ZKSYNC_ERA_PATH`** is unset, then build the repo-local **`zkstack`** on first use if needed.
+
 ```bash
-export ZKSYNC_ERA_PATH=/path/to/zksync-era
-export ZKSYNC_OS_SERVER_PATH=/path/to/zksync-os-server   # optional; defaults to this repo
+cd /path/to/zksync-os-server   # ZKSYNC_OS_SERVER_PATH defaults here
 
 # Disposable local L1 (starts Anvil + watch in background, logs to fixed paths)
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 anvil
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 
-# Tanenbaum — local NEVM (same contract as Anvil: HTTP JSON-RPC on loopback)
-export L1_RPC_URL=http://127.0.0.1:8545
+# Tanenbaum
+export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 tanenbaum
-
-# Tanenbaum — remote HTTPS RPC only if you accept provider rate limits / ops constraints
-# export L1_RPC_URL=https://…
-# bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 tanenbaum
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 
 # Syscoin mainnet
-export L1_RPC_URL=https://your-mainnet-rpc.example
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l1 mainnet
+export L1_RPC_URL=https://rpc.syscoin.org
+export FUNDER_PRIVATE_KEY=0x…
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet
 ```
+
+Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ERA_GIT_URL`** if not cloning from `https://github.com/matter-labs/zksync-era.git`.
 
 **`run-gateway-launch.sh --help`** lists flags (`--reuse-ecosystem`, `--reset-l1-artifacts`, `--skip-fund`, `--with-edge`, `--migrate-edge`, `--stop-after-l1`, `--no-start-anvil`, …).
 
@@ -69,6 +69,10 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 
 | Variable | Purpose |
 |----------|---------|
+| `ZKSYNC_OS_SERVER_PATH` | default: repo root containing `scripts/gateway-launch/` (when you `cd` into the clone, unset is fine) |
+| `ZKSYNC_ERA_PATH` | optional; if unset, `zksync-era` is cloned under `~/.cache/zksync-gateway-era/...` |
+| `ZKSYNC_ERA_GIT_URL` | optional; default `https://github.com/matter-labs/zksync-era.git` |
+| `ZKSYNC_ERA_CACHE_ROOT` | optional; default `~/.cache/zksync-gateway-era` |
 | `PROTOCOL_VERSION` | e.g. `v31.0`; pins `versions.yaml` for both `REQUIRED_ZKSTACK_CLI_SHA` and `REQUIRED_CONTRACTS_SHA` |
 | `REQUIRED_ZKSTACK_CLI_SHA` | optional override; else read from `versions.yaml` (`zkstack-cli.sha`) |
 | `REQUIRED_CONTRACTS_SHA` | optional override; else read from `versions.yaml` |
@@ -83,13 +87,10 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 
 ## One-time machine setup
 
-1. Foundry + foundry-zksync (`prerequisites.md`).
-2. Pin `zksync-era/contracts` to `era-contracts.sha` from `versions.yaml` if needed: **`preflight-pin-era-contracts.sh`** (creates a commit).
-3. `bash scripts/gateway-launch/preflight-zkstack-cli.sh`
-This verifies top-level `zksync-era` against `zkstack-cli.sha`, verifies `zksync-era/contracts` against `era-contracts.sha`, then applies the Syscoin patch and builds the repo-local `zkstack`.
-4. If either object is missing locally, fetch it explicitly:
-`git -C "${ZKSYNC_ERA_PATH}" fetch origin "${REQUIRED_ZKSTACK_CLI_SHA}"`
-`git -C "${ZKSYNC_ERA_PATH}/contracts" fetch origin "${REQUIRED_CONTRACTS_SHA}"`
+1. Foundry + foundry-zksync + nightly Rust (`prerequisites.md`).
+2. **`run-gateway-launch.sh`** alone clones/pins **`zksync-era`** and builds **`zkstack`** on first use when **`ZKSYNC_ERA_PATH`** is unset.
+3. Optional ahead-of-time: **`bash scripts/gateway-launch/preflight-zkstack-cli.sh`** — same pin + **always** runs a release build (uses **`ZKSYNC_OS_SERVER_PATH`**; **`ZKSYNC_ERA_PATH`** optional).
+4. Optional: **`preflight-pin-era-contracts.sh`** if you maintain a custom `zksync-era` commit with `contracts` pinned differently.
 
 ---
 
