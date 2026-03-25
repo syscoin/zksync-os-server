@@ -20,7 +20,8 @@
 #   --skip-fund          skip fund-wallets.sh (you funded manually)
 #   --stop-after-l1      stop after ecosystem init / L1 deploy (skip chain init + convert)
 #   --with-edge          run edge-chain-create-init.sh after gateway steps
-#   --migrate-edge       run edge-chain-migrate-to-gateway.sh (Gateway L2 RPC must be reachable)
+#   --migrate-edge       run edge-chain-migrate-to-gateway.sh (Gateway L2 RPC must be reachable;
+#                        keep the edge node stopped until migration/finalization completes)
 #   --log PATH           tee stdout/stderr here (default: ~/gateway-launch.log)
 #   -h, --help
 #
@@ -70,7 +71,7 @@ Options:
   --skip-fund             wallets already funded
   --stop-after-l1         skip chain init + convert (+ edge)
   --with-edge             create+init edge chain after gateway
-  --migrate-edge          migrate edge to gateway (needs Gateway L2 up)
+  --migrate-edge          migrate edge to gateway (needs Gateway L2 up; edge node stays stopped)
   --log PATH              tee output here
   -h, --help
 EOF
@@ -255,7 +256,7 @@ if [ "${WITH_EDGE}" = true ]; then
 fi
 
 if [ "${MIGRATE_EDGE}" = true ]; then
-  echo "migrate-edge: ensure Gateway zksync-os-server RPC is up if required"
+  echo "migrate-edge: ensure Gateway zksync-os-server RPC is up; keep the edge node stopped until migration/finalization completes"
   "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh"
 fi
 

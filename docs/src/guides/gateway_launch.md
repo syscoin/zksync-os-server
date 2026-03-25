@@ -38,7 +38,7 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 |------|--------|
 | **Gateway only** (ecosystem + L1 deploy + gateway `chain init` + convert to gateway settlement) | none — this is the default |
 | **You want an edge rollup in the ecosystem** | add **`--with-edge`** (create + init edge; see **`EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID`** below) |
-| **Edge should settle through the gateway** | add **`--migrate-edge`** after the edge chain exists **and** the **Gateway chain L2 JSON-RPC** is reachable (the script does not start `zksync-os-server`; see [After the script](#after-the-script)) |
+| **Edge should settle through the gateway** | add **`--migrate-edge`** after the edge chain exists **and** the **Gateway chain L2 JSON-RPC** is reachable. Keep the **edge node stopped** until migration/finalization completes (the script does not start `zksync-os-server`; see [After the script](#after-the-script)) |
 
 **`--with-edge`** and **`--migrate-edge`** are independent: you can create the edge in one run (`--with-edge`) and run migration later (second run with **`--reuse-ecosystem`** + **`--migrate-edge`**, or only **`--migrate-edge`** if the edge is already in **`ZkStack.yaml`**). For a single shot when RPC is already up: `…/run-gateway-launch.sh --l1 anvil --with-edge --migrate-edge`.
 
@@ -91,7 +91,7 @@ This verifies top-level `zksync-era` against `zkstack-cli.sha`, verifies `zksync
 - **Generated OS-server configs:** the launcher writes runnable layered configs under `"$GATEWAY_DIR/os-server-configs/"`.
 Gateway: `"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"`
 Edge: `"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"` (after `--with-edge`)
-- **`--migrate-edge`:** requires this Gateway L2 RPC to be up **before** `zkstack chain gateway migrate-to-gateway` can succeed; if the node is remote, set `api.web3_json_rpc.http_url` on the gateway chain config. See [Edge chain flags](#edge-chain-what-runs-by-default) for when to pass **`--with-edge`** vs **`--migrate-edge`**.
+- **`--migrate-edge`:** requires the Gateway L2 RPC to be up **before** `zkstack chain gateway migrate-to-gateway` can succeed. The **edge node should remain stopped** until both `migrate-to-gateway` and `finalize-chain-migration-to-gateway` are done; start the edge only afterward with the generated gateway-linked config. If the node is remote, set `api.web3_json_rpc.http_url` on the gateway chain config. See [Edge chain flags](#edge-chain-what-runs-by-default) for when to pass **`--with-edge`** vs **`--migrate-edge`**.
 - **Provers:** Airbender per chain; not Era-only `zkstack prover`.
 - **`token_weth_address`** in `configs/initial_deployments.yaml` for non-local L1s as required by your ops.
 
