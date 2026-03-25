@@ -23,6 +23,7 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 # Tanenbaum
 export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
+# Launcher sets Bitcoin DA `Confirmations` + `BITCOIN_DA_PODA_URL=https://poda.tanenbaum.io` unless you override.
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 
 # Syscoin mainnet
@@ -79,6 +80,8 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 | `GATEWAY_DIR` | default `~/gateway` |
 | `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
 | `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0; **tanenbaum** / **mainnet** you must set a key with native L1 balance |
+| `BITCOIN_DA_FINALITY_MODE` / `BITCOIN_DA_FINALITY_CONFIRMATIONS` | **tanenbaum** defaults: `Confirmations` / `6`. **mainnet** / **anvil**: set explicitly if you need non-default DA finality |
+| `BITCOIN_DA_PODA_URL` | **tanenbaum** default `https://poda.tanenbaum.io` |
 | `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
 | `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
 | `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
