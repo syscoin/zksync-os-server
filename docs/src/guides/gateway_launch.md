@@ -88,6 +88,9 @@ This verifies top-level `zksync-era` against `zkstack-cli.sha`, verifies `zksync
 ## After the script
 
 - **Gateway / edge nodes:** `cargo run --release -- --config config-presets/testnet-gateway.yaml` (and `testnet-child.yaml` for the edge). Presets live under `zksync-os-server/config-presets/`.
+- **Generated OS-server configs:** the launcher writes runnable layered configs under `"$GATEWAY_DIR/os-server-configs/"`.
+Gateway: `"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"`
+Edge: `"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"` (after `--with-edge`)
 - **`--migrate-edge`:** requires this Gateway L2 RPC to be up **before** `zkstack chain gateway migrate-to-gateway` can succeed; if the node is remote, set `api.web3_json_rpc.http_url` on the gateway chain config. See [Edge chain flags](#edge-chain-what-runs-by-default) for when to pass **`--with-edge`** vs **`--migrate-edge`**.
 - **Provers:** Airbender per chain; not Era-only `zkstack prover`.
 - **`token_weth_address`** in `configs/initial_deployments.yaml` for non-local L1s as required by your ops.

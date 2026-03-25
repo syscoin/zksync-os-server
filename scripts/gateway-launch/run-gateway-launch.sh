@@ -247,9 +247,11 @@ fi
 
 "${SCRIPT_DIR}/gateway-chain-init.sh"
 "${SCRIPT_DIR}/gateway-convert-settlement.sh"
+"${SCRIPT_DIR}/generate-os-server-configs.sh"
 
 if [ "${WITH_EDGE}" = true ]; then
   "${SCRIPT_DIR}/edge-chain-create-init.sh"
+  "${SCRIPT_DIR}/generate-os-server-configs.sh"
 fi
 
 if [ "${MIGRATE_EDGE}" = true ]; then
