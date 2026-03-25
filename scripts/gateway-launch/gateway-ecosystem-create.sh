@@ -2,6 +2,7 @@
 # zkstack ecosystem create for Gateway (--zksync-os). Run from a dir with no ZkStack.yaml (e.g. $HOME).
 # Requires: ZKSYNC_ERA_PATH, PATH with zkstack. Env overrides:
 #   GATEWAY_ECOSYSTEM_NAME GATEWAY_CHAIN_NAME GATEWAY_CHAIN_ID GATEWAY_PROVER_MODE GATEWAY_COMMIT_MODE L1_NETWORK
+#   GATEWAY_WALLET_CREATION GATEWAY_WALLET_PATH
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -21,8 +22,26 @@ gl_path_for_zkstack
 : "${GATEWAY_PROVER_MODE:=gpu}"
 : "${GATEWAY_COMMIT_MODE:=rollup}"
 : "${L1_NETWORK:=localhost}"
+: "${GATEWAY_WALLET_CREATION:=}"
+
+if [ -z "${GATEWAY_WALLET_CREATION}" ]; then
+  if [ -n "${GATEWAY_WALLET_PATH:-}" ]; then
+    GATEWAY_WALLET_CREATION="in-file"
+  else
+    GATEWAY_WALLET_CREATION="random"
+  fi
+fi
+
+if [ "${GATEWAY_WALLET_CREATION}" = "in-file" ]; then
+  gl_require GATEWAY_WALLET_PATH
+fi
 
 cd "${GATEWAY_ECOSYSTEM_PARENT_DIR:-$(dirname "${GATEWAY_DIR}")}"
+
+wallet_args=(--wallet-creation "${GATEWAY_WALLET_CREATION}")
+if [ "${GATEWAY_WALLET_CREATION}" = "in-file" ]; then
+  wallet_args+=(--wallet-path "${GATEWAY_WALLET_PATH}")
+fi
 
 zkstack ecosystem create \
   --ecosystem-name "${GATEWAY_ECOSYSTEM_NAME}" \
@@ -31,7 +50,7 @@ zkstack ecosystem create \
   --chain-name "${GATEWAY_CHAIN_NAME}" \
   --chain-id "${GATEWAY_CHAIN_ID}" \
   --prover-mode "${GATEWAY_PROVER_MODE}" \
-  --wallet-creation random \
+  "${wallet_args[@]}" \
   --l1-batch-commit-data-generator-mode "${GATEWAY_COMMIT_MODE}" \
   --base-token-address 0x0000000000000000000000000000000000000001 \
   --base-token-price-nominator 1 \

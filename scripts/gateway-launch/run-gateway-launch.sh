@@ -29,7 +29,7 @@
 # Env: ZKSYNC_ERA_PATH (optional), ZKSYNC_ERA_GIT_URL, ZKSYNC_ERA_CACHE_ROOT, PROTOCOL_VERSION, GATEWAY_DIR,
 #      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
 #      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, BITCOIN_DA_RPC_URL, BITCOIN_DA_RPC_USER,
-#      BITCOIN_DA_RPC_PASSWORD
+#      BITCOIN_DA_RPC_PASSWORD, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
 # `gl_zkstack_pty` in gateway-chain-init.sh wraps `zkstack chain init` with util-linux `script`.
@@ -64,6 +64,8 @@ Optional env:
   ZKSYNC_ERA_CACHE_ROOT   default ~/.cache/zksync-gateway-era
   PROTOCOL_VERSION        default v31.0
   GATEWAY_DIR             default ~/gateway
+  GATEWAY_WALLET_CREATION default random for new ecosystems; if GATEWAY_WALLET_PATH is set, defaults to in-file
+  GATEWAY_WALLET_PATH     wallet file to reuse when creating a brand new ecosystem with --wallet-creation in-file
   FUNDER_PRIVATE_KEY      for fund-wallets (Anvil defaults to dev key 0)
   BITCOIN_DA_RPC_URL      Syscoin NEVM RPC for the generated gateway OS-server config (required for blob mode)
   BITCOIN_DA_RPC_USER     Syscoin NEVM RPC auth user for the generated gateway OS-server config
@@ -243,6 +245,11 @@ EOF
     done
   ) &
   WATCH_PID=$!
+fi
+
+if [ "${REUSE_ECOSYSTEM}" = false ] && [ -f "${GATEWAY_DIR}/ZkStack.yaml" ]; then
+  REUSE_ECOSYSTEM=true
+  echo "gateway-launch: existing ecosystem detected at ${GATEWAY_DIR}; auto-enabling --reuse-ecosystem"
 fi
 
 if [ "${REUSE_ECOSYSTEM}" = true ]; then
