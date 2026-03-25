@@ -1,6 +1,7 @@
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::BatcherConfig;
 use alloy::consensus::BlobTransactionSidecar;
+use alloy::hex;
 use alloy::primitives::{Address, keccak256};
 use anyhow::Context;
 use async_trait::async_trait;
@@ -503,7 +504,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         let blob_chunks: Vec<Vec<u8>> = blob_sidecar
             .blobs
             .iter()
-            .map(|blob| blob.as_ref().to_vec())
+            .map(|blob| blob.as_slice().to_vec())
             .collect();
         let local_blob_ids: Vec<u8> = blob_chunks
             .iter()
