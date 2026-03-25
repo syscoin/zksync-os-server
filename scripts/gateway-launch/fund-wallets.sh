@@ -14,14 +14,20 @@ gl_path_for_zkstack
 ROOT_W="${GATEWAY_DIR}/configs/wallets.yaml"
 CHAIN_W="${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
 
-_any=false
-for w in "${ROOT_W}" "${CHAIN_W}"; do
-  if [ -f "$w" ]; then
-    _any=true
-    echo "gateway-launch: funding wallets from ${w}"
-    WALLETS_YAML_PATH="$w" gl_fund_wallets_yaml
-  fi
-done
-if [ "${_any}" = false ]; then
+if [ "${GATEWAY_CHAIN_NAME}" = "gateway" ]; then
+  PRIMARY_W="${ROOT_W}"
+  FALLBACK_W="${CHAIN_W}"
+else
+  PRIMARY_W="${CHAIN_W}"
+  FALLBACK_W="${ROOT_W}"
+fi
+
+if [ -f "${PRIMARY_W}" ]; then
+  echo "gateway-launch: funding wallets from ${PRIMARY_W}"
+  WALLETS_YAML_PATH="${PRIMARY_W}" gl_fund_wallets_yaml
+elif [ -f "${FALLBACK_W}" ]; then
+  echo "gateway-launch: funding wallets from ${FALLBACK_W}"
+  WALLETS_YAML_PATH="${FALLBACK_W}" gl_fund_wallets_yaml
+else
   gl_die "no wallets.yaml found (tried ${ROOT_W} and ${CHAIN_W})"
 fi

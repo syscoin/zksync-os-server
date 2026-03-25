@@ -15,12 +15,30 @@ cd "${GATEWAY_DIR}"
 
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${EDGE_CHAIN_ID:=57057}"
+: "${EDGE_WALLET_CREATION:=}"
+
+if [ -z "${EDGE_WALLET_CREATION}" ]; then
+  if [ -n "${EDGE_WALLET_PATH:-}" ]; then
+    EDGE_WALLET_CREATION="in-file"
+  else
+    EDGE_WALLET_CREATION="random"
+  fi
+fi
+
+if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
+  gl_require EDGE_WALLET_PATH
+fi
+
+wallet_args=(--wallet-creation "${EDGE_WALLET_CREATION}")
+if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
+  wallet_args+=(--wallet-path "${EDGE_WALLET_PATH}")
+fi
 
 zkstack chain create \
   --chain-name "${EDGE_CHAIN_NAME}" \
   --chain-id "${EDGE_CHAIN_ID}" \
   --prover-mode gpu \
-  --wallet-creation random \
+  "${wallet_args[@]}" \
   --l1-batch-commit-data-generator-mode rollup \
   --base-token-address 0x0000000000000000000000000000000000000001 \
   --base-token-price-nominator 1 \
