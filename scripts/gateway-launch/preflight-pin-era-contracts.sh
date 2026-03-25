@@ -2,12 +2,12 @@
 # One-time: pin zksync-era contracts submodule to REQUIRED_CONTRACTS_SHA (creates a git commit).
 # Review before pushing. Requires: ZKSYNC_ERA_PATH, REQUIRED_CONTRACTS_SHA
 set -euo pipefail
-gl_require() { [ -n "${!1:-}" ] || {
-  echo "unset: $1" >&2
-  exit 1
-}; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
-gl_require REQUIRED_CONTRACTS_SHA
+: "${PROTOCOL_VERSION:=v31.0}"
+export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 
 cd "${ZKSYNC_ERA_PATH}"
 git submodule update --init contracts

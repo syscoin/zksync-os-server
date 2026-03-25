@@ -7,16 +7,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
+: "${PROTOCOL_VERSION:=v31.0}"
+export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
+gl_assert_zksync_era_sha
+gl_assert_contracts_sha
 gl_path_for_zkstack
 
-: "${GATEWAY_ECOSYSTEM_NAME:=gateway}"
+: "${GATEWAY_DIR:=${HOME}/gateway}"
+: "${GATEWAY_ECOSYSTEM_NAME:=$(basename "${GATEWAY_DIR}")}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_CHAIN_ID:=57001}"
 : "${GATEWAY_PROVER_MODE:=gpu}"
 : "${GATEWAY_COMMIT_MODE:=rollup}"
 : "${L1_NETWORK:=localhost}"
 
-cd "${GATEWAY_ECOSYSTEM_PARENT_DIR:-${HOME}}"
+cd "${GATEWAY_ECOSYSTEM_PARENT_DIR:-$(dirname "${GATEWAY_DIR}")}"
 
 zkstack ecosystem create \
   --ecosystem-name "${GATEWAY_ECOSYSTEM_NAME}" \
@@ -34,3 +40,9 @@ zkstack ecosystem create \
   --evm-emulator false \
   --start-containers false \
   --zksync-os
+
+# `zkstack ecosystem create --link-to-code` runs a recursive submodule update on the linked
+# checkout, which resets `contracts/` to the top-level repo's recorded submodule revision.
+# Restore the versions.yaml-pinned contracts SHA before subsequent gateway-launch steps.
+gl_checkout_contracts_sha
+gl_assert_contracts_sha

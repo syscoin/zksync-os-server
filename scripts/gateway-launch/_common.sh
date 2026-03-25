@@ -14,22 +14,32 @@ gl_require() {
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
 }
 
-gl_contracts_sha_from_versions() {
+gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
+  local key="$1"
   local vf="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
   [ -f "$vf" ] || gl_die "missing ${vf}"
-  VERSIONS_YAML="$vf" python3 - <<'PY'
+  VERSIONS_YAML="$vf" VERSIONS_KEY="$key" python3 - <<'PY'
 import os, re
 
 text = open(os.environ["VERSIONS_YAML"], "r", encoding="utf-8").read()
+key = re.escape(os.environ["VERSIONS_KEY"])
 m = re.search(
-    r"era-contracts:\s*(?:\n\s*#.*)*\n\s*sha:\s*\"([0-9a-f]{40})\"",
+    rf"{key}:\s*(?:\n\s*#.*)*\n\s*sha:\s*\"([0-9a-f]{{40}})\"",
     text,
 )
 if not m:
-    raise SystemExit("era-contracts sha not found in versions.yaml")
+    raise SystemExit(f"{os.environ['VERSIONS_KEY']} sha not found in versions.yaml")
 print(m.group(1))
 PY
+}
+
+gl_contracts_sha_from_versions() {
+  gl_sha_from_versions "era-contracts"
+}
+
+gl_zkstack_cli_sha_from_versions() {
+  gl_sha_from_versions "zkstack-cli"
 }
 
 gl_assert_contracts_sha() {
@@ -39,6 +49,32 @@ gl_assert_contracts_sha() {
   head="$(git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD)"
   [ "$head" = "${REQUIRED_CONTRACTS_SHA}" ] ||
     gl_die "contracts HEAD ${head} != REQUIRED_CONTRACTS_SHA ${REQUIRED_CONTRACTS_SHA}"
+}
+
+gl_checkout_contracts_sha() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require REQUIRED_CONTRACTS_SHA
+  git -C "${ZKSYNC_ERA_PATH}" submodule update --init contracts
+  git -C "${ZKSYNC_ERA_PATH}/contracts" fetch origin "${REQUIRED_CONTRACTS_SHA}"
+  git -C "${ZKSYNC_ERA_PATH}/contracts" checkout "${REQUIRED_CONTRACTS_SHA}"
+  git -C "${ZKSYNC_ERA_PATH}/contracts" submodule sync --recursive
+  git -C "${ZKSYNC_ERA_PATH}/contracts" submodule update --init --recursive
+}
+
+gl_assert_zksync_era_sha() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  local head
+  head="$(git -C "${ZKSYNC_ERA_PATH}" rev-parse HEAD)"
+  if [ "$head" = "${REQUIRED_ZKSTACK_CLI_SHA}" ]; then
+    return 0
+  fi
+  git -C "${ZKSYNC_ERA_PATH}" merge-base --is-ancestor "${REQUIRED_ZKSTACK_CLI_SHA}" "${head}" ||
+    gl_die "zksync-era HEAD ${head} is not based on REQUIRED_ZKSTACK_CLI_SHA ${REQUIRED_ZKSTACK_CLI_SHA}"
+  local committed_delta
+  committed_delta="$(git -C "${ZKSYNC_ERA_PATH}" diff --name-only "${REQUIRED_ZKSTACK_CLI_SHA}..${head}")"
+  [ "${committed_delta}" = "contracts" ] ||
+    gl_die "zksync-era HEAD ${head} differs from REQUIRED_ZKSTACK_CLI_SHA ${REQUIRED_ZKSTACK_CLI_SHA} outside contracts: ${committed_delta}"
 }
 
 gl_path_for_zkstack() {
@@ -60,12 +96,12 @@ gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
   export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+  export WALLETS_YAML_PATH="${WALLETS_YAML_PATH:-${GATEWAY_DIR}/configs/wallets.yaml}"
   python3 - <<'PY'
 import os, subprocess, yaml
 from pathlib import Path
 
-gw = Path(os.environ["GATEWAY_DIR"])
-w = yaml.safe_load((gw / "configs" / "wallets.yaml").read_text())
+w = yaml.safe_load(Path(os.environ["WALLETS_YAML_PATH"]).read_text())
 rpc = os.environ["L1_RPC_URL"]
 pk = os.environ["FUNDER_PRIVATE_KEY"]
 

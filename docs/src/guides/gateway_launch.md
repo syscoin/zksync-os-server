@@ -2,7 +2,9 @@
 
 Gateway + optional **edge** chain with `zkstack` (`--zksync-os`), `zksync-os-server`, and Airbender. Target: Gateway `rollup` + `Blobs`; edge `rollup` + `RelayedL2Calldata`.
 
-**Prerequisites:** `zksync-os-scripts/docs/src/prerequisites.md`. **Contracts SHA:** `local-chains/<protocol_version>/versions.yaml` (`era-contracts.sha`).
+**Prerequisites:** `zksync-os-scripts/docs/src/prerequisites.md`. **Pinned SHAs:** `local-chains/<protocol_version>/versions.yaml`:
+- top-level `zksync-era` / `zkstack_cli`: `zkstack-cli.sha`
+- nested `zksync-era/contracts`: `era-contracts.sha`
 
 ---
 
@@ -52,7 +54,7 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 
 **Do not** run Anvil with chain id **5700** and `--l1-network tanenbaum`: `zkstack` only enables `with_slow()` for **`localhost`**; large L1 deploys stall on loopback without it. Use **real** Tanenbaum RPC, or Anvil **9** + **`anvil`**.
 
-**Local Anvil:** `anvil-local-start.sh` uses **`--mixed-mining`** only (no **`--block-time`**). In practice, **`--block-time 1`** here left **`forge script --broadcast`** stuck on **`DeployL1CoreContracts`**: **`run-latest.json`** fills **`transactions`** but **`receipts` stay empty** while **`txpool_status`** shows **`pending = queued = 0`**. **`--mixed-mining`** still helps the [foundry#10122](https://github.com/foundry-rs/foundry/issues/10122) class (concurrent / out-of-order nonces). The background **watch** logs **`pending` / `queued`** when non-zero and calls **`anvil_mine 1` every ~1s** during large deploys so mining still runs when the pool reads empty.
+**Local Anvil:** `anvil-local-start.sh` uses **`--mixed-mining`** with a long **`--block-time`** (default **`3600`**, override with **`GATEWAY_ANVIL_BLOCK_TIME`**). This is intentional: newer Anvil builds reject **`--mixed-mining`** without **`--block-time`**, while **`--block-time 1`** left **`forge script --broadcast`** stuck on **`DeployL1CoreContracts`** in practice: **`run-latest.json`** fills **`transactions`** but **`receipts` stay empty** while **`txpool_status`** shows **`pending = queued = 0`**. The long interval satisfies the newer CLI, and the background **watch** remains the effective miner by calling **`anvil_mine 1` every ~1s** during large deploys so mining still runs when the pool reads empty. **`--mixed-mining`** still helps the [foundry#10122](https://github.com/foundry-rs/foundry/issues/10122) class (concurrent / out-of-order nonces).
 
 ---
 
@@ -60,7 +62,8 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 
 | Variable | Purpose |
 |----------|---------|
-| `PROTOCOL_VERSION` | e.g. `v31.0`; pins `versions.yaml` for `REQUIRED_CONTRACTS_SHA` |
+| `PROTOCOL_VERSION` | e.g. `v31.0`; pins `versions.yaml` for both `REQUIRED_ZKSTACK_CLI_SHA` and `REQUIRED_CONTRACTS_SHA` |
+| `REQUIRED_ZKSTACK_CLI_SHA` | optional override; else read from `versions.yaml` (`zkstack-cli.sha`) |
 | `REQUIRED_CONTRACTS_SHA` | optional override; else read from `versions.yaml` |
 | `GATEWAY_DIR` | default `~/gateway` |
 | `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
@@ -73,9 +76,12 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/gateway-launch/run-gateway-launch.sh" --l
 ## One-time machine setup
 
 1. Foundry + foundry-zksync (`prerequisites.md`).
-2. `bash scripts/gateway-launch/preflight-zkstack-cli.sh`
-3. Pin `zksync-era/contracts` to the SHA in `versions.yaml` if needed: **`preflight-pin-era-contracts.sh`** (creates a commit).
-4. `git -C "${ZKSYNC_ERA_PATH}/contracts" fetch origin "${REQUIRED_CONTRACTS_SHA}"` if the object is missing.
+2. Pin `zksync-era/contracts` to `era-contracts.sha` from `versions.yaml` if needed: **`preflight-pin-era-contracts.sh`** (creates a commit).
+3. `bash scripts/gateway-launch/preflight-zkstack-cli.sh`
+This verifies top-level `zksync-era` against `zkstack-cli.sha`, verifies `zksync-era/contracts` against `era-contracts.sha`, then applies the Syscoin patch and builds the repo-local `zkstack`.
+4. If either object is missing locally, fetch it explicitly:
+`git -C "${ZKSYNC_ERA_PATH}" fetch origin "${REQUIRED_ZKSTACK_CLI_SHA}"`
+`git -C "${ZKSYNC_ERA_PATH}/contracts" fetch origin "${REQUIRED_CONTRACTS_SHA}"`
 
 ---
 

@@ -39,7 +39,12 @@ if has_text "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
   && has_text "L1Network::Mainnet => 57" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
   && has_text "L1Network::Tanenbaum => None" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
   && has_text "L1Network::Tanenbaum | L1Network::Holesky => H256::zero()" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && has_text "L1Network::Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs"; then
+  && has_text "L1Network::Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs" \
+  && has_text "if config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs" \
+  && has_text "forge = forge.with_slow();" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs" \
+  && has_text "if config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs" \
+  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs" \
+  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs"; then
   echo "zksync-era Syscoin patch appears already applied; skipping."
   exit 0
 fi

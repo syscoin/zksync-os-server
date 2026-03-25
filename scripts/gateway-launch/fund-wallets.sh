@@ -8,4 +8,9 @@ source "${SCRIPT_DIR}/_common.sh"
 gl_require GATEWAY_DIR
 gl_require L1_RPC_URL
 gl_path_for_zkstack
+: "${GATEWAY_CHAIN_NAME:=gateway}"
 gl_fund_wallets_yaml
+CHAIN_WALLETS_YAML="${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
+if [ -f "${CHAIN_WALLETS_YAML}" ]; then
+  WALLETS_YAML_PATH="${CHAIN_WALLETS_YAML}" gl_fund_wallets_yaml
+fi

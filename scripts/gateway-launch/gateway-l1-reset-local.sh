@@ -13,6 +13,7 @@ export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from
 
 rm -rf "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/broadcast" "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out"
 mkdir -p "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out"
+touch "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out/.gitkeep"
 
 "${SCRIPT_DIR}/fund-wallets.sh"
 "${SCRIPT_DIR}/gateway-deploy-l1.sh"

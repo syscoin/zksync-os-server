@@ -112,3 +112,126 @@ index 707872ea0..9ae443887 100644
                  ecosystem_preexisting_configs_path
              }
          });
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+index 37cad6768..0ae9fd838 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+@@ -21,7 +21,7 @@ use zkstack_cli_config::{
+     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
+     ContractsConfigForDeployERC20, CoreContractsConfig, EcosystemConfig,
+ };
+-use zkstack_cli_types::VMOption;
++use zkstack_cli_types::{L1Network, VMOption};
+ 
+ use super::args::init::EcosystemInitArgsFinal;
+ use crate::{
+@@ -75,6 +75,9 @@ pub async fn deploy_l1_core_contracts(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+ 
+@@ -121,6 +124,10 @@ pub async fn deploy_erc20(
+         .with_rpc_url(l1_rpc_url)
+         .with_broadcast();
+ 
++    if ecosystem_config.l1_network == L1Network::Localhost {
++        forge = forge.with_slow();
++    }
++
+     forge = fill_forge_private_key(
+         forge,
+         ecosystem_config.get_wallets()?.deployer.as_ref(),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+index 03451dd9e..d751d24f8 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+@@ -16,7 +16,7 @@ use zkstack_cli_config::{
+     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
+     CoreContractsConfig, EcosystemConfig, ZkStackConfig,
+ };
+-use zkstack_cli_types::{ProverMode, VMOption};
++use zkstack_cli_types::{L1Network, ProverMode, VMOption};
+ 
+ use crate::{
+     abi::IDEPLOYCTMABI_ABI,
+@@ -203,6 +203,9 @@ pub async fn deploy_new_ctm(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+ 
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
+index e667c383d..f7f70b107 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
+@@ -9,7 +9,7 @@ use zkstack_cli_config::{
+     forge_interface::script_params::REGISTER_CTM_SCRIPT_PARAMS, traits::ReadConfig,
+     EcosystemConfig, ZkStackConfig,
+ };
+-use zkstack_cli_types::VMOption;
++use zkstack_cli_types::{L1Network, VMOption};
+ use zksync_types::H160;
+ 
+ use crate::{
+@@ -112,6 +112,9 @@ pub async fn register_ctm_on_existing_bh(
+ 
+     if !only_save_calldata {
+         forge = forge.with_broadcast();
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
+index de2718561..f8bb298b7 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
+@@ -16,6 +16,7 @@ use zkstack_cli_config::{
+     ChainConfig, ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
+     ZkStackConfigTrait,
+ };
++use zkstack_cli_types::L1Network;
+ 
+ use crate::{
+     abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
+@@ -104,6 +105,9 @@ pub async fn register_chain(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        if chain_config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+     }
+ 
+     if let Some(address) = sender {
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
+index bec070eeb..3efce4fda 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
+@@ -20,6 +20,7 @@ use zkstack_cli_config::{
+     ChainConfig, ContractsConfig, DAValidatorType, EcosystemConfig, ZkStackConfig,
+     ZkStackConfigTrait,
+ };
++use zkstack_cli_types::L1Network;
+ use zksync_basic_types::commitment::L1BatchCommitmentMode;
+ 
+ use crate::{
+@@ -354,6 +355,9 @@ async fn call_forge(
+ 
+     if with_broadcast {
+         forge = forge.with_broadcast();
++        if chain_config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+     }
+ 
+     if let Some(signature) = signature {

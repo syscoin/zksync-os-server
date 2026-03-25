@@ -25,7 +25,8 @@
 #   -h, --help
 #
 # Env: PROTOCOL_VERSION, GATEWAY_DIR, GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID,
-#      FUNDER_PRIVATE_KEY (for fund; Anvil default is dev key 0), FOUNDRY_EVM_VERSION=shanghai
+#      FUNDER_PRIVATE_KEY (for fund; Anvil default is dev key 0), FOUNDRY_EVM_VERSION=shanghai,
+#      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
 # `gl_zkstack_pty` in gateway-chain-init.sh wraps `zkstack chain init` with util-linux `script`.
@@ -144,7 +145,9 @@ export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 : "${PROTOCOL_VERSION:=v31.0}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
+export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_contracts_sha
+gl_assert_zksync_era_sha
 gl_path_for_zkstack
 
 wait_for_rpc() {
@@ -192,19 +195,22 @@ if [ "${L1_PROFILE}" = anvil ] && [ "${START_WATCH}" = true ]; then
   : "${GATEWAY_LOCAL_ANVIL_WATCH_LOG:=${HOME}/gateway-local-anvil-watch.log}"
   : >"${GATEWAY_LOCAL_ANVIL_WATCH_LOG}"
   echo "starting txpool watch -> ${GATEWAY_LOCAL_ANVIL_WATCH_LOG}"
+  LAUNCHER_PID=$$
   (
     export L1_RPC_URL PATH
-    while pgrep -f 'DeployL1CoreContracts\.s\.sol|DeployCTM\.s\.sol|zkstack ecosystem init|zkstack chain init' >/dev/null 2>&1; do
-      # txpool_status "pending" vs "queued" (foundry#10122); also mine every tick — forge can stall with
-      # pending=queued=0 while run-latest has 0 receipts; txpool-only watch never fires.
-      _tp="$(cast rpc txpool_status --rpc-url "${L1_RPC_URL}" 2>/dev/null || echo '{}')"
-      read -r P Q <<EOF
+    while kill -0 "${LAUNCHER_PID}" 2>/dev/null; do
+      if pgrep -f 'DeployL1CoreContracts\.s\.sol|DeployCTM\.s\.sol|zkstack ecosystem init|zkstack chain init' >/dev/null 2>&1; then
+        # txpool_status "pending" vs "queued" (foundry#10122); also mine every tick — forge can stall with
+        # pending=queued=0 while run-latest has 0 receipts; txpool-only watch never fires.
+        _tp="$(cast rpc txpool_status --rpc-url "${L1_RPC_URL}" 2>/dev/null || echo '{}')"
+        read -r P Q <<EOF
 $(python3 -c "import json,sys; j=json.loads(sys.argv[1]); print(int(j.get('pending','0x0'),16), int(j.get('queued','0x0'),16))" "${_tp}")
 EOF
-      if [ "${P}" != "0" ] || [ "${Q}" != "0" ]; then
-        echo "[watch] $(date -Is) pending=${P} queued=${Q}" >>"${GATEWAY_LOCAL_ANVIL_WATCH_LOG}"
+        if [ "${P}" != "0" ] || [ "${Q}" != "0" ]; then
+          echo "[watch] $(date -Is) pending=${P} queued=${Q}" >>"${GATEWAY_LOCAL_ANVIL_WATCH_LOG}"
+        fi
+        cast rpc anvil_mine 1 --rpc-url "${L1_RPC_URL}" >/dev/null || true
       fi
-      cast rpc anvil_mine 1 --rpc-url "${L1_RPC_URL}" >/dev/null || true
       sleep 1
     done
   ) &
@@ -225,6 +231,7 @@ fi
 if [ "${RESET_L1}" = true ]; then
   rm -rf "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/broadcast" "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out"
   mkdir -p "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out"
+  touch "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out/.gitkeep"
 fi
 
 "${SCRIPT_DIR}/gateway-deploy-l1.sh"
