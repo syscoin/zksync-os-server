@@ -30,9 +30,11 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 # Tanenbaum
 export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
-export BITCOIN_DA_RPC_URL=http://127.0.0.1:18370
-# Launcher sets Bitcoin DA `Confirmations` + `BITCOIN_DA_PODA_URL=https://poda.tanenbaum.io` unless you override.
+# Launcher defaults Bitcoin DA RPC to local sysgeth (`http://127.0.0.1:18370`) and
+# loads RPC auth from ~/.syscoin/testnet3/.cookie when present.
+# Prover mode defaults to GPU; override with PROVER_MODE=mock for fake proving.
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
+PROVER_MODE=mock bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 
 # Syscoin mainnet
 export L1_RPC_URL=https://rpc.syscoin.org
@@ -88,11 +90,12 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 | `GATEWAY_DIR` | default `~/gateway` |
 | `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
 | `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0; **tanenbaum** / **mainnet** you must set a key with native L1 balance |
-| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | Syscoin NEVM RPC connection used by the generated Gateway OS-server config in `Blobs` mode. These must be set before starting the Gateway node. |
+| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | Syscoin NEVM RPC connection used by the generated Gateway OS-server config in `Blobs` mode. Defaults to local cookie-auth (`http://127.0.0.1:18370` + `~/.syscoin/testnet3/.cookie`) when available; set explicitly to override. |
 | `BITCOIN_DA_FINALITY_MODE` / `BITCOIN_DA_FINALITY_CONFIRMATIONS` | **tanenbaum** defaults: `Confirmations` / `6`. **mainnet** / **anvil**: set explicitly if you need non-default DA finality |
 | `BITCOIN_DA_PODA_URL` | **tanenbaum** default `https://poda.tanenbaum.io` |
 | `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
 | `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
+| `PROVER_MODE` | proving mode for generated `zksync-os-server` configs: `gpu` (default) or `mock` (enables fake FRI/SNARK provers) |
 | `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
 
 ---

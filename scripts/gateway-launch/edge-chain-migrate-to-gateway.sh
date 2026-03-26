@@ -15,7 +15,20 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 
-gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v
+pause_output=""
+if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
+  echo "${pause_output}"
+  case "${pause_output}" in
+  *"already paused"* | *"AlreadyPaused"* | *"already been paused"*)
+    echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
+    ;;
+  *)
+    exit 1
+    ;;
+  esac
+else
+  echo "${pause_output}"
+fi
 
 gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \

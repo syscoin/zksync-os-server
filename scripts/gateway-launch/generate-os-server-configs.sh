@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+gl_validate_prover_mode
 
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH
@@ -60,6 +61,7 @@ export BITCOIN_DA_WALLET_NAME
 export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
+export PROVER_MODE
 
 python3 - <<'PY'
 from pathlib import Path
@@ -151,6 +153,10 @@ def patch_zkstack_gateway_chain_rpc_files(
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
 server_root = Path(os.environ["ZKSYNC_OS_SERVER_PATH"])
 output_root = gateway_dir / "os-server-configs"
+prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
+if prover_mode not in {"gpu", "mock"}:
+    raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|mock)")
+use_mock_prover = prover_mode == "mock"
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
@@ -206,6 +212,10 @@ def materialize_chain(
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
             f"  address: 0.0.0.0:{prover_api_port}",
+            "  fake_fri_provers:",
+            f"    enabled: {'true' if use_mock_prover else 'false'}",
+            "  fake_snark_provers:",
+            f"    enabled: {'true' if use_mock_prover else 'false'}",
             "status_server:",
             f"  address: 0.0.0.0:{status_port}",
             "observability:",
@@ -246,16 +256,6 @@ def materialize_chain(
                 ]
             ),
         )
-        write_text(
-            out_dir / "pre-migration-overlay.yaml",
-            "\n".join(
-                [
-                    "sequencer:",
-                    "  max_blocks_to_produce: 0",
-                    "",
-                ]
-            ),
-        )
 
     shutil.copy2(source_dir / "contracts.yaml", out_dir / "contracts.yaml")
     shutil.copy2(source_dir / "wallets.yaml", out_dir / "wallets.yaml")
@@ -282,20 +282,6 @@ exec cargo run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
-
-    if gateway_rpc_url is not None:
-        pre_migration_start_script = f"""#!/usr/bin/env bash
-set -euo pipefail
-if [ -f "${{HOME}}/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  source "${{HOME}}/.cargo/env"
-fi
-cd "{server_root}"
-exec cargo run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'pre-migration-overlay.yaml'}"
-"""
-        write_text(out_dir / "start-pre-migration-node.sh", pre_migration_start_script)
-        (out_dir / "start-pre-migration-node.sh").chmod(0o755)
-
 
 materialize_chain(
     chain_name=os.environ["GATEWAY_CHAIN_NAME"],

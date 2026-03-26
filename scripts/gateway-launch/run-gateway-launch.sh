@@ -29,7 +29,7 @@
 # Env: ZKSYNC_ERA_PATH (optional), ZKSYNC_ERA_GIT_URL, ZKSYNC_ERA_CACHE_ROOT, PROTOCOL_VERSION, GATEWAY_DIR,
 #      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
 #      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, BITCOIN_DA_RPC_URL, BITCOIN_DA_RPC_USER,
-#      BITCOIN_DA_RPC_PASSWORD, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH
+#      BITCOIN_DA_RPC_PASSWORD, PROVER_MODE, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
 # `gl_zkstack_pty` in gateway-chain-init.sh wraps `zkstack chain init` with util-linux `script`.
@@ -39,6 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIG_ARGS=("$@")
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+gl_validate_prover_mode
 
 L1_PROFILE=""
 START_ANVIL=true
@@ -75,6 +76,7 @@ Optional env:
   BITCOIN_DA_RPC_PASSWORD Syscoin NEVM RPC auth password for the generated gateway OS-server config
                         If using local Syscoin cookie auth, e.g.:
                           export BITCOIN_DA_RPC_PASSWORD="${COOKIE#*:}"
+  PROVER_MODE            prover mode for generated OS-server config: gpu (default) or mock
   GATEWAY_LAUNCH_LOG      default ~/gateway-launch.log
 
 Options:
@@ -125,6 +127,7 @@ fi
 exec > >(tee "${GATEWAY_LAUNCH_LOG}") 2>&1
 
 echo "=== gateway-launch log: ${GATEWAY_LAUNCH_LOG} ==="
+echo "gateway-launch: PROVER_MODE=${PROVER_MODE}"
 
 [ -n "${L1_PROFILE}" ] || {
   echo "required: --l1 anvil|tanenbaum|mainnet" >&2

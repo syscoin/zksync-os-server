@@ -4,9 +4,30 @@
 GL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ZKSYNC_OS_SERVER_PATH="${ZKSYNC_OS_SERVER_PATH:-$(cd "${GL_DIR}/../.." && pwd)}"
 
+# Ensure required CLI tooling is discoverable in non-interactive shells.
+for _tool_dir in "${HOME}/.foundry/bin" "${HOME}/.cargo/bin"; do
+  if [ -d "${_tool_dir}" ] && [[ ":${PATH}:" != *":${_tool_dir}:"* ]]; then
+    PATH="${_tool_dir}:${PATH}"
+  fi
+done
+export PATH
+: "${PROVER_MODE:=gpu}"
+export PROVER_MODE
+
 gl_die() {
   echo "gateway-launch: $*" >&2
   exit 1
+}
+
+gl_validate_prover_mode() {
+  case "${PROVER_MODE,,}" in
+  gpu | mock) ;;
+  *)
+    gl_die "invalid PROVER_MODE='${PROVER_MODE}' (expected: gpu | mock)"
+    ;;
+  esac
+  PROVER_MODE="${PROVER_MODE,,}"
+  export PROVER_MODE
 }
 
 gl_require() {
