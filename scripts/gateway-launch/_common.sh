@@ -272,10 +272,8 @@ gl_fund_wallets_yaml() {
   export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
   export WALLETS_YAML_PATH
   python3 - <<'PY'
-import json
 import os
 import subprocess
-import urllib.request
 
 import yaml
 from pathlib import Path
@@ -293,21 +291,13 @@ def addr_hex(a):
     return s if s.startswith("0x") else "0x" + s
 
 
-def rpc_call(method, params):
-    req = urllib.request.Request(
-        rpc,
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
-        headers={"content-type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=45) as resp:
-        payload = json.loads(resp.read().decode())
-    if payload.get("error") is not None:
-        raise SystemExit(f"rpc error for {method}: {payload['error']}")
-    return payload["result"]
-
-
 def wei_balance(address):
-    return int(rpc_call("eth_getBalance", [address, "pending"]), 16)
+    return int(
+        subprocess.check_output(
+            ["cast", "balance", address, "--block", "pending", "--rpc-url", rpc],
+            text=True,
+        ).strip()
+    )
 
 
 def required_balance(role):
@@ -331,7 +321,12 @@ funder = subprocess.check_output(
     text=True,
 ).strip()
 funder_balance = wei_balance(funder)
-starting_nonce = int(rpc_call("eth_getTransactionCount", [funder, "pending"]), 16)
+starting_nonce = int(
+    subprocess.check_output(
+        ["cast", "nonce", funder, "--block", "pending", "--rpc-url", rpc],
+        text=True,
+    ).strip()
+)
 
 transfers = []
 for role, cfg in w.items():
