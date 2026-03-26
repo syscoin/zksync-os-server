@@ -88,28 +88,58 @@ PY
 )"
 export DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
 
-forge script deploy-scripts/tokens/DeployErc20.s.sol \
-  --legacy \
-  --ffi \
-  --rpc-url "${L1_RPC_URL}" \
-  --private-key "${DEPLOYER_PRIVATE_KEY}" \
-  --broadcast
-
-export ZKSYS_L1_TOKEN_ADDRESS="$(python3 - <<'PY'
+extract_zksys_address_from_output() {
+  python3 - <<'PY'
 import re
 from pathlib import Path
-text = Path("script-out/output-deploy-erc20.toml").read_text(encoding="utf-8")
+path = Path("script-out/output-deploy-erc20.toml")
+if not path.exists():
+    raise SystemExit(0)
+text = path.read_text(encoding="utf-8")
 block = re.search(r"(?ms)^\[tokens\.ZKSYS\]\s*(.*?)^\[", text + "\n[", re.MULTILINE)
+if not block:
+    raise SystemExit(0)
 m = re.search(r'(?m)^address\s*=\s*"(0x[0-9a-fA-F]{40})"$', block.group(1))
+if not m:
+    raise SystemExit(0)
 print(m.group(1))
 PY
-)"
+}
+
+KNOWN_ZKSYS_ADDRESS="${ZKSYS_L1_TOKEN_ADDRESS:-}"
+if [ -z "${KNOWN_ZKSYS_ADDRESS}" ]; then
+  KNOWN_ZKSYS_ADDRESS="$(extract_zksys_address_from_output || true)"
+fi
+
+if [ -n "${KNOWN_ZKSYS_ADDRESS}" ] && [ "$(cast code "${KNOWN_ZKSYS_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" ]; then
+  export ZKSYS_L1_TOKEN_ADDRESS="${KNOWN_ZKSYS_ADDRESS}"
+  echo "gateway-launch: reusing existing ZKSYS token at ${ZKSYS_L1_TOKEN_ADDRESS}; skipping DeployErc20"
+else
+  forge script deploy-scripts/tokens/DeployErc20.s.sol \
+    --legacy \
+    --ffi \
+    --rpc-url "${L1_RPC_URL}" \
+    --private-key "${DEPLOYER_PRIVATE_KEY}" \
+    --broadcast
+  export ZKSYS_L1_TOKEN_ADDRESS="$(extract_zksys_address_from_output)"
+fi
+
+test "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
+  echo "zksys token has no code at ${ZKSYS_L1_TOKEN_ADDRESS}" >&2
+  exit 1
+}
+
 export L2_NATIVE_TOKEN_VAULT_ADDR=0x0000000000000000000000000000000000010004
-export ZK_TOKEN_ASSET_ID="$(cast abi-encode \
-  "f(uint256,address,address)" \
-  "${L1_CHAIN_ID}" \
-  "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
-  "${ZKSYS_L1_TOKEN_ADDRESS}" | cast keccak)"
+if [ -z "${ZK_TOKEN_ASSET_ID:-}" ]; then
+  export ZK_TOKEN_ASSET_ID="$(cast abi-encode \
+    "f(uint256,address,address)" \
+    "${L1_CHAIN_ID}" \
+    "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
+    "${ZKSYS_L1_TOKEN_ADDRESS}" | cast keccak)"
+  echo "gateway-launch: derived ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
+else
+  echo "gateway-launch: using provided ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
+fi
 
 test -f script-config/config-deploy-ctm.toml || \
   cp deploy-script-config-template/config-deploy-ctm.toml script-config/config-deploy-ctm.toml
