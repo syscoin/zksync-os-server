@@ -29,6 +29,15 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
 : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
 
+if [ -z "${BITCOIN_DA_RPC_URL}" ] && [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
+  BITCOIN_DA_RPC_URL="http://127.0.0.1:18370"
+fi
+if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } && [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
+  COOKIE="$(< "${HOME}/.syscoin/testnet3/.cookie")"
+  : "${BITCOIN_DA_RPC_USER:=${COOKIE%%:*}}"
+  : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
+fi
+
 export GATEWAY_DIR
 export ZKSYNC_OS_SERVER_PATH
 export GATEWAY_CHAIN_NAME
@@ -142,7 +151,6 @@ def patch_zkstack_gateway_chain_rpc_files(
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
 server_root = Path(os.environ["ZKSYNC_OS_SERVER_PATH"])
 output_root = gateway_dir / "os-server-configs"
-local_dev = server_root / "local-chains" / "local_dev.yaml"
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
@@ -187,6 +195,8 @@ def materialize_chain(
             f"  bytecode_supplier_address: '{bytecode_supplier}'",
             f"  genesis_input_path: {out_dir / 'genesis.json'}",
             f"  chain_id: {chain_id}",
+            "sequencer:",
+            "  revm_consistency_checker_enabled: false",
             "l1_sender:",
             f"  pubdata_mode: {pubdata_mode}",
             f"  operator_commit_sk: '{operator_commit_sk}'",
@@ -201,6 +211,10 @@ def materialize_chain(
             "observability:",
             "  prometheus:",
             f"    port: {prometheus_port}",
+            "external_price_api_client:",
+            "  source: Forced",
+            "  forced_prices:",
+            "    '0x0000000000000000000000000000000000000001': 3000",
         ]
     )
     if pubdata_mode == "Blobs":
@@ -215,10 +229,6 @@ def materialize_chain(
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
                 f"  bitcoin_da_finality_mode: {os.environ['BITCOIN_DA_FINALITY_MODE']}",
                 f"  bitcoin_da_finality_confirmations: {os.environ['BITCOIN_DA_FINALITY_CONFIRMATIONS']}",
-                "external_price_api_client:",
-                "  source: Forced",
-                "  forced_prices:",
-                "    '0x0000000000000000000000000000000000000001': 3000",
             ]
         )
     config_lines.append("")
@@ -258,7 +268,7 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   source "${{HOME}}/.cargo/env"
 fi
 cd "{server_root}"
-exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}"
+exec cargo run --release -- --config "{out_dir / 'config.yaml'}"
 """
     if gateway_rpc_url is not None:
         start_script = f"""#!/usr/bin/env bash
@@ -268,7 +278,7 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   source "${{HOME}}/.cargo/env"
 fi
 cd "{server_root}"
-exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
+exec cargo run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
@@ -281,7 +291,7 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   source "${{HOME}}/.cargo/env"
 fi
 cd "{server_root}"
-exec cargo run --release -- --config "{local_dev}" --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'pre-migration-overlay.yaml'}"
+exec cargo run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'pre-migration-overlay.yaml'}"
 """
         write_text(out_dir / "start-pre-migration-node.sh", pre_migration_start_script)
         (out_dir / "start-pre-migration-node.sh").chmod(0o755)

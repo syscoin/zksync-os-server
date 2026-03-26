@@ -12,6 +12,13 @@ Gateway + optional **edge** chain with `zkstack` (`--zksync-os`), `zksync-os-ser
 
 All steps are driven by **`scripts/gateway-launch/run-gateway-launch.sh`**. Sub-scripts in the same directory are for advanced / piecemeal use only.
 
+
+```bash
+# Start nodes after migration completes
+"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
+"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"
+```
+
 From a **`zksync-os-server` clone** (or set **`ZKSYNC_OS_SERVER_PATH`** to it), **`run-gateway-launch.sh`** will **git-clone and pin `zksync-era`** under **`~/.cache/zksync-gateway-era/<protocol>/<zkstack-cli.sha>/`** when **`ZKSYNC_ERA_PATH`** is unset, then build the repo-local **`zkstack`** on first use if needed.
 
 ```bash
@@ -24,9 +31,6 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
 export BITCOIN_DA_RPC_URL=http://127.0.0.1:18370
-COOKIE="$(< ~/.syscoin/testnet3/.cookie)"
-export BITCOIN_DA_RPC_USER="${COOKIE%%:*}"
-export BITCOIN_DA_RPC_PASSWORD="${COOKIE#*:}"
 # Launcher sets Bitcoin DA `Confirmations` + `BITCOIN_DA_PODA_URL=https://poda.tanenbaum.io` unless you override.
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 

@@ -21,8 +21,8 @@
 #   --skip-fund          skip fund-wallets.sh (you funded manually)
 #   --stop-after-l1      stop after ecosystem init / L1 deploy (skip chain init + convert)
 #   --with-edge          run edge-chain-create-init.sh after gateway steps
-#   --migrate-edge       run edge-chain-migrate-to-gateway.sh (Gateway L2 RPC must be reachable;
-#                        keep the edge node stopped until migration/finalization completes)
+#   --migrate-edge       run edge-chain-migrate-to-gateway.sh (launcher starts Gateway via generated
+#                        config, runs migrate/finalize, then stops Gateway; keep edge node stopped)
 #   --log PATH           tee stdout/stderr here (default: ~/gateway-launch.log)
 #   -h, --help
 #
@@ -48,7 +48,7 @@ RESET_L1=false
 SKIP_FUND=false
 STOP_AFTER_L1=false
 WITH_EDGE=true
-MIGRATE_EDGE=false
+MIGRATE_EDGE=true
 
 usage() {
   cat <<'EOF'
@@ -85,7 +85,7 @@ Options:
   --skip-fund             wallets already funded
   --stop-after-l1         skip chain init + convert (+ edge)
   --with-edge             create+init edge chain after gateway
-  --migrate-edge          migrate edge to gateway (needs Gateway L2 up; edge node stays stopped)
+  --migrate-edge          migrate edge to gateway (launcher starts/stops Gateway; edge node stays stopped)
   --log PATH              tee output here
   -h, --help
 EOF
@@ -142,12 +142,20 @@ tanenbaum)
   export L1_NETWORK=tanenbaum
   gl_require L1_RPC_URL
   # Tanenbaum: no chainlocks on the DA path; use PoW confirmation-based finality unless overridden.
+  : "${BITCOIN_DA_RPC_URL:=http://127.0.0.1:18370}"
+  if [ -z "${BITCOIN_DA_RPC_USER:-}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD:-}" ]; then
+    if [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
+      COOKIE="$(< "${HOME}/.syscoin/testnet3/.cookie")"
+      : "${BITCOIN_DA_RPC_USER:=${COOKIE%%:*}}"
+      : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
+    fi
+  fi
   : "${BITCOIN_DA_FINALITY_MODE:=Confirmations}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
   : "${BITCOIN_DA_PODA_URL:=https://poda.tanenbaum.io}"
   : "${ETH_GAS_PRICE:=1gwei}"
   : "${ETH_PRIORITY_GAS_PRICE:=1gwei}"
-  export BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
   ;;
 mainnet)
   export L1_CHAIN_ID=57
@@ -201,7 +209,58 @@ wait_for_rpc() {
 
 ANVIL_PID=""
 WATCH_PID=""
+GATEWAY_NODE_PID=""
+GATEWAY_STARTED_FOR_MIGRATION=false
+
+gateway_rpc_ready() {
+  local rpc_port
+  rpc_port="${GATEWAY_OS_RPC_PORT:-3052}"
+  cast block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
+}
+
+start_gateway_for_migration() {
+  local start_script log_file i
+  start_script="${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/start-node.sh"
+  [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
+
+  if gateway_rpc_ready; then
+    echo "migrate-edge: Gateway RPC already reachable; reusing running node"
+    return 0
+  fi
+
+  : "${GATEWAY_MIGRATION_GATEWAY_LOG:=${HOME}/gateway-migration-gateway-node.log}"
+  log_file="${GATEWAY_MIGRATION_GATEWAY_LOG}"
+  echo "migrate-edge: starting Gateway node via ${start_script} -> ${log_file}"
+  nohup bash "${start_script}" >"${log_file}" 2>&1 &
+  GATEWAY_NODE_PID=$!
+  GATEWAY_STARTED_FOR_MIGRATION=true
+
+  for i in $(seq 1 150); do
+    if gateway_rpc_ready; then
+      echo "migrate-edge: Gateway RPC is up"
+      return 0
+    fi
+    if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
+      break
+    fi
+    sleep 2
+  done
+
+  gl_die "migrate-edge: Gateway RPC did not come up (see ${log_file})"
+}
+
+stop_gateway_for_migration() {
+  if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]; then
+    echo "migrate-edge: stopping Gateway node (pid ${GATEWAY_NODE_PID})"
+    kill "${GATEWAY_NODE_PID}" 2>/dev/null || true
+    wait "${GATEWAY_NODE_PID}" 2>/dev/null || true
+  fi
+  GATEWAY_NODE_PID=""
+  GATEWAY_STARTED_FOR_MIGRATION=false
+}
+
 cleanup() {
+  stop_gateway_for_migration
   if [ -n "${WATCH_PID}" ]; then
     kill "${WATCH_PID}" 2>/dev/null || true
   fi
@@ -293,13 +352,15 @@ fi
 "${SCRIPT_DIR}/generate-os-server-configs.sh"
 
 if [ "${WITH_EDGE}" = true ]; then
-  "${SCRIPT_DIR}/edge-chain-create-init.sh"
+  SKIP_FUND="${SKIP_FUND}" "${SCRIPT_DIR}/edge-chain-create-init.sh"
   "${SCRIPT_DIR}/generate-os-server-configs.sh"
 fi
 
 if [ "${MIGRATE_EDGE}" = true ]; then
-  echo "migrate-edge: ensure Gateway zksync-os-server RPC is up; keep the edge node stopped until migration/finalization completes"
+  echo "migrate-edge: running Gateway start -> migrate/finalize -> Gateway stop"
+  start_gateway_for_migration
   "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh"
+  stop_gateway_for_migration
 fi
 
 echo "=== gateway-launch complete ==="

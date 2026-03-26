@@ -19,6 +19,13 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_ID:=57057}"
 : "${EDGE_WALLET_CREATION:=}"
 : "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
+if [ -z "${SKIP_FUND:-}" ]; then
+  if ps -o args= -p "${PPID}" 2>/dev/null | grep -q -- '--skip-fund'; then
+    SKIP_FUND=true
+  else
+    SKIP_FUND=false
+  fi
+fi
 
 if [ -z "${EDGE_WALLET_CREATION}" ]; then
   if [ -f "${EDGE_WALLET_PATH}" ]; then
@@ -55,7 +62,11 @@ if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; t
   echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
 fi
 
-GATEWAY_CHAIN_NAME="${EDGE_CHAIN_NAME}" "${SCRIPT_DIR}/fund-wallets.sh"
+if [ "${SKIP_FUND}" != "true" ]; then
+  GATEWAY_CHAIN_NAME="${EDGE_CHAIN_NAME}" "${SCRIPT_DIR}/fund-wallets.sh"
+else
+  echo "gateway-launch: SKIP_FUND=true, skipping edge wallet funding"
+fi
 
 zkstack chain init \
   --chain "${EDGE_CHAIN_NAME}" \
