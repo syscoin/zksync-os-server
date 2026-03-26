@@ -10,6 +10,8 @@ gl_require L1_RPC_URL
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_zksync_era_sha
 gl_path_for_zkstack
+: "${FOUNDRY_EVM_VERSION:=shanghai}"
+export FOUNDRY_EVM_VERSION
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 cd "${GATEWAY_DIR}"
 
