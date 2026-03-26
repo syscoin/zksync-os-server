@@ -97,20 +97,12 @@ gl_build_zkstack_cli_release() {
   (cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && cargo +"${toolchain}" build --release --locked -Znext-lockfile-bump -p zkstack)
 }
 
-# Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
-# If ZKSYNC_ERA_PATH is unset, uses ZKSYNC_ERA_CACHE_ROOT/PROTOCOL_VERSION/ZKSTACK_CLI_SHA (default cache ~/.cache/zksync-gateway-era).
-gl_ensure_zksync_era_workspace() {
-  gl_require ZKSYNC_OS_SERVER_PATH
-  gl_require PROTOCOL_VERSION
+gl_prepare_zksync_era_repo() {
+  gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_ZKSTACK_CLI_SHA
   gl_require REQUIRED_CONTRACTS_SHA
 
   local url="${ZKSYNC_ERA_GIT_URL:-https://github.com/matter-labs/zksync-era.git}"
-
-  if [ -z "${ZKSYNC_ERA_PATH:-}" ]; then
-    export ZKSYNC_ERA_PATH="${ZKSYNC_ERA_CACHE_ROOT:-${HOME}/.cache/zksync-gateway-era}/${PROTOCOL_VERSION}/${REQUIRED_ZKSTACK_CLI_SHA}"
-    echo "gateway-launch: ZKSYNC_ERA_PATH unset — using ${ZKSYNC_ERA_PATH}"
-  fi
 
   if [ ! -d "${ZKSYNC_ERA_PATH}/.git" ]; then
     mkdir -p "$(dirname "${ZKSYNC_ERA_PATH}")"
@@ -130,6 +122,75 @@ gl_ensure_zksync_era_workspace() {
   gl_checkout_contracts_sha
   gl_assert_zksync_era_sha
   gl_assert_contracts_sha
+}
+
+gl_prepare_zksync_era_source_repo() {
+  gl_require PROTOCOL_VERSION
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  local source_root source_path
+  source_root="${ZKSYNC_ERA_SOURCE_ROOT:-${HOME}/.cache/zksync-gateway-era-source}"
+  source_path="${source_root}/${PROTOCOL_VERSION}/${REQUIRED_ZKSTACK_CLI_SHA}"
+  export ZKSYNC_ERA_SOURCE_PATH="${source_path}"
+  echo "gateway-launch: ensuring clean zksync-era source at ${ZKSYNC_ERA_SOURCE_PATH}"
+
+  local saved_path="${ZKSYNC_ERA_PATH:-}"
+  export ZKSYNC_ERA_PATH="${ZKSYNC_ERA_SOURCE_PATH}"
+  gl_prepare_zksync_era_repo
+  local source_top_level_delta
+  source_top_level_delta="$(git -C "${ZKSYNC_ERA_PATH}" diff --name-only -- . ":(exclude)contracts")"
+  if [ -n "${source_top_level_delta}" ] || [ -n "$(git -C "${ZKSYNC_ERA_PATH}/contracts" status --porcelain)" ]; then
+    gl_die "zksync-era source cache is dirty: ${ZKSYNC_ERA_PATH}"
+  fi
+  export ZKSYNC_ERA_PATH="${saved_path}"
+}
+
+gl_workspace_matches_required_pins() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  gl_require REQUIRED_CONTRACTS_SHA
+
+  if [ ! -d "${ZKSYNC_ERA_PATH}/.git" ]; then
+    return 1
+  fi
+
+  local top_head contracts_head
+  top_head="$(git -C "${ZKSYNC_ERA_PATH}" rev-parse HEAD 2>/dev/null || true)"
+  contracts_head="$(git -C "${ZKSYNC_ERA_PATH}/contracts" rev-parse HEAD 2>/dev/null || true)"
+  [ "${top_head}" = "${REQUIRED_ZKSTACK_CLI_SHA}" ] && [ "${contracts_head}" = "${REQUIRED_CONTRACTS_SHA}" ]
+}
+
+# Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
+# If ZKSYNC_ERA_PATH is unset, uses a clean shared source cache and a per-ecosystem mutable working clone.
+gl_ensure_zksync_era_workspace() {
+  gl_require ZKSYNC_OS_SERVER_PATH
+  gl_require PROTOCOL_VERSION
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  gl_require REQUIRED_CONTRACTS_SHA
+
+  if [ -n "${ZKSYNC_ERA_PATH:-}" ]; then
+    gl_prepare_zksync_era_repo
+    return 0
+  fi
+
+  gl_prepare_zksync_era_source_repo
+
+  local run_root run_name
+  run_root="${ZKSYNC_ERA_RUN_ROOT:-$(dirname "${GATEWAY_DIR:-${HOME}/gateway}")/.zksync-era-workspaces}"
+  run_name="${GATEWAY_ECOSYSTEM_NAME:-$(basename "${GATEWAY_DIR:-gateway}")}-${PROTOCOL_VERSION}-${REQUIRED_ZKSTACK_CLI_SHA}"
+  export ZKSYNC_ERA_PATH="${run_root}/${run_name}"
+  echo "gateway-launch: ZKSYNC_ERA_PATH unset — using mutable workspace ${ZKSYNC_ERA_PATH}"
+
+  if [ ! -d "${ZKSYNC_ERA_PATH}/.git" ]; then
+    mkdir -p "${run_root}"
+    git clone "${ZKSYNC_ERA_SOURCE_PATH}" "${ZKSYNC_ERA_PATH}"
+    git -C "${ZKSYNC_ERA_PATH}" submodule update --init --recursive
+  fi
+
+  if gl_workspace_matches_required_pins; then
+    return 0
+  fi
+
+  gl_prepare_zksync_era_repo
 }
 
 gl_path_for_zkstack() {
@@ -238,8 +299,10 @@ def required_balance(role):
 
 default_send_timeout = "900" if l1_network in {"tanenbaum", "mainnet"} else "45"
 default_rpc_timeout = "120" if l1_network in {"tanenbaum", "mainnet"} else "45"
+default_min_topup_wei = str(25 * 10**16) if l1_network in {"tanenbaum", "mainnet"} else "0"
 send_timeout = os.environ.get("GATEWAY_FUND_TX_TIMEOUT", default_send_timeout)
 rpc_timeout = os.environ.get("GATEWAY_FUND_RPC_TIMEOUT", default_rpc_timeout)
+min_topup_wei = int(os.environ.get("GATEWAY_FUND_MIN_TOPUP_WEI", default_min_topup_wei))
 
 
 funder = subprocess.check_output(
@@ -259,6 +322,12 @@ for role, cfg in w.items():
     deficit = max(0, target - current)
     if deficit == 0:
         print(f"wallet {role} already funded: current={current} target={target}")
+        continue
+    if deficit < min_topup_wei:
+        print(
+            f"wallet {role} below target by dust: current={current} target={target} "
+            f"deficit={deficit} min_topup_wei={min_topup_wei}; skipping top-up"
+        )
         continue
     transfers.append((role, address, current, target, deficit))
 
