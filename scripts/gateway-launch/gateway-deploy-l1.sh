@@ -86,6 +86,7 @@ pk = yaml.safe_load((Path(os.environ["GATEWAY_DIR"]) / "configs" / "wallets.yaml
 print(format(pk, "x").zfill(64) if isinstance(pk, int) else str(pk).lower().removeprefix("0x").zfill(64))
 PY
 )"
+export DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
 
 forge script deploy-scripts/tokens/DeployErc20.s.sol \
   --legacy \
@@ -127,13 +128,74 @@ p.write_text(s, encoding="utf-8")
 PY
 
 cd "${GATEWAY_DIR}"
-zkstack ecosystem init \
-  --zksync-os \
-  --update-submodules false \
-  --l1-rpc-url "${L1_RPC_URL}" \
-  --deploy-ecosystem true \
-  --deploy-erc20 false \
-  --deploy-paymaster false \
-  --ecosystem-only \
-  --no-genesis \
-  --observability false
+
+wait_for_deployer_nonce_sync() {
+  local timeout_s poll_s start now latest pending
+  timeout_s="${GATEWAY_DEPLOYER_PENDING_TIMEOUT:-1800}"
+  poll_s="${GATEWAY_DEPLOYER_PENDING_POLL:-5}"
+  start="$(date +%s)"
+  while true; do
+    latest="$(cast nonce "${DEPLOYER_ADDRESS}" --block latest --rpc-url "${L1_RPC_URL}")"
+    pending="$(cast nonce "${DEPLOYER_ADDRESS}" --block pending --rpc-url "${L1_RPC_URL}")"
+    if [ "${latest}" = "${pending}" ]; then
+      return 0
+    fi
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "${timeout_s}" ]; then
+      echo "deployer nonce did not converge within timeout: latest=${latest} pending=${pending}" >&2
+      return 1
+    fi
+    echo "waiting for deployer pending txs to clear: latest=${latest} pending=${pending}"
+    sleep "${poll_s}"
+  done
+}
+
+run_ecosystem_init_once() {
+  zkstack ecosystem init \
+    --zksync-os \
+    --update-submodules false \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    --deploy-ecosystem true \
+    --deploy-erc20 false \
+    --deploy-paymaster false \
+    --ecosystem-only \
+    --no-genesis \
+    --observability false
+}
+
+: "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
+attempt=1
+while true; do
+  echo "gateway-launch: ecosystem init attempt ${attempt}/${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}"
+  tmp_log="$(mktemp)"
+  set +e
+  run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
+  ec="${PIPESTATUS[0]}"
+  set -e
+
+  if [ "${ec}" -eq 0 ]; then
+    rm -f "${tmp_log}"
+    break
+  fi
+
+  if python3 - "${tmp_log}" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8", errors="ignore").lower()
+sys.exit(0 if "replacement transaction underpriced" in t else 1)
+PY
+  then
+    rm -f "${tmp_log}"
+    if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
+      echo "gateway-launch: ecosystem init failed after ${attempt} attempts due to replacement transaction underpriced" >&2
+      exit 1
+    fi
+    echo "gateway-launch: detected replacement transaction underpriced; waiting for nonce sync before retry"
+    wait_for_deployer_nonce_sync
+    attempt=$((attempt + 1))
+    continue
+  fi
+
+  rm -f "${tmp_log}"
+  exit "${ec}"
+done
