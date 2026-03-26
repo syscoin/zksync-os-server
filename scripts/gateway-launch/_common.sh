@@ -274,6 +274,7 @@ gl_fund_wallets_yaml() {
   python3 - <<'PY'
 import os
 import subprocess
+import time
 
 import yaml
 from pathlib import Path
@@ -300,6 +301,15 @@ def wei_balance(address):
     )
 
 
+def wei_balance_latest(address):
+    return int(
+        subprocess.check_output(
+            ["cast", "balance", address, "--rpc-url", rpc],
+            text=True,
+        ).strip()
+    )
+
+
 def required_balance(role):
     if role == "deployer":
         return int(6 * 10**18)
@@ -311,9 +321,17 @@ def required_balance(role):
 default_send_timeout = "900" if l1_network in {"tanenbaum", "mainnet"} else "45"
 default_rpc_timeout = "120" if l1_network in {"tanenbaum", "mainnet"} else "45"
 default_min_topup_wei = str(25 * 10**16) if l1_network in {"tanenbaum", "mainnet"} else "0"
+default_post_fund_wait_timeout = "2400" if l1_network in {"tanenbaum", "mainnet"} else "120"
+default_post_fund_poll_interval = "5"
 send_timeout = os.environ.get("GATEWAY_FUND_TX_TIMEOUT", default_send_timeout)
 rpc_timeout = os.environ.get("GATEWAY_FUND_RPC_TIMEOUT", default_rpc_timeout)
 min_topup_wei = int(os.environ.get("GATEWAY_FUND_MIN_TOPUP_WEI", default_min_topup_wei))
+post_fund_wait_timeout = int(
+    os.environ.get("GATEWAY_FUND_POST_WAIT_TIMEOUT", default_post_fund_wait_timeout)
+)
+post_fund_poll_interval = float(
+    os.environ.get("GATEWAY_FUND_POST_WAIT_POLL_INTERVAL", default_post_fund_poll_interval)
+)
 
 
 funder = subprocess.check_output(
@@ -384,5 +402,30 @@ for index, (role, address, current, target, deficit) in enumerate(transfers):
         f"funding wallet {role}: current={current} target={target} deficit={deficit} "
         f"nonce={nonce} tx={result}"
     )
+
+deadline = time.time() + post_fund_wait_timeout
+pending_targets = {role: (address, target) for role, address, _, target, _ in transfers}
+print(
+    f"waiting for funding transactions to be reflected on latest block for {len(pending_targets)} wallet(s) "
+    f"(timeout={post_fund_wait_timeout}s)"
+)
+
+while pending_targets:
+    completed_roles = []
+    for role, (address, target) in pending_targets.items():
+        current_latest = wei_balance_latest(address)
+        if current_latest >= target:
+            print(f"wallet {role} funded on latest: current={current_latest} target={target}")
+            completed_roles.append(role)
+    for role in completed_roles:
+        pending_targets.pop(role, None)
+    if not pending_targets:
+        break
+    if time.time() > deadline:
+        missing = ", ".join(sorted(pending_targets.keys()))
+        raise SystemExit(
+            f"timed out waiting for wallet funding confirmations on latest block; still below target: {missing}"
+        )
+    time.sleep(post_fund_poll_interval)
 PY
 }
