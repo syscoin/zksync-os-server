@@ -212,15 +212,20 @@ while true; do
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 t = p.read_text(encoding="utf-8", errors="ignore").lower()
-sys.exit(0 if "replacement transaction underpriced" in t else 1)
+retry_signals = (
+    "replacement transaction underpriced",
+    "nonce too low",
+    "eoa nonce changed unexpectedly while sending transactions",
+)
+sys.exit(0 if any(sig in t for sig in retry_signals) else 1)
 PY
   then
     rm -f "${tmp_log}"
     if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
-      echo "gateway-launch: ecosystem init failed after ${attempt} attempts due to replacement transaction underpriced" >&2
+      echo "gateway-launch: ecosystem init failed after ${attempt} attempts due to nonce/replacement retryable errors" >&2
       exit 1
     fi
-    echo "gateway-launch: detected replacement transaction underpriced; waiting for nonce sync before retry"
+    echo "gateway-launch: detected nonce/replacement retryable error; waiting for nonce sync before retry"
     wait_for_deployer_nonce_sync
     attempt=$((attempt + 1))
     continue
