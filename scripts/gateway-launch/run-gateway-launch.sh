@@ -47,7 +47,7 @@ REUSE_ECOSYSTEM=false
 RESET_L1=false
 SKIP_FUND=false
 STOP_AFTER_L1=false
-WITH_EDGE=false
+WITH_EDGE=true
 MIGRATE_EDGE=false
 
 usage() {

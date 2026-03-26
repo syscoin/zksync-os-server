@@ -99,6 +99,29 @@ index 1d6300f12..6ee8479bc 100644
 +            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
          }
      }
+diff --git a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
+index 3d8fdfd9c..93faa309f 100644
+--- a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
++++ b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
+@@ -1,3 +1,5 @@
++use std::str::FromStr;
++
+ use ethers::types::{Address, H256};
+ use serde::{Deserialize, Serialize};
+ use zkstack_cli_types::{L1Network, VMOption};
+@@ -33,7 +35,11 @@ impl DeployCTMConfig {
+             is_zk_sync_os: vm_option.is_zksync_os(),
+             testnet_verifier,
+             owner_address: wallets_config.governor.address,
+             support_l2_legacy_shared_bridge_test,
+-            zk_token_asset_id: l1_network.zk_token_asset_id(),
++            zk_token_asset_id: std::env::var("ZK_TOKEN_ASSET_ID")
++                .ok()
++                .and_then(|value| H256::from_str(&value).ok())
++                .unwrap_or_else(|| l1_network.zk_token_asset_id()),
+             contracts: ContractsDeployCTMConfig {
+                 create2_factory_addr: initial_deployment_config.create2_factory_addr,
+                 create2_factory_salt: initial_deployment_config.create2_factory_salt,
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
 index 707872ea0..9ae443887 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
