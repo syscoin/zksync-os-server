@@ -347,26 +347,39 @@ starting_nonce = int(
 )
 
 transfers = []
+wait_only = []
 for role, cfg in w.items():
     if role == "test_wallet":
         continue
     address = addr_hex(cfg["address"])
     target = required_balance(role)
-    current = wei_balance(address)
-    deficit = max(0, target - current)
+    current_latest = wei_balance_latest(address)
+    current_pending = wei_balance(address)
+    deficit = max(0, target - current_latest)
     if deficit == 0:
-        print(f"wallet {role} already funded: current={current} target={target}")
+        print(
+            f"wallet {role} already funded on latest: current_latest={current_latest} "
+            f"current_pending={current_pending} target={target}"
+        )
+        continue
+    if current_pending >= target:
+        print(
+            f"wallet {role} has pending top-up in-flight: current_latest={current_latest} "
+            f"current_pending={current_pending} target={target}; waiting for confirmation"
+        )
+        wait_only.append((role, address, current_latest, target))
         continue
     if deficit < min_topup_wei:
         print(
-            f"wallet {role} below target by dust: current={current} target={target} "
+            f"wallet {role} below target by dust: current_latest={current_latest} "
+            f"current_pending={current_pending} target={target} "
             f"deficit={deficit} min_topup_wei={min_topup_wei}; skipping top-up"
         )
         continue
-    transfers.append((role, address, current, target, deficit))
+    transfers.append((role, address, current_latest, target, deficit))
 
-if not transfers:
-    print("all wallets already meet required balances; skipping funding")
+if not transfers and not wait_only:
+    print("all wallets already meet required balances on latest; skipping funding")
     raise SystemExit(0)
 
 total_deficit = sum(deficit for _, _, _, _, deficit in transfers)
@@ -404,7 +417,9 @@ for index, (role, address, current, target, deficit) in enumerate(transfers):
     )
 
 deadline = time.time() + post_fund_wait_timeout
-pending_targets = {role: (address, target) for role, address, _, target, _ in transfers}
+pending_targets = {role: (address, target) for role, address, _, target, _ in wait_only}
+for role, address, _, target, _ in transfers:
+    pending_targets[role] = (address, target)
 print(
     f"waiting for funding transactions to be reflected on latest block for {len(pending_targets)} wallet(s) "
     f"(timeout={post_fund_wait_timeout}s)"
