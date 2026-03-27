@@ -88,6 +88,27 @@ PY
 )"
 export DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
 
+wait_for_deployer_nonce_sync() {
+  local timeout_s poll_s start now latest pending
+  timeout_s="${GATEWAY_DEPLOYER_PENDING_TIMEOUT:-1800}"
+  poll_s="${GATEWAY_DEPLOYER_PENDING_POLL:-5}"
+  start="$(date +%s)"
+  while true; do
+    latest="$(cast nonce "${DEPLOYER_ADDRESS}" --block latest --rpc-url "${L1_RPC_URL}")"
+    pending="$(cast nonce "${DEPLOYER_ADDRESS}" --block pending --rpc-url "${L1_RPC_URL}")"
+    if [ "${latest}" = "${pending}" ]; then
+      return 0
+    fi
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "${timeout_s}" ]; then
+      echo "deployer nonce did not converge within timeout: latest=${latest} pending=${pending}" >&2
+      return 1
+    fi
+    echo "waiting for deployer pending txs to clear: latest=${latest} pending=${pending}"
+    sleep "${poll_s}"
+  done
+}
+
 extract_zksys_address_from_output() {
   python3 - <<'PY'
 import re
@@ -116,39 +137,91 @@ if [ -n "${KNOWN_ZKSYS_ADDRESS}" ] && [ "$(cast code "${KNOWN_ZKSYS_ADDRESS}" --
   echo "gateway-launch: reusing existing ZKSYS token at ${ZKSYS_L1_TOKEN_ADDRESS}; skipping DeployErc20"
 else
   : "${GATEWAY_DEPLOY_ERC20_TIMEOUT:=1800}"
-  tmp_erc20_log="$(mktemp)"
-  set +e
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${GATEWAY_DEPLOY_ERC20_TIMEOUT}" \
-      forge script deploy-scripts/tokens/DeployErc20.s.sol \
-      --legacy \
-      --ffi \
-      --rpc-url "${L1_RPC_URL}" \
-      --private-key "${DEPLOYER_PRIVATE_KEY}" \
-      --broadcast 2>&1 | tee "${tmp_erc20_log}"
-    erc20_ec="${PIPESTATUS[0]}"
-  else
-    forge script deploy-scripts/tokens/DeployErc20.s.sol \
-      --legacy \
-      --ffi \
-      --rpc-url "${L1_RPC_URL}" \
-      --private-key "${DEPLOYER_PRIVATE_KEY}" \
-      --broadcast 2>&1 | tee "${tmp_erc20_log}"
-    erc20_ec="${PIPESTATUS[0]}"
-  fi
-  set -e
+  : "${GATEWAY_DEPLOY_ERC20_MAX_ATTEMPTS:=4}"
+  deploy_erc20_attempt=1
+  while true; do
+    echo "gateway-launch: DeployErc20 attempt ${deploy_erc20_attempt}/${GATEWAY_DEPLOY_ERC20_MAX_ATTEMPTS}"
+    tmp_erc20_log="$(mktemp)"
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      if [ "${L1_NETWORK:-}" = "tanenbaum" ] || [ "${L1_NETWORK:-}" = "mainnet" ]; then
+        timeout "${GATEWAY_DEPLOY_ERC20_TIMEOUT}" \
+          forge script deploy-scripts/tokens/DeployErc20.s.sol \
+          --legacy \
+          --ffi \
+          --rpc-url "${L1_RPC_URL}" \
+          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          --broadcast \
+          --slow 2>&1 | tee "${tmp_erc20_log}"
+      else
+        timeout "${GATEWAY_DEPLOY_ERC20_TIMEOUT}" \
+          forge script deploy-scripts/tokens/DeployErc20.s.sol \
+          --legacy \
+          --ffi \
+          --rpc-url "${L1_RPC_URL}" \
+          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          --broadcast 2>&1 | tee "${tmp_erc20_log}"
+      fi
+      erc20_ec="${PIPESTATUS[0]}"
+    else
+      if [ "${L1_NETWORK:-}" = "tanenbaum" ] || [ "${L1_NETWORK:-}" = "mainnet" ]; then
+        forge script deploy-scripts/tokens/DeployErc20.s.sol \
+          --legacy \
+          --ffi \
+          --rpc-url "${L1_RPC_URL}" \
+          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          --broadcast \
+          --slow 2>&1 | tee "${tmp_erc20_log}"
+      else
+        forge script deploy-scripts/tokens/DeployErc20.s.sol \
+          --legacy \
+          --ffi \
+          --rpc-url "${L1_RPC_URL}" \
+          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          --broadcast 2>&1 | tee "${tmp_erc20_log}"
+      fi
+      erc20_ec="${PIPESTATUS[0]}"
+    fi
+    set -e
 
-  export ZKSYS_L1_TOKEN_ADDRESS="$(extract_zksys_address_from_output || true)"
-  if [ "${erc20_ec}" -ne 0 ]; then
+    export ZKSYS_L1_TOKEN_ADDRESS="$(extract_zksys_address_from_output || true)"
+    if [ "${erc20_ec}" -eq 0 ]; then
+      rm -f "${tmp_erc20_log}"
+      break
+    fi
+
     if [ -n "${ZKSYS_L1_TOKEN_ADDRESS}" ] && [ "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" ]; then
       echo "gateway-launch: DeployErc20 exited non-zero (${erc20_ec}) but token is deployed at ${ZKSYS_L1_TOKEN_ADDRESS}; continuing"
-    else
-      echo "gateway-launch: DeployErc20 failed (exit=${erc20_ec}) and no deployed token could be confirmed" >&2
       rm -f "${tmp_erc20_log}"
-      exit "${erc20_ec}"
+      break
     fi
-  fi
-  rm -f "${tmp_erc20_log}"
+
+    if python3 - "${tmp_erc20_log}" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8", errors="ignore").lower()
+retry_signals = (
+    "replacement transaction underpriced",
+    "nonce too low",
+    "eoa nonce changed unexpectedly while sending transactions",
+)
+sys.exit(0 if any(sig in t for sig in retry_signals) else 1)
+PY
+    then
+      rm -f "${tmp_erc20_log}"
+      if [ "${deploy_erc20_attempt}" -ge "${GATEWAY_DEPLOY_ERC20_MAX_ATTEMPTS}" ]; then
+        echo "gateway-launch: DeployErc20 failed after ${deploy_erc20_attempt} attempts due to nonce/replacement retryable errors" >&2
+        exit "${erc20_ec}"
+      fi
+      wait_for_deployer_nonce_sync
+      deploy_erc20_attempt=$((deploy_erc20_attempt + 1))
+      continue
+    fi
+
+    echo "gateway-launch: DeployErc20 failed (exit=${erc20_ec}) and no deployed token could be confirmed" >&2
+    rm -f "${tmp_erc20_log}"
+    exit "${erc20_ec}"
+  done
 fi
 
 test "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
@@ -185,27 +258,6 @@ p.write_text(s, encoding="utf-8")
 PY
 
 cd "${GATEWAY_DIR}"
-
-wait_for_deployer_nonce_sync() {
-  local timeout_s poll_s start now latest pending
-  timeout_s="${GATEWAY_DEPLOYER_PENDING_TIMEOUT:-1800}"
-  poll_s="${GATEWAY_DEPLOYER_PENDING_POLL:-5}"
-  start="$(date +%s)"
-  while true; do
-    latest="$(cast nonce "${DEPLOYER_ADDRESS}" --block latest --rpc-url "${L1_RPC_URL}")"
-    pending="$(cast nonce "${DEPLOYER_ADDRESS}" --block pending --rpc-url "${L1_RPC_URL}")"
-    if [ "${latest}" = "${pending}" ]; then
-      return 0
-    fi
-    now="$(date +%s)"
-    if [ $((now - start)) -ge "${timeout_s}" ]; then
-      echo "deployer nonce did not converge within timeout: latest=${latest} pending=${pending}" >&2
-      return 1
-    fi
-    echo "waiting for deployer pending txs to clear: latest=${latest} pending=${pending}"
-    sleep "${poll_s}"
-  done
-}
 
 run_ecosystem_init_once() {
   zkstack ecosystem init \
