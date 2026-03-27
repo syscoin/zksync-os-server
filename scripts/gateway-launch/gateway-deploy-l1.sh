@@ -302,6 +302,35 @@ run_ecosystem_init_once() {
     --observability false
 }
 
+ecosystem_contracts_ready() {
+  local contracts_file bridgehub_addr bytecodes_addr
+  contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
+  [ -f "${contracts_file}" ] || return 1
+
+  bridgehub_addr="$(python3 - "${contracts_file}" <<'PY'
+import sys, yaml
+from pathlib import Path
+p = Path(sys.argv[1])
+d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+print(d.get("contracts", {}).get("bridgehub_proxy_addr", ""))
+PY
+)"
+  bytecodes_addr="$(python3 - "${contracts_file}" <<'PY'
+import sys, yaml
+from pathlib import Path
+p = Path(sys.argv[1])
+d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+print(d.get("contracts", {}).get("l1_bytecodes_supplier_addr", ""))
+PY
+)"
+
+  [ -n "${bridgehub_addr}" ] || return 1
+  [ -n "${bytecodes_addr}" ] || return 1
+  [ "$(cast code "${bridgehub_addr}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
+  [ "$(cast code "${bytecodes_addr}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
+  return 0
+}
+
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
 attempt=1
 while true; do
@@ -325,17 +354,23 @@ retry_signals = (
     "replacement transaction underpriced",
     "nonce too low",
     "eoa nonce changed unexpectedly while sending transactions",
+    "already known",
 )
 sys.exit(0 if any(sig in t for sig in retry_signals) else 1)
 PY
   then
     rm -f "${tmp_log}"
+    if ecosystem_contracts_ready; then
+      echo "gateway-launch: ecosystem contracts already materialized on-chain despite retryable broadcast error; continuing"
+      break
+    fi
     if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
       echo "gateway-launch: ecosystem init failed after ${attempt} attempts due to nonce/replacement retryable errors" >&2
       exit 1
     fi
     echo "gateway-launch: detected nonce/replacement retryable error; waiting for nonce sync before retry"
     wait_for_deployer_nonce_sync
+    sleep 10
     attempt=$((attempt + 1))
     continue
   fi
