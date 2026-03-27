@@ -115,13 +115,40 @@ if [ -n "${KNOWN_ZKSYS_ADDRESS}" ] && [ "$(cast code "${KNOWN_ZKSYS_ADDRESS}" --
   export ZKSYS_L1_TOKEN_ADDRESS="${KNOWN_ZKSYS_ADDRESS}"
   echo "gateway-launch: reusing existing ZKSYS token at ${ZKSYS_L1_TOKEN_ADDRESS}; skipping DeployErc20"
 else
-  forge script deploy-scripts/tokens/DeployErc20.s.sol \
-    --legacy \
-    --ffi \
-    --rpc-url "${L1_RPC_URL}" \
-    --private-key "${DEPLOYER_PRIVATE_KEY}" \
-    --broadcast
-  export ZKSYS_L1_TOKEN_ADDRESS="$(extract_zksys_address_from_output)"
+  : "${GATEWAY_DEPLOY_ERC20_TIMEOUT:=1800}"
+  tmp_erc20_log="$(mktemp)"
+  set +e
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${GATEWAY_DEPLOY_ERC20_TIMEOUT}" \
+      forge script deploy-scripts/tokens/DeployErc20.s.sol \
+      --legacy \
+      --ffi \
+      --rpc-url "${L1_RPC_URL}" \
+      --private-key "${DEPLOYER_PRIVATE_KEY}" \
+      --broadcast 2>&1 | tee "${tmp_erc20_log}"
+    erc20_ec="${PIPESTATUS[0]}"
+  else
+    forge script deploy-scripts/tokens/DeployErc20.s.sol \
+      --legacy \
+      --ffi \
+      --rpc-url "${L1_RPC_URL}" \
+      --private-key "${DEPLOYER_PRIVATE_KEY}" \
+      --broadcast 2>&1 | tee "${tmp_erc20_log}"
+    erc20_ec="${PIPESTATUS[0]}"
+  fi
+  set -e
+
+  export ZKSYS_L1_TOKEN_ADDRESS="$(extract_zksys_address_from_output || true)"
+  if [ "${erc20_ec}" -ne 0 ]; then
+    if [ -n "${ZKSYS_L1_TOKEN_ADDRESS}" ] && [ "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" ]; then
+      echo "gateway-launch: DeployErc20 exited non-zero (${erc20_ec}) but token is deployed at ${ZKSYS_L1_TOKEN_ADDRESS}; continuing"
+    else
+      echo "gateway-launch: DeployErc20 failed (exit=${erc20_ec}) and no deployed token could be confirmed" >&2
+      rm -f "${tmp_erc20_log}"
+      exit "${erc20_ec}"
+    fi
+  fi
+  rm -f "${tmp_erc20_log}"
 fi
 
 test "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
