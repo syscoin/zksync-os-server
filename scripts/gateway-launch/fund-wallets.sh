@@ -10,7 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 gl_require GATEWAY_DIR
 gl_require L1_RPC_URL
-gl_path_for_zkstack
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 
 ROOT_W="${GATEWAY_DIR}/configs/wallets.yaml"
