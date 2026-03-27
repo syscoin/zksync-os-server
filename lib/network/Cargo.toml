@@ -26,12 +26,15 @@ alloy = { workspace = true, default-features = false, features = [
     "rand",
 ] }
 alloy-rlp.workspace = true
+backon.workspace = true
 futures.workspace = true
 semver.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 secrecy.workspace = true
+vise.workspace = true
+metrics.workspace = true
 
 reth-network.workspace = true
 reth-network-peers.workspace = true

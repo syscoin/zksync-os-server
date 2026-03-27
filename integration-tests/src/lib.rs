@@ -219,7 +219,7 @@ impl Tester {
     ) -> anyhow::Result<Self> {
         let overrides_fun = |config: &mut Config| {
             config.general_config.node_role = NodeRole::ExternalNode;
-            config.network_config.boot_nodes = vec![self.node_record];
+            config.network_config.boot_nodes = vec![self.node_record.into()];
             config.general_config.main_node_rpc_url = Some(self.l2_rpc_address.clone());
             config.l1_sender_config.pubdata_mode = None;
             config.general_config.gateway_rpc_url = self.gateway_rpc_url.clone();
@@ -354,6 +354,7 @@ impl Tester {
             enabled: true,
             secret_key: Some(network_secret_key),
             address: Ipv4Addr::LOCALHOST,
+            interface: None,
             port: network_locked_port.port,
             boot_nodes: vec![],
         };
@@ -479,7 +480,8 @@ impl Tester {
             .await?;
 
         // Deposits fail before genesis upgrade tx is processed, so we wait for the first block with upgrade tx.
-        l2_zk_provider.wait_for_block(1).await?;
+        // Second block contains pre-baked L1->L2 transactions and funding the test wallet should happen there, so we wait for it as well.
+        l2_zk_provider.wait_for_block(2).await?;
         ensure_test_wallet_funded(
             &l1,
             &EthDynProvider::new(l2_provider.clone()),
