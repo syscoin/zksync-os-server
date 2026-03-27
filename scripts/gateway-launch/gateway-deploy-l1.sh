@@ -272,6 +272,33 @@ run_ecosystem_init_once() {
     --observability false
 }
 
+ecosystem_contracts_ready() {
+  local parsed bridgehub bytecode_supplier
+  parsed="$(python3 - <<'PY'
+import os
+from pathlib import Path
+import yaml
+
+p = Path(os.environ["GATEWAY_DIR"]) / "configs" / "contracts.yaml"
+if not p.exists():
+    print("|")
+    raise SystemExit(0)
+d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+bridgehub = (d.get("core_ecosystem_contracts") or {}).get("bridgehub_proxy_addr", "")
+bytecode_supplier = (d.get("zksync_os_ctm") or {}).get("l1_bytecodes_supplier_addr", "")
+print(f"{bridgehub}|{bytecode_supplier}")
+PY
+)"
+  bridgehub="${parsed%%|*}"
+  bytecode_supplier="${parsed#*|}"
+  if [ -z "${bridgehub}" ] || [ -z "${bytecode_supplier}" ]; then
+    return 1
+  fi
+  [ "$(cast code "${bridgehub}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
+  [ "$(cast code "${bytecode_supplier}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
+  return 0
+}
+
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
 attempt=1
 while true; do
@@ -308,6 +335,22 @@ PY
     wait_for_deployer_nonce_sync
     attempt=$((attempt + 1))
     continue
+  fi
+
+  if python3 - "${tmp_log}" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+t = p.read_text(encoding="utf-8", errors="ignore").lower()
+sys.exit(0 if "nativetokenvaultalreadyset()" in t else 1)
+PY
+  then
+    rm -f "${tmp_log}"
+    if ecosystem_contracts_ready; then
+      echo "gateway-launch: NativeTokenVaultAlreadySet detected, but ecosystem contracts are present on-chain; continuing"
+      break
+    fi
+    echo "gateway-launch: NativeTokenVaultAlreadySet encountered before ecosystem contracts were fully materialized" >&2
+    exit "${ec}"
   fi
 
   rm -f "${tmp_log}"
