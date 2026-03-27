@@ -417,7 +417,7 @@ for index, (role, address, current, target, deficit) in enumerate(transfers):
     )
 
 deadline = time.time() + post_fund_wait_timeout
-pending_targets = {role: (address, target) for role, address, _, target, _ in wait_only}
+pending_targets = {role: (address, target) for role, address, _, target in wait_only}
 for role, address, _, target, _ in transfers:
     pending_targets[role] = (address, target)
 print(
