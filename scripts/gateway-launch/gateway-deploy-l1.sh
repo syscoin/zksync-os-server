@@ -39,7 +39,7 @@ cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 export PERMANENT_VALUES_INPUT="/script-config/permanent-values.toml"
 export TOKENS_CONFIG="/script-config/config-deploy-erc20.toml"
 
-CREATE2_FACTORY_SALT="$(python3 - <<'PY'
+CREATE2_FACTORY_SALT_FROM_CONFIG="$(python3 - <<'PY'
 import os, yaml
 from pathlib import Path
 s = yaml.safe_load((Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml").read_text())["create2_factory_salt"]
@@ -50,6 +50,36 @@ else:
     print(t if t.startswith("0x") else "0x" + t)
 PY
 )"
+CREATE2_FACTORY_SALT="${CREATE2_FACTORY_SALT_FROM_CONFIG}"
+
+if [ -n "${GATEWAY_CREATE2_FACTORY_SALT:-}" ]; then
+  CREATE2_FACTORY_SALT="$(python3 - <<'PY'
+import os
+raw = str(os.environ["GATEWAY_CREATE2_FACTORY_SALT"]).strip()
+if raw.startswith(("0x", "0X")):
+    h = raw[2:]
+    if len(h) == 0 or len(h) > 64:
+        raise SystemExit("GATEWAY_CREATE2_FACTORY_SALT hex length must be 1..64 nybbles")
+    v = int(h, 16)
+else:
+    v = int(raw, 10)
+if v < 0 or v >= (1 << 256):
+    raise SystemExit("GATEWAY_CREATE2_FACTORY_SALT must fit uint256")
+print("0x" + format(v, "064x"))
+PY
+)"
+  export CREATE2_FACTORY_SALT
+  python3 - <<'PY'
+import os, yaml
+from pathlib import Path
+p = Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"
+d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+d["create2_factory_salt"] = os.environ["CREATE2_FACTORY_SALT"]
+p.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
+PY
+  echo "gateway-launch: using GATEWAY_CREATE2_FACTORY_SALT=${CREATE2_FACTORY_SALT}"
+fi
+
 CREATE2_FACTORY_ADDR="$(python3 - <<'PY'
 import os, yaml
 from pathlib import Path
