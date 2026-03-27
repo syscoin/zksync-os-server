@@ -332,9 +332,32 @@ PY
 }
 
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
+: "${GATEWAY_RETRY_GAS_BUMP_PCT:=20}"
+
+set_retry_gas_price() {
+  local attempt base_wei bump_pct bump_factor gas_price_wei
+  attempt="${1}"
+  bump_pct="${GATEWAY_RETRY_GAS_BUMP_PCT}"
+  base_wei="$(cast gas-price --rpc-url "${L1_RPC_URL}")"
+  if [ "${base_wei}" -lt 1000000000 ]; then
+    base_wei=1000000000
+  fi
+  if [ "${attempt}" -le 1 ]; then
+    gas_price_wei="${base_wei}"
+  else
+    # Attempt N uses base * (1 + bump_pct*(N-1)/100) to satisfy replacement rules.
+    bump_factor=$((100 + bump_pct * (attempt - 1)))
+    gas_price_wei=$(( (base_wei * bump_factor + 99) / 100 ))
+  fi
+  export ETH_GAS_PRICE="${gas_price_wei}"
+  export FORGE_GAS_PRICE="${gas_price_wei}"
+  echo "gateway-launch: retry gas price set to ${gas_price_wei} wei (attempt ${attempt})"
+}
+
 attempt=1
 while true; do
   echo "gateway-launch: ecosystem init attempt ${attempt}/${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}"
+  set_retry_gas_price "${attempt}"
   tmp_log="$(mktemp)"
   set +e
   run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
