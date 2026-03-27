@@ -302,6 +302,34 @@ run_ecosystem_init_once() {
     --observability false
 }
 
+extract_l1_contracts_dir_from_log() {
+  python3 - "${1}" <<'PY'
+import re, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+t = p.read_text(encoding="utf-8", errors="ignore")
+m = re.search(r"Transactions saved to:\s*(/[^ \n]+/contracts/l1-contracts/broadcast/DeployL1CoreContracts\.s\.sol/\d+/run-latest\.json)", t)
+if not m:
+    raise SystemExit(0)
+run_latest = Path(m.group(1))
+print(run_latest.parents[3])  # .../contracts/l1-contracts
+PY
+}
+
+run_ecosystem_init_resume() {
+  local l1_contracts_dir="${1}"
+  (
+    cd "${l1_contracts_dir}"
+    forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol \
+      --legacy \
+      --ffi \
+      --rpc-url "${L1_RPC_URL}" \
+      --private-key "${DEPLOYER_PRIVATE_KEY}" \
+      --broadcast \
+      --resume
+  )
+}
+
 ecosystem_contracts_ready() {
   local contracts_file bridgehub_addr bytecodes_addr
   contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
@@ -333,6 +361,7 @@ PY
 
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
 : "${GATEWAY_RETRY_GAS_BUMP_PCT:=20}"
+LAST_L1_CONTRACTS_DIR=""
 
 set_retry_gas_price() {
   local attempt base_wei bump_pct bump_factor gas_price_wei
@@ -360,9 +389,19 @@ while true; do
   set_retry_gas_price "${attempt}"
   tmp_log="$(mktemp)"
   set +e
-  run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
+  if [ "${attempt}" -gt 1 ] && [ -n "${LAST_L1_CONTRACTS_DIR}" ] && [ -d "${LAST_L1_CONTRACTS_DIR}" ]; then
+    echo "gateway-launch: retrying DeployL1CoreContracts with forge --resume from ${LAST_L1_CONTRACTS_DIR}"
+    run_ecosystem_init_resume "${LAST_L1_CONTRACTS_DIR}" 2>&1 | tee "${tmp_log}"
+  else
+    run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
+  fi
   ec="${PIPESTATUS[0]}"
   set -e
+
+  current_l1_contracts_dir="$(extract_l1_contracts_dir_from_log "${tmp_log}" || true)"
+  if [ -n "${current_l1_contracts_dir}" ] && [ -d "${current_l1_contracts_dir}" ]; then
+    LAST_L1_CONTRACTS_DIR="${current_l1_contracts_dir}"
+  fi
 
   if [ "${ec}" -eq 0 ]; then
     rm -f "${tmp_log}"
