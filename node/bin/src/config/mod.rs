@@ -3,6 +3,7 @@ use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
 use alloy::primitives::{Address, Bytes, U128};
 use num::{BigInt, BigUint, rational::Ratio};
+use secrecy::ExposeSecret;
 use reth_net_nat::net_if::resolve_net_if_ip;
 use reth_network_peers::TrustedPeer;
 use serde::{Deserialize, Serialize};
