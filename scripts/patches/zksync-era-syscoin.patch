@@ -152,7 +152,7 @@ index 37cad6768..0ae9fd838 100644
  
      if broadcast {
          forge = forge.with_broadcast();
-+        if matches!(config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++        if config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
          check_the_balance(&forge).await?;
@@ -162,7 +162,7 @@ index 37cad6768..0ae9fd838 100644
          .with_rpc_url(l1_rpc_url)
          .with_broadcast();
  
-+    if matches!(ecosystem_config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++    if ecosystem_config.l1_network == L1Network::Localhost {
 +        forge = forge.with_slow();
 +    }
 +
@@ -186,7 +186,7 @@ index 03451dd9e..d751d24f8 100644
  
      if broadcast {
          forge = forge.with_broadcast();
-+        if matches!(config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++        if config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
          check_the_balance(&forge).await?;
@@ -209,7 +209,7 @@ index e667c383d..f7f70b107 100644
  
      if !only_save_calldata {
          forge = forge.with_broadcast();
-+        if matches!(config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++        if config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
          check_the_balance(&forge).await?;
@@ -230,7 +230,7 @@ index de2718561..f8bb298b7 100644
  
      if broadcast {
          forge = forge.with_broadcast();
-+        if matches!(chain_config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++        if chain_config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
      }
@@ -252,7 +252,7 @@ index bec070eeb..3efce4fda 100644
  
      if with_broadcast {
          forge = forge.with_broadcast();
-+        if matches!(chain_config.l1_network, L1Network::Localhost | L1Network::Tanenbaum) {
++        if chain_config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
      }
