@@ -19,3 +19,5 @@ gl_zkstack_pty zkstack chain init \
   --no-genesis \
   --deploy-paymaster false \
   --l1-rpc-url "${L1_RPC_URL}"
+
+gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
