@@ -498,7 +498,11 @@ fi
 
 if [ "${WITH_EDGE}" = true ] && [ "${SKIP_EDGE_CREATE_INIT}" = false ]; then
   SKIP_FUND="${SKIP_FUND}" "${SCRIPT_DIR}/edge-chain-create-init.sh"
-  "${SCRIPT_DIR}/generate-os-server-configs.sh"
+  if [ "${MIGRATE_EDGE}" = true ]; then
+    echo "gateway-launch: deferring edge OS-server config materialization until after migration"
+  else
+    "${SCRIPT_DIR}/generate-os-server-configs.sh"
+  fi
 elif [ "${WITH_EDGE}" = true ]; then
   echo "gateway-launch: skipping edge chain create/init stage (--skip-edge-create-init)"
 fi
@@ -508,6 +512,7 @@ if [ "${MIGRATE_EDGE}" = true ]; then
   start_gateway_for_migration
   run_migrate_edge_with_retry
   stop_gateway_for_migration
+  "${SCRIPT_DIR}/generate-os-server-configs.sh"
 fi
 
 echo "=== gateway-launch complete ==="

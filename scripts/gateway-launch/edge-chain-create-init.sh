@@ -66,8 +66,6 @@ zkstack chain create \
   --evm-emulator false \
   --zksync-os
 
-gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
-
 if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; then
   cp "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
   echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
@@ -85,3 +83,5 @@ zkstack chain init \
   --deploy-paymaster false \
   --skip-priority-txs \
   --l1-rpc-url "${L1_RPC_URL}"
+
+gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
