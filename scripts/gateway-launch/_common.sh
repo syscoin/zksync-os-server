@@ -386,6 +386,12 @@ def normalize_bytes_hex(value):
         body = "0" + body
     return "0x" + body
 
+def normalize_h256(value):
+    parsed = _parse_hex_like(value)
+    if parsed is None:
+        return normalize_scalar(value)
+    return "0x" + format(parsed & ((1 << 256) - 1), "064x")
+
 def is_zero_like_address(value):
     value = normalize_scalar(value)
     if isinstance(value, int):
@@ -427,7 +433,7 @@ for field, prefer_non_zero in required_top_level_fields.items():
     if field.endswith("_addr"):
         chosen = normalize_address(chosen)
     if field.endswith("_salt"):
-        chosen = normalize_bytes_hex(chosen)
+        chosen = normalize_h256(chosen)
     if current_value != chosen:
         data[field] = chosen
         updated = True
