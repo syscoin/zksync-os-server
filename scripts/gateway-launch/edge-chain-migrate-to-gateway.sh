@@ -20,8 +20,8 @@ gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 pause_output=""
 if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
   echo "${pause_output}"
-  case "${pause_output}" in
-  *"already paused"* | *"AlreadyPaused"* | *"already been paused"*)
+  case "${pause_output,,}" in
+  *"already paused"* | *"already been paused"* | *"depositsalreadypaused"*)
     echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
     ;;
   *)

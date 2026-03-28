@@ -624,22 +624,9 @@ def wei_balance_latest(address):
 
 
 def required_balance(role):
-    # Allow explicit per-role overrides when operators need higher headroom.
-    override_key = {
-        "deployer": "GATEWAY_FUND_TARGET_DEPLOYER_WEI",
-        "governor": "GATEWAY_FUND_TARGET_GOVERNOR_WEI",
-    }.get(role, f"GATEWAY_FUND_TARGET_{role.upper()}_WEI")
-    override_raw = os.environ.get(override_key)
-    if override_raw is not None and override_raw.strip() != "":
-        return int(override_raw.strip())
-
     if role == "deployer":
         return int(6 * 10**18)
     if role == "governor":
-        # Gateway migration can emit multiple high-value L1->L2 requests from governor.
-        # Keep a larger default balance on live networks to avoid mid-migration depletion.
-        if l1_network in {"tanenbaum", "mainnet"}:
-            return int(30 * 10**18)
         return int(11 * 10**18)
     return int(10**18)
 

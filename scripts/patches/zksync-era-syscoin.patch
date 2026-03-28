@@ -258,3 +258,15 @@ index bec070eeb..3efce4fda 100644
      }
  
      if let Some(signature) = signature {
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
+index 3a65c7110..5d4d6a1cb 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
+@@ -182,7 +182,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
+         validator: chain_secrets_config.operator.address,
+         prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
+         execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),
+-        min_validator_balance: U256::from(10).pow(19.into()),
++        min_validator_balance: U256::from(10).pow(18.into()),
+         refund_recipient: None,
+     };

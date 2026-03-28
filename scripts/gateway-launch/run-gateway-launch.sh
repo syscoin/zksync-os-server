@@ -346,6 +346,42 @@ stop_gateway_for_migration() {
   GATEWAY_STARTED_FOR_MIGRATION=false
 }
 
+run_migrate_edge_with_retry() {
+  local attempt max_attempts status migrate_output
+  max_attempts="${GATEWAY_MIGRATE_EDGE_MAX_ATTEMPTS:-2}"
+  if [ "${max_attempts}" -lt 1 ]; then
+    max_attempts=1
+  fi
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    set +e
+    migrate_output="$("${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" 2>&1)"
+    status=$?
+    set -e
+
+    echo "${migrate_output}"
+
+    if [ "${status}" -eq 0 ]; then
+      return 0
+    fi
+
+    if [ "${attempt}" -ge "${max_attempts}" ]; then
+      return "${status}"
+    fi
+
+    if [[ "${migrate_output,,}" == *"insufficient funds for transfer"* ]]; then
+      if [ "${SKIP_FUND}" = true ]; then
+        gl_die "migrate-edge failed with insufficient funds and --skip-fund is enabled; rerun without --skip-fund or top up wallets manually"
+      fi
+      echo "migrate-edge: insufficient funds detected (attempt ${attempt}/${max_attempts}); topping up wallets and retrying"
+      "${SCRIPT_DIR}/fund-wallets.sh"
+      continue
+    fi
+
+    return "${status}"
+  done
+}
+
 cleanup() {
   stop_gateway_for_migration
   if [ -n "${WATCH_PID}" ]; then
@@ -460,7 +496,7 @@ fi
 if [ "${MIGRATE_EDGE}" = true ]; then
   echo "migrate-edge: running Gateway start -> migrate/finalize -> Gateway stop"
   start_gateway_for_migration
-  "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh"
+  run_migrate_edge_with_retry
   stop_gateway_for_migration
 fi
 

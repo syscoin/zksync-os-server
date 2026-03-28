@@ -45,7 +45,8 @@ if has_text "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
   && has_text "forge = forge.with_slow();" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs" \
   && has_text "if config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs" \
   && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs" \
-  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs"; then
+  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs" \
+  && has_text "min_validator_balance: U256::from(10).pow(18.into())," "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs"; then
   echo "zksync-era Syscoin patch appears already applied; skipping."
   exit 0
 fi
