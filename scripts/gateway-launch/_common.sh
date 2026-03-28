@@ -270,6 +270,33 @@ gl_ensure_chain_contracts_yaml_schema() {
   chain_name="${1:?chain name required}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
+  if [ ! -f "${contracts_yaml}" ]; then
+    local chain_cfg_dir contracts_candidate
+    chain_cfg_dir="${GATEWAY_DIR}/chains/${chain_name}/configs"
+    contracts_candidate=""
+    if [ -d "${chain_cfg_dir}" ]; then
+      while IFS= read -r contracts_candidate; do
+        [ -n "${contracts_candidate}" ] && break
+      done < <(python3 - "${chain_cfg_dir}" <<'PY'
+import sys
+from pathlib import Path
+
+cfg_dir = Path(sys.argv[1])
+candidates = sorted(
+    [p for p in cfg_dir.glob("contracts_*.yaml") if p.is_file()],
+    key=lambda p: p.stat().st_mtime,
+    reverse=True,
+)
+for p in candidates:
+    print(p)
+PY
+)
+    fi
+    if [ -n "${contracts_candidate}" ] && [ -f "${contracts_candidate}" ]; then
+      cp "${contracts_candidate}" "${contracts_yaml}"
+      echo "gateway-launch: materialized ${contracts_yaml} from ${contracts_candidate}"
+    fi
+  fi
   [ -f "${contracts_yaml}" ] || gl_die "missing contracts config: ${contracts_yaml}"
   gateway_contracts_yaml="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml"
 
