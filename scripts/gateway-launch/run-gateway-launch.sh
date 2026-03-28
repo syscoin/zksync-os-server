@@ -4,8 +4,17 @@
 # Usage:
 #   (from zksync-os-server clone) ZKSYNC_OS_SERVER_PATH defaults to this repo — zksync-era is cloned/pinned automatically if ZKSYNC_ERA_PATH is unset
 #   Optional: export ZKSYNC_ERA_PATH=/path/to/zksync-era
-#   export L1_RPC_URL=http://127.0.0.1:8545                 # required for tanenbaum | mainnet — HTTP(S) only
-#     (Foundry cast/forge; IPC/unix not supported). Local Tanenbaum: sysgeth --http — see gateway_launch.md
+#   export L1_RPC_URL=http(s)://...                         # required for tanenbaum | mainnet — HTTP(S) only
+#   Optional: export GATEWAY_ARCHIVE_L1_RPC_URL=http(s)://... # runtime L1 RPC for os-server (defaults to L1_RPC_URL)
+#     Local Syscoin NEVM HTTP example:
+#       ./syscoind --testnet -server=1 -daemon=1 \
+#         -gethcommandline=--http \
+#         -gethcommandline=--http.addr=127.0.0.1 \
+#         -gethcommandline=--http.port=8545 \
+#         -gethcommandline=--http.api=eth,net,web3,txpool,debug \
+#         -gethcommandline=--http.vhosts=* \
+#         -gethcommandline=--http.corsdomain=*
+#     Note: local NEVM nodes are typically non-archive; prefer archive RPC for runtime.
 #   bash run-gateway-launch.sh --l1 anvil [options]
 #
 # Profiles (--l1):
@@ -35,7 +44,7 @@
 #      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
 #      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, BITCOIN_DA_RPC_URL, BITCOIN_DA_RPC_USER,
 #      BITCOIN_DA_RPC_PASSWORD, PROVER_MODE, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH,
-#      GATEWAY_CREATE2_FACTORY_SALT, GATEWAY_FUND_WALLETS_PATHS
+#      GATEWAY_CREATE2_FACTORY_SALT, GATEWAY_FUND_WALLETS_PATHS, GATEWAY_ARCHIVE_L1_RPC_URL
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
 # `gl_zkstack_pty` in gateway-chain-init.sh wraps `zkstack chain init` with util-linux `script`.
@@ -79,6 +88,7 @@ Optional env:
   GATEWAY_WALLET_PATH     default ${GATEWAY_DIR}.wallets.yaml; reused on fresh creates after first wallet generation
   GATEWAY_FUND_WALLETS_PATHS optional colon-separated wallets.yaml paths to fund in addition to discovered defaults
   GATEWAY_CREATE2_FACTORY_SALT optional uint256 override for initial_deployments create2_factory_salt
+  GATEWAY_ARCHIVE_L1_RPC_URL optional archive L1 RPC for generated os-server runtime config and migrate-edge gateway startup (defaults to L1_RPC_URL)
   FUNDER_PRIVATE_KEY      for fund-wallets (Anvil defaults to dev key 0)
   BITCOIN_DA_RPC_URL      Syscoin NEVM RPC for the generated gateway OS-server config (required for blob mode)
   BITCOIN_DA_RPC_USER     Syscoin NEVM RPC auth user for the generated gateway OS-server config
@@ -248,11 +258,46 @@ gateway_rpc_ready() {
   cast block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
 }
 
+set_gateway_runtime_l1_rpc_url() {
+  local chain_name config_path migration_l1_rpc
+  chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
+  [ -f "${config_path}" ] || gl_die "missing Gateway config for migration: ${config_path}"
+
+  migration_l1_rpc="${GATEWAY_ARCHIVE_L1_RPC_URL:-${L1_RPC_URL:-}}"
+  [ -n "${migration_l1_rpc}" ] || gl_die "migrate-edge: missing archive L1 RPC URL (set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL)"
+
+  python3 - "${config_path}" "${migration_l1_rpc}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+new_rpc_url = sys.argv[2]
+text = config_path.read_text()
+pattern = r"^(\s*l1_rpc_url:\s*).*$"
+updated_text, replacements = re.subn(
+    pattern,
+    lambda match: f'{match.group(1)}{json.dumps(new_rpc_url)}',
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if replacements != 1:
+    raise SystemExit(f"migrate-edge: failed to locate l1_rpc_url in {config_path}")
+if updated_text != text:
+    config_path.write_text(updated_text)
+print(f"migrate-edge: set {config_path} l1_rpc_url -> {new_rpc_url}")
+PY
+}
+
 start_gateway_for_migration() {
   local start_script log_file i chain_name start_timeout_s poll_interval_s max_checks
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
+  set_gateway_runtime_l1_rpc_url
 
   if gateway_rpc_ready; then
     echo "migrate-edge: Gateway RPC already reachable; reusing running node"

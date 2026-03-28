@@ -21,6 +21,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
 : "${BITCOIN_DA_RPC_USER:=}"
 : "${BITCOIN_DA_RPC_PASSWORD:=}"
@@ -53,6 +54,7 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
 export BITCOIN_DA_RPC_USER
 export BITCOIN_DA_RPC_PASSWORD
@@ -157,6 +159,11 @@ prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
 if prover_mode not in {"gpu", "mock"}:
     raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|mock)")
 use_mock_prover = prover_mode == "mock"
+l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
+if not l1_rpc_url:
+    raise SystemExit(
+        "missing gateway runtime L1 RPC URL: set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL"
+    )
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
@@ -193,6 +200,7 @@ def materialize_chain(
     config_lines = [
         "general:",
         f"  rocks_db_path: {out_dir / 'db'}",
+        f"  l1_rpc_url: '{l1_rpc_url}'",
     ]
     config_lines.extend(
         [

@@ -30,6 +30,9 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
 # Tanenbaum
 export L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
+# Optional: force archive-capable runtime RPC for generated os-server configs.
+# Defaults to L1_RPC_URL when unset.
+export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 # Launcher defaults Bitcoin DA RPC to local sysgeth (`http://127.0.0.1:18370`) and
 # loads RPC auth from ~/.syscoin/testnet3/.cookie when present.
 # Prover mode defaults to GPU; override with PROVER_MODE=mock for fake proving.
@@ -57,6 +60,36 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 | **Edge should settle through the gateway** | add **`--migrate-edge`** after the edge chain exists **and** the **Gateway chain L2 JSON-RPC** is reachable. Keep the **edge node stopped** until migration/finalization completes (the script does not start `zksync-os-server`; see [After the script](#after-the-script)) |
 
 **`--with-edge`** and **`--migrate-edge`** are independent: you can create the edge in one run (`--with-edge`) and run migration later (second run with **`--reuse-ecosystem`** + **`--migrate-edge`**, or only **`--migrate-edge`** if the edge is already in **`ZkStack.yaml`**). For a single shot when RPC is already up: `…/run-gateway-launch.sh --l1 anvil --with-edge --migrate-edge`.
+
+---
+
+## Local Syscoin NEVM RPC (HTTP)
+
+For local Tanenbaum-style runs, start Syscoin with NEVM HTTP enabled:
+
+```bash
+./syscoind --testnet -server=1 -daemon=1 \
+  -gethcommandline=--http \
+  -gethcommandline=--http.addr=127.0.0.1 \
+  -gethcommandline=--http.port=8545 \
+  -gethcommandline=--http.api=eth,net,web3,txpool,debug \
+  -gethcommandline=--http.vhosts=* \
+  -gethcommandline=--http.corsdomain=*
+```
+
+Then point launch/deploy traffic at local HTTP:
+
+```bash
+export L1_RPC_URL=http://127.0.0.1:8545
+```
+
+If local NEVM is not archive-capable (typical), use an archive RPC for runtime state reads:
+
+```bash
+export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io/
+```
+
+This keeps Foundry/zkstack deploy traffic on local `L1_RPC_URL` while generated `zksync-os-server` runtime config uses `GATEWAY_ARCHIVE_L1_RPC_URL` for `general.l1_rpc_url`.
 
 ---
 
@@ -94,6 +127,7 @@ Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ER
 | `BITCOIN_DA_FINALITY_MODE` / `BITCOIN_DA_FINALITY_CONFIRMATIONS` | **tanenbaum** defaults: `Confirmations` / `6`. **mainnet** / **anvil**: set explicitly if you need non-default DA finality |
 | `BITCOIN_DA_PODA_URL` | **tanenbaum** default `https://poda.tanenbaum.io` |
 | `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
+| `GATEWAY_ARCHIVE_L1_RPC_URL` | Optional runtime override for generated `zksync-os-server` `general.l1_rpc_url` (defaults to `L1_RPC_URL`). Use this when local `L1_RPC_URL` is non-archive. |
 | `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
 | `PROVER_MODE` | proving mode for generated `zksync-os-server` configs: `gpu` (default) or `mock` (enables fake FRI/SNARK provers) |
 | `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
