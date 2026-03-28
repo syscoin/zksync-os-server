@@ -124,35 +124,74 @@ get_chain_diamond_proxy_from_gateway() {
   local chain_id call_from
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   call_from="$(get_chain_governor_from_wallets "${chain_name}")"
-  env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" --from "${call_from}" | awk '{print $1}'
+  gateway_cast_call_with_fallback "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${GATEWAY_RPC_URL}" "${call_from}" "${chain_id}" | awk '{print $1}'
 }
 
 get_chain_governor_from_wallets() {
   local chain_name="${1:?chain name required}"
-  python3 - "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" <<'PY'
+  python3 - \
+    "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
+    "${GATEWAY_DIR}/configs/wallets.yaml" <<'PY'
 import sys
 from pathlib import Path
 import yaml
 
 sys.set_int_max_str_digits(0)
 
-p = Path(sys.argv[1])
-if not p.exists():
-    raise SystemExit(f"missing wallets config: {p}")
-data = yaml.safe_load(p.read_text(encoding="utf-8"))
-if not isinstance(data, dict):
-    raise SystemExit(f"invalid YAML object in {p}")
-gov = data.get("governor")
-if not isinstance(gov, dict):
-    raise SystemExit(f"missing governor wallet in {p}")
-addr = gov.get("address")
-if isinstance(addr, int):
-    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
-if not isinstance(addr, str) or addr.strip() == "":
-    raise SystemExit(f"missing governor.address in {p}")
-print(addr.strip())
+for path_str in sys.argv[1:]:
+    p = Path(path_str)
+    if not p.exists():
+        continue
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    gov = data.get("governor")
+    if not isinstance(gov, dict):
+        continue
+    addr = gov.get("address")
+    if isinstance(addr, int):
+        addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+    if isinstance(addr, str) and addr.strip() != "":
+        print(addr.strip())
+        raise SystemExit(0)
+raise SystemExit(0)
 PY
+}
+
+gateway_cast_call_with_fallback() {
+  local target="${1:?target required}"
+  local sig="${2:?signature required}"
+  local rpc_url="${3:?rpc url required}"
+  local call_from="${4:-}"
+  shift 4
+
+  local out
+  if [ -n "${call_from}" ]; then
+    if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" --gas-price 0 2>/dev/null)"; then
+      printf '%s\n' "${out}"
+      return 0
+    fi
+  fi
+  if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --gas-price 0 2>/dev/null)"; then
+    printf '%s\n' "${out}"
+    return 0
+  fi
+  if [ -n "${call_from}" ]; then
+    if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" 2>/dev/null)"; then
+      printf '%s\n' "${out}"
+      return 0
+    fi
+  fi
+  if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+    printf '%s\n' "${out}"
+    return 0
+  fi
+  return 1
 }
 
 is_da_pair_set_on_gateway() {
@@ -166,10 +205,8 @@ is_da_pair_set_on_gateway() {
     return 1
   fi
 
-  if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" --from "${call_from}" 2>/dev/null)"; then
-    if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" --from "${call_from}" 2>/dev/null)"; then
+  if ! raw_pair="$(gateway_cast_call_with_fallback "${chain_proxy}" "getDAValidatorPair()(address,uint8)" "${gateway_rpc}" "${call_from}")"; then
+    if ! raw_pair="$(gateway_cast_call_with_fallback "${chain_proxy}" "getDAValidatorPair()(address,address)" "${gateway_rpc}" "${call_from}")"; then
       return 1
     fi
   fi
