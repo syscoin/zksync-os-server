@@ -19,6 +19,10 @@
 #   --reuse-ecosystem    skip ecosystem create; use existing GATEWAY_DIR (default ~/gateway)
 #   --reset-l1-artifacts rm l1-contracts/broadcast + script-out before L1 deploy (after fresh chain)
 #   --skip-fund          skip fund-wallets.sh (you funded manually)
+#   --skip-gateway-deploy skip gateway L1 deploy stage
+#   --skip-gateway-init   skip gateway chain init stage
+#   --skip-gateway-convert skip gateway convert-to-settlement stage
+#   --skip-gateway-stages skip gateway deploy+init+convert stages
 #   --stop-after-l1      stop after ecosystem init / L1 deploy (skip chain init + convert)
 #   --with-edge          run edge-chain-create-init.sh after gateway steps
 #   --migrate-edge       run edge-chain-migrate-to-gateway.sh (launcher starts Gateway via generated
@@ -51,6 +55,9 @@ SKIP_FUND=false
 STOP_AFTER_L1=false
 WITH_EDGE=true
 MIGRATE_EDGE=true
+SKIP_GATEWAY_DEPLOY=false
+SKIP_GATEWAY_INIT=false
+SKIP_GATEWAY_CONVERT=false
 
 usage() {
   cat <<'EOF'
@@ -88,6 +95,10 @@ Options:
   --reuse-ecosystem       skip ecosystem create
   --reset-l1-artifacts    rm broadcast/script-out before L1
   --skip-fund             wallets already funded
+  --skip-gateway-deploy   skip gateway L1 deploy stage
+  --skip-gateway-init     skip gateway chain init stage
+  --skip-gateway-convert  skip gateway convert-to-settlement stage
+  --skip-gateway-stages   skip gateway deploy+init+convert stages
   --stop-after-l1         skip chain init + convert (+ edge)
   --with-edge             create+init edge chain after gateway
   --migrate-edge          migrate edge to gateway (launcher starts/stops Gateway; edge node stays stopped)
@@ -108,6 +119,15 @@ while [ "${1:-}" != "" ]; do
   --reuse-ecosystem) REUSE_ECOSYSTEM=true; shift ;;
   --reset-l1-artifacts) RESET_L1=true; shift ;;
   --skip-fund) SKIP_FUND=true; shift ;;
+  --skip-gateway-deploy) SKIP_GATEWAY_DEPLOY=true; shift ;;
+  --skip-gateway-init) SKIP_GATEWAY_INIT=true; shift ;;
+  --skip-gateway-convert) SKIP_GATEWAY_CONVERT=true; shift ;;
+  --skip-gateway-stages)
+    SKIP_GATEWAY_DEPLOY=true
+    SKIP_GATEWAY_INIT=true
+    SKIP_GATEWAY_CONVERT=true
+    shift
+    ;;
   --stop-after-l1) STOP_AFTER_L1=true; shift ;;
   --with-edge) WITH_EDGE=true; shift ;;
   --migrate-edge) MIGRATE_EDGE=true; shift ;;
@@ -343,7 +363,11 @@ if [ "${RESET_L1}" = true ]; then
   touch "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/script-out/.gitkeep"
 fi
 
-"${SCRIPT_DIR}/gateway-deploy-l1.sh"
+if [ "${SKIP_GATEWAY_DEPLOY}" = true ]; then
+  echo "gateway-launch: skipping gateway L1 deploy stage (--skip-gateway-deploy)"
+else
+  "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+fi
 
 if [ "${STOP_AFTER_L1}" = true ]; then
   echo "=== stop-after-l1: done ==="
@@ -354,8 +378,16 @@ if [ "${STOP_AFTER_L1}" = true ]; then
   exit 0
 fi
 
-"${SCRIPT_DIR}/gateway-chain-init.sh"
-"${SCRIPT_DIR}/gateway-convert-settlement.sh"
+if [ "${SKIP_GATEWAY_INIT}" = true ]; then
+  echo "gateway-launch: skipping gateway chain init stage (--skip-gateway-init)"
+else
+  "${SCRIPT_DIR}/gateway-chain-init.sh"
+fi
+if [ "${SKIP_GATEWAY_CONVERT}" = true ]; then
+  echo "gateway-launch: skipping gateway convert stage (--skip-gateway-convert)"
+else
+  "${SCRIPT_DIR}/gateway-convert-settlement.sh"
+fi
 "${SCRIPT_DIR}/generate-os-server-configs.sh"
 
 if [ "${WITH_EDGE}" = true ]; then
