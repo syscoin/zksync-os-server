@@ -16,6 +16,7 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
+: "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 
@@ -111,6 +112,51 @@ is_da_pair_set_on_gateway() {
   [ "${line2}" != "0x0000000000000000000000000000000000000000" ] || return 1
 }
 
+get_l1_da_validator_for_edge() {
+  local chain_name="${1:?chain name required}"
+  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+def norm(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return "0x" + format(value & ((1 << 160) - 1), "040x")
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "":
+            return None
+        return value
+    return str(value)
+
+p = Path(sys.argv[1])
+if not p.exists():
+    raise SystemExit(f"missing contracts config: {p}")
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {p}")
+l1 = data.get("l1")
+if not isinstance(l1, dict):
+    raise SystemExit(f"invalid l1 section in {p}")
+
+candidates = [
+    l1.get("blobs_zksync_os_l1_da_validator_addr"),
+    l1.get("rollup_l1_da_validator_addr"),
+]
+for candidate in candidates:
+    value = norm(candidate)
+    if value is None:
+        continue
+    if value.lower() != "0x0000000000000000000000000000000000000000":
+        print(value)
+        raise SystemExit(0)
+
+raise SystemExit(f"missing non-zero L1 DA validator in {p}")
+PY
+}
+
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
 if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] && is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
@@ -152,10 +198,39 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     echo "${migrate_output}"
   fi
 else
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
+echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
-gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
+finalize_output=""
+if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
-  --deploy-paymaster false
+  --deploy-paymaster false 2>&1)"; then
+  echo "${finalize_output}"
+  case "${finalize_output,,}" in
+  *"depositdoesnotexist"*)
+    echo "gateway-launch: finalize reported DepositDoesNotExist; treating as already-finalized deposit leg and continuing with DA repair"
+    ;;
+  *)
+    exit 1
+    ;;
+  esac
+else
+  echo "${finalize_output}"
+fi
+
+if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
+  l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}")"
+  echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
+  gl_zkstack_pty zkstack chain set-da-validator-pair \
+    --chain "${EDGE_CHAIN_NAME}" \
+    --gateway \
+    "${l1_da_validator_addr}" \
+    BlobsAndPubdataKeccak256 \
+    "${GATEWAY_MAX_L1_GAS_PRICE}"
+fi
+
+if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
+  echo "gateway-launch: DA validator pair is still not set on Gateway for ${EDGE_CHAIN_NAME} after repair attempt" >&2
+  exit 1
+fi
