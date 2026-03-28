@@ -639,7 +639,7 @@ def required_balance(role):
         # Gateway migration can emit multiple high-value L1->L2 requests from governor.
         # Keep a larger default balance on live networks to avoid mid-migration depletion.
         if l1_network in {"tanenbaum", "mainnet"}:
-            return int(40 * 10**18)
+            return int(30 * 10**18)
         return int(11 * 10**18)
     return int(10**18)
 
