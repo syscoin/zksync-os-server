@@ -20,6 +20,7 @@ cd "${GATEWAY_DIR}"
 : "${L2_BRIDGEHUB_ADDRESS:=0x0000000000000000000000000000000000010002}"
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
+gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
 
 ensure_gateway_rpc_url_in_chain_secrets() {
   local chain_name="${1:?chain name required}"

@@ -398,6 +398,12 @@ def normalize_scalar(value):
 def _parse_hex_like(value):
     if isinstance(value, int):
         return value
+    if isinstance(value, float):
+        # Some corrupted YAMLs contain integer-like floats (e.g. 123.0).
+        # Accept only exact integers to avoid silently truncating data.
+        if value.is_integer():
+            return int(value)
+        return None
     if not isinstance(value, str):
         return None
     s = value.strip()
@@ -410,6 +416,11 @@ def _parse_hex_like(value):
         return int(body, 16)
     if re.fullmatch(r"[0-9a-fA-F]+", s):
         return int(s, 16)
+    # Also accept decimal-encoded integers and float-like integer strings.
+    if re.fullmatch(r"[0-9]+", s):
+        return int(s, 10)
+    if re.fullmatch(r"[0-9]+\\.0+", s):
+        return int(s.split(".", 1)[0], 10)
     return None
 
 def normalize_address(value):
