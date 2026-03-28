@@ -184,8 +184,6 @@ def materialize_chain(
     source_dir = gateway_dir / "chains" / chain_name / "configs"
     if not source_dir.exists():
         return
-    is_edge_chain = chain_name == os.environ.get("EDGE_CHAIN_NAME")
-
     out_dir = output_root / chain_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -194,9 +192,6 @@ def materialize_chain(
     contracts_yaml = source_dir / "contracts.yaml"
 
     if not wallets_yaml.exists():
-        if is_edge_chain:
-            print(f"gateway-launch: skipping OS-server config materialization for incomplete edge chain '{chain_name}' (missing {wallets_yaml})")
-            return
         raise FileNotFoundError(f"missing wallets config under {source_dir}: expected wallets.yaml")
 
     contracts_candidate = contracts_yaml
@@ -212,17 +207,6 @@ def materialize_chain(
             contracts_candidate = contract_candidates[0]
 
     if not contracts_candidate.exists() or not genesis_json.exists():
-        if is_edge_chain:
-            missing = []
-            if not contracts_candidate.exists():
-                missing.append("contracts.yaml|contracts_*.yaml")
-            if not genesis_json.exists():
-                missing.append("genesis.json")
-            print(
-                "gateway-launch: skipping OS-server config materialization for incomplete edge chain "
-                f"'{chain_name}' (missing {', '.join(missing)})"
-            )
-            return
         missing = []
         if not contracts_candidate.exists():
             missing.append("contracts.yaml|contracts_*.yaml")
