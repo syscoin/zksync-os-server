@@ -35,6 +35,24 @@ gl_require() {
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
 }
 
+gl_assert_l1_chain_id_matches_rpc() {
+  gl_require L1_RPC_URL
+  gl_require L1_CHAIN_ID
+
+  local rpc_chain_id
+  if ! rpc_chain_id="$(cast chain-id --rpc-url "${L1_RPC_URL}" 2>/dev/null)"; then
+    gl_die "failed to read chain id from L1 RPC ${L1_RPC_URL}"
+  fi
+
+  if [ -z "${rpc_chain_id}" ]; then
+    gl_die "empty chain id from L1 RPC ${L1_RPC_URL}"
+  fi
+
+  if [ "${rpc_chain_id}" != "${L1_CHAIN_ID}" ]; then
+    gl_die "L1 chain-id mismatch: rpc(${L1_RPC_URL})=${rpc_chain_id}, expected L1_CHAIN_ID=${L1_CHAIN_ID}, FOUNDRY_CHAIN_ID=${FOUNDRY_CHAIN_ID:-<unset>}"
+  fi
+}
+
 gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
   local key="$1"

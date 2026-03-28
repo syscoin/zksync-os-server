@@ -19,6 +19,8 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 : "${L2_BRIDGEHUB_ADDRESS:=0x0000000000000000000000000000000000010002}"
 
+gl_assert_l1_chain_id_matches_rpc
+
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
 
