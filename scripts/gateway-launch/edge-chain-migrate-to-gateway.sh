@@ -121,16 +121,45 @@ PY
 
 get_chain_diamond_proxy_from_gateway() {
   local chain_name="${1:?chain name required}"
-  local chain_id
+  local chain_id call_from
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  call_from="$(get_chain_governor_from_wallets "${chain_name}")"
   env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" --gas-price 0 | awk '{print $1}'
+    cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" --from "${call_from}" | awk '{print $1}'
+}
+
+get_chain_governor_from_wallets() {
+  local chain_name="${1:?chain name required}"
+  python3 - "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+p = Path(sys.argv[1])
+if not p.exists():
+    raise SystemExit(f"missing wallets config: {p}")
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {p}")
+gov = data.get("governor")
+if not isinstance(gov, dict):
+    raise SystemExit(f"missing governor wallet in {p}")
+addr = gov.get("address")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or addr.strip() == "":
+    raise SystemExit(f"missing governor.address in {p}")
+print(addr.strip())
+PY
 }
 
 is_da_pair_set_on_gateway() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc="${2:?gateway rpc required}"
-  local chain_proxy raw_pair line1 line2 raw_tokens
+  local chain_proxy raw_pair line1 line2 raw_tokens call_from
+  call_from="$(get_chain_governor_from_wallets "${chain_name}")"
   chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
 
   if [ -z "${chain_proxy}" ] || [ "${chain_proxy}" = "0x0000000000000000000000000000000000000000" ]; then
@@ -138,9 +167,9 @@ is_da_pair_set_on_gateway() {
   fi
 
   if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" --gas-price 0 2>/dev/null)"; then
+    cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" --from "${call_from}" 2>/dev/null)"; then
     if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" --gas-price 0 2>/dev/null)"; then
+      cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" --from "${call_from}" 2>/dev/null)"; then
       return 1
     fi
   fi
