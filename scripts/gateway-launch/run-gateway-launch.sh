@@ -249,7 +249,7 @@ gateway_rpc_ready() {
 }
 
 start_gateway_for_migration() {
-  local start_script log_file i chain_name
+  local start_script log_file i chain_name start_timeout_s poll_interval_s max_checks
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
@@ -260,13 +260,24 @@ start_gateway_for_migration() {
   fi
 
   : "${GATEWAY_MIGRATION_GATEWAY_LOG:=${HOME}/gateway-migration-gateway-node.log}"
+  : "${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT:=1800}"
+  : "${GATEWAY_MIGRATION_GATEWAY_START_POLL:=2}"
+  start_timeout_s="${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT}"
+  poll_interval_s="${GATEWAY_MIGRATION_GATEWAY_START_POLL}"
+  if [ "${poll_interval_s}" -le 0 ]; then
+    poll_interval_s=2
+  fi
+  max_checks=$((start_timeout_s / poll_interval_s))
+  if [ "${max_checks}" -lt 1 ]; then
+    max_checks=1
+  fi
   log_file="${GATEWAY_MIGRATION_GATEWAY_LOG}"
   echo "migrate-edge: starting Gateway node via ${start_script} -> ${log_file}"
   nohup bash "${start_script}" >"${log_file}" 2>&1 &
   GATEWAY_NODE_PID=$!
   GATEWAY_STARTED_FOR_MIGRATION=true
 
-  for i in $(seq 1 150); do
+  for i in $(seq 1 "${max_checks}"); do
     if gateway_rpc_ready; then
       echo "migrate-edge: Gateway RPC is up"
       return 0
@@ -274,10 +285,10 @@ start_gateway_for_migration() {
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
       break
     fi
-    sleep 2
+    sleep "${poll_interval_s}"
   done
 
-  gl_die "migrate-edge: Gateway RPC did not come up (see ${log_file})"
+  gl_die "migrate-edge: Gateway RPC did not come up within ${start_timeout_s}s (see ${log_file})"
 }
 
 stop_gateway_for_migration() {
