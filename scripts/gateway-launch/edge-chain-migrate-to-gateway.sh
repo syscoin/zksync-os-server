@@ -194,6 +194,20 @@ gateway_cast_call_with_fallback() {
   return 1
 }
 
+gateway_address_has_code() {
+  local rpc_url="${1:?rpc url required}"
+  local addr="${2:?address required}"
+
+  local code
+  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+    return 1
+  fi
+  code="$(printf '%s' "${code}" | tr -d '[:space:]')"
+  [ -n "${code}" ] || return 1
+  [ "${code}" != "0x" ] || return 1
+}
+
 is_da_pair_set_on_gateway() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc="${2:?gateway rpc required}"
@@ -225,6 +239,7 @@ is_da_pair_set_on_gateway() {
   [ -n "${line1}" ] || return 1
   [ -n "${line2}" ] || return 1
   [ "${line1}" != "0x0000000000000000000000000000000000000000" ] || return 1
+  gateway_address_has_code "${gateway_rpc}" "${line1}" || return 1
 
   # In Gateway mode, second value may be uint8 commitment scheme (e.g. 3).
   case "${line2}" in
@@ -253,8 +268,16 @@ wait_for_da_pair_on_gateway() {
 }
 
 get_l1_da_validator_for_edge() {
-  local chain_name="${1:?chain name required}"
-  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
+  local edge_chain_name="${1:?edge chain name required}"
+  local gateway_chain_name="${2:?gateway chain name required}"
+  local gateway_rpc_url="${3:?gateway rpc url required}"
+
+  local raw_candidates
+  raw_candidates="$(python3 - \
+    "${EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR:-}" \
+    "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" \
+    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/genesis.yaml" \
+    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/contracts.yaml" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -271,32 +294,77 @@ def norm(value):
         if value == "":
             return None
         return value
-    return str(value)
+    value = str(value).strip()
+    return value if value else None
 
-p = Path(sys.argv[1])
-if not p.exists():
-    raise SystemExit(f"missing contracts config: {p}")
-data = yaml.safe_load(p.read_text(encoding="utf-8"))
-if not isinstance(data, dict):
-    raise SystemExit(f"invalid YAML object in {p}")
-l1 = data.get("l1")
-if not isinstance(l1, dict):
-    raise SystemExit(f"invalid l1 section in {p}")
-
-candidates = [
-    l1.get("blobs_zksync_os_l1_da_validator_addr"),
-    l1.get("rollup_l1_da_validator_addr"),
-]
-for candidate in candidates:
-    value = norm(candidate)
+def emit(value):
+    value = norm(value)
     if value is None:
-        continue
-    if value.lower() != "0x0000000000000000000000000000000000000000":
-        print(value)
-        raise SystemExit(0)
+        return
+    if value.lower() == "0x0000000000000000000000000000000000000000":
+        return
+    print(value)
 
-raise SystemExit(f"missing non-zero L1 DA validator in {p}")
+# 1) Explicit override from env (highest precedence).
+emit(sys.argv[1])
+
+# 2) Canonical Gateway DA validator from gateway config.
+#    This mirrors zkstack migration logic:
+#    - Rollup chains use relayed_sl_da_validator
+#    - Validium chains use validium_da_validator
+gateway_cfg_path = Path(sys.argv[2])
+genesis_cfg_path = Path(sys.argv[3])
+commitment_mode = None
+if genesis_cfg_path.exists():
+    genesis_data = yaml.safe_load(genesis_cfg_path.read_text(encoding="utf-8"))
+    if isinstance(genesis_data, dict):
+        mode = genesis_data.get("l1_batch_commit_data_generator_mode")
+        if isinstance(mode, str):
+            commitment_mode = mode.strip().lower()
+
+if gateway_cfg_path.exists():
+    gateway_data = yaml.safe_load(gateway_cfg_path.read_text(encoding="utf-8"))
+    if isinstance(gateway_data, dict):
+        relayed = gateway_data.get("relayed_sl_da_validator")
+        validium = gateway_data.get("validium_da_validator")
+        # Rollup mode is the default when mode is absent.
+        if commitment_mode == "validium":
+            emit(validium)
+            emit(relayed)
+        else:
+            emit(relayed)
+            emit(validium)
+
+# 3) Legacy L1 DA validator fields (fallback only).
+contracts_path = Path(sys.argv[4])
+if contracts_path.exists():
+    data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        l1 = data.get("l1")
+        if isinstance(l1, dict):
+            emit(l1.get("blobs_zksync_os_l1_da_validator_addr"))
+            emit(l1.get("rollup_l1_da_validator_addr"))
 PY
+)"
+
+  [ -n "${raw_candidates}" ] || {
+    echo "missing DA validator candidates for ${edge_chain_name}" >&2
+    return 1
+  }
+
+  local candidate
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    if gateway_address_has_code "${gateway_rpc_url}" "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done <<EOF
+${raw_candidates}
+EOF
+
+  echo "no DA validator candidate has bytecode on Gateway RPC (${gateway_rpc_url}) for ${edge_chain_name}; set EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR to a Gateway-deployed IL1DAValidator contract" >&2
+  return 1
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
@@ -363,7 +431,7 @@ else
 fi
 
 if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 4 2; then
-  l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}")"
+  l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
   echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
   gl_l1_broadcast_preflight
   gl_zkstack_pty zkstack chain set-da-validator-pair \
