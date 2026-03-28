@@ -165,6 +165,24 @@ is_da_pair_set_on_gateway() {
   esac
 }
 
+wait_for_da_pair_on_gateway() {
+  local chain_name="${1:?chain name required}"
+  local gateway_rpc="${2:?gateway rpc required}"
+  local attempts="${3:-6}"
+  local delay_s="${4:-2}"
+  local i
+
+  for i in $(seq 1 "${attempts}"); do
+    if is_da_pair_set_on_gateway "${chain_name}" "${gateway_rpc}"; then
+      return 0
+    fi
+    if [ "${i}" -lt "${attempts}" ]; then
+      sleep "${delay_s}"
+    fi
+  done
+  return 1
+}
+
 get_l1_da_validator_for_edge() {
   local chain_name="${1:?chain name required}"
   python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
@@ -275,7 +293,7 @@ else
   echo "${finalize_output}"
 fi
 
-if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
+if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 4 2; then
   l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}")"
   echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
   gl_l1_broadcast_preflight
@@ -287,7 +305,7 @@ if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
     "${GATEWAY_MAX_L1_GAS_PRICE}"
 fi
 
-if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
+if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 10 3; then
   echo "gateway-launch: DA validator pair is still not set on Gateway for ${EDGE_CHAIN_NAME} after repair attempt" >&2
   exit 1
 fi
