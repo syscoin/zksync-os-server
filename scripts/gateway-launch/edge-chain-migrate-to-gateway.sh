@@ -127,7 +127,7 @@ get_chain_diamond_proxy_from_gateway() {
 is_da_pair_set_on_gateway() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc="${2:?gateway rpc required}"
-  local chain_proxy raw_pair line1 line2
+  local chain_proxy raw_pair line1 line2 raw_tokens
   chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
 
   if [ -z "${chain_proxy}" ] || [ "${chain_proxy}" = "0x0000000000000000000000000000000000000000" ]; then
@@ -140,8 +140,16 @@ is_da_pair_set_on_gateway() {
     fi
   fi
 
-  line1="$(printf '%s\n' "${raw_pair}" | awk 'NR==1 {print $1}')"
-  line2="$(printf '%s\n' "${raw_pair}" | awk 'NR==2 {print $1}')"
+  # cast output varies by version:
+  # - multiline:
+  #     0x...
+  #     3
+  # - single-line tuple:
+  #     (0x..., 3)
+  # Normalize to two tokens so detection is idempotent across cast versions.
+  raw_tokens="$(printf '%s\n' "${raw_pair}" | tr '(),\n\t' '     ')"
+  line1="$(printf '%s\n' "${raw_tokens}" | awk '{print $1}')"
+  line2="$(printf '%s\n' "${raw_tokens}" | awk '{print $2}')"
 
   [ -n "${line1}" ] || return 1
   [ -n "${line2}" ] || return 1
