@@ -266,12 +266,14 @@ gl_zkstack_pty() {
 
 gl_ensure_chain_contracts_yaml_schema() {
   gl_require GATEWAY_DIR
-  local chain_name contracts_yaml
+  local chain_name contracts_yaml gateway_chain_name gateway_contracts_yaml
   chain_name="${1:?chain name required}"
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
   [ -f "${contracts_yaml}" ] || gl_die "missing contracts config: ${contracts_yaml}"
+  gateway_contracts_yaml="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml"
 
-  python3 - "${contracts_yaml}" "${chain_name}" <<'PY'
+  python3 - "${contracts_yaml}" "${chain_name}" "${gateway_chain_name}" "${gateway_contracts_yaml}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -279,27 +281,146 @@ import yaml
 
 contracts_path = Path(sys.argv[1])
 chain_name = sys.argv[2]
+gateway_chain_name = sys.argv[3]
+gateway_contracts_path = Path(sys.argv[4])
 data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {contracts_path}")
+
+gateway_data = None
+if chain_name != gateway_chain_name and gateway_contracts_path.exists():
+    gateway_data = yaml.safe_load(gateway_contracts_path.read_text(encoding="utf-8"))
+    if not isinstance(gateway_data, dict):
+        gateway_data = None
+
+updated = False
 
 l2 = data.get("l2")
 if l2 is None:
     l2 = {}
     data["l2"] = l2
+    updated = True
 if not isinstance(l2, dict):
     raise SystemExit(f"invalid l2 section in {contracts_path}")
 
 if "default_l2_upgrader" not in l2:
     # Backward-compatible default for older generated contracts.yaml files.
     l2["default_l2_upgrader"] = "0x0000000000000000000000000000000000000000"
-    contracts_path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    updated = True
     print(
         f"gateway-launch: patched {contracts_path} for {chain_name} "
         "(added l2.default_l2_upgrader=0x0000000000000000000000000000000000000000)"
+    )
+
+if "testnet_paymaster_addr" not in l2:
+    # Optional deployment in this flow; keep schema-compliant sentinel when not deployed.
+    l2["testnet_paymaster_addr"] = "0x0000000000000000000000000000000000000000"
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        "(added l2.testnet_paymaster_addr=0x0000000000000000000000000000000000000000)"
+    )
+
+eco = data.get("ecosystem_contracts")
+if eco is None:
+    eco = {}
+    data["ecosystem_contracts"] = eco
+    updated = True
+if not isinstance(eco, dict):
+    raise SystemExit(f"invalid ecosystem_contracts section in {contracts_path}")
+
+l1 = data.get("l1")
+if l1 is not None and not isinstance(l1, dict):
+    l1 = None
+
+gateway_eco = None
+if isinstance(gateway_data, dict):
+    candidate = gateway_data.get("ecosystem_contracts")
+    if isinstance(candidate, dict):
+        gateway_eco = candidate
+
+def maybe_get(mapping, key):
+    if isinstance(mapping, dict):
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
+
+# Required core ecosystem fields in current schema.
+required_eco_core_fields = (
+    "bridgehub_proxy_addr",
+    "transparent_proxy_admin_addr",
+)
+for eco_key in required_eco_core_fields:
+    if eco.get(eco_key) is not None:
+        continue
+    value = maybe_get(gateway_eco, eco_key)
+    if value is None:
+        raise SystemExit(
+            f"unable to auto-heal required ecosystem_contracts field in {contracts_path}: {eco_key}"
+        )
+    eco[eco_key] = value
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        f"(added ecosystem_contracts.{eco_key}={value})"
+    )
+
+# Required CTM fields in ecosystem_contracts for current zkstack parser.
+required_eco_fields = {
+    "governance": ("governance_addr",),
+    "chain_admin": ("chain_admin_addr",),
+    "proxy_admin": ("chain_proxy_admin_addr",),
+    "state_transition_proxy_addr": (),
+    "validator_timelock_addr": ("validator_timelock_addr",),
+    "diamond_cut_data": (),
+    "l1_bytecodes_supplier_addr": (),
+    "server_notifier_proxy_addr": (),
+    "default_upgrade_addr": ("default_upgrade_addr",),
+    "genesis_upgrade_addr": (),
+    "verifier_addr": ("verifier_addr",),
+    "rollup_l1_da_validator_addr": ("rollup_l1_da_validator_addr",),
+    "no_da_validium_l1_validator_addr": ("no_da_validium_l1_validator_addr",),
+    "avail_l1_da_validator_addr": ("avail_l1_da_validator_addr",),
+    "l1_rollup_da_manager": (),
+}
+
+unresolved = []
+for eco_key, l1_keys in required_eco_fields.items():
+    if eco.get(eco_key) is not None:
+        continue
+
+    value = None
+    for l1_key in l1_keys:
+        value = maybe_get(l1, l1_key)
+        if value is not None:
+            break
+    if value is None:
+        value = maybe_get(gateway_eco, eco_key)
+    if value is None and eco_key == "proxy_admin":
+        value = maybe_get(eco, "transparent_proxy_admin_addr")
+
+    if value is None:
+        unresolved.append(eco_key)
+        continue
+
+    eco[eco_key] = value
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        f"(added ecosystem_contracts.{eco_key}={value})"
+    )
+
+if unresolved:
+    unresolved_csv = ", ".join(unresolved)
+    raise SystemExit(
+        f"unable to auto-heal required ecosystem_contracts fields in {contracts_path}: {unresolved_csv}"
+    )
+
+if updated:
+    contracts_path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
     )
 PY
 }
