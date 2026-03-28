@@ -265,7 +265,24 @@ def materialize_chain(
             ),
         )
 
-    shutil.copy2(source_dir / "contracts.yaml", out_dir / "contracts.yaml")
+    contracts_yaml = source_dir / "contracts.yaml"
+    if not contracts_yaml.exists():
+        # `zkstack chain create` may leave `contracts_<id>.yaml` before a canonical
+        # `contracts.yaml` appears; pick the newest one as source of truth.
+        contract_candidates = sorted(
+            [p for p in source_dir.glob("contracts_*.yaml") if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if contract_candidates:
+            contracts_yaml = contract_candidates[0]
+
+    if not contracts_yaml.exists():
+        raise FileNotFoundError(
+            f"missing contracts config under {source_dir}: expected contracts.yaml or contracts_*.yaml"
+        )
+
+    shutil.copy2(contracts_yaml, out_dir / "contracts.yaml")
     shutil.copy2(source_dir / "wallets.yaml", out_dir / "wallets.yaml")
     shutil.copy2(source_dir / "genesis.json", out_dir / "genesis.json")
 
