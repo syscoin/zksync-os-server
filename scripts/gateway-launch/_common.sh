@@ -374,6 +374,7 @@ if not isinstance(l1, dict):
 
 gateway_eco = None
 gateway_l1 = None
+gateway_l2 = None
 if isinstance(gateway_data, dict):
     candidate = gateway_data.get("ecosystem_contracts")
     if isinstance(candidate, dict):
@@ -381,6 +382,9 @@ if isinstance(gateway_data, dict):
     candidate = gateway_data.get("l1")
     if isinstance(candidate, dict):
         gateway_l1 = candidate
+    candidate = gateway_data.get("l2")
+    if isinstance(candidate, dict):
+        gateway_l2 = candidate
 
 def normalize_scalar(value):
     # YAML can parse 0x-prefixed scalars as Python ints; convert back to hex
@@ -451,6 +455,20 @@ def pick_value(*candidates, prefer_non_zero=False):
         if not is_zero_like_address(v):
             return v
     return normalized[0]
+
+# Required L2-level schema fields used by current zkstack code paths.
+if "da_validator_addr" not in l2:
+    l2_da_validator = pick_value(
+        maybe_get(gateway_l2, "da_validator_addr"),
+        "0x0000000000000000000000000000000000000000",
+    )
+    l2_da_validator = normalize_address(l2_da_validator)
+    l2["da_validator_addr"] = l2_da_validator
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        f"(added l2.da_validator_addr={l2_da_validator})"
+    )
 
 # Required top-level fields in current contracts schema.
 required_top_level_fields = {
