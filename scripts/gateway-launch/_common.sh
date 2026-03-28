@@ -365,14 +365,22 @@ if not isinstance(eco, dict):
     raise SystemExit(f"invalid ecosystem_contracts section in {contracts_path}")
 
 l1 = data.get("l1")
-if l1 is not None and not isinstance(l1, dict):
-    l1 = None
+if l1 is None:
+    l1 = {}
+    data["l1"] = l1
+    updated = True
+if not isinstance(l1, dict):
+    raise SystemExit(f"invalid l1 section in {contracts_path}")
 
 gateway_eco = None
+gateway_l1 = None
 if isinstance(gateway_data, dict):
     candidate = gateway_data.get("ecosystem_contracts")
     if isinstance(candidate, dict):
         gateway_eco = candidate
+    candidate = gateway_data.get("l1")
+    if isinstance(candidate, dict):
+        gateway_l1 = candidate
 
 def normalize_scalar(value):
     # YAML can parse 0x-prefixed scalars as Python ints; convert back to hex
@@ -570,6 +578,36 @@ if unresolved:
     raise SystemExit(
         f"unable to auto-heal required ecosystem_contracts fields in {contracts_path}: {unresolved_csv}"
     )
+
+# Required L1-level DA validator fields used by zkstack init/migration code paths.
+required_l1_da_fields = (
+    "blobs_zksync_os_l1_da_validator_addr",
+    "rollup_l1_da_validator_addr",
+    "no_da_validium_l1_validator_addr",
+    "avail_l1_da_validator_addr",
+)
+for l1_key in required_l1_da_fields:
+    current_value = l1.get(l1_key)
+    gw_l1_value = maybe_get(gateway_l1, l1_key)
+    gw_eco_value = maybe_get(gateway_eco, l1_key)
+    value = pick_value(
+        current_value,
+        gw_l1_value,
+        gw_eco_value,
+        prefer_non_zero=True,
+    )
+    if value is None:
+        raise SystemExit(
+            f"unable to auto-heal required l1 DA field in {contracts_path}: {l1_key}"
+        )
+    value = normalize_address(value)
+    if current_value != value:
+        l1[l1_key] = value
+        updated = True
+        print(
+            f"gateway-launch: patched {contracts_path} for {chain_name} "
+            f"(set l1.{l1_key}={value})"
+        )
 
 address_key_hints = {
     "governance",
