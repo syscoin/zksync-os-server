@@ -17,6 +17,7 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
+: "${L2_BRIDGEHUB_ADDRESS:=0x0000000000000000000000000000000000010002}"
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 
@@ -115,51 +116,42 @@ PY
   cast call "${bridgehub}" "settlementLayer(uint256)(uint256)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk '{print $1}'
 }
 
-get_chain_diamond_proxy_from_contracts_yaml() {
+get_chain_diamond_proxy_from_gateway() {
   local chain_name="${1:?chain name required}"
-  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
-import sys
-from pathlib import Path
-import yaml
-
-sys.set_int_max_str_digits(0)
-
-p = Path(sys.argv[1])
-if not p.exists():
-    raise SystemExit(f"missing contracts config: {p}")
-data = yaml.safe_load(p.read_text(encoding="utf-8"))
-if not isinstance(data, dict):
-    raise SystemExit(f"invalid YAML object in {p}")
-l1 = data.get("l1")
-if not isinstance(l1, dict):
-    raise SystemExit(f"invalid l1 section in {p}")
-diamond = l1.get("diamond_proxy_addr")
-if diamond is None:
-    raise SystemExit(f"missing l1.diamond_proxy_addr in {p}")
-if isinstance(diamond, int):
-    diamond = "0x" + format(diamond & ((1 << 160) - 1), "040x")
-print(str(diamond))
-PY
+  local chain_id
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" | awk '{print $1}'
 }
 
 is_da_pair_set_on_gateway() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc="${2:?gateway rpc required}"
   local chain_proxy raw_pair line1 line2
-  chain_proxy="$(get_chain_diamond_proxy_from_contracts_yaml "${chain_name}")"
+  chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
 
-  if ! cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" >/dev/null 2>&1; then
+  if [ -z "${chain_proxy}" ] || [ "${chain_proxy}" = "0x0000000000000000000000000000000000000000" ]; then
     return 1
   fi
 
-  raw_pair="$(cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}")"
+  if ! raw_pair="$(cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" 2>/dev/null)"; then
+    if ! raw_pair="$(cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" 2>/dev/null)"; then
+      return 1
+    fi
+  fi
+
   line1="$(printf '%s\n' "${raw_pair}" | awk 'NR==1 {print $1}')"
   line2="$(printf '%s\n' "${raw_pair}" | awk 'NR==2 {print $1}')"
 
   [ -n "${line1}" ] || return 1
   [ -n "${line2}" ] || return 1
   [ "${line1}" != "0x0000000000000000000000000000000000000000" ] || return 1
-  [ "${line2}" != "0x0000000000000000000000000000000000000000" ] || return 1
+
+  # In Gateway mode, second value may be uint8 commitment scheme (e.g. 3).
+  case "${line2}" in
+  0 | 0x0 | 0x0000000000000000000000000000000000000000)
+    return 1
+    ;;
+  esac
 }
 
 get_l1_da_validator_for_edge() {
