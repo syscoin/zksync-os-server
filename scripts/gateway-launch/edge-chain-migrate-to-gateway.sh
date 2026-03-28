@@ -124,7 +124,7 @@ get_chain_diamond_proxy_from_gateway() {
   local chain_id
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" | awk '{print $1}'
+    cast call "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${GATEWAY_RPC_URL}" --gas-price 0 | awk '{print $1}'
 }
 
 is_da_pair_set_on_gateway() {
@@ -138,9 +138,9 @@ is_da_pair_set_on_gateway() {
   fi
 
   if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" 2>/dev/null)"; then
+    cast call "${chain_proxy}" "getDAValidatorPair()(address,uint8)" --rpc-url "${gateway_rpc}" --gas-price 0 2>/dev/null)"; then
     if ! raw_pair="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" 2>/dev/null)"; then
+      cast call "${chain_proxy}" "getDAValidatorPair()(address,address)" --rpc-url "${gateway_rpc}" --gas-price 0 2>/dev/null)"; then
       return 1
     fi
   fi
