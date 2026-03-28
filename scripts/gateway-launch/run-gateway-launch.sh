@@ -494,7 +494,12 @@ if [ "${SKIP_GATEWAY_CONVERT}" = true ]; then
 else
   "${SCRIPT_DIR}/gateway-convert-settlement.sh"
 fi
-"${SCRIPT_DIR}/generate-os-server-configs.sh"
+if [ "${WITH_EDGE}" = true ] && [ "${SKIP_EDGE_CREATE_INIT}" = false ]; then
+  echo "gateway-launch: materializing gateway OS-server config only (edge deferred until edge stage completes)"
+  MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh"
+else
+  "${SCRIPT_DIR}/generate-os-server-configs.sh"
+fi
 
 if [ "${WITH_EDGE}" = true ] && [ "${SKIP_EDGE_CREATE_INIT}" = false ]; then
   SKIP_FUND="${SKIP_FUND}" "${SCRIPT_DIR}/edge-chain-create-init.sh"

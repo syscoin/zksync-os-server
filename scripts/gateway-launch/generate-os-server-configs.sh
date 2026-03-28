@@ -21,6 +21,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${MATERIALIZE_EDGE_CONFIG:=true}"
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
 : "${BITCOIN_DA_RPC_USER:=}"
@@ -54,6 +55,7 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export MATERIALIZE_EDGE_CONFIG
 export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
 export BITCOIN_DA_RPC_USER
@@ -159,6 +161,9 @@ prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
 if prover_mode not in {"gpu", "no-proofs"}:
     raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|no-proofs)")
 use_mock_prover = prover_mode == "no-proofs"
+materialize_edge_config = os.environ.get("MATERIALIZE_EDGE_CONFIG", "true").strip().lower()
+if materialize_edge_config not in {"true", "false"}:
+    raise SystemExit("invalid MATERIALIZE_EDGE_CONFIG (expected true|false)")
 l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
 if not l1_rpc_url:
     raise SystemExit(
@@ -330,16 +335,19 @@ materialize_chain(
     gateway_rpc_url=None,
 )
 
-materialize_chain(
-    chain_name=os.environ["EDGE_CHAIN_NAME"],
-    chain_id=os.environ["EDGE_CHAIN_ID"],
-    pubdata_mode="RelayedL2Calldata",
-    rpc_port=os.environ["EDGE_OS_RPC_PORT"],
-    prover_api_port=os.environ["EDGE_PROVER_API_PORT"],
-    status_port=os.environ["EDGE_STATUS_PORT"],
-    prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
-    gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
-)
+if materialize_edge_config == "true":
+    materialize_chain(
+        chain_name=os.environ["EDGE_CHAIN_NAME"],
+        chain_id=os.environ["EDGE_CHAIN_ID"],
+        pubdata_mode="RelayedL2Calldata",
+        rpc_port=os.environ["EDGE_OS_RPC_PORT"],
+        prover_api_port=os.environ["EDGE_PROVER_API_PORT"],
+        status_port=os.environ["EDGE_STATUS_PORT"],
+        prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
+        gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
+    )
+else:
+    print("gateway-launch: skipping edge OS-server config materialization for this phase")
 
 patch_zkstack_gateway_chain_rpc_files(
     gateway_dir,
