@@ -156,9 +156,9 @@ gateway_dir = Path(os.environ["GATEWAY_DIR"])
 server_root = Path(os.environ["ZKSYNC_OS_SERVER_PATH"])
 output_root = gateway_dir / "os-server-configs"
 prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
-if prover_mode not in {"gpu", "mock"}:
-    raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|mock)")
-use_mock_prover = prover_mode == "mock"
+if prover_mode not in {"gpu", "no-proofs"}:
+    raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|no-proofs)")
+use_mock_prover = prover_mode == "no-proofs"
 l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
 if not l1_rpc_url:
     raise SystemExit(

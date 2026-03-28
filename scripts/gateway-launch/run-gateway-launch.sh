@@ -43,7 +43,7 @@
 # Env: ZKSYNC_ERA_PATH (optional), ZKSYNC_ERA_GIT_URL, ZKSYNC_ERA_CACHE_ROOT, PROTOCOL_VERSION, GATEWAY_DIR,
 #      GATEWAY_ECOSYSTEM_PARENT_DIR, EDGE_CHAIN_NAME, EDGE_CHAIN_ID, FUNDER_PRIVATE_KEY, FOUNDRY_EVM_VERSION,
 #      REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, BITCOIN_DA_RPC_URL, BITCOIN_DA_RPC_USER,
-#      BITCOIN_DA_RPC_PASSWORD, PROVER_MODE, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH,
+#      BITCOIN_DA_RPC_PASSWORD, PROVER_MODE, GATEWAY_PROVER_MODE, GATEWAY_WALLET_CREATION, GATEWAY_WALLET_PATH,
 #      GATEWAY_CREATE2_FACTORY_SALT, GATEWAY_FUND_WALLETS_PATHS, GATEWAY_ARCHIVE_L1_RPC_URL
 #
 # nohup: outer re-exec under `script` is not enough — `exec > >(tee log)` makes stdout a pipe for zkstack.
@@ -55,6 +55,15 @@ ORIG_ARGS=("$@")
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
+
+# Keep ecosystem prover mode aligned with runtime mode unless user explicitly overrides it.
+if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
+  if [ "${PROVER_MODE}" = "no-proofs" ]; then
+    export GATEWAY_PROVER_MODE="no-proofs"
+  else
+    export GATEWAY_PROVER_MODE="gpu"
+  fi
+fi
 
 L1_PROFILE=""
 START_ANVIL=true
@@ -98,7 +107,8 @@ Optional env:
   BITCOIN_DA_RPC_PASSWORD Syscoin NEVM RPC auth password for the generated gateway OS-server config
                         If using local Syscoin cookie auth, e.g.:
                           export BITCOIN_DA_RPC_PASSWORD="${COOKIE#*:}"
-  PROVER_MODE            prover mode for generated OS-server config: gpu (default) or mock
+  PROVER_MODE            runtime prover mode for generated OS-server config: gpu (default) or no-proofs (enables fake FRI/SNARK provers)
+  GATEWAY_PROVER_MODE    ecosystem deploy prover mode passed to zkstack: gpu|no-proofs (default auto-derived from PROVER_MODE)
   GATEWAY_LAUNCH_LOG      default ~/gateway-launch.log
 
 Options:

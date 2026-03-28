@@ -35,9 +35,9 @@ export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default k
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 # Launcher defaults Bitcoin DA RPC to local sysgeth (`http://127.0.0.1:18370`) and
 # loads RPC auth from ~/.syscoin/testnet3/.cookie when present.
-# Prover mode defaults to GPU; override with PROVER_MODE=mock for fake proving.
+# Prover mode defaults to GPU; override with PROVER_MODE=no-proofs for fake proving.
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
-PROVER_MODE=mock bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
+PROVER_MODE=no-proofs bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 
 # Syscoin mainnet
 export L1_RPC_URL=https://rpc.syscoin.org
@@ -129,7 +129,7 @@ This keeps Foundry/zkstack deploy traffic on local `L1_RPC_URL` while generated 
 | `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Optional runtime override for generated `zksync-os-server` `general.l1_rpc_url` (defaults to `L1_RPC_URL`). Use this when local `L1_RPC_URL` is non-archive. |
 | `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
-| `PROVER_MODE` | proving mode for generated `zksync-os-server` configs: `gpu` (default) or `mock` (enables fake FRI/SNARK provers) |
+| `PROVER_MODE` | proving mode for generated `zksync-os-server` configs: `gpu` (default) or `no-proofs` (enables fake FRI/SNARK provers) |
 | `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
 
 ---

@@ -21,9 +21,9 @@ gl_die() {
 
 gl_validate_prover_mode() {
   case "${PROVER_MODE,,}" in
-  gpu | mock) ;;
+  gpu | no-proofs) ;;
   *)
-    gl_die "invalid PROVER_MODE='${PROVER_MODE}' (expected: gpu | mock)"
+    gl_die "invalid PROVER_MODE='${PROVER_MODE}' (expected: gpu | no-proofs)"
     ;;
   esac
   PROVER_MODE="${PROVER_MODE,,}"
