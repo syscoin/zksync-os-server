@@ -296,6 +296,33 @@ if chain_name != gateway_chain_name and gateway_contracts_path.exists():
 
 updated = False
 
+def maybe_get(mapping, key):
+    if isinstance(mapping, dict):
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return None
+
+# Required top-level fields in current contracts schema.
+required_top_level_fields = (
+    "create2_factory_addr",
+    "create2_factory_salt",
+)
+for field in required_top_level_fields:
+    if data.get(field) is not None:
+        continue
+    value = maybe_get(gateway_data, field)
+    if value is None:
+        raise SystemExit(
+            f"unable to auto-heal required top-level field in {contracts_path}: {field}"
+        )
+    data[field] = value
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        f"(added {field}={value})"
+    )
+
 l2 = data.get("l2")
 if l2 is None:
     l2 = {}
@@ -339,13 +366,6 @@ if isinstance(gateway_data, dict):
     candidate = gateway_data.get("ecosystem_contracts")
     if isinstance(candidate, dict):
         gateway_eco = candidate
-
-def maybe_get(mapping, key):
-    if isinstance(mapping, dict):
-        value = mapping.get(key)
-        if value is not None:
-            return value
-    return None
 
 def normalize_scalar(value):
     # YAML can parse 0x-prefixed scalars as Python ints; convert back to hex
