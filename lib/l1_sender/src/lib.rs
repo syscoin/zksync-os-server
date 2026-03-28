@@ -29,12 +29,12 @@ use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
 use zksync_os_operator_signer::SignerConfig;
 use zksync_os_pipeline::PeekableReceiver;
 
-/// Maximum time to wait for a transaction to be included on L1.
+/// SYSCOIN Maximum time to wait for a transaction to be included on L1.
 ///
 /// Normally 15-30 seconds is enough for normal priority transactions, and 60-120 is enough for
 /// lower gas price transactions. We picked 300 seconds conservatively as it should cover most
 /// scenarios with network congestion.
-const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(300);
+const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(3000);
 
 /// Future that resolves into a (fallible) transaction receipt.
 type TransactionReceiptFuture =
