@@ -15,6 +15,8 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 
+gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
+
 pause_output=""
 if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
   echo "${pause_output}"

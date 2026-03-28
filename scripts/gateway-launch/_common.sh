@@ -264,6 +264,46 @@ gl_zkstack_pty() {
   fi
 }
 
+gl_ensure_chain_contracts_yaml_schema() {
+  gl_require GATEWAY_DIR
+  local chain_name contracts_yaml
+  chain_name="${1:?chain name required}"
+  contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
+  [ -f "${contracts_yaml}" ] || gl_die "missing contracts config: ${contracts_yaml}"
+
+  python3 - "${contracts_yaml}" "${chain_name}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+contracts_path = Path(sys.argv[1])
+chain_name = sys.argv[2]
+data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {contracts_path}")
+
+l2 = data.get("l2")
+if l2 is None:
+    l2 = {}
+    data["l2"] = l2
+if not isinstance(l2, dict):
+    raise SystemExit(f"invalid l2 section in {contracts_path}")
+
+if "default_l2_upgrader" not in l2:
+    # Backward-compatible default for older generated contracts.yaml files.
+    l2["default_l2_upgrader"] = "0x0000000000000000000000000000000000000000"
+    contracts_path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        "(added l2.default_l2_upgrader=0x0000000000000000000000000000000000000000)"
+    )
+PY
+}
+
 gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
