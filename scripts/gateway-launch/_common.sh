@@ -509,28 +509,32 @@ if unresolved:
         f"unable to auto-heal required ecosystem_contracts fields in {contracts_path}: {unresolved_csv}"
     )
 
+address_key_hints = {
+    "governance",
+    "chain_admin",
+    "proxy_admin",
+    "l1_rollup_da_manager",
+}
+
+def normalize_tree(obj, key_hint=None):
+    if isinstance(obj, dict):
+        return {k: normalize_tree(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [normalize_tree(v, key_hint) for v in obj]
+
+    if isinstance(key_hint, str):
+        if key_hint in address_key_hints or key_hint.endswith("_addr") or key_hint.endswith("_address"):
+            return normalize_address(obj)
+        if key_hint in {"diamond_cut_data", "force_deployments_data"}:
+            return normalize_bytes_hex(obj)
+    return normalize_scalar(obj)
+
+normalized_data = normalize_tree(data)
+if normalized_data != data:
+    data = normalized_data
+    updated = True
+
 if updated:
-    address_key_hints = {
-        "governance",
-        "chain_admin",
-        "proxy_admin",
-        "l1_rollup_da_manager",
-    }
-
-    def normalize_tree(obj, key_hint=None):
-        if isinstance(obj, dict):
-            return {k: normalize_tree(v, k) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [normalize_tree(v, key_hint) for v in obj]
-
-        if isinstance(key_hint, str):
-            if key_hint in address_key_hints or key_hint.endswith("_addr") or key_hint.endswith("_address"):
-                return normalize_address(obj)
-            if key_hint in {"diamond_cut_data", "force_deployments_data"}:
-                return normalize_bytes_hex(obj)
-        return normalize_scalar(obj)
-
-    data = normalize_tree(data)
     contracts_path.write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
