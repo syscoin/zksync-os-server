@@ -225,8 +225,9 @@ gateway_rpc_ready() {
 }
 
 start_gateway_for_migration() {
-  local start_script log_file i
-  start_script="${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/start-node.sh"
+  local start_script log_file i chain_name
+  chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
 
   if gateway_rpc_ready; then
