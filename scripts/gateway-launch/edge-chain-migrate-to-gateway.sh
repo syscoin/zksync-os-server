@@ -19,7 +19,7 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 : "${L2_BRIDGEHUB_ADDRESS:=0x0000000000000000000000000000000000010002}"
 
-gl_assert_l1_chain_id_matches_rpc
+gl_l1_broadcast_preflight
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
@@ -257,6 +257,7 @@ echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running fin
 fi
 
 finalize_output=""
+gl_l1_broadcast_preflight
 if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
@@ -277,6 +278,7 @@ fi
 if ! is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
   l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}")"
   echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
+  gl_l1_broadcast_preflight
   gl_zkstack_pty zkstack chain set-da-validator-pair \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway \

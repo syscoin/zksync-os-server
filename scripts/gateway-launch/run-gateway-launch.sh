@@ -414,7 +414,7 @@ if [ "${L1_PROFILE}" = anvil ] && [ "${START_ANVIL}" = true ]; then
   [ "$cid" = "9" ] || gl_die "expected anvil chain id 9, got ${cid}"
 elif [ "${L1_PROFILE}" != anvil ]; then
   wait_for_rpc
-  gl_assert_l1_chain_id_matches_rpc
+  gl_l1_broadcast_preflight
 else
   wait_for_rpc
 fi

@@ -21,7 +21,7 @@ gl_path_for_zkstack
 
 export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-shanghai}"
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
-gl_assert_l1_chain_id_matches_rpc
+gl_l1_broadcast_preflight
 
 cd "${GATEWAY_DIR}"
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"

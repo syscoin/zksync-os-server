@@ -53,6 +53,24 @@ gl_assert_l1_chain_id_matches_rpc() {
   fi
 }
 
+gl_assert_no_chain_id_override_conflicts() {
+  gl_require L1_CHAIN_ID
+  local expected var_name var_value
+  expected="${L1_CHAIN_ID}"
+
+  for var_name in FOUNDRY_CHAIN_ID ETH_CHAIN_ID CHAIN_ID DAPP_CHAIN_ID; do
+    var_value="${!var_name:-}"
+    if [ -n "${var_value}" ] && [ "${var_value}" != "${expected}" ]; then
+      gl_die "conflicting chain-id override env ${var_name}=${var_value} (expected ${expected})"
+    fi
+  done
+}
+
+gl_l1_broadcast_preflight() {
+  gl_assert_l1_chain_id_matches_rpc
+  gl_assert_no_chain_id_override_conflicts
+}
+
 gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
   local key="$1"
