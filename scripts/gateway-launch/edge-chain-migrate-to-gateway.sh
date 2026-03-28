@@ -367,10 +367,32 @@ EOF
   return 1
 }
 
+ensure_deposits_unpaused() {
+  local chain_name="${1:?chain name required}"
+  local unpause_output=""
+
+  gl_l1_broadcast_preflight
+  if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits --chain "${chain_name}" -v 2>&1)"; then
+    echo "${unpause_output}"
+    case "${unpause_output,,}" in
+    *"depositsnotpaused"* | *"already unpaused"* | *"deposits are not paused"* | *"not paused"*)
+      echo "gateway-launch: deposits are already unpaused for ${chain_name}; continuing"
+      ;;
+    *)
+      echo "gateway-launch: failed to unpause deposits for ${chain_name}" >&2
+      return 1
+      ;;
+    esac
+  else
+    echo "${unpause_output}"
+  fi
+}
+
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
 if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] && is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair set; skipping migrate+finalize"
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair set; skipping migrate+finalize and ensuring deposits are unpaused"
+  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
 
@@ -446,3 +468,5 @@ if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 10 3;
   echo "gateway-launch: DA validator pair is still not set on Gateway for ${EDGE_CHAIN_NAME} after repair attempt" >&2
   exit 1
 fi
+
+ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
