@@ -17,6 +17,7 @@ cd "${GATEWAY_DIR}"
 
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${EDGE_CHAIN_ID:=57057}"
+: "${EDGE_PROVER_MODE:=}"
 : "${EDGE_WALLET_CREATION:=}"
 : "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
 if [ -z "${SKIP_FUND:-}" ]; then
@@ -35,6 +36,14 @@ if [ -z "${EDGE_WALLET_CREATION}" ]; then
   fi
 fi
 
+if [ -z "${EDGE_PROVER_MODE}" ]; then
+  if [ "${PROVER_MODE}" = "no-proofs" ]; then
+    EDGE_PROVER_MODE="no-proofs"
+  else
+    EDGE_PROVER_MODE="gpu"
+  fi
+fi
+
 if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   gl_require EDGE_WALLET_PATH
 fi
@@ -47,7 +56,7 @@ fi
 zkstack chain create \
   --chain-name "${EDGE_CHAIN_NAME}" \
   --chain-id "${EDGE_CHAIN_ID}" \
-  --prover-mode gpu \
+  --prover-mode "${EDGE_PROVER_MODE}" \
   "${wallet_args[@]}" \
   --l1-batch-commit-data-generator-mode rollup \
   --base-token-address 0x0000000000000000000000000000000000000001 \
