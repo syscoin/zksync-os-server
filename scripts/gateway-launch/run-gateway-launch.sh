@@ -23,6 +23,7 @@
 #   --skip-gateway-init   skip gateway chain init stage
 #   --skip-gateway-convert skip gateway convert-to-settlement stage
 #   --skip-gateway-stages skip gateway deploy+init+convert stages
+#   --skip-edge-create-init skip edge chain create/init stage (useful for migrate-only resume)
 #   --stop-after-l1      stop after ecosystem init / L1 deploy (skip chain init + convert)
 #   --with-edge          run edge-chain-create-init.sh after gateway steps
 #   --migrate-edge       run edge-chain-migrate-to-gateway.sh (launcher starts Gateway via generated
@@ -58,6 +59,7 @@ MIGRATE_EDGE=true
 SKIP_GATEWAY_DEPLOY=false
 SKIP_GATEWAY_INIT=false
 SKIP_GATEWAY_CONVERT=false
+SKIP_EDGE_CREATE_INIT=false
 
 usage() {
   cat <<'EOF'
@@ -99,6 +101,7 @@ Options:
   --skip-gateway-init     skip gateway chain init stage
   --skip-gateway-convert  skip gateway convert-to-settlement stage
   --skip-gateway-stages   skip gateway deploy+init+convert stages
+  --skip-edge-create-init skip edge chain create/init stage (for migrate-only resume)
   --stop-after-l1         skip chain init + convert (+ edge)
   --with-edge             create+init edge chain after gateway
   --migrate-edge          migrate edge to gateway (launcher starts/stops Gateway; edge node stays stopped)
@@ -122,6 +125,7 @@ while [ "${1:-}" != "" ]; do
   --skip-gateway-deploy) SKIP_GATEWAY_DEPLOY=true; shift ;;
   --skip-gateway-init) SKIP_GATEWAY_INIT=true; shift ;;
   --skip-gateway-convert) SKIP_GATEWAY_CONVERT=true; shift ;;
+  --skip-edge-create-init) SKIP_EDGE_CREATE_INIT=true; shift ;;
   --skip-gateway-stages)
     SKIP_GATEWAY_DEPLOY=true
     SKIP_GATEWAY_INIT=true
@@ -390,9 +394,11 @@ else
 fi
 "${SCRIPT_DIR}/generate-os-server-configs.sh"
 
-if [ "${WITH_EDGE}" = true ]; then
+if [ "${WITH_EDGE}" = true ] && [ "${SKIP_EDGE_CREATE_INIT}" = false ]; then
   SKIP_FUND="${SKIP_FUND}" "${SCRIPT_DIR}/edge-chain-create-init.sh"
   "${SCRIPT_DIR}/generate-os-server-configs.sh"
+elif [ "${WITH_EDGE}" = true ]; then
+  echo "gateway-launch: skipping edge chain create/init stage (--skip-edge-create-init)"
 fi
 
 if [ "${MIGRATE_EDGE}" = true ]; then
