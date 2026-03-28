@@ -346,6 +346,38 @@ def maybe_get(mapping, key):
             return value
     return None
 
+def normalize_scalar(value):
+    # YAML can parse 0x-prefixed scalars as Python ints; convert back to hex
+    # to avoid huge decimal string conversion failures when dumping.
+    if isinstance(value, int):
+        return hex(value)
+    return value
+
+def is_zero_like_address(value):
+    value = normalize_scalar(value)
+    if isinstance(value, int):
+        return value == 0
+    if not isinstance(value, str):
+        return False
+    s = value.strip().lower()
+    if s in {"0x0", "0x", "0"}:
+        return True
+    if s.startswith("0x"):
+        body = s[2:]
+        return body != "" and set(body) == {"0"}
+    return False
+
+def pick_value(*candidates, prefer_non_zero=False):
+    normalized = [normalize_scalar(v) for v in candidates if v is not None]
+    if not normalized:
+        return None
+    if not prefer_non_zero:
+        return normalized[0]
+    for v in normalized:
+        if not is_zero_like_address(v):
+            return v
+    return normalized[0]
+
 # Required core ecosystem fields in current schema.
 required_eco_core_fields = (
     "bridgehub_proxy_addr",
@@ -390,15 +422,22 @@ for eco_key, l1_keys in required_eco_fields.items():
     if eco.get(eco_key) is not None:
         continue
 
-    value = None
+    l1_value = None
     for l1_key in l1_keys:
-        value = maybe_get(l1, l1_key)
-        if value is not None:
+        l1_value = maybe_get(l1, l1_key)
+        if l1_value is not None:
             break
-    if value is None:
-        value = maybe_get(gateway_eco, eco_key)
-    if value is None and eco_key == "proxy_admin":
-        value = maybe_get(eco, "transparent_proxy_admin_addr")
+    gw_value = maybe_get(gateway_eco, eco_key)
+    transparent_proxy_admin_value = maybe_get(eco, "transparent_proxy_admin_addr") if eco_key == "proxy_admin" else None
+
+    # For address-like CTM fields, avoid keeping zero placeholders from stale edge
+    # configs when canonical ecosystem values are available.
+    value = pick_value(
+        l1_value,
+        gw_value,
+        transparent_proxy_admin_value,
+        prefer_non_zero=True,
+    )
 
     if value is None:
         unresolved.append(eco_key)
@@ -418,6 +457,14 @@ if unresolved:
     )
 
 if updated:
+    def normalize_tree(obj):
+        if isinstance(obj, dict):
+            return {k: normalize_tree(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [normalize_tree(v) for v in obj]
+        return normalize_scalar(obj)
+
+    data = normalize_tree(data)
     contracts_path.write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
