@@ -251,8 +251,6 @@ ANVIL_PID=""
 WATCH_PID=""
 GATEWAY_NODE_PID=""
 GATEWAY_STARTED_FOR_MIGRATION=false
-GATEWAY_MIGRATION_CONFIG_PATH=""
-GATEWAY_MIGRATION_CONFIG_BACKUP=""
 
 gateway_rpc_ready() {
   local rpc_port
@@ -294,82 +292,12 @@ print(f"migrate-edge: set {config_path} l1_rpc_url -> {new_rpc_url}")
 PY
 }
 
-prepare_gateway_config_for_migration_runtime() {
-  local chain_name config_path migration_l1_rpc
-  chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
-  config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
-  [ -f "${config_path}" ] || gl_die "missing Gateway config for migration: ${config_path}"
-
-  migration_l1_rpc="${GATEWAY_ARCHIVE_L1_RPC_URL:-${L1_RPC_URL:-}}"
-  [ -n "${migration_l1_rpc}" ] || gl_die "migrate-edge: missing archive L1 RPC URL (set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL)"
-
-  if [ -z "${GATEWAY_MIGRATION_CONFIG_BACKUP}" ]; then
-    GATEWAY_MIGRATION_CONFIG_BACKUP="$(mktemp "${TMPDIR:-/tmp}/gateway-migration-config.XXXXXX.yaml")"
-    cp "${config_path}" "${GATEWAY_MIGRATION_CONFIG_BACKUP}"
-  fi
-  GATEWAY_MIGRATION_CONFIG_PATH="${config_path}"
-
-  python3 - "${config_path}" "${migration_l1_rpc}" <<'PY'
-import json
-import re
-import sys
-from pathlib import Path
-
-config_path = Path(sys.argv[1])
-new_rpc_url = sys.argv[2]
-text = config_path.read_text()
-
-def set_once(pattern, replacement, content: str) -> str:
-    updated, replacements = re.subn(pattern, replacement, content, count=1, flags=re.MULTILINE)
-    if replacements != 1:
-        raise SystemExit(f"migrate-edge: failed to locate config key matching {pattern!r} in {config_path}")
-    return updated
-
-text = set_once(r"^(\s*l1_rpc_url:\s*).*$", lambda m: f'{m.group(1)}{json.dumps(new_rpc_url)}', text)
-
-lines = text.splitlines()
-sender_idx = next((i for i, line in enumerate(lines) if re.match(r"^l1_sender:\s*$", line)), None)
-if sender_idx is None:
-    raise SystemExit(f"migrate-edge: failed to locate l1_sender section in {config_path}")
-
-block_end = len(lines)
-for i in range(sender_idx + 1, len(lines)):
-    if re.match(r"^[^\s].*:\s*$", lines[i]):
-        block_end = i
-        break
-
-enabled_idx = None
-for i in range(sender_idx + 1, block_end):
-    if re.match(r"^\s{2}enabled:\s*.*$", lines[i]):
-        enabled_idx = i
-        break
-
-if enabled_idx is not None:
-    lines[enabled_idx] = "  enabled: false"
-else:
-    lines.insert(sender_idx + 1, "  enabled: false")
-
-config_path.write_text("\n".join(lines) + "\n")
-print(f"migrate-edge: prepared {config_path} for migration runtime (l1_rpc_url updated, l1_sender.enabled=false)")
-PY
-}
-
-restore_gateway_config_after_migration_runtime() {
-  if [ -n "${GATEWAY_MIGRATION_CONFIG_PATH}" ] && [ -n "${GATEWAY_MIGRATION_CONFIG_BACKUP}" ] && [ -f "${GATEWAY_MIGRATION_CONFIG_BACKUP}" ]; then
-    cp "${GATEWAY_MIGRATION_CONFIG_BACKUP}" "${GATEWAY_MIGRATION_CONFIG_PATH}"
-    rm -f "${GATEWAY_MIGRATION_CONFIG_BACKUP}"
-    echo "migrate-edge: restored Gateway config after migration runtime"
-  fi
-  GATEWAY_MIGRATION_CONFIG_PATH=""
-  GATEWAY_MIGRATION_CONFIG_BACKUP=""
-}
-
 start_gateway_for_migration() {
   local start_script log_file i chain_name start_timeout_s poll_interval_s max_checks
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
-  prepare_gateway_config_for_migration_runtime
+  set_gateway_runtime_l1_rpc_url
 
   if gateway_rpc_ready; then
     echo "migrate-edge: Gateway RPC already reachable; reusing running node"
@@ -400,7 +328,7 @@ start_gateway_for_migration() {
       return 0
     fi
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
-      break
+      gl_die "migrate-edge: Gateway node exited before RPC came up (pid ${GATEWAY_NODE_PID}); see ${log_file}"
     fi
     sleep "${poll_interval_s}"
   done
@@ -416,7 +344,6 @@ stop_gateway_for_migration() {
   fi
   GATEWAY_NODE_PID=""
   GATEWAY_STARTED_FOR_MIGRATION=false
-  restore_gateway_config_after_migration_runtime
 }
 
 run_migrate_edge_with_retry() {
