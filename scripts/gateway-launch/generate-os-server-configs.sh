@@ -184,11 +184,55 @@ def materialize_chain(
     source_dir = gateway_dir / "chains" / chain_name / "configs"
     if not source_dir.exists():
         return
+    is_edge_chain = chain_name == os.environ.get("EDGE_CHAIN_NAME")
 
     out_dir = output_root / chain_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    wallets = load_yaml_base(source_dir / "wallets.yaml")
+    wallets_yaml = source_dir / "wallets.yaml"
+    genesis_json = source_dir / "genesis.json"
+    contracts_yaml = source_dir / "contracts.yaml"
+
+    if not wallets_yaml.exists():
+        if is_edge_chain:
+            print(f"gateway-launch: skipping OS-server config materialization for incomplete edge chain '{chain_name}' (missing {wallets_yaml})")
+            return
+        raise FileNotFoundError(f"missing wallets config under {source_dir}: expected wallets.yaml")
+
+    contracts_candidate = contracts_yaml
+    if not contracts_candidate.exists():
+        # `zkstack chain create` may leave `contracts_<id>.yaml` before a canonical
+        # `contracts.yaml` appears; pick the newest one as source of truth.
+        contract_candidates = sorted(
+            [p for p in source_dir.glob("contracts_*.yaml") if p.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if contract_candidates:
+            contracts_candidate = contract_candidates[0]
+
+    if not contracts_candidate.exists() or not genesis_json.exists():
+        if is_edge_chain:
+            missing = []
+            if not contracts_candidate.exists():
+                missing.append("contracts.yaml|contracts_*.yaml")
+            if not genesis_json.exists():
+                missing.append("genesis.json")
+            print(
+                "gateway-launch: skipping OS-server config materialization for incomplete edge chain "
+                f"'{chain_name}' (missing {', '.join(missing)})"
+            )
+            return
+        missing = []
+        if not contracts_candidate.exists():
+            missing.append("contracts.yaml|contracts_*.yaml")
+        if not genesis_json.exists():
+            missing.append("genesis.json")
+        raise FileNotFoundError(
+            f"missing required chain config under {source_dir}: {', '.join(missing)}"
+        )
+
+    wallets = load_yaml_base(wallets_yaml)
     operator_commit_sk = (
         wallets["blob_operator"]["private_key"]
         if pubdata_mode == "Blobs"
@@ -265,26 +309,9 @@ def materialize_chain(
             ),
         )
 
-    contracts_yaml = source_dir / "contracts.yaml"
-    if not contracts_yaml.exists():
-        # `zkstack chain create` may leave `contracts_<id>.yaml` before a canonical
-        # `contracts.yaml` appears; pick the newest one as source of truth.
-        contract_candidates = sorted(
-            [p for p in source_dir.glob("contracts_*.yaml") if p.is_file()],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if contract_candidates:
-            contracts_yaml = contract_candidates[0]
-
-    if not contracts_yaml.exists():
-        raise FileNotFoundError(
-            f"missing contracts config under {source_dir}: expected contracts.yaml or contracts_*.yaml"
-        )
-
-    shutil.copy2(contracts_yaml, out_dir / "contracts.yaml")
-    shutil.copy2(source_dir / "wallets.yaml", out_dir / "wallets.yaml")
-    shutil.copy2(source_dir / "genesis.json", out_dir / "genesis.json")
+    shutil.copy2(contracts_candidate, out_dir / "contracts.yaml")
+    shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
+    shutil.copy2(genesis_json, out_dir / "genesis.json")
 
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
