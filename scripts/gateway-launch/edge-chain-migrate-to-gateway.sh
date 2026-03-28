@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 import yaml
 
+sys.set_int_max_str_digits(0)
+
 secrets_path = Path(sys.argv[1])
 gateway_rpc_url = sys.argv[2].strip()
 if gateway_rpc_url == "":
@@ -69,6 +71,8 @@ import sys
 from pathlib import Path
 import yaml
 
+sys.set_int_max_str_digits(0)
+
 p = Path(sys.argv[1])
 if not p.exists():
     raise SystemExit(f"missing chain config: {p}")
@@ -87,6 +91,8 @@ get_settlement_layer_chain_id() {
 import sys
 from pathlib import Path
 import yaml
+
+sys.set_int_max_str_digits(0)
 
 p = Path(sys.argv[1])
 if not p.exists():
@@ -115,6 +121,8 @@ get_chain_diamond_proxy_from_contracts_yaml() {
 import sys
 from pathlib import Path
 import yaml
+
+sys.set_int_max_str_digits(0)
 
 p = Path(sys.argv[1])
 if not p.exists():
@@ -160,6 +168,8 @@ get_l1_da_validator_for_edge() {
 import sys
 from pathlib import Path
 import yaml
+
+sys.set_int_max_str_digits(0)
 
 def norm(value):
     if value is None:

@@ -307,6 +307,8 @@ from pathlib import Path
 
 import yaml
 
+sys.set_int_max_str_digits(0)
+
 contracts_path = Path(sys.argv[1])
 chain_name = sys.argv[2]
 gateway_chain_name = sys.argv[3]
