@@ -20,6 +20,48 @@ cd "${GATEWAY_DIR}"
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 
+ensure_gateway_rpc_url_in_chain_secrets() {
+  local chain_name="${1:?chain name required}"
+  local gateway_rpc_url="${2:?gateway rpc url required}"
+  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/secrets.yaml" "${gateway_rpc_url}" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+secrets_path = Path(sys.argv[1])
+gateway_rpc_url = sys.argv[2].strip()
+if gateway_rpc_url == "":
+    raise SystemExit("empty gateway rpc url")
+if not secrets_path.exists():
+    raise SystemExit(f"missing secrets config: {secrets_path}")
+
+data = yaml.safe_load(secrets_path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {secrets_path}")
+
+l1 = data.get("l1")
+if l1 is None:
+    l1 = {}
+    data["l1"] = l1
+if not isinstance(l1, dict):
+    raise SystemExit(f"invalid l1 section in {secrets_path}")
+
+current = l1.get("gateway_rpc_url")
+if not isinstance(current, str) or current.strip() == "":
+    l1["gateway_rpc_url"] = gateway_rpc_url
+    secrets_path.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    print(
+        f"gateway-launch: patched {secrets_path} "
+        f"(set l1.gateway_rpc_url={gateway_rpc_url})"
+    )
+PY
+}
+
+ensure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"
+
 get_chain_id_from_zkstack_yaml() {
   local chain_name="${1:?chain name required}"
   python3 - "${GATEWAY_DIR}/chains/${chain_name}/ZkStack.yaml" <<'PY'
