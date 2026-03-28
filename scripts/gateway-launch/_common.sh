@@ -275,6 +275,7 @@ gl_ensure_chain_contracts_yaml_schema() {
 
   python3 - "${contracts_yaml}" "${chain_name}" "${gateway_chain_name}" "${gateway_contracts_yaml}" <<'PY'
 import sys
+import re
 from pathlib import Path
 
 import yaml
@@ -352,6 +353,38 @@ def normalize_scalar(value):
     if isinstance(value, int):
         return hex(value)
     return value
+
+def _parse_hex_like(value):
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if s == "":
+        return None
+    if s.startswith(("0x", "0X")):
+        body = s[2:]
+        if body == "" or not re.fullmatch(r"[0-9a-fA-F]+", body):
+            return None
+        return int(body, 16)
+    if re.fullmatch(r"[0-9a-fA-F]+", s):
+        return int(s, 16)
+    return None
+
+def normalize_address(value):
+    parsed = _parse_hex_like(value)
+    if parsed is None:
+        return normalize_scalar(value)
+    return "0x" + format(parsed & ((1 << 160) - 1), "040x")
+
+def normalize_bytes_hex(value):
+    parsed = _parse_hex_like(value)
+    if parsed is None:
+        return normalize_scalar(value)
+    body = format(parsed, "x")
+    if len(body) % 2 == 1:
+        body = "0" + body
+    return "0x" + body
 
 def is_zero_like_address(value):
     value = normalize_scalar(value)
@@ -443,6 +476,26 @@ for eco_key, l1_keys in required_eco_fields.items():
         unresolved.append(eco_key)
         continue
 
+    if eco_key in {
+        "governance",
+        "chain_admin",
+        "proxy_admin",
+        "state_transition_proxy_addr",
+        "validator_timelock_addr",
+        "l1_bytecodes_supplier_addr",
+        "server_notifier_proxy_addr",
+        "default_upgrade_addr",
+        "genesis_upgrade_addr",
+        "verifier_addr",
+        "rollup_l1_da_validator_addr",
+        "no_da_validium_l1_validator_addr",
+        "avail_l1_da_validator_addr",
+        "l1_rollup_da_manager",
+    }:
+        value = normalize_address(value)
+    elif eco_key == "diamond_cut_data":
+        value = normalize_bytes_hex(value)
+
     eco[eco_key] = value
     updated = True
     print(
@@ -457,11 +510,24 @@ if unresolved:
     )
 
 if updated:
-    def normalize_tree(obj):
+    address_key_hints = {
+        "governance",
+        "chain_admin",
+        "proxy_admin",
+        "l1_rollup_da_manager",
+    }
+
+    def normalize_tree(obj, key_hint=None):
         if isinstance(obj, dict):
-            return {k: normalize_tree(v) for k, v in obj.items()}
+            return {k: normalize_tree(v, k) for k, v in obj.items()}
         if isinstance(obj, list):
-            return [normalize_tree(v) for v in obj]
+            return [normalize_tree(v, key_hint) for v in obj]
+
+        if isinstance(key_hint, str):
+            if key_hint in address_key_hints or key_hint.endswith("_addr") or key_hint.endswith("_address"):
+                return normalize_address(obj)
+            if key_hint in {"diamond_cut_data", "force_deployments_data"}:
+                return normalize_bytes_hex(obj)
         return normalize_scalar(obj)
 
     data = normalize_tree(data)
