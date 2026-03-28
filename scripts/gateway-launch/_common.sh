@@ -303,26 +303,6 @@ def maybe_get(mapping, key):
             return value
     return None
 
-# Required top-level fields in current contracts schema.
-required_top_level_fields = (
-    "create2_factory_addr",
-    "create2_factory_salt",
-)
-for field in required_top_level_fields:
-    if data.get(field) is not None:
-        continue
-    value = maybe_get(gateway_data, field)
-    if value is None:
-        raise SystemExit(
-            f"unable to auto-heal required top-level field in {contracts_path}: {field}"
-        )
-    data[field] = value
-    updated = True
-    print(
-        f"gateway-launch: patched {contracts_path} for {chain_name} "
-        f"(added {field}={value})"
-    )
-
 l2 = data.get("l2")
 if l2 is None:
     l2 = {}
@@ -431,25 +411,52 @@ def pick_value(*candidates, prefer_non_zero=False):
             return v
     return normalized[0]
 
+# Required top-level fields in current contracts schema.
+required_top_level_fields = {
+    "create2_factory_addr": True,   # must be a non-zero address
+    "create2_factory_salt": False,  # zero is valid
+}
+for field, prefer_non_zero in required_top_level_fields.items():
+    current_value = data.get(field)
+    gateway_value = maybe_get(gateway_data, field)
+    chosen = pick_value(current_value, gateway_value, prefer_non_zero=prefer_non_zero)
+    if chosen is None:
+        raise SystemExit(
+            f"unable to auto-heal required top-level field in {contracts_path}: {field}"
+        )
+    if field.endswith("_addr"):
+        chosen = normalize_address(chosen)
+    if field.endswith("_salt"):
+        chosen = normalize_bytes_hex(chosen)
+    if current_value != chosen:
+        data[field] = chosen
+        updated = True
+        print(
+            f"gateway-launch: patched {contracts_path} for {chain_name} "
+            f"(set {field}={chosen})"
+        )
+
 # Required core ecosystem fields in current schema.
 required_eco_core_fields = (
     "bridgehub_proxy_addr",
     "transparent_proxy_admin_addr",
 )
 for eco_key in required_eco_core_fields:
-    if eco.get(eco_key) is not None:
-        continue
-    value = maybe_get(gateway_eco, eco_key)
+    current_value = eco.get(eco_key)
+    gateway_value = maybe_get(gateway_eco, eco_key)
+    value = pick_value(current_value, gateway_value, prefer_non_zero=True)
     if value is None:
         raise SystemExit(
             f"unable to auto-heal required ecosystem_contracts field in {contracts_path}: {eco_key}"
         )
-    eco[eco_key] = value
-    updated = True
-    print(
-        f"gateway-launch: patched {contracts_path} for {chain_name} "
-        f"(added ecosystem_contracts.{eco_key}={value})"
-    )
+    value = normalize_address(value)
+    if current_value != value:
+        eco[eco_key] = value
+        updated = True
+        print(
+            f"gateway-launch: patched {contracts_path} for {chain_name} "
+            f"(set ecosystem_contracts.{eco_key}={value})"
+        )
 
 # Required CTM fields in ecosystem_contracts for current zkstack parser.
 required_eco_fields = {
@@ -471,9 +478,24 @@ required_eco_fields = {
 }
 
 unresolved = []
+address_ctm_fields = {
+    "governance",
+    "chain_admin",
+    "proxy_admin",
+    "state_transition_proxy_addr",
+    "validator_timelock_addr",
+    "l1_bytecodes_supplier_addr",
+    "server_notifier_proxy_addr",
+    "default_upgrade_addr",
+    "genesis_upgrade_addr",
+    "verifier_addr",
+    "rollup_l1_da_validator_addr",
+    "no_da_validium_l1_validator_addr",
+    "avail_l1_da_validator_addr",
+    "l1_rollup_da_manager",
+}
 for eco_key, l1_keys in required_eco_fields.items():
-    if eco.get(eco_key) is not None:
-        continue
+    current_value = eco.get(eco_key)
 
     l1_value = None
     for l1_key in l1_keys:
@@ -486,42 +508,29 @@ for eco_key, l1_keys in required_eco_fields.items():
     # For address-like CTM fields, avoid keeping zero placeholders from stale edge
     # configs when canonical ecosystem values are available.
     value = pick_value(
+        current_value,
         l1_value,
         gw_value,
         transparent_proxy_admin_value,
-        prefer_non_zero=True,
+        prefer_non_zero=(eco_key in address_ctm_fields),
     )
 
     if value is None:
         unresolved.append(eco_key)
         continue
 
-    if eco_key in {
-        "governance",
-        "chain_admin",
-        "proxy_admin",
-        "state_transition_proxy_addr",
-        "validator_timelock_addr",
-        "l1_bytecodes_supplier_addr",
-        "server_notifier_proxy_addr",
-        "default_upgrade_addr",
-        "genesis_upgrade_addr",
-        "verifier_addr",
-        "rollup_l1_da_validator_addr",
-        "no_da_validium_l1_validator_addr",
-        "avail_l1_da_validator_addr",
-        "l1_rollup_da_manager",
-    }:
+    if eco_key in address_ctm_fields:
         value = normalize_address(value)
     elif eco_key == "diamond_cut_data":
         value = normalize_bytes_hex(value)
 
-    eco[eco_key] = value
-    updated = True
-    print(
-        f"gateway-launch: patched {contracts_path} for {chain_name} "
-        f"(added ecosystem_contracts.{eco_key}={value})"
-    )
+    if current_value != value:
+        eco[eco_key] = value
+        updated = True
+        print(
+            f"gateway-launch: patched {contracts_path} for {chain_name} "
+            f"(set ecosystem_contracts.{eco_key}={value})"
+        )
 
 if unresolved:
     unresolved_csv = ", ".join(unresolved)
