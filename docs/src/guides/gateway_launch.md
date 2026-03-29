@@ -4,11 +4,24 @@ Gateway + edge launch is now a **single canonical command** with checkpointed re
 
 ## Canonical command
 
+Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):
+
+```bash
+./syscoind --testnet -server=1 -daemon=1 \
+  -gethcommandline=--http \
+  -gethcommandline=--http.addr=127.0.0.1 \
+  -gethcommandline=--http.port=8545 \
+  -gethcommandline=--http.api=eth,net,web3,txpool,debug \
+  -gethcommandline=--http.vhosts=* \
+  -gethcommandline=--http.corsdomain=*
+```
+
 Run from a `zksync-os-server` clone:
 
 ```bash
 cd /path/to/zksync-os-server
-export L1_RPC_URL=https://rpc.tanenbaum.io
+export L1_RPC_URL=http://127.0.0.1:8545
+export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x...
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 ```
@@ -16,7 +29,8 @@ bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 Mainnet:
 
 ```bash
-export L1_RPC_URL=https://rpc.syscoin.org
+export L1_RPC_URL=http://127.0.0.1:8545
+export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
 export FUNDER_PRIVATE_KEY=0x...
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet
 ```
@@ -93,9 +107,9 @@ Then rerun the canonical launcher command.
 
 | Variable | Purpose |
 |---|---|
-| `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint |
+| `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint used for broadcasts (expected: local Syscoin node/proxy, e.g. `http://127.0.0.1:8545`) |
 | `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
-| `GATEWAY_ARCHIVE_L1_RPC_URL` | Optional runtime archive RPC override (defaults to `L1_RPC_URL`) |
+| `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
@@ -112,3 +126,4 @@ Then rerun the canonical launcher command.
 - Default `FOUNDRY_EVM_VERSION` remains `shanghai`.
 - `run-gateway-launch.sh` still enforces L1 chain-id preflight before broadcast steps.
 - Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).
+- For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
