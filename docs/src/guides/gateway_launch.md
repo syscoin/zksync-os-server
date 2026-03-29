@@ -1,172 +1,114 @@
-# Gateway Launch (Syscoin + OS Server)
+# Gateway Launch (Checkpointed Canonical Flow)
 
-Gateway + optional **edge** chain with `zkstack` (`--zksync-os`), `zksync-os-server`, and Airbender. Target: Gateway `rollup` + `Blobs`; edge `rollup` + `RelayedL2Calldata`.
+Gateway + edge launch is now a **single canonical command** with checkpointed resume and explicit repair.
 
-**Prerequisites:** `zksync-os-scripts/docs/src/prerequisites.md`. **Pinned SHAs:** `local-chains/<protocol_version>/versions.yaml`:
-- top-level `zksync-era` / `zkstack_cli`: `zkstack-cli.sha`
-- nested `zksync-era/contracts`: `era-contracts.sha`
+## Canonical command
 
----
-
-## Run (one script)
-
-All steps are driven by **`scripts/gateway-launch/run-gateway-launch.sh`**. Sub-scripts in the same directory are for advanced / piecemeal use only.
-
+Run from a `zksync-os-server` clone:
 
 ```bash
-# Start nodes after migration completes
-"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
-"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"
+cd /path/to/zksync-os-server
+export L1_RPC_URL=https://rpc.tanenbaum.io
+export FUNDER_PRIVATE_KEY=0x...
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 ```
 
-From a **`zksync-os-server` clone** (or set **`ZKSYNC_OS_SERVER_PATH`** to it), **`run-gateway-launch.sh`** will **git-clone and pin `zksync-era`** under **`~/.cache/zksync-gateway-era/<protocol>/<zkstack-cli.sha>/`** when **`ZKSYNC_ERA_PATH`** is unset, then build the repo-local **`zkstack`** on first use if needed.
+Mainnet:
 
 ```bash
-cd /path/to/zksync-os-server   # ZKSYNC_OS_SERVER_PATH defaults here
-
-# Disposable local L1 (starts Anvil + watch in background, logs to fixed paths)
-bash scripts/gateway-launch/run-gateway-launch.sh --l1 anvil
-
-# Tanenbaum
-export L1_RPC_URL=https://rpc.tanenbaum.io
-export FUNDER_PRIVATE_KEY=0x…   # funded on Tanenbaum (NOT the Anvil default key)
-# Optional: force archive-capable runtime RPC for generated os-server configs.
-# Defaults to L1_RPC_URL when unset.
-export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
-# Launcher defaults Bitcoin DA RPC to local sysgeth (`http://127.0.0.1:18370`) and
-# loads RPC auth from ~/.syscoin/testnet3/.cookie when present.
-# Prover mode defaults to GPU; override with PROVER_MODE=no-proofs for fake proving.
-bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
-PROVER_MODE=no-proofs bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
-
-# Syscoin mainnet
 export L1_RPC_URL=https://rpc.syscoin.org
-export FUNDER_PRIVATE_KEY=0x…
+export FUNDER_PRIVATE_KEY=0x...
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet
 ```
 
-Optional: **`export ZKSYNC_ERA_PATH=...`** to use an existing tree; **`ZKSYNC_ERA_GIT_URL`** if not cloning from `https://github.com/matter-labs/zksync-era.git`.
-
-**`run-gateway-launch.sh --help`** lists flags (`--reuse-ecosystem`, `--reset-l1-artifacts`, `--skip-fund`, `--with-edge`, `--migrate-edge`, `--stop-after-l1`, `--no-start-anvil`, …).
-
-**Default log:** `~/gateway-launch.log` (override **`GATEWAY_LAUNCH_LOG`** or **`--log PATH`**). **Anvil-only:** Anvil stdout → **`~/gateway-local-anvil.log`**, watch notes → **`~/gateway-local-anvil-watch.log`**.
-
-### Edge chain: what runs by default
-
-| Goal | Flags |
-|------|--------|
-| **Gateway only** (ecosystem + L1 deploy + gateway `chain init` + convert to gateway settlement) | none — this is the default |
-| **You want an edge rollup in the ecosystem** | add **`--with-edge`** (create + init edge; see **`EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID`** below) |
-| **Edge should settle through the gateway** | add **`--migrate-edge`** after the edge chain exists **and** the **Gateway chain L2 JSON-RPC** is reachable. Keep the **edge node stopped** until migration/finalization completes (the script does not start `zksync-os-server`; see [After the script](#after-the-script)) |
-
-**`--with-edge`** and **`--migrate-edge`** are independent: you can create the edge in one run (`--with-edge`) and run migration later (second run with **`--reuse-ecosystem`** + **`--migrate-edge`**, or only **`--migrate-edge`** if the edge is already in **`ZkStack.yaml`**). For a single shot when RPC is already up: `…/run-gateway-launch.sh --l1 anvil --with-edge --migrate-edge`.
-
----
-
-## Local Syscoin NEVM RPC (HTTP)
-
-For local Tanenbaum-style runs, start Syscoin with NEVM HTTP enabled:
+Optional log override:
 
 ```bash
-./syscoind --testnet -server=1 -daemon=1 \
-  -gethcommandline=--http \
-  -gethcommandline=--http.addr=127.0.0.1 \
-  -gethcommandline=--http.port=8545 \
-  -gethcommandline=--http.api=eth,net,web3,txpool,debug \
-  -gethcommandline=--http.vhosts=* \
-  -gethcommandline=--http.corsdomain=*
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --log /tmp/gateway-launch.log
 ```
 
-Then point launch/deploy traffic at local HTTP:
+## Checkpoint model
+
+State file:
+
+```text
+$GATEWAY_DIR/.gateway-launch/state.json
+```
+
+Ordered checkpoints:
+
+1. `gl.workspace`
+2. `gl.ecosystem`
+3. `gl.wallets_funded`
+4. `gl.l1_ecosystem_deployed`
+5. `gl.gateway_chain_inited`
+6. `gl.gateway_settlement`
+7. `gl.os_configs_gateway`
+8. `gl.edge_chain_inited`
+9. `gl.migration`
+10. `gl.os_configs_final`
+
+Behavior:
+
+- A checkpoint is skipped only when state says `passed` **and** probe validation passes.
+- Any failure marks checkpoint `blocked` and stops the run.
+- Resume is automatic on the same command after repair.
+- Resume is rejected if fingerprinted launch context changed (network/chain/sha/env mismatch).
+
+## Repair workflow
+
+Inspect state:
 
 ```bash
-export L1_RPC_URL=http://127.0.0.1:8545
+bash scripts/gateway-launch/gateway-launch-repair.sh --l1 tanenbaum status
 ```
 
-If local NEVM is not archive-capable (typical), use an archive RPC for runtime state reads:
+Repair one blocked checkpoint:
 
 ```bash
-export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io/
+bash scripts/gateway-launch/gateway-launch-repair.sh --l1 tanenbaum repair gl.edge_chain_inited
 ```
 
-This keeps Foundry/zkstack deploy traffic on local `L1_RPC_URL` while generated `zksync-os-server` runtime config uses `GATEWAY_ARCHIVE_L1_RPC_URL` for `general.l1_rpc_url`.
+Then rerun the canonical launcher command.
 
----
+## What the launcher now always does
 
-## `--l1` profiles (settings the script applies)
+- Creates/reuses ecosystem.
+- Funds required wallets.
+- Deploys/initializes gateway contracts and chain.
+- Converts gateway settlement.
+- Creates/initializes edge chain.
+- Runs edge migration to gateway settlement.
+- Ensures DA pair correctness and deposit unpause via migration script guards.
+- Generates final `os-server-configs` launchers.
 
-| `--l1`     | `L1_CHAIN_ID` | `L1_NETWORK` (zkstack) | `L1_RPC_URL`        |
-|------------|-----------------|-------------------------|---------------------|
-| `anvil`    | 9               | `localhost`             | default `http://127.0.0.1:8545` |
-| `tanenbaum` | 5700           | `tanenbaum`             | **HTTP(S) `L1_RPC_URL`** (e.g. local `http://127.0.0.1:8545` with `sysgeth --http`, or remote HTTPS) |
-| `mainnet`  | 57              | `mainnet`               | **HTTP(S) `L1_RPC_URL`** |
+## Start nodes after successful launch
 
-**Do not** use **IPC / unix** URLs for `L1_RPC_URL` (e.g. `geth.ipc`): the launch path is built on Foundry **`cast` / `forge`** (`--rpc-url`), which require HTTP(S). Enable **`sysgeth --http`** for local Tanenbaum, same idea as Anvil’s **`http://127.0.0.1:8545`**.
+```bash
+"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"
+"$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
+```
 
-**Do not** run Anvil with chain id **5700** and `--l1-network tanenbaum`: `zkstack` only enables `with_slow()` for **`localhost`**; large L1 deploys stall on loopback without it. Use **real** Tanenbaum (NEVM HTTP or remote RPC), or Anvil **9** + **`anvil`**.
-
-**Local Anvil:** `anvil-local-start.sh` uses **`--mixed-mining`** with a long **`--block-time`** (default **`3600`**, override with **`GATEWAY_ANVIL_BLOCK_TIME`**). This is intentional: newer Anvil builds reject **`--mixed-mining`** without **`--block-time`**, while **`--block-time 1`** left **`forge script --broadcast`** stuck on **`DeployL1CoreContracts`** in practice: **`run-latest.json`** fills **`transactions`** but **`receipts` stay empty** while **`txpool_status`** shows **`pending = queued = 0`**. The long interval satisfies the newer CLI, and the background **watch** remains the effective miner by calling **`anvil_mine 1` every ~1s** during large deploys so mining still runs when the pool reads empty. **`--mixed-mining`** still helps the [foundry#10122](https://github.com/foundry-rs/foundry/issues/10122) class (concurrent / out-of-order nonces).
-
----
-
-## Env you may set
+## Important env vars
 
 | Variable | Purpose |
-|----------|---------|
-| `ZKSYNC_OS_SERVER_PATH` | default: repo root containing `scripts/gateway-launch/` (when you `cd` into the clone, unset is fine) |
-| `ZKSYNC_ERA_PATH` | optional; if unset, `zksync-era` is cloned under `~/.cache/zksync-gateway-era/...` |
-| `ZKSYNC_ERA_GIT_URL` | optional; default `https://github.com/matter-labs/zksync-era.git` |
-| `ZKSYNC_ERA_CACHE_ROOT` | optional; default `~/.cache/zksync-gateway-era` |
-| `PROTOCOL_VERSION` | e.g. `v31.0`; pins `versions.yaml` for both `REQUIRED_ZKSTACK_CLI_SHA` and `REQUIRED_CONTRACTS_SHA` |
-| `REQUIRED_ZKSTACK_CLI_SHA` | optional override; else read from `versions.yaml` (`zkstack-cli.sha`) |
-| `REQUIRED_CONTRACTS_SHA` | optional override; else read from `versions.yaml` |
-| `GATEWAY_DIR` | default `~/gateway` |
-| `GATEWAY_ECOSYSTEM_PARENT_DIR` | parent dir for `ecosystem create` (default `$HOME`) |
-| `FUNDER_PRIVATE_KEY` | funding txs on L1; **anvil** profile defaults to Anvil dev key 0; **tanenbaum** / **mainnet** you must set a key with native L1 balance |
-| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | Syscoin NEVM RPC connection used by the generated Gateway OS-server config in `Blobs` mode. Defaults to local cookie-auth (`http://127.0.0.1:18370` + `~/.syscoin/testnet3/.cookie`) when available; set explicitly to override. |
-| `BITCOIN_DA_FINALITY_MODE` / `BITCOIN_DA_FINALITY_CONFIRMATIONS` | **tanenbaum** defaults: `Confirmations` / `6`. **mainnet** / **anvil**: set explicitly if you need non-default DA finality |
-| `BITCOIN_DA_PODA_URL` | **tanenbaum** default `https://poda.tanenbaum.io` |
-| `L1_RPC_URL` | **Must** be `http://` or `https://` JSON-RPC for **tanenbaum** / **mainnet** (not IPC). Prefer **local** `sysgeth --http` to avoid public-RPC rate limits. |
-| `GATEWAY_ARCHIVE_L1_RPC_URL` | Optional runtime override for generated `zksync-os-server` `general.l1_rpc_url` (defaults to `L1_RPC_URL`). Use this when local `L1_RPC_URL` is non-archive. |
-| `EDGE_CHAIN_NAME` / `EDGE_CHAIN_ID` | edge chain (defaults `zksys` / `57057`) with `--with-edge` |
-| `PROVER_MODE` | proving mode for generated `zksync-os-server` configs: `gpu` (default) or `no-proofs` (enables fake FRI/SNARK provers) |
-| `FOUNDRY_EVM_VERSION` | default `shanghai` for this contracts pin |
+|---|---|
+| `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint |
+| `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
+| `GATEWAY_ARCHIVE_L1_RPC_URL` | Optional runtime archive RPC override (defaults to `L1_RPC_URL`) |
+| `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
+| `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
+| `PROVER_MODE` | `gpu` (default) or `no-proofs` |
+| `PROTOCOL_VERSION` | Default `v31.0` |
+| `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
+| `GATEWAY_CREATE2_FACTORY_SALT` | Optional deterministic `create2_factory_salt` override for L1 deployment |
+| `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
+| `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
+| `EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR` | Optional override for DA validator used by edge migration repair on Gateway |
+| `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
 
----
+## Notes
 
-## One-time machine setup
-
-1. Foundry + foundry-zksync + nightly Rust (`prerequisites.md`).
-2. **`run-gateway-launch.sh`** alone clones/pins **`zksync-era`** and builds **`zkstack`** on first use when **`ZKSYNC_ERA_PATH`** is unset.
-3. Optional ahead-of-time: **`bash scripts/gateway-launch/preflight-zkstack-cli.sh`** — same pin + **always** runs a release build (uses **`ZKSYNC_OS_SERVER_PATH`**; **`ZKSYNC_ERA_PATH`** optional).
-4. Optional: **`preflight-pin-era-contracts.sh`** if you maintain a custom `zksync-era` commit with `contracts` pinned differently.
-
----
-
-## After the script
-
-- **Generated OS-server configs:** the launcher writes runnable layered configs under `"$GATEWAY_DIR/os-server-configs/"`.
-- **Start the Gateway node with the generated launcher:** `"$GATEWAY_DIR/os-server-configs/gateway/start-node.sh"`
-- **Start the edge node with the generated launcher:** `"$GATEWAY_DIR/os-server-configs/$EDGE_CHAIN_NAME/start-node.sh"` (after `--with-edge`)
-- **Do not rely on the generic `config-presets/testnet-gateway.yaml` / `testnet-child.yaml` commands for this flow:** the generated launchers include the per-ecosystem paths and overlays produced by `run-gateway-launch.sh`.
-- **`--migrate-edge`:** requires the Gateway L2 RPC to be up **before** `zkstack chain gateway migrate-to-gateway` can succeed. The **edge node should remain stopped** until both `migrate-to-gateway` and `finalize-chain-migration-to-gateway` are done; start the edge only afterward with the generated gateway-linked config. If the node is remote, set `api.web3_json_rpc.http_url` on the gateway chain config. See [Edge chain flags](#edge-chain-what-runs-by-default) for when to pass **`--with-edge`** vs **`--migrate-edge`**.
-- **Provers:** Airbender per chain; not Era-only `zkstack prover`.
-- **`token_weth_address`** in `configs/initial_deployments.yaml` for non-local L1s as required by your ops.
-
----
-
-## Stuck L1 deploy / recovery
-
-**Disposable Anvil:** restart Anvil (fresh chain), then either full re-run with **`--reset-l1-artifacts`**, or **`gateway-l1-reset-local.sh`** after **`--reuse-ecosystem`** (see that script). **Remote L1:** operational recovery only (salt / new ecosystem / collision avoidance).
-
-**Diagnose:** inspect **`txpool_status`** **`pending`** and **`queued`**. The watch mines on a fixed interval regardless, but if Forge still spins compare **`jq '.receipts|length'`** vs **`jq '.transactions|length'`** on `broadcast/.../run-latest.json`: **0 receipts** with **non-empty transactions** means Forge never finished the broadcast on-chain — kill **`forge`/`zkstack`**, fresh Anvil, **`--reset-l1-artifacts`**, re-run. Also check **phantom broadcast** (`cast tx` on last hash fails).
-
-**SSH:** avoid `pkill -f` patterns that match your own `bash -c` line; use **`killall forge`** / **`killall zkstack`** or bracketed `pkill` patterns.
-
----
-
-## Gotchas
-
-- `deployer` / `governor` need **≥ 5.5** native on L1 before `zkstack` balance checks.
-- `zk_token_asset_id must be non-zero` / `is_zk_sync_os`: handled inside **`gateway-deploy-l1.sh`**.
-- `governanceAcceptOwnerAggregated` / selector mismatch: pin `zkstack` + contracts per **`versions.yaml`**.
+- Default `FOUNDRY_EVM_VERSION` remains `shanghai`.
+- `run-gateway-launch.sh` still enforces L1 chain-id preflight before broadcast steps.
+- Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).

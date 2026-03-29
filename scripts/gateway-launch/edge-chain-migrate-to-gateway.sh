@@ -370,11 +370,13 @@ EOF
 ensure_deposits_unpaused() {
   local chain_name="${1:?chain name required}"
   local unpause_output=""
+  local unpause_output_lc=""
 
   gl_l1_broadcast_preflight
   if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits --chain "${chain_name}" -v 2>&1)"; then
     echo "${unpause_output}"
-    case "${unpause_output,,}" in
+    unpause_output_lc="$(gl_to_lower "${unpause_output}")"
+    case "${unpause_output_lc}" in
     *"depositsnotpaused"* | *"already unpaused"* | *"deposits are not paused"* | *"not paused"*)
       echo "gateway-launch: deposits are already unpaused for ${chain_name}; continuing"
       ;;
@@ -398,9 +400,11 @@ fi
 
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""
+  pause_output_lc=""
   if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
     echo "${pause_output}"
-    case "${pause_output,,}" in
+    pause_output_lc="$(gl_to_lower "${pause_output}")"
+    case "${pause_output_lc}" in
     *"already paused"* | *"already been paused"* | *"depositsalreadypaused"*)
       echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
       ;;
@@ -413,12 +417,14 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   fi
 
   migrate_output=""
+  migrate_output_lc=""
   if ! migrate_output="$(gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
     -v 2>&1)"; then
     echo "${migrate_output}"
-    case "${migrate_output,,}" in
+    migrate_output_lc="$(gl_to_lower "${migrate_output}")"
+    case "${migrate_output_lc}" in
     *"already on top of gateway"*)
       echo "gateway-launch: ${EDGE_CHAIN_NAME} is already on Gateway settlement; continuing to finalize/post-migration steps"
       ;;
@@ -434,13 +440,15 @@ echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running fin
 fi
 
 finalize_output=""
+finalize_output_lc=""
 gl_l1_broadcast_preflight
 if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
   --deploy-paymaster false 2>&1)"; then
   echo "${finalize_output}"
-  case "${finalize_output,,}" in
+  finalize_output_lc="$(gl_to_lower "${finalize_output}")"
+  case "${finalize_output_lc}" in
   *"depositdoesnotexist"*)
     echo "gateway-launch: finalize reported DepositDoesNotExist; treating as already-finalized deposit leg and continuing with DA repair"
     ;;

@@ -19,14 +19,20 @@ gl_die() {
   exit 1
 }
 
+gl_to_lower() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
 gl_validate_prover_mode() {
-  case "${PROVER_MODE,,}" in
+  local prover_mode_lc
+  prover_mode_lc="$(gl_to_lower "${PROVER_MODE}")"
+  case "${prover_mode_lc}" in
   gpu | no-proofs) ;;
   *)
     gl_die "invalid PROVER_MODE='${PROVER_MODE}' (expected: gpu | no-proofs)"
     ;;
   esac
-  PROVER_MODE="${PROVER_MODE,,}"
+  PROVER_MODE="${prover_mode_lc}"
   export PROVER_MODE
 }
 
@@ -134,7 +140,7 @@ gl_assert_zksync_era_sha() {
     gl_die "zksync-era HEAD ${head} differs from REQUIRED_ZKSTACK_CLI_SHA ${REQUIRED_ZKSTACK_CLI_SHA} outside contracts: ${committed_delta}"
 }
 
-# Nightly toolchain for zkstack_cli (same discovery as preflight-zkstack-cli.sh).
+# Nightly toolchain discovery for zkstack_cli.
 gl_detect_gateway_zkstack_nightly() {
   if command -v rustup >/dev/null 2>&1; then
     rustup toolchain list | awk '/^nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}/ {print $1}' | sort -V | tail -n 1
@@ -888,4 +894,314 @@ while pending_targets:
         )
     time.sleep(post_fund_poll_interval)
 PY
+}
+
+# -----------------------------
+# Checkpoint state management
+# -----------------------------
+
+gl_checkpoint_state_dir() {
+  gl_require GATEWAY_DIR
+  printf '%s\n' "${GATEWAY_DIR}/.gateway-launch"
+}
+
+gl_checkpoint_state_file() {
+  printf '%s/state.json\n' "$(gl_checkpoint_state_dir)"
+}
+
+gl_checkpoint_state_init() {
+  local state_dir state_file
+  state_dir="$(gl_checkpoint_state_dir)"
+  state_file="$(gl_checkpoint_state_file)"
+  mkdir -p "${state_dir}"
+
+  if [ -f "${state_file}" ]; then
+    return 0
+  fi
+
+  python3 - "${state_file}" <<'PY'
+import json
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+now = datetime.now(timezone.utc).isoformat()
+state = {
+    "schema_version": 1,
+    "run_id": str(uuid.uuid4()),
+    "created_at": now,
+    "updated_at": now,
+    "current_checkpoint": None,
+    "fingerprint": {},
+    "checkpoints": {},
+    "last_error": None,
+    "repairs": [],
+}
+state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+PY
+}
+
+gl_checkpoint_fingerprint_json() {
+  gl_require PROTOCOL_VERSION
+  gl_require REQUIRED_ZKSTACK_CLI_SHA
+  gl_require REQUIRED_CONTRACTS_SHA
+  gl_require L1_CHAIN_ID
+  gl_require L1_NETWORK
+  gl_require GATEWAY_DIR
+  python3 - <<'PY'
+import hashlib
+import json
+import os
+
+def h(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+payload = {
+    "protocol_version": os.environ.get("PROTOCOL_VERSION", ""),
+    "required_zkstack_cli_sha": os.environ.get("REQUIRED_ZKSTACK_CLI_SHA", ""),
+    "required_contracts_sha": os.environ.get("REQUIRED_CONTRACTS_SHA", ""),
+    "l1_chain_id": str(os.environ.get("L1_CHAIN_ID", "")),
+    "l1_network": os.environ.get("L1_NETWORK", ""),
+    "l1_rpc_url_hash": h(os.environ.get("L1_RPC_URL", "")),
+    "gateway_dir": os.environ.get("GATEWAY_DIR", ""),
+    "gateway_chain_name": os.environ.get("GATEWAY_CHAIN_NAME", "gateway"),
+    "edge_chain_name": os.environ.get("EDGE_CHAIN_NAME", "zksys"),
+    "prover_mode": os.environ.get("PROVER_MODE", ""),
+    "gateway_prover_mode": os.environ.get("GATEWAY_PROVER_MODE", ""),
+    "foundry_evm_version": os.environ.get("FOUNDRY_EVM_VERSION", ""),
+}
+print(json.dumps(payload, sort_keys=True))
+PY
+}
+
+gl_checkpoint_set_fingerprint_if_empty() {
+  gl_checkpoint_state_init
+  local state_file fp_json
+  state_file="$(gl_checkpoint_state_file)"
+  fp_json="$(gl_checkpoint_fingerprint_json)"
+  python3 - "${state_file}" "${fp_json}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+new_fp = json.loads(sys.argv[2])
+state = json.loads(state_path.read_text(encoding="utf-8"))
+if not state.get("fingerprint"):
+    state["fingerprint"] = new_fp
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+PY
+}
+
+gl_checkpoint_assert_fingerprint_matches() {
+  gl_checkpoint_state_init
+  local state_file fp_json
+  state_file="$(gl_checkpoint_state_file)"
+  fp_json="$(gl_checkpoint_fingerprint_json)"
+  python3 - "${state_file}" "${fp_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+expected = json.loads(sys.argv[2])
+state = json.loads(state_path.read_text(encoding="utf-8"))
+current = state.get("fingerprint") or {}
+if current and current != expected:
+    print("checkpoint fingerprint mismatch", file=sys.stderr)
+    print("state file:", state_path, file=sys.stderr)
+    print("expected:", json.dumps(expected, sort_keys=True), file=sys.stderr)
+    print("found:", json.dumps(current, sort_keys=True), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+gl_checkpoint_get_status() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local state_file
+  state_file="$(gl_checkpoint_state_file)"
+  [ -f "${state_file}" ] || {
+    printf '%s\n' "pending"
+    return 0
+  }
+  python3 - "${state_file}" "${checkpoint_id}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+checkpoint_id = sys.argv[2]
+state = json.loads(state_path.read_text(encoding="utf-8"))
+entry = (state.get("checkpoints") or {}).get(checkpoint_id) or {}
+print(entry.get("status", "pending"))
+PY
+}
+
+gl_checkpoint_set_status() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local status="${2:?status required}"
+  local detail="${3:-}"
+  local state_file
+  state_file="$(gl_checkpoint_state_file)"
+  gl_checkpoint_state_init
+  python3 - "${state_file}" "${checkpoint_id}" "${status}" "${detail}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+checkpoint_id = sys.argv[2]
+status = sys.argv[3]
+detail = sys.argv[4]
+now = datetime.now(timezone.utc).isoformat()
+
+state = json.loads(state_path.read_text(encoding="utf-8"))
+checkpoints = state.setdefault("checkpoints", {})
+entry = checkpoints.setdefault(checkpoint_id, {})
+entry["status"] = status
+entry["at"] = now
+if detail:
+    entry["detail"] = detail
+state["current_checkpoint"] = checkpoint_id
+state["updated_at"] = now
+if status in {"failed", "blocked"}:
+    state["last_error"] = {"checkpoint": checkpoint_id, "at": now, "message": detail}
+state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+PY
+}
+
+gl_checkpoint_mark_in_progress() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  gl_checkpoint_set_status "${checkpoint_id}" "in_progress" ""
+}
+
+gl_checkpoint_mark_passed() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local detail="${2:-}"
+  gl_checkpoint_set_status "${checkpoint_id}" "passed" "${detail}"
+}
+
+gl_checkpoint_mark_blocked() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local detail="${2:-checkpoint blocked; repair required}"
+  gl_checkpoint_set_status "${checkpoint_id}" "blocked" "${detail}"
+}
+
+gl_checkpoint_assert_not_blocked() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local status
+  status="$(gl_checkpoint_get_status "${checkpoint_id}")"
+  if [ "${status}" = "blocked" ]; then
+    gl_die "checkpoint ${checkpoint_id} is blocked; run gateway-launch-repair.sh repair ${checkpoint_id}"
+  fi
+}
+
+gl_checkpoint_run() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  shift
+  gl_checkpoint_assert_not_blocked "${checkpoint_id}"
+  gl_checkpoint_mark_in_progress "${checkpoint_id}"
+  if "$@"; then
+    gl_checkpoint_mark_passed "${checkpoint_id}"
+    return 0
+  fi
+  local rc=$?
+  gl_checkpoint_mark_blocked "${checkpoint_id}" "command failed with exit code ${rc}"
+  return "${rc}"
+}
+
+gl_checkpoint_mark_repaired() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local detail="${2:-repaired and validated}"
+  local state_file
+  state_file="$(gl_checkpoint_state_file)"
+  gl_checkpoint_mark_passed "${checkpoint_id}" "${detail}"
+  python3 - "${state_file}" "${checkpoint_id}" "${detail}" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+checkpoint_id = sys.argv[2]
+detail = sys.argv[3]
+now = datetime.now(timezone.utc).isoformat()
+state = json.loads(state_path.read_text(encoding="utf-8"))
+repairs = state.setdefault("repairs", [])
+repairs.append({"checkpoint": checkpoint_id, "at": now, "detail": detail})
+state["updated_at"] = now
+state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+PY
+}
+
+# -----------------------------
+# Checkpoint probe helpers
+# -----------------------------
+
+gl_probe_workspace_ready() {
+  gl_require L1_RPC_URL
+  gl_require L1_CHAIN_ID
+  cast chain-id --rpc-url "${L1_RPC_URL}" >/dev/null 2>&1 &&
+    [ -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ] &&
+    [ "$(cast chain-id --rpc-url "${L1_RPC_URL}")" = "${L1_CHAIN_ID}" ]
+}
+
+gl_probe_ecosystem_ready() {
+  gl_require GATEWAY_DIR
+  [ -f "${GATEWAY_DIR}/ZkStack.yaml" ]
+}
+
+gl_probe_wallets_funded_ready() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  [ -f "${GATEWAY_DIR}/configs/wallets.yaml" ] &&
+    [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/wallets.yaml" ]
+}
+
+gl_probe_l1_ecosystem_deployed_ready() {
+  gl_require GATEWAY_DIR
+  [ -f "${GATEWAY_DIR}/configs/contracts.yaml" ]
+}
+
+gl_probe_gateway_chain_inited_ready() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml" ]
+}
+
+gl_probe_gateway_settlement_ready() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/general.yaml" ]
+}
+
+gl_probe_os_configs_gateway_ready() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  [ -f "${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/config.yaml" ]
+}
+
+gl_probe_edge_chain_inited_ready() {
+  gl_require GATEWAY_DIR
+  local edge_chain_name
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  [ -f "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/contracts.yaml" ]
+}
+
+gl_probe_os_configs_final_ready() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name edge_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  [ -f "${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/config.yaml" ] &&
+    [ -f "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}/config.yaml" ]
 }

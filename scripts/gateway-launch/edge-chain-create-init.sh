@@ -21,11 +21,7 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_WALLET_CREATION:=}"
 : "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
 if [ -z "${SKIP_FUND:-}" ]; then
-  if ps -o args= -p "${PPID}" 2>/dev/null | grep -q -- '--skip-fund'; then
-    SKIP_FUND=true
-  else
-    SKIP_FUND=false
-  fi
+  SKIP_FUND=false
 fi
 
 if [ -z "${EDGE_WALLET_CREATION}" ]; then
@@ -53,22 +49,26 @@ if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   wallet_args+=(--wallet-path "${EDGE_WALLET_PATH}")
 fi
 
-zkstack chain create \
-  --chain-name "${EDGE_CHAIN_NAME}" \
-  --chain-id "${EDGE_CHAIN_ID}" \
-  --prover-mode "${EDGE_PROVER_MODE}" \
-  "${wallet_args[@]}" \
-  --l1-batch-commit-data-generator-mode rollup \
-  --base-token-address 0x0000000000000000000000000000000000000001 \
-  --base-token-price-nominator 1 \
-  --base-token-price-denominator 1 \
-  --set-as-default false \
-  --evm-emulator false \
-  --zksync-os
+if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
+  echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} already exists; skipping chain create"
+else
+  zkstack chain create \
+    --chain-name "${EDGE_CHAIN_NAME}" \
+    --chain-id "${EDGE_CHAIN_ID}" \
+    --prover-mode "${EDGE_PROVER_MODE}" \
+    "${wallet_args[@]}" \
+    --l1-batch-commit-data-generator-mode rollup \
+    --base-token-address 0x0000000000000000000000000000000000000001 \
+    --base-token-price-nominator 1 \
+    --base-token-price-denominator 1 \
+    --set-as-default false \
+    --evm-emulator false \
+    --zksync-os
 
-if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; then
-  cp "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
-  echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
+  if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; then
+    cp "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
+    echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
+  fi
 fi
 
 if [ "${SKIP_FUND}" != "true" ]; then
@@ -77,11 +77,25 @@ else
   echo "gateway-launch: SKIP_FUND=true, skipping edge wallet funding"
 fi
 
-zkstack chain init \
+init_output=""
+if ! init_output="$(zkstack chain init \
   --chain "${EDGE_CHAIN_NAME}" \
   --no-genesis \
   --deploy-paymaster false \
   --skip-priority-txs \
-  --l1-rpc-url "${L1_RPC_URL}"
+  --l1-rpc-url "${L1_RPC_URL}" 2>&1)"; then
+  init_output_lc="$(gl_to_lower "${init_output}")"
+  echo "${init_output}"
+  case "${init_output_lc}" in
+  *"already initialized"* | *"already deployed"* | *"already exists"*)
+    echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} is already initialized; continuing"
+    ;;
+  *)
+    exit 1
+    ;;
+  esac
+else
+  echo "${init_output}"
+fi
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
