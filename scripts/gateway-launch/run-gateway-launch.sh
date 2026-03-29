@@ -145,6 +145,15 @@ gateway_rpc_ready() {
   cast block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
 }
 
+print_gateway_prover_mode_hint() {
+  local effective_gateway_mode
+  effective_gateway_mode="$(gl_to_lower "${GATEWAY_PROVER_MODE:-${PROVER_MODE}}")"
+  if [ "${effective_gateway_mode}" = "gpu" ]; then
+    echo "migrate-edge: Gateway prover mode is gpu; Gateway RPC up does not imply proving is active."
+    echo "migrate-edge: ensure an external Gateway prover is running and connected, otherwise prove batches can stall."
+  fi
+}
+
 set_gateway_runtime_l1_rpc_url() {
   local chain_name config_path migration_l1_rpc
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
@@ -183,6 +192,7 @@ start_gateway_for_migration() {
 
   if gateway_rpc_ready; then
     echo "migrate-edge: Gateway RPC already reachable; reusing running node"
+    print_gateway_prover_mode_hint
     return 0
   fi
 
@@ -242,6 +252,7 @@ PY
   for i in $(seq 1 "${max_checks}"); do
     if gateway_rpc_ready; then
       echo "migrate-edge: Gateway RPC is up"
+      print_gateway_prover_mode_hint
       return 0
     fi
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
