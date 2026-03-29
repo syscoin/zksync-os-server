@@ -267,6 +267,23 @@ checkpoint_should_skip() {
   "$@"
 }
 
+run_checkpoint_with_validation() {
+  local checkpoint_id="${1:?checkpoint id required}"
+  local validator_fn="${2:?validator function required}"
+  shift 2
+
+  if checkpoint_should_skip "${checkpoint_id}" "${validator_fn}"; then
+    echo "checkpoint ${checkpoint_id} already passed; skipping"
+    return 0
+  fi
+
+  gl_checkpoint_run "${checkpoint_id}" "$@" || return $?
+  if ! "${validator_fn}"; then
+    gl_checkpoint_mark_blocked "${checkpoint_id}" "post-run validation failed"
+    gl_die "checkpoint ${checkpoint_id} validation failed after command success"
+  fi
+}
+
 validate_workspace() { gl_probe_workspace_ready; }
 validate_ecosystem() { gl_probe_ecosystem_ready; }
 validate_wallets_funded() { gl_probe_wallets_funded_ready; }
@@ -304,53 +321,14 @@ gl_path_for_zkstack
 gl_checkpoint_set_fingerprint_if_empty
 gl_checkpoint_assert_fingerprint_matches
 
-if checkpoint_should_skip "gl.workspace" validate_workspace; then
-  echo "checkpoint gl.workspace already passed; skipping"
-else
-  gl_checkpoint_run "gl.workspace" step_workspace || exit $?
-fi
-
-if checkpoint_should_skip "gl.ecosystem" validate_ecosystem; then
-  echo "checkpoint gl.ecosystem already passed; skipping"
-else
-  gl_checkpoint_run "gl.ecosystem" step_ecosystem || exit $?
-fi
-
-if checkpoint_should_skip "gl.wallets_funded" validate_wallets_funded; then
-  echo "checkpoint gl.wallets_funded already passed; skipping"
-else
-  gl_checkpoint_run "gl.wallets_funded" "${SCRIPT_DIR}/fund-wallets.sh" || exit $?
-fi
-
-if checkpoint_should_skip "gl.l1_ecosystem_deployed" validate_l1_deployed; then
-  echo "checkpoint gl.l1_ecosystem_deployed already passed; skipping"
-else
-  gl_checkpoint_run "gl.l1_ecosystem_deployed" "${SCRIPT_DIR}/gateway-deploy-l1.sh" || exit $?
-fi
-
-if checkpoint_should_skip "gl.gateway_chain_inited" validate_gateway_chain_inited; then
-  echo "checkpoint gl.gateway_chain_inited already passed; skipping"
-else
-  gl_checkpoint_run "gl.gateway_chain_inited" "${SCRIPT_DIR}/gateway-chain-init.sh" || exit $?
-fi
-
-if checkpoint_should_skip "gl.gateway_settlement" validate_gateway_settlement; then
-  echo "checkpoint gl.gateway_settlement already passed; skipping"
-else
-  gl_checkpoint_run "gl.gateway_settlement" "${SCRIPT_DIR}/gateway-convert-settlement.sh" || exit $?
-fi
-
-if checkpoint_should_skip "gl.os_configs_gateway" validate_os_configs_gateway; then
-  echo "checkpoint gl.os_configs_gateway already passed; skipping"
-else
-  gl_checkpoint_run "gl.os_configs_gateway" env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
-fi
-
-if checkpoint_should_skip "gl.edge_chain_inited" validate_edge_chain_inited; then
-  echo "checkpoint gl.edge_chain_inited already passed; skipping"
-else
-  gl_checkpoint_run "gl.edge_chain_inited" "${SCRIPT_DIR}/edge-chain-create-init.sh" || exit $?
-fi
+run_checkpoint_with_validation "gl.workspace" validate_workspace step_workspace || exit $?
+run_checkpoint_with_validation "gl.ecosystem" validate_ecosystem step_ecosystem || exit $?
+run_checkpoint_with_validation "gl.wallets_funded" validate_wallets_funded "${SCRIPT_DIR}/fund-wallets.sh" || exit $?
+run_checkpoint_with_validation "gl.l1_ecosystem_deployed" validate_l1_deployed "${SCRIPT_DIR}/gateway-deploy-l1.sh" || exit $?
+run_checkpoint_with_validation "gl.gateway_chain_inited" validate_gateway_chain_inited "${SCRIPT_DIR}/gateway-chain-init.sh" || exit $?
+run_checkpoint_with_validation "gl.gateway_settlement" validate_gateway_settlement "${SCRIPT_DIR}/gateway-convert-settlement.sh" || exit $?
+run_checkpoint_with_validation "gl.os_configs_gateway" validate_os_configs_gateway env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
+run_checkpoint_with_validation "gl.edge_chain_inited" validate_edge_chain_inited "${SCRIPT_DIR}/edge-chain-create-init.sh" || exit $?
 
 if checkpoint_should_skip "gl.migration" validate_migration; then
   echo "checkpoint gl.migration already passed; skipping"
@@ -369,11 +347,7 @@ else
   gl_checkpoint_mark_passed "gl.migration"
 fi
 
-if checkpoint_should_skip "gl.os_configs_final" validate_os_configs_final; then
-  echo "checkpoint gl.os_configs_final already passed; skipping"
-else
-  gl_checkpoint_run "gl.os_configs_final" "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
-fi
+run_checkpoint_with_validation "gl.os_configs_final" validate_os_configs_final "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
 
 echo "=== gateway-launch complete ==="
 trap - EXIT INT TERM

@@ -342,7 +342,7 @@ PY
   [ -f "${contracts_yaml}" ] || gl_die "missing contracts config: ${contracts_yaml}"
   gateway_contracts_yaml="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml"
 
-  python3 - "${contracts_yaml}" "${chain_name}" "${gateway_chain_name}" "${gateway_contracts_yaml}" <<'PY'
+  python3 - "${contracts_yaml}" "${chain_name}" "${gateway_chain_name}" "${gateway_contracts_yaml}" "${GATEWAY_DIR}/configs/initial_deployments.yaml" <<'PY'
 import sys
 import re
 from pathlib import Path
@@ -355,6 +355,7 @@ contracts_path = Path(sys.argv[1])
 chain_name = sys.argv[2]
 gateway_chain_name = sys.argv[3]
 gateway_contracts_path = Path(sys.argv[4])
+initial_deployments_path = Path(sys.argv[5])
 data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {contracts_path}")
@@ -364,6 +365,12 @@ if chain_name != gateway_chain_name and gateway_contracts_path.exists():
     gateway_data = yaml.safe_load(gateway_contracts_path.read_text(encoding="utf-8"))
     if not isinstance(gateway_data, dict):
         gateway_data = None
+
+initial_deployments = None
+if initial_deployments_path.exists():
+    initial_deployments = yaml.safe_load(initial_deployments_path.read_text(encoding="utf-8"))
+    if not isinstance(initial_deployments, dict):
+        initial_deployments = None
 
 updated = False
 
@@ -533,7 +540,8 @@ required_top_level_fields = {
 for field, prefer_non_zero in required_top_level_fields.items():
     current_value = data.get(field)
     gateway_value = maybe_get(gateway_data, field)
-    chosen = pick_value(current_value, gateway_value, prefer_non_zero=prefer_non_zero)
+    init_value = maybe_get(initial_deployments, field)
+    chosen = pick_value(current_value, gateway_value, init_value, prefer_non_zero=prefer_non_zero)
     if chosen is None:
         raise SystemExit(
             f"unable to auto-heal required top-level field in {contracts_path}: {field}"
@@ -1173,7 +1181,7 @@ gl_probe_gateway_chain_inited_ready() {
   gl_require GATEWAY_DIR
   local gateway_chain_name
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
-  [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml" ]
+  gl_probe_chain_contracts_schema_ready "${gateway_chain_name}"
 }
 
 gl_probe_gateway_settlement_ready() {
@@ -1194,7 +1202,7 @@ gl_probe_edge_chain_inited_ready() {
   gl_require GATEWAY_DIR
   local edge_chain_name
   edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
-  [ -f "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/contracts.yaml" ]
+  gl_probe_chain_contracts_schema_ready "${edge_chain_name}"
 }
 
 gl_probe_os_configs_final_ready() {
@@ -1204,4 +1212,40 @@ gl_probe_os_configs_final_ready() {
   edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
   [ -f "${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/config.yaml" ] &&
     [ -f "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}/config.yaml" ]
+}
+
+gl_probe_chain_contracts_schema_ready() {
+  gl_require GATEWAY_DIR
+  local chain_name="${1:?chain name required}"
+  local contracts_yaml
+  contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
+  [ -f "${contracts_yaml}" ] || return 1
+
+  python3 - "${contracts_yaml}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+p = Path(sys.argv[1])
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(1)
+
+l2 = data.get("l2")
+if not isinstance(l2, dict):
+    raise SystemExit(1)
+
+required_top = ("create2_factory_addr", "create2_factory_salt")
+for key in required_top:
+    if key not in data:
+        raise SystemExit(1)
+
+required_l2 = ("default_l2_upgrader", "da_validator_addr")
+for key in required_l2:
+    if key not in l2:
+        raise SystemExit(1)
+PY
 }
