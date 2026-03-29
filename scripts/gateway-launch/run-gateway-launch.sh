@@ -352,6 +352,23 @@ step_ecosystem() {
   gl_resolve_gateway_dir_after_ecosystem_create
 }
 
+step_l1_ecosystem_deployed() {
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  # A fresh L1 ecosystem deployment can produce different replay envelopes.
+  # Clear stale runtime DB so gateway node does not panic on replay mismatch.
+  gl_clear_os_server_chain_db "${gateway_chain_name}"
+  "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+}
+
+step_edge_chain_inited() {
+  local edge_chain_name
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  # Edge chain redeploy/init can also invalidate previously replayed runtime state.
+  gl_clear_os_server_chain_db "${edge_chain_name}"
+  "${SCRIPT_DIR}/edge-chain-create-init.sh"
+}
+
 echo "gateway-launch: initializing checkpoint state"
 gl_checkpoint_state_init
 wait_for_rpc
@@ -367,11 +384,11 @@ gl_checkpoint_assert_fingerprint_matches
 run_checkpoint_with_validation "gl.workspace" validate_workspace step_workspace || exit $?
 run_checkpoint_with_validation "gl.ecosystem" validate_ecosystem step_ecosystem || exit $?
 run_checkpoint_with_validation "gl.wallets_funded" validate_wallets_funded "${SCRIPT_DIR}/fund-wallets.sh" || exit $?
-run_checkpoint_with_validation "gl.l1_ecosystem_deployed" validate_l1_deployed "${SCRIPT_DIR}/gateway-deploy-l1.sh" || exit $?
+run_checkpoint_with_validation "gl.l1_ecosystem_deployed" validate_l1_deployed step_l1_ecosystem_deployed || exit $?
 run_checkpoint_with_validation "gl.gateway_chain_inited" validate_gateway_chain_inited "${SCRIPT_DIR}/gateway-chain-init.sh" || exit $?
 run_checkpoint_with_validation "gl.gateway_settlement" validate_gateway_settlement "${SCRIPT_DIR}/gateway-convert-settlement.sh" || exit $?
 run_checkpoint_with_validation "gl.os_configs_gateway" validate_os_configs_gateway env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
-run_checkpoint_with_validation "gl.edge_chain_inited" validate_edge_chain_inited "${SCRIPT_DIR}/edge-chain-create-init.sh" || exit $?
+run_checkpoint_with_validation "gl.edge_chain_inited" validate_edge_chain_inited step_edge_chain_inited || exit $?
 
 if checkpoint_should_skip "gl.migration" validate_migration; then
   echo "checkpoint gl.migration already passed; skipping"

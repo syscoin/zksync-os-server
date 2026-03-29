@@ -1241,6 +1241,23 @@ gl_probe_os_configs_final_ready() {
     [ -f "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}/config.yaml" ]
 }
 
+gl_clear_os_server_chain_db() {
+  gl_require GATEWAY_DIR
+  local chain_name="${1:?chain name required}"
+  local db_dir
+  db_dir="${GATEWAY_DIR}/os-server-configs/${chain_name}/db"
+  case "${db_dir}" in
+  "${GATEWAY_DIR}/os-server-configs/"*/db) ;;
+  *)
+    gl_die "refusing to clear unexpected DB path: ${db_dir}"
+    ;;
+  esac
+  if [ -d "${db_dir}" ]; then
+    echo "gateway-launch: clearing stale runtime DB at ${db_dir}"
+    rm -rf "${db_dir}"
+  fi
+}
+
 gl_probe_chain_contracts_schema_ready() {
   gl_require GATEWAY_DIR
   local chain_name="${1:?chain name required}"

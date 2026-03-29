@@ -170,6 +170,7 @@ perform_repair_step() {
     "${SCRIPT_DIR}/fund-wallets.sh"
     ;;
   gl.l1_ecosystem_deployed)
+    gl_clear_os_server_chain_db "${GATEWAY_CHAIN_NAME:-gateway}"
     "${SCRIPT_DIR}/gateway-deploy-l1.sh"
     ;;
   gl.gateway_chain_inited)
@@ -182,6 +183,7 @@ perform_repair_step() {
     env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh"
     ;;
   gl.edge_chain_inited)
+    gl_clear_os_server_chain_db "${EDGE_CHAIN_NAME:-zksys}"
     "${SCRIPT_DIR}/edge-chain-create-init.sh"
     ;;
   gl.migration)
