@@ -119,6 +119,38 @@ PY
   cast call "${bridgehub}" "settlementLayer(uint256)(uint256)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk '{print $1}'
 }
 
+get_chain_diamond_proxy_from_l1() {
+  local chain_name="${1:?chain name required}"
+  local chain_id bridgehub
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  bridgehub="$(python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+p = Path(sys.argv[1])
+if not p.exists():
+    raise SystemExit(f"missing contracts config: {p}")
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {p}")
+eco = data.get("ecosystem_contracts")
+if not isinstance(eco, dict):
+    raise SystemExit(f"invalid ecosystem_contracts section in {p}")
+bridgehub = eco.get("bridgehub_proxy_addr")
+if bridgehub is None:
+    raise SystemExit(f"missing ecosystem_contracts.bridgehub_proxy_addr in {p}")
+if isinstance(bridgehub, int):
+    bridgehub = "0x" + format(bridgehub & ((1 << 160) - 1), "040x")
+print(str(bridgehub))
+PY
+)"
+
+  cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk '{print $1}'
+}
+
 get_chain_diamond_proxy_from_gateway() {
   local chain_name="${1:?chain name required}"
   local chain_id call_from
@@ -367,12 +399,48 @@ EOF
   return 1
 }
 
+chain_deposits_paused_state() {
+  local chain_name="${1:?chain name required}"
+  local chain_proxy raw normalized
+  chain_proxy="$(get_chain_diamond_proxy_from_l1 "${chain_name}" 2>/dev/null || true)"
+  if [ -z "${chain_proxy}" ] || [ "${chain_proxy}" = "0x0000000000000000000000000000000000000000" ]; then
+    return 1
+  fi
+
+  raw="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast call "${chain_proxy}" "depositsPaused()(bool)" --rpc-url "${L1_RPC_URL}" 2>/dev/null || true)"
+  [ -n "${raw}" ] || return 1
+
+  normalized="$(gl_to_lower "$(printf '%s' "${raw}" | tr -d '[:space:]')")"
+  case "${normalized}" in
+  true | 1 | 0x1)
+    printf '%s\n' "true"
+    return 0
+    ;;
+  false | 0 | 0x0)
+    printf '%s\n' "false"
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
 ensure_deposits_unpaused() {
   local chain_name="${1:?chain name required}"
   local unpause_output=""
   local unpause_output_lc=""
+  local paused_state=""
 
   gl_l1_broadcast_preflight
+  if paused_state="$(chain_deposits_paused_state "${chain_name}")"; then
+    if [ "${paused_state}" = "false" ]; then
+      echo "gateway-launch: deposits are already unpaused for ${chain_name}; skipping unpause call"
+      return 0
+    fi
+  fi
+
   if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits --chain "${chain_name}" -v 2>&1)"; then
     echo "${unpause_output}"
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
