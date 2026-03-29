@@ -7,6 +7,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
 
+if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
+  if [ "${PROVER_MODE}" = "no-proofs" ]; then
+    export GATEWAY_PROVER_MODE="no-proofs"
+  else
+    export GATEWAY_PROVER_MODE="gpu"
+  fi
+fi
+
 L1_PROFILE=""
 COMMAND=""
 CHECKPOINT_ID=""
