@@ -201,16 +201,59 @@ start_gateway_for_migration() {
   GATEWAY_NODE_PID=$!
   GATEWAY_STARTED_FOR_MIGRATION=true
 
+  print_gateway_migration_log_excerpt() {
+    local file_path="${1:?log path required}"
+    [ -f "${file_path}" ] || {
+      echo "migrate-edge: log file not found: ${file_path}" >&2
+      return 0
+    }
+    python3 - "${file_path}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8", errors="replace").splitlines()
+tail = text[-120:] if len(text) > 120 else text
+print("migrate-edge: Gateway node log excerpt (last {} lines):".format(len(tail)), file=sys.stderr)
+for line in tail:
+    print(line, file=sys.stderr)
+PY
+  }
+
+  gateway_replay_assertion_failed() {
+    local file_path="${1:?log path required}"
+    [ -f "${file_path}" ] || return 1
+    python3 - "${file_path}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+patterns = (
+    r"assertion `left == right` failed",
+    r"PanickedTaskError",
+    r"task_name:\s*\"block_executor\"",
+)
+ok = all(re.search(p, text) for p in patterns)
+raise SystemExit(0 if ok else 1)
+PY
+  }
+
   for i in $(seq 1 "${max_checks}"); do
     if gateway_rpc_ready; then
       echo "migrate-edge: Gateway RPC is up"
       return 0
     fi
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
+      print_gateway_migration_log_excerpt "${log_file}"
+      if gateway_replay_assertion_failed "${log_file}"; then
+        gl_die "migrate-edge: Gateway node failed during replay with block_executor assertion mismatch. This usually means stale gateway DB state from a prior incompatible run. Remove ${GATEWAY_DIR}/os-server-configs/${chain_name}/db and rerun."
+      fi
       gl_die "migrate-edge: Gateway node exited before RPC came up; see ${log_file}"
     fi
     sleep "${poll_interval_s}"
   done
+  print_gateway_migration_log_excerpt "${log_file}"
   gl_die "migrate-edge: Gateway RPC did not come up within ${start_timeout_s}s (see ${log_file})"
 }
 
