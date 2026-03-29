@@ -979,6 +979,7 @@ payload = {
     "prover_mode": os.environ.get("PROVER_MODE", ""),
     "gateway_prover_mode": os.environ.get("GATEWAY_PROVER_MODE", ""),
     "foundry_evm_version": os.environ.get("FOUNDRY_EVM_VERSION", ""),
+    "gateway_create2_factory_salt": os.environ.get("GATEWAY_CREATE2_FACTORY_SALT", ""),
 }
 print(json.dumps(payload, sort_keys=True))
 PY
@@ -1013,6 +1014,8 @@ gl_checkpoint_assert_fingerprint_matches() {
   python3 - "${state_file}" "${fp_json}" <<'PY'
 import json
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 state_path = Path(sys.argv[1])
@@ -1020,6 +1023,30 @@ expected = json.loads(sys.argv[2])
 state = json.loads(state_path.read_text(encoding="utf-8"))
 current = state.get("fingerprint") or {}
 if current and current != expected:
+    diff_keys = sorted(
+        key
+        for key in set(current.keys()) | set(expected.keys())
+        if current.get(key) != expected.get(key)
+    )
+    # Changing create2 salt indicates explicit redeploy intent; rotate checkpoint state.
+    # Keep this auto-reset narrowly scoped to avoid clearing checkpoints for unrelated drift.
+    if set(diff_keys).issubset({"gateway_create2_factory_salt"}):
+        now = datetime.now(timezone.utc).isoformat()
+        state["run_id"] = str(uuid.uuid4())
+        state["created_at"] = now
+        state["updated_at"] = now
+        state["current_checkpoint"] = None
+        state["fingerprint"] = expected
+        state["checkpoints"] = {}
+        state["last_error"] = None
+        state["repairs"] = []
+        state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        print(
+            "gateway-launch: checkpoint fingerprint changed only by create2 salt; "
+            "resetting checkpoint state for redeploy",
+            file=sys.stderr,
+        )
+        raise SystemExit(0)
     print("checkpoint fingerprint mismatch", file=sys.stderr)
     print("state file:", state_path, file=sys.stderr)
     print("expected:", json.dumps(expected, sort_keys=True), file=sys.stderr)

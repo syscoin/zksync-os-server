@@ -226,6 +226,12 @@ fi
 
 checkpoint_is_known "${CHECKPOINT_ID}" || gl_die "unknown checkpoint id: ${CHECKPOINT_ID}"
 
+if validate_checkpoint "${CHECKPOINT_ID}"; then
+  gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"
+  echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; marked repaired"
+  exit 0
+fi
+
 echo "gateway-launch-repair: repairing ${CHECKPOINT_ID}"
 gl_checkpoint_mark_in_progress "${CHECKPOINT_ID}"
 
