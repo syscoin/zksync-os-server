@@ -85,7 +85,7 @@ bash scripts/gateway-launch/gateway-launch-repair.sh --l1 tanenbaum repair gl.ed
 
 Then rerun the canonical launcher command.
 
-## What the launcher now always does
+## What the launcher does
 
 - Creates/reuses ecosystem.
 - Funds required wallets.
