@@ -115,6 +115,8 @@ Then rerun the canonical launcher command.
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
+| `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
+| `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace |
 | `GATEWAY_CREATE2_FACTORY_SALT` | Optional deterministic `create2_factory_salt` override for L1 deployment |
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
@@ -131,3 +133,4 @@ Then rerun the canonical launcher command.
 - If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf $GATEWAY_DIR/.gateway-launch`.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
+- For `v31.x`, `start-node.sh` runs through a launcher wrapper that copies the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrites only the `*_dev` `zksync-os` deps to the patched upstream checkout, and uses that isolated workspace for `cargo run`.

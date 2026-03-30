@@ -11,6 +11,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
+: "${PROTOCOL_VERSION:=v31.0}"
 : "${GATEWAY_CHAIN_ID:=57001}"
 : "${EDGE_CHAIN_ID:=57057}"
 : "${GATEWAY_OS_RPC_PORT:=3052}"
@@ -45,6 +46,7 @@ export GATEWAY_DIR
 export ZKSYNC_OS_SERVER_PATH
 export GATEWAY_CHAIN_NAME
 export EDGE_CHAIN_NAME
+export PROTOCOL_VERSION
 export GATEWAY_CHAIN_ID
 export EDGE_CHAIN_ID
 export GATEWAY_OS_RPC_PORT
@@ -309,7 +311,9 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   source "${{HOME}}/.cargo/env"
 fi
 cd "{server_root}"
-exec cargo run --release -- --config "{out_dir / 'config.yaml'}"
+export GATEWAY_DIR="{gateway_dir}"
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- --config "{out_dir / 'config.yaml'}"
 """
     if gateway_rpc_url is not None:
         start_script = f"""#!/usr/bin/env bash
@@ -319,7 +323,9 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   source "${{HOME}}/.cargo/env"
 fi
 cd "{server_root}"
-exec cargo run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
+export GATEWAY_DIR="{gateway_dir}"
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)

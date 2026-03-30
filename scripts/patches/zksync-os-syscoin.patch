@@ -1,0 +1,187 @@
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
+index 6526d9e3..ac076382 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
+@@ -13,7 +13,8 @@ pub struct KZGCommitmentAndProof {
+ }
+ 
+ impl UsizeSerializable for KZGCommitmentAndProof {
+-    const USIZE_LEN: usize = 96 / size_of::<usize>();
++    // SYSCOIN: encode only 32-byte blob id (8 words on 32-bit host, 4 on 64-bit host).
++    const USIZE_LEN: usize = 32 / size_of::<usize>();
+ 
+     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
+         cfg_if::cfg_if!(
+@@ -21,10 +22,11 @@ impl UsizeSerializable for KZGCommitmentAndProof {
+                 compile_error!("unsupported architecture: big endian arch is not supported")
+             } else {
+                 #[allow(clippy::needless_return)]
+-                return ExactSizeChain::new(
+-                    self.commitment.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
+-                    self.proof.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
+-                );
++                return self.commitment[..32]
++                    .as_chunks::<{ core::mem::size_of::<usize>() }>()
++                    .0
++                    .iter()
++                    .map(|chunk| usize::from_le_bytes(*chunk));
+             }
+         );
+     }
+@@ -34,13 +36,13 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
+     const USIZE_LEN: usize = <Self as UsizeSerializable>::USIZE_LEN;
+ 
+     fn from_iter(src: &mut impl ExactSizeIterator<Item = usize>) -> Result<Self, InternalError> {
+-        const FIELD_USIZE_LEN: usize = 48 / core::mem::size_of::<usize>();
++        const FIELD_USIZE_LEN: usize = 32 / core::mem::size_of::<usize>();
+         let mut out = Self {
+             commitment: [0u8; 48],
+             proof: [0u8; 48],
+         };
+         unsafe {
+-            let commitment_usize_ptr = out.commitment.as_mut_ptr().cast::<usize>();
++            let commitment_usize_ptr = out.commitment[..32].as_mut_ptr().cast::<usize>();
+             for i in 0..FIELD_USIZE_LEN {
+                 commitment_usize_ptr
+                     .add(i)
+@@ -48,14 +50,6 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
+                         "KZGCommitmentAndProof deserialization failed"
+                     ))?);
+             }
+-            let proof_usize_ptr = out.proof.as_mut_ptr().cast::<usize>();
+-            for i in 0..FIELD_USIZE_LEN {
+-                proof_usize_ptr
+-                    .add(i)
+-                    .write(src.next().ok_or(internal_error!(
+-                        "KZGCommitmentAndProof deserialization failed"
+-                    ))?);
+-            }
+         }
+ 
+         Ok(out)
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
+index e36a8a8c..fdbf0c3f 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
+@@ -104,25 +104,22 @@ pub fn blob_versioned_hash_with_advisor(
+     // We get commitment and proof from an external source (advisor)
+     // Correctness is checked below
+     let commitment_and_proof = advisor.get_blob_commitment_and_proof_advice(data);
++    let mut advised_blob_data_id = [0u8; 32];
++    advised_blob_data_id.copy_from_slice(&commitment_and_proof.commitment[..32]);
++    let local_blob_data_id = blob_data_id(data);
+ 
+-    let commitment = parse_g1_compressed(&commitment_and_proof.commitment)
+-        .expect("Invalid blob commitment point");
+-    let proof = parse_g1_compressed(&commitment_and_proof.proof).expect("Invalid blob proof point");
+-    let versioned_hash = versioned_hash_for_kzg(commitment_and_proof.commitment.as_slice());
+-    let evaluation_point = calculate_evaluation_point(data, &versioned_hash);
+-    let opening_value = polynomial_evaluation::evaluate_blob_polynomial(data, &evaluation_point);
+-
+-    assert!(
+-        crypto::bls12_381::verify_kzg_proof(
+-            commitment,
+-            proof,
+-            evaluation_point.into_bigint(),
+-            opening_value.into_bigint(),
+-        ),
+-        "Failed to verify blob proof"
++    assert_eq!(
++        advised_blob_data_id, local_blob_data_id,
++        "Blob data id advice mismatch"
+     );
+ 
+-    versioned_hash
++    local_blob_data_id
++}
++
++fn blob_data_id(data: &[u8]) -> [u8; 32] {
++    let mut hasher = Keccak256::new();
++    hasher.update(data);
++    hasher.finalize()
+ }
+ 
+ fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
+diff --git a/callable_oracles/src/blob_kzg_commitment/mod.rs b/callable_oracles/src/blob_kzg_commitment/mod.rs
+index 47324a1f..6a5650c2 100644
+--- a/callable_oracles/src/blob_kzg_commitment/mod.rs
++++ b/callable_oracles/src/blob_kzg_commitment/mod.rs
+@@ -3,6 +3,7 @@ use crate::utils::usize_slice_iterator::UsizeSliceIteratorOwned;
+ use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::KZGCommitmentAndProof;
+ use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::BLOB_COMMITMENT_AND_PROOF_QUERY_ID;
+ use basic_system::system_functions::point_evaluation::versioned_hash_for_kzg;
++use crypto::sha3::Keccak256;
+ use crypto::MiniDigest;
+ use oracle_provider::OracleQueryProcessor;
+ use risc_v_simulator::abstractions::memory::MemorySource;
+@@ -63,39 +64,16 @@ impl<M: MemorySource> OracleQueryProcessor<M> for BlobCommitmentAndProofQuery<M>
+     }
+ }
+ 
+-///
+-/// Calculate kzg commitment and proof at the point `blake2s(versioned_hash & data)` for blob created from passed data.
+-///
+-/// For encoding, we chunk `data` by 31 bytes and interpret each chunk as BE blob element.
+-///
++/// SYSCOIN: Keep the legacy function name/interface, but return blob data id
++/// packed into the legacy struct for compatibility.
+ pub fn blob_kzg_commitment_and_proof(data: &[u8]) -> KZGCommitmentAndProof {
+-    let mut blob = [0u8; 4096 * 32];
+-    for (i, chunk) in data.chunks(31).enumerate() {
+-        let fe = &mut blob[i * 32..(i + 1) * 32];
+-        fe[1..1 + chunk.len()].copy_from_slice(chunk);
+-    }
+-    let blob = c_kzg::Blob::new(blob);
+-
+-    let kzg_settings = c_kzg::ethereum_kzg_settings(8);
+-
+-    let commitment = kzg_settings.blob_to_kzg_commitment(&blob).unwrap();
+-
+-    let mut hasher = crypto::blake2s::Blake2s256::new();
+-    hasher.update(versioned_hash_for_kzg(commitment.as_slice()).as_slice());
++    let mut hasher = Keccak256::new();
+     hasher.update(data);
+-    let mut challenge_point = hasher.finalize();
+-    // truncate hash to 128 bits
+-    // NOTE: it is safe to draw a random scalar at max 128 bits because of the schwartz zippel lemma
+-    for byte in challenge_point[0..16].iter_mut() {
+-        *byte = 0;
+-    }
+-    let p = kzg_settings
+-        .compute_kzg_proof(&blob, &c_kzg::Bytes32::new(challenge_point))
+-        .unwrap();
+-    let proof = p.0;
++    let blob_data_id: [u8; 32] = hasher.finalize();
+ 
+-    KZGCommitmentAndProof {
+-        commitment: commitment.to_bytes().into_inner(),
+-        proof: proof.to_bytes().into_inner(),
+-    }
++    let mut commitment = [0u8; 48];
++    commitment[..32].copy_from_slice(&blob_data_id);
++    let proof = [0u8; 48];
++
++    KZGCommitmentAndProof { commitment, proof }
+ }
+diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
+index a6a348fd..6e98ff3d 100644
+--- a/forward_system/src/run/mod.rs
++++ b/forward_system/src/run/mod.rs
+@@ -202,14 +202,14 @@ pub fn generate_batch_proof_input(
+             for (i, block_pubdata) in blocks_pubdata.into_iter().enumerate() {
+                 blobs_data.extend_from_slice(block_pubdata);
+                 let length_without_advice = blocks_proof_inputs[i].len()
+-                    - (block_pubdata.len() + 31).div_ceil(31 * 4096) * 25;
++                    - (block_pubdata.len() + 31).div_ceil(31 * 4096) * 9;
+                 blocks_proof_inputs[i] = &blocks_proof_inputs[i][..length_without_advice];
+             }
+-            let mut blobs_advice = Vec::with_capacity(25 * blobs_data.len().div_ceil(31 * 4096));
++            let mut blobs_advice = Vec::with_capacity(9 * blobs_data.len().div_ceil(31 * 4096));
+             for blob_data in blobs_data.chunks(31 * 4096) {
+                 let advice =
+                     callable_oracles::blob_kzg_commitment::blob_kzg_commitment_and_proof(blob_data);
+-                blobs_advice.push(24);
++                blobs_advice.push(8);
+                 for word in advice.iter() {
+                     #[cfg(target_pointer_width = "32")]
+                     blobs_advice.push(word as u32);
