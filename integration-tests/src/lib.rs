@@ -154,6 +154,13 @@ pub struct Tester {
     supporting_nodes: Vec<Tester>,
 }
 
+#[derive(Debug)]
+pub struct StoppedTester {
+    l1: AnvilL1,
+    tempdir: Arc<tempfile::TempDir>,
+    chain_layout: ChainLayout<'static>,
+}
+
 impl Tester {
     pub fn l1_provider(&self) -> &EthDynProvider {
         &self.l1.provider
@@ -193,6 +200,16 @@ impl Tester {
 
     pub async fn setup() -> anyhow::Result<Self> {
         Self::builder().build().await
+    }
+
+    pub async fn setup_with_overrides(
+        config_overrides: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<Self> {
+        let chain_layout = ChainLayout::Default {
+            protocol_version: PROTOCOL_VERSION,
+        };
+        let l1 = AnvilL1::start(chain_layout).await?;
+        Self::launch_node(l1, false, Some(config_overrides), chain_layout).await
     }
 
     pub fn l2_rpc_url(&self) -> &str {
@@ -243,7 +260,7 @@ impl Tester {
     /// Returns a new `Tester` connected to the restarted node. The original `Tester` is consumed.
     ///
     /// Note that allocated ports might change between old node and new one.
-    pub async fn restart(self) -> anyhow::Result<Self> {
+    pub async fn stop(self) -> anyhow::Result<StoppedTester> {
         // Drop all fields that might rely on node being alive (e.g. alloy provider that uses RPC).
         let Self {
             runtime,
@@ -255,7 +272,25 @@ impl Tester {
         if !runtime.graceful_shutdown_with_timeout(NODE_SHUTDOWN_TIMEOUT) {
             panic!("node failed to shutdown in time");
         }
-        Self::launch_node_inner(l1, false, None::<fn(&mut Config)>, tempdir, chain_layout).await
+        Ok(StoppedTester {
+            l1,
+            tempdir,
+            chain_layout,
+        })
+    }
+
+    pub async fn restart(self) -> anyhow::Result<Self> {
+        self.stop().await?.start().await
+    }
+
+    pub async fn restart_with_overrides(
+        self,
+        config_overrides: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<Self> {
+        self.stop()
+            .await?
+            .start_with_overrides(config_overrides)
+            .await
     }
 
     async fn launch_node(
@@ -536,6 +571,45 @@ impl Tester {
             chain_layout,
             supporting_nodes: Vec::new(),
         })
+    }
+}
+
+impl StoppedTester {
+    pub fn l1_provider(&self) -> &EthDynProvider {
+        &self.l1.provider
+    }
+
+    pub fn l1_wallet(&self) -> &EthereumWallet {
+        &self.l1.wallet
+    }
+
+    pub fn chain_layout(&self) -> ChainLayout<'static> {
+        self.chain_layout
+    }
+
+    pub async fn start(self) -> anyhow::Result<Tester> {
+        Tester::launch_node_inner(
+            self.l1,
+            false,
+            None::<fn(&mut Config)>,
+            self.tempdir,
+            self.chain_layout,
+        )
+        .await
+    }
+
+    pub async fn start_with_overrides(
+        self,
+        config_overrides: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<Tester> {
+        Tester::launch_node_inner(
+            self.l1,
+            false,
+            Some(config_overrides),
+            self.tempdir,
+            self.chain_layout,
+        )
+        .await
     }
 }
 
