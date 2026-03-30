@@ -102,6 +102,10 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         }
     }
 
+    pub fn next_block_number(&self) -> u64 {
+        self.next_block_number
+    }
+
     pub async fn prepare_command(
         &mut self,
         block_command: BlockCommand,
@@ -208,7 +212,9 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                         self.block_time,
                         self.max_transactions_in_block,
                     ),
-                    invalid_tx_policy: InvalidTxPolicy::RejectAndContinue,
+                    invalid_tx_policy: InvalidTxPolicy::RejectAndContinue {
+                        mark_in_source: true,
+                    },
                     metrics_label: "produce",
                     protocol_version: self.protocol_version.clone(),
                     expected_block_output_hash: None,
@@ -354,7 +360,9 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     seal_policy: SealPolicy::UntilExhausted {
                         allowed_to_finish_early: true,
                     },
-                    invalid_tx_policy: InvalidTxPolicy::RejectAndContinue,
+                    invalid_tx_policy: InvalidTxPolicy::RejectAndContinue {
+                        mark_in_source: false,
+                    },
                     metrics_label: "rebuild",
                     protocol_version,
                     expected_block_output_hash: None,
