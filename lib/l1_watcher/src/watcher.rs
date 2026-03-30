@@ -48,7 +48,14 @@ impl L1Watcher {
         let mut timer = tokio::time::interval(self.poll_interval);
         loop {
             timer.tick().await;
-            self.poll().await.expect("watcher failed");
+            match self.poll().await {
+                Ok(()) => {}
+                // SYSCOIN
+                Err(L1WatcherError::Transport(err)) => {
+                    tracing::warn!(?err, "watcher transport error; retrying on next poll");
+                }
+                Err(err) => panic!("watcher failed: {err}"),
+            }
         }
     }
 
