@@ -40,9 +40,6 @@ default-filter = 'not test(~interop) & not test(does_not_get_stuck) & not test(b
 # Usage: cargo nextest run -p zksync_os_integration_tests --profile no-pig
 [profile.no-pig]
 
-[profile.no-pig.env]
-DISABLE_PROVER_INPUT_GENERATION = "1"
-
 # Skip slow external node tests in coverage profile
 # TODO: investigate why this test gets stuck in coverage runs
 # by producing 550s proving computations in coverage mode

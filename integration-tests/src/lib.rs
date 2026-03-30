@@ -216,7 +216,14 @@ impl Tester {
             protocol_version: PROTOCOL_VERSION,
         };
         let l1 = AnvilL1::start(chain_layout).await?;
-        Self::launch_node(l1, false, true, Some(config_overrides), chain_layout).await
+        Self::launch_node(
+            l1,
+            false,
+            prover_input_generation_enabled(),
+            Some(config_overrides),
+            chain_layout,
+        )
+        .await
     }
 
     pub fn l2_rpc_url(&self) -> &str {
@@ -256,7 +263,7 @@ impl Tester {
         Self::launch_node(
             self.l1.clone(),
             false,
-            true,
+            self.enable_prover_input_generation,
             Some(overrides_fun),
             self.chain_layout,
         )
@@ -864,7 +871,7 @@ impl TesterBuilder {
                 };
                 let l1 = AnvilL1::start(chain_layout).await?;
                 let mut options = self.options;
-                if std::env::var("DISABLE_PROVER_INPUT_GENERATION").is_ok() {
+                if !prover_input_generation_enabled() {
                     options.enable_prover_input_generation = false;
                 }
                 Tester::launch_node(
@@ -878,7 +885,7 @@ impl TesterBuilder {
             }
             SettlementLayer::Gateway => {
                 let mut options = self.options;
-                if std::env::var("DISABLE_PROVER_INPUT_GENERATION").is_ok() {
+                if !prover_input_generation_enabled() {
                     options.enable_prover_input_generation = false;
                 }
                 let gateway_tester = GatewayTester::builder()
@@ -987,7 +994,7 @@ impl GatewayTesterBuilder {
         let gateway = Tester::launch_node(
             l1.clone(),
             false,
-            true,
+            self.chain_options.enable_prover_input_generation,
             None::<fn(&mut Config)>,
             ChainLayout::Gateway { protocol_version },
         )
@@ -1041,6 +1048,10 @@ impl GatewayTesterBuilder {
             chains,
         })
     }
+}
+
+fn prover_input_generation_enabled() -> bool {
+    std::env::var("NEXTEST_PROFILE").as_deref() != Ok("no-pig")
 }
 
 async fn wait_for_gateway_readiness(
