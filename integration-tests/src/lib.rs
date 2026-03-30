@@ -1,6 +1,7 @@
 use crate::config::{ChainLayout, load_chain_config};
 use crate::dyn_wallet_provider::EthDynProvider;
 use crate::network::Zksync;
+use crate::node_log::NodeLogState;
 use crate::prover_tester::ProverTester;
 use crate::provider::{ZksyncApi, ZksyncTestingProvider};
 use crate::utils::LockedPort;
@@ -22,6 +23,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
+use tracing::Instrument;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
 use zksync_os_contract_interface::l1_discovery::L1State;
@@ -45,6 +47,7 @@ pub mod config;
 pub mod contracts;
 pub mod dyn_wallet_provider;
 mod network;
+mod node_log;
 mod prover_tester;
 pub mod provider;
 pub mod upgrade;
@@ -150,6 +153,7 @@ pub struct Tester {
     batch_verification_url: String,
     gateway_rpc_url: Option<String>,
     sl_provider: EthDynProvider,
+    log_state: NodeLogState,
     chain_layout: ChainLayout<'static>,
     supporting_nodes: Vec<Tester>,
 }
@@ -158,6 +162,7 @@ pub struct Tester {
 pub struct StoppedTester {
     l1: AnvilL1,
     tempdir: Arc<tempfile::TempDir>,
+    log_state: NodeLogState,
     chain_layout: ChainLayout<'static>,
 }
 
@@ -266,6 +271,7 @@ impl Tester {
             runtime,
             l1,
             tempdir,
+            log_state,
             chain_layout,
             ..
         } = self;
@@ -275,6 +281,7 @@ impl Tester {
         Ok(StoppedTester {
             l1,
             tempdir,
+            log_state,
             chain_layout,
         })
     }
@@ -300,7 +307,15 @@ impl Tester {
         chain_layout: ChainLayout<'static>,
     ) -> anyhow::Result<Self> {
         let tempdir = Arc::new(tempfile::tempdir()?);
-        Self::launch_node_inner(l1, enable_prover, config_overrides, tempdir, chain_layout).await
+        Self::launch_node_inner(
+            l1,
+            enable_prover,
+            config_overrides,
+            tempdir,
+            None,
+            chain_layout,
+        )
+        .await
     }
 
     async fn launch_node_inner(
@@ -308,6 +323,7 @@ impl Tester {
         enable_prover: bool,
         config_overrides: Option<impl FnOnce(&mut Config)>,
         tempdir: Arc<TempDir>,
+        log_state: Option<NodeLogState>,
         chain_layout: ChainLayout<'static>,
     ) -> anyhow::Result<Self> {
         // Initialize and **hold** locked ports for the duration of node initialization.
@@ -430,12 +446,23 @@ impl Tester {
         if let Some(f) = config_overrides {
             f(&mut config)
         }
+        let node_role = config.general_config.node_role;
+        let log_state = log_state.unwrap_or_else(|| NodeLogState::fresh(node_role));
+        let log_tag = log_state.tag();
         let gateway_rpc_url = config.general_config.gateway_rpc_url.clone();
 
         let runtime = RuntimeBuilder::new(RuntimeConfig::with_existing_handle(Handle::current()))
             .build()
             .expect("failed to build runtime");
-        zksync_os_server::run::<FullDiffsState>(&runtime, config).await;
+        let node_span = tracing::info_span!(
+            "node",
+            node = %log_tag,
+            role = %node_role,
+        );
+        tracing::info!(parent: &node_span, "Launching test node");
+        zksync_os_server::run::<FullDiffsState>(&runtime, config)
+            .instrument(node_span)
+            .await;
 
         #[cfg(feature = "prover-tests")]
         if enable_prover {
@@ -567,6 +594,7 @@ impl Tester {
             gateway_rpc_url,
             sl_provider,
             node_record,
+            log_state,
             tempdir: tempdir.clone(),
             chain_layout,
             supporting_nodes: Vec::new(),
@@ -593,6 +621,7 @@ impl StoppedTester {
             false,
             None::<fn(&mut Config)>,
             self.tempdir,
+            Some(self.log_state.restarted()),
             self.chain_layout,
         )
         .await
@@ -607,6 +636,7 @@ impl StoppedTester {
             false,
             Some(config_overrides),
             self.tempdir,
+            Some(self.log_state.restarted()),
             self.chain_layout,
         )
         .await
