@@ -5,7 +5,6 @@ use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::ops;
 use std::ops::{Deref, DerefMut};
-use zk_os_basic_system::system_implementation::system::da_commitment_generator::blob_commitment_generator::blob_data_id;
 use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
 use zksync_os_interface::types::{BlockContext, BlockOutput};
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
@@ -14,6 +13,10 @@ use zksync_os_types::{
 };
 
 const PUBDATA_SOURCE_CALLDATA: u8 = 0;
+
+fn blob_data_id(data: &[u8]) -> [u8; 32] {
+    keccak256(data).0
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct BatchInfo {
