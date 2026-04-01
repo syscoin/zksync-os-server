@@ -65,7 +65,7 @@ prepare_dev_checkout() {
 
   dev_tag="$(extract_dev_tag)"
   dev_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
-  dev_path="${dev_root}/dev-${dev_tag}"
+  dev_path="${dev_root}/${dev_tag}"
 
   if [ ! -d "${dev_path}/.git" ]; then
     mkdir -p "${dev_root}"
