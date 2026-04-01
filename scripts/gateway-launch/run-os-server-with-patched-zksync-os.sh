@@ -53,17 +53,23 @@ PY
 
 prepare_dev_checkout() {
   local dev_tag dev_root dev_path
+  dev_tag="${1:?dev tag required}"
 
   if [ -n "${ZKSYNC_OS_DEV_PATH:-}" ]; then
     dev_path="${ZKSYNC_OS_DEV_PATH}"
     git -C "${dev_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
       gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${dev_path}"
     bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
+    git -C "${dev_path}" add -A
+    if ! git -C "${dev_path}" diff --cached --quiet; then
+      git -C "${dev_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
+        commit -m "gateway-launch local syscoin patch" >/dev/null
+    fi
+    git -C "${dev_path}" tag -f "${dev_tag}" >/dev/null
     printf '%s\n' "${dev_path}"
     return 0
   fi
 
-  dev_tag="$(extract_dev_tag)"
   dev_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
   dev_path="${dev_root}/${dev_tag}"
 
@@ -74,13 +80,20 @@ prepare_dev_checkout() {
   fi
 
   bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
+  git -C "${dev_path}" add -A
+  if ! git -C "${dev_path}" diff --cached --quiet; then
+    git -C "${dev_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
+      commit -m "gateway-launch local syscoin patch" >/dev/null
+  fi
+  git -C "${dev_path}" tag -f "${dev_tag}" >/dev/null
   printf '%s\n' "${dev_path}"
 }
 
 prepare_run_workspace() {
   local run_path="$1"
   local dev_path="$2"
-  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${dev_path}" <<'PY'
+  local dev_tag="$3"
+  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${dev_path}" "${dev_tag}" <<'PY'
 import re
 import shutil
 import sys
@@ -89,6 +102,8 @@ from pathlib import Path
 source = Path(sys.argv[1]).resolve()
 target = Path(sys.argv[2]).resolve()
 dev_path = Path(sys.argv[3]).resolve()
+dev_tag = sys.argv[4]
+dev_git_url = dev_path.as_uri()
 
 if target.exists():
     shutil.rmtree(target)
@@ -121,7 +136,7 @@ basic_re = re.compile(
 )
 
 text, count_forward = forward_re.subn(
-    f'zk_os_forward_system_dev = {{ package = "forward_system", path = "{dev_path / "forward_system"}", features = [\n'
+    f'zk_os_forward_system_dev = {{ package = "forward_system", git = "{dev_git_url}", tag = "{dev_tag}", features = [\n'
     '    "production",\n'
     '    "no_print",\n'
     '], default-features = false }',
@@ -147,10 +162,11 @@ PY
 }
 
 if protocol_uses_dev_patch; then
-  DEV_PATH="$(prepare_dev_checkout)"
+  DEV_TAG="$(extract_dev_tag)"
+  DEV_PATH="$(prepare_dev_checkout "${DEV_TAG}")"
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"
   TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
-  prepare_run_workspace "${RUN_PATH}" "${DEV_PATH}"
+  prepare_run_workspace "${RUN_PATH}" "${DEV_PATH}" "${DEV_TAG}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
 else
