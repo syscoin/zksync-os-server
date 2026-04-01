@@ -41,12 +41,39 @@ gl_require() {
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
 }
 
+gl_l1_chain_id_from_rpc() {
+  gl_require L1_RPC_URL
+  python3 - "${L1_RPC_URL}" <<'PY'
+import json
+import sys
+import urllib.request
+
+rpc_url = sys.argv[1]
+payload = json.dumps(
+    {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
+).encode("utf-8")
+req = urllib.request.Request(
+    rpc_url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=3) as resp:
+    body = resp.read().decode("utf-8")
+obj = json.loads(body)
+result = obj.get("result")
+if not isinstance(result, str) or not result.startswith("0x"):
+    raise SystemExit(1)
+print(int(result, 16))
+PY
+}
+
 gl_assert_l1_chain_id_matches_rpc() {
   gl_require L1_RPC_URL
   gl_require L1_CHAIN_ID
 
   local rpc_chain_id
-  if ! rpc_chain_id="$(cast chain-id --rpc-url "${L1_RPC_URL}" 2>/dev/null)"; then
+  if ! rpc_chain_id="$(gl_l1_chain_id_from_rpc 2>/dev/null)"; then
     gl_die "failed to read chain id from L1 RPC ${L1_RPC_URL}"
   fi
 
@@ -1181,9 +1208,11 @@ PY
 gl_probe_workspace_ready() {
   gl_require L1_RPC_URL
   gl_require L1_CHAIN_ID
-  cast chain-id --rpc-url "${L1_RPC_URL}" >/dev/null 2>&1 &&
+  local rpc_chain_id
+  rpc_chain_id="$(gl_l1_chain_id_from_rpc 2>/dev/null || true)"
+  [ -n "${rpc_chain_id}" ] &&
     [ -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ] &&
-    [ "$(cast chain-id --rpc-url "${L1_RPC_URL}")" = "${L1_CHAIN_ID}" ]
+    [ "${rpc_chain_id}" = "${L1_CHAIN_ID}" ]
 }
 
 gl_probe_ecosystem_ready() {
