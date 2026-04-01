@@ -84,13 +84,6 @@ tanenbaum)
   export L1_NETWORK=tanenbaum
   gl_require L1_RPC_URL
   : "${BITCOIN_DA_RPC_URL:=http://127.0.0.1:18370}"
-  if [ -z "${BITCOIN_DA_RPC_USER:-}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD:-}" ]; then
-    if [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
-      COOKIE="$(< "${HOME}/.syscoin/testnet3/.cookie")"
-      : "${BITCOIN_DA_RPC_USER:=${COOKIE%%:*}}"
-      : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
-    fi
-  fi
   : "${BITCOIN_DA_FINALITY_MODE:=Confirmations}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
   : "${BITCOIN_DA_PODA_URL:=https://poda.tanenbaum.io}"
@@ -102,9 +95,13 @@ mainnet)
   export L1_CHAIN_ID=57
   export L1_NETWORK=mainnet
   gl_require L1_RPC_URL
+  : "${BITCOIN_DA_RPC_URL:=http://127.0.0.1:8370}"
+  : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
+  : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
+  : "${BITCOIN_DA_PODA_URL:=https://poda.syscoin.org}"
   : "${ETH_GAS_PRICE:=1gwei}"
   : "${ETH_PRIORITY_GAS_PRICE:=1gwei}"
-  export ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
   ;;
 *)
   gl_die "invalid --l1: ${L1_PROFILE} (supported: tanenbaum|mainnet)"
@@ -118,7 +115,7 @@ http://* | https://*) ;;
   ;;
 esac
 
-export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-shanghai}"
+export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-}"
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"

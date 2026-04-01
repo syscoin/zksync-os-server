@@ -32,12 +32,42 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"
 : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
 : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
+: "${BITCOIN_DA_COOKIE_FILE:=}"
 
-if [ -z "${BITCOIN_DA_RPC_URL}" ] && [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
+resolve_syscoin_cookie_file() {
+  local cookie_file datadir network candidate
+  cookie_file="${BITCOIN_DA_COOKIE_FILE:-}"
+  if [ -n "${cookie_file}" ] && [ -f "${cookie_file}" ]; then
+    printf '%s\n' "${cookie_file}"
+    return 0
+  fi
+
+  datadir="${SYSCOIN_DATADIR:-${HOME}/.syscoin}"
+  network="${SYSCOIN_NETWORK:-}"
+  if [ -n "${network}" ]; then
+    candidate="${datadir}/${network}/.cookie"
+    if [ -f "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
+  candidate="${datadir}/testnet3/.cookie"
+  if [ -f "${candidate}" ]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  return 1
+}
+
+COOKIE_FILE="$(resolve_syscoin_cookie_file || true)"
+
+if [ -z "${BITCOIN_DA_RPC_URL}" ] && [ -n "${COOKIE_FILE}" ]; then
   BITCOIN_DA_RPC_URL="http://127.0.0.1:18370"
 fi
-if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } && [ -f "${HOME}/.syscoin/testnet3/.cookie" ]; then
-  COOKIE="$(< "${HOME}/.syscoin/testnet3/.cookie")"
+if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } && [ -n "${COOKIE_FILE}" ]; then
+  COOKIE="$(< "${COOKIE_FILE}")"
   : "${BITCOIN_DA_RPC_USER:=${COOKIE%%:*}}"
   : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
 fi
@@ -304,6 +334,80 @@ def materialize_chain(
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
     shutil.copy2(genesis_json, out_dir / "genesis.json")
 
+    config_path = out_dir / "config.yaml"
+    start_config_args = f'--config "{config_path}"'
+    if gateway_rpc_url is not None:
+        start_config_args += f' --config "{out_dir / "gateway-overlay.yaml"}"'
+
+    refresh_cookie_block = ""
+    if pubdata_mode == "Blobs":
+        refresh_cookie_block = f"""
+resolve_syscoin_cookie_file() {{
+  local cookie_file datadir network candidate
+  cookie_file="${{BITCOIN_DA_COOKIE_FILE:-}}"
+  if [ -n "${{cookie_file}}" ] && [ -f "${{cookie_file}}" ]; then
+    printf '%s\\n' "${{cookie_file}}"
+    return 0
+  fi
+
+  datadir="${{SYSCOIN_DATADIR:-${{HOME}}/.syscoin}}"
+  network="${{SYSCOIN_NETWORK:-}}"
+  if [ -n "${{network}}" ]; then
+    candidate="${{datadir}}/${{network}}/.cookie"
+    if [ -f "${{candidate}}" ]; then
+      printf '%s\\n' "${{candidate}}"
+      return 0
+    fi
+  fi
+
+  candidate="${{datadir}}/testnet3/.cookie"
+  if [ -f "${{candidate}}" ]; then
+    printf '%s\\n' "${{candidate}}"
+    return 0
+  fi
+  return 1
+}}
+
+COOKIE_FILE="$(resolve_syscoin_cookie_file || true)"
+if [ -n "${{COOKIE_FILE}}" ]; then
+  COOKIE="$(< "${{COOKIE_FILE}}")"
+  BITCOIN_DA_RPC_USER="${{COOKIE%%:*}}"
+  BITCOIN_DA_RPC_PASSWORD="${{COOKIE#*:}}"
+
+  python3 - "{config_path}" "${{BITCOIN_DA_RPC_USER}}" "${{BITCOIN_DA_RPC_PASSWORD}}" <<'PYCOOKIE'
+import json
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+rpc_user = sys.argv[2]
+rpc_password = sys.argv[3]
+text = config_path.read_text(encoding="utf-8")
+text, user_count = re.subn(
+    r"^(\\s*bitcoin_da_rpc_user:\\s*).*$",
+    lambda m: f"{{m.group(1)}}{{json.dumps(rpc_user)}}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+text, password_count = re.subn(
+    r"^(\\s*bitcoin_da_rpc_password:\\s*).*$",
+    lambda m: f"{{m.group(1)}}{{json.dumps(rpc_password)}}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if user_count != 1 or password_count != 1:
+    raise SystemExit(f"failed to patch Syscoin RPC credentials in {{config_path}}")
+config_path.write_text(text, encoding="utf-8")
+print(f"gateway-launch: refreshed Syscoin RPC credentials in {{config_path}}")
+PYCOOKIE
+else
+  echo "gateway-launch: Syscoin cookie not found; using existing credentials in {config_path}" >&2
+fi
+"""
+
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 if [ -f "${{HOME}}/.cargo/env" ]; then
@@ -312,20 +416,8 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
 fi
 cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
-export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"
-exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- --config "{out_dir / 'config.yaml'}"
-"""
-    if gateway_rpc_url is not None:
-        start_script = f"""#!/usr/bin/env bash
-set -euo pipefail
-if [ -f "${{HOME}}/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  source "${{HOME}}/.cargo/env"
-fi
-cd "{server_root}"
-export GATEWAY_DIR="{gateway_dir}"
-export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"
-exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- --config "{out_dir / 'config.yaml'}" --config "{out_dir / 'gateway-overlay.yaml'}"
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
