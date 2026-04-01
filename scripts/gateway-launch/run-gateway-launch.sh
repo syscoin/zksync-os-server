@@ -120,7 +120,7 @@ http://* | https://*) ;;
   ;;
 esac
 
-export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-}"
+gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"

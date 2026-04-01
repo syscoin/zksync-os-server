@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # §2: patch, build, genesis, dev contracts, ZKSYS erc20, CTM toml patch, zkstack ecosystem init --deploy-ecosystem.
 # Requires: GATEWAY_DIR, ZKSYNC_ERA_PATH, ZKSYNC_OS_SERVER_PATH, L1_RPC_URL, L1_CHAIN_ID,
-#           REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, FOUNDRY_EVM_VERSION=shanghai
+#           REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, optional FOUNDRY_EVM_VERSION
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -19,7 +19,7 @@ gl_assert_contracts_sha
 gl_assert_zksync_era_sha
 gl_path_for_zkstack
 
-export FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION:-shanghai}"
+gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 gl_l1_broadcast_preflight
 

@@ -41,6 +41,11 @@ gl_require() {
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
 }
 
+gl_export_foundry_evm_version() {
+  : "${FOUNDRY_EVM_VERSION:=shanghai}"
+  export FOUNDRY_EVM_VERSION
+}
+
 gl_l1_chain_id_from_rpc() {
   gl_require L1_RPC_URL
   python3 - "${L1_RPC_URL}" <<'PY'
