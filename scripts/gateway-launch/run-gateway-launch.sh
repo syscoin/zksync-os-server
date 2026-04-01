@@ -14,6 +14,27 @@ if [ -f "${HOME}/.cargo/env" ]; then
   source "${HOME}/.cargo/env"
 fi
 
+resolve_cast_bin() {
+  local candidate
+  if [ -n "${GATEWAY_CAST_BIN:-}" ] && [ -x "${GATEWAY_CAST_BIN}" ]; then
+    printf '%s\n' "${GATEWAY_CAST_BIN}"
+    return 0
+  fi
+  for candidate in \
+    "${HOME}/.config/.foundry/bin/cast" \
+    "${HOME}/.foundry/bin/cast" \
+    "$(command -v cast 2>/dev/null || true)"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+CAST_BIN="$(resolve_cast_bin || true)"
+[ -n "${CAST_BIN}" ] || gl_die "cast binary not found (set GATEWAY_CAST_BIN to explicit path)"
+
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
   if [ "${PROVER_MODE}" = "no-proofs" ]; then
     export GATEWAY_PROVER_MODE="no-proofs"
@@ -77,6 +98,7 @@ fi
 exec > >(tee "${GATEWAY_LAUNCH_LOG}") 2>&1
 echo "=== gateway-launch log: ${GATEWAY_LAUNCH_LOG} ==="
 echo "gateway-launch: PROVER_MODE=${PROVER_MODE}"
+echo "gateway-launch: CAST_BIN=${CAST_BIN}"
 
 [ -n "${L1_PROFILE}" ] || {
   echo "required: --l1 tanenbaum|mainnet" >&2
@@ -132,8 +154,8 @@ export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sh
 wait_for_rpc() {
   local i
   for i in $(seq 1 60); do
-    if cast chain-id --rpc-url "${L1_RPC_URL}" >/dev/null 2>&1; then
-      echo "L1 RPC up, chain-id $(cast chain-id --rpc-url "${L1_RPC_URL}")"
+    if "${CAST_BIN}" chain-id --rpc-url "${L1_RPC_URL}" >/dev/null 2>&1; then
+      echo "L1 RPC up, chain-id $("${CAST_BIN}" chain-id --rpc-url "${L1_RPC_URL}")"
       return 0
     fi
     sleep 1
@@ -144,7 +166,7 @@ wait_for_rpc() {
 gateway_rpc_ready() {
   local rpc_port
   rpc_port="${GATEWAY_OS_RPC_PORT:-3052}"
-  cast block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
+  "${CAST_BIN}" block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
 }
 
 print_gateway_prover_mode_hint() {
