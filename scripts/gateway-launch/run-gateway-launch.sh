@@ -9,6 +9,11 @@ ORIG_ARGS=("$@")
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
 
+if [ -f "${HOME}/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "${HOME}/.cargo/env"
+fi
+
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
   if [ "${PROVER_MODE}" = "no-proofs" ]; then
     export GATEWAY_PROVER_MODE="no-proofs"
