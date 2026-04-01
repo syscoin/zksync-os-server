@@ -151,11 +151,41 @@ export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 
+json_rpc_hex_to_dec() {
+  local rpc_url="${1:?rpc url required}"
+  local method="${2:?rpc method required}"
+  python3 - "${rpc_url}" "${method}" <<'PY'
+import json
+import sys
+import urllib.request
+
+rpc_url = sys.argv[1]
+method = sys.argv[2]
+payload = json.dumps(
+    {"jsonrpc": "2.0", "method": method, "params": [], "id": 1}
+).encode("utf-8")
+req = urllib.request.Request(
+    rpc_url,
+    data=payload,
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(req, timeout=3) as resp:
+    body = resp.read().decode("utf-8")
+obj = json.loads(body)
+result = obj.get("result")
+if not isinstance(result, str) or not result.startswith("0x"):
+    raise SystemExit(1)
+print(int(result, 16))
+PY
+}
+
 wait_for_rpc() {
   local i
   for i in $(seq 1 60); do
-    if "${CAST_BIN}" chain-id --rpc-url "${L1_RPC_URL}" >/dev/null 2>&1; then
-      echo "L1 RPC up, chain-id $("${CAST_BIN}" chain-id --rpc-url "${L1_RPC_URL}")"
+    chain_id="$(json_rpc_hex_to_dec "${L1_RPC_URL}" "eth_chainId" 2>/dev/null || true)"
+    if [ -n "${chain_id}" ]; then
+      echo "L1 RPC up, chain-id ${chain_id}"
       return 0
     fi
     sleep 1
@@ -164,9 +194,10 @@ wait_for_rpc() {
 }
 
 gateway_rpc_ready() {
-  local rpc_port
+  local rpc_port block_no
   rpc_port="${GATEWAY_OS_RPC_PORT:-3052}"
-  "${CAST_BIN}" block-number --rpc-url "http://127.0.0.1:${rpc_port}" >/dev/null 2>&1
+  block_no="$(json_rpc_hex_to_dec "http://127.0.0.1:${rpc_port}" "eth_blockNumber" 2>/dev/null || true)"
+  [ -n "${block_no}" ]
 }
 
 print_gateway_prover_mode_hint() {
