@@ -144,12 +144,12 @@ text, count_forward = forward_re.subn(
     count=1,
 )
 text, count_ee = zk_ee_re.subn(
-    f'zk_ee_dev = {{ package = "zk_ee", path = "{dev_path / "zk_ee"}" }}',
+    f'zk_ee_dev = {{ package = "zk_ee", git = "{dev_git_url}", tag = "{dev_tag}" }}',
     text,
     count=1,
 )
 text, count_basic = basic_re.subn(
-    f'zk_os_basic_system_dev = {{ package = "basic_system", path = "{dev_path / "basic_system"}" }}',
+    f'zk_os_basic_system_dev = {{ package = "basic_system", git = "{dev_git_url}", tag = "{dev_tag}" }}',
     text,
     count=1,
 )
