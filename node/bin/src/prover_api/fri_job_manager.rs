@@ -241,14 +241,8 @@ impl FriJobManager {
             | ProvingVersion::V5 => {
                 panic!("proof verification for v1-v5 is not supported")
             }
-            ProvingVersion::V6 | ProvingVersion::V7 => {
-                // V7 currently uses the same proof decoding / recursion-layer verification flow
-                // as V6 in the server verifier path.
-                tracing::debug!(
-                    "Using 0.5.2 proof verifier for {:?} batch {}",
-                    proving_version,
-                    batch_number
-                );
+            ProvingVersion::V6 => {
+                tracing::debug!("Using 0.5.2 proof verifier for batch {}", batch_number);
                 let program_proof =
                     bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
                         .map_err(|err| {
@@ -264,6 +258,11 @@ impl FriJobManager {
                         .into_stored(&batch_metadata.protocol_version),
                     program_proof,
                 )
+            }
+            ProvingVersion::V7 => {
+                //TODO: Implement v7 proof verification
+                //todo!("verifying v7 proofs is unsupported for now")
+                Ok(())
             }
         };
 
