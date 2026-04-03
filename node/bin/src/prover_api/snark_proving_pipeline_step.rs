@@ -1,4 +1,5 @@
 use super::snark_job_manager::SnarkJobManager;
+use super::proof_storage::ProofStorage;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,14 +22,18 @@ use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 /// - Fake provers pool
 pub struct SnarkProvingPipelineStep {
     last_proved_batch_number: u64,
+    last_committed_batch_number: u64,
+    proof_storage: ProofStorage,
     snark_job_manager: Arc<SnarkJobManager>,
     proof_commands_receiver: mpsc::Receiver<ProofCommand>,
 }
 
 impl SnarkProvingPipelineStep {
     pub fn new(
+        proof_storage: ProofStorage,
         max_fris_per_snark: usize,
         last_proved_batch_number: u64,
+        last_committed_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
     ) -> (Self, Arc<SnarkJobManager>) {
@@ -43,6 +48,8 @@ impl SnarkProvingPipelineStep {
 
         let result = Self {
             last_proved_batch_number,
+            last_committed_batch_number,
+            proof_storage,
             snark_job_manager: snark_job_manager.clone(),
             proof_commands_receiver,
         };
@@ -64,6 +71,31 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
+        // SYSCOIN On restart, rehydrate SNARK queue from stored FRI proofs that are already committed but not proved.
+        let mut rehydrated_jobs = 0u64;
+        for batch_number in (self.last_proved_batch_number + 1)..=self.last_committed_batch_number {
+            match self.proof_storage.get_batch_with_proof(batch_number).await {
+                Ok(Some(batch)) => {
+                    self.snark_job_manager.add_job(batch).await;
+                    rehydrated_jobs += 1;
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        batch_number,
+                        ?err,
+                        "failed to load stored FRI proof for SNARK queue rehydration"
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            rehydrated_jobs,
+            from = self.last_proved_batch_number + 1,
+            to = self.last_committed_batch_number,
+            "SNARK queue rehydration completed"
+        );
+
         // Forward batches: pipeline input → SnarkJobManager → pipeline output
         // Two concurrent tasks handle the bidirectional flow
         tokio::select! {
