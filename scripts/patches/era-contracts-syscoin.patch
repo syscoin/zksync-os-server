@@ -999,10 +999,15 @@ diff --git a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol 
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-@@ -59,1 +59,2 @@
+@@ -56,6 +56,7 @@ import {IDeployCTM} from "contracts/script-interfaces/IDeployCTM.sol";
+ import {ZKSyncOSBytecodeInfo} from "contracts/common/libraries/ZKSyncOSBytecodeInfo.sol";
+ 
+ // TODO: pass this value from zkstack_cli
 -uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;
 +// SYSCOIN: v31 proving uses V7 verifier routing.
 +uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;
+ 
+ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
