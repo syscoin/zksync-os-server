@@ -2,7 +2,7 @@ diff --git a/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol b
 index 826c1dcd2..f6d35cc8c 100644
 --- a/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol
 +++ b/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol
-@@ -361,6 +359,6 @@
+@@ -361,7 +359,7 @@
          }
          (address create2FactoryAddr, ) = getPermanentValues(getPermanentValuesPath());
 -        if (create2FactoryAddr.code.length == 0) {
@@ -619,7 +619,7 @@ index 4083f7206..eb6803d2a 100644
          bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
  
          bytes32 daCommitment = keccak256(
-@@ -119,12 +136,12 @@ contract CommittingTest is ExecutorTest {
+@@ -119,12 +136,11 @@ contract CommittingTest is ExecutorTest {
              )
          );
  
@@ -716,7 +716,7 @@ index 4083f7206..eb6803d2a 100644
          bytes memory operatorDAInput = abi.encodePacked(blobVersionedHashes[0], blobVersionedHashes[1]);
  
          bytes32 daCommitment = keccak256(
-@@ -313,178 +328,24 @@ contract CommittingTest is ExecutorTest {
+@@ -313,178 +328,23 @@ contract CommittingTest is ExecutorTest {
              )
          );
  
@@ -903,7 +903,7 @@ diff --git a/da-contracts/test/foundry/MockBlobsL1DAValidator.sol b/da-contracts
 index eaedb85a6..f5652f93f 100644
 --- a/da-contracts/test/foundry/MockBlobsL1DAValidator.sol
 +++ b/da-contracts/test/foundry/MockBlobsL1DAValidator.sol
-@@ -3,22 +3,9 @@ pragma solidity 0.8.28;
+@@ -3,22 +3,10 @@ pragma solidity 0.8.28;
  
  import {BlobsL1DAValidatorZKsyncOS} from "../../contracts/BlobsL1DAValidatorZKsyncOS.sol";
  
@@ -953,7 +953,7 @@ index 4ef340ec2..15e3eb179 100644
 diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/vendor/Bytes.sol
 --- a/l1-contracts/contracts/vendor/Bytes.sol
 +++ b/l1-contracts/contracts/vendor/Bytes.sol
-@@ -93,5 +93,6 @@ library Bytes {
+@@ -93,8 +93,10 @@ library Bytes {
          // allocate and copy
 -        bytes memory result = new bytes(end - start);
 -        assembly ("memory-safe") {
@@ -963,7 +963,7 @@ diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/ve
 +        for (uint256 i = 0; i < newLength; ++i) {
 +            result[i] = buffer[start + i];
          }
-@@ -123,8 +125,11 @@ library Bytes {
+@@ -123,10 +125,12 @@ library Bytes {
          // allocate and copy
 +        uint256 newLength = end - start;
 +        for (uint256 i = 0; i < newLength; ++i) {
@@ -980,7 +980,7 @@ diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/ve
 diff --git a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol b/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
 --- a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
 +++ b/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol
-@@ -256,13 +256,11 @@ abstract contract Create2FactoryUtils is Script {
+@@ -256,12 +256,11 @@ abstract contract Create2FactoryUtils is Script {
      function getPermanentValues(
          string memory permanentValuesPath
      ) public view returns (address create2FactoryAddr, bytes32 create2FactorySalt) {
@@ -999,7 +999,8 @@ diff --git a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol 
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-@@ -67,1 +67,2 @@
+@@ -66,2 +66,3 @@
+ // TODO: pass this value from zkstack_cli
 -uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;
 +// SYSCOIN: v31 proving uses V7 verifier routing.
 +uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;
@@ -1026,7 +1027,7 @@ diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierP
              mstore(VK_GATE_SETUP_1_X_SLOT, 0x0feda978f4639d0a725df74c4738bf178adca34e6a4f7cc38d6a9ae9ee49f695)
              mstore(VK_GATE_SETUP_1_Y_SLOT, 0x2f7068beedb881aea392246c33ccc026ea9c8f6ea558a055b6df00ebfdf210a3)
              mstore(VK_GATE_SETUP_2_X_SLOT, 0x06eccb685da5c8cc09a13698b2a22e383025abc75393d68c1da5a7dbacffbd9b)
-@@ -296,7 +296,7 @@ contract ZKsyncOSVerifierPlonk is IVerifier {
+@@ -296,8 +296,8 @@ contract ZKsyncOSVerifierPlonk is IVerifier {
              mstore(VK_GATE_SETUP_4_Y_SLOT, 0x1ac2f036e3de6e4a9bacd5eacc778fa3fbdf5fd4b06e551038c704adecbeb639)
              mstore(VK_GATE_SETUP_5_X_SLOT, 0x048e2130f16d54d7e07df66330b4d892753b5141ecacb4007573d9ea4a8ff028)
              mstore(VK_GATE_SETUP_5_Y_SLOT, 0x13a3819d4cb80114e51de741a5fb48ce4ba20e82c5d39d16f70ca0461f49a131)
