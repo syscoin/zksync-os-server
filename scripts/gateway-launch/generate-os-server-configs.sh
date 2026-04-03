@@ -33,6 +33,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
 : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
 : "${BITCOIN_DA_COOKIE_FILE:=}"
+: "${ETH_GAS_PRICE:=1gwei}"
+: "${ETH_PRIORITY_GAS_PRICE:=1gwei}"
 
 resolve_syscoin_cookie_file() {
   local cookie_file datadir network candidate
@@ -97,6 +99,8 @@ export BITCOIN_DA_WALLET_NAME
 export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
+export ETH_GAS_PRICE
+export ETH_PRIORITY_GAS_PRICE
 export PROVER_MODE
 
 python3 - <<'PY'
@@ -118,6 +122,24 @@ def load_yaml(path: Path):
 def write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def parse_ether_amount_to_wei(value: str, default_wei: int) -> int:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default_wei
+    m = re.fullmatch(r"([0-9]+)(?:\s*(wei|gwei|eth|ether))?", raw)
+    if not m:
+        raise SystemExit(f"invalid ether amount '{value}' (examples: 1gwei, 200gwei, 1000000000)")
+    amount = int(m.group(1))
+    unit = m.group(2) or "wei"
+    multipliers = {
+        "wei": 1,
+        "gwei": 10**9,
+        "eth": 10**18,
+        "ether": 10**18,
+    }
+    return amount * multipliers[unit]
 
 
 def sync_zkstack_gateway_l2_rpc_in_yaml(tree, port: int) -> None:
@@ -261,6 +283,14 @@ def materialize_chain(
     )
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
+    max_fee_per_gas_wei = parse_ether_amount_to_wei(
+        os.environ.get("ETH_GAS_PRICE", ""),
+        1 * 10**9,
+    )
+    max_priority_fee_per_gas_wei = parse_ether_amount_to_wei(
+        os.environ.get("ETH_PRIORITY_GAS_PRICE", ""),
+        1 * 10**9,
+    )
 
     config_lines = [
         "general:",
@@ -281,6 +311,8 @@ def materialize_chain(
             f"  operator_commit_sk: '{operator_commit_sk}'",
             f"  operator_prove_sk: '{operator_prove_sk}'",
             f"  operator_execute_sk: '{operator_execute_sk}'",
+            f"  max_fee_per_gas: {max_fee_per_gas_wei}",
+            f"  max_priority_fee_per_gas: {max_priority_fee_per_gas_wei}",
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
@@ -289,6 +321,8 @@ def materialize_chain(
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
+            "  proof_storage:",
+            f"    path: {out_dir / 'db' / 'fri_proofs'}",
             "status_server:",
             f"  address: 0.0.0.0:{status_port}",
             "observability:",
@@ -417,6 +451,8 @@ fi
 cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
+export ETH_GAS_PRICE="{os.environ["ETH_GAS_PRICE"]}"
+export ETH_PRIORITY_GAS_PRICE="{os.environ["ETH_PRIORITY_GAS_PRICE"]}"
 exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
