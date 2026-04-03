@@ -6,8 +6,7 @@ era-contracts:
   # TODO: remove branch and put tag and sha when the release is done
   #branch: "draft-v31-with-zksync-os"
   # tag: "TBD"
-  # Includes V7 ZKsyncOS Plonk verifier key update (0x739d...).
-  sha: "10116dcccbaa9d0fd81380754ecac69275d6b929"
+  sha: "2f024c5764e7a873ce1dda5fb990331559996441"
 
 zkstack-cli:
   # TODO: remove branch and put tag and sha when the release is done
