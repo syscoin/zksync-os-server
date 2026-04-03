@@ -996,10 +996,10 @@ diff --git a/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol 
 +        return (create2FactoryAddr, create2FactorySalt);
      }
  }
-diff --git a/l1-contracts/deploy-scripts/DeployCTM.s.sol b/l1-contracts/deploy-scripts/DeployCTM.s.sol
---- a/l1-contracts/deploy-scripts/DeployCTM.s.sol
-+++ b/l1-contracts/deploy-scripts/DeployCTM.s.sol
-@@ -64,7 +64,8 @@ import {ContractDeployer} from "./ContractDeployer.s.sol";
+diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+--- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
++++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+@@ -64,7 +64,8 @@ import {ZKSyncOSBytecodeInfo} from "contracts/common/libraries/ZKSyncOSBytecodeInfo.sol";
  // We currently don't support changing this value in config as this can lead to unexpected behavior.
  // During the zksync-os migration period, this may be changed manually in each related commit if needed.
  // Once migration period is over, this can be removed.
@@ -1007,8 +1007,7 @@ diff --git a/l1-contracts/deploy-scripts/DeployCTM.s.sol b/l1-contracts/deploy-s
 +// SYSCOIN: v31 proving uses V7 verifier routing.
 +uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;
  
- contract DeployCTM is DeployL1Config, ContractDeployer {
-     bool internal constant IS_GATEWAY = false;
+ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
@@ -1042,43 +1041,6 @@ diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierP
 +            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x258272ce6cfd054f17b7f02d096a08805d338d79b069c0c36716b8a765cb40f3)
              mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
              mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
-diff --git a/AllContractsHashes.json b/AllContractsHashes.json
---- a/AllContractsHashes.json
-+++ b/AllContractsHashes.json
-@@ -1251,12 +1251,12 @@
-   },
-   {
-     "contractName": "l1-contracts/GatewayCTMDeployerVerifiersZKsyncOS",
--    "zkBytecodeHash": "0x01000087f20100e25be0668f39d8ebabd9ae84ffd7e865bfcf1873e096685735",
-+    "zkBytecodeHash": "0x0100008782914f4cd2587f685272114145b72a47c8568aa34107b504095d825c",
-     "zkBytecodePath": "/l1-contracts/zkout/GatewayCTMDeployerVerifiersZKsyncOS.sol/GatewayCTMDeployerVerifiersZKsyncOS.json",
--    "evmBytecodeHash": "0x1c9e02658a5fa6d59a46d16c6b3c26f92d9d0cf674af108058769d9c977b580a",
-+    "evmBytecodeHash": "0xa471dc0cab5607ade69201d3ab4a7963c6c2dc506956a7303db7d58bf89926f9",
-     "evmBytecodePath": "/l1-contracts/out/GatewayCTMDeployerVerifiersZKsyncOS.sol/GatewayCTMDeployerVerifiersZKsyncOS.json",
--    "evmDeployedBytecodeHash": "0x49601a538bb3fe247e68c73d00164f2b3a3092bc220541ee1b78d4916c6ba99a",
--    "evmDeployedBytecodeBlakeHash": "0x8d986317ec56c125e6758499537c30a19e4ccf50f347cfb4534827bf96391b42",
-+    "evmDeployedBytecodeHash": "0x695d0a04b5090cc6b66ab86d41a9ecbc61c01c002dc175c5aae80a8d5d4fdc25",
-+    "evmDeployedBytecodeBlakeHash": "0xa1ec0187b16f9fd35e0205829e57ecefdad11c049e536d23b55dd8a35ff63660",
-     "evmDeployedBytecodeLength": 256
-   },
-   {
-@@ -2301,12 +2301,12 @@
-   },
-   {
-     "contractName": "l1-contracts/ZKsyncOSVerifierPlonk",
--    "zkBytecodeHash": "0x01000dbb0b7d8d3cc6e753c6e2d568f11491710659366483c3fb9f9f4895fb66",
-+    "zkBytecodeHash": "0x01000dbbcd63f3e5330ff2a9d99ea79be20308fec1a9aa93a513bb9f7d1b17e3",
-     "zkBytecodePath": "/l1-contracts/zkout/ZKsyncOSVerifierPlonk.sol/ZKsyncOSVerifierPlonk.json",
--    "evmBytecodeHash": "0xae7e93534e0d67856a9abebb9749d2b5e23f1189f5dd63229fcc69ec2dbebe45",
-+    "evmBytecodeHash": "0xa46da016633b67a72202523d2d9375b648ffda19fdc5b2babd37d1bd436daecf",
-     "evmBytecodePath": "/l1-contracts/out/ZKsyncOSVerifierPlonk.sol/ZKsyncOSVerifierPlonk.json",
--    "evmDeployedBytecodeHash": "0x89f72eebdff5abf5de394dc63cd2afb835f1ae750f91e03eac74caa24c821312",
--    "evmDeployedBytecodeBlakeHash": "0xcf3996f99d8862ec2777c9aa0134c8e4c55c38602c64a744d5b93bf9af460988",
-+    "evmDeployedBytecodeHash": "0x4ea2ede94f32569cab9f8c3452536e108730e36722068ec109346471469b6659",
-+    "evmDeployedBytecodeBlakeHash": "0xcd3e64fc29d6ee4fff7e3435be88edbfdb691215144b6374b819f7ddb9663e55",
-     "evmDeployedBytecodeLength": 17226
-   },
-   {
 diff --git a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json b/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
 --- a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
 +++ b/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
