@@ -1,7 +1,9 @@
 use crate::prover_api::fri_job_manager::FriJob;
 use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
+use alloy::primitives::{B256, keccak256};
 use std::sync::Arc;
+use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
@@ -12,7 +14,7 @@ use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_observability::{
     ComponentStateHandle, ComponentStateReporter, GenericComponentState,
 };
-use zksync_os_types::ProvingVersion;
+use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion};
 
 /// Job manager for SNARK proving.
 ///
@@ -99,6 +101,7 @@ impl SnarkJobManager {
         batch_to: u64,
         proving_version: ProvingVersion,
         payload: Vec<u8>,
+        snark_public_input: Option<String>,
         prover_id: String,
     ) -> anyhow::Result<()> {
         // note: we still hold mutex while verifying the proof -
@@ -132,6 +135,44 @@ impl SnarkJobManager {
             "Verification key hash mismatch: server got {server_vk}, prover got {prover_vk}"
         );
 
+        if let Some(snark_public_input) = snark_public_input {
+            let expected_public_input = Self::expected_snark_public_input(&consumed_batches_proven)?;
+            let reported_public_input = B256::from_str(&snark_public_input)
+                .map_err(|e| anyhow::anyhow!("invalid snark_public_input `{snark_public_input}`: {e}"))?;
+            let is_match = expected_public_input == reported_public_input;
+            tracing::info!(
+                "SNARK public input comparison: is_match={is_match}, expected {expected_public_input:#x}, reported {reported_public_input:#x} for range {batch_from}-{batch_to}"
+            );
+            if !is_match {
+                // Diagnostic path for protocol v31+/proving v7 transitions:
+                // compare against a legacy v30 commitment layout as well to identify
+                // whether the mismatch is a format/version drift.
+                let mut mismatch_msg = format!(
+                    "SNARK public input mismatch: expected {expected_public_input:#x}, prover reported {reported_public_input:#x} for range {batch_from}-{batch_to}"
+                );
+
+                if proving_version == ProvingVersion::V7 {
+                    let legacy_protocol = ProtocolSemanticVersion::new(0, 30, 0);
+                    let expected_legacy = Self::expected_snark_public_input_for_protocol(
+                        &consumed_batches_proven,
+                        &legacy_protocol,
+                    )?;
+
+                    mismatch_msg.push_str(&format!(
+                        "; legacy_v30_expected {expected_legacy:#x}"
+                    ));
+                    if expected_legacy == reported_public_input {
+                        mismatch_msg.push_str("; prover input matches legacy v30 commitment layout");
+                    }
+                }
+                tracing::error!("{mismatch_msg}");
+                anyhow::bail!(mismatch_msg);
+            }
+            tracing::info!(
+                "SNARK public input match: expected/reported {expected_public_input:#x} for range {batch_from}-{batch_to}"
+            );
+        }
+
         let consumed_batches_proven: Vec<_> = consumed_batches_proven
             .into_iter()
             .map(|batch| batch.with_stage(BatchExecutionStage::SnarkProvedReal))
@@ -146,6 +187,96 @@ impl SnarkJobManager {
         ))
         .await?;
         Ok(())
+    }
+
+    fn shift_b256_right(input: &B256) -> B256 {
+        let mut bytes = [0_u8; 32];
+        bytes[4..32].copy_from_slice(&input.as_slice()[0..28]);
+        B256::from_slice(&bytes)
+    }
+
+    fn get_batch_public_input(
+        prev_batch: &zksync_os_contract_interface::models::StoredBatchInfo,
+        batch: &zksync_os_contract_interface::models::StoredBatchInfo,
+    ) -> B256 {
+        let mut bytes = Vec::with_capacity(32 * 3);
+        bytes.extend_from_slice(prev_batch.state_commitment.as_slice());
+        bytes.extend_from_slice(batch.state_commitment.as_slice());
+        bytes.extend_from_slice(batch.commitment.as_slice());
+        keccak256(&bytes)
+    }
+
+    fn expected_snark_public_input(
+        batches: &[SignedBatchEnvelope<FriProof>],
+    ) -> anyhow::Result<B256> {
+        anyhow::ensure!(!batches.is_empty(), "empty SNARK batch range");
+
+        let previous_batch_info = &batches[0].batch.previous_stored_batch_info;
+        let stored_batch_infos: Vec<_> = batches
+            .iter()
+            .map(|batch| {
+                batch
+                    .batch
+                    .batch_info
+                    .clone()
+                    .into_stored(&batch.batch.protocol_version)
+            })
+            .collect();
+
+        let mut result: Option<B256> = None;
+        let mut prev = previous_batch_info;
+        for batch in &stored_batch_infos {
+            let public_input = Self::get_batch_public_input(prev, batch);
+            let snark_input = Self::shift_b256_right(&public_input);
+            match result {
+                Some(ref mut res) => {
+                    let mut combined = [0_u8; 64];
+                    combined[..32].copy_from_slice(&res.0);
+                    combined[32..].copy_from_slice(&snark_input.0);
+                    *res = Self::shift_b256_right(&keccak256(combined));
+                }
+                None => {
+                    result = Some(snark_input);
+                }
+            }
+            prev = batch;
+        }
+
+        result.ok_or_else(|| anyhow::anyhow!("failed to compute SNARK public input"))
+    }
+
+    fn expected_snark_public_input_for_protocol(
+        batches: &[SignedBatchEnvelope<FriProof>],
+        protocol_version: &ProtocolSemanticVersion,
+    ) -> anyhow::Result<B256> {
+        anyhow::ensure!(!batches.is_empty(), "empty SNARK batch range");
+
+        let previous_batch_info = &batches[0].batch.previous_stored_batch_info;
+        let stored_batch_infos: Vec<_> = batches
+            .iter()
+            .map(|batch| batch.batch.batch_info.clone().into_stored(protocol_version))
+            .collect();
+
+        let mut result: Option<B256> = None;
+        let mut prev = previous_batch_info;
+        for batch in &stored_batch_infos {
+            let public_input = Self::get_batch_public_input(prev, batch);
+            let snark_input = Self::shift_b256_right(&public_input);
+            match result {
+                Some(ref mut res) => {
+                    let mut combined = [0_u8; 64];
+                    combined[..32].copy_from_slice(&res.0);
+                    combined[32..].copy_from_slice(&snark_input.0);
+                    *res = Self::shift_b256_right(&keccak256(combined));
+                }
+                None => {
+                    result = Some(snark_input);
+                }
+            }
+            prev = batch;
+        }
+
+        result.ok_or_else(|| anyhow::anyhow!("failed to compute SNARK public input"))
     }
 
     /// Consumes fake FRI proofs from the head of the queue and turns them into fake SNARKs.
