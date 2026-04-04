@@ -161,31 +161,6 @@ cargo_toml.write_text(text, encoding="utf-8")
 PY
 }
 
-seed_multivm_app_bins() {
-  local run_path="$1"
-  local dev_path="$2"
-  local dev_tag="$3"
-  local src_dir dst_base
-  local variants
-
-  src_dir="${dev_path}/zksync_os"
-  dst_base="${run_path}/lib/multivm/apps"
-  variants=(
-    "multiblock_batch"
-    "singleblock_batch"
-    "singleblock_batch_logging_enabled"
-  )
-
-  mkdir -p "${dst_base}/${dev_tag}" "${dst_base}/v0.2.5"
-
-  for variant in "${variants[@]}"; do
-    local src_file="${src_dir}/${variant}.bin"
-    [ -f "${src_file}" ] || gl_die "missing required app bin: ${src_file}"
-    cp -f "${src_file}" "${dst_base}/${dev_tag}/${variant}.bin"
-    # Keep V6 fallback path populated because multivm build.rs still probes v0.2.5.
-    cp -f "${src_file}" "${dst_base}/v0.2.5/${variant}.bin"
-  done
-}
 
 if protocol_uses_dev_patch; then
   DEV_TAG="$(extract_dev_tag)"
@@ -193,7 +168,6 @@ if protocol_uses_dev_patch; then
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"
   TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
   prepare_run_workspace "${RUN_PATH}" "${DEV_PATH}" "${DEV_TAG}"
-  seed_multivm_app_bins "${RUN_PATH}" "${DEV_PATH}" "${DEV_TAG}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
 else
