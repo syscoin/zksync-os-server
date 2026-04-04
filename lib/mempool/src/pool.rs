@@ -17,7 +17,6 @@ use zksync_os_interface::types::AccountDiff;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
     InteropRootsLogIndex, L1TxSerialId, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
-    ZkTxType,
 };
 
 /// General pool that provides unified access to all transaction sources in the system.
@@ -315,42 +314,5 @@ impl<'a> MarkingTxStream<'a> {
             )
         };
         marker.mark_last_tx_as_invalid()
-    }
-
-    pub async fn inject_sl_chain_id_tx(self, tx: ZkTransaction) -> (Self, bool) {
-        let mut stream = self.stream;
-        let first_tx = stream
-            .next()
-            .await
-            .expect("marking tx stream is guaranteed to be non-empty");
-
-        // SYSCOIN: preserve the L2 invalidation marker while guaranteeing the injected tx is
-        // actually reached in `Produce` mode. If the block starts with an upgrade tx, place the
-        // SL chain id update immediately after it; otherwise prepend it.
-        let (stream, expect_after_upgrade) = if first_tx.tx_type() == ZkTxType::Upgrade {
-            (
-                futures::stream::once(async move { first_tx })
-                    .chain(futures::stream::once(async move { tx }))
-                    .chain(stream)
-                    .boxed(),
-                true,
-            )
-        } else {
-            (
-                futures::stream::once(async move { tx })
-                    .chain(futures::stream::once(async move { first_tx }))
-                    .chain(stream)
-                    .boxed(),
-                false,
-            )
-        };
-
-        (
-            Self {
-                stream,
-                marker: self.marker,
-            },
-            expect_after_upgrade,
-        )
     }
 }

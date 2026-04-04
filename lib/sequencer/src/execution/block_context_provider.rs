@@ -3,6 +3,7 @@ use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{BlockCommand, InvalidTxPolicy, PreparedBlockCommand, SealPolicy};
 use alloy::primitives::{Address, TxHash, U256};
 use anyhow::Context as _;
+use futures::StreamExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::watch, time::Instant};
 use zksync_os_interface::types::{BlockContext, BlockHashes, BlockOutput};
@@ -165,19 +166,16 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if !self.sl_chain_id_set
                     && self.protocol_version.minor == 31
                 {
-                    // SYSCOIN: `Produce` blocks seal on policy rather than stream exhaustion, so
-                    // tail-appending `SetSLChainId` to a long-lived stream can starve it forever.
-                    // Inject it through `MarkingTxStream` so the L2 invalidation marker is preserved.
-                    let sl_chain_id_tx = ZkTransaction::from(SystemTxEnvelope::set_sl_chain_id(
+                    self.sl_chain_id_set = true;
+                    let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
                         self.sl_chain_id_at_startup,
                         // We use `u64::MAX` as a placeholder, since it is not an actual migration
                         u64::MAX,
+                    );
+                    let tx_source = MarkingTxStream::unmarkable(best_txs.stream.stream.chain(
+                        futures::stream::once(async move { ZkTransaction::from(sl_chain_id_tx) }),
                     ));
-                    let (tx_source, expect_after_upgrade) =
-                        best_txs.stream.inject_sl_chain_id_tx(sl_chain_id_tx).await;
-
-                    self.sl_chain_id_set = true;
-                    (tx_source, expect_after_upgrade)
+                    (tx_source, true)
                 } else {
                     (best_txs.stream, false)
                 };
