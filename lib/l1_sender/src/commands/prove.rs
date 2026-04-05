@@ -145,8 +145,8 @@ impl ProofCommand {
             Some(4) => 4,
             Some(5) => 5,
             Some(6) => 6,
-            // SYSCOIN Proving version V7 is used for protocol 31+, but it still targets the V6 execution verifier.
-            Some(7) => 7,
+            // SYSCOIN: route V7 proofs through verifier slot 0 to match current gateway deployment.
+            Some(7) => 0,
             Some(execution_version) => panic!(
                 "unsupported or old execution version: {execution_version}; there's no verifier defined for it"
             ),

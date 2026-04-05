@@ -42,7 +42,6 @@ fi
 if grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
-  && grep -q "DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol" \
   && grep -q "0x739d5ed5fea55cb873fa1ba8d698a20f3fd0d9d2871228cd397c518c41d80e99" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
   && grep -q "create2FactoryAddr != address(0) && create2FactoryAddr.code.length == 0" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol" \
   && grep -q "return (create2FactoryAddr, create2FactorySalt);" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol"; then
