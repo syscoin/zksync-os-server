@@ -14,8 +14,32 @@ use zksync_os_types::{
 
 const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 
+const BLOB_CHUNK_SIZE: usize = 31;
+const ELEMENTS_PER_4844_BLOB: usize = 4096;
+const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
+
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
     keccak256(data).0
+}
+
+fn blob_ids_from_pubdata(pubdata: &[u8]) -> Vec<u8> {
+    // Match the proving side blob commitment generator:
+    // prepend 31-byte length field prefix and hash each encoded blob chunk.
+    let mut encoded = vec![0u8; BLOB_CHUNK_SIZE];
+    encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
+    encoded.extend_from_slice(pubdata);
+    encoded
+        .chunks(ENCODABLE_BYTES_PER_BLOB)
+        .flat_map(blob_data_id)
+        .collect()
+}
+
+fn blob_ids_from_sidecar(sidecar: &BlobTransactionSidecar) -> Vec<u8> {
+    sidecar
+        .blobs
+        .iter()
+        .flat_map(|blob| blob_data_id(blob.as_slice()))
+        .collect()
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -311,17 +335,33 @@ fn calculate_da_fields(
             }
             (PubdataMode::Validium, _) => (B256::ZERO, vec![0u8; 32], None),
             (PubdataMode::Blobs, _) => {
-                // Build the blob-style chunk artifact locally, then use the shared OS blob
-                // identifier for each encoded chunk so the server matches the proving side.
+                // Keep sidecar generation for commit path compatibility, but derive blob IDs
+                // from the same pubdata encoding path as proving.
                 let blob_sidecar: BlobTransactionSidecar =
                     SidecarBuilder::<SimpleCoder>::from_slice(pubdata)
                         .build()
                         .unwrap();
-                let blob_ids: Vec<u8> = blob_sidecar
-                    .blobs
-                    .iter()
-                    .flat_map(|blob| blob_data_id(blob.as_slice()))
-                    .collect();
+                let blob_ids_from_pubdata = blob_ids_from_pubdata(pubdata);
+                let blob_ids_from_sidecar = blob_ids_from_sidecar(&blob_sidecar);
+                if blob_ids_from_pubdata != blob_ids_from_sidecar {
+                    let first_mismatch_index = blob_ids_from_pubdata
+                        .iter()
+                        .zip(blob_ids_from_sidecar.iter())
+                        .position(|(a, b)| a != b);
+                    let pubdata_ids_hash = keccak256(&blob_ids_from_pubdata);
+                    let sidecar_ids_hash = keccak256(&blob_ids_from_sidecar);
+                    tracing::warn!(
+                        pubdata_len = pubdata.len(),
+                        sidecar_blob_count = blob_sidecar.blobs.len(),
+                        pubdata_ids_len = blob_ids_from_pubdata.len(),
+                        sidecar_ids_len = blob_ids_from_sidecar.len(),
+                        first_mismatch_index,
+                        ?pubdata_ids_hash,
+                        ?sidecar_ids_hash,
+                        "blob id derivations diverged: pubdata encoding path != sidecar path",
+                    );
+                }
+                let blob_ids = blob_ids_from_pubdata;
                 let da_commitment = keccak256(&blob_ids);
                 let operator_da_input = blob_ids;
                 (da_commitment, operator_da_input, Some(blob_sidecar))
