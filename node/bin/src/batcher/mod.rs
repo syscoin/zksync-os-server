@@ -3,7 +3,7 @@ use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::Address;
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
@@ -12,7 +12,9 @@ use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
 use tracing;
-use zksync_os_batch_types::{BlockMerkleTreeData, DiscoveredCommittedBatch};
+use zksync_os_batch_types::{
+    BlockMerkleTreeData, DiscoveredCommittedBatch, syscoin_blob_ids_and_chunks_from_pubdata,
+};
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_l1_sender::batcher_metrics::BATCHER_METRICS;
@@ -364,15 +366,19 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             &self.read_state,
         )?;
         if pubdata_mode == PubdataMode::Blobs {
-            let blob_sidecar = batch_envelope
-                .batch
-                .batch_info
-                .blob_sidecar
-                .as_ref()
-                .context("missing blob sidecar for Syscoin-backed blob mode")?;
+            let total_pubdata: Vec<u8> = blocks
+                .iter()
+                .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())
+                .collect();
+            let (blob_ids_from_pubdata, blob_chunks_from_pubdata) =
+                syscoin_blob_ids_and_chunks_from_pubdata(&total_pubdata);
+            anyhow::ensure!(
+                blob_ids_from_pubdata == batch_envelope.batch.batch_info.operator_da_input,
+                "canonical blob ids mismatch committed operator DA input for batch {batch_number}",
+            );
             self.publish_bitcoin_da(
                 batch_number,
-                blob_sidecar,
+                &blob_chunks_from_pubdata,
                 &batch_envelope.batch.batch_info.operator_da_input,
             )
             .await?;
@@ -481,7 +487,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
     async fn publish_bitcoin_da(
         &self,
         batch_number: u64,
-        blob_sidecar: &BlobTransactionSidecar,
+        blob_chunks: &[Vec<u8>],
         expected_version_hashes: &[u8],
     ) -> anyhow::Result<()> {
         let rpc_url =
@@ -516,35 +522,15 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 anyhow::anyhow!("failed to initialize Bitcoin DA wallet/address: {err}")
             })?;
 
-        let expected_chunks = expected_version_hashes.chunks_exact(32);
-        anyhow::ensure!(
-            expected_chunks.remainder().is_empty(),
-            "bitcoin operator DA input must be a concatenation of 32-byte version hashes"
-        );
-
         let expected_hashes: Vec<String> = expected_version_hashes
             .chunks_exact(32)
             .map(hex::encode)
             .collect();
-        let blob_chunks: Vec<Vec<u8>> = blob_sidecar
-            .blobs
-            .iter()
-            .map(|blob| blob.as_slice().to_vec())
-            .collect();
-        let local_blob_ids: Vec<u8> = blob_chunks
-            .iter()
-            .flat_map(|blob| keccak256(blob).0)
-            .collect();
-
         anyhow::ensure!(
             blob_chunks.len() == expected_hashes.len(),
             "bitcoin publication blob count mismatch: built {}, committed {}",
             blob_chunks.len(),
             expected_hashes.len()
-        );
-        anyhow::ensure!(
-            local_blob_ids == expected_version_hashes,
-            "local Syscoin blob ids do not match committed operator DA input for batch {batch_number}"
         );
 
         let mut published_hashes = Vec::with_capacity(expected_hashes.len());
