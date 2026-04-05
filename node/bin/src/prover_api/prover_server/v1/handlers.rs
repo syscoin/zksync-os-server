@@ -255,19 +255,15 @@ pub(super) async fn submit_snark_proof(
             payload.to_batch_number,
             proving_version,
             proof_bytes,
-            payload.snark_public_input,
             query.id,
         )
         .await
     {
         Ok(()) => Ok((StatusCode::NO_CONTENT, "proof accepted".to_string()).into_response()),
-        Err(err) => {
-            tracing::error!("SNARK proof rejected in API handler: {err}");
-            Err((
-                StatusCode::BAD_REQUEST,
-                format!("proof rejected: {err}").to_string(),
-            ))
-        }
+        Err(err) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("proof rejected: {err}").to_string(),
+        )),
     }
 }
 

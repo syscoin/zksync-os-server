@@ -33,7 +33,6 @@ pub(super) struct SnarkProofPayload {
     pub to_batch_number: u64,
     pub vk_hash: String,
     pub proof: String,
-    pub snark_public_input: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
