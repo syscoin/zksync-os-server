@@ -24,6 +24,7 @@ FRI_QUOTA="${FRI_QUOTA:-100}"
 FRI_WORKER_TIMEOUT_SECONDS="${FRI_WORKER_TIMEOUT_SECONDS:-1800}"
 SNARK_WORKER_TIMEOUT_SECONDS="${SNARK_WORKER_TIMEOUT_SECONDS:-900}"
 SUPERVISOR_LOOP_SLEEP_SECONDS="${SUPERVISOR_LOOP_SLEEP_SECONDS:-1}"
+FRI_POLL_INTERVAL_SECONDS="${FRI_POLL_INTERVAL_SECONDS:-1}"
 
 FRI_CIRCUIT_LIMIT="${FRI_CIRCUIT_LIMIT:-10000}"
 FRI_REQUEST_TIMEOUT_SECONDS="${FRI_REQUEST_TIMEOUT_SECONDS:-15}"
@@ -163,32 +164,103 @@ while true; do
   load_state
 
   if [[ "${PHASE}" == "fri" ]]; then
-    declare -a pids=()
-    declare -a res_files=()
-    for gpu in "${GPUS[@]}"; do
-      rf="$(mktemp "${STATE_DIR}/fri_result_gpu${gpu}.XXXXXX")"
-      res_files+=("${rf}")
-      run_fri_oneshot "${gpu}" "${rf}" &
-      pids+=("$!")
-    done
-    for pid in "${pids[@]}"; do
+    declare -A FRI_PIDS=()
+    declare -A FRI_RESULT_FILES=()
+    quota_reached=0
+
+    spawn_fri_worker() {
+      local gpu="$1"
+      local result_file
+      result_file="$(mktemp "${STATE_DIR}/fri_result_gpu${gpu}.XXXXXX")"
+      FRI_RESULT_FILES["${gpu}"]="${result_file}"
+      run_fri_oneshot "${gpu}" "${result_file}" &
+      FRI_PIDS["${gpu}"]="$!"
+      echo "$(timestamp) fri_worker_started gpu=${gpu} pid=${FRI_PIDS[${gpu}]}"
+    }
+
+    collect_fri_result() {
+      local gpu="$1"
+      local pid="${FRI_PIDS[${gpu}]}"
+      local result_file="${FRI_RESULT_FILES[${gpu}]}"
+      local success=0
+
       wait "${pid}" || true
-    done
-
-    successes=0
-    for rf in "${res_files[@]}"; do
-      if [[ -f "${rf}" ]] && [[ "$(cat "${rf}")" == "1" ]]; then
-        successes=$((successes + 1))
+      if [[ -f "${result_file}" ]] && [[ "$(cat "${result_file}")" == "1" ]]; then
+        success=1
       fi
-      rm -f "${rf}"
+      rm -f "${result_file}"
+      unset FRI_PIDS["${gpu}"]
+      unset FRI_RESULT_FILES["${gpu}"]
+      echo "${success}"
+    }
+
+    # Initial fill for all available GPUs.
+    for gpu in "${GPUS[@]}"; do
+      spawn_fri_worker "${gpu}"
     done
 
-    FRI_STREAK=$((FRI_STREAK + successes))
-    if [[ "${FRI_STREAK}" -ge "${FRI_QUOTA}" ]]; then
-      PHASE="snark"
-    fi
-    save_state
-    echo "$(timestamp) fri_round successes=${successes} fri_streak=${FRI_STREAK} next_phase=${PHASE}"
+    # Continuous refill loop: refill each GPU immediately when it finishes.
+    while true; do
+      active=0
+      for gpu in "${GPUS[@]}"; do
+        pid="${FRI_PIDS[${gpu}]-}"
+        if [[ -z "${pid}" ]]; then
+          continue
+        fi
+
+        if kill -0 "${pid}" 2>/dev/null; then
+          active=1
+          continue
+        fi
+
+        success="$(collect_fri_result "${gpu}")"
+        if [[ "${success}" == "1" ]]; then
+          FRI_STREAK=$((FRI_STREAK + 1))
+          echo "$(timestamp) fri_job_done gpu=${gpu} result=success fri_streak=${FRI_STREAK}"
+          if [[ "${FRI_STREAK}" -ge "${FRI_QUOTA}" ]]; then
+            PHASE="snark"
+            quota_reached=1
+            save_state
+            echo "$(timestamp) fri_quota_reached fri_streak=${FRI_STREAK} draining_inflight=1 next_phase=${PHASE}"
+          else
+            save_state
+          fi
+        else
+          echo "$(timestamp) fri_job_done gpu=${gpu} result=no_job_or_fail fri_streak=${FRI_STREAK}"
+        fi
+
+        # Refill immediately unless we are switching to SNARK.
+        if [[ "${quota_reached}" -eq 0 ]]; then
+          spawn_fri_worker "${gpu}"
+          active=1
+        fi
+      done
+
+      # If quota reached, wait for all in-flight FRI workers to complete, then switch.
+      if [[ "${quota_reached}" -eq 1 ]]; then
+        inflight=0
+        for gpu in "${GPUS[@]}"; do
+          if [[ -n "${FRI_PIDS[${gpu}]-}" ]]; then
+            inflight=1
+            break
+          fi
+        done
+        if [[ "${inflight}" -eq 0 ]]; then
+          break
+        fi
+      fi
+
+      # Should not happen in normal operation, but keep scheduler alive.
+      if [[ "${active}" -eq 0 ]] && [[ "${quota_reached}" -eq 0 ]]; then
+        for gpu in "${GPUS[@]}"; do
+          if [[ -z "${FRI_PIDS[${gpu}]-}" ]]; then
+            spawn_fri_worker "${gpu}"
+          fi
+        done
+      fi
+
+      sleep "${FRI_POLL_INTERVAL_SECONDS}"
+    done
   else
     SNARK_ATTEMPTS=$((SNARK_ATTEMPTS + 1))
     if run_snark_oneshot "${SNARK_GPU}"; then
