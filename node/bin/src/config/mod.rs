@@ -845,7 +845,7 @@ pub struct BatcherConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// Maximum time a batch stays open before being sealed.
+    /// SYSCOIN Maximum time a batch stays open before being sealed.
     ///
     /// The deadline is computed as `first_block_timestamp + batch_timeout`, where
     /// `first_block_timestamp` is the L2 timestamp of the first block in the batch. Using an
@@ -858,7 +858,7 @@ pub struct BatcherConfig {
     ///
     /// On mainnet environments with low load, consider a higher value (e.g. 3 hours), as L1
     /// settlement has a non-trivial gas overhead per batch.
-    #[config(default_t = 60 * TimeUnit::Seconds)]
+    #[config(default_t = 300 * TimeUnit::Seconds)]
     pub batch_timeout: Duration,
 
     /// Max number of transactions per batch
@@ -977,15 +977,15 @@ pub struct ProverApiConfig {
     #[config(default_t = Duration::from_secs(300))]
     pub snark_job_timeout: Duration,
 
-    /// Max difference between the oldest and newest batch number being proven
+    /// SYSCOIN Max difference between the oldest and newest batch number being proven
     /// If the difference is larger than this, provers will not be assigned new jobs - only retries.
     /// We use max range instead of length limit to avoid having one old batch stuck -
     /// otherwise GaplessCommitter's buffer would grow indefinitely.
-    #[config(default_t = 10)]
+    #[config(default_t = 128)]
     pub max_assigned_batch_range: usize,
 
-    /// Max number of FRI proofs that will be aggregated to a single SNARK job.
-    #[config(default_t = 10)]
+    /// SYSCOIN Max number of FRI proofs that will be aggregated to a single SNARK job.
+    #[config(default_t = 100)]
     pub max_fris_per_snark: usize,
 
     /// Default: store files in ./db/fri_proofs/ with 1GiB disk usage cap
