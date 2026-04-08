@@ -1,4 +1,5 @@
 use crate::prover_api::fri_job_manager::FriJob;
+use crate::prover_api::fri_job_manager::JobState;
 use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use std::sync::Arc;
@@ -218,6 +219,10 @@ impl SnarkJobManager {
         self.latency_tracker
             .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
         Ok(())
+    }
+    // SYSCOIN
+    pub async fn status(&self) -> Vec<JobState> {
+        self.jobs.status().await
     }
 }
 

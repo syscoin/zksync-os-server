@@ -21,6 +21,7 @@ use crate::prover_api::{
         },
     },
 };
+use serde::Deserialize;
 
 /// Ensures `pick_job_latency` is recorded on all exit paths including cancellation.
 struct PickJobGuard {
@@ -366,10 +367,27 @@ pub(super) async fn peek_snark_job(
     })
     .into_response()
 }
+// SYSCOIN
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum StatusStage {
+    Fri,
+    Snark,
+}
 
-pub(super) async fn status(State(state): State<AppState>) -> Response {
-    let status = state.fri_job_manager.status().await;
+pub(super) async fn status(
+    Path(stage): Path<StatusStage>,
+    State(state): State<AppState>,
+) -> Response {
+    let status = match stage {
+        StatusStage::Fri => state.fri_job_manager.status().await,
+        StatusStage::Snark => state.snark_job_manager.status().await,
+    };
     Json(status).into_response()
+}
+
+pub(super) async fn status_default(State(state): State<AppState>) -> Response {
+    Json(state.fri_job_manager.status().await).into_response()
 }
 
 /// Get detailed information about a failed FRI proof for debugging.
