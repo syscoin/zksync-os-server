@@ -67,7 +67,7 @@ impl ProvingVersion {
 
     /// SYSCOIN TODO: replace with the actual V7 VK hash once the proving circuit for v31 is finalized.
     const V7_VK_HASH: &'static str =
-        "0x739d5ed5fea55cb873fa1ba8d698a20f3fd0d9d2871228cd397c518c41d80e99";
+        "0x860d1e6a02a654c78150cc1bfb3f1c75c684330ba702316d8d456666091c37fe";
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
