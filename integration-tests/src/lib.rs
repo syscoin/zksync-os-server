@@ -16,13 +16,14 @@ use alloy::signers::local::{LocalSigner, PrivateKeySigner};
 use anyhow::Context;
 use backon::ConstantBuilder;
 use backon::Retryable;
-use reth_tasks::{Runtime, RuntimeBuilder, RuntimeConfig};
+use reth_tasks::{PanickedTaskError, Runtime, RuntimeBuilder, RuntimeConfig};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
 use tracing::Instrument;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
@@ -143,6 +144,7 @@ pub struct Tester {
     pub prover_tester: ProverTester,
 
     runtime: Runtime,
+    task_manager_handle: Option<JoinHandle<Result<(), PanickedTaskError>>>,
 
     #[allow(dead_code)]
     tempdir: Arc<tempfile::TempDir>,
@@ -205,6 +207,30 @@ impl Tester {
                 None
             };
         Ok(provider)
+    }
+
+    /// Waits until the node reports a fatal critical-task error through the runtime task manager.
+    ///
+    /// This consumes the runtime's task manager handle for this tester instance, so it should be
+    /// used only in tests that expect the node to fail.
+    pub async fn wait_for_fatal_error_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> anyhow::Result<PanickedTaskError> {
+        let task_manager_handle = self
+            .task_manager_handle
+            .take()
+            .context("task manager handle was already taken")?;
+
+        let result = tokio::time::timeout(timeout, task_manager_handle)
+            .await
+            .context("timed out waiting for fatal node error")?;
+
+        match result {
+            Ok(Err(err)) => Ok(err),
+            Ok(Ok(())) => anyhow::bail!("node shut down gracefully before any fatal error"),
+            Err(err) => Err(anyhow::Error::new(err).context("task manager join failed")),
+        }
     }
 }
 
@@ -287,6 +313,7 @@ impl Tester {
         // Drop all fields that might rely on node being alive (e.g. alloy provider that uses RPC).
         let Self {
             runtime,
+            task_manager_handle: _,
             l1,
             tempdir,
             log_state,
@@ -487,6 +514,9 @@ impl Tester {
         zksync_os_server::run::<FullDiffsState>(&runtime, config)
             .instrument(node_span)
             .await;
+        let task_manager_handle = runtime
+            .take_task_manager_handle()
+            .expect("Runtime must contain a TaskManager handle");
 
         #[cfg(feature = "prover-tests")]
         if enable_prover {
@@ -614,6 +644,7 @@ impl Tester {
             l2_wallet,
             prover_tester,
             runtime,
+            task_manager_handle: Some(task_manager_handle),
             l2_rpc_address: l2_rpc_address.replace("0.0.0.0:", "http://localhost:"),
             batch_verification_url,
             gateway_rpc_url,
