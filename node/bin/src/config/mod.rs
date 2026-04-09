@@ -776,8 +776,8 @@ pub struct L1SenderConfig {
     /// Maximum time to wait for an L1 transaction to be included.
     ///
     /// Normally 15-30 seconds is sufficient for normal-priority transactions; 60-120s covers most
-    /// lower-gas-price cases. 600 seconds is a conservative default that handles heavy congestion.
-    #[config(default_t = 600 * TimeUnit::Seconds)]
+    /// SYSCOIN lower-gas-price cases. 3000 seconds is a conservative default for slow-L1 environments.
+    #[config(default_t = 3000 * TimeUnit::Seconds)]
     pub transaction_timeout: Duration,
 
     /// Use Fusaka blob transaction format if the timestamp has passed.
@@ -1680,7 +1680,8 @@ mod tests {
                 max_fee_per_blob_gas: 2 * EtherUnit::Gwei,
                 command_limit: 16,
                 poll_interval: Duration::from_millis(100),
-                transaction_timeout: Duration::from_secs(600),
+                // SYSCOIN
+                transaction_timeout: Duration::from_secs(3000),
                 fusaka_upgrade_timestamp: u64::MAX,
                 enabled: true,
                 pubdata_mode: Some(PubdataMode::Blobs),
