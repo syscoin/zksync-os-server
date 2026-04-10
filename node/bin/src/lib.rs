@@ -1301,6 +1301,10 @@ async fn run_en_pipeline(
                 config.batch_verification_config.signing_key.clone(),
                 finality.clone(),
                 node_state_on_startup.l1_state.clone(),
+                // SYSCOIN
+                node_state_on_startup.l1_state.last_committed_batch,
+                upgrade_batch_number,
+                upgrade_tx_hash,
                 state.clone(),
                 verify_batch_rx,
                 outgoing_verify_results,
