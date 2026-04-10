@@ -17,7 +17,19 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
-: "${L2_BRIDGEHUB_ADDRESS:=0x0000000000000000000000000000000000010002}"
+
+# Gateway settlement checks must use the system Bridgehub on the Gateway chain.
+# Do not allow accidental carry-over from shell/session env to point this at L1.
+readonly GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS="0x0000000000000000000000000000000000010002"
+if [ -n "${L2_BRIDGEHUB_ADDRESS:-}" ]; then
+  provided_l2_bridgehub="$(printf '%s' "${L2_BRIDGEHUB_ADDRESS}" | tr '[:upper:]' '[:lower:]')"
+  expected_l2_bridgehub="$(printf '%s' "${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}" | tr '[:upper:]' '[:lower:]')"
+  if [ "${provided_l2_bridgehub}" != "${expected_l2_bridgehub}" ]; then
+    echo "gateway-launch: invalid L2_BRIDGEHUB_ADDRESS override (${L2_BRIDGEHUB_ADDRESS}); expected ${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}" >&2
+    exit 1
+  fi
+fi
+readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
 
 gl_l1_broadcast_preflight
 
