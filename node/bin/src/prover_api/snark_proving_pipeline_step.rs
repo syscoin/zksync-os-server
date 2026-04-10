@@ -99,7 +99,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         // Forward batches: pipeline input → SnarkJobManager → pipeline output
         // Two concurrent tasks handle the bidirectional flow
         tokio::select! {
-            _ = async {
+            res = async {
                 while let Some(batch) = input.recv().await {
                     if batch.batch_number() > self.last_proved_batch_number {
                         // SYSCOIN
@@ -111,18 +111,22 @@ impl PipelineComponent for SnarkProvingPipelineStep {
                             .await?;
                     }
                 }
+                Ok::<(), anyhow::Error>(())
             } => {
+                res?;
                 tracing::info!("inbound channel closed");
                 return Ok(());
             },
-            _ = async {
+            res = async {
                 while let Some(proof_command) = self.proof_commands_receiver.recv().await {
                     // SYSCOIN stop swallowing send errors
                     output
                         .send(L1SenderCommand::SendToL1(proof_command))
                         .await?;
                 }
+                Ok::<(), anyhow::Error>(())
             } => {
+                res?;
                 tracing::info!("outbound channel closed");
                 return Ok(());
             },
