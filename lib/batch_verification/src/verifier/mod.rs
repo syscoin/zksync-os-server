@@ -141,6 +141,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             self.l1_state.sl_chain_id,
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
+            None,
         );
 
         let expected_commit_data = normalized_commit_data(
