@@ -1,5 +1,5 @@
-use super::snark_job_manager::SnarkJobManager;
 use super::proof_storage::ProofStorage;
+use super::snark_job_manager::SnarkJobManager;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -102,9 +102,13 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             _ = async {
                 while let Some(batch) = input.recv().await {
                     if batch.batch_number() > self.last_proved_batch_number {
-                        let _ = self.snark_job_manager.add_job(batch).await;
+                        // SYSCOIN
+                        self.snark_job_manager.add_job(batch).await;
                     } else {
-                        let _ = output.send(L1SenderCommand::Passthrough(Box::new(batch))).await;
+                        // SYSCOIN stop swallowing send errors
+                        output
+                            .send(L1SenderCommand::Passthrough(Box::new(batch)))
+                            .await?;
                     }
                 }
             } => {
@@ -113,7 +117,10 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             },
             _ = async {
                 while let Some(proof_command) = self.proof_commands_receiver.recv().await {
-                    let _ = output.send(L1SenderCommand::SendToL1(proof_command)).await;
+                    // SYSCOIN stop swallowing send errors
+                    output
+                        .send(L1SenderCommand::SendToL1(proof_command))
+                        .await?;
                 }
             } => {
                 tracing::info!("outbound channel closed");
