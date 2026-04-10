@@ -7,4 +7,7 @@ mod block_merkle_tree_data;
 pub use block_merkle_tree_data::BlockMerkleTreeData;
 
 mod batch_info;
-pub use batch_info::{BatchInfo, DiscoveredCommittedBatch, syscoin_blob_ids_and_chunks_from_pubdata};
+pub use batch_info::{
+    BatchInfo, DiscoveredCommittedBatch, expected_upgrade_tx_hash_for_batch,
+    syscoin_blob_ids_and_chunks_from_pubdata,
+};
