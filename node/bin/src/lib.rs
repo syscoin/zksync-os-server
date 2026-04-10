@@ -1250,6 +1250,38 @@ async fn run_en_pipeline(
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
 ) {
+    let upgrade_batch_number = match node_state_on_startup
+        .l1_state
+        .diamond_proxy_sl
+        .get_upgrade_batch_number(BlockId::latest())
+        .await
+    {
+        Ok(batch_number) => batch_number,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "failed to fetch upgrade batch marker from settlement layer"
+            );
+            0
+        }
+    };
+    let upgrade_tx_hash = match node_state_on_startup
+        .l1_state
+        .diamond_proxy_sl
+        .get_upgrade_tx_hash(BlockId::latest())
+        .await
+    {
+        Ok(hash) if !hash.is_zero() => Some(hash),
+        Ok(_) => None,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "failed to fetch upgrade tx hash from settlement layer"
+            );
+            None
+        }
+    };
+
     let internal_config_manager = init_and_report_internal_config_manager(
         config
             .general_config
