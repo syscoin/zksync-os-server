@@ -273,12 +273,10 @@ is_da_pair_set_on_gateway() {
   [ "${line1}" != "0x0000000000000000000000000000000000000000" ] || return 1
   gateway_address_has_code "${gateway_rpc}" "${line1}" || return 1
 
-  # In Gateway mode, second value may be uint8 commitment scheme (e.g. 3).
-  case "${line2}" in
-  0 | 0x0 | 0x0000000000000000000000000000000000000000)
-    return 1
-    ;;
-  esac
+  # NOTE:
+  # The second value can be zero for valid configurations (e.g. first deployed version/scheme slot).
+  # Presence of a non-zero, code-bearing validator contract in `line1` is the authoritative check.
+  # `line2` is kept only as a parse/shape guard above.
 }
 
 wait_for_da_pair_on_gateway() {
