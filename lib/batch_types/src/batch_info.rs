@@ -17,24 +17,6 @@ const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 const BLOB_CHUNK_SIZE: usize = 31;
 const ELEMENTS_PER_4844_BLOB: usize = 4096;
 const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
-
-/// SYSCOIN Returns the canonical upgrade tx hash to use for a specific batch number.
-///
-/// `upgrade_batch_number == 0` means an upgrade tx hash is present in contract storage and
-/// will be consumed by the next committed batch.
-pub fn expected_upgrade_tx_hash_for_batch(
-    batch_number: u64,
-    last_committed_batch: u64,
-    upgrade_batch_number: u64,
-    upgrade_tx_hash: Option<B256>,
-) -> Option<B256> {
-    let upgrade_tx_hash = upgrade_tx_hash?;
-    if upgrade_batch_number == 0 {
-        return (batch_number == last_committed_batch + 1).then_some(upgrade_tx_hash);
-    }
-    (batch_number == upgrade_batch_number).then_some(upgrade_tx_hash)
-}
-
 /*
 pub fn blob_data_id(data: &[u8]) -> [u8; 32] {
     let mut hasher = Blake2s256::new();

@@ -13,8 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
 use tracing;
 use zksync_os_batch_types::{
-    BlockMerkleTreeData, DiscoveredCommittedBatch, expected_upgrade_tx_hash_for_batch,
-    syscoin_blob_ids_and_chunks_from_pubdata,
+    BlockMerkleTreeData, DiscoveredCommittedBatch, syscoin_blob_ids_and_chunks_from_pubdata,
 };
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_interface::types::BlockOutput;
@@ -237,6 +236,29 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 }
 
 impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
+    // SYSCOIN
+    fn expected_upgrade_tx_hash_for_batch(&self, batch_number: u64) -> Option<B256> {
+        let Some(upgrade_tx_hash) = self.startup_config.upgrade_tx_hash else {
+            return None;
+        };
+
+        // `upgrade_batch_number == 0` means upgrade tx is pending and will be consumed
+        // by the next committed batch.
+        if self.startup_config.upgrade_batch_number == 0 {
+            let next_committed_batch = self.startup_config.last_committed_batch + 1;
+            if batch_number == next_committed_batch {
+                return Some(upgrade_tx_hash);
+            }
+            return None;
+        }
+
+        if batch_number == self.startup_config.upgrade_batch_number {
+            Some(upgrade_tx_hash)
+        } else {
+            None
+        }
+    }
+
     async fn create_batch(
         &mut self,
         block_receiver: &mut PeekableReceiver<(
@@ -368,12 +390,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.chain_address_sl,
             pubdata_mode,
             self.sl_chain_id,
-            expected_upgrade_tx_hash_for_batch(
-                batch_number,
-                self.startup_config.last_committed_batch,
-                self.startup_config.upgrade_batch_number,
-                self.startup_config.upgrade_tx_hash,
-            ),
+            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
         if pubdata_mode == PubdataMode::Blobs {
@@ -465,12 +482,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             // Assume pubdata mode does not change
             self.pubdata_mode,
             self.sl_chain_id,
-            expected_upgrade_tx_hash_for_batch(
-                batch_number,
-                self.startup_config.last_committed_batch,
-                self.startup_config.upgrade_batch_number,
-                self.startup_config.upgrade_tx_hash,
-            ),
+            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
 
