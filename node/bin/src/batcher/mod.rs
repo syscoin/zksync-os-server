@@ -3,7 +3,7 @@ use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
 use tracing;
 use zksync_os_batch_types::{
-    BlockMerkleTreeData, DiscoveredCommittedBatch, syscoin_blob_ids_and_chunks_from_pubdata,
+    BlockMerkleTreeData, DiscoveredCommittedBatch, expected_upgrade_tx_hash_for_batch,
+    syscoin_blob_ids_and_chunks_from_pubdata,
 };
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_interface::types::BlockOutput;
@@ -39,6 +40,10 @@ pub mod util;
 pub struct BatcherStartupConfig {
     pub last_committed_batch: u64,
     pub last_executed_batch: u64,
+    /// Latest L2 system-contract upgrade marker discovered on the settlement layer at startup.
+    /// If non-zero, the corresponding batch commitment must use this exact upgrade tx hash.
+    pub upgrade_batch_number: u64,
+    pub upgrade_tx_hash: Option<B256>,
     /// Last block number already known to this node. On startup, we'll replay all blocks until and including
     /// this - in other words, there will be no arbitrary delays until this block is passed through Batcher.
     /// We do not seal batches by timeout until this block is reached.
@@ -363,6 +368,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.chain_address_sl,
             pubdata_mode,
             self.sl_chain_id,
+            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
         if pubdata_mode == PubdataMode::Blobs {
@@ -454,6 +460,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             // Assume pubdata mode does not change
             self.pubdata_mode,
             self.sl_chain_id,
+            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
 
@@ -483,6 +490,15 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         Ok(Some(rebuilt_batch))
     }
 
+    fn expected_upgrade_tx_hash_for_batch(&self, batch_number: u64) -> Option<B256> {
+        expected_upgrade_tx_hash_for_batch(
+            batch_number,
+            self.startup_config.last_committed_batch,
+            self.startup_config.upgrade_batch_number,
+            self.startup_config.upgrade_tx_hash,
+        )
+    }
+
     // SYSCOIN: publish each sealed batch to Syscoin Bitcoin DA and wait for finality.
     async fn publish_bitcoin_da(
         &self,
@@ -490,10 +506,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         blob_chunks: &[Vec<u8>],
         expected_version_hashes: &[u8],
     ) -> anyhow::Result<()> {
-        let rpc_url =
-            self.batcher_config.bitcoin_da_rpc_url.as_deref().context(
-                "`batcher.bitcoin_da_rpc_url` must be set when using blob pubdata mode",
-            )?;
+        let rpc_url = self
+            .batcher_config
+            .bitcoin_da_rpc_url
+            .as_deref()
+            .context("`batcher.bitcoin_da_rpc_url` must be set when using blob pubdata mode")?;
         let rpc_user =
             self.batcher_config.bitcoin_da_rpc_user.as_ref().context(
                 "`batcher.bitcoin_da_rpc_user` must be set when using blob pubdata mode",
@@ -534,10 +551,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         );
 
         let mut published_hashes = Vec::with_capacity(expected_hashes.len());
-        for (idx, (blob, expected_hash)) in blob_chunks
-            .iter()
-            .zip(expected_hashes.iter())
-            .enumerate()
+        for (idx, (blob, expected_hash)) in
+            blob_chunks.iter().zip(expected_hashes.iter()).enumerate()
         {
             let version_hash = client.create_blob(blob).await.map_err(|err| {
                 anyhow::anyhow!(
@@ -580,8 +595,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                             "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
                         )
                     })?;
-                if is_final
-                {
+                if is_final {
                     tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
                     break;
                 }
