@@ -262,7 +262,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     let genesis = Genesis::new(
         genesis_input_source.clone(),
-        l1_state.diamond_proxy_l1.clone(),
+        // SYSCOIN For chains settling on Gateway, the batch-1 upgrade hash is
+        // authoritative on the settlement-layer proxy rather than the L1 proxy.
+        l1_state.diamond_proxy_sl.clone(),
         chain_id,
     );
 
