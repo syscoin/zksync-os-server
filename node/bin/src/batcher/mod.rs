@@ -3,7 +3,7 @@ use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
-use alloy::primitives::{Address, B256};
+use alloy::primitives::Address;
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
@@ -39,10 +39,6 @@ pub mod util;
 pub struct BatcherStartupConfig {
     pub last_committed_batch: u64,
     pub last_executed_batch: u64,
-    /// SYSCOIN Latest L2 system-contract upgrade marker discovered on settlement layer at startup.
-    /// If non-zero, the corresponding batch commitment must use this exact upgrade tx hash.
-    pub upgrade_batch_number: u64,
-    pub upgrade_tx_hash: Option<B256>,
     /// Last block number already known to this node. On startup, we'll replay all blocks until and including
     /// this - in other words, there will be no arbitrary delays until this block is passed through Batcher.
     /// We do not seal batches by timeout until this block is reached.
@@ -236,29 +232,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 }
 
 impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
-    // SYSCOIN
-    fn expected_upgrade_tx_hash_for_batch(&self, batch_number: u64) -> Option<B256> {
-        let Some(upgrade_tx_hash) = self.startup_config.upgrade_tx_hash else {
-            return None;
-        };
-
-        // `upgrade_batch_number == 0` means upgrade tx is pending and will be consumed
-        // by the next committed batch.
-        if self.startup_config.upgrade_batch_number == 0 {
-            let next_committed_batch = self.startup_config.last_committed_batch + 1;
-            if batch_number == next_committed_batch {
-                return Some(upgrade_tx_hash);
-            }
-            return None;
-        }
-
-        if batch_number == self.startup_config.upgrade_batch_number {
-            Some(upgrade_tx_hash)
-        } else {
-            None
-        }
-    }
-
     async fn create_batch(
         &mut self,
         block_receiver: &mut PeekableReceiver<(
@@ -390,7 +363,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.chain_address_sl,
             pubdata_mode,
             self.sl_chain_id,
-            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
         if pubdata_mode == PubdataMode::Blobs {
@@ -482,7 +454,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             // Assume pubdata mode does not change
             self.pubdata_mode,
             self.sl_chain_id,
-            self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
 

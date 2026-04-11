@@ -24,7 +24,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     chain_address_sl: Address,
     pubdata_mode: PubdataMode,
     sl_chain_id: u64,
-    expected_upgrade_tx_hash: Option<alloy::primitives::B256>,
     read_state: &ReadState,
 ) -> anyhow::Result<BatchForSigning<ProverInput>> {
     let block_number_from = blocks.first().unwrap().1.block_context.block_number;
@@ -53,7 +52,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         sl_chain_id,
         multichain_root,
         &protocol_version,
-        expected_upgrade_tx_hash,
     );
 
     let mut logs = Vec::new();

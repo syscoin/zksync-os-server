@@ -38,7 +38,6 @@ use crate::provider::build_node_provider;
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
-use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
 use alloy::primitives::BlockNumber;
 use alloy::providers::fillers::{FillProvider, TxFiller};
@@ -1099,50 +1098,6 @@ async fn run_main_node_pipeline(
              prover_api_config.fake_snark_provers.enabled to be true"
         );
     }
-    // SYSCOIN
-    let upgrade_batch_number = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_batch_number(BlockId::latest())
-        .await
-    {
-        Ok(batch_number) => batch_number,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade batch marker from settlement layer"
-            );
-            0
-        }
-    };
-    let upgrade_tx_hash = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_tx_hash(BlockId::latest())
-        .await
-    {
-        Ok(hash) if !hash.is_zero() => Some(hash),
-        Ok(_) => None,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade tx hash from settlement layer"
-            );
-            None
-        }
-    };
-    if upgrade_batch_number == 0 && upgrade_tx_hash.is_some() {
-        tracing::info!(
-            ?upgrade_tx_hash,
-            "detected pending system-contract upgrade at startup"
-        );
-    }
-    if upgrade_batch_number > 0 && upgrade_tx_hash.is_none() {
-        tracing::warn!(
-            upgrade_batch_number,
-            "upgrade batch is non-zero, but upgrade tx hash is zero"
-        );
-    }
 
     let pipeline = pipeline
         .pipe(ProverInputGenerator {
@@ -1159,8 +1114,6 @@ async fn run_main_node_pipeline(
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
                 last_executed_batch: node_state_on_startup.l1_state.last_executed_batch,
-                upgrade_batch_number,
-                upgrade_tx_hash,
                 last_persisted_block: node_state_on_startup.block_replay_storage_last_block,
             },
             chain_id,
