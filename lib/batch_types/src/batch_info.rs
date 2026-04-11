@@ -17,12 +17,7 @@ const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 const BLOB_CHUNK_SIZE: usize = 31;
 const ELEMENTS_PER_4844_BLOB: usize = 4096;
 const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
-/*
-pub fn blob_data_id(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Blake2s256::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}*/
+
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
     keccak256(data).0
 }
@@ -41,10 +36,7 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
 
 pub fn syscoin_blob_ids_and_chunks_from_pubdata(pubdata: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let blob_chunks = encoded_blob_chunks_from_pubdata(pubdata);
-    let blob_ids = blob_chunks
-        .iter()
-        .flat_map(|chunk| blob_data_id(chunk))
-        .collect();
+    let blob_ids = blob_chunks.iter().flat_map(|chunk| blob_data_id(chunk)).collect();
     (blob_ids, blob_chunks)
 }
 
@@ -79,7 +71,6 @@ impl BatchInfo {
         sl_chain_id: u64,
         multichain_root: B256,
         protocol_version: &ProtocolSemanticVersion,
-        expected_upgrade_tx_hash: Option<B256>,
     ) -> Self {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
@@ -131,7 +122,7 @@ impl BatchInfo {
                             "more than one upgrade tx in a batch: first {upgrade_tx_hash:?}, second {}",
                             tx.hash()
                         );
-                        upgrade_tx_hash = Some(expected_upgrade_tx_hash.unwrap_or(*tx.hash()));
+                        upgrade_tx_hash = Some(*tx.hash());
                     }
                 }
             }
