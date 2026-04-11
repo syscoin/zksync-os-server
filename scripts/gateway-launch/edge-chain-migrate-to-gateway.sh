@@ -538,7 +538,17 @@ else
   echo "${finalize_output}"
 fi
 
-if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 4 2; then
+: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"
+: "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY:=2}"
+: "${GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS:=120}"
+: "${GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY:=5}"
+
+da_pair_repair_requested=false
+if ! wait_for_da_pair_on_gateway \
+  "${EDGE_CHAIN_NAME}" \
+  "${GATEWAY_RPC_URL}" \
+  "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS}" \
+  "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY}"; then
   l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
   echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
   gl_l1_broadcast_preflight
@@ -548,9 +558,18 @@ if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 4 2; 
     "${l1_da_validator_addr}" \
     BlobsAndPubdataKeccak256 \
     "${GATEWAY_MAX_L1_GAS_PRICE}"
+  da_pair_repair_requested=true
 fi
 
-if ! wait_for_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" 10 3; then
+if [ "${da_pair_repair_requested}" = true ]; then
+  echo "gateway-launch: waiting for Gateway to apply the repaired DA pair (up to $((GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS * GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY))s)"
+fi
+
+if ! wait_for_da_pair_on_gateway \
+  "${EDGE_CHAIN_NAME}" \
+  "${GATEWAY_RPC_URL}" \
+  "${GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS}" \
+  "${GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY}"; then
   echo "gateway-launch: DA validator pair is still not set on Gateway for ${EDGE_CHAIN_NAME} after repair attempt" >&2
   exit 1
 fi
