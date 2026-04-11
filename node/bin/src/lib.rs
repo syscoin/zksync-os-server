@@ -40,7 +40,7 @@ use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
-use alloy::primitives::BlockNumber;
+use alloy::primitives::{B256, BlockNumber};
 use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use anyhow::Context;
@@ -123,6 +123,52 @@ const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
+// SYSCOIN
+async fn fetch_startup_upgrade_state(l1_state: &L1State) -> (u64, Option<B256>) {
+    let upgrade_batch_number = match l1_state
+        .diamond_proxy_sl
+        .get_upgrade_batch_number(BlockId::latest())
+        .await
+    {
+        Ok(batch_number) => batch_number,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "failed to fetch upgrade batch marker from settlement layer"
+            );
+            0
+        }
+    };
+    let upgrade_tx_hash = match l1_state
+        .diamond_proxy_sl
+        .get_upgrade_tx_hash(BlockId::latest())
+        .await
+    {
+        Ok(hash) if !hash.is_zero() => Some(hash),
+        Ok(_) => None,
+        Err(err) => {
+            tracing::warn!(
+                ?err,
+                "failed to fetch upgrade tx hash from settlement layer"
+            );
+            None
+        }
+    };
+
+    (upgrade_batch_number, upgrade_tx_hash)
+}
+
+fn has_pending_system_upgrade(upgrade_batch_number: u64, upgrade_tx_hash: Option<B256>) -> bool {
+    upgrade_batch_number == 0 && upgrade_tx_hash.is_some()
+}
+
+fn should_seed_genesis_upgrade(
+    starting_block: u64,
+    upgrade_batch_number: u64,
+    upgrade_tx_hash: Option<B256>,
+) -> bool {
+    starting_block == 1 && !has_pending_system_upgrade(upgrade_batch_number, upgrade_tx_hash)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone>(
@@ -553,9 +599,29 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         // todo: change to config.sequencer_config.interop_roots_per_tx when contracts are updated
         1,
     );
+    // SYSCOIN
+    let (startup_upgrade_batch_number, startup_upgrade_tx_hash) =
+        fetch_startup_upgrade_state(&node_startup_state.l1_state).await;
+    if has_pending_system_upgrade(startup_upgrade_batch_number, startup_upgrade_tx_hash) {
+        tracing::info!(
+            ?startup_upgrade_tx_hash,
+            "detected pending system-contract upgrade at startup"
+        );
+    }
+    if startup_upgrade_batch_number > 0 && startup_upgrade_tx_hash.is_none() {
+        tracing::warn!(
+            upgrade_batch_number = startup_upgrade_batch_number,
+            "upgrade batch is non-zero, but upgrade tx hash is zero"
+        );
+    }
 
-    // If we start from the very first block, we should start by sending upgrade tx for genesis.
-    if starting_block == 1 {
+    // Fresh chains need the synthetic genesis upgrade, but it must not override
+    // an upgrade that is already pending on the settlement layer.
+    if should_seed_genesis_upgrade(
+        starting_block,
+        startup_upgrade_batch_number,
+        startup_upgrade_tx_hash,
+    ) {
         let genesis_upgrade = genesis.genesis_upgrade_tx().await;
         let upgrade_tx = UpgradeInfo {
             tx: Some(genesis_upgrade.tx.clone()),
@@ -566,6 +632,13 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             },
         };
         upgrade_subpool.insert(upgrade_tx).await;
+    } else if starting_block == 1
+        && has_pending_system_upgrade(startup_upgrade_batch_number, startup_upgrade_tx_hash)
+    {
+        tracing::info!(
+            ?startup_upgrade_tx_hash,
+            "skipping genesis upgrade injection because settlement layer already has a pending upgrade"
+        );
     }
 
     if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
@@ -1100,50 +1173,8 @@ async fn run_main_node_pipeline(
         );
     }
     // SYSCOIN
-    let upgrade_batch_number = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_batch_number(BlockId::latest())
-        .await
-    {
-        Ok(batch_number) => batch_number,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade batch marker from settlement layer"
-            );
-            0
-        }
-    };
-    let upgrade_tx_hash = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_tx_hash(BlockId::latest())
-        .await
-    {
-        Ok(hash) if !hash.is_zero() => Some(hash),
-        Ok(_) => None,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade tx hash from settlement layer"
-            );
-            None
-        }
-    };
-    if upgrade_batch_number == 0 && upgrade_tx_hash.is_some() {
-        tracing::info!(
-            ?upgrade_tx_hash,
-            "detected pending system-contract upgrade at startup"
-        );
-    }
-    if upgrade_batch_number > 0 && upgrade_tx_hash.is_none() {
-        tracing::warn!(
-            upgrade_batch_number,
-            "upgrade batch is non-zero, but upgrade tx hash is zero"
-        );
-    }
-
+    let (upgrade_batch_number, upgrade_tx_hash) =
+        fetch_startup_upgrade_state(&node_state_on_startup.l1_state).await;
     let pipeline = pipeline
         .pipe(ProverInputGenerator {
             enable_logging: config.prover_input_generator_config.logging_enabled,
@@ -1251,37 +1282,9 @@ async fn run_en_pipeline(
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
 ) {
-    let upgrade_batch_number = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_batch_number(BlockId::latest())
-        .await
-    {
-        Ok(batch_number) => batch_number,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade batch marker from settlement layer"
-            );
-            0
-        }
-    };
-    let upgrade_tx_hash = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_tx_hash(BlockId::latest())
-        .await
-    {
-        Ok(hash) if !hash.is_zero() => Some(hash),
-        Ok(_) => None,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade tx hash from settlement layer"
-            );
-            None
-        }
-    };
+    // SYSCOIN
+    let (upgrade_batch_number, upgrade_tx_hash) =
+        fetch_startup_upgrade_state(&node_state_on_startup.l1_state).await;
 
     let internal_config_manager = init_and_report_internal_config_manager(
         config
@@ -1644,9 +1647,11 @@ async fn find_last_matching_main_node_block(
 
 #[cfg(test)]
 mod tests {
-    use super::check_batch_verification_mismatch;
+    use super::{
+        check_batch_verification_mismatch, should_seed_genesis_upgrade,
+    };
     use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use alloy::primitives::{address, b256};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
@@ -1711,5 +1716,21 @@ mod tests {
         let warned = check_batch_verification_mismatch(&server_config, &l1_config);
 
         assert!(!warned);
+    }
+
+    #[test]
+    fn test_seed_genesis_upgrade_for_fresh_chain_without_pending_upgrade() {
+        assert!(should_seed_genesis_upgrade(1, 0, None));
+    }
+
+    #[test]
+    fn test_do_not_seed_genesis_upgrade_when_settlement_upgrade_is_pending() {
+        assert!(!should_seed_genesis_upgrade(
+            1,
+            0,
+            Some(b256!(
+                "0x1111111111111111111111111111111111111111111111111111111111111111"
+            ))
+        ));
     }
 }
