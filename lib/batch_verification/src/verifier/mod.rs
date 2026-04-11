@@ -1,6 +1,7 @@
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::{VerificationRequest, normalized_commit_data};
-use alloy::primitives::{Address, B256};
+use alloy::eips::BlockId;
+use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
 use block_cache::BlockCache;
@@ -29,9 +30,6 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     chain_id: u64,
     diamond_proxy_sl: Address,
     l1_state: L1State,
-    last_committed_batch: u64,
-    upgrade_batch_number: u64,
-    upgrade_tx_hash: Option<B256>,
     signer: PrivateKeySigner,
     block_cache: BlockCache<Finality, (BlockOutput, ReplayRecord, BlockMerkleTreeData)>,
     read_state: ReadState,
@@ -61,9 +59,6 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         private_key: SecretString,
         finality: Finality,
         l1_state: L1State,
-        last_committed_batch: u64,
-        upgrade_batch_number: u64,
-        upgrade_tx_hash: Option<B256>,
         read_state: ReadState,
         verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
         outgoing_verify_results: broadcast::Sender<PeerVerifyBatchResult>,
@@ -83,9 +78,6 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             chain_id,
             diamond_proxy_sl,
             l1_state,
-            last_committed_batch,
-            upgrade_batch_number,
-            upgrade_tx_hash,
             signer,
             block_cache: BlockCache::new(finality),
             read_state,
@@ -130,11 +122,31 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let state_view = self.read_state.state_view_at(request.last_block_number)?;
         let multichain_root = read_multichain_root(state_view);
+        let latest = BlockId::latest();
+        let upgrade_batch_number = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_upgrade_batch_number(latest)
+            .await
+            .unwrap_or(0);
+        let upgrade_tx_hash = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_upgrade_tx_hash(latest)
+            .await
+            .ok()
+            .filter(|hash| !hash.is_zero());
+        let last_committed_batch = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_total_batches_committed(latest)
+            .await
+            .unwrap_or(self.l1_state.last_committed_batch);
         let expected_upgrade_tx_hash = expected_upgrade_tx_hash_for_batch(
             request.batch_number,
-            self.last_committed_batch,
-            self.upgrade_batch_number,
-            self.upgrade_tx_hash,
+            last_committed_batch,
+            upgrade_batch_number,
+            upgrade_tx_hash,
         );
 
         let batch_info = BatchInfo::new(
