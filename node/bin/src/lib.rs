@@ -1067,6 +1067,7 @@ async fn run_main_node_pipeline(
         node_state_on_startup.l1_state.last_committed_batch,
         config.prover_api_config.snark_job_timeout,
         config.prover_api_config.max_assigned_batch_range,
+        committed_batch_provider.clone(),
     );
 
     if config.prover_api_config.enabled {

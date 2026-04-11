@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use zksync_os_l1_sender::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_l1_sender::commands::L1SenderCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
+use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 
 /// Pipeline step that waits for batches to be SNARK proved.
@@ -24,6 +25,7 @@ pub struct SnarkProvingPipelineStep {
     last_proved_batch_number: u64,
     last_committed_batch_number: u64,
     proof_storage: ProofStorage,
+    committed_batch_provider: CommittedBatchProvider,
     snark_job_manager: Arc<SnarkJobManager>,
     proof_commands_receiver: mpsc::Receiver<ProofCommand>,
 }
@@ -36,6 +38,7 @@ impl SnarkProvingPipelineStep {
         last_committed_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
+        committed_batch_provider: CommittedBatchProvider,
     ) -> (Self, Arc<SnarkJobManager>) {
         let (proof_commands_sender, proof_commands_receiver) = mpsc::channel::<ProofCommand>(1);
 
@@ -50,11 +53,52 @@ impl SnarkProvingPipelineStep {
             last_proved_batch_number,
             last_committed_batch_number,
             proof_storage,
+            committed_batch_provider,
             snark_job_manager: snark_job_manager.clone(),
             proof_commands_receiver,
         };
 
         (result, snark_job_manager)
+    }
+}
+// SYSCOIN
+impl SnarkProvingPipelineStep {
+    fn can_rehydrate_batch(&self, expected_batch_number: u64, batch: &SignedBatchEnvelope<FriProof>) -> bool {
+        if batch.batch_number() != expected_batch_number {
+            tracing::warn!(
+                expected_batch_number,
+                actual_batch_number = batch.batch_number(),
+                "skipping SNARK rehydration due to stored proof batch number mismatch"
+            );
+            return false;
+        }
+
+        let local_stored_batch = batch
+            .batch
+            .batch_info
+            .clone()
+            .into_stored(&batch.batch.protocol_version);
+        let local_hash = local_stored_batch.hash();
+        let Some(committed_batch) = self.committed_batch_provider.get(expected_batch_number) else {
+            tracing::warn!(
+                batch_number = expected_batch_number,
+                "skipping SNARK rehydration because canonical committed batch is missing"
+            );
+            return false;
+        };
+
+        let committed_hash = committed_batch.hash();
+        if committed_hash != local_hash {
+            tracing::warn!(
+                batch_number = expected_batch_number,
+                ?committed_hash,
+                ?local_hash,
+                "skipping SNARK rehydration due to committed/local batch hash mismatch"
+            );
+            return false;
+        }
+
+        true
     }
 }
 
@@ -76,8 +120,10 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         for batch_number in (self.last_proved_batch_number + 1)..=self.last_committed_batch_number {
             match self.proof_storage.get_batch_with_proof(batch_number).await {
                 Ok(Some(batch)) => {
-                    self.snark_job_manager.add_job(batch).await;
-                    rehydrated_jobs += 1;
+                    if self.can_rehydrate_batch(batch_number, &batch) {
+                        self.snark_job_manager.add_job(batch).await;
+                        rehydrated_jobs += 1;
+                    }
                 }
                 Ok(None) => {}
                 Err(err) => {
