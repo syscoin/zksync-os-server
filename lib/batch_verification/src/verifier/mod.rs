@@ -1,5 +1,6 @@
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::{VerificationRequest, normalized_commit_data};
+use alloy::eips::BlockId;
 use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
@@ -8,7 +9,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::BlockMerkleTreeData;
-use zksync_os_batch_types::{BatchInfo, BatchSignature};
+use zksync_os_batch_types::{BatchInfo, BatchSignature, expected_upgrade_tx_hash_for_batch};
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_merkle_tree::TreeBatchOutput;
@@ -121,6 +122,32 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let state_view = self.read_state.state_view_at(request.last_block_number)?;
         let multichain_root = read_multichain_root(state_view);
+        let latest = BlockId::latest();
+        let upgrade_batch_number = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_upgrade_batch_number(latest)
+            .await
+            .unwrap_or(0);
+        let upgrade_tx_hash = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_upgrade_tx_hash(latest)
+            .await
+            .ok()
+            .filter(|hash| !hash.is_zero());
+        let last_committed_batch = self
+            .l1_state
+            .diamond_proxy_sl
+            .get_total_batches_committed(latest)
+            .await
+            .unwrap_or(self.l1_state.last_committed_batch);
+        let expected_upgrade_tx_hash = expected_upgrade_tx_hash_for_batch(
+            request.batch_number,
+            last_committed_batch,
+            upgrade_batch_number,
+            upgrade_tx_hash,
+        );
 
         let batch_info = BatchInfo::new(
             blocks
@@ -141,6 +168,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             self.l1_state.sl_chain_id,
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
+            expected_upgrade_tx_hash,
         );
 
         let expected_commit_data = normalized_commit_data(
