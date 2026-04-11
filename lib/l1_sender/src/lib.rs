@@ -326,17 +326,18 @@ async fn tx_request_with_gas_fields(
     } else {
         eip1559_est.max_fee_per_gas
     };
-    let selected_max_priority_fee_per_gas =
-        if eip1559_est.max_priority_fee_per_gas < max_priority_fee_per_gas {
-            tracing::warn!(
-                "L1 sender's estimated maxPriorityFeePerGas ({}) is lower than configured floor ({max_priority_fee_per_gas}); \
+    let selected_max_priority_fee_per_gas = if eip1559_est.max_priority_fee_per_gas
+        < max_priority_fee_per_gas
+    {
+        tracing::warn!(
+            "L1 sender's estimated maxPriorityFeePerGas ({}) is lower than configured floor ({max_priority_fee_per_gas}); \
                  using configured floor value to avoid inclusion delay.",
-                eip1559_est.max_priority_fee_per_gas
-            );
-            max_priority_fee_per_gas
-        } else {
             eip1559_est.max_priority_fee_per_gas
-        };
+        );
+        max_priority_fee_per_gas
+    } else {
+        eip1559_est.max_priority_fee_per_gas
+    };
 
     let tx = TransactionRequest::default()
         .with_from(operator_address)

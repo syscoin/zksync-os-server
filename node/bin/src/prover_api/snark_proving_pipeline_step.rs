@@ -1,5 +1,5 @@
-use super::snark_job_manager::SnarkJobManager;
 use super::proof_storage::ProofStorage;
+use super::snark_job_manager::SnarkJobManager;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,7 +63,11 @@ impl SnarkProvingPipelineStep {
 }
 // SYSCOIN
 impl SnarkProvingPipelineStep {
-    fn can_rehydrate_batch(&self, expected_batch_number: u64, batch: &SignedBatchEnvelope<FriProof>) -> bool {
+    fn can_rehydrate_batch(
+        &self,
+        expected_batch_number: u64,
+        batch: &SignedBatchEnvelope<FriProof>,
+    ) -> bool {
         if batch.batch_number() != expected_batch_number {
             tracing::warn!(
                 expected_batch_number,
