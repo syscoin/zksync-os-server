@@ -4,7 +4,7 @@ use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{Permit, Sender, error::TrySendError};
+use tokio::sync::mpsc::Sender;
 use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::batcher_model::{
     FriProof, RealSnarkProof, SignedBatchEnvelope, SnarkProof,
@@ -110,10 +110,6 @@ impl SnarkJobManager {
         //     anyhow::bail!("proof validation failed")
         // }
 
-        // SYSCOIN Reserve downstream capacity before consuming jobs so we cannot drop a proof command
-        // after marking jobs as completed.
-        let permit = self.try_reserve_permit_downstream()?;
-
         // prove is valid - consuming proven batches
         let Some(consumed_batches_proven) = self
             .jobs
@@ -142,15 +138,14 @@ impl SnarkJobManager {
             .map(|batch| batch.with_stage(BatchExecutionStage::SnarkProvedReal))
             .collect();
 
-        permit.send(ProofCommand::new(
+        self.send_downstream(ProofCommand::new(
             consumed_batches_proven,
             SnarkProof::Real(RealSnarkProof::V2 {
                 proof: payload,
                 proving_execution_version: proving_version as u32,
             }),
-        ));
-        self.latency_tracker
-            .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+        ))
+        .await?;
         Ok(())
     }
 
@@ -192,9 +187,6 @@ impl SnarkJobManager {
                 assigned.len() - real_proofs_count,
             );
 
-            // Same ordering guarantee as real proofs: reserve outbound slot first.
-            let permit = self.try_reserve_permit_downstream()?;
-
             let mut completed = Vec::default();
             for (job, _) in assigned {
                 if let Some(envelope) = self
@@ -212,34 +204,25 @@ impl SnarkJobManager {
                 .map(|batch| batch.with_stage(BatchExecutionStage::SnarkProvedFake))
                 .collect();
 
-            permit.send(ProofCommand::new(
+            self.send_downstream(ProofCommand::new(
                 batches_with_fake_proofs,
                 SnarkProof::Fake,
-            ));
-            self.latency_tracker
-                .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+            ))
+            .await?;
         }
     }
 
+    async fn send_downstream(&self, proof_command: ProofCommand) -> anyhow::Result<()> {
+        self.latency_tracker
+            .enter_state(GenericComponentState::WaitingSend);
+        self.prove_batches_sender.send(proof_command).await?;
+        self.latency_tracker
+            .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+        Ok(())
+    }
     // SYSCOIN
     pub async fn status(&self) -> Vec<JobState> {
         self.jobs.status().await
-    }
-
-    fn try_reserve_permit_downstream(&self) -> anyhow::Result<Permit<'_, ProofCommand>> {
-        Ok(match self.prove_batches_sender.try_reserve() {
-            Ok(permit) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
-                permit
-            }
-            Err(TrySendError::Full(_)) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::WaitingSend);
-                anyhow::bail!("downstream backpressure")
-            }
-            Err(TrySendError::Closed(_)) => anyhow::bail!("server is shutting down"),
-        })
     }
 }
 

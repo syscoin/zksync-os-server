@@ -22,8 +22,6 @@ type InputChannel = PeekableReceiver<SignedBatchEnvelope<FriProof>>;
 type OutputChannel = mpsc::Sender<L1SenderCommand<ExecuteCommand>>;
 
 mod db;
-// SYSCOIN
-const MAX_BATCHES_PER_EXECUTE_COMMAND: usize = 100;
 
 #[derive(Clone)]
 pub struct PriorityTreeManager<ReplayStorage, Finality> {
@@ -146,61 +144,48 @@ impl<ReplayStorage: ReadReplay + Clone, Finality: ReadFinality + Clone>
             main_node_channels.unzip();
         let mut last_processed_batch = self.last_executed_batch_on_init;
 
+        async fn take_n<T>(
+            receiver: &mut PeekableReceiver<T>,
+            n: usize,
+        ) -> anyhow::Result<Option<Vec<T>>> {
+            let mut out = Vec::default();
+            while out.len() < n {
+                match receiver.recv().await {
+                    Some(v) => out.push(v),
+                    None => return Ok(None),
+                }
+            }
+            Ok(Some(out))
+        }
+
         loop {
             latency_tracker.enter_state(GenericComponentState::WaitingRecv);
             let (batch_envelopes, batch_ranges) = match proved_batch_envelopes_receiver.as_mut() {
                 Some(r) => {
-                    // SYSCOIN
-                    let Some(first_envelope) = r.recv().await else {
+                    // todo(#160): we enforce executing one batch at a time for now as we don't have
+                    //             aggregation seal criteria yet.
+                    //             Addressing this includes reworking L1SenderCommand::Passthrough logic -
+                    //             Aggregation is only possible AFTER the last_executed_batch_on_init.
+                    let Some(mut envelopes) = take_n(r, 1).await? else {
                         tracing::info!("inbound channel closed");
                         return Ok(());
                     };
-                    if first_envelope.batch_number() <= self.last_executed_batch_on_init {
+                    let envelope = envelopes.pop().unwrap();
+                    if envelope.batch_number() <= self.last_executed_batch_on_init {
                         tracing::info!(
-                            batch_number = first_envelope.batch_number(),
+                            batch_number = envelope.batch_number(),
                             "Passing through batch that was already executed"
                         );
                         latency_tracker.enter_state(GenericComponentState::WaitingSend);
                         if let Some(sender) = &execute_batches_sender {
                             sender
-                                .send(L1SenderCommand::Passthrough(Box::new(first_envelope)))
+                                .send(L1SenderCommand::Passthrough(Box::new(envelope)))
                                 .await?;
                         }
 
                         continue;
                     }
-                    // SYSCOIN
-                    assert_eq!(
-                        first_envelope.batch_number(),
-                        last_processed_batch + 1,
-                        "Unexpected envelope received"
-                    );
-
-                    // Aggregate as many immediately-available, contiguous batches as possible.
-                    let mut envelopes = vec![first_envelope];
-                    while envelopes.len() < MAX_BATCHES_PER_EXECUTE_COMMAND {
-                        let Some(next_batch_number) = r.peek_with(|e| e.batch_number()) else {
-                            break;
-                        };
-                        if next_batch_number <= self.last_executed_batch_on_init {
-                            tracing::warn!(
-                                next_batch_number,
-                                last_executed_batch_on_init = self.last_executed_batch_on_init,
-                                "Skipping already executed batch that appeared after non-executed batch in execute pipeline"
-                            );
-                            let _ = r.recv().await;
-                            continue;
-                        }
-                        let expected_next = envelopes.last().unwrap().batch_number() + 1;
-                        if next_batch_number != expected_next {
-                            break;
-                        }
-                        let Some(next_envelope) = r.recv().await else {
-                            break;
-                        };
-                        envelopes.push(next_envelope);
-                    }
-
+                    let envelopes = vec![envelope];
                     let ranges = envelopes
                         .iter()
                         .map(|e| {
@@ -210,6 +195,12 @@ impl<ReplayStorage: ReadReplay + Clone, Finality: ReadFinality + Clone>
                             )
                         })
                         .collect::<Vec<_>>();
+                    // Sanity check: we must receive the next batch in sequence.
+                    assert_eq!(
+                        ranges[0].0,
+                        last_processed_batch + 1,
+                        "Unexpected envelope received"
+                    );
                     (Some(envelopes), ranges)
                 }
                 None => {

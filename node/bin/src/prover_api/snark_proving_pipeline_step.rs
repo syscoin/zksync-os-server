@@ -1,5 +1,5 @@
-use super::proof_storage::ProofStorage;
 use super::snark_job_manager::SnarkJobManager;
+use super::proof_storage::ProofStorage;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,13 +148,9 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             res = async {
                 while let Some(batch) = input.recv().await {
                     if batch.batch_number() > self.last_proved_batch_number {
-                        // SYSCOIN
-                        self.snark_job_manager.add_job(batch).await;
+                        let _ = self.snark_job_manager.add_job(batch).await;
                     } else {
-                        // SYSCOIN stop swallowing send errors
-                        output
-                            .send(L1SenderCommand::Passthrough(Box::new(batch)))
-                            .await?;
+                        let _ = output.send(L1SenderCommand::Passthrough(Box::new(batch))).await;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -165,10 +161,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             },
             res = async {
                 while let Some(proof_command) = self.proof_commands_receiver.recv().await {
-                    // SYSCOIN stop swallowing send errors
-                    output
-                        .send(L1SenderCommand::SendToL1(proof_command))
-                        .await?;
+                    let _ = output.send(L1SenderCommand::SendToL1(proof_command)).await;
                 }
                 Ok::<(), anyhow::Error>(())
             } => {
