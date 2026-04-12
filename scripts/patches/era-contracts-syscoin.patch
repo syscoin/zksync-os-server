@@ -1004,7 +1004,7 @@ diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierP
  /// Knowledge (PLONK) verifier.
  /// Modifications have been made to optimize the proof system for ZK chain circuits.
 -/// @dev Contract was generated from a verification key with a hash of 0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337
-+/// @dev Contract was generated from a verification key with a hash of 0x860d1e6a02a654c78150cc1bfb3f1c75c684330ba702316d8d456666091c37fe
++/// @dev Contract was generated from a verification key with a hash of 0x19bb48657a65f996c62ba86ebda9add9bcf3ca57a4c84658f4cc8433e141764c
  /// @dev It uses a custom memory layout inside the inline assembly block. Each reserved memory cell is declared in the
  /// constants below.
  /// @dev For a better understanding of the verifier algorithm please refer to the following papers:
@@ -1014,8 +1014,8 @@ diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierP
              // gate setup commitments
 -            mstore(VK_GATE_SETUP_0_X_SLOT, 0x1106b27c3561b9ffeacfd97e7c2a73e5b3830a71d9cf1e7a13e2c22619df67c6)
 -            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x1766dab5ce252fef675ee6ae5a594f2625517b04233609d7d6fa5b0d0e87bf9f)
-+            mstore(VK_GATE_SETUP_0_X_SLOT, 0x0a85b24892dff1b05b919bc8d0d96ec2628c8fb4bd858ce7715b846ae1499a3d)
-+            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x12783f696c4b7b50a22e852bbbe73d94d5e4d7520b6d9d1ca75fd8e6f4c20ce4)
++            mstore(VK_GATE_SETUP_0_X_SLOT, 0x0ae669960a0565758ad76393be64a13e8ba631a1f2fd74f9a92ec36768d4dd69)
++            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x1f0ece676cfabe4b5d3447ddeab58f89a5cd43d6a21c9cc2ce75daecaa2158fa)
              mstore(VK_GATE_SETUP_1_X_SLOT, 0x0feda978f4639d0a725df74c4738bf178adca34e6a4f7cc38d6a9ae9ee49f695)
              mstore(VK_GATE_SETUP_1_Y_SLOT, 0x2f7068beedb881aea392246c33ccc026ea9c8f6ea558a055b6df00ebfdf210a3)
              mstore(VK_GATE_SETUP_2_X_SLOT, 0x06eccb685da5c8cc09a13698b2a22e383025abc75393d68c1da5a7dbacffbd9b)
@@ -1025,8 +1025,8 @@ diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierP
              mstore(VK_GATE_SETUP_5_Y_SLOT, 0x13a3819d4cb80114e51de741a5fb48ce4ba20e82c5d39d16f70ca0461f49a131)
 -            mstore(VK_GATE_SETUP_6_X_SLOT, 0x133985cd37d7e76cbe8a87b9eddbc637916035656b2cfe776a2c4a6c23ae938b)
 -            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x060b7c13eb18593c67a6cd94f24b8403dd97157a3f4096d1ce3c1e9b2fb53c12)
-+            mstore(VK_GATE_SETUP_6_X_SLOT, 0x0715bdb2c67468dc630926c521f0f2ccaad30bdc9d66f78ef4ad11a71ce8db5c)
-+            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x04ed6ef0523ed0549482ffaf5380752a42db17d1b0287bbb43bc773c314eaea2)
++            mstore(VK_GATE_SETUP_6_X_SLOT, 0x005a1ed512c50eea1eb296747dde04d399c9e2b4bbbca61eae745ef207001a78)
++            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x042558896a8d7dd4c39b0c231fba7bea49f83d484b73c56fe0c6a7548d4c535e)
              mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
              mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
 diff --git a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json b/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json
@@ -1040,20 +1040,20 @@ diff --git a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json b/tools/v
 -        12935194038840008314,
 -        16919981462326506469,
 -        1226864195046324735
-+        8168267943747623485,
-+        7101208718892960999,
-+        6598226215874162370,
-+        758208137053335984
++        12190896090246339945,
++        10062784989042144505,
++        10004574583432454462,
++        785431278156866933
        ],
        "y": [
 -        15490793979930722207,
 -        2689065710217726423,
 -        7448644470231879462,
 -        1686275584879308783
-+        12060596813581913316,
-+        15412680572147703068,
-+        11686424505955597716,
-+        1330883411908983632
++        14877037654089750778,
++        11947279975605640386,
++        6716071962767363977,
++        2237953008455040587
        ],
        "infinity": false
      },
@@ -1065,20 +1065,20 @@ diff --git a/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json b/tools/v
 -        10475431442969853559,
 -        13729935646621681207,
 -        1385285476844824428
-+        17630767525667593052,
-+        12309195248695179150,
-+        7136277712665113292,
-+        510522708307765468
++        12570776853490440824,
++        11081637623993509406,
++        2211995794064409811,
++        25366648395730666
        ],
        "y": [
 -        14860786522284964882,
 -        15967254618656773841,
 -        7468883071644435459,
 -        435578213961849148
-+        4880907196571758242,
-+        4817470415773924283,
-+        10701396793071007018,
-+        355061924083191892
++        16196817091474248542,
++        5330077539705800047,
++        14094872803781802986,
++        298742297511427540
        ],
        "infinity": false
      },

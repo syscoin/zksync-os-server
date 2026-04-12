@@ -65,9 +65,9 @@ impl ProvingVersion {
     const V6_VK_HASH: &'static str =
         "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337";
 
-    /// SYSCOIN TODO: replace with the actual V7 VK hash once the proving circuit for v31 is finalized.
+    /// verification key hash generated from patched zksync-os dev-20260402 multiblock proving binary.
     const V7_VK_HASH: &'static str =
-        "0x860d1e6a02a654c78150cc1bfb3f1c75c684330ba702316d8d456666091c37fe";
+        "0x19bb48657a65f996c62ba86ebda9add9bcf3ca57a4c84658f4cc8433e141764c";
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
