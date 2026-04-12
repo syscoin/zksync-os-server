@@ -48,6 +48,7 @@ impl TryFrom<v0::ReplayRecord> for StorageReplayRecord {
             protocol_version: ProtocolSemanticVersion::new(0, 0, 0),
             block_output_hash: Default::default(),
             force_preimages: vec![],
+            canonical_upgrade_tx_hash: Default::default(),
             starting_cursors: BlockStartCursors::default(),
         })
     }
@@ -151,6 +152,7 @@ impl TryFrom<v1::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
+            canonical_upgrade_tx_hash: Default::default(),
             starting_cursors: BlockStartCursors {
                 l1_priority_id: value.starting_l1_priority_id,
                 // v1 format has InteropRootsLogIndex; map to 0 since block/index is not the log_id
@@ -262,6 +264,7 @@ impl TryFrom<v2::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
+            canonical_upgrade_tx_hash: Default::default(),
             starting_cursors: BlockStartCursors {
                 l1_priority_id: value.starting_l1_priority_id,
                 // v2 format has InteropRootsLogIndex; map to 0 since block/index is not the log_id
@@ -372,6 +375,7 @@ impl TryFrom<v3::ReplayRecord> for StorageReplayRecord {
                 .into_iter()
                 .map(|p| (p.hash, p.preimage.into()))
                 .collect(),
+            canonical_upgrade_tx_hash: Default::default(),
             starting_cursors: BlockStartCursors {
                 l1_priority_id: value.starting_l1_priority_id,
                 interop_root_id: value.starting_interop_root_id,

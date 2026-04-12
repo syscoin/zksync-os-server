@@ -34,6 +34,7 @@ pub struct L1UpgradeTxWatcher {
 
     provider_l1: DynProvider,
     provider_sl: DynProvider,
+    zk_chain_sl: ZkChain<DynProvider>,
     /// Address of the bytecode supplier contract (used to detect published bytecode preimages)
     #[allow(dead_code)] // TODO: enable once bytecode supplier integration is ready
     bytecode_supplier_address: Address,
@@ -101,6 +102,7 @@ impl L1UpgradeTxWatcher {
             admin_contract_l1: admin_l1,
             provider_l1: zk_chain_l1.provider().clone(),
             provider_sl: zk_chain_sl.provider().clone(),
+            zk_chain_sl,
             bytecode_supplier_address,
             ctm_sl,
             current_protocol_version,
@@ -188,8 +190,7 @@ impl L1UpgradeTxWatcher {
             );
             (Some(tx), force_preimages)
         };
-        // SYSCOIN
-        let canonical_tx_hash = match self.provider_sl.get_upgrade_tx_hash(BlockId::latest()).await {
+        let canonical_tx_hash = match self.zk_chain_sl.get_upgrade_tx_hash(BlockId::latest()).await {
             Ok(hash) if !hash.is_zero() => hash,
             Ok(_) | Err(_) => l2_upgrade_tx
                 .as_ref()
