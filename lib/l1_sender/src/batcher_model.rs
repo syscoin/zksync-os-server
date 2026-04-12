@@ -60,12 +60,6 @@ impl BatchMetadata {
     pub fn proving_version(&self) -> anyhow::Result<ProvingVersion> {
         Ok(ProvingVersion::try_from(self.protocol_version.clone())?)
     }
-
-    /// Upgrade batches must be SNARKed on their own so the verifier sees the
-    /// same range boundary that includes the upgrade commitment.
-    pub fn requires_standalone_snark_proof(&self) -> bool {
-        self.batch_info.upgrade_tx_hash.is_some()
-    }
 }
 
 fn default_execution_version() -> u32 {

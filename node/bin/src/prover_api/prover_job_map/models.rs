@@ -15,7 +15,6 @@ pub struct JobMetadata {
     pub proving_version: ProvingVersion,
     pub tx_count: usize,
     pub computational_native_used: Option<u64>,
-    pub requires_standalone_snark_proof: bool,
     pub added_at: Instant,
     pub assigned_to_prover_id: Option<String>,
     pub assigned_at: Option<Instant>,
@@ -61,15 +60,12 @@ impl JobMetadata {
             .expect("Must be valid execution as set by the server");
         let tx_count = batch_envelope.batch.tx_count;
         let computational_native_used = batch_envelope.batch.computational_native_used;
-        let requires_standalone_snark_proof =
-            batch_envelope.batch.requires_standalone_snark_proof();
 
         Self {
             batch_number,
             proving_version,
             tx_count,
             computational_native_used,
-            requires_standalone_snark_proof,
             added_at: Instant::now(),
             assigned_to_prover_id: None,
             assigned_at: None,

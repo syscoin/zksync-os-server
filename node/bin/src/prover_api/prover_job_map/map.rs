@@ -224,18 +224,6 @@ impl<T: Clone> ProverJobMap<T> {
             return false;
         }
 
-        if self.prover_stage == ProverStage::Snark && limit > 1 {
-            if next_job_entry.metadata.requires_standalone_snark_proof {
-                return already_selected_jobs.is_empty();
-            }
-            if already_selected_jobs
-                .iter()
-                .any(|job| job.requires_standalone_snark_proof)
-            {
-                return false;
-            }
-        }
-
         // No gaps in batch numbers and all have the same proving version
         match already_selected_jobs.last() {
             None => true,
@@ -485,10 +473,7 @@ mod tests {
     use zksync_os_l1_sender::batcher_model::{BatchForSigning, BatchMetadata};
     use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
 
-    fn create_test_batch_envelope_with_upgrade(
-        batch_number: u64,
-        upgrade_tx_hash: Option<B256>,
-    ) -> SignedBatchEnvelope<Vec<u8>> {
+    fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
         let batch = BatchMetadata {
             previous_stored_batch_info: StoredBatchInfo {
                 batch_number: batch_number.saturating_sub(1),
@@ -521,7 +506,7 @@ mod tests {
                     sl_chain_id: 2,
                 },
                 chain_address: Address::ZERO,
-                upgrade_tx_hash,
+                upgrade_tx_hash: None,
                 blob_sidecar: None,
             },
             first_block_number: batch_number,
@@ -538,10 +523,6 @@ mod tests {
 
         BatchForSigning::new(batch, vec![1, 2, 3])
             .with_signatures(zksync_os_l1_sender::batcher_model::BatchSignatureData::NotNeeded)
-    }
-
-    fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
-        create_test_batch_envelope_with_upgrade(batch_number, None)
     }
 
     #[tokio::test]
@@ -635,25 +616,6 @@ mod tests {
         map.add_job(create_test_batch_envelope(3)).await; // Gap: no batch 2
 
         // Should only pick batch 1, not 3 (due to gap)
-        let jobs = map
-            .pick_jobs_while_with_limit(5, "prover-1", |_| true)
-            .await;
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].0.batch_number, 1);
-    }
-
-    #[tokio::test]
-    async fn test_pick_multiple_jobs_stops_at_upgrade_batch() {
-        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
-
-        map.add_job(create_test_batch_envelope_with_upgrade(
-            1,
-            Some(B256::from([7; 32])),
-        ))
-        .await;
-        map.add_job(create_test_batch_envelope(2)).await;
-        map.add_job(create_test_batch_envelope(3)).await;
-
         let jobs = map
             .pick_jobs_while_with_limit(5, "prover-1", |_| true)
             .await;
