@@ -1,7 +1,7 @@
 use crate::execution::fee_provider::{FeeParams, FeeProvider};
 use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{BlockCommand, InvalidTxPolicy, PreparedBlockCommand, SealPolicy};
-use alloy::primitives::{Address, TxHash, U256};
+use alloy::primitives::{Address, B256, TxHash, U256};
 use anyhow::Context as _;
 use futures::StreamExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
