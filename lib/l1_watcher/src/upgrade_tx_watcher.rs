@@ -5,6 +5,7 @@ use crate::util::ANVIL_L1_CHAIN_ID;
 use crate::watcher::{L1Watcher, L1WatcherError};
 use crate::{L1WatcherConfig, ProcessL1Event, util};
 use alloy::dyn_abi::SolType;
+use alloy::eips::BlockId;
 use alloy::primitives::{Address, B256, BlockNumber, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::{Filter, Log};
@@ -187,6 +188,14 @@ impl L1UpgradeTxWatcher {
             );
             (Some(tx), force_preimages)
         };
+        // SYSCOIN
+        let canonical_tx_hash = match self.provider_sl.get_upgrade_tx_hash(BlockId::latest()).await {
+            Ok(hash) if !hash.is_zero() => hash,
+            Ok(_) | Err(_) => l2_upgrade_tx
+                .as_ref()
+                .map(|tx| *tx.hash())
+                .unwrap_or(B256::ZERO),
+        };
 
         let upgrade_tx = UpgradeInfo {
             tx: l2_upgrade_tx,
@@ -194,6 +203,7 @@ impl L1UpgradeTxWatcher {
                 timestamp: *timestamp,
                 protocol_version: protocol_version.clone(),
                 force_preimages,
+                canonical_tx_hash,
             },
         };
 

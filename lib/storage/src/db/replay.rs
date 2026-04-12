@@ -47,6 +47,7 @@ pub enum BlockReplayColumnFamily {
     NodeVersion,
     ProtocolVersion,
     ForcePreimages,
+    CanonicalUpgradeTxHash,
     BlockOutputHash,
     StartingInteropRootId,
     StartingMigrationNumber,
@@ -67,6 +68,7 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
         BlockReplayColumnFamily::ProtocolVersion,
         BlockReplayColumnFamily::BlockOutputHash,
         BlockReplayColumnFamily::ForcePreimages,
+        BlockReplayColumnFamily::CanonicalUpgradeTxHash,
         BlockReplayColumnFamily::StartingInteropRootId,
         BlockReplayColumnFamily::StartingMigrationNumber,
         BlockReplayColumnFamily::StartingInteropFeeNumber,
@@ -83,6 +85,7 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
             BlockReplayColumnFamily::ProtocolVersion => "protocol_version",
             BlockReplayColumnFamily::BlockOutputHash => "block_output_hash",
             BlockReplayColumnFamily::ForcePreimages => "force_preimages",
+            BlockReplayColumnFamily::CanonicalUpgradeTxHash => "canonical_upgrade_tx_hash",
             BlockReplayColumnFamily::StartingInteropRootId => "starting_interop_root_id",
             BlockReplayColumnFamily::StartingMigrationNumber => "starting_migration_number",
             BlockReplayColumnFamily::StartingInteropFeeNumber => "starting_interop_fee_number",
@@ -117,6 +120,7 @@ impl BlockReplayStorage {
                 protocol_version: genesis_tx.protocol_version.clone(),
                 block_output_hash: B256::ZERO,
                 force_preimages: genesis_tx.force_deploy_preimages.clone(),
+                canonical_upgrade_tx_hash: B256::ZERO,
                 starting_cursors: BlockStartCursors::default(),
             };
             this.write_replay_unchecked(Sealed::new_unchecked(genesis_record, genesis_hash), true);
@@ -196,6 +200,12 @@ impl BlockReplayStorage {
             BlockReplayColumnFamily::ForcePreimages,
             &db_key,
             &force_preimages_value,
+        );
+        // SYSCOIN
+        batch.put_cf(
+            BlockReplayColumnFamily::CanonicalUpgradeTxHash,
+            &db_key,
+            &record.canonical_upgrade_tx_hash.0,
         );
 
         let starting_interop_root_id_value = bincode::serde::encode_to_vec(
@@ -386,6 +396,13 @@ impl ReadReplay for BlockReplayStorage {
             .get_cf(BlockReplayColumnFamily::BlockOutputHash, &key)
             .expect("Failed to read from BlockOutputHash CF")
             .expect("BlockOutputHash must be written atomically with Context");
+        // SYSCOIN
+        let canonical_upgrade_tx_hash = self
+            .db
+            .get_cf(BlockReplayColumnFamily::CanonicalUpgradeTxHash, &key)
+            .expect("Failed to read from CanonicalUpgradeTxHash CF")
+            .map(|hash| B256::from_slice(&hash))
+            .unwrap_or(B256::ZERO);
 
         let starting_interop_root_id = if let Some(starting_interop_root_id) = self
             .db
@@ -455,6 +472,7 @@ impl ReadReplay for BlockReplayStorage {
             protocol_version,
             block_output_hash: B256::from_slice(&block_output_hash),
             force_preimages,
+            canonical_upgrade_tx_hash,
             starting_cursors: BlockStartCursors {
                 l1_priority_id: bincode::serde::decode_from_slice(
                     &starting_l1_priority_id,

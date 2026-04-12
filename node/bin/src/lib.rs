@@ -557,12 +557,23 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // If we start from the very first block, we should start by sending upgrade tx for genesis.
     if starting_block == 1 {
         let genesis_upgrade = genesis.genesis_upgrade_tx().await;
+        // SYSCOIN
+        let canonical_tx_hash = match node_startup_state
+            .l1_state
+            .diamond_proxy_sl
+            .get_upgrade_tx_hash(BlockId::latest())
+            .await
+        {
+            Ok(hash) if !hash.is_zero() => hash,
+            Ok(_) | Err(_) => *genesis_upgrade.tx.hash(),
+        };
         let upgrade_tx = UpgradeInfo {
             tx: Some(genesis_upgrade.tx.clone()),
             metadata: UpgradeMetadata {
                 protocol_version: genesis_upgrade.protocol_version.clone(),
                 timestamp: 0, // No restrictions on timestamp.
                 force_preimages: genesis_upgrade.force_deploy_preimages.clone(),
+                canonical_tx_hash,
             },
         };
         upgrade_subpool.insert(upgrade_tx).await;
@@ -1131,18 +1142,6 @@ async fn run_main_node_pipeline(
             None
         }
     };
-    if upgrade_batch_number == 0 && upgrade_tx_hash.is_some() {
-        tracing::info!(
-            ?upgrade_tx_hash,
-            "detected pending system-contract upgrade at startup"
-        );
-    }
-    if upgrade_batch_number > 0 && upgrade_tx_hash.is_none() {
-        tracing::warn!(
-            upgrade_batch_number,
-            "upgrade batch is non-zero, but upgrade tx hash is zero"
-        );
-    }
 
     let pipeline = pipeline
         .pipe(ProverInputGenerator {

@@ -46,6 +46,9 @@ pub struct ReplayRecord {
     pub block_output_hash: B256,
     /// Forced preimages to be included before the block execution.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
+    /// Canonical settlement-layer upgrade tx hash for this block's upgrade batch.
+    #[serde(default)]
+    pub canonical_upgrade_tx_hash: B256,
     /// Cursors at the start of this block. Tracks where each L1 data source
     /// (priority txs, interop events, migrations, fee updates) left off.
     /// Flattened for serde backwards-compatibility with the old flat field layout.
@@ -63,6 +66,7 @@ impl PartialEq for ReplayRecord {
             && self.protocol_version == other.protocol_version
             && self.block_output_hash == other.block_output_hash
             && self.force_preimages == other.force_preimages
+            && self.canonical_upgrade_tx_hash == other.canonical_upgrade_tx_hash
             && self.starting_cursors == other.starting_cursors
     }
 }
@@ -77,6 +81,7 @@ impl ReplayRecord {
         protocol_version: ProtocolSemanticVersion,
         block_output_hash: B256,
         force_preimages: Vec<(B256, Vec<u8>)>,
+        canonical_upgrade_tx_hash: B256,
         starting_cursors: BlockStartCursors,
     ) -> Self {
         let first_l1_tx_priority_id = transactions.iter().find_map(|tx| match tx.envelope() {
@@ -98,6 +103,7 @@ impl ReplayRecord {
             protocol_version,
             block_output_hash,
             force_preimages,
+            canonical_upgrade_tx_hash,
             starting_cursors,
         }
     }

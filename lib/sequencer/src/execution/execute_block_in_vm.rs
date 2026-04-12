@@ -437,6 +437,7 @@ pub async fn execute_block_in_vm<V: ViewState>(
             command.protocol_version,
             block_hash_output,
             command.force_preimages,
+            command.canonical_upgrade_tx_hash,
             command.starting_cursors,
         ),
         purged_txs,

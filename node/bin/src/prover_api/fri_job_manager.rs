@@ -247,20 +247,14 @@ impl FriJobManager {
                     batch_number,
                     "Verifying FRI proof against expected batch public input"
                 );
-                let program_proof =
-                    bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-                        .map_err(|err| {
-                            tracing::warn!(batch_number, ?err, "Failed to deserialize proof");
-                            SubmitError::DeserializationFailed(err)
-                        })?
-                        .0;
-                fri_proof_verifier::verify_fri_proof(
+                // SYSCOIN
+                fri_proof_verifier::verify_real_fri_proof_bytes(
                     batch_metadata.previous_stored_batch_info.state_commitment,
                     batch_metadata
                         .batch_info
                         .clone()
                         .into_stored(&batch_metadata.protocol_version),
-                    program_proof,
+                    proof_bytes,
                 )
             }
         };

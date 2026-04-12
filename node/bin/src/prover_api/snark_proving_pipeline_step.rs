@@ -1,5 +1,6 @@
 use super::proof_storage::ProofStorage;
 use super::snark_job_manager::SnarkJobManager;
+use crate::prover_api::fri_proof_verifier;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +101,21 @@ impl SnarkProvingPipelineStep {
                 "skipping SNARK rehydration due to committed/local batch hash mismatch"
             );
             return false;
+        }
+        // SYSCOIN
+        if let FriProof::Real(real) = &batch.data {
+            if let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
+                batch.batch.previous_stored_batch_info.state_commitment,
+                local_stored_batch,
+                real.proof(),
+            ) {
+                tracing::warn!(
+                    batch_number = expected_batch_number,
+                    ?err,
+                    "skipping SNARK rehydration due to invalid stored FRI proof"
+                );
+                return false;
+            }
         }
 
         true

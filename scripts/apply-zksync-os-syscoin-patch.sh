@@ -30,12 +30,27 @@ has_text() {
   fi
 }
 
-if has_text "Blob data id advice mismatch" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs" \
-  && has_text "const USIZE_LEN: usize = 32 / size_of::<usize>();" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs" \
-  && has_text "SYSCOIN: Keep the legacy function name/interface, but return blob data id" "${ZKSYNC_OS_PATH}/callable_oracles/src/blob_kzg_commitment/mod.rs" \
-  && has_text "blobs_advice.push(8);" "${ZKSYNC_OS_PATH}/forward_system/src/run/mod.rs"; then
+base_patch_applied() {
+  has_text "Blob data id advice mismatch" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs" \
+    && has_text "const USIZE_LEN: usize = 32 / size_of::<usize>();" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs" \
+    && has_text "SYSCOIN: Keep the legacy function name/interface, but return blob data id" "${ZKSYNC_OS_PATH}/callable_oracles/src/blob_kzg_commitment/mod.rs" \
+    && has_text "blobs_advice.push(8);" "${ZKSYNC_OS_PATH}/forward_system/src/run/mod.rs"
+}
+
+canonical_upgrade_fix_applied() {
+  has_text "canonical_upgrade_tx_hash: Bytes32::ZERO," "${ZKSYNC_OS_PATH}/zk_ee/src/system/metadata/zk_metadata.rs" \
+    && has_text "recorded_upgrade_tx_hash" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs"
+}
+
+if base_patch_applied && canonical_upgrade_fix_applied; then
   echo "zksync-os Syscoin patch appears already applied; skipping." >&2
   exit 0
+fi
+
+if base_patch_applied && ! canonical_upgrade_fix_applied; then
+  echo "error: detected an older partially applied Syscoin patch in ${ZKSYNC_OS_PATH}." >&2
+  echo "Please start from a clean upstream checkout/tag before applying the updated patch." >&2
+  exit 1
 fi
 
 echo "Checking patch applicability..." >&2

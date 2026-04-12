@@ -128,12 +128,13 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
 
                 let timestamp = (millis_since_epoch() / 1000) as u64;
 
-                // Check if we peeked an upgrade transaction info.
+                // SYSCOIN Check if we peeked an upgrade transaction info.
                 // It is possible that we peek an upgrade with version <= self.protocol_version
                 // since we do not consume patch upgrades when replaying/rebuilding blocks. Such upgrade can be safely skipped.
-                let force_preimages = if let Some(upgrade_metadata) = best_txs.upgrade_metadata
-                    && upgrade_metadata.protocol_version > self.protocol_version
-                {
+                let (force_preimages, canonical_upgrade_tx_hash) =
+                    if let Some(upgrade_metadata) = best_txs.upgrade_metadata
+                        && upgrade_metadata.protocol_version > self.protocol_version
+                    {
                     tracing::info!(
                         block_number,
                         ?upgrade_metadata,
@@ -150,9 +151,13 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                         current_timestamp
                     );
                     self.protocol_version = upgrade_metadata.protocol_version.clone();
-                    upgrade_metadata.force_preimages.clone()
+                    // SYSCOIN
+                    (
+                        upgrade_metadata.force_preimages.clone(),
+                        upgrade_metadata.canonical_tx_hash,
+                    )
                 } else {
-                    Vec::new()
+                    (Vec::new(), B256::ZERO)
                 };
 
                 let execution_version: ExecutionVersion = (&self.protocol_version)
@@ -218,6 +223,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages,
+                    canonical_upgrade_tx_hash,
                     expect_sl_chain_id_tx_after_upgrade,
                     starting_cursors: self.next_cursors.clone(),
                     interop_roots_per_block: self.interop_roots_per_block,
@@ -270,6 +276,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: Some(record.block_output_hash),
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: record.force_preimages,
+                    canonical_upgrade_tx_hash: record.canonical_upgrade_tx_hash,
                     expect_sl_chain_id_tx_after_upgrade,
                     starting_cursors: record.starting_cursors,
                     interop_roots_per_block: self.interop_roots_per_block,
@@ -371,6 +378,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     expected_block_output_hash: None,
                     previous_block_timestamp: self.previous_block_timestamp,
                     force_preimages: rebuild.replay_record.force_preimages,
+                    canonical_upgrade_tx_hash: rebuild.replay_record.canonical_upgrade_tx_hash,
                     starting_cursors: self.next_cursors.clone(),
                     interop_roots_per_block: self.interop_roots_per_block,
                     strict_subpool_cleanup: false,

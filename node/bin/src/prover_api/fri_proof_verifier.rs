@@ -2,6 +2,18 @@ use crate::prover_api::fri_job_manager::SubmitError;
 use alloy::primitives::B256;
 use zk_os_basic_system::system_implementation::system::BatchPublicInput;
 use zksync_os_contract_interface::models::StoredBatchInfo;
+// SYSCOIN
+pub fn verify_real_fri_proof_bytes(
+    previous_state_commitment: B256,
+    stored_batch_info: StoredBatchInfo,
+    proof_bytes: &[u8],
+) -> Result<(), SubmitError> {
+    let program_proof = bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+        .map_err(|err| SubmitError::DeserializationFailed(err))?
+        .0;
+
+    verify_fri_proof(previous_state_commitment, stored_batch_info, program_proof)
+}
 
 pub fn verify_fri_proof(
     previous_state_commitment: B256,
@@ -31,7 +43,7 @@ pub fn verify_fri_proof(
         expected_hash_u32s
     );
 
-    // compare expected_hash_u32s with the last 8 values of proof_final_register_values
+    // Compare expected hash words with the first 8 public-output registers.
     (proof_final_register_values[..8] == expected_hash_u32s)
         .then_some(())
         .ok_or(SubmitError::FriProofVerificationError {

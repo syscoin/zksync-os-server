@@ -185,3 +185,135 @@ index a6a348fd..6e98ff3d 100644
                  for word in advice.iter() {
                      #[cfg(target_pointer_width = "32")]
                      blobs_advice.push(word as u32);
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
+index 0ff5891c..7de80e91 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
+@@ -109,7 +109,12 @@ where
+         io.logs_storage
+             .apply_to_array_vec(&mut batch_data.logs_storage);
+ 
+-        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
++        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
++        let upgrade_tx_hash = if metadata.block_level.canonical_upgrade_tx_hash == Bytes32::ZERO {
++            recorded_upgrade_tx_hash
++        } else {
++            metadata.block_level.canonical_upgrade_tx_hash
++        };
+         let (multichain_root, settlement_layer_chain_id) = read_batch_context_inputs(&mut io);
+ 
+         let (mut state_commitment, last_block_timestamp) = {
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
+index 2c21c201..8be6f90e 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
+@@ -110,7 +110,12 @@ where
+         if !block_data.upgrade_tx_recorder.is_empty() {
+             number_of_layer_2_txs -= 1;
+         }
+-        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
++        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
++        let upgrade_tx_hash = if metadata.block_level.canonical_upgrade_tx_hash == Bytes32::ZERO {
++            recorded_upgrade_tx_hash
++        } else {
++            metadata.block_level.canonical_upgrade_tx_hash
++        };
+         let interop_roots_rolling_hash = calculate_interop_roots_rolling_hash(
+             Bytes32::zero(),
+             io.interop_root_storage.iter(),
+diff --git a/forward_system/src/run/convert.rs b/forward_system/src/run/convert.rs
+index dbab6675..4e9e7850 100644
+--- a/forward_system/src/run/convert.rs
++++ b/forward_system/src/run/convert.rs
+@@ -5,6 +5,7 @@ use basic_bootloader::bootloader::block_header::BlockHeader;
+ use zk_ee::common_structs::GenericEventContent;
+ use zk_ee::system::evm::EvmError as ZkEvmError;
+ use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
++use zk_ee::utils::Bytes32;
+ use zk_ee::types_config::EthereumIOTypesConfig;
+ use zksync_os_evm_errors::EvmError as InterfaceEvmError;
+ use zksync_os_interface::error::InvalidTransaction;
+@@ -93,6 +94,7 @@ impl FromInterface<BlockContext> for BlockMetadataFromOracle {
+             pubdata_limit: value.pubdata_limit,
+             mix_hash: value.mix_hash,
+             blob_fee: value.blob_fee,
++            canonical_upgrade_tx_hash: Bytes32::ZERO,
+         }
+     }
+ }
+diff --git a/tests/rig/src/chain.rs b/tests/rig/src/chain.rs
+index 28a64da4..d38de79e 100644
+--- a/tests/rig/src/chain.rs
++++ b/tests/rig/src/chain.rs
+@@ -425,6 +425,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
+             pubdata_limit: block_context.pubdata_limit,
+             mix_hash: block_context.mix_hash,
+             blob_fee: block_context.blob_fee,
++            canonical_upgrade_tx_hash: Bytes32::ZERO,
+         };
+         let tx_source = TxListSource {
+             transactions: transactions.into(),
+@@ -615,6 +616,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
+             pubdata_limit: block_context.pubdata_limit,
+             mix_hash: block_context.mix_hash,
+             blob_fee: block_context.blob_fee,
++            canonical_upgrade_tx_hash: Bytes32::ZERO,
+         };
+         let state_commitment = FlatStorageCommitment::<{ TREE_HEIGHT }> {
+             root: *self.state_tree.storage_tree.root(),
+diff --git a/zk_ee/src/system/metadata/zk_metadata.rs b/zk_ee/src/system/metadata/zk_metadata.rs
+index 2ebf44bf..10ea6b70 100644
+--- a/zk_ee/src/system/metadata/zk_metadata.rs
++++ b/zk_ee/src/system/metadata/zk_metadata.rs
+@@ -129,6 +129,9 @@ pub struct BlockMetadataFromOracle {
+     /// of prevRandao.
+     pub mix_hash: U256,
+     pub blob_fee: U256,
++    /// Canonical settlement-layer upgrade tx hash for this block's upgrade batch.
++    /// Zero when the block is not the upgrade block.
++    pub canonical_upgrade_tx_hash: Bytes32,
+ }
+ 
+ impl BasicBlockMetadata<EthereumIOTypesConfig> for BlockMetadataFromOracle {
+@@ -217,6 +220,7 @@ impl BlockMetadataFromOracle {
+             block_hashes: BlockHashes::default(),
+             mix_hash: U256::ONE,
+             blob_fee: U256::ZERO,
++            canonical_upgrade_tx_hash: Bytes32::ZERO,
+         }
+     }
+ }
+@@ -225,7 +229,8 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+     const USIZE_LEN: usize = <U256 as UsizeSerializable>::USIZE_LEN
+         * (5 + BLOCK_HASHES_WINDOW_SIZE)
+         + <u64 as UsizeSerializable>::USIZE_LEN * 5
+-        + <B160 as UsizeDeserializable>::USIZE_LEN;
++        + <B160 as UsizeDeserializable>::USIZE_LEN
++        + <Bytes32 as UsizeSerializable>::USIZE_LEN;
+ 
+     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
+         ExactSizeChain::new(
+@@ -262,6 +267,7 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+             ),
+             UsizeSerializable::iter(&self.blob_fee),
+         )
++        .chain(UsizeSerializable::iter(&self.canonical_upgrade_tx_hash))
+     }
+ }
+ 
+@@ -281,6 +287,7 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
+         let block_hashes = UsizeDeserializable::from_iter(src)?;
+         let mix_hash = UsizeDeserializable::from_iter(src)?;
+         let blob_fee = UsizeDeserializable::from_iter(src)?;
++        let canonical_upgrade_tx_hash = UsizeDeserializable::from_iter(src)?;
+ 
+         let new = Self {
+             eip1559_basefee,
+@@ -295,6 +302,7 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
+             block_hashes,
+             mix_hash,
+             blob_fee,
++            canonical_upgrade_tx_hash,
+         };
+ 
+         Ok(new)

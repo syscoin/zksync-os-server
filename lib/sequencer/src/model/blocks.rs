@@ -94,6 +94,8 @@ pub struct PreparedBlockCommand<'a> {
     /// Contract preimages to be included before the block execution.
     /// Can be non-empty e.g. when processing upgrade transactions.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
+    /// Canonical settlement-layer upgrade tx hash for this block's upgrade batch.
+    pub canonical_upgrade_tx_hash: B256,
     /// Whether the sequencer expects exactly one `SetSLChainId` system tx to execute immediately
     /// after an upgrade tx before the block is sealed.
     pub expect_sl_chain_id_tx_after_upgrade: bool,
