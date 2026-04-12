@@ -208,7 +208,6 @@ fn compute_prover_input(
             use zk_ee::{
                 common_structs::ProofData,
                 system::metadata::zk_metadata::BlockMetadataFromOracle,
-                utils::Bytes32,
             };
             use zk_os_forward_system::run::{
                 StorageCommitment, convert::FromInterface, generate_proof_input_from_bytes,
@@ -230,12 +229,9 @@ fn compute_prover_input(
             let da_commitment_scheme = (da_commitment_scheme as u8)
                 .try_into()
                 .expect("Failed to convert DA commitment scheme");
-            let mut block_metadata = BlockMetadataFromOracle::from_interface(replay_record.block_context);
-            block_metadata.canonical_upgrade_tx_hash =
-                Bytes32::from_array(replay_record.canonical_upgrade_tx_hash.into_array());
             generate_proof_input_from_bytes(
                 bin_bytes,
-                block_metadata,
+                BlockMetadataFromOracle::from_interface(replay_record.block_context),
                 ProofData {
                     state_root_view: initial_storage_commitment,
                     last_block_timestamp: replay_record.previous_block_timestamp,
@@ -276,7 +272,7 @@ fn compute_prover_input(
             // SYSCOIN
             let mut block_metadata = BlockMetadataFromOracle::from_interface(replay_record.block_context);
             block_metadata.canonical_upgrade_tx_hash =
-                Bytes32::from_array(replay_record.canonical_upgrade_tx_hash.into_array());
+                Bytes32::from_array(replay_record.canonical_upgrade_tx_hash.to_array());
             generate_proof_input_from_bytes(
                 bin_bytes,
                 block_metadata,
