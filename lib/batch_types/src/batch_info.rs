@@ -53,7 +53,10 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
 
 pub fn syscoin_blob_ids_and_chunks_from_pubdata(pubdata: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let blob_chunks = encoded_blob_chunks_from_pubdata(pubdata);
-    let blob_ids = blob_chunks.iter().flat_map(|chunk| blob_data_id(chunk)).collect();
+    let blob_ids = blob_chunks
+        .iter()
+        .flat_map(|chunk| blob_data_id(chunk))
+        .collect();
     (blob_ids, blob_chunks)
 }
 

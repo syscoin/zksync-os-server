@@ -127,7 +127,8 @@ impl GasAdjuster {
         if current_block > last_processed_block {
             let n_blocks = current_block - last_processed_block;
             let fee_data =
-                Self::base_fee_history(&self.sl_provider, current_block, n_blocks, &self.config).await?;
+                Self::base_fee_history(&self.sl_provider, current_block, n_blocks, &self.config)
+                    .await?;
 
             // We shouldn't rely on provider to return consistent results, so we check that we have at least one new sample.
             if let Some(current_base_fee_per_gas) = fee_data.last().map(|fee| fee.base_fee_per_gas)
@@ -392,7 +393,9 @@ impl GasAdjuster {
             Some(config.bitcoin_da_request_timeout),
             &config.bitcoin_da_wallet_name,
         )
-        .map_err(|err| anyhow::anyhow!("failed to construct Syscoin client for blob fee estimation: {err}"))?;
+        .map_err(|err| {
+            anyhow::anyhow!("failed to construct Syscoin client for blob fee estimation: {err}")
+        })?;
 
         client
             .get_blob_base_fee(config.bitcoin_da_fee_conf_target)

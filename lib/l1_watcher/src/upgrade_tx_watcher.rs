@@ -190,7 +190,11 @@ impl L1UpgradeTxWatcher {
             );
             (Some(tx), force_preimages)
         };
-        let canonical_tx_hash = match self.zk_chain_sl.get_upgrade_tx_hash(BlockId::latest()).await {
+        let canonical_tx_hash = match self
+            .zk_chain_sl
+            .get_upgrade_tx_hash(BlockId::latest())
+            .await
+        {
             Ok(hash) if !hash.is_zero() => hash,
             Ok(_) | Err(_) => l2_upgrade_tx
                 .as_ref()

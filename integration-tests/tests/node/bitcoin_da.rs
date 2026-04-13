@@ -54,7 +54,9 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
                 .body_matches(r#""method"\s*:\s*"estimatesmartfee""#);
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}));
+                .json_body(
+                    json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}),
+                );
         })
         .await;
     let get_mempool_info = server
@@ -187,7 +189,9 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
                 .body_matches(r#""method"\s*:\s*"estimatesmartfee""#);
             then.status(200)
                 .header("content-type", "application/json")
-                .json_body(json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}));
+                .json_body(
+                    json!({"result": {"feerate": 0.00001, "blocks": 6}, "error": null, "id": 1}),
+                );
         })
         .await;
     let get_mempool_info = server

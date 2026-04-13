@@ -131,10 +131,10 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 // SYSCOIN Check if we peeked an upgrade transaction info.
                 // It is possible that we peek an upgrade with version <= self.protocol_version
                 // since we do not consume patch upgrades when replaying/rebuilding blocks. Such upgrade can be safely skipped.
-                let (force_preimages, canonical_upgrade_tx_hash) =
-                    if let Some(upgrade_metadata) = best_txs.upgrade_metadata
-                        && upgrade_metadata.protocol_version > self.protocol_version
-                    {
+                let (force_preimages, canonical_upgrade_tx_hash) = if let Some(upgrade_metadata) =
+                    best_txs.upgrade_metadata
+                    && upgrade_metadata.protocol_version > self.protocol_version
+                {
                     tracing::info!(
                         block_number,
                         ?upgrade_metadata,
