@@ -225,6 +225,9 @@ alloy::sol! {
 
         /// Provides an actual data for the upgrade execution.
         event NewUpgradeCutData(uint256 indexed protocolVersion, DiamondCutData diamondCutData);
+
+        /// Address of the L1 bytecodes supplier used for upgrades (v31+).
+        function L1_BYTECODES_SUPPLIER() external view returns (address);
     }
 
     // `IZKChain.sol`
@@ -402,9 +405,9 @@ alloy::sol! {
         function tokenMultiplierSetter() external view returns (address);
     }
 
-    // `BytecodeSupplier.sol`
+    // `BytecodesSupplier.sol`
     interface IBytecodeSupplier {
-        event BytecodePublished(bytes32 indexed bytecodeHash, bytes bytecode);
+        event EVMBytecodePublished(bytes32 indexed bytecodeHash, bytes bytecode);
     }
 
     #[sol(rpc)]
