@@ -44,7 +44,7 @@ pub async fn run(
         .with_state(app_state)
         // Set the request body limit to 10MiB
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
-        // Large prover inputs are expected; allow standard HTTP response compression so
+        // SYSCOIN Large prover inputs are expected; allow standard HTTP response compression so
         // remote provers do not need to pull multi-megabyte JSON payloads uncompressed.
         .layer(CompressionLayer::new());
 
