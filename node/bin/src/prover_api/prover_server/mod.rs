@@ -14,6 +14,7 @@ use crate::prover_api::{
 use axum::{Router, extract::DefaultBodyLimit};
 use reth_tasks::shutdown::GracefulShutdown;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
 
 /// Application state shared across all request handlers.
 #[derive(Clone)]
@@ -42,7 +43,10 @@ pub async fn run(
         .nest("/prover-jobs/v1", v1_routes())
         .with_state(app_state)
         // Set the request body limit to 10MiB
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024));
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Large prover inputs are expected; allow standard HTTP response compression so
+        // remote provers do not need to pull multi-megabyte JSON payloads uncompressed.
+        .layer(CompressionLayer::new());
 
     let bind_address: SocketAddr = bind_address.parse().expect("failed to parse bind address");
     tracing::info!("starting proof data server on {bind_address}");
