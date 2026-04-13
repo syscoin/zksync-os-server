@@ -14,7 +14,9 @@ use zksync_os_batch_types::{BatchInfo, DiscoveredCommittedBatch};
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::CommitBatchInfo;
-use zksync_os_contract_interface::{Bridgehub, IExecutor, MessageRoot, ZkChain};
+use zksync_os_contract_interface::{
+    Bridgehub, Error as ContractInterfaceError, IExecutor, MessageRoot, ZkChain,
+};
 use zksync_os_types::ProtocolSemanticVersion;
 
 pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
@@ -310,8 +312,24 @@ pub async fn find_l1_block_by_interop_root_id(
                 .await?;
             Ok(res >= next_interop_root_id)
         };
+    // SYSCOIN
+    let latest_result = guarded_predicate(message_root.clone(), latest).await;
+    let latest_matches_target = match latest_result {
+        Ok(latest_matches_target) => latest_matches_target,
+        Err(err) if should_fallback_to_genesis_log_scan(&err) => {
+            tracing::warn!(
+                interop_root_id = next_interop_root_id,
+                message_root = ?message_root_address,
+                error = %err,
+                "MessageRoot.totalPublishedInteropRoots is unavailable; falling back to genesis log scan"
+            );
+            return Ok(0);
+        }
+        Err(err) => return Err(err),
+    };
 
-    if !guarded_predicate(message_root.clone(), latest).await? {
+    // SYSCOIN
+    if !latest_matches_target {
         anyhow::bail!(
             "Condition not satisfied up to latest block: contract not deployed yet \
              or target not reached.",
@@ -321,7 +339,21 @@ pub async fn find_l1_block_by_interop_root_id(
     let (mut lo, mut hi) = (0, latest);
     while lo < hi {
         let mid = (lo + hi) / 2;
-        if guarded_predicate(message_root.clone(), mid).await? {
+        // SYSCOIN
+        let mid_matches_target = match guarded_predicate(message_root.clone(), mid).await {
+            Ok(mid_matches_target) => mid_matches_target,
+            Err(err) if should_fallback_to_genesis_log_scan(&err) => {
+                tracing::warn!(
+                    interop_root_id = next_interop_root_id,
+                    message_root = ?message_root_address,
+                    error = %err,
+                    "MessageRoot.totalPublishedInteropRoots became unavailable during binary search; falling back to genesis log scan"
+                );
+                return Ok(0);
+            }
+            Err(err) => return Err(err),
+        };
+        if mid_matches_target {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -329,6 +361,21 @@ pub async fn find_l1_block_by_interop_root_id(
     }
 
     Ok(lo)
+}
+// SYSCOIN
+fn should_fallback_to_genesis_log_scan(err: &anyhow::Error) -> bool {
+    let Some(err) = err.downcast_ref::<ContractInterfaceError>() else {
+        return false;
+    };
+    match err {
+        ContractInterfaceError::Call(inner, function_name)
+        | ContractInterfaceError::CallAtBlock(inner, function_name, _)
+            if function_name == "totalPublishedInteropRoots" =>
+        {
+            inner.to_string().contains("execution reverted")
+        }
+        _ => false,
+    }
 }
 
 /// Fetches and decodes stored batch data for batch `batch_number` that is expected to have been
