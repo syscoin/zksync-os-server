@@ -1,4 +1,4 @@
-use super::proof_storage::{ProofStorage, StoredBatch};
+use super::proof_storage::ProofStorage;
 use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proof_verifier;
 use async_trait::async_trait;
@@ -56,7 +56,6 @@ impl FriProvingPipelineStep {
     }
     // SYSCOIN
     fn can_rehydrate_batch(
-        &self,
         expected_batch: &SignedBatchEnvelope<ProverInput>,
         stored_batch: &SignedBatchEnvelope<FriProof>,
     ) -> bool {
@@ -135,14 +134,10 @@ impl FriProvingPipelineStep {
     }
 
     async fn try_rehydrate_batch(
-        &self,
+        proof_storage: &ProofStorage,
         batch: &SignedBatchEnvelope<ProverInput>,
     ) -> Option<SignedBatchEnvelope<FriProof>> {
-        let stored_batch = match self
-            .proof_storage
-            .get_batch_with_proof(batch.batch_number())
-            .await
-        {
+        let stored_batch = match proof_storage.get_batch_with_proof(batch.batch_number()).await {
             Ok(Some(batch)) => batch,
             Ok(None) => return None,
             Err(err) => {
@@ -155,7 +150,7 @@ impl FriProvingPipelineStep {
             }
         };
 
-        if self.can_rehydrate_batch(batch, &stored_batch) {
+        if Self::can_rehydrate_batch(batch, &stored_batch) {
             tracing::info!(
                 batch_number = batch.batch_number(),
                 "Reusing stored FRI proof after restart"
@@ -180,14 +175,19 @@ impl PipelineComponent for FriProvingPipelineStep {
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
+        let last_proved_batch_number = self.last_proved_batch_number;
+        let proof_storage = self.proof_storage.clone();
+        let fri_job_manager = self.fri_job_manager.clone();
+        let mut batches_with_proof_receiver = self.batches_with_proof_receiver;
+
         // Forward batches: pipeline input → FriJobManager (add_job) → pipeline output (via proofs channel)
         // Two concurrent tasks handle the bidirectional flow
         tokio::select! {
             result = async {
                 while let Some(batch) = input.recv().await {
-                    if batch.batch_number() > self.last_proved_batch_number {
+                    if batch.batch_number() > last_proved_batch_number {
                         // SYSCOIN
-                        if let Some(stored_batch) = self.try_rehydrate_batch(&batch).await {
+                        if let Some(stored_batch) = Self::try_rehydrate_batch(&proof_storage, &batch).await {
                             output.send(stored_batch).await?;
                             continue;
                         }
@@ -196,7 +196,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                             batch.batch_number()
                         );
                         // Add job directly to FriJobManager - this will await if queue is full
-                        self.fri_job_manager.add_job(batch).await
+                        fri_job_manager.add_job(batch).await
                     } else {
                         // Already proven - send with fake proof to pass through the pipeline
                         let batch_with_fake_proof = batch.with_data(FriProof::AlreadySubmittedToL1);
@@ -210,7 +210,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                 return Ok(());
             },
             result = async {
-                while let Some(proof) = self.batches_with_proof_receiver.recv().await {
+                while let Some(proof) = batches_with_proof_receiver.recv().await {
                     tracing::info!(
                         "Received batch after FRI proving: {:?}",
                         proof.batch_number()
@@ -231,6 +231,7 @@ impl PipelineComponent for FriProvingPipelineStep {
 mod tests {
     use super::*;
     use crate::config::ProofStorageConfig;
+    use crate::prover_api::proof_storage::StoredBatch;
     use alloy::primitives::{Address, B256};
     use tempfile::TempDir;
     use tokio::time::timeout;
