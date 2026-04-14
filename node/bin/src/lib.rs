@@ -303,9 +303,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let tree_db = tree_at_genesis.tree;
     let tree_for_rpc = Arc::new(tree_db.clone());
 
-    // todo: this can take a while; ideally committed batches should be loaded in the background
-    //       and then `get()` method can be made async so that it waits for relevant batch to load
-    let committed_batch_provider = CommittedBatchProvider::init(
+    let committed_batch_provider = CommittedBatchProvider::new(
         &l1_state,
         config.l1_watcher_config.max_blocks_to_process,
         || async {
@@ -317,6 +315,16 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     )
     .await
     .expect("failed to init CommittedBatchProvider");
+
+    let committed_batch_provider_for_init = committed_batch_provider.clone();
+    let l1_state_for_init = l1_state.clone();
+    let max_blocks_to_process = config.l1_watcher_config.max_blocks_to_process;
+    runtime.spawn_critical_task("committed batch provider init", async move {
+        committed_batch_provider_for_init
+            .init(&l1_state_for_init, max_blocks_to_process)
+            .await
+            .expect("failed to initialize CommittedBatchProvider");
+    });
 
     let state = State::new(&config.general_config, &genesis).await;
 
@@ -1412,7 +1420,7 @@ async fn commit_proof_execute_block_numbers(
     } else {
         committed_batch_provider
             .get(l1_state.last_committed_batch)
-            .expect("last committed batch was not discovered on L1")
+            .expect("last_committed_batch is expected to be loaded")
             .last_block_number()
     };
 
@@ -1422,7 +1430,7 @@ async fn commit_proof_execute_block_numbers(
     } else {
         committed_batch_provider
             .get(l1_state.last_proved_batch)
-            .expect("last proved batch was not discovered on L1")
+            .expect("last_proved_batch is expected to be loaded")
             .last_block_number()
     };
 
@@ -1431,7 +1439,7 @@ async fn commit_proof_execute_block_numbers(
     } else {
         committed_batch_provider
             .get(l1_state.last_executed_batch)
-            .expect("last executed batch was not discovered on L1")
+            .expect("last_executed_batch is expected to be loaded")
             .last_block_number()
     };
     (last_committed_block, last_proved_block, last_executed_block)

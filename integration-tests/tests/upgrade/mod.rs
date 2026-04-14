@@ -19,7 +19,6 @@ async fn upgrade_patch_no_deployments() -> anyhow::Result<()> {
     let upgrade_timestamp = U256::from(1); // Protocol upgrade can be executed immediately.
     let deadline = U256::MAX; // The protocol version will not have any deadline in this upgrade
 
-    // Test that we can deposit L2 funds from a rich L1 account
     let tester = Tester::setup().await?;
     let upgrade_tester = UpgradeTester::for_default_upgrade(tester).await?;
 
@@ -136,10 +135,8 @@ async fn upgrade_to_v31_with_deployments() -> anyhow::Result<()> {
     let tester = Tester::setup().await?;
     let upgrade_tester = UpgradeTester::for_default_upgrade(tester).await?;
 
-    // Publish the bytecodes for upgrade beforehand.
-    // TODO: we need to use bytecode instead of deployed bytecode for now, since under the hood `publish_bytecodes`
-    // actually deploys contracts since BytecodesSupplier is not ready for zksync os
-    // Once this is fixed, also check the logic for `ForceDeploymentBytecodeInfo` in the builder.
+    // Publish the bytecodes for upgrade beforehand via L2 deploy
+    // so that the preimages are known to the node.
     upgrade_tester
         .publish_bytecodes([SampleForceDeployment::BYTECODE.clone()])
         .await?;
@@ -227,20 +224,20 @@ async fn upgrade_to_v32_with_deployments_settles_to_gateway() -> anyhow::Result<
     let tester = gateway_tester.into_primary_chain();
     let upgrade_tester = UpgradeTester::for_default_upgrade(tester).await?;
 
-    // Publish the bytecodes for upgrade beforehand.
-    // TODO: we need to use bytecode instead of deployed bytecode for now, since under the hood `publish_bytecodes`
-    // actually deploys contracts since BytecodesSupplier is not ready for zksync os
-    // Once this is fixed, also check the logic for `ForceDeploymentBytecodeInfo` in the builder.
+    // Publish to the L1 BytecodesSupplier only (no L2 deploy). This exercises
+    // the end-to-end path: the server discovers preimages from `EVMBytecodePublished`
+    // events via `fetch_force_preimages`.
     upgrade_tester
-        .publish_bytecodes([SampleForceDeployment::BYTECODE.clone()])
+        .publish_bytecodes_to_l1_supplier([SampleForceDeployment::DEPLOYED_BYTECODE.clone()])
         .await?;
 
-    // Prepare protocol upgrade
+    // Prepare protocol upgrade with factory_deps so the server fetches from the supplier.
     let protocol_upgrade = upgrade_tester
         .protocol_upgrade_builder()
         .await?
         .bump_minor(1)
         .with_force_deployments(force_deployments)
+        .with_factory_deps()
         .with_timestamp(upgrade_timestamp)
         .build();
 

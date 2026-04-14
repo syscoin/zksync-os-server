@@ -4,7 +4,6 @@ use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
 use alloy::primitives::{Address, B256};
-use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
 use secrecy::ExposeSecret;
@@ -92,13 +91,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
         // `last_executed_batch + 1`.
         let last_executed_batch = self
             .committed_batch_provider
-            .get(self.startup_config.last_executed_batch)
-            .with_context(|| {
-                format!(
-                    "last executed batch {} must have been discovered on L1",
-                    self.startup_config.last_executed_batch
-                )
-            })?;
+            .wait_for_batch(self.startup_config.last_executed_batch)
+            .await;
         let first_expected_block = last_executed_batch.last_block_number() + 1;
         let mut prev_batch_info = last_executed_batch.batch_info;
 
@@ -146,13 +140,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                 if prev_batch_info.batch_number < self.startup_config.last_committed_batch {
                     let committed_batch = self
                         .committed_batch_provider
-                        .get(prev_batch_info.batch_number + 1)
-                        .with_context(|| {
-                            format!(
-                                "committed batch {} must have been discovered on L1",
-                                prev_batch_info.batch_number + 1
-                            )
-                        })?;
+                        .wait_for_batch(prev_batch_info.batch_number + 1)
+                        .await;
                     // Validate that the existing batch's first block matches the next block in the stream
                     anyhow::ensure!(
                         committed_batch.first_block_number() == next_block_number,
