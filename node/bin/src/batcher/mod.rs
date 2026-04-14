@@ -4,6 +4,7 @@ use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
 use alloy::primitives::{Address, B256};
+use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
 use secrecy::ExposeSecret;

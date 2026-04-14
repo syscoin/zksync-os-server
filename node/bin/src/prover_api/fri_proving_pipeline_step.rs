@@ -315,7 +315,7 @@ mod tests {
     async fn run_reuses_stored_fri_proof_after_restart() -> anyhow::Result<()> {
         let proof_storage = proof_storage_for_test().await?;
         let input_batch = dummy_input_batch(1);
-        let stored_batch = StoredBatch::V1(input_batch.clone().with_data(FriProof::Fake));
+        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
         proof_storage.save_batch_with_proof(&stored_batch).await?;
 
         let (step, _job_manager) =
