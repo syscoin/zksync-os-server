@@ -191,19 +191,23 @@ impl L1State {
         gateway_provider: Option<DynProvider>,
         bridgehub_address: Address,
         chain_id: u64,
+        startup_sl_finalization_timeout: Duration,
     ) -> anyhow::Result<Self> {
         let this = Self::fetch(l1_provider, gateway_provider, bridgehub_address, chain_id).await?;
         let zk_chain_sl = &this.diamond_proxy_sl;
-        let (sl_block_number, batch_finality) =
-            wait_to_finalize(zk_chain_sl.provider(), |block_id| async move {
+        let (sl_block_number, batch_finality) = wait_to_finalize(
+            zk_chain_sl.provider(),
+            startup_sl_finalization_timeout,
+            |block_id| async move {
                 Ok(BatchFinality {
                     last_committed_batch: zk_chain_sl.get_total_batches_committed(block_id).await?,
                     last_proved_batch: zk_chain_sl.get_total_batches_proved(block_id).await?,
                     last_executed_batch: zk_chain_sl.get_total_batches_executed(block_id).await?,
                 })
-            })
-            .await
-            .context("failed to fetch finalized batch state")?;
+            },
+        )
+        .await
+        .context("failed to fetch finalized batch state")?;
         Ok(Self {
             bridgehub_l1: this.bridgehub_l1,
             bridgehub_sl: this.bridgehub_sl,
@@ -245,13 +249,14 @@ impl L1State {
 /// Waits until the pending SL state matches the latest finalized SL block.
 async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Result<T>>>(
     provider: &DynProvider,
+    timeout: Duration,
     f: impl Fn(BlockId) -> Fut,
 ) -> anyhow::Result<(u64, T)> {
-    /// Ethereum blocks are mined every ~12 seconds on average, but we wait in 1-second intervals
-    /// optimistically to save time on startup.
-    const RETRY_BUILDER: ConstantBuilder = ConstantBuilder::new()
-        .with_delay(Duration::from_secs(1))
-        .with_max_times(10);
+    /// SYSCOIN We probe once per second so startup can proceed as soon as pending SL state finalizes.
+    const RETRY_DELAY: Duration = Duration::from_secs(1);
+    let retry_builder = ConstantBuilder::new()
+        .with_delay(RETRY_DELAY)
+        .with_max_times(timeout.as_millis().div_ceil(RETRY_DELAY.as_millis()).max(1) as usize);
 
     let pending_value = f(BlockId::pending())
         .await
@@ -278,7 +283,7 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
             Err(err) => Ok(Err(err)),
         }
     })
-    .retry(RETRY_BUILDER)
+    .retry(retry_builder)
     .notify(|(latest_block_number, last_value), _| {
         tracing::info!(
             pending_value = ?pending_value,

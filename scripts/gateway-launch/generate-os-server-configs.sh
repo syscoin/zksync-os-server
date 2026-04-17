@@ -296,6 +296,11 @@ def materialize_chain(
         "general:",
         f"  rocks_db_path: {out_dir / 'db'}",
         f"  l1_rpc_url: '{l1_rpc_url}'",
+        *(
+            ["  startup_sl_finalization_timeout: 3000s"]
+            if pubdata_mode != "RelayedL2Calldata"
+            else []
+        ),
     ]
     config_lines.extend(
         [

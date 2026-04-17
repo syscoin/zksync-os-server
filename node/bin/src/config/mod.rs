@@ -383,6 +383,11 @@ pub struct GeneralConfig {
     #[config(default_t = 7 * TimeUnit::Seconds)]
     pub gateway_rpc_poll_interval: Duration,
 
+    /// SYSCOIN Maximum time the main node waits on startup for pending settlement-layer state to become
+    /// finalized before aborting initialization.
+    #[config(default_t = 10 * TimeUnit::Seconds)]
+    pub startup_sl_finalization_timeout: Duration,
+
     /// Gateway chain ID. Used by the migration watcher to construct `SetSLChainId` system
     /// transactions when a `MigrateToGateway` event fires. Defaults to 506 (ZKsync Gateway).
     #[config(default_t = 506)]

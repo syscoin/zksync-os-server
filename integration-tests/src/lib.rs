@@ -1189,6 +1189,7 @@ async fn wait_for_gateway_readiness(
             Some(DynProvider::new(gateway_provider)),
             bridgehub_address,
             chain_id,
+            Duration::from_secs(10),
         )
         .await
         .with_context(|| format!("gateway is not ready for chain {chain_id}"))?;

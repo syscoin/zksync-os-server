@@ -210,6 +210,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             gateway_provider.as_ref().map(|p| p.clone().erased()),
             bridgehub_address,
             chain_id,
+            config.general_config.startup_sl_finalization_timeout,
         )
         .await
         .expect("failed to fetch finalized L1 state")
