@@ -594,17 +594,7 @@ pub struct SequencerConfig {
 
     /// Max pubdata bytes per block.
     /// One of the block Seal Criteria. Only affects the Main Node.
-    ///
-    /// SYSCOIN Default raised to 1_000_000 B to provide headroom for pubdata-heavy
-    /// workloads (e.g. EAS attestations creating new storage slots per tx). The
-    /// hard upper bound in the proving path is 9 blobs ≈ 1_142_784 B of raw
-    /// pubdata per batch (see `BlobCommitmentGenerator::BUFFER_CAPACITY` in
-    /// basic_bootloader); 1 MB leaves a comfortable margin under that ceiling
-    /// and under Syscoin DA's 2 MB per-transaction capacity. Edge and gateway
-    /// should stay in sync on this value; the batcher reserves
-    /// `COMMIT_TX_PUBDATA_OVERHEAD` bytes of headroom so the relayed commit tx
-    /// still fits inside an identically-configured gateway block.
-    #[config(default_t = 1_000_000)]
+    #[config(default_t = 110_000)]
     pub block_pubdata_limit_bytes: u64,
 
     /// Path to the directory where block dumps for unexpected failures will be saved.
