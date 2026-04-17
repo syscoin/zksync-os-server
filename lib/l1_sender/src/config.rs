@@ -28,6 +28,20 @@ pub struct L1SenderConfig<Input> {
     /// Maximum time to wait for a transaction to be included on L1.
     pub transaction_timeout: Duration,
 
+    /// SYSCOIN How often to poll the settlement-layer mempool for an in-flight
+    /// transaction while waiting for its receipt. Used to detect permanently
+    /// rejected transactions (e.g. dropped by a ZKsync OS gateway with
+    /// `source_marked_invalid=true`) instead of waiting the full
+    /// `transaction_timeout`.
+    pub tx_liveness_poll_interval: Duration,
+
+    /// Number of consecutive polls that must report the transaction as missing
+    /// from the settlement-layer mempool (and not yet mined) before the L1
+    /// sender declares it permanently rejected and fails. A value of `0`
+    /// disables the liveness check entirely (legacy behavior: wait up to
+    /// `transaction_timeout`).
+    pub tx_liveness_max_missing_polls: u32,
+
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 

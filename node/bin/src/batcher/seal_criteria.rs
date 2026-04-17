@@ -5,6 +5,48 @@ use zksync_os_l1_sender::batcher_metrics::BATCHER_METRICS;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{ProtocolSemanticVersion, SystemTxType, ZkTxType};
 
+/// SYSCOIN Reserved headroom (in bytes) between the batch's accumulated raw pubdata and
+/// the configured `batch_pubdata_limit_bytes`, used to guarantee that the
+/// commit transaction carrying the batch still fits within a settlement-layer
+/// block configured with the same pubdata limit.
+///
+/// When a `RelayedL2Calldata` edge commits to a gateway, the gateway's
+/// `RelayedSLDAValidator` re-emits the full edge pubdata as an L2→L1 message
+/// via `L2_TO_L1_MESSENGER_SYSTEM_CONTRACT.sendToL1(abi.encode(version, chainId,
+/// batchNumber, pubdata))`. That message payload is then physically written
+/// into the gateway block's own pubdata buffer by `LogsStorage::apply_pubdata`
+/// (see `zk_ee::common_structs::logs_storage`). The gateway block pubdata
+/// therefore equals the edge pubdata plus a per-commit fixed expansion, which
+/// we upper-bound below.
+///
+/// Breakdown of the gateway-side expansion (conservative upper bound):
+///   * Gateway block header in pubdata: 1B version + 32B block_hash + 8B
+///     timestamp = 41B.
+///   * Gateway state diffs emitted by executing `commitBatches` on the
+///     diamond proxy (batch hash tracking, last-committed pointers, message
+///     root bookkeeping): ≲ 400B.
+///   * First-pass L2→L1 logs section: 4B count prefix + up to ~6 service logs
+///     (RelayedSLDAValidator user message + Executor.sol service logs) ×
+///     88B each = ≲ 532B.
+///   * Second-pass messages section: 4B count + per-user-message header
+///     (4B length prefix + 160B `abi.encode` header for the
+///     `(uint8,uint256,uint256,bytes)` tuple + up to 31B tail padding of the
+///     embedded `pubdata` bytes) + room for auxiliary service payloads:
+///     ≲ 800B.
+///   * Safety margin for future Executor/DAValidator additions.
+///
+/// 2048B comfortably covers this envelope while costing only ~0.2% of the
+/// typical ~1 MB block pubdata budget.
+///
+/// The check that uses this constant is only applied once the batch already
+/// contains at least one block: the batcher's invariant is that the first
+/// block of a batch must always be includable, otherwise a single block near
+/// the per-block pubdata cap would cause an infinite peek-reject loop. For
+/// single-block batches, inclusion still depends on the settlement layer
+/// accepting the commit tx, which requires the settlement layer's
+/// `block_pubdata_limit_bytes` to exceed the edge's by at least this margin.
+const COMMIT_TX_PUBDATA_OVERHEAD: u64 = 2048;
+
 #[derive(Default, Clone)]
 pub(crate) struct BatchInfoAccumulator {
     // Accumulated values
@@ -136,6 +178,28 @@ impl BatchInfoAccumulator {
         if self.pubdata_bytes > self.batch_pubdata_limit_bytes {
             BATCHER_METRICS.seal_reason[&"pubdata"].inc();
             tracing::debug!("Batcher: reached pubdata bytes limit for the batch");
+            return true;
+        }
+
+        // SYSCOIN Seal early to reserve space for the commit-transaction framing overhead so the
+        // settlement layer (L1 or gateway) never rejects the commit tx as exceeding its
+        // block pubdata limit when it is configured identically to this limit. Only
+        // enforced once the batch already has more than one block so that a single block
+        // near the per-block pubdata cap is still guaranteed to fit in some batch.
+        if self.block_count > 1
+            && self
+                .pubdata_bytes
+                .saturating_add(COMMIT_TX_PUBDATA_OVERHEAD)
+                > self.batch_pubdata_limit_bytes
+        {
+            BATCHER_METRICS.seal_reason[&"pubdata"].inc();
+            tracing::debug!(
+                "Batcher: sealing batch to reserve commit-tx pubdata overhead \
+                 (pubdata_bytes={}, overhead={}, limit={})",
+                self.pubdata_bytes,
+                COMMIT_TX_PUBDATA_OVERHEAD,
+                self.batch_pubdata_limit_bytes
+            );
             return true;
         }
 
