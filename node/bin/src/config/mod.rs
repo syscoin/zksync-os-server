@@ -786,24 +786,9 @@ pub struct L1SenderConfig {
     /// Maximum time to wait for an L1 transaction to be included.
     ///
     /// Normally 15-30 seconds is sufficient for normal-priority transactions; 60-120s covers most
-    /// SYSCOIN lower-gas-price cases. 3000 seconds is a conservative default for slow-L1 environments.
-    #[config(default_t = 3000 * TimeUnit::Seconds)]
+    /// lower-gas-price cases. 600 seconds is a conservative default that handles heavy congestion.
+    #[config(default_t = 600 * TimeUnit::Seconds)]
     pub transaction_timeout: Duration,
-
-    /// SYSCOIN How often to poll the settlement-layer mempool for an in-flight transaction while waiting
-    /// for its receipt. Used to detect permanently rejected transactions (e.g. a ZKsync OS gateway
-    /// purging a tx with `source_marked_invalid=true`) instead of waiting the full
-    /// `transaction_timeout`.
-    #[config(default_t = 30 * TimeUnit::Seconds)]
-    pub tx_liveness_poll_interval: Duration,
-
-    /// Number of consecutive polls that must report the transaction as missing from the
-    /// settlement-layer mempool (and not yet mined) before the L1 sender declares it
-    /// permanently rejected and fails fast. With the default `tx_liveness_poll_interval` of 30s
-    /// and 3 misses the grace period is ~90s. A value of `0` disables the check and restores the
-    /// legacy behavior of waiting up to `transaction_timeout`.
-    #[config(default_t = 3)]
-    pub tx_liveness_max_missing_polls: u32,
 
     /// Use Fusaka blob transaction format if the timestamp has passed.
     ///
@@ -1406,9 +1391,6 @@ impl L1SenderConfig {
             command_limit: self.command_limit,
             poll_interval: self.poll_interval,
             transaction_timeout: self.transaction_timeout,
-            // SYSCOIN
-            tx_liveness_poll_interval: self.tx_liveness_poll_interval,
-            tx_liveness_max_missing_polls: self.tx_liveness_max_missing_polls,
             fusaka_upgrade_timestamp: self.fusaka_upgrade_timestamp,
             phantom_data: Default::default(),
         }
@@ -1710,8 +1692,6 @@ mod tests {
                 poll_interval: Duration::from_millis(100),
                 // SYSCOIN
                 transaction_timeout: Duration::from_secs(3000),
-                tx_liveness_poll_interval: Duration::from_secs(30),
-                tx_liveness_max_missing_polls: 3,
                 fusaka_upgrade_timestamp: u64::MAX,
                 enabled: true,
                 pubdata_mode: Some(PubdataMode::Blobs),

@@ -125,7 +125,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
-        let pending_txs: Vec<(TransactionReceiptFuture, TxHash, Input, Instant)> =
+        let pending_txs: Vec<(TransactionReceiptFuture, Input, Instant)> =
             futures::stream::iter(commands.drain(..))
                 .then(|mut cmd| async {
                     let mut tx_request = tx_request_with_gas_fields(
@@ -218,7 +218,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     cmd.as_mut()
                         .iter_mut()
                         .for_each(|envelope| envelope.set_stage(Input::SENT_STAGE));
-                    anyhow::Ok((receipt_fut, tx_hash, cmd, submitted_at))
+                    anyhow::Ok((receipt_fut, cmd, submitted_at))
                 })
                 // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
                 // but this is not necessary for now - we wait for them to be included in parallel
@@ -228,18 +228,8 @@ pub async fn run_l1_sender<Input: SendToL1>(
         latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
 
         let mut completed_commands = Vec::with_capacity(pending_txs.len());
-        // SYSCOIN
-        for (receipt_fut, tx_hash, command, submitted_at) in pending_txs {
-            let receipt = await_receipt_with_liveness_check(
-                &provider,
-                receipt_fut,
-                tx_hash,
-                command_name,
-                &range,
-                config.tx_liveness_poll_interval,
-                config.tx_liveness_max_missing_polls,
-            )
-            .await;
+        for (receipt_fut, command, submitted_at) in pending_txs {
+            let receipt = receipt_fut.await;
             // Observe latency before propagating errors so timeout cases are recorded
             L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
                 .observe(submitted_at.elapsed().as_secs_f64());
@@ -264,96 +254,6 @@ pub async fn run_l1_sender<Input: SendToL1>(
             for mut output_envelope in command.into() {
                 output_envelope.set_stage(Input::MINED_STAGE);
                 outbound.send(output_envelope).await?;
-            }
-        }
-    }
-}
-
-/// SYSCOIN Waits for the transaction receipt while periodically polling the settlement
-/// layer's mempool to detect permanent rejection without waiting the full
-/// `transaction_timeout`.
-///
-/// Motivation: a ZKsync OS settlement layer (e.g. a gateway) may permanently
-/// reject a commit transaction (`source_marked_invalid=true`) and purge it from
-/// its mempool. Alloy's inclusion watcher keeps polling for a receipt anyway,
-/// leaving the sender silently stalled for up to `transaction_timeout` (up to
-/// 50 minutes by default) and propagating backpressure all the way up the
-/// proving pipeline.
-///
-/// Behavior:
-///   * `max_missing_polls == 0` disables the check and preserves legacy behavior.
-///   * Otherwise, while waiting for the receipt we poll
-///     `eth_getTransactionByHash` every `poll_interval`. If the transaction
-///     is missing from the mempool (and not yet mined) for `max_missing_polls`
-///     consecutive polls, we error out loudly so the caller can fail fast and
-///     operators get an actionable signal.
-///   * Transient RPC errors during the liveness poll are logged but do not
-///     count as a miss; we only treat an unambiguous `Ok(None)` as evidence
-///     that the settlement layer no longer knows about the transaction.
-///   * `biased` select ensures that if the receipt arrives concurrently with a
-///     liveness poll we take the receipt.
-async fn await_receipt_with_liveness_check<P: Provider<Ethereum> + ?Sized>(
-    provider: &P,
-    receipt_fut: TransactionReceiptFuture,
-    tx_hash: TxHash,
-    command_name: &'static str,
-    range: &str,
-    poll_interval: Duration,
-    max_missing_polls: u32,
-) -> anyhow::Result<TransactionReceipt> {
-    let mut receipt_fut = receipt_fut;
-    if max_missing_polls == 0 {
-        return receipt_fut.await.map_err(Into::into);
-    }
-
-    let mut ticker = tokio::time::interval(poll_interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // The first tick completes immediately; discard it so the first real tick
-    // happens after a full `poll_interval`.
-    ticker.tick().await;
-
-    let mut consecutive_missing: u32 = 0;
-    loop {
-        tokio::select! {
-            biased;
-            r = &mut receipt_fut => return r.map_err(Into::into),
-            _ = ticker.tick() => {
-                match provider.get_transaction_by_hash(tx_hash).await {
-                    Ok(Some(_)) => {
-                        consecutive_missing = 0;
-                    }
-                    Ok(None) => {
-                        consecutive_missing = consecutive_missing.saturating_add(1);
-                        if consecutive_missing >= max_missing_polls {
-                            anyhow::bail!(
-                                "{command_name}: L1 transaction {tx_hash:?} for {range} \
-                                 missing from settlement-layer mempool for {consecutive_missing} \
-                                 consecutive polls and not yet mined; declaring it permanently \
-                                 rejected by the settlement layer (inspect settlement-layer logs \
-                                 for `source_marked_invalid=true`, `BlockPubdataLimitReached`, \
-                                 or similar seal-criterion rejections).",
-                            );
-                        }
-                        tracing::warn!(
-                            command_name,
-                            range,
-                            ?tx_hash,
-                            consecutive_missing,
-                            max_missing_polls,
-                            "L1 transaction not found in settlement-layer mempool; \
-                             will fail fast if it stays missing for {max_missing_polls} consecutive polls",
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            command_name,
-                            range,
-                            ?tx_hash,
-                            error = %e,
-                            "failed to query settlement-layer for tx status during liveness check; continuing to wait",
-                        );
-                    }
-                }
             }
         }
     }

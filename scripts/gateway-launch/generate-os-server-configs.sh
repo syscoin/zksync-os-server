@@ -313,6 +313,11 @@ def materialize_chain(
             f"  operator_execute_sk: '{operator_execute_sk}'",
             f"  max_fee_per_gas: '{max_fee_per_gas_wei} wei'",
             f"  max_priority_fee_per_gas: '{max_priority_fee_per_gas_wei} wei'",
+            *(
+                ["  transaction_timeout: 3000s"]
+                if pubdata_mode != "RelayedL2Calldata"
+                else []
+            ),
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
