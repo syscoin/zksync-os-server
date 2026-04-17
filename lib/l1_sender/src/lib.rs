@@ -133,6 +133,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                         operator_address,
                         config.max_fee_per_gas_wei,
                         config.max_priority_fee_per_gas_wei,
+                        config.tx_gas_limit,
                     )
                     .await?
                     .with_to(to_address)
@@ -406,6 +407,8 @@ async fn tx_request_with_gas_fields(
     operator_address: Address,
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
+    // SYSCOIN configurable; see `L1SenderConfig::tx_gas_limit`.
+    tx_gas_limit: u64,
 ) -> anyhow::Result<TransactionRequest> {
     let eip1559_est = provider.estimate_eip1559_fees().await?;
     L1_SENDER_METRICS.report_l1_eip_1559_estimation(eip1559_est)?;
@@ -443,8 +446,13 @@ async fn tx_request_with_gas_fields(
         .with_from(operator_address)
         .with_max_fee_per_gas(selected_max_fee_per_gas)
         .with_max_priority_fee_per_gas(selected_max_priority_fee_per_gas)
-        // Default value for `max_aggregated_tx_gas` from zksync-era, should always be enough
-        .with_gas_limit(15000000);
+        // SYSCOIN was hardcoded to 15_000_000 (zksync-era's `max_aggregated_tx_gas`),
+        // but that is only sufficient for ~110 KB pubdata batches. With
+        // `block_pubdata_limit_bytes` raised to ~1 MB, intrinsic calldata gas
+        // alone can exceed that, causing `intrinsic gas too low` rejections at
+        // the settlement-layer RPC. The limit is now driven by
+        // `L1SenderConfig::tx_gas_limit`.
+        .with_gas_limit(tx_gas_limit);
     Ok(tx)
 }
 
