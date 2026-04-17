@@ -815,29 +815,6 @@ pub struct L1SenderConfig {
     #[config(default_t = 3)]
     pub tx_liveness_max_missing_polls: u32,
 
-    /// SYSCOIN Gas limit set on the L1 envelope carrying a commit / prove / execute command.
-    ///
-    /// Upstream hardcoded this to 15_000_000 (zksync-era's `max_aggregated_tx_gas`), which is
-    /// only sufficient for the original 110 KB `block_pubdata_limit_bytes`. With pubdata
-    /// raised to ~1 MB, intrinsic calldata cost alone (16 gas / non-zero byte) can exceed 15 M
-    /// and cause the settlement-layer RPC to reject the commit tx with
-    /// `intrinsic gas too low`, which then exhausts the L1 sender's retries and panics
-    /// the `commit` task.
-    ///
-    /// 50_000_000 is sized for a worst-case ~1 MB commit tx:
-    ///   * intrinsic calldata:   ~16 M (all non-zero 1 MB) + 21_000 base
-    ///   * ABI / selector / framing overhead: negligible
-    ///   * gateway-side execution: `commitBatches` → `RelayedSLDAValidator.sendToL1` has to
-    ///     materialize the full pubdata as an L2→L1 message — conservative budget ~15 M.
-    ///   * safety margin: ~60 %.
-    /// It still fits comfortably inside the gateway's default `block_gas_limit` of 100 M
-    /// (so the gateway can still pack 2 such commits per block if it needs to).
-    ///
-    /// Keep this value in sync with `block_pubdata_limit_bytes`: if you raise the pubdata cap
-    /// above ~1 MB, raise this proportionally (roughly `16 × pubdata_limit + 20 M`).
-    #[config(default_t = 50_000_000)]
-    pub tx_gas_limit: u64,
-
     /// Use Fusaka blob transaction format if the timestamp has passed.
     ///
     /// Defaults to `2^64-1` which is practically never. This is needed for local setup as anvil
@@ -1442,7 +1419,6 @@ impl L1SenderConfig {
             // SYSCOIN
             tx_liveness_poll_interval: self.tx_liveness_poll_interval,
             tx_liveness_max_missing_polls: self.tx_liveness_max_missing_polls,
-            tx_gas_limit: self.tx_gas_limit,
             fusaka_upgrade_timestamp: self.fusaka_upgrade_timestamp,
             phantom_data: Default::default(),
         }
@@ -1746,7 +1722,6 @@ mod tests {
                 transaction_timeout: Duration::from_secs(3000),
                 tx_liveness_poll_interval: Duration::from_secs(30),
                 tx_liveness_max_missing_polls: 3,
-                tx_gas_limit: 50_000_000,
                 fusaka_upgrade_timestamp: u64::MAX,
                 enabled: true,
                 pubdata_mode: Some(PubdataMode::Blobs),

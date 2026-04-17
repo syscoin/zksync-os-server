@@ -42,21 +42,6 @@ pub struct L1SenderConfig<Input> {
     /// `transaction_timeout`).
     pub tx_liveness_max_missing_polls: u32,
 
-    /// SYSCOIN Gas limit put on the L1 transaction envelope that carries a
-    /// commit / prove / execute command to the settlement layer.
-    ///
-    /// Must be >= intrinsic calldata cost (21_000 + 16/non-zero + 4/zero per
-    /// byte) plus execution cost on the settlement layer. For a ~1 MB commit
-    /// payload (our raised `block_pubdata_limit_bytes`) intrinsic gas alone
-    /// can reach ~16 M; add the gateway-side `commitBatches` +
-    /// `RelayedSLDAValidator.sendToL1` execution and it grows further.
-    ///
-    /// Upstream hardcoded this to 15_000_000 (matching zksync-era's
-    /// `max_aggregated_tx_gas`); that value is only sufficient for the
-    /// original ~110 KB pubdata limit and triggers `intrinsic gas too low`
-    /// rejections once pubdata grows.
-    pub tx_gas_limit: u64,
-
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 
