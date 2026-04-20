@@ -2,6 +2,7 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 mod batch_sink;
+mod batch_work;
 pub mod batcher;
 mod command_source;
 pub mod config;
@@ -17,6 +18,7 @@ pub mod tree_manager;
 pub mod util;
 
 use crate::batch_sink::{BatchSink, NoOpSink, clear_failing_block_config_task};
+use crate::batch_work::{BatchWorkDispatcher, BatchWorkSource, BatchWorkStorage};
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
@@ -1074,6 +1076,11 @@ async fn run_main_node_pipeline(
         pipeline.pipe(NoOpSink::new()).spawn();
         return;
     }
+    // SYSCOIN
+    let batch_work_storage =
+        BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
+            .expect("failed to initialize batch work storage");
+    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::unbounded_channel();
 
     tracing::info!("Initializing ProofStorage");
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
@@ -1158,8 +1165,19 @@ async fn run_main_node_pipeline(
             None
         }
     };
+    // SYSCOIN
+    let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
+        batch_work_storage.clone(),
+        batch_work_tx,
+    ));
 
-    let pipeline = pipeline
+    let batch_pipeline = Pipeline::new(runtime.clone())
+        .pipe(BatchWorkSource::new(
+            batch_work_storage,
+            block_replay_storage.clone(),
+            tree.clone(),
+            batch_work_rx,
+        ))
         .pipe(ProverInputGenerator {
             enable_logging: config.prover_input_generator_config.logging_enabled,
             maximum_in_flight_blocks: config
@@ -1187,6 +1205,10 @@ async fn run_main_node_pipeline(
             sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
+            bitcoin_da_status_storage_path: config
+                .general_config
+                .rocks_db_path
+                .join("bitcoin_da_status"),
         })
         .pipe(BatchVerificationPipelineStep::new(
             config.batch_verification_config.clone().into(),
@@ -1240,9 +1262,11 @@ async fn run_main_node_pipeline(
             commit_submitted_tx: None,
         })
         .pipe(BatchSink::new(internal_config_manager));
-
-    tracing::info!("Launching pipeline");
-    pipeline.spawn();
+    // SYSCOIN
+    tracing::info!("Launching execution pipeline");
+    execution_pipeline.spawn();
+    tracing::info!("Launching batch pipeline");
+    batch_pipeline.spawn();
 }
 
 /// Only for EN - we still populate channels destined for the batcher subsystem -

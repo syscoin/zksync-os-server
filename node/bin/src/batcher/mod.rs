@@ -1,4 +1,5 @@
 use crate::batcher::batch_deadline_policy::deadline_from_block_timestamp;
+use crate::batcher::bitcoin_da_status_storage::{BitcoinDaBatchStatus, BitcoinDaStatusStorage};
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
@@ -8,6 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
 use secrecy::ExposeSecret;
+use std::path::PathBuf;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
@@ -33,6 +35,7 @@ use zksync_os_types::PubdataMode;
 
 pub mod batch_builder;
 mod batch_deadline_policy;
+mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
 
@@ -65,6 +68,7 @@ pub struct Batcher<ReadState> {
     pub sidecar_sender: mpsc::Sender<BlobTransactionSidecar>,
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
+    pub bitcoin_da_status_storage_path: PathBuf,
 }
 
 #[async_trait]
@@ -539,66 +543,105 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             blob_chunks.len(),
             expected_hashes.len()
         );
-
-        let mut published_hashes = Vec::with_capacity(expected_hashes.len());
-        for (idx, (blob, expected_hash)) in
-            blob_chunks.iter().zip(expected_hashes.iter()).enumerate()
-        {
-            let version_hash = client.create_blob(blob).await.map_err(|err| {
-                anyhow::anyhow!(
-                    "failed to publish Bitcoin DA blob {idx} for batch {batch_number}: {err}"
-                )
-            })?;
-            let normalized_hash = version_hash.strip_prefix("0x").unwrap_or(&version_hash);
-            anyhow::ensure!(
-                normalized_hash.eq_ignore_ascii_case(expected_hash),
-                "Bitcoin DA version hash mismatch for batch {batch_number}, blob {idx}: expected {expected_hash}, got {normalized_hash}"
-            );
-            published_hashes.push(version_hash);
+        // SYSCOIN
+        let status_storage = BitcoinDaStatusStorage::new(&self.bitcoin_da_status_storage_path)?;
+        let mut status = match status_storage.load(batch_number).await? {
+            Some(status)
+                if status.expected_hashes == expected_hashes
+                    && status.published_hashes.len() <= expected_hashes.len()
+                    && (!status.finalized
+                        || status.published_hashes.len() == expected_hashes.len()) =>
+            {
+                status
+            }
+            Some(status) => {
+                tracing::warn!(
+                    batch_number,
+                    stored_expected = ?status.expected_hashes,
+                    current_expected = ?expected_hashes,
+                    "discarding stale Bitcoin DA publication state for batch"
+                );
+                BitcoinDaBatchStatus {
+                    expected_hashes: expected_hashes.clone(),
+                    published_hashes: Vec::new(),
+                    finalized: false,
+                }
+            }
+            None => BitcoinDaBatchStatus {
+                expected_hashes: expected_hashes.clone(),
+                published_hashes: Vec::new(),
+                finalized: false,
+            },
+        };
+        // SYSCOIN
+        if !status.finalized {
+            for (idx, (blob, expected_hash)) in blob_chunks
+                .iter()
+                .zip(expected_hashes.iter())
+                .enumerate()
+                .skip(status.published_hashes.len())
+            {
+                let version_hash = client.create_blob(blob).await.map_err(|err| {
+                    anyhow::anyhow!(
+                        "failed to publish Bitcoin DA blob {idx} for batch {batch_number}: {err}"
+                    )
+                })?;
+                let normalized_hash = version_hash.strip_prefix("0x").unwrap_or(&version_hash);
+                anyhow::ensure!(
+                    normalized_hash.eq_ignore_ascii_case(expected_hash),
+                    "Bitcoin DA version hash mismatch for batch {batch_number}, blob {idx}: expected {expected_hash}, got {normalized_hash}"
+                );
+                status.published_hashes.push(version_hash);
+                status_storage.save(batch_number, &status).await?;
+            }
         }
 
         tracing::info!(
             batch_number,
-            version_hashes = ?published_hashes,
+            version_hashes = ?status.published_hashes,
             chunk_count = blob_chunks.len(),
             "Published Bitcoin DA blobs"
         );
 
-        for version_hash in published_hashes {
-            let start = Instant::now();
-            loop {
-                let finality_mode = match self.batcher_config.bitcoin_da_finality_mode {
-                    BitcoinDaFinalityMode::Chainlock => ClientBitcoinDaFinalityMode::Chainlock,
-                    BitcoinDaFinalityMode::Confirmations => {
-                        ClientBitcoinDaFinalityMode::Confirmations
-                    }
-                };
-                let is_final = client
-                    .check_blob_finality_with_mode(
-                        &version_hash,
-                        finality_mode,
-                        self.batcher_config.bitcoin_da_finality_confirmations,
-                    )
-                    .await
-                    .map_err(|err| {
-                        anyhow::anyhow!(
-                            "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
+        if !status.finalized {
+            for version_hash in &status.published_hashes {
+                let start = Instant::now();
+                loop {
+                    let finality_mode = match self.batcher_config.bitcoin_da_finality_mode {
+                        BitcoinDaFinalityMode::Chainlock => ClientBitcoinDaFinalityMode::Chainlock,
+                        BitcoinDaFinalityMode::Confirmations => {
+                            ClientBitcoinDaFinalityMode::Confirmations
+                        }
+                    };
+                    let is_final = client
+                        .check_blob_finality_with_mode(
+                            version_hash,
+                            finality_mode,
+                            self.batcher_config.bitcoin_da_finality_confirmations,
                         )
-                    })?;
-                if is_final {
-                    tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
-                    break;
-                }
+                        .await
+                        .map_err(|err| {
+                            anyhow::anyhow!(
+                                "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
+                            )
+                        })?;
+                    if is_final {
+                        tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
+                        break;
+                    }
 
-                if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
-                    anyhow::bail!(
-                        "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
-                        self.batcher_config.bitcoin_da_finality_timeout
-                    );
-                }
+                    if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
+                        anyhow::bail!(
+                            "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
+                            self.batcher_config.bitcoin_da_finality_timeout
+                        );
+                    }
 
-                tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
+                    tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
+                }
             }
+            status.finalized = true;
+            status_storage.save(batch_number, &status).await?;
         }
         Ok(())
     }
