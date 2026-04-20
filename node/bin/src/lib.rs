@@ -95,7 +95,7 @@ use zksync_os_network::protocol::{
 };
 use zksync_os_network::service::{NetworkService, PeerVerifyBatch, PeerVerifyBatchResult};
 use zksync_os_observability::GENERAL_METRICS;
-use zksync_os_pipeline::Pipeline;
+use zksync_os_pipeline::{Pipeline, PipelineComponent};
 use zksync_os_priority_tree::PriorityTreeManager;
 use zksync_os_raft::{
     BlockCanonizationEngine, ConsensusRuntimeParts, LeadershipSignal, loopback_consensus,
@@ -127,7 +127,7 @@ const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
 // SYSCOIN
-const BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
+const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
 #[allow(clippy::too_many_arguments)]
@@ -1080,11 +1080,34 @@ async fn run_main_node_pipeline(
         pipeline.pipe(NoOpSink::new()).spawn();
         return;
     }
+    let batch_work_state_history_reserve = config
+        .prover_input_generator_config
+        .maximum_in_flight_blocks
+        + <BatchWorkSource as PipelineComponent>::OUTPUT_BUFFER_SIZE
+        + 1;
+    let batch_work_channel_capacity = config
+        .general_config
+        .blocks_to_retain_in_memory
+        .checked_sub(batch_work_state_history_reserve)
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or_else(|| {
+            panic!(
+                "blocks_to_retain_in_memory ({}) must exceed async batch-work state history reserve ({batch_work_state_history_reserve})",
+                config.general_config.blocks_to_retain_in_memory
+            )
+        })
+        .min(MAX_BATCH_WORK_CHANNEL_CAPACITY);
+    tracing::info!(
+        batch_work_channel_capacity,
+        blocks_to_retain_in_memory = config.general_config.blocks_to_retain_in_memory,
+        batch_work_state_history_reserve,
+        "Configured async batch-work queue capacity"
+    );
     // SYSCOIN
     let batch_work_storage =
         BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
             .expect("failed to initialize batch work storage");
-    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::channel(BATCH_WORK_CHANNEL_CAPACITY);
+    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::channel(batch_work_channel_capacity);
     let bitcoin_da_status_storage = BitcoinDaStatusStorage::new(
         config
             .general_config
