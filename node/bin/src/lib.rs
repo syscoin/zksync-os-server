@@ -127,6 +127,9 @@ const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
 // SYSCOIN
+const BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE: usize = 5;
+const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
+const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
@@ -1085,7 +1088,10 @@ async fn run_main_node_pipeline(
         .prover_input_generator_config
         .maximum_in_flight_blocks
         + <BatchWorkSource as PipelineComponent>::OUTPUT_BUFFER_SIZE
-        + 1;
+        + <TreeManager as PipelineComponent>::OUTPUT_BUFFER_SIZE
+        + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
+        + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
+        + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
     let batch_work_channel_capacity = config
         .general_config
         .blocks_to_retain_in_memory

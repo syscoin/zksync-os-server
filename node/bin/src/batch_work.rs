@@ -35,6 +35,7 @@ impl BatchWorkStorage {
     pub fn new(base_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base_dir = base_dir.as_ref().to_owned();
         std::fs::create_dir_all(&base_dir)?;
+        clear_stale_batch_work_files(&base_dir)?;
         let run_nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)?
             .as_nanos()
@@ -89,6 +90,23 @@ impl BatchWorkStorage {
         }
         Ok(())
     }
+}
+// SYSCOIN
+fn clear_stale_batch_work_files(base_dir: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(base_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if name.starts_with("block_") && (name.ends_with(".json") || name.ends_with(".json.tmp")) {
+            std::fs::remove_file(path)?;
+        }
+    }
+    Ok(())
 }
 
 pub struct BatchWorkDispatcher {
