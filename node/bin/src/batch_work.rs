@@ -3,6 +3,9 @@ use alloy::primitives::{Address, B256};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::mpsc;
 use zksync_os_batch_types::BlockMerkleTreeData;
@@ -18,41 +21,66 @@ use zksync_os_storage_api::{ReadReplay, ReplayRecord};
 #[derive(Clone, Debug)]
 pub struct BatchWorkStorage {
     base_dir: PathBuf,
+    run_nonce: Arc<str>,
+    next_work_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchWorkHandle {
+    block_number: u64,
+    work_id: u64,
 }
 
 impl BatchWorkStorage {
     pub fn new(base_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base_dir = base_dir.as_ref().to_owned();
         std::fs::create_dir_all(&base_dir)?;
-        Ok(Self { base_dir })
+        let run_nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_nanos()
+            .to_string();
+        Ok(Self {
+            base_dir,
+            run_nonce: Arc::<str>::from(run_nonce),
+            next_work_id: Arc::new(AtomicU64::new(0)),
+        })
     }
 
-    fn path_for(&self, block_number: u64) -> PathBuf {
-        self.base_dir.join(format!("block_{block_number}.json"))
+    fn path_for(&self, handle: &BatchWorkHandle) -> PathBuf {
+        self.base_dir.join(format!(
+            "block_{}_{}_{}.json",
+            handle.block_number, self.run_nonce, handle.work_id
+        ))
     }
 
-    fn tmp_path_for(&self, block_number: u64) -> PathBuf {
-        self.base_dir.join(format!("block_{block_number}.json.tmp"))
+    fn tmp_path_for(&self, handle: &BatchWorkHandle) -> PathBuf {
+        self.base_dir.join(format!(
+            "block_{}_{}_{}.json.tmp",
+            handle.block_number, self.run_nonce, handle.work_id
+        ))
     }
 
-    pub async fn store(&self, block_output: BlockOutput) -> anyhow::Result<()> {
-        let block_number = block_output.header.number;
+    pub async fn store(&self, block_output: BlockOutput) -> anyhow::Result<BatchWorkHandle> {
+        let handle = BatchWorkHandle {
+            block_number: block_output.header.number,
+            work_id: self.next_work_id.fetch_add(1, Ordering::Relaxed),
+        };
         let data = serde_json::to_vec(&BatchWorkBlockOutput::from(block_output))?;
-        let tmp_path = self.tmp_path_for(block_number);
-        let path = self.path_for(block_number);
+        let tmp_path = self.tmp_path_for(&handle);
+        let path = self.path_for(&handle);
         fs::write(&tmp_path, data).await?;
         fs::rename(&tmp_path, &path).await?;
-        Ok(())
+        Ok(handle)
     }
 
-    pub async fn load(&self, block_number: u64) -> anyhow::Result<BlockOutput> {
-        let data = fs::read(self.path_for(block_number)).await?;
+    pub async fn load(&self, handle: &BatchWorkHandle) -> anyhow::Result<BlockOutput> {
+        let data = fs::read(self.path_for(handle)).await?;
         let record: BatchWorkBlockOutput = serde_json::from_slice(&data)?;
         Ok(record.into_block_output())
     }
 
-    pub async fn delete(&self, block_number: u64) -> anyhow::Result<()> {
-        let path = self.path_for(block_number);
+    pub async fn delete(&self, handle: &BatchWorkHandle) -> anyhow::Result<()> {
+        let path = self.path_for(handle);
         if fs::try_exists(&path).await? {
             fs::remove_file(path).await?;
         }
@@ -62,11 +90,11 @@ impl BatchWorkStorage {
 
 pub struct BatchWorkDispatcher {
     storage: BatchWorkStorage,
-    sender: mpsc::Sender<u64>,
+    sender: mpsc::Sender<BatchWorkHandle>,
 }
 
 impl BatchWorkDispatcher {
-    pub fn new(storage: BatchWorkStorage, sender: mpsc::Sender<u64>) -> Self {
+    pub fn new(storage: BatchWorkStorage, sender: mpsc::Sender<BatchWorkHandle>) -> Self {
         Self { storage, sender }
     }
 }
@@ -86,9 +114,14 @@ impl PipelineComponent for BatchWorkDispatcher {
     ) -> anyhow::Result<()> {
         while let Some((block_output, replay_record, _tree)) = input.recv().await {
             let block_number = replay_record.block_context.block_number;
-            self.storage.store(block_output).await?;
+            let handle = self.storage.store(block_output).await?;
+            anyhow::ensure!(
+                handle.block_number == block_number,
+                "batch work block number mismatch: replay {block_number}, output {}",
+                handle.block_number
+            );
             self.sender
-                .send(block_number)
+                .send(handle)
                 .await
                 .map_err(|_| anyhow::anyhow!("batch work receiver dropped"))?;
         }
@@ -101,7 +134,7 @@ pub struct BatchWorkSource<Replay> {
     storage: BatchWorkStorage,
     replay_storage: Replay,
     tree: MerkleTree<RocksDBWrapper>,
-    receiver: mpsc::Receiver<u64>,
+    receiver: mpsc::Receiver<BatchWorkHandle>,
 }
 
 impl<Replay> BatchWorkSource<Replay> {
@@ -109,7 +142,7 @@ impl<Replay> BatchWorkSource<Replay> {
         storage: BatchWorkStorage,
         replay_storage: Replay,
         tree: MerkleTree<RocksDBWrapper>,
-        receiver: mpsc::Receiver<u64>,
+        receiver: mpsc::Receiver<BatchWorkHandle>,
     ) -> Self {
         Self {
             storage,
@@ -136,8 +169,9 @@ where
         _input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
-        while let Some(block_number) = self.receiver.recv().await {
-            let block_output = self.storage.load(block_number).await?;
+        while let Some(handle) = self.receiver.recv().await {
+            let block_number = handle.block_number;
+            let block_output = self.storage.load(&handle).await?;
             let replay_record = self
                 .replay_storage
                 .get_replay_record(block_number)
@@ -160,7 +194,7 @@ where
                 tracing::info!("outbound channel closed");
                 return Ok(());
             }
-            self.storage.delete(block_number).await?;
+            self.storage.delete(&handle).await?;
         }
         tracing::info!("batch work channel closed");
         Ok(())
