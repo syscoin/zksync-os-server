@@ -1189,7 +1189,6 @@ async fn run_main_node_pipeline(
     let batch_pipeline = Pipeline::new(runtime.clone())
         .pipe(BatchWorkSource::new(
             batch_work_storage,
-            block_replay_storage.clone(),
             tree.clone(),
             batch_work_rx,
         ))

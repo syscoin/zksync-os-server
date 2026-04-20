@@ -16,7 +16,7 @@ use zksync_os_interface::types::{
 };
 use zksync_os_merkle_tree::{MerkleTree, MerkleTreeVersion, RocksDBWrapper};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
-use zksync_os_storage_api::{ReadReplay, ReplayRecord};
+use zksync_os_storage_api::ReplayRecord;
 
 #[derive(Clone, Debug)]
 pub struct BatchWorkStorage {
@@ -24,7 +24,7 @@ pub struct BatchWorkStorage {
     run_nonce: Arc<str>,
     next_work_id: Arc<AtomicU64>,
 }
-
+// SYSCOIN
 #[derive(Clone, Debug)]
 pub struct BatchWorkHandle {
     block_number: u64,
@@ -60,12 +60,16 @@ impl BatchWorkStorage {
         ))
     }
 
-    pub async fn store(&self, block_output: BlockOutput) -> anyhow::Result<BatchWorkHandle> {
+    pub async fn store(
+        &self,
+        block_output: BlockOutput,
+        replay_record: ReplayRecord,
+    ) -> anyhow::Result<BatchWorkHandle> {
         let handle = BatchWorkHandle {
             block_number: block_output.header.number,
             work_id: self.next_work_id.fetch_add(1, Ordering::Relaxed),
         };
-        let data = serde_json::to_vec(&BatchWorkBlockOutput::from(block_output))?;
+        let data = serde_json::to_vec(&BatchWorkItem::from_parts(block_output, replay_record))?;
         let tmp_path = self.tmp_path_for(&handle);
         let path = self.path_for(&handle);
         fs::write(&tmp_path, data).await?;
@@ -73,10 +77,9 @@ impl BatchWorkStorage {
         Ok(handle)
     }
 
-    pub async fn load(&self, handle: &BatchWorkHandle) -> anyhow::Result<BlockOutput> {
+    pub async fn load(&self, handle: &BatchWorkHandle) -> anyhow::Result<BatchWorkItem> {
         let data = fs::read(self.path_for(handle)).await?;
-        let record: BatchWorkBlockOutput = serde_json::from_slice(&data)?;
-        Ok(record.into_block_output())
+        Ok(serde_json::from_slice(&data)?)
     }
 
     pub async fn delete(&self, handle: &BatchWorkHandle) -> anyhow::Result<()> {
@@ -114,7 +117,7 @@ impl PipelineComponent for BatchWorkDispatcher {
     ) -> anyhow::Result<()> {
         while let Some((block_output, replay_record, _tree)) = input.recv().await {
             let block_number = replay_record.block_context.block_number;
-            let handle = self.storage.store(block_output).await?;
+            let handle = self.storage.store(block_output, replay_record).await?;
             anyhow::ensure!(
                 handle.block_number == block_number,
                 "batch work block number mismatch: replay {block_number}, output {}",
@@ -130,23 +133,20 @@ impl PipelineComponent for BatchWorkDispatcher {
     }
 }
 
-pub struct BatchWorkSource<Replay> {
+pub struct BatchWorkSource {
     storage: BatchWorkStorage,
-    replay_storage: Replay,
     tree: MerkleTree<RocksDBWrapper>,
     receiver: mpsc::Receiver<BatchWorkHandle>,
 }
 
-impl<Replay> BatchWorkSource<Replay> {
+impl BatchWorkSource {
     pub fn new(
         storage: BatchWorkStorage,
-        replay_storage: Replay,
         tree: MerkleTree<RocksDBWrapper>,
         receiver: mpsc::Receiver<BatchWorkHandle>,
     ) -> Self {
         Self {
             storage,
-            replay_storage,
             tree,
             receiver,
         }
@@ -154,10 +154,7 @@ impl<Replay> BatchWorkSource<Replay> {
 }
 
 #[async_trait]
-impl<Replay> PipelineComponent for BatchWorkSource<Replay>
-where
-    Replay: ReadReplay + Send + 'static,
-{
+impl PipelineComponent for BatchWorkSource {
     type Input = ();
     type Output = (BlockOutput, ReplayRecord, BlockMerkleTreeData);
 
@@ -171,11 +168,8 @@ where
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
             let block_number = handle.block_number;
-            let block_output = self.storage.load(&handle).await?;
-            let replay_record = self
-                .replay_storage
-                .get_replay_record(block_number)
-                .ok_or_else(|| anyhow::anyhow!("missing replay record for block {block_number}"))?;
+            let item = self.storage.load(&handle).await?;
+            let (block_output, replay_record) = item.into_parts();
             let tree = BlockMerkleTreeData {
                 block_start: MerkleTreeVersion {
                     tree: self.tree.clone(),
@@ -198,6 +192,25 @@ where
         }
         tracing::info!("batch work channel closed");
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchWorkItem {
+    block_output: BatchWorkBlockOutput,
+    replay_record: ReplayRecord,
+}
+
+impl BatchWorkItem {
+    fn from_parts(block_output: BlockOutput, replay_record: ReplayRecord) -> Self {
+        Self {
+            block_output: BatchWorkBlockOutput::from(block_output),
+            replay_record,
+        }
+    }
+
+    fn into_parts(self) -> (BlockOutput, ReplayRecord) {
+        (self.block_output.into_block_output(), self.replay_record)
     }
 }
 
