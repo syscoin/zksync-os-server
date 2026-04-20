@@ -137,7 +137,10 @@ impl FriProvingPipelineStep {
         proof_storage: &ProofStorage,
         batch: &SignedBatchEnvelope<ProverInput>,
     ) -> Option<SignedBatchEnvelope<FriProof>> {
-        let stored_batch = match proof_storage.get_batch_with_proof(batch.batch_number()).await {
+        let stored_batch = match proof_storage
+            .get_batch_with_proof(batch.batch_number())
+            .await
+        {
             Ok(Some(batch)) => batch,
             Ok(None) => return None,
             Err(err) => {

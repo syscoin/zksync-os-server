@@ -2,6 +2,7 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 mod batch_sink;
+mod batch_work;
 pub mod batcher;
 mod command_source;
 pub mod config;
@@ -17,6 +18,9 @@ pub mod tree_manager;
 pub mod util;
 
 use crate::batch_sink::{BatchSink, NoOpSink, clear_failing_block_config_task};
+use crate::batch_work::{BatchWorkDispatcher, BatchWorkSource, BatchWorkStorage};
+use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
+use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
@@ -91,7 +95,7 @@ use zksync_os_network::protocol::{
 };
 use zksync_os_network::service::{NetworkService, PeerVerifyBatch, PeerVerifyBatchResult};
 use zksync_os_observability::GENERAL_METRICS;
-use zksync_os_pipeline::Pipeline;
+use zksync_os_pipeline::{Pipeline, PipelineComponent};
 use zksync_os_priority_tree::PriorityTreeManager;
 use zksync_os_raft::{
     BlockCanonizationEngine, ConsensusRuntimeParts, LeadershipSignal, loopback_consensus,
@@ -122,6 +126,11 @@ const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
+// SYSCOIN
+const BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE: usize = 5;
+const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
+const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
+const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
 #[allow(clippy::too_many_arguments)]
@@ -1074,6 +1083,49 @@ async fn run_main_node_pipeline(
         pipeline.pipe(NoOpSink::new()).spawn();
         return;
     }
+    // SYSCOIN
+    let batch_work_state_history_reserve = config
+        .prover_input_generator_config
+        .maximum_in_flight_blocks
+        + <BatchWorkSource as PipelineComponent>::OUTPUT_BUFFER_SIZE
+        + <TreeManager as PipelineComponent>::OUTPUT_BUFFER_SIZE
+        + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
+        + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
+        + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
+    let batch_work_channel_capacity = config
+        .general_config
+        .blocks_to_retain_in_memory
+        .checked_sub(batch_work_state_history_reserve)
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or_else(|| {
+            panic!(
+                "blocks_to_retain_in_memory ({}) must exceed async batch-work state history reserve ({batch_work_state_history_reserve})",
+                config.general_config.blocks_to_retain_in_memory
+            )
+        })
+        .min(MAX_BATCH_WORK_CHANNEL_CAPACITY);
+    tracing::info!(
+        batch_work_channel_capacity,
+        blocks_to_retain_in_memory = config.general_config.blocks_to_retain_in_memory,
+        batch_work_state_history_reserve,
+        "Configured async batch-work queue capacity"
+    );
+    // SYSCOIN
+    let batch_work_storage =
+        BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
+            .expect("failed to initialize batch work storage");
+    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::channel(batch_work_channel_capacity);
+    let bitcoin_da_status_storage = BitcoinDaStatusStorage::new(
+        config
+            .general_config
+            .rocks_db_path
+            .join("bitcoin_da_status"),
+    )
+    .expect("failed to initialize bitcoin da status storage");
+    bitcoin_da_status_storage
+        .delete_through(node_state_on_startup.l1_state.last_committed_batch)
+        .await
+        .expect("failed to prune stale bitcoin da status");
 
     tracing::info!("Initializing ProofStorage");
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
@@ -1158,8 +1210,18 @@ async fn run_main_node_pipeline(
             None
         }
     };
+    // SYSCOIN
+    let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
+        batch_work_storage.clone(),
+        batch_work_tx,
+    ));
 
-    let pipeline = pipeline
+    let batch_pipeline = Pipeline::new(runtime.clone())
+        .pipe(BatchWorkSource::new(
+            batch_work_storage,
+            tree.clone(),
+            batch_work_rx,
+        ))
         .pipe(ProverInputGenerator {
             enable_logging: config.prover_input_generator_config.logging_enabled,
             maximum_in_flight_blocks: config
@@ -1187,6 +1249,7 @@ async fn run_main_node_pipeline(
             sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
+            bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
         })
         .pipe(BatchVerificationPipelineStep::new(
             config.batch_verification_config.clone().into(),
@@ -1212,6 +1275,8 @@ async fn run_main_node_pipeline(
             gateway: config.general_config.gateway_rpc_url.is_some(),
             commit_submitted_tx: Some(commit_submitted_tx),
         })
+        // SYSCOIN
+        .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
         .pipe(snark_proving_step)
         .pipe(GaplessL1ProofSender::new(
             node_state_on_startup.l1_state.last_executed_batch + 1,
@@ -1240,9 +1305,11 @@ async fn run_main_node_pipeline(
             commit_submitted_tx: None,
         })
         .pipe(BatchSink::new(internal_config_manager));
-
-    tracing::info!("Launching pipeline");
-    pipeline.spawn();
+    // SYSCOIN
+    tracing::info!("Launching execution pipeline");
+    execution_pipeline.spawn();
+    tracing::info!("Launching batch pipeline");
+    batch_pipeline.spawn();
 }
 
 /// Only for EN - we still populate channels destined for the batcher subsystem -
