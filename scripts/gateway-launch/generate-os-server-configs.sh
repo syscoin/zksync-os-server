@@ -458,6 +458,22 @@ if [ -f "${{HOME}}/.cargo/env" ]; then
   # shellcheck disable=SC1091
   source "${{HOME}}/.cargo/env"
 fi
+: "${{OS_SERVER_NOFILE_TARGET:=1048576}}"
+: "${{OS_SERVER_NOFILE_RECOMMENDED:=131072}}"
+: "${{OS_SERVER_NOFILE_MIN:=65536}}"
+current_nofile="$(ulimit -n)"
+if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_TARGET}}" ]; then
+  ulimit -n "${{OS_SERVER_NOFILE_TARGET}}" 2>/dev/null || true
+fi
+current_nofile="$(ulimit -n)"
+if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_MIN}}" ]; then
+  echo "gateway-launch: open-file limit too low for os-server: ${{current_nofile}} (need at least ${{OS_SERVER_NOFILE_MIN}}, target ${{OS_SERVER_NOFILE_TARGET}})" >&2
+  echo "gateway-launch: raise the shell/system nofile hard limit and retry" >&2
+  exit 1
+fi
+if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
+  echo "gateway-launch: warning: open-file limit is below recommended value: ${{current_nofile}} < ${{OS_SERVER_NOFILE_RECOMMENDED}}" >&2
+fi
 cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}

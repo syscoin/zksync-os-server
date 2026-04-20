@@ -103,6 +103,14 @@ Then rerun the canonical launcher command.
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
 ```
 
+The generated `start-node.sh` now preflights the open-file limit before starting the node:
+
+- it tries to raise `ulimit -n` to `1048576`
+- it warns if the resulting limit is below the recommended `131072`
+- it fails fast if the resulting limit is below `65536`
+
+If the script cannot raise the limit high enough, increase the shell / service hard limit first (for example via systemd `LimitNOFILE`, Docker `--ulimit`, or host user limits).
+
 ## Important env vars
 
 | Variable | Purpose |
@@ -134,3 +142,4 @@ Then rerun the canonical launcher command.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
 - For `v31.x`, `start-node.sh` runs through a launcher wrapper that copies the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrites only the `*_dev` `zksync-os` deps to the patched upstream checkout, and uses that isolated workspace for `cargo run`.
+- High-TPS runs can exhaust low default `nofile` limits; use at least `65536`, with `131072+` recommended.
