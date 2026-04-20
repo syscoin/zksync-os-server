@@ -1,5 +1,7 @@
 use crate::batcher::batch_deadline_policy::deadline_from_block_timestamp;
-use crate::batcher::bitcoin_da_status_storage::{BitcoinDaBatchStatus, BitcoinDaStatusStorage};
+use crate::batcher::bitcoin_da_status_storage::{
+    BitcoinDaBatchStatus, BitcoinDaFinalityPolicy, BitcoinDaStatusStorage,
+};
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::consensus::BlobTransactionSidecar;
@@ -543,6 +545,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             blob_chunks.len(),
             expected_hashes.len()
         );
+        let current_finality_policy = BitcoinDaFinalityPolicy {
+            mode: self.batcher_config.bitcoin_da_finality_mode,
+            confirmations: self.batcher_config.bitcoin_da_finality_confirmations,
+        };
         // SYSCOIN
         let status_storage = &self.bitcoin_da_status_storage;
         let mut status = match status_storage.load(batch_number).await? {
@@ -550,9 +556,29 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 if status.expected_hashes == expected_hashes
                     && status.published_hashes.len() <= expected_hashes.len()
                     && (!status.finalized
-                        || status.published_hashes.len() == expected_hashes.len()) =>
+                        || (status.published_hashes.len() == expected_hashes.len()
+                            && status.finality_policy.as_ref()
+                                == Some(&current_finality_policy))) =>
             {
                 status
+            }
+            Some(status)
+                if status.expected_hashes == expected_hashes
+                    && status.published_hashes.len() == expected_hashes.len()
+                    && status.finalized =>
+            {
+                tracing::info!(
+                    batch_number,
+                    stored_policy = ?status.finality_policy,
+                    current_policy = ?current_finality_policy,
+                    "revalidating Bitcoin DA finality under current policy"
+                );
+                BitcoinDaBatchStatus {
+                    expected_hashes: status.expected_hashes,
+                    published_hashes: status.published_hashes,
+                    finalized: false,
+                    finality_policy: Some(current_finality_policy.clone()),
+                }
             }
             Some(status) => {
                 tracing::warn!(
@@ -565,14 +591,19 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                     expected_hashes: expected_hashes.clone(),
                     published_hashes: Vec::new(),
                     finalized: false,
+                    finality_policy: Some(current_finality_policy.clone()),
                 }
             }
             None => BitcoinDaBatchStatus {
                 expected_hashes: expected_hashes.clone(),
                 published_hashes: Vec::new(),
                 finalized: false,
+                finality_policy: Some(current_finality_policy.clone()),
             },
         };
+        if status.finality_policy.is_none() {
+            status.finality_policy = Some(current_finality_policy.clone());
+        }
         // SYSCOIN
         if !status.finalized {
             for (idx, (blob, expected_hash)) in blob_chunks

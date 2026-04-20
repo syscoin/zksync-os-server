@@ -1,3 +1,4 @@
+use crate::config::BitcoinDaFinalityMode;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -12,6 +13,14 @@ pub struct BitcoinDaBatchStatus {
     pub expected_hashes: Vec<String>,
     pub published_hashes: Vec<String>,
     pub finalized: bool,
+    #[serde(default)]
+    pub finality_policy: Option<BitcoinDaFinalityPolicy>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BitcoinDaFinalityPolicy {
+    pub mode: BitcoinDaFinalityMode,
+    pub confirmations: u64,
 }
 
 impl BitcoinDaStatusStorage {
