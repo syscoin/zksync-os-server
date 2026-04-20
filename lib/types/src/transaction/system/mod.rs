@@ -19,9 +19,12 @@ pub mod tx;
 pub mod utils;
 pub use utils::{L2_INTEROP_ROOT_STORAGE_ADDRESS, SYSTEM_TX_TYPE_ID, SystemTxType};
 use zksync_os_contract_interface::IInteropCenter::setInteropFeeCall;
-
+// SYSCOIN
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(into = "tx_serde::TransactionSerdeHelper")]
+#[serde(
+    into = "tx_serde::TransactionSerdeHelper",
+    from = "tx_serde::TransactionSerdeHelper"
+)]
 pub struct SystemTxEnvelope {
     /// Hash of the transaction
     /// Stored in an envelope and calculated separately from transaction as hash of transaction is not part of transaction itself.
@@ -207,6 +210,27 @@ mod tx_serde {
                 r: U256::ZERO,
                 s: U256::ZERO,
                 y_parity: false,
+            }
+        }
+    }
+    // SYSCOIN
+    impl From<TransactionSerdeHelper> for SystemTxEnvelope {
+        fn from(tx: TransactionSerdeHelper) -> Self {
+            let inner = SystemTx {
+                to: tx.to,
+                input: tx.input,
+                salt: tx.nonce,
+            };
+            let computed_hash = inner.calculate_hash();
+            debug_assert_eq!(
+                tx.hash, computed_hash,
+                "system transaction JSON hash does not match reconstructed payload"
+            );
+
+            SystemTxEnvelope {
+                hash: computed_hash,
+                inner,
+                subtype: OnceLock::new(),
             }
         }
     }
@@ -471,5 +495,16 @@ mod tests {
   "yParity": "0x0"
 }"#
         );
+    }
+
+    #[test]
+    fn system_tx_roundtrip_json() {
+        let tx = SystemTxEnvelope::set_sl_chain_id(1, 7);
+
+        let serialized = serde_json::to_string(&tx).unwrap();
+        let deserialized: SystemTxEnvelope = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized, tx);
+        assert_eq!(deserialized.hash(), tx.hash());
     }
 }
