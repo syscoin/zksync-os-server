@@ -19,6 +19,8 @@ pub mod util;
 
 use crate::batch_sink::{BatchSink, NoOpSink, clear_failing_block_config_task};
 use crate::batch_work::{BatchWorkDispatcher, BatchWorkSource, BatchWorkStorage};
+use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
+use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
@@ -1081,6 +1083,17 @@ async fn run_main_node_pipeline(
         BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
             .expect("failed to initialize batch work storage");
     let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::unbounded_channel();
+    let bitcoin_da_status_storage = BitcoinDaStatusStorage::new(
+        config
+            .general_config
+            .rocks_db_path
+            .join("bitcoin_da_status"),
+    )
+    .expect("failed to initialize bitcoin da status storage");
+    bitcoin_da_status_storage
+        .delete_through(node_state_on_startup.l1_state.last_committed_batch)
+        .await
+        .expect("failed to prune stale bitcoin da status");
 
     tracing::info!("Initializing ProofStorage");
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
@@ -1205,10 +1218,7 @@ async fn run_main_node_pipeline(
             sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
-            bitcoin_da_status_storage_path: config
-                .general_config
-                .rocks_db_path
-                .join("bitcoin_da_status"),
+            bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
         })
         .pipe(BatchVerificationPipelineStep::new(
             config.batch_verification_config.clone().into(),
@@ -1234,6 +1244,8 @@ async fn run_main_node_pipeline(
             gateway: config.general_config.gateway_rpc_url.is_some(),
             commit_submitted_tx: Some(commit_submitted_tx),
         })
+        // SYSCOIN
+        .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
         .pipe(snark_proving_step)
         .pipe(GaplessL1ProofSender::new(
             node_state_on_startup.l1_state.last_executed_batch + 1,

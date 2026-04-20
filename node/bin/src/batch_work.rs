@@ -151,7 +151,6 @@ where
                     block: block_number,
                 },
             };
-            self.storage.delete(block_number).await?;
             if output
                 .send((block_output, replay_record, tree))
                 .await
@@ -160,6 +159,7 @@ where
                 tracing::info!("outbound channel closed");
                 return Ok(());
             }
+            self.storage.delete(block_number).await?;
         }
         tracing::info!("batch work channel closed");
         Ok(())

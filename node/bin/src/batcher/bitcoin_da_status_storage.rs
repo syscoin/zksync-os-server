@@ -50,4 +50,34 @@ impl BitcoinDaStatusStorage {
         fs::rename(&tmp_path, &path).await?;
         Ok(())
     }
+
+    pub async fn delete(&self, batch_number: u64) -> anyhow::Result<()> {
+        let path = self.path_for(batch_number);
+        if fs::try_exists(&path).await? {
+            fs::remove_file(path).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn delete_through(&self, last_committed_batch: u64) -> anyhow::Result<()> {
+        let mut entries = fs::read_dir(&self.base_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(batch_number) = parse_batch_number(&name) else {
+                continue;
+            };
+            if batch_number <= last_committed_batch {
+                fs::remove_file(entry.path()).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn parse_batch_number(name: &str) -> Option<u64> {
+    name.strip_prefix("batch_")
+        .and_then(|value| value.strip_suffix(".json"))
+        .and_then(|value| value.parse().ok())
 }

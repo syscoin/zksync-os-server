@@ -9,7 +9,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
 use secrecy::ExposeSecret;
-use std::path::PathBuf;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, Sleep};
@@ -35,7 +34,8 @@ use zksync_os_types::PubdataMode;
 
 pub mod batch_builder;
 mod batch_deadline_policy;
-mod bitcoin_da_status_storage;
+pub(crate) mod bitcoin_da_status_cleanup;
+pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
 
@@ -68,7 +68,7 @@ pub struct Batcher<ReadState> {
     pub sidecar_sender: mpsc::Sender<BlobTransactionSidecar>,
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
-    pub bitcoin_da_status_storage_path: PathBuf,
+    pub bitcoin_da_status_storage: BitcoinDaStatusStorage,
 }
 
 #[async_trait]
@@ -544,7 +544,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             expected_hashes.len()
         );
         // SYSCOIN
-        let status_storage = BitcoinDaStatusStorage::new(&self.bitcoin_da_status_storage_path)?;
+        let status_storage = &self.bitcoin_da_status_storage;
         let mut status = match status_storage.load(batch_number).await? {
             Some(status)
                 if status.expected_hashes == expected_hashes
