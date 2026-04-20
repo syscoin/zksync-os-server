@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tokio::sync::{mpsc, mpsc::UnboundedReceiver, mpsc::UnboundedSender};
+use tokio::sync::mpsc;
 use zksync_os_batch_types::BlockMerkleTreeData;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::types::{
@@ -62,11 +62,11 @@ impl BatchWorkStorage {
 
 pub struct BatchWorkDispatcher {
     storage: BatchWorkStorage,
-    sender: UnboundedSender<u64>,
+    sender: mpsc::Sender<u64>,
 }
 
 impl BatchWorkDispatcher {
-    pub fn new(storage: BatchWorkStorage, sender: UnboundedSender<u64>) -> Self {
+    pub fn new(storage: BatchWorkStorage, sender: mpsc::Sender<u64>) -> Self {
         Self { storage, sender }
     }
 }
@@ -89,6 +89,7 @@ impl PipelineComponent for BatchWorkDispatcher {
             self.storage.store(block_output).await?;
             self.sender
                 .send(block_number)
+                .await
                 .map_err(|_| anyhow::anyhow!("batch work receiver dropped"))?;
         }
         tracing::info!("inbound channel closed");
@@ -100,7 +101,7 @@ pub struct BatchWorkSource<Replay> {
     storage: BatchWorkStorage,
     replay_storage: Replay,
     tree: MerkleTree<RocksDBWrapper>,
-    receiver: UnboundedReceiver<u64>,
+    receiver: mpsc::Receiver<u64>,
 }
 
 impl<Replay> BatchWorkSource<Replay> {
@@ -108,7 +109,7 @@ impl<Replay> BatchWorkSource<Replay> {
         storage: BatchWorkStorage,
         replay_storage: Replay,
         tree: MerkleTree<RocksDBWrapper>,
-        receiver: UnboundedReceiver<u64>,
+        receiver: mpsc::Receiver<u64>,
     ) -> Self {
         Self {
             storage,

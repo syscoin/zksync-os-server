@@ -126,6 +126,8 @@ const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
+// SYSCOIN
+const BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
 #[allow(clippy::too_many_arguments)]
@@ -1082,7 +1084,7 @@ async fn run_main_node_pipeline(
     let batch_work_storage =
         BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
             .expect("failed to initialize batch work storage");
-    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::channel(BATCH_WORK_CHANNEL_CAPACITY);
     let bitcoin_da_status_storage = BitcoinDaStatusStorage::new(
         config
             .general_config
