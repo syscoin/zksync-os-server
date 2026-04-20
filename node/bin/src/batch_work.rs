@@ -168,6 +168,7 @@ impl PipelineComponent for BatchWorkSource {
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
             let block_number = handle.block_number;
+            // SYSCOIN
             let item = self.storage.load(&handle).await?;
             let (block_output, replay_record) = item.into_parts();
             let tree = BlockMerkleTreeData {
@@ -194,7 +195,7 @@ impl PipelineComponent for BatchWorkSource {
         Ok(())
     }
 }
-
+// SYSCOIN
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BatchWorkItem {
     block_output: BatchWorkBlockOutput,
