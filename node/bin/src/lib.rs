@@ -1080,6 +1080,7 @@ async fn run_main_node_pipeline(
         pipeline.pipe(NoOpSink::new()).spawn();
         return;
     }
+    // SYSCOIN
     let batch_work_state_history_reserve = config
         .prover_input_generator_config
         .maximum_in_flight_blocks
