@@ -1,6 +1,6 @@
 use crate::config::RpcConfig;
 use crate::eth_call_handler::EthCallHandler;
-use crate::metrics::{TX_SUBMISSION_METRICS, TxRejectionReason};
+use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
 use crate::result::{ToRpcResult, internal_rpc_err, unimplemented_rpc_err};
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use crate::tx_handler::{EthSendRawTransactionSyncError, TxHandler};
@@ -784,7 +784,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthApiServer
             .send_raw_transaction_impl(bytes)
             .await
             .inspect_err(|err| {
-                TX_SUBMISSION_METRICS.rejections[&TxRejectionReason::from(err)].inc();
+                TX_SUBMISSION.rejections[&TxRejectionReason::from(err)].inc();
             })
             .to_rpc_result()
     }
@@ -799,7 +799,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthApiServer
             .await
             .inspect_err(|err| {
                 if let EthSendRawTransactionSyncError::Regular(inner) = err {
-                    TX_SUBMISSION_METRICS.rejections[&TxRejectionReason::from(inner)].inc();
+                    TX_SUBMISSION.rejections[&TxRejectionReason::from(inner)].inc();
                 }
             })
             .to_rpc_result()
