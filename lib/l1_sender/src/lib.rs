@@ -19,14 +19,12 @@ use alloy::eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use alloy::network::{
     Ethereum, EthereumWallet, TransactionBuilder, TransactionBuilder4844, TransactionResponse,
 };
-use alloy::primitives::Address;
 use alloy::primitives::utils::{format_ether, format_units};
+use alloy::primitives::{Address, B256};
 use alloy::providers::ext::DebugApi;
 use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::utils::Eip1559Estimation;
-use alloy::providers::{
-    PendingTransactionBuilder, PendingTransactionError, Provider, WalletProvider,
-};
+use alloy::providers::{Provider, WalletProvider};
 use alloy::rpc::types::trace::geth::{CallConfig, GethDebugTracingOptions};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::transports::TransportError;
@@ -43,8 +41,13 @@ use zksync_os_pipeline::PeekableReceiver;
 /// A code for "method not found" error response as declared in JSON-RPC 2.0 spec.
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
 /// Future that resolves into a (fallible) transaction receipt.
-type TransactionReceiptFuture =
-    BoxFuture<'static, Result<TransactionReceipt, PendingTransactionError>>;
+type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<TransactionReceipt>>;
+type PendingTx<Input> = (TransactionReceiptFuture, Input, Instant);
+
+const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
+/// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
+/// to reach 3 confirmations for such transactions
+const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
 
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
@@ -128,13 +131,20 @@ pub async fn run_l1_sender<Input: SendToL1>(
     // new commands. Their nonces precede anything we are about to send, so they
     // must be confirmed first.
     if !recovered.is_empty() {
-        let pending_txs: Vec<(TransactionReceiptFuture, Input, Instant)> = recovered
+        let pending_txs: Vec<PendingTx<Input>> = recovered
             .into_iter()
             .map(|(tx_hash, cmd)| {
-                let fut = PendingTransactionBuilder::new(provider.root().clone(), tx_hash)
-                    .with_required_confirmations(1)
-                    .get_receipt()
-                    .boxed();
+                let fut = wait_for_confirmed_receipt(
+                    provider.root().clone(),
+                    tx_hash,
+                    if gateway {
+                        REQUIRED_CONFIRMATIONS_GATEWAY
+                    } else {
+                        REQUIRED_CONFIRMATIONS_L1
+                    },
+                    config.transaction_timeout,
+                )
+                .boxed();
                 (fut, cmd, Instant::now())
             })
             .collect();
@@ -187,7 +197,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
-        let pending_txs: Vec<(TransactionReceiptFuture, Input, Instant)> =
+        let pending_txs: Vec<PendingTx<Input>> =
             futures::stream::iter(commands.drain(..))
                 .then(|mut cmd| async {
                     let mut tx_request = tx_request_with_gas_fields(
@@ -238,27 +248,25 @@ pub async fn run_l1_sender<Input: SendToL1>(
                         envelope
                     };
 
-                    // We don't wait for receipt here, instead we register an alloy watcher that
-                    // polls for the receipt in the background. This future resolves when the watcher
-                    // finds it.
                     let pending_tx = provider
                         .send_raw_transaction(&tx.encoded_2718())
                         .await?;
                     let submitted_at = Instant::now();
-                    let pending_tx = pending_tx
-                        // We are being optimistic with our transaction inclusion here. But, even if
-                        // reorg happens and transaction will not be included in the new fork (very-very
-                        // unlikely), L1 sender will crash at some point (because a consequent L1
-                        // transactions will fail) and recover from the new L1 state after restart.
-                        .with_required_confirmations(1)
-                        // Ensure we don't wait indefinitely and crash if the transaction is not
-                        // included on L1 in a reasonable time.
-                        .with_timeout(Some(config.transaction_timeout));
                     let tx_hash = *pending_tx.tx_hash();
+                    let receipt_fut = wait_for_confirmed_receipt(
+                        provider.root().clone(),
+                        tx_hash,
+                        if gateway {
+                            REQUIRED_CONFIRMATIONS_GATEWAY
+                        } else {
+                            REQUIRED_CONFIRMATIONS_L1
+                        },
+                        config.transaction_timeout,
+                    )
+                    .boxed();
                     tracing::info!(
                         "{command_name}: L1 transaction submitted for {range}. Hash: {tx_hash:?} Waiting for inclusion...",
                     );
-                    let receipt_fut = pending_tx.get_receipt().boxed();
 
                     // Notify CommitWatcher: this batch number has been submitted to L1.
                     if let Some(sender) = &commit_submitted_tx {
@@ -302,7 +310,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
 /// metrics, and forwards the completed commands downstream.
 async fn wait_for_txs_and_forward<F, P, Input>(
-    pending_txs: Vec<(TransactionReceiptFuture, Input, Instant)>,
+    pending_txs: Vec<PendingTx<Input>>,
     provider: &FillProvider<F, P>,
     operator_address: Address,
     command_name: &'static str,
@@ -348,6 +356,73 @@ where
         }
     }
     Ok(())
+}
+
+async fn wait_for_confirmed_receipt<P>(
+    provider: P,
+    tx_hash: B256,
+    required_confirmations: u64,
+    timeout: std::time::Duration,
+) -> anyhow::Result<TransactionReceipt>
+where
+    P: Provider<Ethereum>,
+{
+    let started_at = Instant::now();
+    let poll_interval = provider.client().poll_interval();
+    let mut next_warning_at = if timeout.is_zero() {
+        None
+    } else {
+        Some(timeout)
+    };
+
+    loop {
+        let latest_block = provider.get_block_number().await.map_err(|err| {
+            tracing::warn!(
+                "Failed to fetch latest L1 block while waiting for transaction confirmation \
+                 for tx {tx_hash}: {err}",
+            );
+            anyhow::Error::from(err)
+        })?;
+        let receipt = match provider.get_transaction_receipt(tx_hash).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to fetch transaction receipt while waiting for confirmation \
+                     for tx {tx_hash}: {err}",
+                );
+                return Err(err.into());
+            }
+        };
+        if let Some(receipt) = receipt.as_ref() {
+            let receipt_block_number = receipt
+                .block_number
+                .context("transaction receipt missing block number")?;
+            let confirmed_at =
+                receipt_block_number.saturating_add(required_confirmations.saturating_sub(1));
+            if latest_block >= confirmed_at {
+                return Ok(receipt.clone());
+            }
+        }
+
+        let elapsed = started_at.elapsed();
+        if let Some(warning_at) = next_warning_at
+            && elapsed >= warning_at
+        {
+            let receipt_block_number = receipt.as_ref().and_then(|receipt| receipt.block_number);
+            let confirmed_at =
+                receipt_block_number.map(|block| block + required_confirmations.saturating_sub(1));
+            tracing::warn!(
+                "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
+                 required_confirmations={required_confirmations}, \
+                 waited_secs={}, latest_l1_block={latest_block}, \
+                 receipt_block_number={receipt_block_number:?}, confirmed_at={confirmed_at:?}",
+                elapsed.as_secs_f64(),
+            );
+            next_warning_at = Some(warning_at + timeout);
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 /// Detects in-flight L1 transactions from a previous session, pairs each one with the
