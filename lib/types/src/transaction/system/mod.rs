@@ -414,7 +414,7 @@ mod tests {
     use alloy::primitives::{B256, U256, Uint};
     use zksync_os_contract_interface::InteropRoot;
 
-    use crate::SystemTxEnvelope;
+    use crate::{SystemTxEnvelope, SystemTxType};
 
     /// System transaction serialization should be consistent with Ethereum JSON-RPC spec
     /// See https://ethereum.github.io/execution-apis/api-documentation/
@@ -506,5 +506,18 @@ mod tests {
 
         assert_eq!(deserialized, tx);
         assert_eq!(deserialized.hash(), tx.hash());
+    }
+
+    #[test]
+    fn synthetic_sl_chain_id_marker_survives_json_roundtrip() {
+        let tx = SystemTxEnvelope::set_sl_chain_id(5700, u64::MAX);
+
+        let serialized = serde_json::to_string(&tx).unwrap();
+        let deserialized: SystemTxEnvelope = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            deserialized.system_subtype(),
+            &SystemTxType::SetSLChainId(u64::MAX)
+        );
     }
 }

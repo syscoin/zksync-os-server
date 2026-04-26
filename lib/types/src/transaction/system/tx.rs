@@ -27,9 +27,9 @@ impl Transaction for SystemTx {
     fn chain_id(&self) -> Option<ChainId> {
         None
     }
-
+    // SYSCOIN nonce is the salt
     fn nonce(&self) -> u64 {
-        0
+        self.salt
     }
 
     fn gas_limit(&self) -> u64 {
