@@ -320,6 +320,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let tree_for_rpc = Arc::new(tree_db.clone());
 
     let committed_batch_provider = CommittedBatchProvider::new(
+        runtime,
         &l1_state,
         config.l1_watcher_config.max_blocks_to_process,
         || async {
@@ -331,16 +332,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     )
     .await
     .expect("failed to init CommittedBatchProvider");
-
-    let committed_batch_provider_for_init = committed_batch_provider.clone();
-    let l1_state_for_init = l1_state.clone();
-    let max_blocks_to_process = config.l1_watcher_config.max_blocks_to_process;
-    runtime.spawn_critical_task("committed batch provider init", async move {
-        committed_batch_provider_for_init
-            .init(&l1_state_for_init, max_blocks_to_process)
-            .await
-            .expect("failed to initialize CommittedBatchProvider");
-    });
 
     let state = State::new(&config.general_config, &genesis).await;
 
@@ -1274,6 +1265,7 @@ async fn run_main_node_pipeline(
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
             commit_submitted_tx: Some(commit_submitted_tx),
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         // SYSCOIN
         .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
@@ -1287,6 +1279,7 @@ async fn run_main_node_pipeline(
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
             commit_submitted_tx: None,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         .pipe(
             PriorityTreePipelineStep::new(
@@ -1303,6 +1296,7 @@ async fn run_main_node_pipeline(
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
             gateway: config.general_config.gateway_rpc_url.is_some(),
             commit_submitted_tx: None,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         .pipe(BatchSink::new(internal_config_manager));
     // SYSCOIN
