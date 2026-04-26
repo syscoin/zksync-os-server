@@ -613,24 +613,25 @@ async fn tx_request_with_gas_fields(
         max_fee_per_gas_gwei = ?format_units(eip1559_est.max_fee_per_gas, "gwei"),
         "estimated priority and max fees"
     );
-    // SYSCOIN Use configured values as floors to avoid underpriced transactions on networks
-    // where fee estimators return unrealistically low values.
-    let selected_max_fee_per_gas = if eip1559_est.max_fee_per_gas < max_fee_per_gas {
+    // Use the minimum of estimated and configured values for gas fields
+    let capped_max_fee_per_gas = if eip1559_est.max_fee_per_gas > max_fee_per_gas {
         tracing::warn!(
-            "L1 sender's estimated maxFeePerGas ({}) is lower than configured floor ({max_fee_per_gas}); \
-             using configured floor value to avoid inclusion delay.",
+            "L1 sender's configured maxFeePerGas ({max_fee_per_gas}) \
+             is lower than the one estimated from network  ({}), \
+             using the configured base fee value ({max_fee_per_gas}) - this may result in inclusion delay.",
             eip1559_est.max_fee_per_gas
         );
         max_fee_per_gas
     } else {
         eip1559_est.max_fee_per_gas
     };
-    let selected_max_priority_fee_per_gas = if eip1559_est.max_priority_fee_per_gas
-        < max_priority_fee_per_gas
+    let capped_max_priority_fee_per_gas = if eip1559_est.max_priority_fee_per_gas
+        > max_priority_fee_per_gas
     {
         tracing::warn!(
-            "L1 sender's estimated maxPriorityFeePerGas ({}) is lower than configured floor ({max_priority_fee_per_gas}); \
-                 using configured floor value to avoid inclusion delay.",
+            "L1 sender's configured max_priority_fee_per_gas ({max_priority_fee_per_gas}) \
+             is lower than the one estimated from network  ({}), \
+             using the configured priority fee value ({max_priority_fee_per_gas}) - this may result in inclusion delay.",
             eip1559_est.max_priority_fee_per_gas
         );
         max_priority_fee_per_gas
