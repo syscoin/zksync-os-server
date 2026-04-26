@@ -405,12 +405,22 @@ where
         }
 
         let elapsed = started_at.elapsed();
+        // SYSCOIN timeout to break out of loop
+        let receipt_block_number = receipt.as_ref().and_then(|receipt| receipt.block_number);
+        let confirmed_at =
+            receipt_block_number.map(|block| block + required_confirmations.saturating_sub(1));
+        if !timeout.is_zero() && elapsed >= timeout {
+            anyhow::bail!(
+                "Timed out waiting for L1 transaction confirmation for tx {tx_hash}. \
+                 required_confirmations={required_confirmations}, \
+                 timeout_secs={}, latest_l1_block={latest_block}, \
+                 receipt_block_number={receipt_block_number:?}, confirmed_at={confirmed_at:?}",
+                timeout.as_secs_f64(),
+            );
+        }
         if let Some(warning_at) = next_warning_at
             && elapsed >= warning_at
         {
-            let receipt_block_number = receipt.as_ref().and_then(|receipt| receipt.block_number);
-            let confirmed_at =
-                receipt_block_number.map(|block| block + required_confirmations.saturating_sub(1));
             tracing::warn!(
                 "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
                  required_confirmations={required_confirmations}, \
