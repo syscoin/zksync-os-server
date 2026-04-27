@@ -11,6 +11,44 @@ index 826c1dcd2..f6d35cc8c 100644
          }
      }
 
+diff --git a/da-contracts/contracts/CalldataDA.sol b/da-contracts/contracts/CalldataDA.sol
+--- a/da-contracts/contracts/CalldataDA.sol
++++ b/da-contracts/contracts/CalldataDA.sol
+@@ -7,7 +7,8 @@
+ /// @dev Total number of bytes in a blob. Blob = 4096 field elements * 31 bytes per field element
+ /// @dev EIP-4844 defines it as 131_072 but we use 4096 * 31 within our circuits to always fit within a field element
+ /// @dev Our circuits will prove that a EIP-4844 blob and our internal blob are the same.
+-uint256 constant BLOB_SIZE_BYTES = 126_976;
++// SYSCOIN: one Bitcoin DA blob carries up to 2 MiB.
++uint256 constant BLOB_SIZE_BYTES = 2 * 1024 * 1024;
+ 
+ /// @dev The state diff hash, hash of pubdata + the number of blobs.
+ uint256 constant BLOB_DATA_OFFSET = 65;
+diff --git a/da-contracts/contracts/DAUtils.sol b/da-contracts/contracts/DAUtils.sol
+--- a/da-contracts/contracts/DAUtils.sol
++++ b/da-contracts/contracts/DAUtils.sol
+@@ -5,7 +5,8 @@
+ /// @dev Total number of bytes in a blob. Blob = 4096 field elements * 31 bytes per field element
+ /// @dev EIP-4844 defines it as 131_072 but we use 4096 * 31 within our circuits to always fit within a field element
+ /// @dev Our circuits will prove that a EIP-4844 blob and our internal blob are the same.
+-uint256 constant BLOB_SIZE_BYTES = 126_976;
++// SYSCOIN: one Bitcoin DA blob carries up to 2 MiB.
++uint256 constant BLOB_SIZE_BYTES = 2 * 1024 * 1024;
+ 
+ /// @dev Enum used to determine the source of pubdata. At first we will support calldata and blobs but this can be extended.
+ enum PubdataSource {
+diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol b/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol
+--- a/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol
++++ b/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol
+@@ -67,7 +67,7 @@
+ /// @dev The number of blobs that must be present in the commitment to a batch.
+ /// It represents the maximal number of blobs that circuits can support and can be larger
+ /// than the maximal number of blobs supported by the contract (`MAX_NUMBER_OF_BLOBS`).
+-uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 16;
++uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 32;
+ 
+ /// @title The interface of the ZKsync Executor contract capable of processing events emitted in the ZKsync protocol.
+ /// @author Matter Labs
 diff --git a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
 index 4ee20aa08..f1c6fdf65 100644
 --- a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol

@@ -9,6 +9,7 @@ fi
 CONTRACTS_PATH="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin.patch"
+DA_LIMITS_PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin-da-limits.patch"
 
 if [[ ! -e "${CONTRACTS_PATH}/.git" ]]; then
   echo "error: ${CONTRACTS_PATH} is not a git repository root" >&2
@@ -17,6 +18,10 @@ fi
 
 if [[ ! -f "${PATCH_FILE}" ]]; then
   echo "error: patch file not found: ${PATCH_FILE}" >&2
+  exit 1
+fi
+if [[ ! -f "${DA_LIMITS_PATCH_FILE}" ]]; then
+  echo "error: patch file not found: ${DA_LIMITS_PATCH_FILE}" >&2
   exit 1
 fi
 
@@ -38,13 +43,23 @@ if [[ "${ACTUAL_NESTED_SHA}" != "${EXPECTED_NESTED_SHA}" ]]; then
   exit 1
 fi
 
-# Marker-based idempotency check: if these patch-introduced strings exist, skip.
-if grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
+base_patch_applied() {
+  grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
   && grep -q "0x19bb48657a65f996c62ba86ebda9add9bcf3ca57a4c84658f4cc8433e141764c" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
   && grep -q "create2FactoryAddr != address(0) && create2FactoryAddr.code.length == 0" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol" \
-  && grep -q "return (create2FactoryAddr, create2FactorySalt);" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol"; then
+  && grep -q "return (create2FactoryAddr, create2FactorySalt);" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol"
+}
+
+da_limits_patch_applied() {
+  grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/CalldataDA.sol" \
+  && grep -q "uint256 constant MAX_NUMBER_OF_BLOBS = 32;" "${CONTRACTS_PATH}/system-contracts/contracts/Constants.sol" \
+  && grep -q "uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 32;" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol"
+}
+
+# Marker-based idempotency check: if these patch-introduced strings exist, skip.
+if base_patch_applied && da_limits_patch_applied; then
   echo "era-contracts syscoin patch appears already applied; skipping."
   exit 0
 fi
@@ -55,10 +70,22 @@ if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
   exit 1
 fi
 
+if base_patch_applied && ! da_limits_patch_applied; then
+  echo "Checking Syscoin DA limits patch applicability..."
+  git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
+
+  echo "Applying era-contracts Syscoin DA limits patch..."
+  git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
+  echo "Patch applied successfully."
+  exit 0
+fi
+
 echo "Checking patch applicability..."
 git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
+git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
 
 echo "Applying era-contracts syscoin patch..."
 git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
+git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
 
 echo "Patch applied successfully."

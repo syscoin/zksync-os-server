@@ -1,0 +1,16 @@
+diff --git a/system-contracts/contracts/Constants.sol b/system-contracts/contracts/Constants.sol
+--- a/system-contracts/contracts/Constants.sol
++++ b/system-contracts/contracts/Constants.sol
+@@ -160,10 +160,10 @@
+ /// @dev Total number of bytes in a blob. Blob = 4096 field elements * 31 bytes per field element
+ /// @dev EIP-4844 defines it as 131_072 but we use 4096 * 31 within our circuits to always fit within a field element
+ /// @dev Our circuits will prove that a EIP-4844 blob and our internal blob are the same.
+-uint256 constant BLOB_SIZE_BYTES = 126_976;
++uint256 constant BLOB_SIZE_BYTES = 2 * 1024 * 1024;
+ 
+ /// @dev Max number of blobs currently supported
+-uint256 constant MAX_NUMBER_OF_BLOBS = 6;
++uint256 constant MAX_NUMBER_OF_BLOBS = 32;
+ 
+ /// @dev Marker of EraVM bytecode
+ uint8 constant ERA_VM_BYTECODE_FLAG = 1;
