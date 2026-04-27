@@ -129,7 +129,9 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitm
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
 @@ -1,31 +1,47 @@
-+use super::blob_commitment_generator::{ENCODABLE_BYTES_PER_BLOB, MAX_NUMBER_OF_BLOBS};
++use super::blob_commitment_generator::{
++    BLOB_CHUNK_SIZE, ENCODABLE_BYTES_PER_BLOB, MAX_NUMBER_OF_BLOBS,
++};
  use super::DACommitmentGenerator;
 +use core::cmp;
  use crypto::sha3::Keccak256;
@@ -162,7 +164,10 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitm
  impl<O: IOOracle> DACommitmentGenerator<O> for Keccak256CommitmentGenerator {
      fn finalize(&mut self, _oracle: &mut O) -> Bytes32 {
 +        // SYSCOIN: Gateway relayed-calldata DA can cover multiple 2 MiB Syscoin DA blobs.
-+        let blobs_provided = cmp::max(1, self.pubdata_len.div_ceil(ENCODABLE_BYTES_PER_BLOB));
++        let blobs_provided = cmp::max(
++            1,
++            (self.pubdata_len + BLOB_CHUNK_SIZE).div_ceil(ENCODABLE_BYTES_PER_BLOB),
++        );
 +        assert!(
 +            blobs_provided <= MAX_NUMBER_OF_BLOBS,
 +            "Syscoin DA pubdata exceeds supported blob count"

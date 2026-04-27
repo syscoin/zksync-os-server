@@ -64,7 +64,10 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn syscoin_da_blob_count_for_pubdata(pubdata_len: usize) -> usize {
-    let blob_count = pubdata_len.div_ceil(SYSCOIN_DA_BYTES_PER_BLOB).max(1);
+    let blob_count = pubdata_len
+        .saturating_add(BLOB_CHUNK_SIZE)
+        .div_ceil(SYSCOIN_DA_BYTES_PER_BLOB)
+        .max(1);
     assert!(
         blob_count <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
         "Syscoin DA pubdata exceeds 32-blob capacity: {} blobs > {}",
