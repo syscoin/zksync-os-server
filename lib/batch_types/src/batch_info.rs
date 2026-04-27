@@ -45,6 +45,13 @@ fn blob_data_id(data: &[u8]) -> [u8; 32] {
 }
 
 fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
+    assert!(
+        pubdata.len() <= SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES,
+        "Syscoin DA blob pubdata exceeds 32-blob capacity: {} > {}",
+        pubdata.len(),
+        SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES
+    );
+
     // Match the proving side blob commitment generator:
     // prepend 31-byte length field prefix and hash each encoded blob chunk.
     let mut encoded = vec![0u8; BLOB_CHUNK_SIZE];
@@ -57,7 +64,14 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn syscoin_da_blob_count_for_pubdata(pubdata_len: usize) -> usize {
-    pubdata_len.div_ceil(SYSCOIN_DA_BYTES_PER_BLOB).max(1)
+    let blob_count = pubdata_len.div_ceil(SYSCOIN_DA_BYTES_PER_BLOB).max(1);
+    assert!(
+        blob_count <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+        "Syscoin DA pubdata exceeds 32-blob capacity: {} blobs > {}",
+        blob_count,
+        SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+    );
+    blob_count
 }
 
 pub fn syscoin_blob_ids_and_chunks_from_pubdata(pubdata: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
