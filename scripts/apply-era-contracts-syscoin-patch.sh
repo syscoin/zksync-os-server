@@ -80,6 +80,16 @@ if base_patch_applied && ! da_limits_patch_applied; then
   exit 0
 fi
 
+if ! base_patch_applied && da_limits_patch_applied; then
+  echo "Checking base era-contracts Syscoin patch applicability..."
+  git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
+
+  echo "Applying base era-contracts Syscoin patch..."
+  git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
+  echo "Patch applied successfully."
+  exit 0
+fi
+
 echo "Checking patch applicability..."
 git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
 git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
