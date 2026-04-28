@@ -124,7 +124,8 @@ impl FriJobManager {
             GenericComponentState::ProcessingOrWaitingRecv,
         );
         // SYSCOIN
-        let (accepted_proof_sender, mut accepted_proof_receiver) = mpsc::unbounded_channel();
+        let (accepted_proof_sender, mut accepted_proof_receiver) =
+            mpsc::unbounded_channel::<AcceptedProof>();
         let proof_storage_for_forwarder = proof_storage.clone();
         let downstream_sender = batches_with_proof_sender.clone();
         tokio::spawn(async move {
