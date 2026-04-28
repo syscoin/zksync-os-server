@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::Metadata;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -18,6 +19,8 @@ pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
     // SYSCOIN
     pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
+    // SYSCOIN
+    pending_key_counter: Arc<AtomicU64>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
 impl ProofStorage {
@@ -37,6 +40,7 @@ impl ProofStorage {
                 .await?,
             )),
             pending_batches_with_proof: Arc::new(Mutex::new(HashMap::new())),
+            pending_key_counter: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
                     config.path.join("failed_proofs"),
@@ -75,40 +79,64 @@ impl ProofStorage {
     /// Pending proofs are protected from capacity eviction until [`Self::release_pending_batch_with_proof`]
     /// is called. Returning `Ok(())` from this method means the proof was actually written and remains
     /// loadable by the forwarder unless it is externally deleted or the filesystem fails.
-    pub async fn save_pending_batch_with_proof(&self, batch: &StoredBatch) -> anyhow::Result<()> {
+    pub async fn save_pending_batch_with_proof(
+        &self,
+        batch: &StoredBatch,
+    ) -> anyhow::Result<PendingBatchProofKey> {
         let latency =
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
-        let key = format!("batch_{}.json", batch.batch_number());
+        let key = PendingBatchProofKey::new(
+            batch.batch_number(),
+            self.pending_key_counter.fetch_add(1, Ordering::Relaxed),
+        )?;
         let mut pending = self.pending_batches_with_proof.lock().await;
         // SYSCOIN
-        *pending.entry(key.clone()).or_insert(0) += 1;
+        *pending.entry(key.0.clone()).or_insert(0) += 1;
         let protected_keys: HashSet<_> = pending.keys().cloned().collect();
 
         let result = self
             .batches_with_proof
             .lock()
             .await
-            .store_protected(&key, batch, &protected_keys)
+            .store_protected(key.as_str(), batch, &protected_keys)
             .await;
 
         if result.is_err() {
             // SYSCOIN
-            decrement_pending_proof(&mut pending, &key);
+            decrement_pending_proof(&mut pending, key.as_str());
         }
 
         latency.observe();
         let usage = result?;
 
         PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
-        Ok(())
+        Ok(key)
     }
 
     // SYSCOIN
-    pub async fn release_pending_batch_with_proof(&self, batch_num: u64) {
-        let key = format!("batch_{batch_num}.json");
+    pub async fn release_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        decrement_pending_proof(&mut pending, &key);
+        decrement_pending_proof(&mut pending, key.as_str());
+    }
+
+    // SYSCOIN
+    pub async fn get_pending_batch_with_proof(
+        &self,
+        key: &PendingBatchProofKey,
+    ) -> anyhow::Result<Option<SignedBatchEnvelope<FriProof>>> {
+        let latency = PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::GetBatchWithProof].start();
+
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .load::<StoredBatch>(key.as_str())
+            .await
+            .map(|o| o.map(|o| o.batch_envelope()));
+
+        latency.observe();
+        result
     }
 
     /// Loads a BatchWithProof for `batch_number`, if present
@@ -164,6 +192,23 @@ fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) {
         if *count == 0 {
             pending.remove(key);
         }
+    }
+}
+
+// SYSCOIN
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PendingBatchProofKey(String);
+
+impl PendingBatchProofKey {
+    fn new(batch_number: u64, sequence: u64) -> anyhow::Result<Self> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        Ok(Self(format!(
+            "batch_{batch_number}_pending_{now}_{sequence}.json"
+        )))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

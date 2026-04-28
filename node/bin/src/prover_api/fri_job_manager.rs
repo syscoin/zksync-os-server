@@ -15,7 +15,7 @@
 
 use crate::prover_api::fri_proof_verifier;
 use crate::prover_api::metrics::{ProverStage, ProverType};
-use crate::prover_api::proof_storage::{ProofStorage, StoredBatch};
+use crate::prover_api::proof_storage::{PendingBatchProofKey, ProofStorage, StoredBatch};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use alloy::primitives::Bytes;
 use jsonrpsee::core::Serialize;
@@ -85,6 +85,7 @@ pub struct JobState {
 #[derive(Debug)]
 struct AcceptedProof {
     batch_number: u64,
+    proof_key: PendingBatchProofKey,
     latency_tracker: LatencyDistributionTracker<BatchExecutionStage>,
 }
 
@@ -127,7 +128,7 @@ impl FriJobManager {
                 let batch_number = accepted_proof.batch_number;
                 let mut stored_batch = loop {
                     match proof_storage_for_forwarder
-                        .get_batch_with_proof(batch_number)
+                        .get_pending_batch_with_proof(&accepted_proof.proof_key)
                         .await
                     {
                         Ok(Some(stored_batch)) => break stored_batch,
@@ -153,19 +154,19 @@ impl FriJobManager {
 
                 if downstream_sender.send(stored_batch).await.is_err() {
                     proof_storage_for_forwarder
-                        .release_pending_batch_with_proof(batch_number)
+                        .release_pending_batch_with_proof(&accepted_proof.proof_key)
                         .await;
                     accepted_proof_receiver.close();
                     while let Ok(queued_proof) = accepted_proof_receiver.try_recv() {
                         proof_storage_for_forwarder
-                            .release_pending_batch_with_proof(queued_proof.batch_number)
+                            .release_pending_batch_with_proof(&queued_proof.proof_key)
                             .await;
                     }
                     tracing::info!("accepted FRI proof downstream channel closed");
                     return;
                 }
                 proof_storage_for_forwarder
-                    .release_pending_batch_with_proof(batch_number)
+                    .release_pending_batch_with_proof(&accepted_proof.proof_key)
                     .await;
             }
         });
@@ -266,7 +267,8 @@ impl FriJobManager {
             signature_data,
             latency_tracker: Default::default(),
         });
-        self.proof_storage
+        let pending_proof_key = self
+            .proof_storage
             .save_pending_batch_with_proof(&stored_batch)
             .await
             .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
@@ -285,16 +287,18 @@ impl FriJobManager {
             );
             // SYSCOIN
             self.proof_storage
-                .release_pending_batch_with_proof(batch_number)
+                .release_pending_batch_with_proof(&pending_proof_key)
                 .await;
             return Ok(());
         };
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
         let latency_tracker = completed_job.latency_tracker;
 
-        if let Err(err) = self.enqueue_accepted_proof(batch_number, latency_tracker) {
+        if let Err(err) =
+            self.enqueue_accepted_proof(batch_number, pending_proof_key.clone(), latency_tracker)
+        {
             self.proof_storage
-                .release_pending_batch_with_proof(batch_number)
+                .release_pending_batch_with_proof(&pending_proof_key)
                 .await;
             tracing::error!(
                 batch_number,
@@ -429,11 +433,13 @@ impl FriJobManager {
     fn enqueue_accepted_proof(
         &self,
         batch_number: u64,
+        proof_key: PendingBatchProofKey,
         latency_tracker: LatencyDistributionTracker<BatchExecutionStage>,
     ) -> Result<(), SubmitError> {
         self.accepted_proof_sender
             .send(AcceptedProof {
                 batch_number,
+                proof_key,
                 latency_tracker,
             })
             .map_err(|_| SubmitError::Other("server is shutting down".to_string()))
