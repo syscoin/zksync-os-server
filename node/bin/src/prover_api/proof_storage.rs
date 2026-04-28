@@ -306,6 +306,13 @@ impl BoundedFileStorage {
             );
             return Ok(self.current_size);
         }
+
+        if require_write && self.base_dir.join(key).is_file() {
+            return self
+                .overwrite_existing_required(key, data, count, protected_keys)
+                .await;
+        }
+
         self.handle_duplicate(key).await?;
         // This could still remove the duplicate if there is not enough space for it
         self.enforce_capacity(count, protected_keys).await?;
@@ -323,6 +330,38 @@ impl BoundedFileStorage {
             return Ok(self.current_size);
         }
         self.write_file(key, data).await?;
+        Ok(self.current_size)
+    }
+
+    // SYSCOIN
+    async fn overwrite_existing_required(
+        &mut self,
+        key: &str,
+        data: Vec<u8>,
+        count: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        let path = self.base_dir.join(key);
+        let old_meta = fs::metadata(&path).await?;
+        let old_len = old_meta.len();
+        let extra_size = count.saturating_sub(old_len);
+
+        self.enforce_capacity(extra_size, protected_keys).await?;
+        anyhow::ensure!(
+            self.current_size + extra_size <= self.capacity_bytes,
+            "not enough storage capacity for {key}; remaining files are protected"
+        );
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let tmp_key = format!("{key}.tmp_{now}");
+        let tmp_path = self.base_dir.join(&tmp_key);
+        fs::write(&tmp_path, data).await?;
+        fs::rename(&tmp_path, &path).await?;
+
+        self.current_size = self.current_size - old_len + count;
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&path).await?;
+        self.remove_queue.push_back((key.to_string(), meta));
         Ok(self.current_size)
     }
 
@@ -522,6 +561,33 @@ mod tests {
                 .await
                 .is_err()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_protected_overwrite_failure_preserves_existing_entry() -> anyhow::Result<()> {
+        const LIMIT: u64 = 700;
+        let dir = TempDir::new()?;
+        let path = dir.path().to_owned();
+        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
+
+        let old_value = "old".repeat(50);
+        let other_value = "other".repeat(50);
+        storage.store("batch", &old_value).await?;
+        storage.store("other", &other_value).await?;
+
+        let protected_keys = HashSet::from(["batch".to_string(), "other".to_string()]);
+        let too_large_replacement = "replacement".repeat(50);
+        assert!(
+            storage
+                .store_protected("batch", &too_large_replacement, &protected_keys)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(storage.load::<String>("batch").await?, Some(old_value));
+        assert_eq!(storage.load::<String>("other").await?, Some(other_value));
 
         Ok(())
     }
