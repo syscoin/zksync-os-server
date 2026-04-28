@@ -163,6 +163,81 @@ impl FriProvingPipelineStep {
             None
         }
     }
+
+    // SYSCOIN
+    async fn try_rehydrate_pending_batch(
+        proof_storage: &ProofStorage,
+        batch: &SignedBatchEnvelope<ProverInput>,
+    ) -> Option<ProvenBatch> {
+        let pending_keys = proof_storage.pending_batch_proof_keys().await;
+        for pending_key in pending_keys {
+            if pending_key.batch_number() < batch.batch_number() {
+                tracing::warn!(
+                    batch_number = pending_key.batch_number(),
+                    current_batch_number = batch.batch_number(),
+                    ?pending_key,
+                    "dropping stale pending FRI proof before rehydration"
+                );
+                proof_storage
+                    .release_pending_batch_with_proof(&pending_key)
+                    .await;
+                continue;
+            }
+            if pending_key.batch_number() != batch.batch_number() {
+                continue;
+            }
+
+            let stored_batch = match proof_storage
+                .get_pending_batch_with_proof(&pending_key)
+                .await
+            {
+                Ok(Some(batch)) => batch,
+                Ok(None) => {
+                    tracing::warn!(
+                        batch_number = batch.batch_number(),
+                        ?pending_key,
+                        "dropping missing pending FRI proof during rehydration"
+                    );
+                    proof_storage
+                        .release_pending_batch_with_proof(&pending_key)
+                        .await;
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        batch_number = batch.batch_number(),
+                        ?pending_key,
+                        ?err,
+                        "quarantining unloadable pending FRI proof during rehydration"
+                    );
+                    proof_storage
+                        .quarantine_pending_batch_with_proof(&pending_key)
+                        .await;
+                    continue;
+                }
+            };
+
+            if Self::can_rehydrate_batch(batch, &stored_batch) {
+                tracing::info!(
+                    batch_number = batch.batch_number(),
+                    ?pending_key,
+                    "Reusing pending FRI proof after restart"
+                );
+                return Some(ProvenBatch::pending(stored_batch, pending_key));
+            }
+
+            tracing::warn!(
+                batch_number = batch.batch_number(),
+                ?pending_key,
+                "dropping stale pending FRI proof during rehydration"
+            );
+            proof_storage
+                .release_pending_batch_with_proof(&pending_key)
+                .await;
+        }
+
+        None
+    }
 }
 
 #[async_trait]
@@ -190,6 +265,10 @@ impl PipelineComponent for FriProvingPipelineStep {
                 while let Some(batch) = input.recv().await {
                     if batch.batch_number() > last_proved_batch_number {
                         // SYSCOIN
+                        if let Some(stored_batch) = Self::try_rehydrate_pending_batch(&proof_storage, &batch).await {
+                            output.send(stored_batch).await?;
+                            continue;
+                        }
                         if let Some(stored_batch) = Self::try_rehydrate_batch(&proof_storage, &batch).await {
                             output.send(ProvenBatch::new(stored_batch)).await?;
                             continue;
