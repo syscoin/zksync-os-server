@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-use zksync_os_l1_sender::batcher_model::{BatchMetadata, SignedBatchEnvelope};
+use zksync_os_l1_sender::batcher_model::{BatchMetadata, BatchSignatureData, SignedBatchEnvelope};
 
 /// Concurrent map of prover jobs that support FRI and SNARK workflows.
 /// Imposes a limit on batch range
@@ -241,6 +241,22 @@ impl<T: Clone> ProverJobMap<T> {
             .await;
         jobs.get(&batch_number)
             .map(|entry| entry.batch_envelope.batch.clone())
+    }
+
+    // SYSCOIN
+    pub async fn get_job_batch_metadata_and_signature(
+        &self,
+        batch_number: u64,
+    ) -> Option<(BatchMetadata, BatchSignatureData)> {
+        let jobs = self
+            .lock_with_tracking(JobMapMethod::GetJobBatchMetadata)
+            .await;
+        jobs.get(&batch_number).map(|entry| {
+            (
+                entry.batch_envelope.batch.clone(),
+                entry.batch_envelope.signature_data.clone(),
+            )
+        })
     }
 
     /// If a job is present for given batch_number, returns (vk, prover_input)

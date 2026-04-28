@@ -27,7 +27,7 @@ use tokio::sync::mpsc::Permit;
 use tokio::sync::mpsc::error::TrySendError;
 use zksync_os_l1_sender::batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::batcher_model::{
-    BatchMetadata, FriProof, ProverInput, RealFriProof, SignedBatchEnvelope,
+    BatchEnvelope, BatchMetadata, FriProof, ProverInput, RealFriProof, SignedBatchEnvelope,
 };
 use zksync_os_observability::{
     ComponentStateHandle, ComponentStateReporter, GenericComponentState,
@@ -84,6 +84,8 @@ pub struct FriJobManager {
     jobs: ProverJobMap<ProverInput>,
     // outbound
     batches_with_proof_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+    // SYSCOIN
+    accepted_proof_sender: mpsc::UnboundedSender<u64>,
     // == storage ==
     proof_storage: ProofStorage,
     // == metrics ==
@@ -106,9 +108,45 @@ impl FriJobManager {
             "fri_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
         );
+        // SYSCOIN
+        let (accepted_proof_sender, mut accepted_proof_receiver) = mpsc::unbounded_channel();
+        let proof_storage_for_forwarder = proof_storage.clone();
+        let downstream_sender = batches_with_proof_sender.clone();
+        tokio::spawn(async move {
+            while let Some(batch_number) = accepted_proof_receiver.recv().await {
+                let stored_batch = match proof_storage_for_forwarder
+                    .get_batch_with_proof(batch_number)
+                    .await
+                {
+                    Ok(Some(stored_batch)) => stored_batch,
+                    Ok(None) => {
+                        tracing::error!(
+                            batch_number,
+                            "accepted FRI proof missing from proof storage"
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            batch_number,
+                            ?err,
+                            "failed to load accepted FRI proof from proof storage"
+                        );
+                        continue;
+                    }
+                };
+
+                if downstream_sender.send(stored_batch).await.is_err() {
+                    tracing::info!("accepted FRI proof downstream channel closed");
+                    return;
+                }
+            }
+        });
+
         Self {
             jobs,
             batches_with_proof_sender,
+            accepted_proof_sender,
             proof_storage,
             latency_tracker,
         }
@@ -159,7 +197,11 @@ impl FriJobManager {
         prover_id: &str,
     ) -> Result<(), SubmitError> {
         // Snapshot the assigned job entry (if any).
-        let batch_metadata = match self.jobs.get_job_batch_metadata(batch_number).await {
+        let (batch_metadata, signature_data) = match self
+            .jobs
+            .get_job_batch_metadata_and_signature(batch_number)
+            .await
+        {
             Some(e) => e,
             None => return Err(SubmitError::UnknownJob(batch_number)),
         };
@@ -184,9 +226,27 @@ impl FriJobManager {
         self.verify_proof(&batch_metadata, &proof_bytes, batch_number, prover_id)
             .await?;
 
-        // SYSCOIN: Downstream commit/finality backpressure should not make provers redo
-        // already verified work. Complete the assigned job, persist the accepted proof, and
-        // then forward it internally even if the immediate downstream channel is full.
+        // SYSCOIN: Persist the accepted proof before removing the in-memory job, so
+        // storage failures leave the job retriable. Forwarding only records the batch
+        // number; the forwarder reloads the proof from disk before sending downstream.
+        let proof = RealFriProof::V2 {
+            proof: proof_bytes,
+            proving_execution_version: proving_version as u32,
+        };
+        let stored_batch = StoredBatch::V1(
+            BatchEnvelope {
+                batch: batch_metadata.clone(),
+                data: FriProof::Real(proof),
+                signature_data,
+                latency_tracker: Default::default(),
+            }
+            .with_stage(BatchExecutionStage::FriProvedReal),
+        );
+        self.proof_storage
+            .save_batch_with_proof(&stored_batch)
+            .await
+            .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
+
         let Some(removed_job) = self
             .jobs
             .complete_job(batch_number, ProverType::Real, prover_id)
@@ -201,20 +261,9 @@ impl FriJobManager {
             );
             return Ok(());
         };
+        drop(removed_job);
 
-        let proof = RealFriProof::V2 {
-            proof: proof_bytes,
-            proving_execution_version: proving_version as u32,
-        };
-        let envelope = removed_job
-            .with_data(FriProof::Real(proof))
-            .with_stage(BatchExecutionStage::FriProvedReal);
-        let stored_batch = StoredBatch::V1(envelope);
-        self.proof_storage
-            .save_batch_with_proof(&stored_batch)
-            .await
-            .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
-        self.enqueue_proof_downstream(stored_batch.batch_envelope())?;
+        self.enqueue_accepted_proof(batch_number)?;
 
         Ok(())
     }
@@ -338,31 +387,10 @@ impl FriJobManager {
     }
 
     // SYSCOIN
-    fn enqueue_proof_downstream(
-        &self,
-        envelope: SignedBatchEnvelope<FriProof>,
-    ) -> Result<(), SubmitError> {
-        match self.batches_with_proof_sender.try_send(envelope) {
-            Ok(()) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
-                Ok(())
-            }
-            Err(TrySendError::Full(envelope)) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::WaitingSend);
-                let sender = self.batches_with_proof_sender.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = sender.send(envelope).await {
-                        tracing::error!(?err, "failed to forward persisted FRI proof downstream");
-                    }
-                });
-                Ok(())
-            }
-            Err(TrySendError::Closed(_)) => {
-                Err(SubmitError::Other("server is shutting down".to_string()))
-            }
-        }
+    fn enqueue_accepted_proof(&self, batch_number: u64) -> Result<(), SubmitError> {
+        self.accepted_proof_sender
+            .send(batch_number)
+            .map_err(|_| SubmitError::Other("server is shutting down".to_string()))
     }
 
     fn try_reserve_permit_downstream(
