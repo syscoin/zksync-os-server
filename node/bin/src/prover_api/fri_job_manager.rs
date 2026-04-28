@@ -155,6 +155,7 @@ impl FriJobManager {
                     proof_storage_for_forwarder
                         .release_pending_batch_with_proof(batch_number)
                         .await;
+                    accepted_proof_receiver.close();
                     while let Ok(queued_proof) = accepted_proof_receiver.try_recv() {
                         proof_storage_for_forwarder
                             .release_pending_batch_with_proof(queued_proof.batch_number)
