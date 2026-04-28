@@ -114,25 +114,22 @@ impl ProofStorage {
     }
 
     // SYSCOIN
-    /// Persist a promoted pending proof under its canonical batch key.
+    /// Promote a pending proof file to its canonical batch key.
     ///
-    /// Unlike [`Self::save_batch_with_proof`], this is a required write: callers use it as
-    /// the durable handoff point before releasing a pending accepted proof.
+    /// Unlike [`Self::save_batch_with_proof`], this is a required durable handoff; it renames
+    /// the already-written pending file instead of requiring temporary capacity for a second copy.
     pub async fn promote_pending_batch_with_proof(
         &self,
-        batch: &StoredBatch,
+        key: &PendingBatchProofKey,
     ) -> anyhow::Result<()> {
         let latency =
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
-        let key = format!("batch_{}.json", batch.batch_number());
-        let pending = self.pending_batches_with_proof.lock().await;
-        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
         let result = self
             .batches_with_proof
             .lock()
             .await
-            .store_protected(&key, batch, &protected_keys)
+            .promote(key.as_str(), &format!("batch_{}.json", key.batch_number()))
             .await;
         latency.observe();
         let usage = result?;
@@ -217,37 +214,43 @@ impl ProofStorage {
     // SYSCOIN
     pub async fn quarantine_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        let was_last_reference = decrement_pending_proof(&mut pending, key.as_str());
-        drop(pending);
+        let Some(reference_count) = pending.get_mut(key.as_str()) else {
+            return;
+        };
 
-        if was_last_reference {
-            match self
-                .batches_with_proof
-                .lock()
-                .await
-                .quarantine(key.as_str())
-                .await
-            {
-                Ok(Some(quarantine_key)) => {
-                    tracing::error!(
-                        pending_proof_key = key.as_str(),
-                        quarantine_key,
-                        "quarantined unloadable pending proof"
-                    );
-                }
-                Ok(None) => {
-                    tracing::error!(
-                        pending_proof_key = key.as_str(),
-                        "pending proof was missing during quarantine"
-                    );
-                }
-                Err(err) => {
-                    tracing::error!(
-                        ?err,
-                        pending_proof_key = key.as_str(),
-                        "failed to quarantine unloadable pending proof"
-                    );
-                }
+        if *reference_count > 1 {
+            *reference_count -= 1;
+            return;
+        }
+
+        match self
+            .batches_with_proof
+            .lock()
+            .await
+            .quarantine(key.as_str())
+            .await
+        {
+            Ok(Some(quarantine_key)) => {
+                pending.remove(key.as_str());
+                tracing::error!(
+                    pending_proof_key = key.as_str(),
+                    quarantine_key,
+                    "quarantined unloadable pending proof"
+                );
+            }
+            Ok(None) => {
+                pending.remove(key.as_str());
+                tracing::error!(
+                    pending_proof_key = key.as_str(),
+                    "pending proof was missing during quarantine"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    pending_proof_key = key.as_str(),
+                    "failed to quarantine unloadable pending proof; keeping it protected"
+                );
             }
         }
     }
@@ -651,6 +654,26 @@ impl BoundedFileStorage {
         self.current_size = self.current_size.saturating_sub(meta.len());
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         Ok(())
+    }
+
+    // SYSCOIN
+    async fn promote(&mut self, from_key: &str, to_key: &str) -> anyhow::Result<u64> {
+        let from_path = self.base_dir.join(from_key);
+        anyhow::ensure!(
+            fs::try_exists(&from_path).await?,
+            "pending proof {from_key} is missing"
+        );
+
+        if from_key != to_key {
+            self.remove(to_key).await?;
+        }
+
+        let to_path = self.base_dir.join(to_key);
+        fs::rename(&from_path, &to_path).await?;
+        *self.outdated_count.entry(from_key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&to_path).await?;
+        self.remove_queue.push_back((to_key.to_string(), meta));
+        Ok(self.current_size)
     }
 
     // SYSCOIN

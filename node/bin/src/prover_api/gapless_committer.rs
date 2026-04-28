@@ -73,7 +73,7 @@ impl PipelineComponent for GaplessCommitter {
                             let stored_batch = StoredBatch::V1(batch);
                             if let Some(pending_proof_key) = pending_proof_key {
                                 self.proof_storage
-                                    .promote_pending_batch_with_proof(&stored_batch)
+                                    .promote_pending_batch_with_proof(&pending_proof_key)
                                     .await?;
                                 self.proof_storage
                                     .release_pending_batch_with_proof(&pending_proof_key)
