@@ -3,13 +3,13 @@ use crate::batcher::bitcoin_da_status_storage::{
     BitcoinDaBatchStatus, BitcoinDaFinalityPolicy, BitcoinDaStatusStorage,
 };
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
-use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
+use crate::config::BatcherConfig;
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
 use alloy::primitives::{Address, B256};
 use anyhow::Context;
 use async_trait::async_trait;
-use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
+use bitcoin_da_client::SyscoinClient;
 use secrecy::ExposeSecret;
 use std::pin::Pin;
 use tokio::sync::mpsc;
@@ -36,6 +36,7 @@ use zksync_os_types::PubdataMode;
 
 pub mod batch_builder;
 mod batch_deadline_policy;
+pub(crate) mod bitcoin_da_finality_gate;
 pub(crate) mod bitcoin_da_status_cleanup;
 pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
@@ -495,7 +496,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         )
     }
 
-    // SYSCOIN: publish each sealed batch to Syscoin Bitcoin DA and wait for finality.
+    // SYSCOIN: publish each sealed batch to Syscoin Bitcoin DA. Finality is
+    // enforced later, immediately before the commit transaction is sent to L1.
     async fn publish_bitcoin_da(
         &self,
         batch_number: u64,
@@ -633,47 +635,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             chunk_count = blob_chunks.len(),
             "Published Bitcoin DA blobs"
         );
-
-        if !status.finalized {
-            for version_hash in &status.published_hashes {
-                let start = Instant::now();
-                loop {
-                    let finality_mode = match self.batcher_config.bitcoin_da_finality_mode {
-                        BitcoinDaFinalityMode::Chainlock => ClientBitcoinDaFinalityMode::Chainlock,
-                        BitcoinDaFinalityMode::Confirmations => {
-                            ClientBitcoinDaFinalityMode::Confirmations
-                        }
-                    };
-                    let is_final = client
-                        .check_blob_finality_with_mode(
-                            version_hash,
-                            finality_mode,
-                            self.batcher_config.bitcoin_da_finality_confirmations,
-                        )
-                        .await
-                        .map_err(|err| {
-                            anyhow::anyhow!(
-                                "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
-                            )
-                        })?;
-                    if is_final {
-                        tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
-                        break;
-                    }
-
-                    if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
-                        anyhow::bail!(
-                            "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
-                            self.batcher_config.bitcoin_da_finality_timeout
-                        );
-                    }
-
-                    tokio::time::sleep(self.batcher_config.bitcoin_da_finality_poll_interval).await;
-                }
-            }
-            status.finalized = true;
-            status_storage.save(batch_number, &status).await?;
-        }
         Ok(())
     }
 }

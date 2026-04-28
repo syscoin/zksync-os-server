@@ -19,6 +19,7 @@ pub mod util;
 
 use crate::batch_sink::{BatchSink, NoOpSink, clear_failing_block_config_task};
 use crate::batch_work::{BatchWorkDispatcher, BatchWorkSource, BatchWorkStorage};
+use crate::batcher::bitcoin_da_finality_gate::BitcoinDaFinalityGate;
 use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
 use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
@@ -1258,6 +1259,11 @@ async fn run_main_node_pipeline(
         })
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
+        ))
+        // SYSCOIN
+        .pipe(BitcoinDaFinalityGate::new(
+            config.batcher_config.clone(),
+            bitcoin_da_status_storage.clone(),
         ))
         .pipe(L1Sender::<_, _, CommitCommand> {
             provider: sl_provider.clone(),
