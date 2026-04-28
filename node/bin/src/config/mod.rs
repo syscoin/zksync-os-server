@@ -927,7 +927,7 @@ pub struct BatcherConfig {
     pub bitcoin_da_address_label: String,
 
     /// Request timeout for Bitcoin DA RPC calls.
-    #[config(default_t = 60 * TimeUnit::Seconds)]
+    #[config(default_t = 120 * TimeUnit::Seconds)]
     pub bitcoin_da_request_timeout: Duration,
 
     /// How often to poll Bitcoin DA finality after publishing a blob.
@@ -942,8 +942,8 @@ pub struct BatcherConfig {
     #[config(default_t = 5)]
     pub bitcoin_da_finality_confirmations: u64,
 
-    /// Max time to wait for a published Bitcoin DA blob to become final.
-    #[config(default_t = 30 * TimeUnit::Minutes)]
+    /// Max time to wait for published Bitcoin DA blobs to become final.
+    #[config(default_t = 90 * TimeUnit::Minutes)]
     pub bitcoin_da_finality_timeout: Duration,
 }
 
