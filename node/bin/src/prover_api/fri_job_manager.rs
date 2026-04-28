@@ -15,7 +15,7 @@
 
 use crate::prover_api::fri_proof_verifier;
 use crate::prover_api::metrics::{ProverStage, ProverType};
-use crate::prover_api::proof_storage::ProofStorage;
+use crate::prover_api::proof_storage::{ProofStorage, StoredBatch};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use alloy::primitives::Bytes;
 use jsonrpsee::core::Serialize;
@@ -184,10 +184,9 @@ impl FriJobManager {
         self.verify_proof(&batch_metadata, &proof_bytes, batch_number, prover_id)
             .await?;
 
-        // We want to ensure we can send the result downstream before we remove the job from queue
-        let permit = self.try_reserve_permit_downstream()?;
-
-        // Remove the job from the assigned map.
+        // SYSCOIN: Downstream commit/finality backpressure should not make provers redo
+        // already verified work. Complete the assigned job, persist the accepted proof, and
+        // then forward it internally even if the immediate downstream channel is full.
         let Some(removed_job) = self
             .jobs
             .complete_job(batch_number, ProverType::Real, prover_id)
@@ -203,7 +202,6 @@ impl FriJobManager {
             return Ok(());
         };
 
-        // Prepare the envelope and send it downstream.
         let proof = RealFriProof::V2 {
             proof: proof_bytes,
             proving_execution_version: proving_version as u32,
@@ -211,8 +209,12 @@ impl FriJobManager {
         let envelope = removed_job
             .with_data(FriProof::Real(proof))
             .with_stage(BatchExecutionStage::FriProvedReal);
-
-        permit.send(envelope);
+        let stored_batch = StoredBatch::V1(envelope);
+        self.proof_storage
+            .save_batch_with_proof(&stored_batch)
+            .await
+            .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
+        self.enqueue_proof_downstream(stored_batch.batch_envelope())?;
 
         Ok(())
     }
@@ -333,6 +335,34 @@ impl FriJobManager {
 
     pub async fn status(&self) -> Vec<JobState> {
         self.jobs.status().await
+    }
+
+    // SYSCOIN
+    fn enqueue_proof_downstream(
+        &self,
+        envelope: SignedBatchEnvelope<FriProof>,
+    ) -> Result<(), SubmitError> {
+        match self.batches_with_proof_sender.try_send(envelope) {
+            Ok(()) => {
+                self.latency_tracker
+                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+                Ok(())
+            }
+            Err(TrySendError::Full(envelope)) => {
+                self.latency_tracker
+                    .enter_state(GenericComponentState::WaitingSend);
+                let sender = self.batches_with_proof_sender.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = sender.send(envelope).await {
+                        tracing::error!(?err, "failed to forward persisted FRI proof downstream");
+                    }
+                });
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => {
+                Err(SubmitError::Other("server is shutting down".to_string()))
+            }
+        }
     }
 
     fn try_reserve_permit_downstream(
