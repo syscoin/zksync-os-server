@@ -34,6 +34,9 @@ use zksync_os_observability::{
 };
 use zksync_os_types::ProvingVersion;
 
+// SYSCOIN
+const ACCEPTED_PROOF_LOAD_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 #[derive(Error, Debug)]
 pub enum SubmitError {
     #[error("FRI proof verification error")]
@@ -114,26 +117,29 @@ impl FriJobManager {
         let downstream_sender = batches_with_proof_sender.clone();
         tokio::spawn(async move {
             while let Some(batch_number) = accepted_proof_receiver.recv().await {
-                let stored_batch = match proof_storage_for_forwarder
-                    .get_batch_with_proof(batch_number)
-                    .await
-                {
-                    Ok(Some(stored_batch)) => stored_batch,
-                    Ok(None) => {
-                        tracing::error!(
-                            batch_number,
-                            "accepted FRI proof missing from proof storage"
-                        );
-                        continue;
+                let stored_batch = loop {
+                    match proof_storage_for_forwarder
+                        .get_batch_with_proof(batch_number)
+                        .await
+                    {
+                        Ok(Some(stored_batch)) => break stored_batch,
+                        Ok(None) => {
+                            tracing::error!(
+                                batch_number,
+                                retry_in = ?ACCEPTED_PROOF_LOAD_RETRY_DELAY,
+                                "accepted FRI proof missing from proof storage; retrying"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                batch_number,
+                                ?err,
+                                retry_in = ?ACCEPTED_PROOF_LOAD_RETRY_DELAY,
+                                "failed to load accepted FRI proof from proof storage; retrying"
+                            );
+                        }
                     }
-                    Err(err) => {
-                        tracing::error!(
-                            batch_number,
-                            ?err,
-                            "failed to load accepted FRI proof from proof storage"
-                        );
-                        continue;
-                    }
+                    tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;
                 };
 
                 if downstream_sender.send(stored_batch).await.is_err() {
