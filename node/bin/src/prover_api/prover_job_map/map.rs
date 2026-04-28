@@ -102,6 +102,34 @@ impl<T: Clone> ProverJobMap<T> {
         );
     }
 
+    // SYSCOIN
+    /// Restores a job that was removed during completion but could not be handed off.
+    ///
+    /// This intentionally bypasses the range wait in `add_job`: the job already occupied
+    /// space in the map, and blocking while trying to undo a failed handoff can strand it.
+    pub async fn restore_job(&self, batch_envelope: SignedBatchEnvelope<T>) {
+        let batch_number = batch_envelope.batch_number();
+        let mut jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
+        let entry = JobEntry {
+            metadata: JobMetadata::new_from_batch(&batch_envelope),
+            batch_envelope,
+        };
+
+        if jobs.insert(batch_number, entry).is_some() {
+            tracing::warn!(
+                batch_number,
+                ?self.prover_stage,
+                "Restored job replaced an existing job"
+            );
+        } else {
+            tracing::warn!(
+                batch_number,
+                ?self.prover_stage,
+                "Restored job after failed downstream handoff"
+            );
+        }
+    }
+
     /// Picks the first job (lowest batch number) that is either:
     /// - Pending and older than min_age (fake provers use non-empty min_age)
     /// - Assigned and timed out

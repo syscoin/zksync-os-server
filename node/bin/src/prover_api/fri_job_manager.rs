@@ -292,20 +292,36 @@ impl FriJobManager {
             return Ok(());
         };
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
-        let latency_tracker = completed_job.latency_tracker;
+        let BatchEnvelope {
+            batch,
+            data,
+            signature_data,
+            latency_tracker,
+        } = completed_job;
 
         if let Err(err) =
             self.enqueue_accepted_proof(batch_number, pending_proof_key.clone(), latency_tracker)
         {
+            // SYSCOIN
+            let accepted_proof = err.0;
+            self.jobs
+                .restore_job(BatchEnvelope {
+                    batch,
+                    data,
+                    signature_data,
+                    latency_tracker: accepted_proof.latency_tracker,
+                })
+                .await;
             self.proof_storage
                 .release_pending_batch_with_proof(&pending_proof_key)
                 .await;
             tracing::error!(
                 batch_number,
-                ?err,
                 "accepted FRI proof was persisted but could not be queued for forwarding"
             );
-            return Ok(());
+            return Err(SubmitError::Other(
+                "server is shutting down before accepted FRI proof could be queued".to_string(),
+            ));
         }
 
         Ok(())
@@ -435,14 +451,12 @@ impl FriJobManager {
         batch_number: u64,
         proof_key: PendingBatchProofKey,
         latency_tracker: LatencyDistributionTracker<BatchExecutionStage>,
-    ) -> Result<(), SubmitError> {
-        self.accepted_proof_sender
-            .send(AcceptedProof {
-                batch_number,
-                proof_key,
-                latency_tracker,
-            })
-            .map_err(|_| SubmitError::Other("server is shutting down".to_string()))
+    ) -> Result<(), mpsc::error::SendError<AcceptedProof>> {
+        self.accepted_proof_sender.send(AcceptedProof {
+            batch_number,
+            proof_key,
+            latency_tracker,
+        })
     }
 
     fn try_reserve_permit_downstream(
