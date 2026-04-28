@@ -271,17 +271,6 @@ impl ProofStorage {
     }
 
     // SYSCOIN
-    pub async fn pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
-        let pending = self.pending_batches_with_proof.lock().await;
-        let mut keys: Vec<_> = pending
-            .keys()
-            .filter_map(|key| PendingBatchProofKey::parse(key.clone()))
-            .collect();
-        keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
-        keys
-    }
-
-    // SYSCOIN
     pub async fn recovered_pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
         let recovered = self.recovered_pending_batches_with_proof.lock().await;
         let mut keys: Vec<_> = recovered
