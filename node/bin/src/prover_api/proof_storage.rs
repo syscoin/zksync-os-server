@@ -20,6 +20,8 @@ pub struct ProofStorage {
     // SYSCOIN
     pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
     // SYSCOIN
+    recovered_pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
+    // SYSCOIN
     pending_key_counter: Arc<AtomicU64>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
@@ -80,6 +82,7 @@ impl ProofStorage {
                 .await?,
             )),
             pending_batches_with_proof: Arc::new(Mutex::new(pending_batches_with_proof)),
+            recovered_pending_batches_with_proof: Arc::new(Mutex::new(pending_protected_keys)),
             pending_key_counter: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
@@ -200,6 +203,10 @@ impl ProofStorage {
         {
             Ok(()) => {
                 pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
             }
             Err(err) => {
                 tracing::warn!(
@@ -232,6 +239,10 @@ impl ProofStorage {
         {
             Ok(Some(quarantine_key)) => {
                 pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
                 tracing::error!(
                     pending_proof_key = key.as_str(),
                     quarantine_key,
@@ -240,6 +251,10 @@ impl ProofStorage {
             }
             Ok(None) => {
                 pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
                 tracing::error!(
                     pending_proof_key = key.as_str(),
                     "pending proof was missing during quarantine"
@@ -260,6 +275,17 @@ impl ProofStorage {
         let pending = self.pending_batches_with_proof.lock().await;
         let mut keys: Vec<_> = pending
             .keys()
+            .filter_map(|key| PendingBatchProofKey::parse(key.clone()))
+            .collect();
+        keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
+        keys
+    }
+
+    // SYSCOIN
+    pub async fn recovered_pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
+        let recovered = self.recovered_pending_batches_with_proof.lock().await;
+        let mut keys: Vec<_> = recovered
+            .iter()
             .filter_map(|key| PendingBatchProofKey::parse(key.clone()))
             .collect();
         keys.sort_by_key(|key| (key.batch_number, key.key.clone()));

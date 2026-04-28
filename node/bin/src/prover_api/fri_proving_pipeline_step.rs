@@ -169,7 +169,7 @@ impl FriProvingPipelineStep {
         proof_storage: &ProofStorage,
         batch: &SignedBatchEnvelope<ProverInput>,
     ) -> Option<ProvenBatch> {
-        let pending_keys = proof_storage.pending_batch_proof_keys().await;
+        let pending_keys = proof_storage.recovered_pending_batch_proof_keys().await;
         for pending_key in pending_keys {
             if pending_key.batch_number() < batch.batch_number() {
                 tracing::warn!(
