@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-use zksync_os_l1_sender::batcher_model::{BatchMetadata, SignedBatchEnvelope};
+use zksync_os_l1_sender::batcher_model::{BatchMetadata, BatchSignatureData, SignedBatchEnvelope};
 
 /// Concurrent map of prover jobs that support FRI and SNARK workflows.
 /// Imposes a limit on batch range
@@ -100,6 +100,34 @@ impl<T: Clone> ProverJobMap<T> {
             ?self.prover_stage,
             "Job added"
         );
+    }
+
+    // SYSCOIN
+    /// Restores a job that was removed during completion but could not be handed off.
+    ///
+    /// This intentionally bypasses the range wait in `add_job`: the job already occupied
+    /// space in the map, and blocking while trying to undo a failed handoff can strand it.
+    pub async fn restore_job(&self, batch_envelope: SignedBatchEnvelope<T>) {
+        let batch_number = batch_envelope.batch_number();
+        let mut jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
+        let entry = JobEntry {
+            metadata: JobMetadata::new_from_batch(&batch_envelope),
+            batch_envelope,
+        };
+
+        if jobs.insert(batch_number, entry).is_some() {
+            tracing::warn!(
+                batch_number,
+                ?self.prover_stage,
+                "Restored job replaced an existing job"
+            );
+        } else {
+            tracing::warn!(
+                batch_number,
+                ?self.prover_stage,
+                "Restored job after failed downstream handoff"
+            );
+        }
     }
 
     /// Picks the first job (lowest batch number) that is either:
@@ -241,6 +269,22 @@ impl<T: Clone> ProverJobMap<T> {
             .await;
         jobs.get(&batch_number)
             .map(|entry| entry.batch_envelope.batch.clone())
+    }
+
+    // SYSCOIN
+    pub async fn get_job_batch_metadata_and_signature(
+        &self,
+        batch_number: u64,
+    ) -> Option<(BatchMetadata, BatchSignatureData)> {
+        let jobs = self
+            .lock_with_tracking(JobMapMethod::GetJobBatchMetadata)
+            .await;
+        jobs.get(&batch_number).map(|entry| {
+            (
+                entry.batch_envelope.batch.clone(),
+                entry.batch_envelope.signature_data.clone(),
+            )
+        })
     }
 
     /// If a job is present for given batch_number, returns (vk, prover_input)

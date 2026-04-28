@@ -3,10 +3,11 @@ use crate::prover_api::fri_job_manager::FailedFriProof;
 use crate::prover_api::metrics::{PROOF_STORAGE_METRICS, ProofStorageMethod};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::Metadata;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -16,24 +17,73 @@ use zksync_os_l1_sender::batcher_model::{FriProof, SignedBatchEnvelope};
 #[derive(Clone, Debug)]
 pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
+    // SYSCOIN
+    pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
+    // SYSCOIN
+    recovered_pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
+    // SYSCOIN
+    pending_key_counter: Arc<AtomicU64>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
+
+// SYSCOIN
+#[derive(Debug)]
+pub struct ProvenBatch {
+    pub batch: SignedBatchEnvelope<FriProof>,
+    pub pending_proof_key: Option<PendingBatchProofKey>,
+}
+
+impl ProvenBatch {
+    pub fn new(batch: SignedBatchEnvelope<FriProof>) -> Self {
+        Self {
+            batch,
+            pending_proof_key: None,
+        }
+    }
+
+    pub fn pending(
+        batch: SignedBatchEnvelope<FriProof>,
+        pending_proof_key: PendingBatchProofKey,
+    ) -> Self {
+        Self {
+            batch,
+            pending_proof_key: Some(pending_proof_key),
+        }
+    }
+}
+
 impl ProofStorage {
     pub async fn new(config: ProofStorageConfig) -> anyhow::Result<Self> {
+        let fri_batches_path = config.path.join("fri_batches");
+        // SYSCOIN
+        let pending_keys = discover_pending_batch_proof_keys(&fri_batches_path).await?;
+        let pending_protected_keys: HashSet<_> = pending_keys
+            .iter()
+            .map(|key| key.as_str().to_string())
+            .collect();
+        let pending_batches_with_proof = pending_protected_keys
+            .iter()
+            .map(|key| (key.clone(), 1))
+            .collect();
         tracing::info!(
             path = config.path.display().to_string(),
             batch_with_proof_capacity = config.batch_with_proof_capacity.0,
             failed_capacity = config.failed_capacity.0,
+            pending_accepted_proofs = pending_keys.len(),
             "Initializing proof storage"
         );
         Ok(Self {
             batches_with_proof: Arc::new(Mutex::new(
-                BoundedFileStorage::new(
-                    config.path.join("fri_batches"),
+                BoundedFileStorage::new_protected(
+                    fri_batches_path,
                     config.batch_with_proof_capacity.0,
+                    &pending_protected_keys,
                 )
                 .await?,
             )),
+            pending_batches_with_proof: Arc::new(Mutex::new(pending_batches_with_proof)),
+            recovered_pending_batches_with_proof: Arc::new(Mutex::new(pending_protected_keys)),
+            pending_key_counter: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
                     config.path.join("failed_proofs"),
@@ -50,17 +100,212 @@ impl ProofStorage {
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
         let key = format!("batch_{}.json", batch.batch_number());
+        // SYSCOIN
+        let pending = self.pending_batches_with_proof.lock().await;
+        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
         let result = self
             .batches_with_proof
             .lock()
             .await
-            .store(&key, batch)
+            .store_best_effort_protected(&key, batch, &protected_keys)
             .await;
         latency.observe();
         let usage = result?;
 
         PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
         Ok(())
+    }
+
+    // SYSCOIN
+    /// Promote a pending proof file to its canonical batch key.
+    ///
+    /// Unlike [`Self::save_batch_with_proof`], this is a required durable handoff; it renames
+    /// the already-written pending file instead of requiring temporary capacity for a second copy.
+    pub async fn promote_pending_batch_with_proof(
+        &self,
+        key: &PendingBatchProofKey,
+    ) -> anyhow::Result<()> {
+        let latency =
+            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
+
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .promote(key.as_str(), &format!("batch_{}.json", key.batch_number()))
+            .await;
+        latency.observe();
+        let usage = result?;
+
+        PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
+        Ok(())
+    }
+
+    // SYSCOIN
+    /// Persist a batch with proof that has been accepted by the FRI API but not yet forwarded.
+    ///
+    /// Pending proofs are protected from capacity eviction until [`Self::release_pending_batch_with_proof`]
+    /// is called. Returning `Ok(())` from this method means the proof was actually written and remains
+    /// loadable by the forwarder unless it is externally deleted or the filesystem fails.
+    pub async fn save_pending_batch_with_proof(
+        &self,
+        batch: &StoredBatch,
+    ) -> anyhow::Result<PendingBatchProofKey> {
+        let latency =
+            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
+
+        let key = PendingBatchProofKey::new(
+            batch.batch_number(),
+            self.pending_key_counter.fetch_add(1, Ordering::Relaxed),
+        )?;
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        // SYSCOIN
+        *pending.entry(key.as_str().to_string()).or_insert(0) += 1;
+        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
+
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .store_protected(key.as_str(), batch, &protected_keys)
+            .await;
+
+        if result.is_err() {
+            // SYSCOIN
+            decrement_pending_proof(&mut pending, key.as_str());
+        }
+
+        latency.observe();
+        let usage = result?;
+
+        PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
+        Ok(key)
+    }
+
+    // SYSCOIN
+    pub async fn release_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        let Some(reference_count) = pending.get_mut(key.as_str()) else {
+            return;
+        };
+
+        if *reference_count > 1 {
+            *reference_count -= 1;
+            return;
+        }
+
+        match self
+            .batches_with_proof
+            .lock()
+            .await
+            .remove(key.as_str())
+            .await
+        {
+            Ok(()) => {
+                pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    pending_proof_key = key.as_str(),
+                    "failed to remove released pending proof; keeping it protected"
+                );
+            }
+        }
+    }
+
+    // SYSCOIN
+    pub async fn quarantine_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        let Some(reference_count) = pending.get_mut(key.as_str()) else {
+            return;
+        };
+
+        if *reference_count > 1 {
+            *reference_count -= 1;
+            return;
+        }
+
+        match self
+            .batches_with_proof
+            .lock()
+            .await
+            .quarantine(key.as_str())
+            .await
+        {
+            Ok(Some(quarantine_key)) => {
+                pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
+                tracing::error!(
+                    pending_proof_key = key.as_str(),
+                    quarantine_key,
+                    "quarantined unloadable pending proof"
+                );
+            }
+            Ok(None) => {
+                pending.remove(key.as_str());
+                self.recovered_pending_batches_with_proof
+                    .lock()
+                    .await
+                    .remove(key.as_str());
+                tracing::error!(
+                    pending_proof_key = key.as_str(),
+                    "pending proof was missing during quarantine"
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    ?err,
+                    pending_proof_key = key.as_str(),
+                    "failed to quarantine unloadable pending proof; keeping it protected"
+                );
+            }
+        }
+    }
+
+    // SYSCOIN
+    pub async fn recovered_pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
+        let recovered = self.recovered_pending_batches_with_proof.lock().await;
+        let mut keys: Vec<_> = recovered
+            .iter()
+            .filter_map(|key| PendingBatchProofKey::parse(key.clone()))
+            .collect();
+        keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
+        keys
+    }
+
+    // SYSCOIN
+    pub async fn remove_recovered_pending_batch_proof_key(&self, key: &PendingBatchProofKey) {
+        self.recovered_pending_batches_with_proof
+            .lock()
+            .await
+            .remove(key.as_str());
+    }
+
+    // SYSCOIN
+    pub async fn get_pending_batch_with_proof(
+        &self,
+        key: &PendingBatchProofKey,
+    ) -> anyhow::Result<Option<SignedBatchEnvelope<FriProof>>> {
+        let latency = PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::GetBatchWithProof].start();
+
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .load::<StoredBatch>(key.as_str())
+            .await
+            .map(|o| o.map(|o| o.batch_envelope()));
+
+        latency.observe();
+        result
     }
 
     /// Loads a BatchWithProof for `batch_number`, if present
@@ -107,6 +352,79 @@ impl ProofStorage {
         latency.observe();
         result
     }
+}
+
+// SYSCOIN
+fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) -> bool {
+    if let Some(count) = pending.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            pending.remove(key);
+            return true;
+        }
+    }
+    false
+}
+
+// SYSCOIN
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PendingBatchProofKey {
+    key: String,
+    batch_number: u64,
+}
+
+impl PendingBatchProofKey {
+    fn new(batch_number: u64, sequence: u64) -> anyhow::Result<Self> {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        Ok(Self {
+            key: format!("batch_{batch_number}_pending_{now}_{sequence}.json"),
+            batch_number,
+        })
+    }
+
+    fn parse(key: String) -> Option<Self> {
+        let suffix_stripped = key.strip_suffix(".json")?;
+        let batch_number = suffix_stripped
+            .strip_prefix("batch_")?
+            .split_once("_pending_")?
+            .0
+            .parse()
+            .ok()?;
+        Some(Self { key, batch_number })
+    }
+
+    pub fn batch_number(&self) -> u64 {
+        self.batch_number
+    }
+
+    fn as_str(&self) -> &str {
+        &self.key
+    }
+}
+
+// SYSCOIN
+async fn discover_pending_batch_proof_keys(
+    base_dir: &std::path::Path,
+) -> anyhow::Result<Vec<PendingBatchProofKey>> {
+    let mut keys = Vec::new();
+    if !fs::try_exists(base_dir).await? {
+        return Ok(keys);
+    }
+
+    let mut entries = fs::read_dir(base_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.metadata().await?.is_file() {
+            continue;
+        }
+        if let Ok(filename) = entry.file_name().into_string()
+            && let Some(key) = PendingBatchProofKey::parse(filename)
+        {
+            keys.push(key);
+        }
+    }
+
+    keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
+    Ok(keys)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,6 +481,15 @@ struct BoundedFileStorage {
 
 impl BoundedFileStorage {
     async fn new(base_dir: PathBuf, capacity_bytes: u64) -> anyhow::Result<Self> {
+        Self::new_protected(base_dir, capacity_bytes, &HashSet::new()).await
+    }
+
+    // SYSCOIN
+    async fn new_protected(
+        base_dir: PathBuf,
+        capacity_bytes: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<Self> {
         // Create the directory if it doesn't exist already
         fs::create_dir_all(&base_dir).await?;
         // List all files sorted by timestamp (descending)
@@ -198,7 +525,7 @@ impl BoundedFileStorage {
                 capacity_bytes,
                 "On startup, more data is used than expected"
             );
-            storage.enforce_capacity(0).await?;
+            storage.enforce_capacity(0, protected_keys).await?;
         }
 
         Ok(storage)
@@ -209,22 +536,121 @@ impl BoundedFileStorage {
     /// removes old files to enforce capacity constraints and
     /// returns disk usage
     async fn store<T: Serialize>(&mut self, key: &str, value: &T) -> anyhow::Result<u64> {
+        self.store_internal(key, value, &HashSet::new(), false)
+            .await
+    }
+
+    // SYSCOIN
+    async fn store_best_effort_protected<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        self.store_internal(key, value, protected_keys, false).await
+    }
+
+    // SYSCOIN
+    async fn store_protected<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        self.store_internal(key, value, protected_keys, true).await
+    }
+
+    async fn store_internal<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        protected_keys: &HashSet<String>,
+        require_write: bool,
+    ) -> anyhow::Result<u64> {
         fs::create_dir_all(&self.base_dir).await?;
 
         let data = serde_json::to_vec(value)?;
         let count = data.len() as u64;
-        self.handle_duplicate(key).await?;
-        // This could still remove the duplicate if there is not enough space for it
-        self.enforce_capacity(count).await?;
-        if count <= self.capacity_bytes {
-            self.write_file(key, data).await?;
-        } else {
+        if count > self.capacity_bytes {
+            if require_write {
+                anyhow::bail!(
+                    "entry {key} size {count} exceeds storage capacity {}",
+                    self.capacity_bytes
+                );
+            }
             tracing::warn!(
                 data_len = data.len(),
                 capacity = self.capacity_bytes,
                 "Entry size is larger than the limit. Not saving.",
             );
+            return Ok(self.current_size);
         }
+
+        if require_write && self.base_dir.join(key).is_file() {
+            return self
+                .overwrite_existing_required(key, data, count, protected_keys)
+                .await;
+        }
+        if !require_write && protected_keys.contains(key) && self.base_dir.join(key).is_file() {
+            tracing::warn!(
+                key,
+                "Skipping best-effort overwrite of protected proof storage entry"
+            );
+            return Ok(self.current_size);
+        }
+
+        self.handle_duplicate(key).await?;
+        // This could still remove the duplicate if there is not enough space for it
+        self.enforce_capacity(count, protected_keys).await?;
+        if self.current_size + count > self.capacity_bytes {
+            if require_write {
+                anyhow::bail!(
+                    "not enough storage capacity for {key}; remaining files are protected"
+                );
+            }
+            tracing::warn!(
+                data_len = data.len(),
+                capacity = self.capacity_bytes,
+                "Not enough capacity after preserving protected entries. Not saving.",
+            );
+            return Ok(self.current_size);
+        }
+        self.write_file(key, data).await?;
+        Ok(self.current_size)
+    }
+
+    // SYSCOIN
+    async fn overwrite_existing_required(
+        &mut self,
+        key: &str,
+        data: Vec<u8>,
+        count: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        let path = self.base_dir.join(key);
+        let old_meta = fs::metadata(&path).await?;
+        let old_len = old_meta.len();
+        let extra_size = count.saturating_sub(old_len);
+
+        let mut protected_keys = protected_keys.clone();
+        protected_keys.insert(key.to_string());
+
+        self.enforce_capacity(extra_size, &protected_keys).await?;
+        anyhow::ensure!(
+            self.current_size + extra_size <= self.capacity_bytes,
+            "not enough storage capacity for {key}; remaining files are protected"
+        );
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let tmp_key = format!("{key}.tmp_{now}");
+        let tmp_path = self.base_dir.join(&tmp_key);
+        fs::write(&tmp_path, data).await?;
+        fs::rename(&tmp_path, &path).await?;
+
+        self.current_size = self.current_size - old_len + count;
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&path).await?;
+        self.remove_queue.push_back((key.to_string(), meta));
         Ok(self.current_size)
     }
 
@@ -239,25 +665,98 @@ impl BoundedFileStorage {
         Ok(Some(decoded))
     }
 
+    // SYSCOIN
+    async fn remove(&mut self, key: &str) -> anyhow::Result<()> {
+        let path = self.base_dir.join(key);
+        if !fs::try_exists(&path).await? {
+            return Ok(());
+        }
+
+        let meta = fs::metadata(&path).await?;
+        fs::remove_file(path).await?;
+        self.current_size = self.current_size.saturating_sub(meta.len());
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        Ok(())
+    }
+
+    // SYSCOIN
+    async fn promote(&mut self, from_key: &str, to_key: &str) -> anyhow::Result<u64> {
+        let from_path = self.base_dir.join(from_key);
+        anyhow::ensure!(
+            fs::try_exists(&from_path).await?,
+            "pending proof {from_key} is missing"
+        );
+
+        if from_key != to_key {
+            self.remove(to_key).await?;
+        }
+
+        let to_path = self.base_dir.join(to_key);
+        fs::rename(&from_path, &to_path).await?;
+        *self.outdated_count.entry(from_key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&to_path).await?;
+        self.remove_queue.push_back((to_key.to_string(), meta));
+        Ok(self.current_size)
+    }
+
+    // SYSCOIN
+    async fn quarantine(&mut self, key: &str) -> anyhow::Result<Option<String>> {
+        let path = self.base_dir.join(key);
+        if !fs::try_exists(&path).await? {
+            return Ok(None);
+        }
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let quarantine_key = format!("{key}.quarantined_{now}");
+        let quarantine_path = self.base_dir.join(&quarantine_key);
+        fs::rename(&path, &quarantine_path).await?;
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&quarantine_path).await?;
+        self.remove_queue.push_back((quarantine_key.clone(), meta));
+        Ok(Some(quarantine_key))
+    }
+
     /// Delete old files to make space for the new file
-    async fn enforce_capacity(&mut self, new_file_size: u64) -> anyhow::Result<()> {
+    async fn enforce_capacity(
+        &mut self,
+        new_file_size: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<()> {
         // Delete old files to satisfy capacity constraints
         while self.current_size + new_file_size > self.capacity_bytes
             && !self.remove_queue.is_empty()
         {
-            let (key, meta) = self.remove_queue.pop_front().unwrap();
-            // This queue entry is outdated: the file was renamed away by a later overwrite.
-            // Skip it without touching the filesystem and decrement the counter.
-            // The renamed file is tracked separately under its new name.
-            if let Some(outdated) = self.outdated_count.get_mut(&key)
-                && *outdated > 0
-            {
-                *outdated -= 1;
-                continue;
+            // SYSCOIN
+            let mut removed_any = false;
+            let entries_to_scan = self.remove_queue.len();
+            for _ in 0..entries_to_scan {
+                let (key, meta) = self.remove_queue.pop_front().unwrap();
+                // This queue entry is outdated: the file was renamed away by a later overwrite.
+                // Skip it without touching the filesystem and decrement the counter.
+                // The renamed file is tracked separately under its new name.
+                if let Some(outdated) = self.outdated_count.get_mut(&key)
+                    && *outdated > 0
+                {
+                    *outdated -= 1;
+                    continue;
+                }
+                if protected_keys.contains(&key) {
+                    self.remove_queue.push_back((key, meta));
+                    continue;
+                }
+
+                fs::remove_file(self.base_dir.join(key)).await?;
+                self.current_size -= meta.len();
+                removed_any = true;
+
+                if self.current_size + new_file_size <= self.capacity_bytes {
+                    break;
+                }
             }
 
-            fs::remove_file(self.base_dir.join(key)).await?;
-            self.current_size -= meta.len();
+            if !removed_any {
+                break;
+            }
         }
 
         if self.remove_queue.is_empty() && self.current_size > 0 {
@@ -367,6 +866,89 @@ mod tests {
         let very_big = "a".repeat((2 * LIMIT) as usize);
         storage.store("key", &very_big).await?;
         assert!(storage.load::<String>("key").await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bounded_storage_protected_entries_are_not_evicted() -> anyhow::Result<()> {
+        const LIMIT: u64 = 600;
+        let dir = TempDir::new()?;
+        let path = dir.path().to_owned();
+        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
+
+        let protected_value = "p".repeat(200);
+        let evictable_value = "e".repeat(200);
+        storage.store("protected", &protected_value).await?;
+        storage.store("evictable", &evictable_value).await?;
+
+        let protected_keys = HashSet::from(["protected".to_string()]);
+        let new_value = "n".repeat(200);
+        storage
+            .store_protected("new", &new_value, &protected_keys)
+            .await?;
+
+        assert_eq!(
+            storage.load::<String>("protected").await?,
+            Some(protected_value)
+        );
+        assert!(storage.load::<String>("evictable").await?.is_none());
+        assert_eq!(storage.load::<String>("new").await?, Some(new_value));
+        let too_large = "x".repeat((LIMIT * 2) as usize);
+        assert!(
+            storage
+                .store_protected("too_large", &too_large, &protected_keys)
+                .await
+                .is_err()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_protected_overwrite_failure_preserves_existing_entry() -> anyhow::Result<()> {
+        const LIMIT: u64 = 700;
+        let dir = TempDir::new()?;
+        let path = dir.path().to_owned();
+        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
+
+        let old_value = "old".repeat(50);
+        let other_value = "other".repeat(50);
+        storage.store("batch", &old_value).await?;
+        storage.store("other", &other_value).await?;
+
+        let protected_keys = HashSet::from(["other".to_string()]);
+        let too_large_replacement = "replacement".repeat(50);
+        assert!(
+            storage
+                .store_protected("batch", &too_large_replacement, &protected_keys)
+                .await
+                .is_err()
+        );
+
+        assert_eq!(storage.load::<String>("batch").await?, Some(old_value));
+        assert_eq!(storage.load::<String>("other").await?, Some(other_value));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_best_effort_store_preserves_protected_existing_entry() -> anyhow::Result<()> {
+        const LIMIT: u64 = 700;
+        let dir = TempDir::new()?;
+        let path = dir.path().to_owned();
+        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
+
+        let old_value = "old".repeat(50);
+        let replacement = "replacement".repeat(50);
+        storage.store("batch", &old_value).await?;
+
+        let protected_keys = HashSet::from(["batch".to_string()]);
+        storage
+            .store_best_effort_protected("batch", &replacement, &protected_keys)
+            .await?;
+
+        assert_eq!(storage.load::<String>("batch").await?, Some(old_value));
 
         Ok(())
     }
