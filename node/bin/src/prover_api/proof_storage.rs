@@ -150,6 +150,44 @@ impl ProofStorage {
     }
 
     // SYSCOIN
+    pub async fn quarantine_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        let was_last_reference = decrement_pending_proof(&mut pending, key.as_str());
+        drop(pending);
+
+        if was_last_reference {
+            match self
+                .batches_with_proof
+                .lock()
+                .await
+                .quarantine(key.as_str())
+                .await
+            {
+                Ok(Some(quarantine_key)) => {
+                    tracing::error!(
+                        pending_proof_key = key.as_str(),
+                        quarantine_key,
+                        "quarantined unloadable pending proof"
+                    );
+                }
+                Ok(None) => {
+                    tracing::error!(
+                        pending_proof_key = key.as_str(),
+                        "pending proof was missing during quarantine"
+                    );
+                }
+                Err(err) => {
+                    tracing::error!(
+                        ?err,
+                        pending_proof_key = key.as_str(),
+                        "failed to quarantine unloadable pending proof"
+                    );
+                }
+            }
+        }
+    }
+
+    // SYSCOIN
     pub async fn pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
         let pending = self.pending_batches_with_proof.lock().await;
         let mut keys: Vec<_> = pending
@@ -548,6 +586,23 @@ impl BoundedFileStorage {
         self.current_size = self.current_size.saturating_sub(meta.len());
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         Ok(())
+    }
+
+    // SYSCOIN
+    async fn quarantine(&mut self, key: &str) -> anyhow::Result<Option<String>> {
+        let path = self.base_dir.join(key);
+        if !fs::try_exists(&path).await? {
+            return Ok(None);
+        }
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let quarantine_key = format!("{key}.quarantined_{now}");
+        let quarantine_path = self.base_dir.join(&quarantine_key);
+        fs::rename(&path, &quarantine_path).await?;
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        let meta = fs::metadata(&quarantine_path).await?;
+        self.remove_queue.push_back((quarantine_key.clone(), meta));
+        Ok(Some(quarantine_key))
     }
 
     /// Delete old files to make space for the new file

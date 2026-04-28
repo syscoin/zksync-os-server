@@ -36,6 +36,8 @@ use zksync_os_types::ProvingVersion;
 
 // SYSCOIN
 const ACCEPTED_PROOF_LOAD_RETRY_DELAY: Duration = Duration::from_secs(1);
+// SYSCOIN
+const ACCEPTED_PROOF_LOAD_MAX_ATTEMPTS: usize = 60;
 
 #[derive(Error, Debug)]
 pub enum SubmitError {
@@ -137,7 +139,7 @@ impl FriJobManager {
                 })
                 .collect::<std::collections::VecDeque<_>>();
 
-            loop {
+            'forwarder: loop {
                 let accepted_proof = if let Some(accepted_proof) = recovered_proofs.pop_front() {
                     accepted_proof
                 } else {
@@ -147,6 +149,7 @@ impl FriJobManager {
                     }
                 };
                 let batch_number = accepted_proof.batch_number;
+                let mut load_attempts = 0;
                 let mut stored_batch = loop {
                     match proof_storage_for_forwarder
                         .get_pending_batch_with_proof(&accepted_proof.proof_key)
@@ -168,6 +171,18 @@ impl FriJobManager {
                                 "failed to load accepted FRI proof from proof storage; retrying"
                             );
                         }
+                    }
+                    load_attempts += 1;
+                    if load_attempts >= ACCEPTED_PROOF_LOAD_MAX_ATTEMPTS {
+                        tracing::error!(
+                            batch_number,
+                            attempts = load_attempts,
+                            "accepted FRI proof could not be loaded; quarantining pending proof"
+                        );
+                        proof_storage_for_forwarder
+                            .quarantine_pending_batch_with_proof(&accepted_proof.proof_key)
+                            .await;
+                        continue 'forwarder;
                     }
                     tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;
                 };
