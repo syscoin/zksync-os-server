@@ -274,6 +274,9 @@ impl FriJobManager {
                 prover_id,
                 "Job already removed (racing submit)"
             );
+            self.proof_storage
+                .release_pending_batch_with_proof(batch_number)
+                .await;
             return Ok(());
         };
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);

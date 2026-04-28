@@ -16,7 +16,7 @@ use zksync_os_l1_sender::batcher_model::{FriProof, SignedBatchEnvelope};
 #[derive(Clone, Debug)]
 pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
-    pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
+    pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
 impl ProofStorage {
@@ -35,7 +35,7 @@ impl ProofStorage {
                 )
                 .await?,
             )),
-            pending_batches_with_proof: Arc::new(Mutex::new(HashSet::new())),
+            pending_batches_with_proof: Arc::new(Mutex::new(HashMap::new())),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
                     config.path.join("failed_proofs"),
@@ -52,11 +52,13 @@ impl ProofStorage {
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
         let key = format!("batch_{}.json", batch.batch_number());
+        let pending = self.pending_batches_with_proof.lock().await;
+        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
         let result = self
             .batches_with_proof
             .lock()
             .await
-            .store(&key, batch)
+            .store_protected(&key, batch, &protected_keys)
             .await;
         latency.observe();
         let usage = result?;
@@ -77,17 +79,18 @@ impl ProofStorage {
 
         let key = format!("batch_{}.json", batch.batch_number());
         let mut pending = self.pending_batches_with_proof.lock().await;
-        pending.insert(key.clone());
+        *pending.entry(key.clone()).or_insert(0) += 1;
+        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
 
         let result = self
             .batches_with_proof
             .lock()
             .await
-            .store_protected(&key, batch, &pending)
+            .store_protected(&key, batch, &protected_keys)
             .await;
 
         if result.is_err() {
-            pending.remove(&key);
+            decrement_pending_proof(&mut pending, &key);
         }
 
         latency.observe();
@@ -100,7 +103,8 @@ impl ProofStorage {
     // SYSCOIN
     pub async fn release_pending_batch_with_proof(&self, batch_num: u64) {
         let key = format!("batch_{batch_num}.json");
-        self.pending_batches_with_proof.lock().await.remove(&key);
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        decrement_pending_proof(&mut pending, &key);
     }
 
     /// Loads a BatchWithProof for `batch_number`, if present
@@ -146,6 +150,16 @@ impl ProofStorage {
 
         latency.observe();
         result
+    }
+}
+
+// SYSCOIN
+fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) {
+    if let Some(count) = pending.get_mut(key) {
+        *count -= 1;
+        if *count == 0 {
+            pending.remove(key);
+        }
     }
 }
 
