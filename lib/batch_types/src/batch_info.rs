@@ -15,8 +15,13 @@ use zksync_os_types::{
 const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 
 const BLOB_CHUNK_SIZE: usize = 31;
-const ELEMENTS_PER_4844_BLOB: usize = 4096;
-const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
+// SYSCOIN: Syscoin Bitcoin DA accepts up to 2 MiB per blob and up to 32 blobs per block.
+pub const SYSCOIN_DA_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
+pub const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
+pub const SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH: usize =
+    SYSCOIN_DA_BYTES_PER_BLOB * SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
+pub const SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES: usize =
+    SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH - BLOB_CHUNK_SIZE;
 
 /// Returns the canonical upgrade tx hash to use for a specific batch number.
 ///
@@ -40,15 +45,36 @@ fn blob_data_id(data: &[u8]) -> [u8; 32] {
 }
 
 fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
+    assert!(
+        pubdata.len() <= SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES,
+        "Syscoin DA blob pubdata exceeds 32-blob capacity: {} > {}",
+        pubdata.len(),
+        SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES
+    );
+
     // Match the proving side blob commitment generator:
     // prepend 31-byte length field prefix and hash each encoded blob chunk.
     let mut encoded = vec![0u8; BLOB_CHUNK_SIZE];
     encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
     encoded.extend_from_slice(pubdata);
     encoded
-        .chunks(ENCODABLE_BYTES_PER_BLOB)
+        .chunks(SYSCOIN_DA_BYTES_PER_BLOB)
         .map(|chunk| chunk.to_vec())
         .collect()
+}
+
+fn syscoin_da_blob_count_for_pubdata(pubdata_len: usize) -> usize {
+    let blob_count = pubdata_len
+        .saturating_add(BLOB_CHUNK_SIZE)
+        .div_ceil(SYSCOIN_DA_BYTES_PER_BLOB)
+        .max(1);
+    assert!(
+        blob_count <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+        "Syscoin DA pubdata exceeds 32-blob capacity: {} blobs > {}",
+        blob_count,
+        SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+    );
+    blob_count
 }
 
 pub fn syscoin_blob_ids_and_chunks_from_pubdata(pubdata: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -322,21 +348,30 @@ fn calculate_da_fields(
         match (pubdata_mode, batch_execution_version) {
             (PubdataMode::Calldata | PubdataMode::RelayedL2Calldata, _)
             | (PubdataMode::Validium, 4) => {
-                let mut operator_da_input = Vec::with_capacity(32 * 3 + 1 + pubdata.len() + 1 + 32);
+                let blobs_provided = syscoin_da_blob_count_for_pubdata(pubdata.len());
+                let mut operator_da_input = Vec::with_capacity(
+                    32 * 2 + 1 + 32 * blobs_provided + 1 + pubdata.len() + 32 * blobs_provided,
+                );
 
                 // reference for this header is taken from zk_ee: https://github.com/matter-labs/zk_ee/blob/ad-aggregation-program/aggregator/src/aggregation/da_commitment.rs#L27
                 // consider reusing that code instead:
                 //
                 // hasher.update([0u8; 32]); // we don't have to validate state diffs hash
                 // hasher.update(Keccak256::digest(&pubdata)); // full pubdata keccak
-                // hasher.update([1u8]); // with calldata we should provide 1 blob
-                // hasher.update([0u8; 32]); // its hash will be ignored on the settlement layer
+                // hasher.update([blobs_provided as u8]); // Syscoin DA supports multiple 2 MiB blobs
+                // hasher.update([0u8; 32] * blobs_provided); // ignored on the settlement layer
                 // Ok(hasher.finalize().into())
 
                 operator_da_input.extend(B256::ZERO.as_slice());
                 operator_da_input.extend(keccak256(pubdata));
-                operator_da_input.push(1);
-                operator_da_input.extend(B256::ZERO.as_slice());
+                operator_da_input.push(
+                    blobs_provided
+                        .try_into()
+                        .expect("Syscoin DA blob count must fit into u8"),
+                );
+                for _ in 0..blobs_provided {
+                    operator_da_input.extend(B256::ZERO.as_slice());
+                }
 
                 //     bytes32 daCommitment; - we compute hash of the first part of the operator_da_input (see above)
                 let da_commitment = keccak256(&operator_da_input);
@@ -344,7 +379,9 @@ fn calculate_da_fields(
                 operator_da_input.extend([PUBDATA_SOURCE_CALLDATA]);
                 operator_da_input.extend(pubdata);
                 // blob_commitment should be set to zero in ZK OS
-                operator_da_input.extend(B256::ZERO.as_slice());
+                for _ in 0..blobs_provided {
+                    operator_da_input.extend(B256::ZERO.as_slice());
+                }
 
                 if pubdata_mode == PubdataMode::Validium {
                     operator_da_input = U256::ZERO.to_be_bytes_vec();
@@ -372,10 +409,8 @@ fn calculate_da_fields(
 #[cfg(test)]
 mod tests {
     use super::calculate_da_fields;
+    use super::{SYSCOIN_DA_BYTES_PER_BLOB, blob_data_id};
     use alloy::primitives::keccak256;
-    use zk_os_basic_system::system_implementation::system::da_commitment_generator::blob_commitment_generator::{
-        ENCODABLE_BYTES_PER_BLOB, blob_data_id,
-    };
     use zksync_os_types::PubdataMode;
 
     fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
@@ -383,7 +418,7 @@ mod tests {
         encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
         encoded.extend_from_slice(pubdata);
         encoded
-            .chunks(ENCODABLE_BYTES_PER_BLOB)
+            .chunks(SYSCOIN_DA_BYTES_PER_BLOB)
             .flat_map(blob_data_id)
             .collect()
     }
@@ -402,7 +437,7 @@ mod tests {
 
     #[test]
     fn blob_da_fields_match_os_chunk_ids_for_multiple_blobs() {
-        let pubdata = vec![0x42; ENCODABLE_BYTES_PER_BLOB + 17];
+        let pubdata = vec![0x42; SYSCOIN_DA_BYTES_PER_BLOB + 17];
 
         let fields = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6);
         let expected_blob_ids = expected_blob_ids(&pubdata);

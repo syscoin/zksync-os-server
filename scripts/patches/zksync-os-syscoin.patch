@@ -63,6 +63,29 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitm
 index e36a8a8c..fdbf0c3f 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
+@@ -29,16 +29,17 @@ pub const BLOB_CHUNK_SIZE: usize = 31;
+ ///
+ /// Number of field elements per EIP-4844 blob
+ ///
+-pub const ELEMENTS_PER_4844_BLOB: usize = 4096;
++pub const ELEMENTS_PER_4844_BLOB: usize = 4096;
+ 
+ ///
+ /// Number of bytes we can encode in one blob
+ ///
+-pub const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
++// SYSCOIN: Bitcoin DA accepts up to 2 MiB per blob; keep the legacy constant
++// name because the rest of the DA commitment path is keyed off this value.
++pub const ENCODABLE_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
+ 
+ ///
+ /// Maximal number of blobs that we support with blobs DA mode.
+ ///
+-pub const MAX_NUMBER_OF_BLOBS: usize = 9;
++pub const MAX_NUMBER_OF_BLOBS: usize = 32;
+ 
+ pub const BUFFER_CAPACITY: usize = ENCODABLE_BYTES_PER_BLOB * MAX_NUMBER_OF_BLOBS;
+ 
 @@ -104,25 +104,22 @@ pub fn blob_versioned_hash_with_advisor(
      // We get commitment and proof from an external source (advisor)
      // Correctness is checked below
@@ -102,6 +125,66 @@ index e36a8a8c..fdbf0c3f 100644
  }
  
  fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
+@@ -1,31 +1,47 @@
++use super::blob_commitment_generator::{
++    BLOB_CHUNK_SIZE, ENCODABLE_BYTES_PER_BLOB, MAX_NUMBER_OF_BLOBS,
++};
+ use super::DACommitmentGenerator;
++use core::cmp;
+ use crypto::sha3::Keccak256;
+ use crypto::MiniDigest;
+ use zk_ee::oracle::IOOracle;
+ use zk_ee::utils::write_bytes::WriteBytes;
+ use zk_ee::utils::Bytes32;
+ 
+ pub struct Keccak256CommitmentGenerator {
+     pubdata_hasher: Keccak256,
++    pubdata_len: usize,
+ }
+ 
+ impl Keccak256CommitmentGenerator {
+     pub fn new() -> Self {
+         Self {
+             pubdata_hasher: Keccak256::new(),
++            pubdata_len: 0,
+         }
+     }
+ }
+ 
+ impl WriteBytes for Keccak256CommitmentGenerator {
+     fn write(&mut self, buf: &[u8]) {
+         self.pubdata_hasher.update(buf);
++        self.pubdata_len += buf.len();
+     }
+ }
+ 
+ impl<O: IOOracle> DACommitmentGenerator<O> for Keccak256CommitmentGenerator {
+     fn finalize(&mut self, _oracle: &mut O) -> Bytes32 {
++        // SYSCOIN: Gateway relayed-calldata DA can cover multiple 2 MiB Syscoin DA blobs.
++        let blobs_provided = cmp::max(
++            1,
++            (self.pubdata_len + BLOB_CHUNK_SIZE).div_ceil(ENCODABLE_BYTES_PER_BLOB),
++        );
++        assert!(
++            blobs_provided <= MAX_NUMBER_OF_BLOBS,
++            "Syscoin DA pubdata exceeds supported blob count"
++        );
+         let mut da_commitment_hasher = crypto::sha3::Keccak256::new();
+         da_commitment_hasher.update([0u8; 32]); // we don't have to validate state diffs hash
+         da_commitment_hasher.update(self.pubdata_hasher.finalize_reset()); // full pubdata keccak
+-        da_commitment_hasher.update([1u8]); // with calldata we should provide 1 blob
+-        da_commitment_hasher.update([0u8; 32]); // its hash will be ignored on the settlement layer
++        da_commitment_hasher.update([blobs_provided as u8]);
++        for _ in 0..blobs_provided {
++            da_commitment_hasher.update([0u8; 32]); // ignored on the settlement layer
++        }
++        self.pubdata_len = 0;
+         da_commitment_hasher.finalize().into()
+     }
+ }
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 index 0ff5891c..7de80e91 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
@@ -223,17 +306,33 @@ diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
 index a6a348fd..6e98ff3d 100644
 --- a/forward_system/src/run/mod.rs
 +++ b/forward_system/src/run/mod.rs
-@@ -202,14 +202,14 @@ pub fn generate_batch_proof_input(
+@@ -49,6 +49,14 @@ use zksync_os_interface::traits::EncodedTx;
+ 
+ use std::path::PathBuf;
++// SYSCOIN: must match the patched ZKsync OS blob commitment chunk size.
++const SYSCOIN_DA_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
++const SYSCOIN_DA_LENGTH_PREFIX_BYTES: usize = 31;
++
++fn syscoin_da_blob_count(pubdata_len: usize) -> usize {
++    (pubdata_len + SYSCOIN_DA_LENGTH_PREFIX_BYTES).div_ceil(SYSCOIN_DA_BYTES_PER_BLOB)
++}
++
+ pub use tx_result_callback::TxResultCallback;
+ pub use tx_source::NextTxResponse;
+ pub use tx_source::TxSource;
+@@ -202,14 +210,15 @@ pub fn generate_batch_proof_input(
              for (i, block_pubdata) in blocks_pubdata.into_iter().enumerate() {
                  blobs_data.extend_from_slice(block_pubdata);
                  let length_without_advice = blocks_proof_inputs[i].len()
 -                    - (block_pubdata.len() + 31).div_ceil(31 * 4096) * 25;
-+                    - (block_pubdata.len() + 31).div_ceil(31 * 4096) * 9;
++                    - syscoin_da_blob_count(block_pubdata.len()) * 9;
                  blocks_proof_inputs[i] = &blocks_proof_inputs[i][..length_without_advice];
              }
 -            let mut blobs_advice = Vec::with_capacity(25 * blobs_data.len().div_ceil(31 * 4096));
-+            let mut blobs_advice = Vec::with_capacity(9 * blobs_data.len().div_ceil(31 * 4096));
-             for blob_data in blobs_data.chunks(31 * 4096) {
+-            for blob_data in blobs_data.chunks(31 * 4096) {
++            let blob_count = syscoin_da_blob_count(total_pubdata_length);
++            let mut blobs_advice = Vec::with_capacity(9 * blob_count);
++            for blob_data in blobs_data.chunks(SYSCOIN_DA_BYTES_PER_BLOB).take(blob_count) {
                  let advice =
                      callable_oracles::blob_kzg_commitment::blob_kzg_commitment_and_proof(blob_data);
 -                blobs_advice.push(24);

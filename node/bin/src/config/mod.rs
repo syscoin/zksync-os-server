@@ -597,9 +597,9 @@ pub struct SequencerConfig {
     #[config(default_t = 100_000_000)]
     pub block_gas_limit: u64,
 
-    /// Max pubdata bytes per block.
+    /// SYSCOIN Max pubdata bytes per block.
     /// One of the block Seal Criteria. Only affects the Main Node.
-    #[config(default_t = 110_000)]
+    #[config(default_t = 2 * 1024 * 1024)]
     pub block_pubdata_limit_bytes: u64,
 
     /// Path to the directory where block dumps for unexpected failures will be saved.

@@ -22,6 +22,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
+: "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=2097152}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
@@ -89,6 +91,8 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
+export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
 export MATERIALIZE_EDGE_CONFIG
 export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
@@ -238,6 +242,7 @@ def materialize_chain(
     prover_api_port: str,
     status_port: str,
     prometheus_port: str,
+    block_pubdata_limit_bytes: str,
     gateway_rpc_url: str | None,
 ):
     source_dir = gateway_dir / "chains" / chain_name / "configs"
@@ -311,6 +316,7 @@ def materialize_chain(
             f"  chain_id: {chain_id}",
             "sequencer:",
             "  revm_consistency_checker_enabled: false",
+            f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
             "l1_sender:",
             f"  pubdata_mode: {pubdata_mode}",
             f"  operator_commit_sk: '{operator_commit_sk}'",
@@ -492,6 +498,7 @@ materialize_chain(
     prover_api_port=os.environ["GATEWAY_PROVER_API_PORT"],
     status_port=os.environ["GATEWAY_STATUS_PORT"],
     prometheus_port=os.environ["GATEWAY_PROMETHEUS_PORT"],
+    block_pubdata_limit_bytes=os.environ["GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES"],
     gateway_rpc_url=None,
 )
 
@@ -504,6 +511,7 @@ if materialize_edge_config == "true":
         prover_api_port=os.environ["EDGE_PROVER_API_PORT"],
         status_port=os.environ["EDGE_STATUS_PORT"],
         prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
+        block_pubdata_limit_bytes=os.environ["EDGE_BLOCK_PUBDATA_LIMIT_BYTES"],
         gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
     )
 else:
