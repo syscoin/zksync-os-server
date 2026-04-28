@@ -34,9 +34,6 @@ use zksync_os_observability::{
 };
 use zksync_os_types::ProvingVersion;
 
-// SYSCOIN
-const PERSISTED_PROOF_FORWARD_BUFFER_SIZE: usize = 256;
-
 #[derive(Error, Debug)]
 pub enum SubmitError {
     #[error("FRI proof verification error")]
@@ -87,8 +84,6 @@ pub struct FriJobManager {
     jobs: ProverJobMap<ProverInput>,
     // outbound
     batches_with_proof_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
-    // SYSCOIN
-    persisted_proof_forward_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
     // == storage ==
     proof_storage: ProofStorage,
     // == metrics ==
@@ -111,23 +106,9 @@ impl FriJobManager {
             "fri_job_manager",
             GenericComponentState::ProcessingOrWaitingRecv,
         );
-        // SYSCOIN
-        let (persisted_proof_forward_sender, mut persisted_proof_forward_receiver) =
-            mpsc::channel::<SignedBatchEnvelope<FriProof>>(PERSISTED_PROOF_FORWARD_BUFFER_SIZE);
-        let downstream_sender = batches_with_proof_sender.clone();
-        tokio::spawn(async move {
-            while let Some(envelope) = persisted_proof_forward_receiver.recv().await {
-                if downstream_sender.send(envelope).await.is_err() {
-                    tracing::info!("persisted FRI proof downstream channel closed");
-                    return;
-                }
-            }
-        });
-
         Self {
             jobs,
             batches_with_proof_sender,
-            persisted_proof_forward_sender,
             proof_storage,
             latency_tracker,
         }
@@ -178,15 +159,10 @@ impl FriJobManager {
         prover_id: &str,
     ) -> Result<(), SubmitError> {
         // Snapshot the assigned job entry (if any).
-        let batch_envelope_snapshot = match self
-            .jobs
-            .get_job_batch_envelope_snapshot(batch_number)
-            .await
-        {
+        let batch_metadata = match self.jobs.get_job_batch_metadata(batch_number).await {
             Some(e) => e,
             None => return Err(SubmitError::UnknownJob(batch_number)),
         };
-        let batch_metadata = batch_envelope_snapshot.batch.clone();
 
         // Prover should generate the proof with VK received from server. These must always match.
         // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
@@ -208,26 +184,9 @@ impl FriJobManager {
         self.verify_proof(&batch_metadata, &proof_bytes, batch_number, prover_id)
             .await?;
 
-        // SYSCOIN: Persist the accepted proof before removing the in-memory job, so
-        // storage failures leave the job retriable.
-        let proof = RealFriProof::V2 {
-            proof: proof_bytes,
-            proving_execution_version: proving_version as u32,
-        };
-        let stored_batch = StoredBatch::V1(
-            batch_envelope_snapshot
-                .with_data(FriProof::Real(proof.clone()))
-                .with_stage(BatchExecutionStage::FriProvedReal),
-        );
-        self.proof_storage
-            .save_batch_with_proof(&stored_batch)
-            .await
-            .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
-        let forward_permit = self.try_reserve_forward_permit()?;
-
         // SYSCOIN: Downstream commit/finality backpressure should not make provers redo
-        // already verified work. After persistence and bounded forward capacity are secured,
-        // complete the assigned job and forward it internally.
+        // already verified work. Complete the assigned job, persist the accepted proof, and
+        // then forward it internally even if the immediate downstream channel is full.
         let Some(removed_job) = self
             .jobs
             .complete_job(batch_number, ProverType::Real, prover_id)
@@ -243,10 +202,19 @@ impl FriJobManager {
             return Ok(());
         };
 
+        let proof = RealFriProof::V2 {
+            proof: proof_bytes,
+            proving_execution_version: proving_version as u32,
+        };
         let envelope = removed_job
             .with_data(FriProof::Real(proof))
             .with_stage(BatchExecutionStage::FriProvedReal);
-        forward_permit.send(envelope);
+        let stored_batch = StoredBatch::V1(envelope);
+        self.proof_storage
+            .save_batch_with_proof(&stored_batch)
+            .await
+            .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
+        self.enqueue_proof_downstream(stored_batch.batch_envelope())?;
 
         Ok(())
     }
@@ -370,28 +338,26 @@ impl FriJobManager {
     }
 
     // SYSCOIN
-    fn try_reserve_forward_permit(
+    fn enqueue_proof_downstream(
         &self,
-    ) -> Result<Permit<'_, SignedBatchEnvelope<FriProof>>, SubmitError> {
-        match self.batches_with_proof_sender.try_reserve() {
-            Ok(permit) => {
+        envelope: SignedBatchEnvelope<FriProof>,
+    ) -> Result<(), SubmitError> {
+        match self.batches_with_proof_sender.try_send(envelope) {
+            Ok(()) => {
                 self.latency_tracker
                     .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
-                Ok(permit)
+                Ok(())
             }
-            Err(TrySendError::Full(_)) => {
+            Err(TrySendError::Full(envelope)) => {
                 self.latency_tracker
                     .enter_state(GenericComponentState::WaitingSend);
-                self.persisted_proof_forward_sender
-                    .try_reserve()
-                    .map_err(|err| match err {
-                        TrySendError::Full(_) => SubmitError::Other(
-                            "persisted FRI proof forward queue is full".to_string(),
-                        ),
-                        TrySendError::Closed(_) => {
-                            SubmitError::Other("server is shutting down".to_string())
-                        }
-                    })
+                let sender = self.batches_with_proof_sender.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = sender.send(envelope).await {
+                        tracing::error!(?err, "failed to forward persisted FRI proof downstream");
+                    }
+                });
+                Ok(())
             }
             Err(TrySendError::Closed(_)) => {
                 Err(SubmitError::Other("server is shutting down".to_string()))
