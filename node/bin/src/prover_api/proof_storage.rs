@@ -185,22 +185,32 @@ impl ProofStorage {
     // SYSCOIN
     pub async fn release_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        let was_last_reference = decrement_pending_proof(&mut pending, key.as_str());
-        drop(pending);
+        let Some(reference_count) = pending.get_mut(key.as_str()) else {
+            return;
+        };
 
-        if was_last_reference
-            && let Err(err) = self
-                .batches_with_proof
-                .lock()
-                .await
-                .remove(key.as_str())
-                .await
+        if *reference_count > 1 {
+            *reference_count -= 1;
+            return;
+        }
+
+        match self
+            .batches_with_proof
+            .lock()
+            .await
+            .remove(key.as_str())
+            .await
         {
-            tracing::warn!(
-                ?err,
-                pending_proof_key = key.as_str(),
-                "failed to remove released pending proof"
-            );
+            Ok(()) => {
+                pending.remove(key.as_str());
+            }
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    pending_proof_key = key.as_str(),
+                    "failed to remove released pending proof; keeping it protected"
+                );
+            }
         }
     }
 
