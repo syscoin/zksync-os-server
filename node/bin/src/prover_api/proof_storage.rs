@@ -3,7 +3,7 @@ use crate::prover_api::fri_job_manager::FailedFriProof;
 use crate::prover_api::metrics::{PROOF_STORAGE_METRICS, ProofStorageMethod};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::Metadata;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use zksync_os_l1_sender::batcher_model::{FriProof, SignedBatchEnvelope};
 #[derive(Clone, Debug)]
 pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
+    pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
 impl ProofStorage {
@@ -34,6 +35,7 @@ impl ProofStorage {
                 )
                 .await?,
             )),
+            pending_batches_with_proof: Arc::new(Mutex::new(HashSet::new())),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
                     config.path.join("failed_proofs"),
@@ -61,6 +63,44 @@ impl ProofStorage {
 
         PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
         Ok(())
+    }
+
+    // SYSCOIN
+    /// Persist a batch with proof that has been accepted by the FRI API but not yet forwarded.
+    ///
+    /// Pending proofs are protected from capacity eviction until [`Self::release_pending_batch_with_proof`]
+    /// is called. Returning `Ok(())` from this method means the proof was actually written and remains
+    /// loadable by the forwarder unless it is externally deleted or the filesystem fails.
+    pub async fn save_pending_batch_with_proof(&self, batch: &StoredBatch) -> anyhow::Result<()> {
+        let latency =
+            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
+
+        let key = format!("batch_{}.json", batch.batch_number());
+        let mut pending = self.pending_batches_with_proof.lock().await;
+        pending.insert(key.clone());
+
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .store_protected(&key, batch, &pending)
+            .await;
+
+        if result.is_err() {
+            pending.remove(&key);
+        }
+
+        latency.observe();
+        let usage = result?;
+
+        PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
+        Ok(())
+    }
+
+    // SYSCOIN
+    pub async fn release_pending_batch_with_proof(&self, batch_num: u64) {
+        let key = format!("batch_{batch_num}.json");
+        self.pending_batches_with_proof.lock().await.remove(&key);
     }
 
     /// Loads a BatchWithProof for `batch_number`, if present
@@ -198,7 +238,7 @@ impl BoundedFileStorage {
                 capacity_bytes,
                 "On startup, more data is used than expected"
             );
-            storage.enforce_capacity(0).await?;
+            storage.enforce_capacity(0, &HashSet::new()).await?;
         }
 
         Ok(storage)
@@ -209,22 +249,62 @@ impl BoundedFileStorage {
     /// removes old files to enforce capacity constraints and
     /// returns disk usage
     async fn store<T: Serialize>(&mut self, key: &str, value: &T) -> anyhow::Result<u64> {
+        self.store_internal(key, value, &HashSet::new(), false)
+            .await
+    }
+
+    // SYSCOIN
+    async fn store_protected<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        self.store_internal(key, value, protected_keys, true).await
+    }
+
+    async fn store_internal<T: Serialize>(
+        &mut self,
+        key: &str,
+        value: &T,
+        protected_keys: &HashSet<String>,
+        require_write: bool,
+    ) -> anyhow::Result<u64> {
         fs::create_dir_all(&self.base_dir).await?;
 
         let data = serde_json::to_vec(value)?;
         let count = data.len() as u64;
-        self.handle_duplicate(key).await?;
-        // This could still remove the duplicate if there is not enough space for it
-        self.enforce_capacity(count).await?;
-        if count <= self.capacity_bytes {
-            self.write_file(key, data).await?;
-        } else {
+        if count > self.capacity_bytes {
+            if require_write {
+                anyhow::bail!(
+                    "entry {key} size {count} exceeds storage capacity {}",
+                    self.capacity_bytes
+                );
+            }
             tracing::warn!(
                 data_len = data.len(),
                 capacity = self.capacity_bytes,
                 "Entry size is larger than the limit. Not saving.",
             );
+            return Ok(self.current_size);
         }
+        self.handle_duplicate(key).await?;
+        // This could still remove the duplicate if there is not enough space for it
+        self.enforce_capacity(count, protected_keys).await?;
+        if self.current_size + count > self.capacity_bytes {
+            if require_write {
+                anyhow::bail!(
+                    "not enough storage capacity for {key}; remaining files are protected"
+                );
+            }
+            tracing::warn!(
+                data_len = data.len(),
+                capacity = self.capacity_bytes,
+                "Not enough capacity after preserving protected entries. Not saving.",
+            );
+            return Ok(self.current_size);
+        }
+        self.write_file(key, data).await?;
         Ok(self.current_size)
     }
 
@@ -240,24 +320,46 @@ impl BoundedFileStorage {
     }
 
     /// Delete old files to make space for the new file
-    async fn enforce_capacity(&mut self, new_file_size: u64) -> anyhow::Result<()> {
+    async fn enforce_capacity(
+        &mut self,
+        new_file_size: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<()> {
         // Delete old files to satisfy capacity constraints
         while self.current_size + new_file_size > self.capacity_bytes
             && !self.remove_queue.is_empty()
         {
-            let (key, meta) = self.remove_queue.pop_front().unwrap();
-            // This queue entry is outdated: the file was renamed away by a later overwrite.
-            // Skip it without touching the filesystem and decrement the counter.
-            // The renamed file is tracked separately under its new name.
-            if let Some(outdated) = self.outdated_count.get_mut(&key)
-                && *outdated > 0
-            {
-                *outdated -= 1;
-                continue;
+            // SYSCOIN
+            let mut removed_any = false;
+            let entries_to_scan = self.remove_queue.len();
+            for _ in 0..entries_to_scan {
+                let (key, meta) = self.remove_queue.pop_front().unwrap();
+                // This queue entry is outdated: the file was renamed away by a later overwrite.
+                // Skip it without touching the filesystem and decrement the counter.
+                // The renamed file is tracked separately under its new name.
+                if let Some(outdated) = self.outdated_count.get_mut(&key)
+                    && *outdated > 0
+                {
+                    *outdated -= 1;
+                    continue;
+                }
+                if protected_keys.contains(&key) {
+                    self.remove_queue.push_back((key, meta));
+                    continue;
+                }
+
+                fs::remove_file(self.base_dir.join(key)).await?;
+                self.current_size -= meta.len();
+                removed_any = true;
+
+                if self.current_size + new_file_size <= self.capacity_bytes {
+                    break;
+                }
             }
 
-            fs::remove_file(self.base_dir.join(key)).await?;
-            self.current_size -= meta.len();
+            if !removed_any {
+                break;
+            }
         }
 
         if self.remove_queue.is_empty() && self.current_size > 0 {
@@ -367,6 +469,41 @@ mod tests {
         let very_big = "a".repeat((2 * LIMIT) as usize);
         storage.store("key", &very_big).await?;
         assert!(storage.load::<String>("key").await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bounded_storage_protected_entries_are_not_evicted() -> anyhow::Result<()> {
+        const LIMIT: u64 = 600;
+        let dir = TempDir::new()?;
+        let path = dir.path().to_owned();
+        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
+
+        let protected_value = "p".repeat(200);
+        let evictable_value = "e".repeat(200);
+        storage.store("protected", &protected_value).await?;
+        storage.store("evictable", &evictable_value).await?;
+
+        let protected_keys = HashSet::from(["protected".to_string()]);
+        let new_value = "n".repeat(200);
+        storage
+            .store_protected("new", &new_value, &protected_keys)
+            .await?;
+
+        assert_eq!(
+            storage.load::<String>("protected").await?,
+            Some(protected_value)
+        );
+        assert!(storage.load::<String>("evictable").await?.is_none());
+        assert_eq!(storage.load::<String>("new").await?, Some(new_value));
+        let too_large = "x".repeat((LIMIT * 2) as usize);
+        assert!(
+            storage
+                .store_protected("too_large", &too_large, &protected_keys)
+                .await
+                .is_err()
+        );
 
         Ok(())
     }

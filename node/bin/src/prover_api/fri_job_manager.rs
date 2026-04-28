@@ -155,6 +155,9 @@ impl FriJobManager {
                     tracing::info!("accepted FRI proof downstream channel closed");
                     return;
                 }
+                proof_storage_for_forwarder
+                    .release_pending_batch_with_proof(batch_number)
+                    .await;
             }
         });
 
@@ -242,8 +245,8 @@ impl FriJobManager {
             .await?;
 
         // SYSCOIN: Persist the accepted proof before removing the in-memory job, so
-        // storage failures leave the job retriable. Forwarding only records the batch
-        // number; the forwarder reloads the proof from disk before sending downstream.
+        // storage failures leave the job retriable. Forwarding records the batch number
+        // and tracker; the forwarder reloads the proof from disk before sending downstream.
         let proof = RealFriProof::V2 {
             proof: proof_bytes,
             proving_execution_version: proving_version as u32,
@@ -255,7 +258,7 @@ impl FriJobManager {
             latency_tracker: Default::default(),
         });
         self.proof_storage
-            .save_batch_with_proof(&stored_batch)
+            .save_pending_batch_with_proof(&stored_batch)
             .await
             .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
 
