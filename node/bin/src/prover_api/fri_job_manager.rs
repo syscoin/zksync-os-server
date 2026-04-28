@@ -295,7 +295,12 @@ impl FriJobManager {
             self.proof_storage
                 .release_pending_batch_with_proof(batch_number)
                 .await;
-            return Err(err);
+            tracing::error!(
+                batch_number,
+                ?err,
+                "accepted FRI proof was persisted but could not be queued for forwarding"
+            );
+            return Ok(());
         }
 
         Ok(())
