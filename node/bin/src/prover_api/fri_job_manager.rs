@@ -124,7 +124,28 @@ impl FriJobManager {
         let proof_storage_for_forwarder = proof_storage.clone();
         let downstream_sender = batches_with_proof_sender.clone();
         tokio::spawn(async move {
-            while let Some(accepted_proof) = accepted_proof_receiver.recv().await {
+            // SYSCOIN: pending proof files are the durable queue across restarts. Replay
+            // anything left from a previous forwarder shutdown before accepting new items.
+            let mut recovered_proofs = proof_storage_for_forwarder
+                .pending_batch_proof_keys()
+                .await
+                .into_iter()
+                .map(|proof_key| AcceptedProof {
+                    batch_number: proof_key.batch_number(),
+                    proof_key,
+                    latency_tracker: Default::default(),
+                })
+                .collect::<std::collections::VecDeque<_>>();
+
+            loop {
+                let accepted_proof = if let Some(accepted_proof) = recovered_proofs.pop_front() {
+                    accepted_proof
+                } else {
+                    match accepted_proof_receiver.recv().await {
+                        Some(accepted_proof) => accepted_proof,
+                        None => return,
+                    }
+                };
                 let batch_number = accepted_proof.batch_number;
                 let mut stored_batch = loop {
                     match proof_storage_for_forwarder
@@ -153,16 +174,10 @@ impl FriJobManager {
                 stored_batch.latency_tracker = accepted_proof.latency_tracker;
 
                 if downstream_sender.send(stored_batch).await.is_err() {
-                    proof_storage_for_forwarder
-                        .release_pending_batch_with_proof(&accepted_proof.proof_key)
-                        .await;
                     accepted_proof_receiver.close();
-                    while let Ok(queued_proof) = accepted_proof_receiver.try_recv() {
-                        proof_storage_for_forwarder
-                            .release_pending_batch_with_proof(&queued_proof.proof_key)
-                            .await;
-                    }
-                    tracing::info!("accepted FRI proof downstream channel closed");
+                    tracing::info!(
+                        "accepted FRI proof downstream channel closed; pending proofs left on disk for recovery"
+                    );
                     return;
                 }
                 proof_storage_for_forwarder

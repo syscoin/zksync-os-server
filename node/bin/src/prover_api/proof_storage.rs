@@ -25,21 +25,34 @@ pub struct ProofStorage {
 }
 impl ProofStorage {
     pub async fn new(config: ProofStorageConfig) -> anyhow::Result<Self> {
+        let fri_batches_path = config.path.join("fri_batches");
+        // SYSCOIN
+        let pending_keys = discover_pending_batch_proof_keys(&fri_batches_path).await?;
+        let pending_protected_keys: HashSet<_> = pending_keys
+            .iter()
+            .map(|key| key.as_str().to_string())
+            .collect();
+        let pending_batches_with_proof = pending_protected_keys
+            .iter()
+            .map(|key| (key.clone(), 1))
+            .collect();
         tracing::info!(
             path = config.path.display().to_string(),
             batch_with_proof_capacity = config.batch_with_proof_capacity.0,
             failed_capacity = config.failed_capacity.0,
+            pending_accepted_proofs = pending_keys.len(),
             "Initializing proof storage"
         );
         Ok(Self {
             batches_with_proof: Arc::new(Mutex::new(
-                BoundedFileStorage::new(
-                    config.path.join("fri_batches"),
+                BoundedFileStorage::new_protected(
+                    fri_batches_path,
                     config.batch_with_proof_capacity.0,
+                    &pending_protected_keys,
                 )
                 .await?,
             )),
-            pending_batches_with_proof: Arc::new(Mutex::new(HashMap::new())),
+            pending_batches_with_proof: Arc::new(Mutex::new(pending_batches_with_proof)),
             pending_key_counter: Arc::new(AtomicU64::new(0)),
             failed: Arc::new(Mutex::new(
                 BoundedFileStorage::new(
@@ -92,7 +105,7 @@ impl ProofStorage {
         )?;
         let mut pending = self.pending_batches_with_proof.lock().await;
         // SYSCOIN
-        *pending.entry(key.0.clone()).or_insert(0) += 1;
+        *pending.entry(key.as_str().to_string()).or_insert(0) += 1;
         let protected_keys: HashSet<_> = pending.keys().cloned().collect();
 
         let result = self
@@ -117,7 +130,34 @@ impl ProofStorage {
     // SYSCOIN
     pub async fn release_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        decrement_pending_proof(&mut pending, key.as_str());
+        let was_last_reference = decrement_pending_proof(&mut pending, key.as_str());
+        drop(pending);
+
+        if was_last_reference
+            && let Err(err) = self
+                .batches_with_proof
+                .lock()
+                .await
+                .remove(key.as_str())
+                .await
+        {
+            tracing::warn!(
+                ?err,
+                pending_proof_key = key.as_str(),
+                "failed to remove released pending proof"
+            );
+        }
+    }
+
+    // SYSCOIN
+    pub async fn pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
+        let pending = self.pending_batches_with_proof.lock().await;
+        let mut keys: Vec<_> = pending
+            .keys()
+            .filter_map(|key| PendingBatchProofKey::parse(key.clone()))
+            .collect();
+        keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
+        keys
     }
 
     // SYSCOIN
@@ -186,30 +226,76 @@ impl ProofStorage {
 }
 
 // SYSCOIN
-fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) {
+fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) -> bool {
     if let Some(count) = pending.get_mut(key) {
         *count -= 1;
         if *count == 0 {
             pending.remove(key);
+            return true;
         }
     }
+    false
 }
 
 // SYSCOIN
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct PendingBatchProofKey(String);
+pub struct PendingBatchProofKey {
+    key: String,
+    batch_number: u64,
+}
 
 impl PendingBatchProofKey {
     fn new(batch_number: u64, sequence: u64) -> anyhow::Result<Self> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        Ok(Self(format!(
-            "batch_{batch_number}_pending_{now}_{sequence}.json"
-        )))
+        Ok(Self {
+            key: format!("batch_{batch_number}_pending_{now}_{sequence}.json"),
+            batch_number,
+        })
+    }
+
+    fn parse(key: String) -> Option<Self> {
+        let suffix_stripped = key.strip_suffix(".json")?;
+        let batch_number = suffix_stripped
+            .strip_prefix("batch_")?
+            .split_once("_pending_")?
+            .0
+            .parse()
+            .ok()?;
+        Some(Self { key, batch_number })
+    }
+
+    pub fn batch_number(&self) -> u64 {
+        self.batch_number
     }
 
     fn as_str(&self) -> &str {
-        &self.0
+        &self.key
     }
+}
+
+// SYSCOIN
+async fn discover_pending_batch_proof_keys(
+    base_dir: &std::path::Path,
+) -> anyhow::Result<Vec<PendingBatchProofKey>> {
+    let mut keys = Vec::new();
+    if !fs::try_exists(base_dir).await? {
+        return Ok(keys);
+    }
+
+    let mut entries = fs::read_dir(base_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.metadata().await?.is_file() {
+            continue;
+        }
+        if let Ok(filename) = entry.file_name().into_string()
+            && let Some(key) = PendingBatchProofKey::parse(filename)
+        {
+            keys.push(key);
+        }
+    }
+
+    keys.sort_by_key(|key| (key.batch_number, key.key.clone()));
+    Ok(keys)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -266,6 +352,15 @@ struct BoundedFileStorage {
 
 impl BoundedFileStorage {
     async fn new(base_dir: PathBuf, capacity_bytes: u64) -> anyhow::Result<Self> {
+        Self::new_protected(base_dir, capacity_bytes, &HashSet::new()).await
+    }
+
+    // SYSCOIN
+    async fn new_protected(
+        base_dir: PathBuf,
+        capacity_bytes: u64,
+        protected_keys: &HashSet<String>,
+    ) -> anyhow::Result<Self> {
         // Create the directory if it doesn't exist already
         fs::create_dir_all(&base_dir).await?;
         // List all files sorted by timestamp (descending)
@@ -301,7 +396,7 @@ impl BoundedFileStorage {
                 capacity_bytes,
                 "On startup, more data is used than expected"
             );
-            storage.enforce_capacity(0, &HashSet::new()).await?;
+            storage.enforce_capacity(0, protected_keys).await?;
         }
 
         Ok(storage)
@@ -439,6 +534,20 @@ impl BoundedFileStorage {
         let data = fs::read(path).await?;
         let decoded = serde_json::from_slice(&data)?;
         Ok(Some(decoded))
+    }
+
+    // SYSCOIN
+    async fn remove(&mut self, key: &str) -> anyhow::Result<()> {
+        let path = self.base_dir.join(key);
+        if !fs::try_exists(&path).await? {
+            return Ok(());
+        }
+
+        let meta = fs::metadata(&path).await?;
+        fs::remove_file(path).await?;
+        self.current_size = self.current_size.saturating_sub(meta.len());
+        *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        Ok(())
     }
 
     /// Delete old files to make space for the new file
