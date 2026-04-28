@@ -282,6 +282,14 @@ impl ProofStorage {
     }
 
     // SYSCOIN
+    pub async fn remove_recovered_pending_batch_proof_key(&self, key: &PendingBatchProofKey) {
+        self.recovered_pending_batches_with_proof
+            .lock()
+            .await
+            .remove(key.as_str());
+    }
+
+    // SYSCOIN
     pub async fn get_pending_batch_with_proof(
         &self,
         key: &PendingBatchProofKey,

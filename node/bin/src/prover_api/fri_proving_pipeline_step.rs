@@ -223,6 +223,9 @@ impl FriProvingPipelineStep {
                     ?pending_key,
                     "Reusing pending FRI proof after restart"
                 );
+                proof_storage
+                    .remove_recovered_pending_batch_proof_key(&pending_key)
+                    .await;
                 return Some(ProvenBatch::pending(stored_batch, pending_key));
             }
 
