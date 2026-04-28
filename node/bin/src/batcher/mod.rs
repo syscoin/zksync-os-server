@@ -41,7 +41,7 @@ pub(crate) mod bitcoin_da_status_cleanup;
 pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
-
+// SYSCOIN
 const BITCOIN_DA_ANCESTOR_LIMIT_ERROR: &str = "Unconfirmed UTXOs are available, but spending them creates a chain of transactions that will be rejected by the mempool";
 
 /// Set of fields to define batcher's behavior on startup (when to replay, when to produce, etc.)
