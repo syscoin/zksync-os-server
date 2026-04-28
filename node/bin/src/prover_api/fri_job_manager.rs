@@ -152,6 +152,9 @@ impl FriJobManager {
                 stored_batch.latency_tracker = accepted_proof.latency_tracker;
 
                 if downstream_sender.send(stored_batch).await.is_err() {
+                    proof_storage_for_forwarder
+                        .release_pending_batch_with_proof(batch_number)
+                        .await;
                     tracing::info!("accepted FRI proof downstream channel closed");
                     return;
                 }
@@ -283,7 +286,12 @@ impl FriJobManager {
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
         let latency_tracker = completed_job.latency_tracker;
 
-        self.enqueue_accepted_proof(batch_number, latency_tracker)?;
+        if let Err(err) = self.enqueue_accepted_proof(batch_number, latency_tracker) {
+            self.proof_storage
+                .release_pending_batch_with_proof(batch_number)
+                .await;
+            return Err(err);
+        }
 
         Ok(())
     }
