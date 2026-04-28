@@ -42,6 +42,8 @@ pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
 
+const BITCOIN_DA_ANCESTOR_LIMIT_ERROR: &str = "Unconfirmed UTXOs are available, but spending them creates a chain of transactions that will be rejected by the mempool";
+
 /// Set of fields to define batcher's behavior on startup (when to replay, when to produce, etc.)
 pub struct BatcherStartupConfig {
     pub last_committed_batch: u64,
@@ -72,6 +74,10 @@ pub struct Batcher<ReadState> {
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
     pub bitcoin_da_status_storage: BitcoinDaStatusStorage,
+}
+
+fn is_bitcoin_da_ancestor_limit_error(err: &str) -> bool {
+    err.contains(BITCOIN_DA_ANCESTOR_LIMIT_ERROR)
 }
 
 #[async_trait]
@@ -614,11 +620,37 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 .enumerate()
                 .skip(status.published_hashes.len())
             {
-                let version_hash = client.create_blob(blob).await.map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to publish Bitcoin DA blob {idx} for batch {batch_number}: {err}"
-                    )
-                })?;
+                let start = Instant::now();
+                let version_hash = loop {
+                    match client.create_blob(blob).await {
+                        Ok(version_hash) => break version_hash,
+                        Err(err) => {
+                            let err = err.to_string();
+                            if !is_bitcoin_da_ancestor_limit_error(&err) {
+                                anyhow::bail!(
+                                    "failed to publish Bitcoin DA blob {idx} for batch {batch_number}: {err}"
+                                );
+                            }
+                            if start.elapsed() >= self.batcher_config.bitcoin_da_finality_timeout {
+                                anyhow::bail!(
+                                    "Bitcoin DA publish for batch {batch_number}, blob {idx} remained blocked by Syscoin mempool ancestor limits for {:?}: {err}",
+                                    self.batcher_config.bitcoin_da_finality_timeout
+                                );
+                            }
+
+                            tracing::warn!(
+                                batch_number,
+                                blob_index = idx,
+                                retry_in = ?self.batcher_config.bitcoin_da_finality_poll_interval,
+                                "Bitcoin DA publish hit Syscoin mempool ancestor limit; waiting before retry"
+                            );
+                            tokio::time::sleep(
+                                self.batcher_config.bitcoin_da_finality_poll_interval,
+                            )
+                            .await;
+                        }
+                    }
+                };
                 let normalized_hash = version_hash.strip_prefix("0x").unwrap_or(&version_hash);
                 anyhow::ensure!(
                     normalized_hash.eq_ignore_ascii_case(expected_hash),
