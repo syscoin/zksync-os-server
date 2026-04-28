@@ -46,9 +46,41 @@ impl PipelineComponent for GaplessCommitter {
         loop {
             latency_tracker.enter_state(GenericComponentState::WaitingRecv);
             match input.recv().await {
-                Some(batch) => {
+                Some(proven_batch) => {
                     latency_tracker.enter_state(GenericComponentState::Processing);
-                    buffer.insert(batch.batch.batch_number(), batch);
+                    let batch_number = proven_batch.batch.batch_number();
+                    // SYSCOIN
+                    if batch_number < next_expected_batch_number {
+                        if let Some(pending_proof_key) = proven_batch.pending_proof_key {
+                            tracing::warn!(
+                                batch_number,
+                                pending_proof_key = ?pending_proof_key,
+                                next_expected_batch_number,
+                                "dropping stale pending FRI proof replay"
+                            );
+                            self.proof_storage
+                                .release_pending_batch_with_proof(&pending_proof_key)
+                                .await;
+                        } else {
+                            tracing::warn!(
+                                batch_number,
+                                next_expected_batch_number,
+                                "dropping stale FRI proof"
+                            );
+                        }
+                        continue;
+                    }
+
+                    // SYSCOIN Multiple pending files for the same batch may be replayed after
+                    // restart. Keep the latest proof in the gap buffer and release the replaced
+                    // pending file so it does not remain protected forever.
+                    if let Some(replaced_batch) = buffer.insert(batch_number, proven_batch)
+                        && let Some(pending_proof_key) = replaced_batch.pending_proof_key
+                    {
+                        self.proof_storage
+                            .release_pending_batch_with_proof(&pending_proof_key)
+                            .await;
+                    }
 
                     // SYSCOIN Flush ready batches
                     let mut ready: Vec<ProvenBatch> = Vec::new();
