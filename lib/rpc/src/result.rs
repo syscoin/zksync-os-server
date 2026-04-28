@@ -48,7 +48,9 @@ impl<Ok> ToRpcResult<Ok, EthError> for Result<Ok, EthError> {
         self.map_err(|err| match err {
             EthError::BlockNotFound(_)
             | EthError::NonceMaxValue
-            | EthError::InvalidRewardPercentiles => invalid_params_rpc_err(err.to_string()),
+            // SYSCOIN
+            | EthError::InvalidRewardPercentiles
+            | EthError::PageSizeTooLarge { .. } => invalid_params_rpc_err(err.to_string()),
             EthError::RpcStorage(_) | EthError::Repository(_) | EthError::State(_) => {
                 internal_rpc_err(err.to_string())
             }
