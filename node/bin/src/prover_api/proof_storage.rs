@@ -114,6 +114,34 @@ impl ProofStorage {
     }
 
     // SYSCOIN
+    /// Persist a promoted pending proof under its canonical batch key.
+    ///
+    /// Unlike [`Self::save_batch_with_proof`], this is a required write: callers use it as
+    /// the durable handoff point before releasing a pending accepted proof.
+    pub async fn promote_pending_batch_with_proof(
+        &self,
+        batch: &StoredBatch,
+    ) -> anyhow::Result<()> {
+        let latency =
+            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
+
+        let key = format!("batch_{}.json", batch.batch_number());
+        let pending = self.pending_batches_with_proof.lock().await;
+        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
+        let result = self
+            .batches_with_proof
+            .lock()
+            .await
+            .store_protected(&key, batch, &protected_keys)
+            .await;
+        latency.observe();
+        let usage = result?;
+
+        PROOF_STORAGE_METRICS.disk_usage[&ProofStorageMethod::SaveBatchWithProof].set(usage);
+        Ok(())
+    }
+
+    // SYSCOIN
     /// Persist a batch with proof that has been accepted by the FRI API but not yet forwarded.
     ///
     /// Pending proofs are protected from capacity eviction until [`Self::release_pending_batch_with_proof`]

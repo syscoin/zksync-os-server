@@ -71,13 +71,17 @@ impl PipelineComponent for GaplessCommitter {
                                 .batch
                                 .with_stage(BatchExecutionStage::FriProofStored);
                             let stored_batch = StoredBatch::V1(batch);
-                            self.proof_storage
-                                .save_batch_with_proof(&stored_batch)
-                                .await?;
                             if let Some(pending_proof_key) = pending_proof_key {
+                                self.proof_storage
+                                    .promote_pending_batch_with_proof(&stored_batch)
+                                    .await?;
                                 self.proof_storage
                                     .release_pending_batch_with_proof(&pending_proof_key)
                                     .await;
+                            } else {
+                                self.proof_storage
+                                    .save_batch_with_proof(&stored_batch)
+                                    .await?;
                             }
                             let result = if stored_batch.batch_number()
                                 <= self.last_committed_batch_number
