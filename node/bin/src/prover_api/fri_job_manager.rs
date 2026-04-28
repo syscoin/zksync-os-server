@@ -30,7 +30,7 @@ use zksync_os_l1_sender::batcher_model::{
     BatchEnvelope, BatchMetadata, FriProof, ProverInput, RealFriProof, SignedBatchEnvelope,
 };
 use zksync_os_observability::{
-    ComponentStateHandle, ComponentStateReporter, GenericComponentState,
+    ComponentStateHandle, ComponentStateReporter, GenericComponentState, LatencyDistributionTracker,
 };
 use zksync_os_types::ProvingVersion;
 
@@ -81,6 +81,13 @@ pub struct JobState {
     pub current_attempt: usize,
 }
 
+// SYSCOIN
+#[derive(Debug)]
+struct AcceptedProof {
+    batch_number: u64,
+    latency_tracker: LatencyDistributionTracker<BatchExecutionStage>,
+}
+
 #[derive(Debug)]
 pub struct FriJobManager {
     // == state ==
@@ -88,7 +95,7 @@ pub struct FriJobManager {
     // outbound
     batches_with_proof_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
     // SYSCOIN
-    accepted_proof_sender: mpsc::UnboundedSender<u64>,
+    accepted_proof_sender: mpsc::UnboundedSender<AcceptedProof>,
     // == storage ==
     proof_storage: ProofStorage,
     // == metrics ==
@@ -116,8 +123,9 @@ impl FriJobManager {
         let proof_storage_for_forwarder = proof_storage.clone();
         let downstream_sender = batches_with_proof_sender.clone();
         tokio::spawn(async move {
-            while let Some(batch_number) = accepted_proof_receiver.recv().await {
-                let stored_batch = loop {
+            while let Some(accepted_proof) = accepted_proof_receiver.recv().await {
+                let batch_number = accepted_proof.batch_number;
+                let mut stored_batch = loop {
                     match proof_storage_for_forwarder
                         .get_batch_with_proof(batch_number)
                         .await
@@ -141,6 +149,7 @@ impl FriJobManager {
                     }
                     tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;
                 };
+                stored_batch.latency_tracker = accepted_proof.latency_tracker;
 
                 if downstream_sender.send(stored_batch).await.is_err() {
                     tracing::info!("accepted FRI proof downstream channel closed");
@@ -239,15 +248,12 @@ impl FriJobManager {
             proof: proof_bytes,
             proving_execution_version: proving_version as u32,
         };
-        let stored_batch = StoredBatch::V1(
-            BatchEnvelope {
-                batch: batch_metadata.clone(),
-                data: FriProof::Real(proof),
-                signature_data,
-                latency_tracker: Default::default(),
-            }
-            .with_stage(BatchExecutionStage::FriProvedReal),
-        );
+        let stored_batch = StoredBatch::V1(BatchEnvelope {
+            batch: batch_metadata.clone(),
+            data: FriProof::Real(proof),
+            signature_data,
+            latency_tracker: Default::default(),
+        });
         self.proof_storage
             .save_batch_with_proof(&stored_batch)
             .await
@@ -267,9 +273,10 @@ impl FriJobManager {
             );
             return Ok(());
         };
-        drop(removed_job);
+        let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
+        let latency_tracker = completed_job.latency_tracker;
 
-        self.enqueue_accepted_proof(batch_number)?;
+        self.enqueue_accepted_proof(batch_number, latency_tracker)?;
 
         Ok(())
     }
@@ -393,9 +400,16 @@ impl FriJobManager {
     }
 
     // SYSCOIN
-    fn enqueue_accepted_proof(&self, batch_number: u64) -> Result<(), SubmitError> {
+    fn enqueue_accepted_proof(
+        &self,
+        batch_number: u64,
+        latency_tracker: LatencyDistributionTracker<BatchExecutionStage>,
+    ) -> Result<(), SubmitError> {
         self.accepted_proof_sender
-            .send(batch_number)
+            .send(AcceptedProof {
+                batch_number,
+                latency_tracker,
+            })
             .map_err(|_| SubmitError::Other("server is shutting down".to_string()))
     }
 
