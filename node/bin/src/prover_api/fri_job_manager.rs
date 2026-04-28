@@ -274,6 +274,7 @@ impl FriJobManager {
                 prover_id,
                 "Job already removed (racing submit)"
             );
+            // SYSCOIN
             self.proof_storage
                 .release_pending_batch_with_proof(batch_number)
                 .await;

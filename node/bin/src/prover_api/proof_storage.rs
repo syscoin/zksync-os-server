@@ -16,6 +16,7 @@ use zksync_os_l1_sender::batcher_model::{FriProof, SignedBatchEnvelope};
 #[derive(Clone, Debug)]
 pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
+    // SYSCOIN
     pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
@@ -52,6 +53,7 @@ impl ProofStorage {
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
         let key = format!("batch_{}.json", batch.batch_number());
+        // SYSCOIN
         let pending = self.pending_batches_with_proof.lock().await;
         let protected_keys: HashSet<_> = pending.keys().cloned().collect();
         let result = self
@@ -79,6 +81,7 @@ impl ProofStorage {
 
         let key = format!("batch_{}.json", batch.batch_number());
         let mut pending = self.pending_batches_with_proof.lock().await;
+        // SYSCOIN
         *pending.entry(key.clone()).or_insert(0) += 1;
         let protected_keys: HashSet<_> = pending.keys().cloned().collect();
 
@@ -90,6 +93,7 @@ impl ProofStorage {
             .await;
 
         if result.is_err() {
+            // SYSCOIN
             decrement_pending_proof(&mut pending, &key);
         }
 
