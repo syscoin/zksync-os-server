@@ -1,4 +1,4 @@
-use super::proof_storage::ProofStorage;
+use super::proof_storage::{ProofStorage, ProvenBatch};
 use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proof_verifier;
 use async_trait::async_trait;
@@ -24,7 +24,7 @@ pub struct FriProvingPipelineStep {
     last_proved_batch_number: u64,
     proof_storage: ProofStorage,
     fri_job_manager: Arc<FriJobManager>,
-    batches_with_proof_receiver: mpsc::Receiver<SignedBatchEnvelope<FriProof>>,
+    batches_with_proof_receiver: mpsc::Receiver<ProvenBatch>,
 }
 
 impl FriProvingPipelineStep {
@@ -36,7 +36,7 @@ impl FriProvingPipelineStep {
     ) -> (Self, Arc<FriJobManager>) {
         // Create channel for completed proofs - between FriProveManager and GaplessCommitter
         let (batches_with_proof_sender, batches_with_proof_receiver) =
-            mpsc::channel::<SignedBatchEnvelope<FriProof>>(5);
+            mpsc::channel::<ProvenBatch>(5);
 
         let fri_job_manager = Arc::new(FriJobManager::new(
             batches_with_proof_sender,
@@ -168,7 +168,7 @@ impl FriProvingPipelineStep {
 #[async_trait]
 impl PipelineComponent for FriProvingPipelineStep {
     type Input = SignedBatchEnvelope<ProverInput>;
-    type Output = SignedBatchEnvelope<FriProof>;
+    type Output = ProvenBatch;
 
     const NAME: &'static str = "fri_proving";
     const OUTPUT_BUFFER_SIZE: usize = 5;
@@ -191,7 +191,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                     if batch.batch_number() > last_proved_batch_number {
                         // SYSCOIN
                         if let Some(stored_batch) = Self::try_rehydrate_batch(&proof_storage, &batch).await {
-                            output.send(stored_batch).await?;
+                            output.send(ProvenBatch::new(stored_batch)).await?;
                             continue;
                         }
                         tracing::info!(
@@ -203,7 +203,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                     } else {
                         // Already proven - send with fake proof to pass through the pipeline
                         let batch_with_fake_proof = batch.with_data(FriProof::AlreadySubmittedToL1);
-                        output.send(batch_with_fake_proof).await?;
+                        output.send(ProvenBatch::new(batch_with_fake_proof)).await?;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -216,7 +216,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                 while let Some(proof) = batches_with_proof_receiver.recv().await {
                     tracing::info!(
                         "Received batch after FRI proving: {:?}",
-                        proof.batch_number()
+                        proof.batch.batch_number()
                     );
                     output.send(proof).await?;
                 }
@@ -337,8 +337,8 @@ mod tests {
             .await
             .expect("timed out waiting for stored proof reuse")
             .expect("expected reused stored proof");
-        assert_eq!(out.batch_number(), 1);
-        assert!(matches!(out.data, FriProof::Fake));
+        assert_eq!(out.batch.batch_number(), 1);
+        assert!(matches!(out.batch.data, FriProof::Fake));
 
         run_handle.await.expect("run task should complete")?;
         assert!(output_rx.recv().await.is_none());

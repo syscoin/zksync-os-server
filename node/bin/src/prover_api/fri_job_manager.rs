@@ -15,7 +15,9 @@
 
 use crate::prover_api::fri_proof_verifier;
 use crate::prover_api::metrics::{ProverStage, ProverType};
-use crate::prover_api::proof_storage::{PendingBatchProofKey, ProofStorage, StoredBatch};
+use crate::prover_api::proof_storage::{
+    PendingBatchProofKey, ProofStorage, ProvenBatch, StoredBatch,
+};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use alloy::primitives::Bytes;
 use jsonrpsee::core::Serialize;
@@ -96,7 +98,7 @@ pub struct FriJobManager {
     // == state ==
     jobs: ProverJobMap<ProverInput>,
     // outbound
-    batches_with_proof_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+    batches_with_proof_sender: mpsc::Sender<ProvenBatch>,
     // SYSCOIN
     accepted_proof_sender: mpsc::UnboundedSender<AcceptedProof>,
     // == storage ==
@@ -107,7 +109,7 @@ pub struct FriJobManager {
 
 impl FriJobManager {
     pub fn new(
-        batches_with_proof_sender: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+        batches_with_proof_sender: mpsc::Sender<ProvenBatch>,
         proof_storage: ProofStorage,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
@@ -188,16 +190,17 @@ impl FriJobManager {
                 };
                 stored_batch.latency_tracker = accepted_proof.latency_tracker;
 
-                if downstream_sender.send(stored_batch).await.is_err() {
+                if downstream_sender
+                    .send(ProvenBatch::pending(stored_batch, accepted_proof.proof_key))
+                    .await
+                    .is_err()
+                {
                     accepted_proof_receiver.close();
                     tracing::info!(
                         "accepted FRI proof downstream channel closed; pending proofs left on disk for recovery"
                     );
                     return;
                 }
-                proof_storage_for_forwarder
-                    .release_pending_batch_with_proof(&accepted_proof.proof_key)
-                    .await;
             }
         });
 
@@ -467,7 +470,7 @@ impl FriJobManager {
             .with_data(FriProof::Fake)
             .with_stage(BatchExecutionStage::FriProvedFake);
 
-        permit.send(envelope);
+        permit.send(ProvenBatch::new(envelope));
         Ok(())
     }
 
@@ -489,9 +492,7 @@ impl FriJobManager {
         })
     }
 
-    fn try_reserve_permit_downstream(
-        &self,
-    ) -> Result<Permit<'_, SignedBatchEnvelope<FriProof>>, SubmitError> {
+    fn try_reserve_permit_downstream(&self) -> Result<Permit<'_, ProvenBatch>, SubmitError> {
         Ok(match self.batches_with_proof_sender.try_reserve() {
             Ok(permit) => {
                 self.latency_tracker

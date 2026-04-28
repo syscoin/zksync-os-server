@@ -23,6 +23,33 @@ pub struct ProofStorage {
     pending_key_counter: Arc<AtomicU64>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
+
+// SYSCOIN
+#[derive(Debug)]
+pub struct ProvenBatch {
+    pub batch: SignedBatchEnvelope<FriProof>,
+    pub pending_proof_key: Option<PendingBatchProofKey>,
+}
+
+impl ProvenBatch {
+    pub fn new(batch: SignedBatchEnvelope<FriProof>) -> Self {
+        Self {
+            batch,
+            pending_proof_key: None,
+        }
+    }
+
+    pub fn pending(
+        batch: SignedBatchEnvelope<FriProof>,
+        pending_proof_key: PendingBatchProofKey,
+    ) -> Self {
+        Self {
+            batch,
+            pending_proof_key: Some(pending_proof_key),
+        }
+    }
+}
+
 impl ProofStorage {
     pub async fn new(config: ProofStorageConfig) -> anyhow::Result<Self> {
         let fri_batches_path = config.path.join("fri_batches");
