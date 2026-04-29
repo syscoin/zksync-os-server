@@ -48,6 +48,9 @@ const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
 /// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
 /// to reach 3 confirmations for such transactions
 const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
+/// SYSCOIN Temporary cap for settlement transactions while Gateway commit sizing is calibrated.
+/// TODO: restore dynamic gas estimation for these transactions instead of carrying a hardcoded limit.
+const L1_TX_GAS_LIMIT: u64 = 100_000_000;
 
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
@@ -654,7 +657,7 @@ async fn tx_request_with_gas_fields(
         .with_from(operator_address)
         .with_max_fee_per_gas(capped_max_fee_per_gas)
         .with_max_priority_fee_per_gas(capped_max_priority_fee_per_gas)
-        .with_gas_limit(15000000);
+        .with_gas_limit(L1_TX_GAS_LIMIT);
     Ok(tx)
 }
 
