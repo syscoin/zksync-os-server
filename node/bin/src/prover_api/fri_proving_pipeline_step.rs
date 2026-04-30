@@ -427,7 +427,9 @@ mod tests {
     async fn run_does_not_reuse_mismatched_stored_fri_proof() -> anyhow::Result<()> {
         let proof_storage = proof_storage_for_test().await?;
         let input_batch = dummy_input_batch(1);
-        let mismatched_batch = BatchEnvelope::new(dummy_batch_metadata(1, 11, 11), FriProof::Fake)
+        let mut mismatched_metadata = dummy_batch_metadata(1, 10, 10);
+        mismatched_metadata.batch_info.new_state_commitment = B256::repeat_byte(1);
+        let mismatched_batch = BatchEnvelope::new(mismatched_metadata, FriProof::Fake)
             .with_signatures(BatchSignatureData::NotNeeded);
         proof_storage
             .save_batch_with_proof(&StoredBatch::V1(mismatched_batch))
