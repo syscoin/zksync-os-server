@@ -46,9 +46,9 @@ const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
 /// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
 /// to reach 3 confirmations for such transactions
 const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
-/// SYSCOIN Temporary cap for settlement transactions while Gateway commit sizing is calibrated.
-/// TODO: restore dynamic gas estimation for these transactions instead of carrying a hardcoded limit.
-const L1_TX_GAS_LIMIT: u64 = 100_000_000;
+/// SYSCOIN Extra headroom over the L1 RPC gas estimate.
+const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
+const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
 
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
@@ -227,6 +227,8 @@ pub async fn run_l1_sender<Input: SendToL1>(
                         tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
                         tx_request.set_blob_sidecar(blob_sidecar);
                     };
+
+                    apply_l1_gas_limit(&provider, &mut tx_request).await?;
 
                     // Fill the transaction (e.g., nonce, gas, etc.) using the provider and convert it to an
                     // envelope.
@@ -654,9 +656,45 @@ async fn tx_request_with_gas_fields(
     let tx = TransactionRequest::default()
         .with_from(operator_address)
         .with_max_fee_per_gas(capped_max_fee_per_gas)
-        .with_max_priority_fee_per_gas(capped_max_priority_fee_per_gas)
-        .with_gas_limit(L1_TX_GAS_LIMIT);
+        .with_max_priority_fee_per_gas(capped_max_priority_fee_per_gas);
     Ok(tx)
+}
+
+// SYSCOIN
+async fn apply_l1_gas_limit(
+    provider: &dyn Provider,
+    tx_request: &mut TransactionRequest,
+) -> anyhow::Result<()> {
+    let estimated_gas = provider.estimate_gas(tx_request.clone()).await?;
+    let latest_block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .context("latest L1 block is unavailable while setting L1 gas limit")?;
+    let block_gas_limit = latest_block.header.gas_limit;
+
+    if estimated_gas > block_gas_limit {
+        anyhow::bail!(
+            "estimated L1 transaction gas ({estimated_gas}) exceeds latest L1 block gas limit ({block_gas_limit})",
+        );
+    }
+
+    let padded_gas_limit = estimated_gas
+        .saturating_mul(L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR)
+        .div_ceil(L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR);
+    let gas_limit = padded_gas_limit.min(block_gas_limit);
+
+    if gas_limit < padded_gas_limit {
+        tracing::warn!(
+            estimated_gas,
+            padded_gas_limit,
+            block_gas_limit,
+            gas_limit,
+            "capping L1 transaction gas limit at latest block gas limit"
+        );
+    }
+
+    tx_request.set_gas_limit(gas_limit);
+    Ok(())
 }
 
 async fn report_custom_priority_fee_metrics(provider: &dyn Provider) -> anyhow::Result<()> {
