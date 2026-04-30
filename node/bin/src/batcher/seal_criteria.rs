@@ -10,16 +10,14 @@ use zksync_os_types::{ProtocolSemanticVersion, SystemTxType, ZkTxType};
 /// commit transaction carrying the batch still fits within a settlement-layer
 /// block configured with the same pubdata limit.
 ///
-/// When a `RelayedL2Calldata` edge commits to a gateway, the gateway's
-/// `RelayedSLDAValidator` re-emits the full edge pubdata as an L2→L1 message
-/// via `L2_TO_L1_MESSENGER_SYSTEM_CONTRACT.sendToL1(abi.encode(version, chainId,
-/// batchNumber, pubdata))`. That message payload is then physically written
-/// into the gateway block's own pubdata buffer by `LogsStorage::apply_pubdata`
-/// (see `zk_ee::common_structs::logs_storage`). The gateway block pubdata
-/// therefore equals the edge pubdata plus a per-commit fixed expansion, which
-/// we upper-bound below.
+/// When a Syscoin `RelayedL2Calldata` edge commits to a gateway, the edge
+/// publishes full pubdata directly to Bitcoin DA and the gateway receives only
+/// compact DA references (DA commitment + 32-byte blob hashes). The gateway
+/// block pubdata therefore grows with the compact reference envelope, not with
+/// the full edge pubdata.
 ///
-/// Breakdown of the gateway-side expansion (conservative upper bound):
+/// Breakdown of the gateway-side expansion (conservative upper bound for a
+/// max-sized Syscoin DA batch):
 ///   * Gateway block header in pubdata: 1B version + 32B block_hash + 8B
 ///     timestamp = 41B.
 ///   * Gateway state diffs emitted by executing `commitBatches` on the
@@ -29,23 +27,23 @@ use zksync_os_types::{ProtocolSemanticVersion, SystemTxType, ZkTxType};
 ///     (RelayedSLDAValidator user message + Executor.sol service logs) ×
 ///     88B each = ≲ 532B.
 ///   * Second-pass messages section: 4B count + per-user-message header
-///     (4B length prefix + 160B `abi.encode` header for the
-///     `(uint8,uint256,uint256,bytes)` tuple + up to 31B tail padding of the
-///     embedded `pubdata` bytes) + room for auxiliary service payloads:
-///     ≲ 800B.
+///     (4B length prefix + 160B `abi.encode` header for the compact
+///     `(uint8,uint256,uint256,bytes32,bytes)` tuple + 32B length prefix +
+///     up to 32 32-byte blob hashes + padding) + room for auxiliary service
+///     payloads: ≲ 1.5 KiB.
 ///   * Safety margin for future Executor/DAValidator additions.
 ///
-/// 2048B comfortably covers this envelope while costing only ~0.2% of the
-/// typical ~1 MB block pubdata budget.
+/// 4096B covers this envelope while costing only ~0.006% of the ~64 MiB
+/// Syscoin Bitcoin DA batch budget.
 ///
 /// The check that uses this constant is only applied once the batch already
 /// contains at least one block: the batcher's invariant is that the first
 /// block of a batch must always be includable, otherwise a single block near
 /// the per-block pubdata cap would cause an infinite peek-reject loop. For
 /// single-block batches, inclusion still depends on the settlement layer
-/// accepting the commit tx, which requires the settlement layer's
-/// `block_pubdata_limit_bytes` to exceed the edge's by at least this margin.
-const COMMIT_TX_PUBDATA_OVERHEAD: u64 = 2048;
+/// accepting the commit tx; on Syscoin this settlement path carries compact
+/// DA refs rather than the full edge pubdata.
+const COMMIT_TX_PUBDATA_OVERHEAD: u64 = 4096;
 
 #[derive(Default, Clone)]
 pub(crate) struct BatchInfoAccumulator {
