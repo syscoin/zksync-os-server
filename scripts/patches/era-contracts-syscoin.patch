@@ -797,10 +797,10 @@ index d282201b8..268a502a1 100644
  }
  
 diff --git a/l1-contracts/contracts/state-transition/data-availability/RelayedSLDAValidator.sol b/l1-contracts/contracts/state-transition/data-availability/RelayedSLDAValidator.sol
-index 232920082..93010da33 100644
+index 232920082..4c9430d3c 100644
 --- a/l1-contracts/contracts/state-transition/data-availability/RelayedSLDAValidator.sol
 +++ b/l1-contracts/contracts/state-transition/data-availability/RelayedSLDAValidator.sol
-@@ -2,20 +2,20 @@
+@@ -2,20 +2,21 @@
  
  pragma solidity 0.8.28;
  
@@ -822,12 +822,13 @@ index 232920082..93010da33 100644
  uint8 constant RELAYED_SL_DA_VALIDATOR_VERSION = 0;
 +// SYSCOIN: compact edge DA refs emitted to Gateway instead of relaying full edge-chain pubdata.
 +uint8 constant SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION = 1;
++uint256 constant SYSCOIN_DA_MAX_BLOBS_PER_BATCH = 32;
 +error SyscoinEdgeDARefInputMalformed();
 +error SyscoinEdgeDACommitmentMismatch(bytes32 expectedCommitment, bytes32 actualCommitment);
  
  /// @notice The DA validator intended to be used in Era-environment.
  /// @dev For compatibility reasons it accepts calldata in the same format as the `RollupL1DAValidator`, but unlike the latter it
-@@ -44,6 +44,19 @@ contract RelayedSLDAValidator is IL1DAValidator, CalldataDAGateway {
+@@ -44,6 +45,19 @@ contract RelayedSLDAValidator is IL1DAValidator, CalldataDAGateway {
          );
      }
  
@@ -847,7 +848,7 @@ index 232920082..93010da33 100644
      /// @inheritdoc IL1DAValidator
      function checkDA(
          uint256 _chainId,
-@@ -56,56 +69,18 @@ contract RelayedSLDAValidator is IL1DAValidator, CalldataDAGateway {
+@@ -56,56 +70,22 @@ contract RelayedSLDAValidator is IL1DAValidator, CalldataDAGateway {
          // because of the stack-too-deep error caused by it.
          _ensureOnlyChainSender(_chainId);
  
@@ -871,7 +872,11 @@ index 232920082..93010da33 100644
 +        // SYSCOIN: compact ZKsync OS path. The operator input is the ordered 32-byte Bitcoin DA
 +        // hashes, and the OS/Committer commitment is keccak256(operatorDAInput). Fail closed so
 +        // malformed compact refs cannot fall through to the legacy full-pubdata relay path.
-+        if (_operatorDAInput.length == 0 || _operatorDAInput.length % 32 != 0) {
++        if (
++            _operatorDAInput.length == 0 ||
++            _operatorDAInput.length % 32 != 0 ||
++            _operatorDAInput.length / 32 > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
++        ) {
 +            revert SyscoinEdgeDARefInputMalformed();
          }
 -
