@@ -24,6 +24,8 @@ use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, Transaction
 /// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
 /// inexpensive.
 const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
+// SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
+const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
@@ -231,9 +233,15 @@ fn compact_edge_da_refs_from_commit_calldata(
     }
 
     let operator_da_input = &commit.commit_batch_info.operator_da_input;
-    if operator_da_input.is_empty() || operator_da_input.len() % 32 != 0 {
+    let blob_hash_count = operator_da_input.len() / 32;
+    if operator_da_input.is_empty()
+        || operator_da_input.len() % 32 != 0
+        || blob_hash_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+    {
         return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
-            "compact edge DA operator input must be a non-empty 32-byte hash array".into(),
+            format!(
+                "compact edge DA operator input must be a non-empty array of at most {SYSCOIN_DA_MAX_BLOBS_PER_BATCH} 32-byte hashes"
+            ),
         ));
     }
     let actual_commitment = keccak256(operator_da_input);
@@ -507,5 +515,19 @@ mod tests {
             err.to_string()
                 .contains("compact edge DA commitment mismatch")
         );
+    }
+
+    #[test]
+    fn compact_edge_da_refs_rejects_oversized_hash_array() {
+        let operator_da_input = vec![0x11; 32 * (SYSCOIN_DA_MAX_BLOBS_PER_BATCH + 1)];
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&operator_da_input),
+            operator_da_input,
+        ));
+
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
+
+        assert!(err.to_string().contains("at most 32 32-byte hashes"));
     }
 }
