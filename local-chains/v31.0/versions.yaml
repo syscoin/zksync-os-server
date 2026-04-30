@@ -1,6 +1,6 @@
 general:
   protocol_version: "v31.0"
-  verification_key: "TBD"
+  verification_key: "0xb4cdc2235d292f3ae22ee3385d82217770f4b0c4908d00ccba5ef5a8c4d69e09"
 
 era-contracts:
   # TODO: remove branch and put tag and sha when the release is done
