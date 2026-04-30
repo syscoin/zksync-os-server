@@ -145,9 +145,22 @@ fn edge_da_finality_config(
     }
 
     let batcher = &config.batcher_config;
-    let edge_da_finality_requested = batcher.bitcoin_da_rpc_url.is_some()
-        || batcher.bitcoin_da_rpc_user.is_some()
-        || batcher.bitcoin_da_rpc_password.is_some();
+    let rpc_url = batcher
+        .bitcoin_da_rpc_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let rpc_user = batcher
+        .bitcoin_da_rpc_user
+        .as_ref()
+        .map(|secret| secret.expose_secret())
+        .filter(|value| !value.trim().is_empty());
+    let rpc_password = batcher
+        .bitcoin_da_rpc_password
+        .as_ref()
+        .map(|secret| secret.expose_secret())
+        .filter(|value| !value.trim().is_empty());
+    let edge_da_finality_requested =
+        rpc_url.is_some() || rpc_user.is_some() || rpc_password.is_some();
     if !edge_da_finality_requested {
         return Ok(None);
     }
@@ -161,24 +174,20 @@ fn edge_da_finality_config(
 
     Ok(Some(zksync_os_rpc::EdgeDaFinalityConfig {
         commit_tx_target,
-        rpc_url: batcher.bitcoin_da_rpc_url.clone().context(
-            "`batcher.bitcoin_da_rpc_url` must be set when edge DA finality is configured",
-        )?,
-        rpc_user: batcher
-            .bitcoin_da_rpc_user
-            .as_ref()
+        rpc_url: rpc_url
+            .context(
+                "`batcher.bitcoin_da_rpc_url` must be set when edge DA finality is configured",
+            )?
+            .to_owned(),
+        rpc_user: rpc_user
             .context(
                 "`batcher.bitcoin_da_rpc_user` must be set when edge DA finality is configured",
             )?
-            .expose_secret()
             .to_owned(),
-        rpc_password: batcher
-            .bitcoin_da_rpc_password
-            .as_ref()
+        rpc_password: rpc_password
             .context(
                 "`batcher.bitcoin_da_rpc_password` must be set when edge DA finality is configured",
             )?
-            .expose_secret()
             .to_owned(),
         poda_url: batcher.bitcoin_da_poda_url.clone(),
         wallet_name: batcher.bitcoin_da_wallet_name.clone(),
