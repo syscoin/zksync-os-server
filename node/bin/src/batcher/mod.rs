@@ -18,7 +18,10 @@ use tracing;
 use zksync_os_batch_types::batcher_model::{
     BatchEnvelope, BatchForSigning, MissingSignature, ProverInput,
 };
-use zksync_os_batch_types::{BlockMerkleTreeData, DiscoveredCommittedBatch, expected_upgrade_tx_hash_for_batch, syscoin_blob_ids_and_chunks_from_pubdata};
+use zksync_os_batch_types::{
+    BlockMerkleTreeData, DiscoveredCommittedBatch, expected_upgrade_tx_hash_for_batch,
+    syscoin_blob_ids_and_chunks_from_pubdata,
+};
 use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_interface::types::BlockOutput;
@@ -390,7 +393,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             )
             .await?;
             // Prevent the normal L1 sender from treating this as an EIP-4844 sidecar.
-            batch_envelope.batch.batch_info.blob_sidecar = None;
+            batch_envelope.batch.blob_sidecar = None;
         }
         Ok(Some(batch_envelope))
     }

@@ -80,16 +80,8 @@ impl FriProvingPipelineStep {
             return false;
         }
 
-        let expected_stored_batch = expected_batch
-            .batch
-            .batch_info
-            .clone()
-            .into_stored(&expected_batch.batch.protocol_version);
-        let stored_batch_info = stored_batch
-            .batch
-            .batch_info
-            .clone()
-            .into_stored(&stored_batch.batch.protocol_version);
+        let expected_stored_batch = expected_batch.batch.batch_info.clone().into_stored();
+        let stored_batch_info = stored_batch.batch.batch_info.clone().into_stored();
 
         let expected_hash = expected_stored_batch.hash();
         let stored_hash = stored_batch_info.hash();
@@ -320,11 +312,11 @@ mod tests {
     use alloy::primitives::{Address, B256};
     use tempfile::TempDir;
     use tokio::time::timeout;
-    use zksync_os_batch_types::BatchInfo;
+    use zksync_os_batch_types::ExtendedCommitBatchInfo;
+    use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, BatchSignatureData};
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
-    use zksync_os_l1_sender::batcher_model::{BatchEnvelope, BatchMetadata, BatchSignatureData};
     use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
 
     fn dummy_commit_batch_info(batch_number: u64, from: u64, to: u64) -> CommitBatchInfo {
@@ -364,18 +356,17 @@ mod tests {
                 commitment: B256::ZERO,
                 last_block_timestamp: Some(0),
             },
-            batch_info: BatchInfo {
+            batch_info: ExtendedCommitBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                chain_address: Address::ZERO,
+                protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
                 upgrade_tx_hash: None,
-                blob_sidecar: None,
             },
+            chain_address: Address::ZERO,
+            blob_sidecar: None,
             first_block_number: from,
             last_block_number: to,
             pubdata_mode: PubdataMode::Calldata,
             tx_count: 0,
-            execution_version: 1,
-            protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
             computational_native_used: None,
             logs: vec![],
             messages: vec![],

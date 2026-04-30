@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
-use zksync_os_batch_types::batcher_model::{BatchMetadata, BatchSignatureData, SignedBatchEnvelope};
+use zksync_os_batch_types::batcher_model::{
+    BatchMetadata, BatchSignatureData, SignedBatchEnvelope,
+};
 
 /// Concurrent map of prover jobs that support FRI and SNARK workflows.
 /// Imposes a limit on batch range

@@ -3,7 +3,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_contract_interface::l1_discovery::BatchVerificationSL;
 use zksync_os_l1_sender::commands::L1SenderCommand;

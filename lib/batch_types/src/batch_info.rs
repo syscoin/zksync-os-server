@@ -1,4 +1,4 @@
-use alloy::consensus::{BlobTransactionSidecar, SidecarBuilder, SimpleCoder};
+use alloy::consensus::BlobTransactionSidecar;
 use alloy::primitives::{B256, BlockNumber, U256, keccak256};
 use alloy::sol_types::SolValue;
 use blake2::{Blake2s256, Digest};

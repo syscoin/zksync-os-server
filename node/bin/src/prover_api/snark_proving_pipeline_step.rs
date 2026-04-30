@@ -78,11 +78,7 @@ impl SnarkProvingPipelineStep {
             return false;
         }
 
-        let local_stored_batch = batch
-            .batch
-            .batch_info
-            .clone()
-            .into_stored(&batch.batch.protocol_version);
+        let local_stored_batch = batch.batch.batch_info.clone().into_stored();
         let local_hash = local_stored_batch.hash();
         let Some(committed_batch) = self.committed_batch_provider.get(expected_batch_number) else {
             tracing::warn!(
