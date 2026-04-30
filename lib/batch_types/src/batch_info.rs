@@ -106,7 +106,7 @@ fn parse_syscoin_edge_da_ref_message(message: &[u8]) -> Option<SyscoinEdgeDaRef<
         return None;
     }
     let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
-    if message.len() < blob_hashes_end {
+    if message.len() != blob_hashes_end {
         return None;
     }
     Some(SyscoinEdgeDaRef {
@@ -660,6 +660,18 @@ mod tests {
         }]);
 
         assert_eq!(root_from_messages, expected_root);
+    }
+
+    #[test]
+    fn edge_da_refs_root_rejects_messages_with_trailing_bytes() {
+        let blob_hashes = expected_blob_ids(b"edge-chain-pubdata");
+        let da_commitment = keccak256(&blob_hashes);
+        let mut message = compact_edge_da_ref_message(10, 1, da_commitment, &blob_hashes);
+        message.extend([0xff; 32]);
+
+        let root_from_messages = syscoin_edge_da_refs_root_from_messages([message.as_slice()]);
+
+        assert_eq!(root_from_messages, B256::ZERO);
     }
 }
 

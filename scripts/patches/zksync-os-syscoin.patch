@@ -497,7 +497,7 @@ index f7313c71..3d500cfb 100644
 +        return None;
 +    }
 +    let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
-+    if message.len() < blob_hashes_end {
++    if message.len() != blob_hashes_end {
 +        return None;
 +    }
 +
