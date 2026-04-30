@@ -9,7 +9,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::BlockMerkleTreeData;
-use zksync_os_batch_types::{BatchInfo, BatchSignature, expected_upgrade_tx_hash_for_batch};
+use zksync_os_batch_types::{BatchSignature, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch};
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_merkle_tree::TreeBatchOutput;
@@ -149,7 +149,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             upgrade_tx_hash,
         );
 
-        let batch_info = BatchInfo::new(
+        let (batch_info, _) = ExtendedCommitBatchInfo::build(
             blocks
                 .iter()
                 .map(|(block_output, replay_record, tree)| {
@@ -162,7 +162,6 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
                 })
                 .collect(),
             self.chain_id,
-            self.diamond_proxy_sl,
             request.batch_number,
             request.pubdata_mode,
             self.l1_state.sl_chain_id,
@@ -181,7 +180,8 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let signature = BatchSignature::sign_batch(
             &request.prev_commit_data,
-            &batch_info,
+            &batch_info.commit_info,
+            self.diamond_proxy_sl,
             self.l1_state.sl_chain_id,
             self.l1_state.validator_timelock_sl,
             &blocks.first().unwrap().1.protocol_version,
