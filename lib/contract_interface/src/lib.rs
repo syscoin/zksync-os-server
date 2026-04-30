@@ -303,6 +303,10 @@ alloy::sol! {
             uint64 lastBlockNumber;
             uint256 chainId;
             bytes operatorDAInput;
+            // SYSCOIN: compact edge DA ref messages used as the final-L1 root opening.
+            bytes edgeDARefsInput;
+            // SYSCOIN: root of compact edge DA refs emitted by chains settling to Gateway.
+            bytes32 edgeDARefsRoot;
             uint256 slChainId;
         }
 

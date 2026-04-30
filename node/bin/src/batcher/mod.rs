@@ -374,7 +374,12 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
-        if pubdata_mode == PubdataMode::Blobs {
+        // SYSCOIN: `RelayedL2Calldata` is a compact edge-DA reference mode when settling to
+        // Gateway; it uses the same Bitcoin DA publication and hash-array commitment as blobs.
+        if matches!(
+            pubdata_mode,
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+        ) {
             let total_pubdata: Vec<u8> = blocks
                 .iter()
                 .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())

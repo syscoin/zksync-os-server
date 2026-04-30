@@ -1354,6 +1354,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             send_raw_transaction_sync_timeout: c.send_raw_transaction_sync_timeout,
             gas_price_scale_factor: c.gas_price_scale_factor,
             estimate_gas_pubdata_price_factor: c.estimate_gas_pubdata_price_factor,
+            edge_da_finality: None,
         }
     }
 }

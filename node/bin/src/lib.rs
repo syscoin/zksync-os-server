@@ -25,7 +25,8 @@ use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
-    Config, ProverApiConfig, base_token_price_updater_config, gas_adjuster_config,
+    BitcoinDaFinalityMode, Config, ProverApiConfig, base_token_price_updater_config,
+    gas_adjuster_config,
 };
 use crate::en_remote_config::load_remote_config;
 use crate::node_state_on_startup::NodeStateOnStartup;
@@ -45,7 +46,7 @@ use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
-use alloy::primitives::BlockNumber;
+use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use anyhow::Context;
@@ -53,6 +54,7 @@ use jsonrpsee::http_client::HttpClient;
 use priority_tree_pipeline_step::PriorityTreePipelineStep;
 use reth_tasks::Runtime;
 use ruint::aliases::U256;
+use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -133,6 +135,67 @@ const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
 const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
+
+fn edge_da_finality_config(
+    config: &Config,
+    commit_tx_target: Address,
+) -> anyhow::Result<Option<zksync_os_rpc::EdgeDaFinalityConfig>> {
+    if config.l1_sender_config.pubdata_mode != Some(PubdataMode::Blobs) {
+        return Ok(None);
+    }
+
+    let batcher = &config.batcher_config;
+    let rpc_url = batcher
+        .bitcoin_da_rpc_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let rpc_user = batcher
+        .bitcoin_da_rpc_user
+        .as_ref()
+        .map(|secret| secret.expose_secret())
+        .filter(|value| !value.trim().is_empty());
+    let rpc_password = batcher
+        .bitcoin_da_rpc_password
+        .as_ref()
+        .map(|secret| secret.expose_secret())
+        .filter(|value| !value.trim().is_empty());
+    let edge_da_finality_requested =
+        rpc_url.is_some() || rpc_user.is_some() || rpc_password.is_some();
+    if !edge_da_finality_requested {
+        return Ok(None);
+    }
+
+    let finality_mode = match batcher.bitcoin_da_finality_mode {
+        BitcoinDaFinalityMode::Chainlock => bitcoin_da_client::BitcoinDaFinalityMode::Chainlock,
+        BitcoinDaFinalityMode::Confirmations => {
+            bitcoin_da_client::BitcoinDaFinalityMode::Confirmations
+        }
+    };
+
+    Ok(Some(zksync_os_rpc::EdgeDaFinalityConfig {
+        commit_tx_target,
+        rpc_url: rpc_url
+            .context(
+                "`batcher.bitcoin_da_rpc_url` must be set when edge DA finality is configured",
+            )?
+            .to_owned(),
+        rpc_user: rpc_user
+            .context(
+                "`batcher.bitcoin_da_rpc_user` must be set when edge DA finality is configured",
+            )?
+            .to_owned(),
+        rpc_password: rpc_password
+            .context(
+                "`batcher.bitcoin_da_rpc_password` must be set when edge DA finality is configured",
+            )?
+            .to_owned(),
+        poda_url: batcher.bitcoin_da_poda_url.clone(),
+        wallet_name: batcher.bitcoin_da_wallet_name.clone(),
+        request_timeout: batcher.bitcoin_da_request_timeout,
+        finality_mode,
+        confirmations: batcher.bitcoin_da_finality_confirmations,
+    }))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone>(
@@ -957,8 +1020,13 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .wait_for_db_ready_to_process_blocks()
             .await;
     };
+    let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
+    // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
+    // if the referenced Bitcoin DA hashes are not finalized yet.
+    rpc_config.edge_da_finality = edge_da_finality_config(&config, l1_state.validator_timelock_sl)
+        .expect("failed to build edge DA finality config");
     zksync_os_rpc::spawn(
-        config.rpc_config.into(),
+        rpc_config,
         chain_id,
         bridgehub_address,
         bytecode_supplier_address,

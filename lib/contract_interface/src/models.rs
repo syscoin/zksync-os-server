@@ -198,6 +198,12 @@ pub struct CommitBatchInfo {
     pub last_block_number: Option<u64>,
     pub chain_id: u64,
     pub operator_da_input: Vec<u8>,
+    // SYSCOIN: compact edge DA ref messages used as the final-L1 root opening.
+    #[serde(default)]
+    pub edge_da_refs_input: Vec<u8>,
+    // SYSCOIN: root of compact edge DA refs emitted by chains settling to Gateway.
+    #[serde(default)]
+    pub edge_da_refs_root: B256,
     #[serde(default)]
     pub sl_chain_id: u64,
 }
@@ -228,6 +234,8 @@ impl From<CommitBatchInfo> for IExecutor::CommitBatchInfoZKsyncOS {
             value.last_block_number.unwrap(),
             U256::from(value.chain_id),
             Bytes::from(value.operator_da_input),
+            Bytes::from(value.edge_da_refs_input),
+            value.edge_da_refs_root,
             U256::from(value.sl_chain_id),
         ))
     }
@@ -294,6 +302,8 @@ impl From<IExecutor::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             last_block_number: Some(value.lastBlockNumber),
             chain_id: value.chainId.to::<u64>(),
             operator_da_input: value.operatorDAInput.as_ref().to_vec(),
+            edge_da_refs_input: value.edgeDARefsInput.as_ref().to_vec(),
+            edge_da_refs_root: value.edgeDARefsRoot,
             sl_chain_id: value.slChainId.to::<u64>(),
         }
     }
@@ -317,6 +327,8 @@ impl From<IExecutorV30::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             last_block_number: Some(value.lastBlockNumber),
             chain_id: value.chainId.to::<u64>(),
             operator_da_input: value.operatorDAInput.as_ref().to_vec(),
+            edge_da_refs_input: Vec::new(),
+            edge_da_refs_root: B256::ZERO,
             sl_chain_id: 0,
         }
     }
@@ -340,6 +352,7 @@ impl fmt::Debug for CommitBatchInfo {
             .field("first_block_timestamp", &self.first_block_timestamp)
             .field("last_block_timestamp", &self.last_block_timestamp)
             .field("chain_id", &self.chain_id)
+            .field("edge_da_refs_root", &self.edge_da_refs_root)
             // .field("operator_da_input", skipped to keep concise!)
             .finish()
     }

@@ -51,8 +51,10 @@ impl PubdataMode {
                 zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256
             }
             Self::Validium => zksync_os_contract_interface::models::DACommitmentScheme::EmptyNoDA,
+            // SYSCOIN: edge chains settling to Gateway publish pubdata directly to Bitcoin DA and
+            // send compact blob-hash references, not full relayed calldata.
             Self::RelayedL2Calldata => {
-                zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256
+                zksync_os_contract_interface::models::DACommitmentScheme::BlobsZKsyncOS
             }
         }
     }

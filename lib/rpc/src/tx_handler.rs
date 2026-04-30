@@ -1,13 +1,20 @@
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
 use crate::{ReadRpcStorage, RpcConfig};
+use alloy::consensus::Transaction;
 use alloy::consensus::transaction::SignerRecoverable;
 use alloy::eips::Decodable2718;
-use alloy::primitives::{B256, Bytes, U256};
+use alloy::hex;
+use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::providers::{DynProvider, Provider};
+use alloy::sol_types::SolCall;
 use alloy::transports::{RpcError, TransportErrorKind};
+use bitcoin_da_client::SyscoinClient;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
+use zksync_os_contract_interface::calldata::CommitCalldata;
+use zksync_os_contract_interface::models::DACommitmentScheme;
+use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
@@ -17,6 +24,8 @@ use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, Transaction
 /// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
 /// inexpensive.
 const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
+// SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
+const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
@@ -63,6 +72,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
+        // SYSCOIN
+        self.verify_compact_edge_da_refs(&l2_tx).await?;
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -83,6 +94,56 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         }
 
         Ok(hash)
+    }
+    // SYSCOIN: verify compact edge DA refs emitted by chains settling to Gateway.
+    async fn verify_compact_edge_da_refs(
+        &self,
+        tx: &L2Transaction,
+    ) -> Result<(), EthSendRawTransactionError> {
+        let Some(config) = self.config.edge_da_finality.as_ref() else {
+            return Ok(());
+        };
+        if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
+            return Ok(());
+        }
+        let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
+            return Ok(());
+        };
+
+        let client = SyscoinClient::new(
+            &config.rpc_url,
+            &config.rpc_user,
+            &config.rpc_password,
+            &config.poda_url,
+            Some(config.request_timeout),
+            &config.wallet_name,
+        )
+        .map_err(|err| {
+            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+                "failed to create Bitcoin DA client: {err}"
+            ))
+        })?;
+        for (idx, version_hash) in version_hashes.iter().enumerate() {
+            let finalized = client
+                .check_blob_finality_with_mode(
+                    version_hash,
+                    config.finality_mode,
+                    config.confirmations,
+                )
+                .await
+                .map_err(|err| {
+                    EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+                        "failed to check Bitcoin DA finality for compact edge ref {idx} ({version_hash}): {err}"
+                    ))
+                })?;
+            if !finalized {
+                return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+                    format!("compact edge DA ref {idx} ({version_hash}) is not finalized"),
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn send_raw_transaction_sync_impl(
@@ -140,6 +201,70 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
     }
 }
 
+// SYSCOIN: only Gateway validator timelock commit transactions can carry compact edge DA refs.
+fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Address) -> bool {
+    tx_to == Some(commit_tx_target)
+}
+
+// SYSCOIN: parse Gateway child-chain commit calldata and return compact Bitcoin DA refs
+// that must be finalized before admitting the tx to the Gateway mempool.
+fn compact_edge_da_refs_from_commit_calldata(
+    input: &[u8],
+) -> Result<Option<Vec<String>>, EthSendRawTransactionError> {
+    if input.len() < 4
+        || (input[..4] != IExecutor::commitBatchesSharedBridgeCall::SELECTOR
+            && input[..4] != IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+    {
+        return Ok(None);
+    }
+
+    let commit = CommitCalldata::decode(input).map_err(|err| {
+        EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+            "failed to decode compact edge DA commit calldata: {err}"
+        ))
+    })?;
+    match commit.commit_batch_info.l2_da_commitment_scheme {
+        DACommitmentScheme::BlobsZKsyncOS => {}
+        // SYSCOIN: Validium child chains have no Bitcoin DA refs to check at Gateway admission.
+        // Their scheme-specific validity remains enforced by the configured onchain DA validator.
+        DACommitmentScheme::EmptyNoDA => return Ok(None),
+        scheme => {
+            return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+                format!("unsupported child-chain DA commitment scheme for Gateway: {scheme:?}"),
+            ));
+        }
+    }
+
+    let operator_da_input = &commit.commit_batch_info.operator_da_input;
+    let blob_hash_count = operator_da_input.len() / 32;
+    if operator_da_input.is_empty()
+        || operator_da_input.len() % 32 != 0
+        || blob_hash_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+    {
+        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+            format!(
+                "compact edge DA operator input must be a non-empty array of at most {SYSCOIN_DA_MAX_BLOBS_PER_BATCH} 32-byte hashes"
+            ),
+        ));
+    }
+    let actual_commitment = keccak256(operator_da_input);
+    if actual_commitment != commit.commit_batch_info.da_commitment {
+        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+            format!(
+                "compact edge DA commitment mismatch: expected {}, got {}",
+                commit.commit_batch_info.da_commitment, actual_commitment
+            ),
+        ));
+    }
+
+    Ok(Some(
+        operator_da_input
+            .chunks_exact(32)
+            .map(hex::encode)
+            .collect(),
+    ))
+}
+
 /// Error types returned by `eth_sendRawTransaction` implementation
 #[derive(Debug, thiserror::Error)]
 pub enum EthSendRawTransactionError {
@@ -160,6 +285,8 @@ pub enum EthSendRawTransactionError {
     ForwardError(#[from] RpcError<TransportErrorKind>),
     #[error("Signer is blacklisted")]
     BlacklistedSigner,
+    #[error("compact edge DA finality check failed: {0}")]
+    EdgeDaFinalityCheckFailed(String),
 }
 
 impl From<&EthSendRawTransactionError> for TxRejectionReason {
@@ -169,6 +296,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::InvalidTransactionSignature => Self::InvalidSignature,
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
+            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(_) => Self::PoolOther,
             EthSendRawTransactionError::ForwardError(rpc_err) => match rpc_err {
                 RpcError::ErrorResp(_) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,
@@ -258,5 +386,184 @@ impl ForwardingLatencyGuard {
 impl Drop for ForwardingLatencyGuard {
     fn drop(&mut self) {
         TX_SUBMISSION.forwarding_latency.observe(self.0.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zksync_os_contract_interface::calldata::encode_commit_batch_data;
+    use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
+
+    fn dummy_stored_batch_info() -> StoredBatchInfo {
+        StoredBatchInfo {
+            batch_number: 0,
+            state_commitment: B256::ZERO,
+            number_of_layer1_txs: 0,
+            priority_operations_hash: B256::ZERO,
+            dependency_roots_rolling_hash: B256::ZERO,
+            l2_to_l1_logs_root_hash: B256::ZERO,
+            commitment: B256::ZERO,
+            last_block_timestamp: Some(0),
+        }
+    }
+
+    fn dummy_commit_batch_info(
+        scheme: DACommitmentScheme,
+        da_commitment: B256,
+        operator_da_input: Vec<u8>,
+    ) -> CommitBatchInfo {
+        CommitBatchInfo {
+            batch_number: 1,
+            new_state_commitment: B256::ZERO,
+            number_of_layer1_txs: 0,
+            number_of_layer2_txs: 0,
+            priority_operations_hash: B256::ZERO,
+            dependency_roots_rolling_hash: B256::ZERO,
+            l2_to_l1_logs_root_hash: B256::ZERO,
+            l2_da_commitment_scheme: scheme,
+            da_commitment,
+            first_block_timestamp: 1,
+            first_block_number: Some(1),
+            last_block_timestamp: 1,
+            last_block_number: Some(1),
+            chain_id: 1,
+            operator_da_input,
+            edge_da_refs_input: Vec::new(),
+            edge_da_refs_root: B256::ZERO,
+            sl_chain_id: 1,
+        }
+    }
+
+    fn commit_call_data(commit_info: CommitBatchInfo) -> Vec<u8> {
+        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 31);
+        IExecutor::commitBatchesSharedBridgeCall {
+            _chainAddress: Address::ZERO,
+            _processFrom: U256::ZERO,
+            _processTo: U256::from(1),
+            _commitData: Bytes::from(commit_data),
+        }
+        .abi_encode()
+    }
+
+    fn multisig_commit_call_data(commit_info: CommitBatchInfo) -> Vec<u8> {
+        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 31);
+        IMultisigCommitter::commitBatchesMultisigCall {
+            chainAddress: Address::ZERO,
+            _processBatchFrom: U256::ZERO,
+            _processBatchTo: U256::from(1),
+            _batchData: Bytes::from(commit_data),
+            signers: Vec::new(),
+            signatures: Vec::new(),
+        }
+        .abi_encode()
+    }
+
+    #[test]
+    fn compact_edge_da_guard_only_routes_target_validator_timelock() {
+        let validator_timelock = Address::repeat_byte(0x11);
+        assert!(is_compact_edge_da_commit_target(
+            Some(validator_timelock),
+            validator_timelock
+        ));
+        assert!(!is_compact_edge_da_commit_target(
+            Some(Address::repeat_byte(0x22)),
+            validator_timelock
+        ));
+        assert!(!is_compact_edge_da_commit_target(None, validator_timelock));
+    }
+
+    #[test]
+    fn compact_edge_da_refs_extracts_blob_hashes() {
+        let mut operator_da_input = vec![0x11; 32];
+        operator_da_input.extend([0x22; 32]);
+        let expected = vec![hex::encode([0x11; 32]), hex::encode([0x22; 32])];
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&operator_da_input),
+            operator_da_input,
+        ));
+
+        let refs = compact_edge_da_refs_from_commit_calldata(&input)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    fn compact_edge_da_refs_extracts_multisig_commit_blob_hashes() {
+        let operator_da_input = vec![0x33; 32];
+        let expected = vec![hex::encode([0x33; 32])];
+        let input = multisig_commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&operator_da_input),
+            operator_da_input,
+        ));
+
+        let refs = compact_edge_da_refs_from_commit_calldata(&input)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    fn compact_edge_da_refs_allows_validium_without_refs() {
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::EmptyNoDA,
+            B256::ZERO,
+            vec![0; 32],
+        ));
+
+        let refs = compact_edge_da_refs_from_commit_calldata(&input).unwrap();
+
+        assert!(refs.is_none());
+    }
+
+    #[test]
+    fn compact_edge_da_refs_rejects_unsupported_scheme() {
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsAndPubdataKeccak256,
+            B256::ZERO,
+            Vec::new(),
+        ));
+
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported child-chain DA commitment scheme")
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_refs_rejects_commitment_mismatch() {
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            B256::ZERO,
+            vec![0x11; 32],
+        ));
+
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("compact edge DA commitment mismatch")
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_refs_rejects_oversized_hash_array() {
+        let operator_da_input = vec![0x11; 32 * (SYSCOIN_DA_MAX_BLOBS_PER_BATCH + 1)];
+        let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&operator_da_input),
+            operator_da_input,
+        ));
+
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
+
+        assert!(err.to_string().contains("at most 32 32-byte hashes"));
     }
 }

@@ -23,7 +23,11 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
-: "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1468006}"
+: "${GATEWAY_BATCH_TIMEOUT:=1000s}"
+: "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
+: "${EDGE_BLOCK_TIME:=2s}"
+: "${EDGE_PUBDATA_PRICING_MULTIPLIER:=32.0}"
+: "${EDGE_NATIVE_PER_GAS:=50000}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
@@ -92,7 +96,11 @@ export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
+export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
+export EDGE_BLOCK_TIME
+export EDGE_PUBDATA_PRICING_MULTIPLIER
+export EDGE_NATIVE_PER_GAS
 export MATERIALIZE_EDGE_CONFIG
 export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
@@ -245,6 +253,9 @@ def materialize_chain(
     block_pubdata_limit_bytes: str,
     gateway_rpc_url: str | None,
 ):
+    # SYSCOIN: edge chains in RelayedL2Calldata mode publish pubdata directly to Bitcoin DA and
+    # relay only compact blob hashes to Gateway, so they need the same DA plumbing as Blobs mode.
+    uses_syscoin_da_refs = pubdata_mode in ("Blobs", "RelayedL2Calldata")
     source_dir = gateway_dir / "chains" / chain_name / "configs"
     if not source_dir.exists():
         return
@@ -283,7 +294,7 @@ def materialize_chain(
     wallets = load_yaml_base(wallets_yaml)
     operator_commit_sk = (
         wallets["blob_operator"]["private_key"]
-        if pubdata_mode == "Blobs"
+        if uses_syscoin_da_refs
         else wallets["operator"]["private_key"]
     )
     operator_prove_sk = wallets["prove_operator"]["private_key"]
@@ -317,6 +328,11 @@ def materialize_chain(
             "sequencer:",
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
+            *(
+                [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
+                if chain_name == "zksys"
+                else []
+            ),
             "l1_sender:",
             f"  pubdata_mode: {pubdata_mode}",
             f"  operator_commit_sk: '{operator_commit_sk}'",
@@ -327,6 +343,22 @@ def materialize_chain(
             *(
                 ["  transaction_timeout: 3000s"]
                 if pubdata_mode != "RelayedL2Calldata"
+                else []
+            ),
+            *(
+                [
+                    "gas_adjuster:",
+                    f"  pubdata_pricing_multiplier: {os.environ['EDGE_PUBDATA_PRICING_MULTIPLIER']}",
+                ]
+                if pubdata_mode == "RelayedL2Calldata"
+                else []
+            ),
+            *(
+                [
+                    "fee:",
+                    f"  native_per_gas: {os.environ['EDGE_NATIVE_PER_GAS']}",
+                ]
+                if chain_name == "zksys"
                 else []
             ),
             "rpc:",
@@ -350,10 +382,15 @@ def materialize_chain(
             "    '0x0000000000000000000000000000000000000001': 3000",
         ]
     )
-    if pubdata_mode == "Blobs":
+    if uses_syscoin_da_refs:
         config_lines.extend(
             [
                 "batcher:",
+                *(
+                    [f"  batch_timeout: {os.environ['GATEWAY_BATCH_TIMEOUT']}"]
+                    if chain_name == "gateway"
+                    else []
+                ),
                 f"  bitcoin_da_rpc_url: {os.environ['BITCOIN_DA_RPC_URL']}",
                 f"  bitcoin_da_rpc_user: '{os.environ['BITCOIN_DA_RPC_USER']}'",
                 f"  bitcoin_da_rpc_password: '{os.environ['BITCOIN_DA_RPC_PASSWORD']}'",
@@ -390,7 +427,7 @@ def materialize_chain(
         start_config_args += f' --config "{out_dir / "gateway-overlay.yaml"}"'
 
     refresh_cookie_block = ""
-    if pubdata_mode == "Blobs":
+    if uses_syscoin_da_refs:
         refresh_cookie_block = f"""
 resolve_syscoin_cookie_file() {{
   local cookie_file datadir network candidate
