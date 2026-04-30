@@ -723,6 +723,7 @@ for l1_key in required_l1_da_fields:
         )
 
 address_key_hints = {
+    "consensus_registry",
     "governance",
     "chain_admin",
     "proxy_admin",
