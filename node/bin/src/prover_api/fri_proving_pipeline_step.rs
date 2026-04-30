@@ -358,7 +358,7 @@ mod tests {
             },
             batch_info: ExtendedCommitBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
+                protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
                 upgrade_tx_hash: None,
             },
             chain_address: Address::ZERO,
