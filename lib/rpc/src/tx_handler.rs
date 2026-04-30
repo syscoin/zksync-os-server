@@ -12,9 +12,9 @@ use alloy::transports::{RpcError, TransportErrorKind};
 use bitcoin_da_client::SyscoinClient;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
-use zksync_os_contract_interface::IExecutor;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
+use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
@@ -201,7 +201,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
     }
 }
 
-// SYSCOIN: only Gateway Bridgehub commit transactions can carry compact edge DA refs.
+// SYSCOIN: only Gateway validator timelock commit transactions can carry compact edge DA refs.
 fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Address) -> bool {
     tx_to == Some(commit_tx_target)
 }
@@ -211,7 +211,10 @@ fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Ad
 fn compact_edge_da_refs_from_commit_calldata(
     input: &[u8],
 ) -> Result<Option<Vec<String>>, EthSendRawTransactionError> {
-    if input.len() < 4 || input[..4] != IExecutor::commitBatchesSharedBridgeCall::SELECTOR {
+    if input.len() < 4
+        || (input[..4] != IExecutor::commitBatchesSharedBridgeCall::SELECTOR
+            && input[..4] != IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+    {
         return Ok(None);
     }
 
@@ -443,15 +446,31 @@ mod tests {
         .abi_encode()
     }
 
+    fn multisig_commit_call_data(commit_info: CommitBatchInfo) -> Vec<u8> {
+        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 31);
+        IMultisigCommitter::commitBatchesMultisigCall {
+            chainAddress: Address::ZERO,
+            _processBatchFrom: U256::ZERO,
+            _processBatchTo: U256::from(1),
+            _batchData: Bytes::from(commit_data),
+            signers: Vec::new(),
+            signatures: Vec::new(),
+        }
+        .abi_encode()
+    }
+
     #[test]
-    fn compact_edge_da_guard_only_routes_target_bridgehub() {
-        let bridgehub = Address::repeat_byte(0x11);
-        assert!(is_compact_edge_da_commit_target(Some(bridgehub), bridgehub));
+    fn compact_edge_da_guard_only_routes_target_validator_timelock() {
+        let validator_timelock = Address::repeat_byte(0x11);
+        assert!(is_compact_edge_da_commit_target(
+            Some(validator_timelock),
+            validator_timelock
+        ));
         assert!(!is_compact_edge_da_commit_target(
             Some(Address::repeat_byte(0x22)),
-            bridgehub
+            validator_timelock
         ));
-        assert!(!is_compact_edge_da_commit_target(None, bridgehub));
+        assert!(!is_compact_edge_da_commit_target(None, validator_timelock));
     }
 
     #[test]
@@ -460,6 +479,23 @@ mod tests {
         operator_da_input.extend([0x22; 32]);
         let expected = vec![hex::encode([0x11; 32]), hex::encode([0x22; 32])];
         let input = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&operator_da_input),
+            operator_da_input,
+        ));
+
+        let refs = compact_edge_da_refs_from_commit_calldata(&input)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(refs, expected);
+    }
+
+    #[test]
+    fn compact_edge_da_refs_extracts_multisig_commit_blob_hashes() {
+        let operator_da_input = vec![0x33; 32];
+        let expected = vec![hex::encode([0x33; 32])];
+        let input = multisig_commit_call_data(dummy_commit_batch_info(
             DACommitmentScheme::BlobsZKsyncOS,
             keccak256(&operator_da_input),
             operator_da_input,

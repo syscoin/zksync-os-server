@@ -1023,7 +1023,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not finalized yet.
-    rpc_config.edge_da_finality = edge_da_finality_config(&config, bridgehub_address)
+    rpc_config.edge_da_finality = edge_da_finality_config(&config, l1_state.validator_timelock_sl)
         .expect("failed to build edge DA finality config");
     zksync_os_rpc::spawn(
         rpc_config,
