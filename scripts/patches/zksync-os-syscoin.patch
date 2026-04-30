@@ -185,13 +185,45 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitm
          da_commitment_hasher.finalize().into()
      }
  }
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
+index 0125d676..b48e3e35 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
+@@ -25,6 +25,8 @@ pub struct ZKBatchDataKeeper<A: alloc::alloc::Allocator, O: IOOracle> {
+     pub da_commitment_scheme: Option<DACommitmentScheme>,
+     pub da_commitment_generator: Option<alloc::boxed::Box<dyn DACommitmentGenerator<O>, A>>,
+     pub logs_storage: ArrayVec<Bytes32, 16384>,
++    // SYSCOIN: ordered root of compact edge DA refs emitted by Gateway child-chain commits.
++    pub edge_da_refs_root: Bytes32,
+     enforced_txs_accumulator: TransactionsRollingKeccakHasher,
+     // Includes all transactions
+     pub tx_count: U256,
+@@ -46,6 +48,7 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
+             da_commitment_generator: None,
+             da_commitment_scheme: None,
+             logs_storage: ArrayVec::new(),
++            edge_da_refs_root: Bytes32::ZERO,
+             // keccak256([])
+             enforced_txs_accumulator: TransactionsRollingKeccakHasher::empty(),
+             tx_count: U256::ZERO,
+@@ -149,6 +152,7 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
+             upgrade_tx_hash: self.upgrade_tx_hash.unwrap(),
+             interop_roots_rolling_hash: self.interop_roots_rolling_hash,
+             settlement_layer_chain_id: self.settlement_layer_chain_id.unwrap(),
++            edge_da_refs_root: self.edge_da_refs_root,
+         };
+         let public_input = BatchPublicInput {
+             state_before: self.initial_state_commitment.unwrap(),
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 index 0ff5891c..7de80e91 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
-@@ -109,7 +109,12 @@ where
+@@ -109,7 +109,15 @@ where
          io.logs_storage
              .apply_to_array_vec(&mut batch_data.logs_storage);
++        // SYSCOIN: accumulate compact edge DA refs emitted during Gateway execution.
++        io.logs_storage
++            .apply_syscoin_edge_da_refs_root(&mut batch_data.edge_da_refs_root);
  
 -        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
 +        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
@@ -221,6 +253,37 @@ index 2c21c201..8be6f90e 100644
          let interop_roots_rolling_hash = calculate_interop_roots_rolling_hash(
              Bytes32::zero(),
              io.interop_root_storage.iter(),
+@@ -195,6 +200,8 @@ where
+             upgrade_tx_hash,
+             interop_roots_rolling_hash,
+             settlement_layer_chain_id,
++            // SYSCOIN: derive compact edge DA refs from messages emitted during Gateway execution.
++            edge_da_refs_root: io.logs_storage.syscoin_edge_da_refs_root(),
+         };
+         logger_log!(logger, "PI calculation: batch output {:?}\n", batch_output,);
+ 
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs
+index 93780290..ee1a9f15 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs
+@@ -77,6 +77,8 @@ pub struct BatchOutput {
+     pub interop_roots_rolling_hash: Bytes32,
+     /// Settlement layer chain id.
+     pub settlement_layer_chain_id: U256,
++    /// SYSCOIN: root of compact edge DA refs emitted by chains settling to Gateway.
++    pub edge_da_refs_root: Bytes32,
+ }
+ 
+ impl BatchOutput {
+@@ -99,6 +101,8 @@ impl BatchOutput {
+         hasher.update(self.upgrade_tx_hash.as_u8_ref());
+         hasher.update(self.interop_roots_rolling_hash.as_u8_ref());
+         hasher.update(self.settlement_layer_chain_id.to_be_bytes::<32>());
++        // SYSCOIN: bind compact edge DA refs into the proven Gateway batch output.
++        hasher.update(self.edge_da_refs_root.as_u8_ref());
+         hasher.finalize()
+     }
+ }
 diff --git a/callable_oracles/src/blob_kzg_commitment/mod.rs b/callable_oracles/src/blob_kzg_commitment/mod.rs
 index 47324a1f..6a5650c2 100644
 --- a/callable_oracles/src/blob_kzg_commitment/mod.rs
@@ -360,6 +423,99 @@ index 28a64da4..d38de79e 100644
          };
          let state_commitment = FlatStorageCommitment::<{ TREE_HEIGHT }> {
              root: *self.state_tree.storage_tree.root(),
+diff --git a/zk_ee/src/common_structs/logs_storage.rs b/zk_ee/src/common_structs/logs_storage.rs
+index f7313c71..3d500cfb 100644
+--- a/zk_ee/src/common_structs/logs_storage.rs
++++ b/zk_ee/src/common_structs/logs_storage.rs
+@@ -23,6 +23,11 @@ use ruint::aliases::U256;
+ pub const L2_TO_L1_LOG_SERIALIZE_SIZE: usize = 88;
+ // Taken from the size of the Merkle tree.
+ pub const MAX_NUMBER_OF_LOGS: u64 = 16_384;
++// SYSCOIN: compact RelayedSLDAValidator message version for edge DA refs.
++const SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION: u8 = 1;
++const SYSCOIN_EDGE_DA_REFS_DOMAIN: &[u8] = b"SYSCOIN_EDGE_DA_REFS_V1";
++const ABI_WORD: usize = 32;
++const SYSCOIN_EDGE_DA_REF_HEAD_BYTES: usize = ABI_WORD * 5;
+ 
+ ///
+ /// L2 to l1 log structure, used for merkle tree leaves.
+@@ -263,6 +268,29 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
+         }
+     }
+ 
++    pub fn syscoin_edge_da_refs_root(&self) -> Bytes32 {
++        // SYSCOIN: ordered rolling root over compact edge DA refs emitted during Gateway execution.
++        let mut root = Bytes32::ZERO;
++        self.apply_syscoin_edge_da_refs_root(&mut root);
++        root
++    }
++
++    pub fn apply_syscoin_edge_da_refs_root(&self, root: &mut Bytes32) {
++        // SYSCOIN: extend an existing ordered root with this block's compact edge DA refs.
++        for message in self.list.iter() {
++            let GenericLogContentData::UserMsg(UserMsgData { data, .. }) = &message.data else {
++                continue;
++            };
++            let Some(edge_ref_hash) = syscoin_edge_da_ref_hash(data.as_slice()) else {
++                continue;
++            };
++            let mut hasher = crypto::sha3::Keccak256::new();
++            hasher.update(root.as_u8_ref());
++            hasher.update(edge_ref_hash.as_u8_ref());
++            *root = hasher.finalize().into();
++        }
++    }
++
+     pub fn calculate_pubdata_used_by_tx(&self) -> Result<u32, InternalError> {
+         let total_pubdata_used = self.list.top().map_or(0, |(_, m)| *m);
+ 
+@@ -523,3 +551,45 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
+         }
+     }
+ }
++
++// SYSCOIN: hash abi.encode(uint8 version, uint256 chainId, uint256 batchNumber,
++// bytes32 daCommitment, bytes blobHashes) emitted by the compact Gateway DA validator.
++fn syscoin_edge_da_ref_hash(message: &[u8]) -> Option<Bytes32> {
++    if message.len() < SYSCOIN_EDGE_DA_REF_HEAD_BYTES + ABI_WORD {
++        return None;
++    }
++    if message[..31] != [0u8; 31] || message[31] != SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION {
++        return None;
++    }
++    let blob_hashes_offset = u256_word_to_usize(&message[ABI_WORD * 4..ABI_WORD * 5])?;
++    if blob_hashes_offset != SYSCOIN_EDGE_DA_REF_HEAD_BYTES {
++        return None;
++    }
++    let blob_hashes_len_offset = blob_hashes_offset;
++    let blob_hashes_start = blob_hashes_len_offset + ABI_WORD;
++    if message.len() < blob_hashes_start {
++        return None;
++    }
++    let blob_hashes_len = u256_word_to_usize(&message[blob_hashes_len_offset..blob_hashes_start])?;
++    if blob_hashes_len == 0 || blob_hashes_len % ABI_WORD != 0 {
++        return None;
++    }
++    let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
++    if message.len() < blob_hashes_end {
++        return None;
++    }
++
++    let mut hasher = crypto::sha3::Keccak256::new();
++    hasher.update(SYSCOIN_EDGE_DA_REFS_DOMAIN);
++    hasher.update(&message[ABI_WORD..ABI_WORD * 4]);
++    let blob_count = U256::from(blob_hashes_len / ABI_WORD);
++    hasher.update(blob_count.to_be_bytes::<32>());
++    hasher.update(&message[blob_hashes_start..blob_hashes_end]);
++    Some(hasher.finalize().into())
++}
++
++fn u256_word_to_usize(word: &[u8]) -> Option<usize> {
++    if word.len() != ABI_WORD || word[..24] != [0u8; 24] {
++        return None;
++    }
++    usize::try_from(u64::from_be_bytes(word[24..].try_into().ok()?)).ok()
++}
 diff --git a/zk_ee/src/system/metadata/zk_metadata.rs b/zk_ee/src/system/metadata/zk_metadata.rs
 index 2ebf44bf..a9af008c 100644
 --- a/zk_ee/src/system/metadata/zk_metadata.rs

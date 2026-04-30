@@ -1,4 +1,5 @@
 use crate::main_node::component::BatchVerificationError;
+use alloy::primitives::B256;
 use alloy::sol_types::SolValue;
 use anyhow::anyhow;
 use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
@@ -110,6 +111,10 @@ fn decode_commit_data(
                 last_block_number: Some(last_block_number),
                 chain_id: decoded.chainId.to::<u64>(),
                 operator_da_input: decoded.operatorDAInput.as_ref().to_vec(),
+                // SYSCOIN: v29 batches predate compact edge DA ref openings.
+                edge_da_refs_input: Vec::new(),
+                // SYSCOIN: v29 batches predate compact edge DA ref binding.
+                edge_da_refs_root: B256::ZERO,
                 sl_chain_id: 0,
             }
         }

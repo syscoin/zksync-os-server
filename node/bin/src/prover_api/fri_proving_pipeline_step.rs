@@ -344,6 +344,10 @@ mod tests {
             last_block_number: Some(to),
             chain_id: 270,
             operator_da_input: Vec::new(),
+            // SYSCOIN: dummy batches do not include compact edge DA ref openings.
+            edge_da_refs_input: Vec::new(),
+            // SYSCOIN: dummy batches do not include compact edge DA refs.
+            edge_da_refs_root: B256::ZERO,
             sl_chain_id: 123,
         }
     }

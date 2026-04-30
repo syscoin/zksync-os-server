@@ -31,7 +31,7 @@ use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::watch;
 use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};

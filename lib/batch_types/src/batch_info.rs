@@ -22,6 +22,111 @@ pub const SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH: usize =
     SYSCOIN_DA_BYTES_PER_BLOB * SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
 pub const SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES: usize =
     SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH - BLOB_CHUNK_SIZE;
+// SYSCOIN: domain separator for compact edge DA references committed by Gateway.
+const SYSCOIN_EDGE_DA_REFS_DOMAIN: &[u8] = b"SYSCOIN_EDGE_DA_REFS_V1";
+// SYSCOIN: RelayedSLDAValidator compact-ref message version.
+const SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION: u8 = 1;
+const ABI_WORD: usize = 32;
+const SYSCOIN_EDGE_DA_REF_HEAD_BYTES: usize = ABI_WORD * 5;
+
+// SYSCOIN: compact reference to edge-chain pubdata that was published directly to Bitcoin DA.
+pub struct SyscoinEdgeDaRef<'a> {
+    pub edge_chain_id: u64,
+    pub edge_batch_number: u64,
+    pub edge_da_commitment: B256,
+    pub blob_version_hashes: &'a [u8],
+}
+
+// SYSCOIN: hash one edge DA ref with its chain/batch context so blob hashes cannot be replayed
+// across edge chains or batches.
+pub fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
+    assert!(
+        edge_ref.blob_version_hashes.len() % 32 == 0,
+        "Syscoin edge DA refs must be a concatenation of 32-byte blob hashes"
+    );
+
+    let mut preimage = Vec::with_capacity(
+        SYSCOIN_EDGE_DA_REFS_DOMAIN.len() + 32 * 4 + edge_ref.blob_version_hashes.len(),
+    );
+    preimage.extend(SYSCOIN_EDGE_DA_REFS_DOMAIN);
+    preimage.extend(U256::from(edge_ref.edge_chain_id).to_be_bytes::<32>());
+    preimage.extend(U256::from(edge_ref.edge_batch_number).to_be_bytes::<32>());
+    preimage.extend(edge_ref.edge_da_commitment.as_slice());
+    preimage.extend(U256::from(edge_ref.blob_version_hashes.len() / 32).to_be_bytes::<32>());
+    preimage.extend(edge_ref.blob_version_hashes);
+    keccak256(preimage)
+}
+
+// SYSCOIN: ordered rolling root over edge DA refs checked by the Gateway node and later bound
+// to settlement. Empty means no edge DA references were included.
+pub fn syscoin_edge_da_refs_root<'a>(
+    edge_refs: impl IntoIterator<Item = SyscoinEdgeDaRef<'a>>,
+) -> B256 {
+    edge_refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+        keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+    })
+}
+
+// SYSCOIN: derive the ordered edge DA refs root from compact ref messages emitted during
+// Gateway execution. Non-Syscoin L2->L1 messages are ignored.
+pub fn syscoin_edge_da_refs_root_from_messages<'a>(
+    messages: impl IntoIterator<Item = &'a [u8]>,
+) -> B256 {
+    messages.into_iter().fold(B256::ZERO, |root, message| {
+        let Some(edge_ref) = parse_syscoin_edge_da_ref_message(message) else {
+            return root;
+        };
+        keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+    })
+}
+
+// SYSCOIN: parse abi.encode(uint8 version, uint256 chainId, uint256 batchNumber,
+// bytes32 daCommitment, bytes blobHashes) emitted by the compact Gateway DA validator.
+fn parse_syscoin_edge_da_ref_message(message: &[u8]) -> Option<SyscoinEdgeDaRef<'_>> {
+    if message.len() < SYSCOIN_EDGE_DA_REF_HEAD_BYTES + ABI_WORD {
+        return None;
+    }
+    if message[..31] != [0u8; 31] || message[31] != SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION {
+        return None;
+    }
+    let edge_chain_id = u256_word_to_u64(&message[ABI_WORD..ABI_WORD * 2])?;
+    let edge_batch_number = u256_word_to_u64(&message[ABI_WORD * 2..ABI_WORD * 3])?;
+    let edge_da_commitment = B256::from_slice(&message[ABI_WORD * 3..ABI_WORD * 4]);
+    let blob_hashes_offset = u256_word_to_usize(&message[ABI_WORD * 4..ABI_WORD * 5])?;
+    if blob_hashes_offset != SYSCOIN_EDGE_DA_REF_HEAD_BYTES {
+        return None;
+    }
+    let blob_hashes_len_offset = blob_hashes_offset;
+    let blob_hashes_start = blob_hashes_len_offset + ABI_WORD;
+    if message.len() < blob_hashes_start {
+        return None;
+    }
+    let blob_hashes_len = u256_word_to_usize(&message[blob_hashes_len_offset..blob_hashes_start])?;
+    if blob_hashes_len == 0 || blob_hashes_len % ABI_WORD != 0 {
+        return None;
+    }
+    let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
+    if message.len() < blob_hashes_end {
+        return None;
+    }
+    Some(SyscoinEdgeDaRef {
+        edge_chain_id,
+        edge_batch_number,
+        edge_da_commitment,
+        blob_version_hashes: &message[blob_hashes_start..blob_hashes_end],
+    })
+}
+
+fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
+    if word.len() != ABI_WORD || word[..24] != [0u8; 24] {
+        return None;
+    }
+    Some(u64::from_be_bytes(word[24..].try_into().ok()?))
+}
+
+fn u256_word_to_usize(word: &[u8]) -> Option<usize> {
+    usize::try_from(u256_word_to_u64(word)?).ok()
+}
 
 /// Returns the canonical upgrade tx hash to use for a specific batch number.
 ///
@@ -131,6 +236,10 @@ impl BatchInfo {
         let mut upgrade_tx_hash = None;
 
         let mut dependency_roots_rolling_hash = B256::ZERO;
+        // SYSCOIN: accumulated compact edge DA refs emitted by chains settling to Gateway.
+        let mut edge_da_refs_root = B256::ZERO;
+        // SYSCOIN: compact edge DA ref messages used as final-L1 root openings.
+        let mut edge_da_refs_input = Vec::new();
 
         for (block_output, _, transactions, _) in blocks {
             total_pubdata.extend(block_output.pubdata.clone());
@@ -177,6 +286,15 @@ impl BatchInfo {
             for tx_output in block_output.tx_results.clone().into_iter().flatten() {
                 encoded_l2_l1_logs.extend(tx_output.l2_to_l1_logs.into_iter().map(
                     |log_with_preimage| {
+                        if let Some(preimage) = log_with_preimage.preimage.as_deref()
+                            && let Some(edge_ref) = parse_syscoin_edge_da_ref_message(preimage)
+                        {
+                            edge_da_refs_root = keccak256(
+                                [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0]
+                                    .concat(),
+                            );
+                            edge_da_refs_input.extend_from_slice(preimage);
+                        }
                         let log = L2ToL1Log {
                             l2_shard_id: log_with_preimage.log.l2_shard_id,
                             is_service: log_with_preimage.log.is_service,
@@ -249,6 +367,8 @@ impl BatchInfo {
             last_block_number: Some(last_block_output.header.number),
             chain_id,
             operator_da_input: da_fields.operator_da_input,
+            edge_da_refs_input,
+            edge_da_refs_root,
             sl_chain_id,
         };
         Self {
@@ -295,6 +415,8 @@ impl BatchInfo {
                     upgrade_tx_hash,
                     commit_info.dependency_roots_rolling_hash,
                     U256::from(commit_info.sl_chain_id),
+                    // SYSCOIN: bind compact edge DA refs into the proven Gateway batch output.
+                    commit_info.edge_da_refs_root,
                 )
                     .abi_encode_packed(),
             )),
@@ -346,8 +468,7 @@ fn calculate_da_fields(
 ) -> DAFields {
     let (da_commitment, operator_da_input, blob_sidecar) =
         match (pubdata_mode, batch_execution_version) {
-            (PubdataMode::Calldata | PubdataMode::RelayedL2Calldata, _)
-            | (PubdataMode::Validium, 4) => {
+            (PubdataMode::Calldata, _) | (PubdataMode::Validium, 4) => {
                 let blobs_provided = syscoin_da_blob_count_for_pubdata(pubdata.len());
                 let mut operator_da_input = Vec::with_capacity(
                     32 * 2 + 1 + 32 * blobs_provided + 1 + pubdata.len() + 32 * blobs_provided,
@@ -390,7 +511,9 @@ fn calculate_da_fields(
                 (da_commitment, operator_da_input, None)
             }
             (PubdataMode::Validium, _) => (B256::ZERO, vec![0u8; 32], None),
-            (PubdataMode::Blobs, _) => {
+            (PubdataMode::Blobs | PubdataMode::RelayedL2Calldata, _) => {
+                // SYSCOIN: edge chains that settle to Gateway publish pubdata directly to Bitcoin
+                // DA and commit only the compact ordered blob hash array to Gateway.
                 let (blob_ids_from_pubdata, _blob_chunks_from_pubdata) =
                     syscoin_blob_ids_and_chunks_from_pubdata(pubdata);
                 let blob_ids = blob_ids_from_pubdata;
@@ -409,8 +532,11 @@ fn calculate_da_fields(
 #[cfg(test)]
 mod tests {
     use super::calculate_da_fields;
-    use super::{SYSCOIN_DA_BYTES_PER_BLOB, blob_data_id};
-    use alloy::primitives::keccak256;
+    use super::{
+        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, syscoin_edge_da_ref_hash,
+        syscoin_edge_da_refs_root, syscoin_edge_da_refs_root_from_messages,
+    };
+    use alloy::primitives::{B256, U256, keccak256};
     use zksync_os_types::PubdataMode;
 
     fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
@@ -423,6 +549,24 @@ mod tests {
             .collect()
     }
 
+    fn compact_edge_da_ref_message(
+        edge_chain_id: u64,
+        edge_batch_number: u64,
+        edge_da_commitment: B256,
+        blob_hashes: &[u8],
+    ) -> Vec<u8> {
+        let mut message = Vec::new();
+        message.extend([0u8; 31]);
+        message.push(1);
+        message.extend(U256::from(edge_chain_id).to_be_bytes::<32>());
+        message.extend(U256::from(edge_batch_number).to_be_bytes::<32>());
+        message.extend(edge_da_commitment.as_slice());
+        message.extend(U256::from(32 * 5).to_be_bytes::<32>());
+        message.extend(U256::from(blob_hashes.len()).to_be_bytes::<32>());
+        message.extend(blob_hashes);
+        message
+    }
+
     #[test]
     fn blob_da_fields_match_os_chunk_ids_for_single_blob() {
         let pubdata = b"hello-syscoin-da";
@@ -432,7 +576,7 @@ mod tests {
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert_eq!(fields.blob_sidecar.as_ref().unwrap().blobs.len(), 1);
+        assert!(fields.blob_sidecar.is_none());
     }
 
     #[test]
@@ -444,7 +588,78 @@ mod tests {
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert_eq!(fields.blob_sidecar.as_ref().unwrap().blobs.len(), 2);
+        assert!(fields.blob_sidecar.is_none());
+    }
+
+    #[test]
+    fn relayed_l2_calldata_uses_compact_syscoin_da_refs() {
+        let pubdata = b"edge-chain-pubdata";
+
+        let fields = calculate_da_fields(pubdata, PubdataMode::RelayedL2Calldata, 6);
+        let expected_blob_ids = expected_blob_ids(pubdata);
+
+        assert_eq!(fields.operator_da_input, expected_blob_ids);
+        assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
+        assert!(fields.blob_sidecar.is_none());
+    }
+
+    #[test]
+    fn edge_da_refs_root_is_ordered_and_context_bound() {
+        let blob_hashes = expected_blob_ids(b"edge-chain-pubdata");
+        let da_commitment = keccak256(&blob_hashes);
+
+        let first = SyscoinEdgeDaRef {
+            edge_chain_id: 10,
+            edge_batch_number: 1,
+            edge_da_commitment: da_commitment,
+            blob_version_hashes: &blob_hashes,
+        };
+        let second = SyscoinEdgeDaRef {
+            edge_chain_id: 10,
+            edge_batch_number: 2,
+            edge_da_commitment: da_commitment,
+            blob_version_hashes: &blob_hashes,
+        };
+
+        let first_hash = syscoin_edge_da_ref_hash(first);
+        let second_hash = syscoin_edge_da_ref_hash(second);
+        assert_ne!(first_hash, second_hash);
+
+        let root = syscoin_edge_da_refs_root([
+            SyscoinEdgeDaRef {
+                edge_chain_id: 10,
+                edge_batch_number: 1,
+                edge_da_commitment: da_commitment,
+                blob_version_hashes: &blob_hashes,
+            },
+            SyscoinEdgeDaRef {
+                edge_chain_id: 10,
+                edge_batch_number: 2,
+                edge_da_commitment: da_commitment,
+                blob_version_hashes: &blob_hashes,
+            },
+        ]);
+        assert_ne!(root, B256::ZERO);
+    }
+
+    #[test]
+    fn edge_da_refs_root_from_messages_matches_canonical_refs() {
+        let blob_hashes = expected_blob_ids(b"edge-chain-pubdata");
+        let da_commitment = keccak256(&blob_hashes);
+        let message = compact_edge_da_ref_message(10, 1, da_commitment, &blob_hashes);
+
+        let root_from_messages = syscoin_edge_da_refs_root_from_messages([
+            b"not-a-syscoin-edge-ref".as_slice(),
+            message.as_slice(),
+        ]);
+        let expected_root = syscoin_edge_da_refs_root([SyscoinEdgeDaRef {
+            edge_chain_id: 10,
+            edge_batch_number: 1,
+            edge_da_commitment: da_commitment,
+            blob_version_hashes: &blob_hashes,
+        }]);
+
+        assert_eq!(root_from_messages, expected_root);
     }
 }
 
