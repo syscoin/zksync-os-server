@@ -46,7 +46,7 @@ use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::eips::BlockId;
 use alloy::network::{Ethereum, EthereumWallet};
-use alloy::primitives::BlockNumber;
+use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::{Provider, ProviderBuilder, WalletProvider};
 use anyhow::Context;
@@ -136,7 +136,10 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
-fn edge_da_finality_config(config: &Config) -> Option<zksync_os_rpc::EdgeDaFinalityConfig> {
+fn edge_da_finality_config(
+    config: &Config,
+    commit_tx_target: Address,
+) -> Option<zksync_os_rpc::EdgeDaFinalityConfig> {
     let batcher = &config.batcher_config;
     let finality_mode = match batcher.bitcoin_da_finality_mode {
         BitcoinDaFinalityMode::Chainlock => bitcoin_da_client::BitcoinDaFinalityMode::Chainlock,
@@ -146,6 +149,7 @@ fn edge_da_finality_config(config: &Config) -> Option<zksync_os_rpc::EdgeDaFinal
     };
 
     Some(zksync_os_rpc::EdgeDaFinalityConfig {
+        commit_tx_target,
         rpc_url: batcher.bitcoin_da_rpc_url.clone()?,
         rpc_user: batcher
             .bitcoin_da_rpc_user
@@ -991,7 +995,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not finalized yet.
-    rpc_config.edge_da_finality = edge_da_finality_config(&config);
+    rpc_config.edge_da_finality = edge_da_finality_config(&config, bridgehub_address);
     zksync_os_rpc::spawn(
         rpc_config,
         chain_id,

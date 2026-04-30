@@ -5,7 +5,7 @@ use alloy::consensus::Transaction;
 use alloy::consensus::transaction::SignerRecoverable;
 use alloy::eips::Decodable2718;
 use alloy::hex;
-use alloy::primitives::{B256, Bytes, U256, keccak256};
+use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 use alloy::transports::{RpcError, TransportErrorKind};
@@ -101,6 +101,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let Some(config) = self.config.edge_da_finality.as_ref() else {
             return Ok(());
         };
+        if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
+            return Ok(());
+        }
         let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
             return Ok(());
         };
@@ -194,6 +197,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         .await
         .map_err(|_| EthSendRawTransactionSyncError::Timeout(timeout_duration))?
     }
+}
+
+// SYSCOIN: only Gateway Bridgehub commit transactions can carry compact edge DA refs.
+fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Address) -> bool {
+    tx_to == Some(commit_tx_target)
 }
 
 // SYSCOIN: parse Gateway child-chain commit calldata and return compact Bitcoin DA refs
@@ -373,7 +381,6 @@ impl Drop for ForwardingLatencyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::Address;
     use zksync_os_contract_interface::calldata::encode_commit_batch_data;
     use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
 
@@ -426,6 +433,17 @@ mod tests {
             _commitData: Bytes::from(commit_data),
         }
         .abi_encode()
+    }
+
+    #[test]
+    fn compact_edge_da_guard_only_routes_target_bridgehub() {
+        let bridgehub = Address::repeat_byte(0x11);
+        assert!(is_compact_edge_da_commit_target(Some(bridgehub), bridgehub));
+        assert!(!is_compact_edge_da_commit_target(
+            Some(Address::repeat_byte(0x22)),
+            bridgehub
+        ));
+        assert!(!is_compact_edge_da_commit_target(None, bridgehub));
     }
 
     #[test]
