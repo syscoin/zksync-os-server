@@ -1,8 +1,8 @@
 diff --git a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
-index 4ee20aa08..3f3a07240 100644
+index 4ee20aa08..a072d7a87 100644
 --- a/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
 +++ b/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol
-@@ -5,46 +5,23 @@ pragma solidity 0.8.28;
+@@ -5,46 +5,24 @@ pragma solidity 0.8.28;
  import {IL1DAValidator, L1DAValidatorOutput} from "./IL1DAValidator.sol";
  
  import {
@@ -35,6 +35,7 @@ index 4ee20aa08..3f3a07240 100644
 +    /// @dev Same Bitcoin DA precompile as `RollupL1DAValidator` on this fork.
 +    address internal constant BITCOINDA_PRECOMPILE_ADDR = address(0x63);
 +    uint16 internal constant BITCOINDA_PRECOMPILE_COST = 1400;
++    uint256 internal constant SYSCOIN_DA_MAX_BLOBS_PER_BATCH = 32;
  
 -    /// @notice Publishes all the blobs provided with a transaction.
 -    function publishBlobs() external {
@@ -61,7 +62,7 @@ index 4ee20aa08..3f3a07240 100644
  
      /// @inheritdoc IL1DAValidator
      function checkDA(
-@@ -54,61 +31,37 @@ contract BlobsL1DAValidatorZKsyncOS is IL1DAValidator {
+@@ -54,61 +32,37 @@ contract BlobsL1DAValidatorZKsyncOS is IL1DAValidator {
          bytes calldata _operatorDAInput,
          uint256 // _maxBlobsSupported
      ) external view returns (L1DAValidatorOutput memory output) {
@@ -70,7 +71,7 @@ index 4ee20aa08..3f3a07240 100644
 -        if (_operatorDAInput.length % BLOB_VERSIONED_HASH_SIZE != 0) {
 -            revert InvalidBlobsDAInputLength(_operatorDAInput.length);
 +        uint256 len = _operatorDAInput.length;
-+        if (len == 0 || len % WORD != 0) {
++        if (len == 0 || len % WORD != 0 || len / WORD > SYSCOIN_DA_MAX_BLOBS_PER_BATCH) {
 +            revert InvalidBlobsDAInputLength(len);
          }
  
@@ -138,7 +139,7 @@ index 4ee20aa08..3f3a07240 100644
 +        if (!success) {
 +            revert BitcoinDAPrecompileCallFailed();
 +        }
-+        if (result.length == 0) {
++        if (result.length < 32 || abi.decode(result, (uint256)) == 0) {
 +            revert BitcoinDAVerificationFailed();
          }
      }
@@ -170,10 +171,10 @@ index 34163db26..872b17a9e 100644
      }
  }
 diff --git a/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol b/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
-index fff80d4af..e2c2e799b 100644
+index fff80d4af..5909c7550 100644
 --- a/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
 +++ b/da-contracts/test/foundry/BlobsL1DaValidatorZKsyncOS.t.sol
-@@ -2,133 +2,96 @@
+@@ -2,133 +2,115 @@
  pragma solidity 0.8.28;
  
  import {Test} from "forge-std/Test.sol";
@@ -213,14 +214,22 @@ index fff80d4af..e2c2e799b 100644
 -        validator.setMockBlobs(blobs);
 -
 -        validator.publishBlobs();
--
--        assertEq(validator.publishedBlobs(blobs[0]), block.number);
--        assertEq(validator.publishedBlobs(blobs[1]), block.number);
--        assertEq(validator.publishedBlobs(keccak256("nonexistent")), 0);
 +/// @dev Etched at `0x63` to simulate DA lookup failure.
 +contract BitcoinDAMockFail {
 +    fallback() external {
 +        revert();
++    }
++}
+ 
+-        assertEq(validator.publishedBlobs(blobs[0]), block.number);
+-        assertEq(validator.publishedBlobs(blobs[1]), block.number);
+-        assertEq(validator.publishedBlobs(keccak256("nonexistent")), 0);
++/// @dev Etched at `0x63`: call succeeds but returns no data.
++contract BitcoinDAMockEmptyReturn {
++    fallback() external {
++        assembly {
++            return(0, 0)
++        }
      }
 +}
  
@@ -229,11 +238,12 @@ index fff80d4af..e2c2e799b 100644
 -        bytes32[] memory blobs = new bytes32[](1);
 -        blobs[0] = blobHash;
 -        validator.setMockBlobs(blobs);
-+/// @dev Etched at `0x63`: call succeeds but returns no data.
-+contract BitcoinDAMockEmptyReturn {
++/// @dev Etched at `0x63`: call succeeds but reports DA as unavailable.
++contract BitcoinDAMockZeroReturn {
 +    fallback() external {
 +        assembly {
-+            return(0, 0)
++            mstore(0, 0)
++            return(0, 32)
 +        }
 +    }
 +}
@@ -311,15 +321,15 @@ index fff80d4af..e2c2e799b 100644
 -        bytes32[] memory blobs = new bytes32[](1);
 -        blobs[0] = keccak256("blob");
 -        validator.setMockBlobs(blobs);
--
--        // operator input asks to pull blob0
--        bytes memory operatorInput = abi.encodePacked(bytes32(0));
--        bytes32 expectedHash = keccak256(abi.encodePacked(blobs[0]));
 +        bytes32 h0 = keccak256("a");
 +        bytes32 h1 = keccak256("b");
 +        bytes memory operatorInput = abi.encodePacked(h0, h1);
 +        bytes32 expectedHash = keccak256(operatorInput);
  
+-        // operator input asks to pull blob0
+-        bytes memory operatorInput = abi.encodePacked(bytes32(0));
+-        bytes32 expectedHash = keccak256(abi.encodePacked(blobs[0]));
+-
 -        // solhint-disable-next-line func-named-parameters
          L1DAValidatorOutput memory out = validator.checkDA(1, 1, expectedHash, operatorInput, 0);
  
@@ -334,27 +344,35 @@ index fff80d4af..e2c2e799b 100644
 -        blobs[0] = publishedBlob;
 -        validator.setMockBlobs(blobs);
 -        validator.publishBlobs();
--
--        // operator provides one directly + one placeholder for pulling from tx (mock)
--        bytes32 providedBlob = keccak256("provided");
--        bytes32[] memory txBlobs = new bytes32[](1);
--        txBlobs[0] = providedBlob;
--        validator.setMockBlobs(txBlobs); // will be pulled for the zero placeholder
 +    function testCheckDABitcoinDAPrecompileFails() public {
 +        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockFail()).code);
- 
--        bytes memory operatorInput = abi.encodePacked(publishedBlob, bytes32(0));
--        bytes32 expectedHash = keccak256(abi.encodePacked(publishedBlob, providedBlob));
++
 +        bytes32 h0 = keccak256("a");
 +        bytes memory operatorInput = abi.encodePacked(h0);
 +        vm.expectRevert(BitcoinDAPrecompileCallFailed.selector);
 +        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
 +    }
  
--        // solhint-disable-next-line func-named-parameters
--        L1DAValidatorOutput memory out = validator.checkDA(1, 1, expectedHash, operatorInput, 0);
+-        // operator provides one directly + one placeholder for pulling from tx (mock)
+-        bytes32 providedBlob = keccak256("provided");
+-        bytes32[] memory txBlobs = new bytes32[](1);
+-        txBlobs[0] = providedBlob;
+-        validator.setMockBlobs(txBlobs); // will be pulled for the zero placeholder
 +    function testCheckDABitcoinDAEmptyResult() public {
 +        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockEmptyReturn()).code);
+ 
+-        bytes memory operatorInput = abi.encodePacked(publishedBlob, bytes32(0));
+-        bytes32 expectedHash = keccak256(abi.encodePacked(publishedBlob, providedBlob));
++        bytes32 h0 = keccak256("a");
++        bytes memory operatorInput = abi.encodePacked(h0);
++        vm.expectRevert(BitcoinDAVerificationFailed.selector);
++        validator.checkDA(1, 1, keccak256(operatorInput), operatorInput, 0);
++    }
+ 
+-        // solhint-disable-next-line func-named-parameters
+-        L1DAValidatorOutput memory out = validator.checkDA(1, 1, expectedHash, operatorInput, 0);
++    function testCheckDABitcoinDAZeroResult() public {
++        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockZeroReturn()).code);
  
 -        assertEq(out.stateDiffHash, bytes32(0));
 -        assertEq(out.blobsLinearHashes.length, 0);
@@ -610,10 +628,10 @@ index 084148311..613742967 100644
          // From now on, we know that the used encoding version is `NEW_ENCODING_VERSION` that is
          // supported only in the new protocol version with Gateway support, so we can assume
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-index 61f61abb9..fc939734b 100644
+index 61f61abb9..0cbbd3ff3 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-@@ -84,6 +84,18 @@ uint8 constant RELAYED_EXECUTOR_VERSION = 0;
+@@ -84,6 +84,19 @@ uint8 constant RELAYED_EXECUTOR_VERSION = 0;
  /// @dev The version that is used for the `Executor` calldata used for relaying the
  /// ZKSync OS stored batch info.
  uint8 constant RELAYED_EXECUTOR_VERSION_ZKSYNC_OS = 1;
@@ -623,6 +641,7 @@ index 61f61abb9..fc939734b 100644
 +address constant SYSCOIN_BITCOINDA_PRECOMPILE_ADDR = address(0x63);
 +uint16 constant SYSCOIN_BITCOINDA_PRECOMPILE_COST = 1400;
 +uint256 constant SYSCOIN_EDGE_DA_REF_HEAD_BYTES = 32 * 5;
++uint256 constant SYSCOIN_DA_MAX_BLOBS_PER_BATCH = 32;
 +
 +// SYSCOIN: final L1 settlement must exactly open the Gateway-proven edge DA refs root.
 +error SyscoinEdgeDARefsRootMismatch(bytes32 expectedRoot, bytes32 actualRoot);
@@ -632,7 +651,7 @@ index 61f61abb9..fc939734b 100644
  
  /// @title ZK chain Committer contract responsible for batch commitment operations.
  /// @author Matter Labs
-@@ -404,6 +416,98 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -404,6 +417,99 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          }
      }
  
@@ -700,7 +719,8 @@ index 61f61abb9..fc939734b 100644
 +                version != SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION ||
 +                blobHashesOffset != SYSCOIN_EDGE_DA_REF_HEAD_BYTES ||
 +                blobHashesLength == 0 ||
-+                blobHashesLength % 32 != 0
++                blobHashesLength % 32 != 0 ||
++                blobHashesLength / 32 > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
 +            ) {
 +                revert SyscoinEdgeDARefInputMalformed(offset);
 +            }
@@ -731,17 +751,17 @@ index 61f61abb9..fc939734b 100644
      function _commitOneBatchZKsyncOS(
          IExecutor.StoredBatchInfo memory _previousBatch,
          CommitBatchInfoZKsyncOS memory _newBatch,
-@@ -473,6 +577,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -473,6 +579,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          if (_newBatch.slChainId != block.chainid) {
              revert SettlementLayerChainIdMismatch();
          }
-+        if (L1_CHAIN_ID == block.chainid) {
-+            _verifySyscoinEdgeDARefs(_newBatch.edgeDARefsInput, _newBatch.edgeDARefsRoot);
-+        }
++        // SYSCOIN: always verify the Gateway-proven compact edge DA refs opening.
++        // Empty input/root passes for batches with no edge DA refs; non-empty roots must open to Bitcoin DA.
++        _verifySyscoinEdgeDARefs(_newBatch.edgeDARefsInput, _newBatch.edgeDARefsRoot);
  
          // The batch proof public input can be calculated as keccak256(state_commitment_before & state_commitment_after & batch_output_hash)
          // batch output hash commits to information about batch that needs to be opened on l1.
-@@ -490,7 +597,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -490,7 +599,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
                  _newBatch.l2LogsTreeRoot,
                  _expectedSystemContractUpgradeTxHash,
                  _newBatch.dependencyRootsRollingHash,
