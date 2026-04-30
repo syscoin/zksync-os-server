@@ -80,6 +80,31 @@ impl L1Watcher {
 }
 
 impl L1Watcher {
+    // SYSCOIN: return the finalized block number if the boundary is finalized, otherwise return the confirmed block number
+    async fn block_boundary_cap(&self) -> Result<Option<BlockNumber>, L1WatcherError> {
+        match self.block_boundary {
+            BlockBoundary::Confirmed { confirmations } => Ok(Some(
+                self.provider
+                    .get_block_number()
+                    .await?
+                    .saturating_sub(confirmations),
+            )),
+            BlockBoundary::Finalized => {
+                let finalized_block = self
+                    .provider
+                    .get_block_number_by_id(BlockId::finalized())
+                    .await?;
+                if finalized_block.is_none() {
+                    tracing::debug!(
+                        event_name = &self.processor.name(),
+                        "no finalized L1 block available yet"
+                    );
+                }
+                Ok(finalized_block)
+            }
+        }
+    }
+
     /// Polls for new events.
     ///
     /// For unbounded watchers (`end_block = None`) this never returns; for bounded watchers
@@ -110,33 +135,13 @@ impl L1Watcher {
     }
 
     async fn poll(&mut self) -> Result<(), L1WatcherError> {
-        let cap = match self.end_block {
-            // Closed segment: `end_block` was already resolved against a finalized/executed batch,
-            // so the confirmation/finalization window doesn't apply and we don't need an
-            // additional RPC.
-            Some(eb) => eb,
-            None => match self.block_boundary {
-                BlockBoundary::Confirmed { confirmations } => self
-                    .provider
-                    .get_block_number()
-                    .await?
-                    .saturating_sub(confirmations),
-                BlockBoundary::Finalized => {
-                    let Some(finalized_block) = self
-                        .provider
-                        .get_block_number_by_id(BlockId::finalized())
-                        .await?
-                    else {
-                        tracing::debug!(
-                            event_name = &self.processor.name(),
-                            "no finalized L1 block available yet"
-                        );
-                        return Ok(());
-                    };
-                    finalized_block
-                }
-            },
+        // SYSCOIN
+        let Some(boundary_cap) = self.block_boundary_cap().await? else {
+            return Ok(());
         };
+        let cap = self
+            .end_block
+            .map_or(boundary_cap, |eb| eb.min(boundary_cap));
 
         while self.next_block <= cap {
             let from_block = self.next_block;

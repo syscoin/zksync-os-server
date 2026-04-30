@@ -105,9 +105,8 @@ async fn run_segment(
         end_block.unwrap_or(u64::MAX),
     );
 
-    // Closed segments are bounded by an executed batch on-chain, so the boundary mode does not
-    // matter — `end_block` dominates the cap. The open-ended segment uses the finalized boundary
-    // so persistence-style processors only react to irreversibly observed events.
+    // SYSCOIN Closed segments stop at `end_block`, but still use the finalized boundary so
+    // persistence-style processors only react to irreversibly observed events.
     let mut watcher = L1Watcher::new_finalized(
         config,
         zk_chain.provider().clone(),
