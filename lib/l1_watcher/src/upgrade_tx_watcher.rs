@@ -61,6 +61,11 @@ pub struct L1UpgradeTxWatcher {
     max_blocks_to_process: u64,
 }
 
+struct UpgradeCutDataLog {
+    log: Log,
+    provider: DynProvider,
+}
+
 impl L1UpgradeTxWatcher {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_watcher(
@@ -151,8 +156,8 @@ impl L1UpgradeTxWatcher {
             raw_protocol_version,
         } = request;
 
-        let upgrade_cut_data_log = self.find_upgrade_cut_log(*raw_protocol_version).await?;
-        let raw_diamond_cut: Log<NewUpgradeCutData> = upgrade_cut_data_log.log_decode()?;
+        let upgrade_cut_data = self.find_upgrade_cut_log(*raw_protocol_version).await?;
+        let raw_diamond_cut: Log<NewUpgradeCutData> = upgrade_cut_data.log.log_decode()?;
         let diamond_cut_data = raw_diamond_cut.inner.data.diamondCutData;
         let mut proposed_upgrade =
             ProposedUpgrade::abi_decode(&diamond_cut_data.initCalldata[4..]).unwrap(); // TODO: we're in fact parsing `upgrade(..)` signature here
@@ -178,9 +183,11 @@ impl L1UpgradeTxWatcher {
             // a tx whose hash diverges from what L1 wrote into the priority queue.
             let upgrade_init_address = diamond_cut_data.initAddress;
             let original_tx_data = proposed_upgrade.l2ProtocolUpgradeTx.data.clone();
+            // SYSCOIN: the cut data can be owned by the Gateway CTM, in which case the init
+            // contract is deployed on the settlement layer rather than L1.
             match ISettlementLayerV31UpgradeInstance::new(
                 upgrade_init_address,
-                self.provider_l1.clone(),
+                upgrade_cut_data.provider.clone(),
             )
             .getL2UpgradeTxData(
                 self.bridgehub_l1,
@@ -255,7 +262,10 @@ impl L1UpgradeTxWatcher {
     /// chain, so we can fetch the event with a single `eth_getLogs` call against the right
     /// settlement layer. For pre-V31 CTMs the mapping is absent, so we fall back to the
     /// pre-existing backward linear scan on the SL CTM.
-    async fn find_upgrade_cut_log(&self, raw_protocol_version: U256) -> anyhow::Result<Log> {
+    async fn find_upgrade_cut_log(
+        &self,
+        raw_protocol_version: U256,
+    ) -> anyhow::Result<UpgradeCutDataLog> {
         let l1_block =
             get_upgrade_cut_data_block(&self.provider_l1, self.ctm_l1, raw_protocol_version)
                 .await?;
@@ -273,8 +283,12 @@ impl L1UpgradeTxWatcher {
         };
 
         if let Some((provider, ctm_address, block)) = target {
-            return fetch_upgrade_cut_log_at(provider, ctm_address, raw_protocol_version, block)
-                .await;
+            let log = fetch_upgrade_cut_log_at(provider, ctm_address, raw_protocol_version, block)
+                .await?;
+            return Ok(UpgradeCutDataLog {
+                log,
+                provider: provider.clone(),
+            });
         }
 
         // Neither CTM reports a cut data block; either we're on a pre-V31 CTM without this
@@ -285,7 +299,10 @@ impl L1UpgradeTxWatcher {
     /// Pre-V31 fallback: scan `UPGRADE_DATA_LOOKBEHIND_BLOCKS` worth of `NewUpgradeCutData`
     /// events backward on the SL CTM. Pre-V31 chains do not have Gateway migrations, so the
     /// cut always lives on the SL CTM (which equals the L1 CTM in that era).
-    async fn legacy_backward_scan(&self, raw_protocol_version: U256) -> anyhow::Result<Log> {
+    async fn legacy_backward_scan(
+        &self,
+        raw_protocol_version: U256,
+    ) -> anyhow::Result<UpgradeCutDataLog> {
         let mut current_block = self.provider_sl.get_block_number().await?;
         let start_block = current_block
             .saturating_sub(UPGRADE_DATA_LOOKBEHIND_BLOCKS)
@@ -317,7 +334,10 @@ impl L1UpgradeTxWatcher {
             );
         }
         // `last()` because each scan batch returns logs in ascending order.
-        Ok(upgrade_cut_data_logs.pop().unwrap())
+        Ok(UpgradeCutDataLog {
+            log: upgrade_cut_data_logs.pop().unwrap(),
+            provider: self.provider_sl.clone(),
+        })
     }
 
     async fn wait_until_timestamp(&self, target_timestamp: u64) {

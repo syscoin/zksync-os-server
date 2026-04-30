@@ -942,13 +942,15 @@ impl<P: Provider> ZkChain<P> {
     }
 }
 
-/// Returns `true` if the error came from the contract itself (empty return data or a revert),
-/// which is how an EVM reports a call to a function selector that the deployed code does not
-/// implement. Network / transport failures return `false` so they can be propagated.
+/// Returns `true` if the call returned empty data, which is how an EVM reports a call to a
+/// function selector that the deployed code does not implement. Reverts must propagate: callers
+/// use this helper to decide whether to fall back to old protocol behavior.
 pub fn is_method_missing(err: &alloy::contract::Error) -> bool {
     match err {
         alloy::contract::Error::ZeroData(..) => true,
-        alloy::contract::Error::TransportError(te) => te.as_error_resp().is_some(),
+        // SYSCOIN: do not classify RPC error payloads as missing methods. A real contract revert
+        // from getL2UpgradeTxData must fail fast; otherwise we can inject a placeholder upgrade tx.
+        alloy::contract::Error::TransportError(_) => false,
         _ => false,
     }
 }
