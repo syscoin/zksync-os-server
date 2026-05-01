@@ -42,7 +42,10 @@ pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
 // SYSCOIN
-const BITCOIN_DA_ANCESTOR_LIMIT_ERROR: &str = "Unconfirmed UTXOs are available, but spending them creates a chain of transactions that will be rejected by the mempool";
+const BITCOIN_DA_ANCESTOR_LIMIT_ERRORS: &[&str] = &[
+    "unconfirmed utxos are available, but spending them creates a chain of transactions that will be rejected by the mempool",
+    "transaction has too long of a mempool chain",
+];
 
 /// Set of fields to define batcher's behavior on startup (when to replay, when to produce, etc.)
 pub struct BatcherStartupConfig {
@@ -77,7 +80,10 @@ pub struct Batcher<ReadState> {
 }
 
 fn is_bitcoin_da_ancestor_limit_error(err: &str) -> bool {
-    err.contains(BITCOIN_DA_ANCESTOR_LIMIT_ERROR)
+    let err = err.to_ascii_lowercase();
+    BITCOIN_DA_ANCESTOR_LIMIT_ERRORS
+        .iter()
+        .any(|message| err.contains(message))
 }
 
 #[async_trait]
@@ -665,5 +671,23 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             "Published Bitcoin DA blobs"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bitcoin_da_ancestor_limit_error;
+
+    #[test]
+    fn detects_bitcoin_da_ancestor_limit_errors() {
+        assert!(is_bitcoin_da_ancestor_limit_error(
+            "Unconfirmed UTXOs are available, but spending them creates a chain of transactions that will be rejected by the mempool",
+        ));
+        assert!(is_bitcoin_da_ancestor_limit_error(
+            "WALLET RPC `syscoincreatenevmblob` -> HTTP 500 Internal Server Error: {\"error\":{\"code\":-6,\"message\":\"Transaction has too long of a mempool chain\"}}",
+        ));
+        assert!(!is_bitcoin_da_ancestor_limit_error(
+            "HTTP 500 Internal Server Error: insufficient funds",
+        ));
     }
 }
