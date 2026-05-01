@@ -1215,6 +1215,16 @@ index 4083f7206..4b54ea0fd 100644
 +        );
 +    }
 +
++    function test_RevertWhen_CommittingWithEmptyEdgeDARefsInputAndNonzeroRoot() public {
++        (, bytes32 expectedRoot) = _edgeDARefsInput(l2ChainId, 1, keccak256("edge-blob"));
++
++        _commitValidiumBatchWithEdgeDARefs(
++            "",
++            expectedRoot,
++            abi.encodeWithSignature("SyscoinEdgeDARefsRootMismatch(bytes32,bytes32)", expectedRoot, bytes32(0))
++        );
++    }
++
 +    function test_RevertWhen_CommittingWithWrongEdgeDARefsRoot() public {
 +        vm.etch(address(uint160(0x63)), address(new BitcoinDAMockOk()).code);
 +        (bytes memory edgeDARefsInput, bytes32 actualRoot) = _edgeDARefsInput(l2ChainId, 1, keccak256("edge-blob"));
@@ -1377,3 +1387,25 @@ index d35ee9dcf..ca517503c 100644
        ],
        "infinity": false
      },
+diff --git a/l1-contracts/contracts/state-transition/chain-deps/GatewayCTMDeployer.sol b/l1-contracts/contracts/state-transition/chain-deps/GatewayCTMDeployer.sol
+--- a/l1-contracts/contracts/state-transition/chain-deps/GatewayCTMDeployer.sol
++++ b/l1-contracts/contracts/state-transition/chain-deps/GatewayCTMDeployer.sol
+@@ -33,7 +33,7 @@
+ import {ZKsyncOSChainTypeManager} from "../ZKsyncOSChainTypeManager.sol";
+ import {EraChainTypeManager} from "../EraChainTypeManager.sol";
+ 
+ import {L2_BRIDGEHUB_ADDR} from "../../common/l2-helpers/L2ContractAddresses.sol";
+-import {ROLLUP_L2_DA_COMMITMENT_SCHEME} from "../../common/Config.sol";
++import {L2DACommitmentScheme} from "../../common/Config.sol";
+ 
+ import {ProxyAdmin} from "@openzeppelin/contracts-v4/proxy/transparent/ProxyAdmin.sol";
+@@ -372,7 +372,10 @@
+         ValidiumL1DAValidator validiumDAValidator = new ValidiumL1DAValidator{salt: _salt}();
+ 
+         RelayedSLDAValidator relayedSLDAValidator = new RelayedSLDAValidator{salt: _salt}();
+-        rollupDAManager.updateDAPair(address(relayedSLDAValidator), ROLLUP_L2_DA_COMMITMENT_SCHEME, true);
++        // SYSCOIN: Gateway child chains use compact Bitcoin DA refs with the
++        // ZKsync OS commitment scheme, not the upstream Era rollup scheme.
++        rollupDAManager.updateDAPair(address(relayedSLDAValidator), L2DACommitmentScheme.BLOBS_ZKSYNC_OS, true);
+ 
+         // Note, that the governance still has to accept it.
