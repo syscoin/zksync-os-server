@@ -168,9 +168,14 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // receives up to `self.command_limit` commands from the channel if they are ready (i.e. does
         // not wait for them). Extends `cmd_buffer` with received values and, as `cmd_buffer` is
         // emptied in every iteration, its size never exceeds `self.command_limit`.
-        let received = inbound
-            .recv_many(&mut cmd_buffer, config.command_limit)
-            .await;
+        // SYSCOIN: execute appends to MessageRoot sequentially, so tx N+1
+        // cannot be prepared before tx N is mined. Keep commit/prove pipelining intact.
+        let command_limit = if command_name == "execute" {
+            1
+        } else {
+            config.command_limit
+        };
+        let received = inbound.recv_many(&mut cmd_buffer, command_limit).await;
         let mut commands = cmd_buffer
             .drain(..)
             .map(|cmd| -> anyhow::Result<Input> {
@@ -201,6 +206,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
         let pending_txs: Vec<PendingTx<Input>> =
             futures::stream::iter(commands.drain(..))
                 .then(|mut cmd| async {
+                    let tx_range = Input::display_range(std::slice::from_ref(&cmd));
                     let mut tx_request = tx_request_with_gas_fields(
                         &provider,
                         operator_address,
@@ -268,7 +274,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     )
                     .boxed();
                     tracing::info!(
-                        "{command_name}: L1 transaction submitted for {range}. Hash: {tx_hash:?} Waiting for inclusion...",
+                        "{command_name}: L1 transaction submitted for {tx_range}. Hash: {tx_hash:?} Waiting for inclusion...",
                     );
 
                     // Notify CommitWatcher: this batch number has been submitted to L1.
