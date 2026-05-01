@@ -341,6 +341,13 @@ def materialize_chain(
             f"  max_fee_per_gas: '{max_fee_per_gas_wei} wei'",
             f"  max_priority_fee_per_gas: '{max_priority_fee_per_gas_wei} wei'",
             *(
+                # SYSCOIN: child-chain commits to Gateway must be serialized because
+                # each commit's previous batch hash depends on the prior commit landing.
+                ["  command_limit: 1"]
+                if chain_name == "zksys"
+                else []
+            ),
+            *(
                 ["  transaction_timeout: 3000s"]
                 if pubdata_mode != "RelayedL2Calldata"
                 else []
