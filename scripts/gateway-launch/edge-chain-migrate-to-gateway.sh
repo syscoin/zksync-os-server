@@ -17,6 +17,8 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
+: "${GATEWAY_L2_DA_COMMITMENT_SCHEME:=BlobsZKsyncOS}"
+: "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:=4}"
 
 # Gateway settlement checks must use the system Bridgehub on the Gateway chain.
 # Do not allow accidental carry-over from shell/session env to point this at L1.
@@ -203,6 +205,126 @@ raise SystemExit(0)
 PY
 }
 
+get_wallet_address_from_wallets() {
+  local chain_name="${1:?chain name required}"
+  local wallet_name="${2:?wallet name required}"
+  python3 - \
+    "${wallet_name}" \
+    "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
+    "${GATEWAY_DIR}/configs/wallets.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+wallet_name = sys.argv[1]
+for path_str in sys.argv[2:]:
+    p = Path(path_str)
+    if not p.exists():
+        continue
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    wallet = data.get(wallet_name)
+    if not isinstance(wallet, dict):
+        continue
+    addr = wallet.get("address")
+    if isinstance(addr, int):
+        addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+    if isinstance(addr, str) and addr.strip() != "":
+        print(addr.strip())
+        raise SystemExit(0)
+raise SystemExit(f"missing wallet address for {wallet_name}")
+PY
+}
+
+get_wallet_private_key_from_wallets() {
+  local chain_name="${1:?chain name required}"
+  local wallet_name="${2:?wallet name required}"
+  python3 - \
+    "${wallet_name}" \
+    "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
+    "${GATEWAY_DIR}/configs/wallets.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+wallet_name = sys.argv[1]
+for path_str in sys.argv[2:]:
+    p = Path(path_str)
+    if not p.exists():
+        continue
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    wallet = data.get(wallet_name)
+    if not isinstance(wallet, dict):
+        continue
+    pk = wallet.get("private_key")
+    if isinstance(pk, int):
+        print("0x" + format(pk, "064x"))
+        raise SystemExit(0)
+    if isinstance(pk, str) and pk.strip() != "":
+        raw = pk.strip()
+        if raw.startswith("0x"):
+            print("0x" + raw[2:].zfill(64))
+        else:
+            print("0x" + format(int(raw), "064x"))
+        raise SystemExit(0)
+raise SystemExit(f"missing wallet private_key for {wallet_name}")
+PY
+}
+
+get_l1_bridgehub_proxy_addr() {
+  local chain_name="${1:?chain name required}"
+  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+p = Path(sys.argv[1])
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+eco = data.get("ecosystem_contracts") if isinstance(data, dict) else None
+if not isinstance(eco, dict):
+    raise SystemExit(f"invalid ecosystem_contracts section in {p}")
+addr = eco.get("bridgehub_proxy_addr")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or addr.strip() == "":
+    raise SystemExit(f"missing ecosystem_contracts.bridgehub_proxy_addr in {p}")
+print(addr.strip())
+PY
+}
+
+get_gateway_validator_timelock_addr() {
+  local gateway_chain_name="${1:?gateway chain name required}"
+  python3 - "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+p = Path(sys.argv[1])
+if not p.exists():
+    raise SystemExit(f"missing Gateway config: {p}")
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+addr = data.get("validator_timelock_addr") if isinstance(data, dict) else None
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or addr.strip() == "":
+    raise SystemExit(f"missing validator_timelock_addr in {p}")
+print(addr.strip())
+PY
+}
+
 gateway_cast_call_with_fallback() {
   local target="${1:?target required}"
   local sig="${2:?signature required}"
@@ -252,6 +374,137 @@ gateway_address_has_code() {
   [ "${code}" != "0x" ] || return 1
 }
 
+gateway_committer_role_set() {
+  local chain_name="${1:?chain name required}"
+  local committer_addr="${2:?committer address required}"
+  local chain_id validator_timelock committer_role call_from result
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  validator_timelock="$(get_gateway_validator_timelock_addr "${GATEWAY_CHAIN_NAME}")"
+  call_from="$(get_chain_governor_from_wallets "${chain_name}")"
+
+  committer_role="$(gateway_cast_call_with_fallback \
+    "${validator_timelock}" \
+    "COMMITTER_ROLE()(bytes32)" \
+    "${GATEWAY_RPC_URL}" \
+    "${call_from}" | awk '{print $1}')"
+  [ -n "${committer_role}" ] || return 1
+
+  result="$(gateway_cast_call_with_fallback \
+    "${validator_timelock}" \
+    "hasRoleForChainId(uint256,bytes32,address)(bool)" \
+    "${GATEWAY_RPC_URL}" \
+    "${call_from}" \
+    "${chain_id}" \
+    "${committer_role}" \
+    "${committer_addr}" | awk '{print $1}')" || return 1
+  [ "${result}" = "true" ]
+}
+
+wait_for_gateway_committer_role() {
+  local chain_name="${1:?chain name required}"
+  local committer_addr="${2:?committer address required}"
+  local max_attempts="${3:?max attempts required}"
+  local delay_seconds="${4:?delay seconds required}"
+  local attempt
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if gateway_committer_role_set "${chain_name}" "${committer_addr}"; then
+      return 0
+    fi
+    sleep "${delay_seconds}"
+  done
+  return 1
+}
+
+ensure_gateway_commit_sender_validator() {
+  local chain_name="${1:?chain name required}"
+  local wallet_name committer_addr bridgehub validator_timelock governor_pk refund_recipient chain_id gateway_chain_id
+
+  # zkstack migration currently enables only `operator`, while OS-server commits
+  # Syscoin DA batches from `blob_operator`. Keep this in the launch layer until
+  # upstream migration accepts the actual commit sender set.
+  wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
+  committer_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
+
+  if gateway_committer_role_set "${chain_name}" "${committer_addr}"; then
+    echo "gateway-launch: Gateway committer role already set for ${wallet_name} (${committer_addr})"
+    return 0
+  fi
+
+  echo "gateway-launch: Gateway committer role missing for ${wallet_name} (${committer_addr}); repairing via L1->Gateway admin tx"
+
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
+  validator_timelock="$(get_gateway_validator_timelock_addr "${GATEWAY_CHAIN_NAME}")"
+  governor_pk="$(get_wallet_private_key_from_wallets "${chain_name}" governor)"
+  refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+
+  gl_l1_broadcast_preflight
+  (
+    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+    forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
+      --sig 'enableValidatorViaGateway(address,uint256,uint256,uint256,address,address,address,bool)' \
+      "${bridgehub}" \
+      "${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "${chain_id}" \
+      "${gateway_chain_id}" \
+      "${committer_addr}" \
+      "${validator_timelock}" \
+      "${refund_recipient}" \
+      true \
+      --rpc-url "${L1_RPC_URL}" \
+      --broadcast \
+      --private-key "${governor_pk}" \
+      --slow
+  )
+
+  : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS:=120}"
+  : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY:=5}"
+  echo "gateway-launch: waiting for Gateway committer role repair (up to $((GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY))s)"
+  if ! wait_for_gateway_committer_role \
+    "${chain_name}" \
+    "${committer_addr}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY}"; then
+    echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt" >&2
+    return 1
+  fi
+}
+
+repair_da_pair_on_gateway() {
+  local chain_name="${1:?chain name required}"
+  local l1_da_validator_addr="${2:?L1 DA validator address required}"
+  local bridgehub governor_pk refund_recipient chain_id gateway_chain_id chain_proxy
+
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
+  governor_pk="$(get_wallet_private_key_from_wallets "${chain_name}" governor)"
+  refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+  chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
+
+  gl_l1_broadcast_preflight
+  (
+    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+    forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
+      --sig 'setDAValidatorPairWithGateway(address,uint256,uint256,uint256,address,uint8,address,address,bool)' \
+      "${bridgehub}" \
+      "${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "${chain_id}" \
+      "${gateway_chain_id}" \
+      "${l1_da_validator_addr}" \
+      "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE}" \
+      "${chain_proxy}" \
+      "${refund_recipient}" \
+      true \
+      --rpc-url "${L1_RPC_URL}" \
+      --broadcast \
+      --private-key "${governor_pk}" \
+      --slow
+  )
+}
+
 is_da_pair_set_on_gateway() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc="${2:?gateway rpc required}"
@@ -285,10 +538,10 @@ is_da_pair_set_on_gateway() {
   [ "${line1}" != "0x0000000000000000000000000000000000000000" ] || return 1
   gateway_address_has_code "${gateway_rpc}" "${line1}" || return 1
 
-  # NOTE:
-  # The second value can be zero for valid configurations (e.g. first deployed version/scheme slot).
-  # Presence of a non-zero, code-bearing validator contract in `line1` is the authoritative check.
-  # `line2` is kept only as a parse/shape guard above.
+  # The scheme must match the batches produced by OS-server. A non-zero validator
+  # address with the wrong scheme still lets migration finish, but the first
+  # commit reverts with MismatchL2DACommitmentScheme.
+  [ "${line2}" = "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE}" ] || return 1
 }
 
 wait_for_da_pair_on_gateway() {
@@ -470,8 +723,12 @@ ensure_deposits_unpaused() {
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
-if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] && is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair set; skipping migrate+finalize and ensuring deposits are unpaused"
+edge_committer_wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
+edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${edge_committer_wallet_name}")"
+if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
+  is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" &&
+  gateway_committer_role_set "${EDGE_CHAIN_NAME}" "${edge_committer_addr}"; then
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and committer role set; skipping migrate+finalize and ensuring deposits are unpaused"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
@@ -514,7 +771,7 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     echo "${migrate_output}"
   fi
 else
-echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
 finalize_output=""
@@ -550,14 +807,8 @@ if ! wait_for_da_pair_on_gateway \
   "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS}" \
   "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY}"; then
   l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
-  echo "gateway-launch: DA pair still missing on Gateway; setting it explicitly via zkstack chain set-da-validator-pair"
-  gl_l1_broadcast_preflight
-  gl_zkstack_pty zkstack chain set-da-validator-pair \
-    --chain "${EDGE_CHAIN_NAME}" \
-    --gateway \
-    "${l1_da_validator_addr}" \
-    BlobsAndPubdataKeccak256 \
-    "${GATEWAY_MAX_L1_GAS_PRICE}"
+  echo "gateway-launch: DA pair still missing or has wrong scheme on Gateway; setting ${GATEWAY_L2_DA_COMMITMENT_SCHEME} explicitly"
+  repair_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${l1_da_validator_addr}"
   da_pair_repair_requested=true
 fi
 
@@ -574,4 +825,5 @@ if ! wait_for_da_pair_on_gateway \
   exit 1
 fi
 
+ensure_gateway_commit_sender_validator "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
