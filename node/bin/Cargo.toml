@@ -13,6 +13,10 @@ categories.workspace = true
 name = "zksync-os-server"
 path = "src/main.rs"
 
+[features]
+default = ["jemalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+
 [dependencies]
 zksync_os_l1_sender.workspace = true
 zksync_os_l1_watcher.workspace = true
@@ -110,3 +114,6 @@ tower-http = { workspace = true, features = ["compression-br", "compression-gzip
 # SYSCOIN: batcher-side Bitcoin DA RPC client and secret handling.
 secrecy.workspace = true
 bitcoin_da_client = { git = "https://github.com/SYS-Labs/bitcoin_da_client.git", tag = "v0.1.9" }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
