@@ -27,7 +27,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
 : "${EDGE_BLOCK_TIME:=2s}"
 : "${EDGE_PUBDATA_PRICING_MULTIPLIER:=32.0}"
-: "${EDGE_NATIVE_PER_GAS:=50000}"
+: "${EDGE_NATIVE_PER_GAS:=1}"
+: "${NATIVE_TOKEN_PRICE_USD:=0.01}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
@@ -101,6 +102,7 @@ export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
 export EDGE_BLOCK_TIME
 export EDGE_PUBDATA_PRICING_MULTIPLIER
 export EDGE_NATIVE_PER_GAS
+export NATIVE_TOKEN_PRICE_USD
 export MATERIALIZE_EDGE_CONFIG
 export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
@@ -386,7 +388,7 @@ def materialize_chain(
             "external_price_api_client:",
             "  source: Forced",
             "  forced_prices:",
-            "    '0x0000000000000000000000000000000000000001': 3000",
+            f"    '0x0000000000000000000000000000000000000001': {os.environ['NATIVE_TOKEN_PRICE_USD']}",
         ]
     )
     if uses_syscoin_da_refs:
