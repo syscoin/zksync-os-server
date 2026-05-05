@@ -1,10 +1,9 @@
 use alloy::primitives::Address;
-use bitcoin_da_client::BitcoinDaFinalityMode;
 use std::collections::HashSet;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
-pub struct EdgeDaFinalityConfig {
+pub struct EdgeDaAdmissionConfig {
     pub commit_tx_target: Address,
     pub rpc_url: String,
     pub rpc_user: String,
@@ -12,8 +11,6 @@ pub struct EdgeDaFinalityConfig {
     pub poda_url: String,
     pub wallet_name: String,
     pub request_timeout: Duration,
-    pub finality_mode: BitcoinDaFinalityMode,
-    pub confirmations: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -57,8 +54,8 @@ pub struct RpcConfig {
     /// because pubdata price increase in-between estimation and sequencing.
     pub estimate_gas_pubdata_price_factor: f64,
     // SYSCOIN: when this node is a Gateway sequencer, reject compact edge DA commit txs
-    // before mempool admission unless every referenced Bitcoin DA blob is finalized.
-    pub edge_da_finality: Option<EdgeDaFinalityConfig>,
+    // before mempool admission unless every referenced Bitcoin DA blob is retrievable.
+    pub edge_da_admission: Option<EdgeDaAdmissionConfig>,
 }
 
 impl RpcConfig {

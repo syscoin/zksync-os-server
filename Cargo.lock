@@ -2521,8 +2521,8 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
 name = "bitcoin_da_client"
-version = "0.1.9"
-source = "git+https://github.com/SYS-Labs/bitcoin_da_client.git?tag=v0.1.9#d6d168a0438e63ad908cf68fd3598d29be93ee6a"
+version = "0.1.10"
+source = "git+https://github.com/syscoin/bitcoin_da_client.git?tag=v0.1.10#ae62627826ff8d0c5e7ee018a141a704f41548da"
 dependencies = [
  "async-trait",
  "hex",
