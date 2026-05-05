@@ -70,6 +70,7 @@ pub struct Batcher<ReadState> {
     pub chain_id: u64,
     pub sl_chain_id: u64,
     pub chain_address_sl: Address,
+    pub compact_edge_da_commit_target: Address,
     pub pubdata_limit_bytes: u64,
     pub batcher_config: BatcherConfig,
     pub pubdata_mode: PubdataMode,
@@ -373,6 +374,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.chain_address_sl,
             pubdata_mode,
             self.sl_chain_id,
+            self.compact_edge_da_commit_target,
             self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;
@@ -470,6 +472,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             // Assume pubdata mode does not change
             self.pubdata_mode,
             self.sl_chain_id,
+            self.compact_edge_da_commit_target,
             self.expected_upgrade_tx_hash_for_batch(batch_number),
             &self.read_state,
         )?;

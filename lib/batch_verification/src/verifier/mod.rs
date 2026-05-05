@@ -9,7 +9,9 @@ use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::BlockMerkleTreeData;
-use zksync_os_batch_types::{BatchSignature, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch};
+use zksync_os_batch_types::{
+    BatchSignature, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch,
+};
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_merkle_tree::TreeBatchOutput;
@@ -168,6 +170,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
+            Some(self.l1_state.validator_timelock_sl),
         );
 
         let expected_commit_data = normalized_commit_data(

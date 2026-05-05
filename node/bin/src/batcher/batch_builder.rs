@@ -24,6 +24,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     chain_address_sl: Address,
     pubdata_mode: PubdataMode,
     sl_chain_id: u64,
+    compact_edge_da_commit_target: Address,
     expected_upgrade_tx_hash: Option<B256>,
     read_state: &ReadState,
 ) -> anyhow::Result<BatchForSigning<ProverInput>> {
@@ -52,6 +53,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         multichain_root,
         &protocol_version,
         expected_upgrade_tx_hash,
+        Some(compact_edge_da_commit_target),
     );
 
     let mut logs = Vec::new();
