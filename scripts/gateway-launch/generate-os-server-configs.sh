@@ -344,13 +344,9 @@ def materialize_chain(
             f"  operator_execute_sk: '{operator_execute_sk}'",
             f"  max_fee_per_gas: '{max_fee_per_gas_wei} wei'",
             f"  max_priority_fee_per_gas: '{max_priority_fee_per_gas_wei} wei'",
-            *(
-                # SYSCOIN: child-chain commits to Gateway must be serialized because
-                # each commit's previous batch hash depends on the prior commit landing.
-                ["  command_limit: 1"]
-                if chain_name == "zksys"
-                else []
-            ),
+            # SYSCOIN: commit batches are state-dependent on both settlement
+            # layers, so keep L1 submissions single-flight for now.
+            "  command_limit: 1",
             *(
                 ["  transaction_timeout: 3000s"]
                 if pubdata_mode != "RelayedL2Calldata"
