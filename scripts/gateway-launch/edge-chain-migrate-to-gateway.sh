@@ -240,44 +240,58 @@ raise SystemExit(f"missing wallet address for {wallet_name}")
 PY
 }
 
-get_wallet_private_key_from_wallets() {
-  local chain_name="${1:?chain name required}"
-  local wallet_name="${2:?wallet name required}"
-  python3 - \
-    "${wallet_name}" \
-    "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
-    "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
-    "${GATEWAY_DIR}/configs/wallets.yaml" <<'PY'
-import sys
-from pathlib import Path
-import yaml
+GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
 
-sys.set_int_max_str_digits(0)
+prepare_gateway_governor_forge_wallet_args() {
+  GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
 
-wallet_name = sys.argv[1]
-for path_str in sys.argv[2:]:
-    p = Path(path_str)
-    if not p.exists():
-        continue
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        continue
-    wallet = data.get(wallet_name)
-    if not isinstance(wallet, dict):
-        continue
-    pk = wallet.get("private_key")
-    if isinstance(pk, int):
-        print("0x" + format(pk, "064x"))
-        raise SystemExit(0)
-    if isinstance(pk, str) and pk.strip() != "":
-        raw = pk.strip()
-        if raw.startswith("0x"):
-            print("0x" + raw[2:].zfill(64))
-        else:
-            print("0x" + format(int(raw), "064x"))
-        raise SystemExit(0)
-raise SystemExit(f"missing wallet private_key for {wallet_name}")
-PY
+  if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
+    echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
+    return 1
+  fi
+
+  case "${EDGE_GATEWAY_GOVERNOR_SIGNER:-account}" in
+  account)
+    local account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-governor}"
+    [ -n "${account_name}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME must not be empty" >&2
+      return 1
+    }
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--account "${account_name}")
+    ;;
+  keystore)
+    local keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:?EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore}"
+    [ -f "${keystore_path}" ] || {
+      echo "gateway-launch: governor keystore does not exist: ${keystore_path}" >&2
+      return 1
+    }
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--keystore "${keystore_path}")
+    ;;
+  ledger)
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--ledger)
+    ;;
+  trezor)
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--trezor)
+    ;;
+  aws)
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--aws)
+    ;;
+  gcp)
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--gcp)
+    ;;
+  *)
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${EDGE_GATEWAY_GOVERNOR_SIGNER}; expected account, keystore, ledger, trezor, aws, or gcp" >&2
+    return 1
+    ;;
+  esac
+
+  if [ -n "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-}" ]; then
+    [ -f "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}" ] || {
+      echo "gateway-launch: governor password file does not exist: ${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}" >&2
+      return 1
+    }
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}")
+  fi
 }
 
 get_l1_bridgehub_proxy_addr() {
@@ -418,7 +432,7 @@ wait_for_gateway_committer_role() {
 
 ensure_gateway_commit_sender_validator() {
   local chain_name="${1:?chain name required}"
-  local wallet_name committer_addr bridgehub validator_timelock governor_pk refund_recipient chain_id gateway_chain_id
+  local wallet_name committer_addr bridgehub validator_timelock refund_recipient chain_id gateway_chain_id
 
   # zkstack migration currently enables only `operator`, while OS-server commits
   # Syscoin DA batches from `blob_operator`. Keep this in the launch layer until
@@ -435,12 +449,12 @@ ensure_gateway_commit_sender_validator() {
 
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
   validator_timelock="$(get_gateway_validator_timelock_addr "${GATEWAY_CHAIN_NAME}")"
-  governor_pk="$(get_wallet_private_key_from_wallets "${chain_name}" governor)"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 
   gl_l1_broadcast_preflight
+  prepare_gateway_governor_forge_wallet_args
   (
     cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
     forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
@@ -455,7 +469,7 @@ ensure_gateway_commit_sender_validator() {
       true \
       --rpc-url "${L1_RPC_URL}" \
       --broadcast \
-      --private-key "${governor_pk}" \
+      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
       --slow
   )
 
@@ -475,16 +489,16 @@ ensure_gateway_commit_sender_validator() {
 repair_da_pair_on_gateway() {
   local chain_name="${1:?chain name required}"
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
-  local bridgehub governor_pk refund_recipient chain_id gateway_chain_id chain_proxy
+  local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy
 
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
-  governor_pk="$(get_wallet_private_key_from_wallets "${chain_name}" governor)"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
   chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
 
   gl_l1_broadcast_preflight
+  prepare_gateway_governor_forge_wallet_args
   (
     cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
     forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
@@ -500,7 +514,7 @@ repair_da_pair_on_gateway() {
       true \
       --rpc-url "${L1_RPC_URL}" \
       --broadcast \
-      --private-key "${governor_pk}" \
+      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
       --slow
   )
 }
