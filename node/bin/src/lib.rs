@@ -1321,6 +1321,7 @@ async fn run_main_node_pipeline(
             chain_id,
             sl_chain_id: node_state_on_startup.l1_state.sl_chain_id,
             chain_address_sl: node_state_on_startup.l1_state.diamond_proxy_address_sl(),
+            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,

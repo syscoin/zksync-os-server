@@ -1,11 +1,12 @@
 use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{B256, BlockNumber, U256, keccak256};
-use alloy::sol_types::SolValue;
+use alloy::primitives::{Address, B256, BlockNumber, U256, keccak256};
+use alloy::sol_types::{SolCall, SolValue};
 use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::ops;
 use std::ops::{Deref, DerefMut};
 use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
+use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_interface::types::{BlockContext, BlockOutput};
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
 use zksync_os_types::{
@@ -120,6 +121,17 @@ fn parse_syscoin_edge_da_ref_message_prefix(
     ))
 }
 
+fn is_compact_edge_da_commit_tx(
+    tx_to: Option<Address>,
+    tx_input: &[u8],
+    commit_tx_target: Address,
+) -> bool {
+    tx_to == Some(commit_tx_target)
+        && tx_input.len() >= 4
+        && (tx_input[..4] == IExecutor::commitBatchesSharedBridgeCall::SELECTOR
+            || tx_input[..4] == IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+}
+
 fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
     if word.len() != ABI_WORD || word[..24] != [0u8; 24] {
         return None;
@@ -220,6 +232,7 @@ impl ExtendedCommitBatchInfo {
         multichain_root: B256,
         protocol_version: &ProtocolSemanticVersion,
         expected_upgrade_tx_hash: Option<B256>,
+        compact_edge_da_commit_target: Option<Address>,
     ) -> (Self, Option<BlobTransactionSidecar>) {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
@@ -280,10 +293,17 @@ impl ExtendedCommitBatchInfo {
                 }
             }
 
-            for tx_output in block_output.tx_results.clone().into_iter().flatten() {
-                encoded_l2_l1_logs.extend(tx_output.l2_to_l1_logs.into_iter().map(
+            for (tx, tx_output) in transactions.iter().zip(&block_output.tx_results) {
+                let Ok(tx_output) = tx_output else {
+                    continue;
+                };
+                let collect_edge_da_refs = compact_edge_da_commit_target.is_some_and(|target| {
+                    is_compact_edge_da_commit_tx(tx.to(), tx.input().as_ref(), target)
+                });
+                encoded_l2_l1_logs.extend(tx_output.l2_to_l1_logs.iter().map(
                     |log_with_preimage| {
                         if let Some(preimage) = log_with_preimage.preimage.as_deref()
+                            && collect_edge_da_refs
                             && let Some(edge_ref) = parse_syscoin_edge_da_ref_message(preimage)
                         {
                             edge_da_refs_root = keccak256(
@@ -532,10 +552,12 @@ fn calculate_da_fields(
 mod tests {
     use super::calculate_da_fields;
     use super::{
-        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, syscoin_edge_da_ref_hash,
-        syscoin_edge_da_refs_from_input,
+        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, is_compact_edge_da_commit_tx,
+        syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
     };
-    use alloy::primitives::{B256, U256, keccak256};
+    use alloy::primitives::{B256, U256, address, keccak256};
+    use alloy::sol_types::SolCall;
+    use zksync_os_contract_interface::IExecutor;
     use zksync_os_types::PubdataMode;
 
     fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
@@ -652,6 +674,30 @@ mod tests {
         assert_eq!(refs[0].blob_version_hashes, first_blob_hashes);
         assert_eq!(refs[1].edge_batch_number, 2);
         assert_eq!(refs[1].blob_version_hashes, second_blob_hashes);
+    }
+
+    #[test]
+    fn compact_edge_da_refs_are_collected_only_from_known_commit_target() {
+        let commit_target = address!("0000000000000000000000000000000000001234");
+        let other_target = address!("0000000000000000000000000000000000005678");
+        let mut commit_input = IExecutor::commitBatchesSharedBridgeCall::SELECTOR.to_vec();
+        commit_input.extend_from_slice(b"truncated calldata is enough for selector filtering");
+
+        assert!(is_compact_edge_da_commit_tx(
+            Some(commit_target),
+            &commit_input,
+            commit_target
+        ));
+        assert!(!is_compact_edge_da_commit_tx(
+            Some(other_target),
+            &commit_input,
+            commit_target
+        ));
+        assert!(!is_compact_edge_da_commit_tx(
+            Some(commit_target),
+            b"abcd",
+            commit_target
+        ));
     }
 }
 
