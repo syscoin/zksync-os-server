@@ -2,7 +2,7 @@ mod call_fees;
 
 mod config;
 
-pub use config::{EdgeDaFinalityConfig, RpcConfig};
+pub use config::{EdgeDaAdmissionConfig, RpcConfig};
 use std::sync::Arc;
 use tokio::sync::watch;
 

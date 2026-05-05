@@ -73,7 +73,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
         // SYSCOIN
-        self.verify_compact_edge_da_refs(&l2_tx).await?;
+        self.verify_compact_edge_da_refs_available(&l2_tx).await?;
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -96,11 +96,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         Ok(hash)
     }
     // SYSCOIN: verify compact edge DA refs emitted by chains settling to Gateway.
-    async fn verify_compact_edge_da_refs(
+    async fn verify_compact_edge_da_refs_available(
         &self,
         tx: &L2Transaction,
     ) -> Result<(), EthSendRawTransactionError> {
-        let Some(config) = self.config.edge_da_finality.as_ref() else {
+        let Some(config) = self.config.edge_da_admission.as_ref() else {
             return Ok(());
         };
         if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
@@ -119,26 +119,22 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             &config.wallet_name,
         )
         .map_err(|err| {
-            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
                 "failed to create Bitcoin DA client: {err}"
             ))
         })?;
         for (idx, version_hash) in version_hashes.iter().enumerate() {
-            let finalized = client
-                .check_blob_finality_with_mode(
-                    version_hash,
-                    config.finality_mode,
-                    config.confirmations,
-                )
+            let exists = client
+                .blob_exists(version_hash)
                 .await
                 .map_err(|err| {
-                    EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
-                        "failed to check Bitcoin DA finality for compact edge ref {idx} ({version_hash}): {err}"
+                    EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
+                        "failed to check Bitcoin DA availability for compact edge ref {idx} ({version_hash}): {err}"
                     ))
                 })?;
-            if !finalized {
-                return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
-                    format!("compact edge DA ref {idx} ({version_hash}) is not finalized"),
+            if !exists {
+                return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                    format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
                 ));
             }
         }
@@ -219,7 +215,7 @@ fn compact_edge_da_refs_from_commit_calldata(
     }
 
     let commit = CommitCalldata::decode(input).map_err(|err| {
-        EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+        EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
             "failed to decode compact edge DA commit calldata: {err}"
         ))
     })?;
@@ -229,7 +225,7 @@ fn compact_edge_da_refs_from_commit_calldata(
         // Their scheme-specific validity remains enforced by the configured onchain DA validator.
         DACommitmentScheme::EmptyNoDA => return Ok(None),
         scheme => {
-            return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                 format!("unsupported child-chain DA commitment scheme for Gateway: {scheme:?}"),
             ));
         }
@@ -241,7 +237,7 @@ fn compact_edge_da_refs_from_commit_calldata(
         || operator_da_input.len() % 32 != 0
         || blob_hash_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
     {
-        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+        return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
             format!(
                 "compact edge DA operator input must be a non-empty array of at most {SYSCOIN_DA_MAX_BLOBS_PER_BATCH} 32-byte hashes"
             ),
@@ -249,7 +245,7 @@ fn compact_edge_da_refs_from_commit_calldata(
     }
     let actual_commitment = keccak256(operator_da_input);
     if actual_commitment != commit.commit_batch_info.da_commitment {
-        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+        return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
             format!(
                 "compact edge DA commitment mismatch: expected {}, got {}",
                 commit.commit_batch_info.da_commitment, actual_commitment
@@ -285,8 +281,8 @@ pub enum EthSendRawTransactionError {
     ForwardError(#[from] RpcError<TransportErrorKind>),
     #[error("Signer is blacklisted")]
     BlacklistedSigner,
-    #[error("compact edge DA finality check failed: {0}")]
-    EdgeDaFinalityCheckFailed(String),
+    #[error("compact edge DA admission check failed: {0}")]
+    EdgeDaAdmissionCheckFailed(String),
 }
 
 impl From<&EthSendRawTransactionError> for TxRejectionReason {
@@ -296,7 +292,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::InvalidTransactionSignature => Self::InvalidSignature,
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
-            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
             EthSendRawTransactionError::ForwardError(rpc_err) => match rpc_err {
                 RpcError::ErrorResp(_) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,

@@ -949,6 +949,11 @@ pub struct BatcherConfig {
     /// Max time to wait for published Bitcoin DA blobs to become final.
     #[config(default_t = 90 * TimeUnit::Minutes)]
     pub bitcoin_da_finality_timeout: Duration,
+
+    /// Whether Gateway may fetch and republish edge DA blobs that are retrievable but not final
+    /// before committing Gateway batches to L1.
+    #[config(default_t = true)]
+    pub bitcoin_da_gateway_l1_republish_enabled: bool,
 }
 
 /// Only used on the Main Node.
@@ -1358,7 +1363,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             send_raw_transaction_sync_timeout: c.send_raw_transaction_sync_timeout,
             gas_price_scale_factor: c.gas_price_scale_factor,
             estimate_gas_pubdata_price_factor: c.estimate_gas_pubdata_price_factor,
-            edge_da_finality: None,
+            edge_da_admission: None,
         }
     }
 }
