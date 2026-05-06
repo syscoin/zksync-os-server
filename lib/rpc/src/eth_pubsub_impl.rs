@@ -55,7 +55,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthPubsubNamespace<RpcStora
                         notification
                             .transactions
                             .get(tx_hash)
-                            .map(|tx| tx.tx.inner.encode_2718_len())
+                            .map(|tx| tx.tx.inner.network_len())
                     })
                     .collect::<Option<Vec<_>>>();
                 let size = tx_rlp_lengths.map(|tx_rlp_lengths| {

@@ -18,6 +18,8 @@ pub type ZkApiTransaction = alloy::rpc::types::Transaction<ZkEnvelope>;
 
 pub type ZkApiBlock = alloy::rpc::types::Block<ZkApiTransaction>;
 
+const EIP2718_TYPED_TX_TYPE_BOUND: u8 = 0x80;
+
 pub trait RpcBlockConvert {
     fn into_rpc(self) -> ZkApiBlock;
     fn into_rpc_with_size(self, size: Option<U256>) -> ZkApiBlock;
@@ -40,8 +42,8 @@ impl RpcBlockConvert for Sealed<alloy::consensus::Block<TxHash>> {
     }
 }
 
-// SYSCOIN: compute the RPC block size from the full EIP-2718 transaction byte lengths instead of
-// the hash-only repository body.
+// SYSCOIN: compute the RPC block size from the full transaction RLP item lengths instead of the
+// hash-only repository body.
 pub fn block_rlp_length_with_full_transactions(
     block: &alloy::consensus::Block<TxHash>,
     tx_rlp_lengths: impl IntoIterator<Item = usize>,
@@ -62,6 +64,23 @@ pub fn block_rlp_length_with_full_transactions(
         payload_length: block_payload_length,
     }
     .length_with_payload()
+}
+
+// SYSCOIN: persisted raw tx bytes are EIP-2718 encoded. Legacy tx bytes are already an RLP list
+// item, while typed tx bytes must be wrapped as an RLP string when embedded in a block body.
+pub fn raw_transaction_rlp_item_length(raw_tx: &[u8]) -> usize {
+    if raw_tx
+        .first()
+        .is_some_and(|first_byte| *first_byte < EIP2718_TYPED_TX_TYPE_BOUND)
+    {
+        RlpHeader {
+            list: false,
+            payload_length: raw_tx.len(),
+        }
+        .length_with_payload()
+    } else {
+        raw_tx.len()
+    }
 }
 
 /// A struct with the proof for the L2->L1 log in a specific block.
@@ -326,24 +345,67 @@ pub struct StorageView {
 mod tests {
     use super::*;
     use alloy::consensus::{Block, BlockBody, Header};
+    use alloy::eips::Encodable2718;
     use alloy_rlp::BufMut;
 
     #[derive(Clone)]
-    struct RawTransaction(Vec<u8>);
+    enum RawTransaction {
+        Legacy(Vec<u8>),
+        Typed(Vec<u8>),
+    }
 
     impl Encodable for RawTransaction {
         fn encode(&self, out: &mut dyn BufMut) {
-            out.put_slice(&self.0);
+            match self {
+                RawTransaction::Legacy(raw) => out.put_slice(raw),
+                RawTransaction::Typed(raw) => {
+                    RlpHeader {
+                        list: false,
+                        payload_length: raw.len(),
+                    }
+                    .encode(out);
+                    out.put_slice(raw);
+                }
+            }
         }
 
         fn length(&self) -> usize {
-            self.0.len()
+            match self {
+                RawTransaction::Legacy(raw) => raw.len(),
+                RawTransaction::Typed(raw) => raw_transaction_rlp_item_length(raw),
+            }
+        }
+    }
+
+    impl alloy::consensus::Typed2718 for RawTransaction {
+        fn ty(&self) -> u8 {
+            match self {
+                RawTransaction::Legacy(_) => alloy::consensus::constants::LEGACY_TX_TYPE_ID,
+                RawTransaction::Typed(raw) => raw[0],
+            }
+        }
+    }
+
+    impl Encodable2718 for RawTransaction {
+        fn encode_2718_len(&self) -> usize {
+            match self {
+                RawTransaction::Legacy(raw) | RawTransaction::Typed(raw) => raw.len(),
+            }
+        }
+
+        fn encode_2718(&self, out: &mut dyn BufMut) {
+            match self {
+                RawTransaction::Legacy(raw) | RawTransaction::Typed(raw) => out.put_slice(raw),
+            }
         }
     }
 
     #[test]
     fn full_transaction_block_size_uses_raw_transaction_lengths() {
-        let raw_transactions = vec![vec![0xc1, 0x80], vec![0x7e, 0xc1, 0x01]];
+        let raw_transactions = vec![
+            RawTransaction::Legacy(vec![0xc1, 0x80]),
+            RawTransaction::Typed(vec![0x7e, 0xc1, 0x01]),
+        ];
         let hash_only_block = Block::new(
             Header::default(),
             BlockBody {
@@ -355,11 +417,7 @@ mod tests {
         let full_transaction_block = Block::new(
             hash_only_block.header.clone(),
             BlockBody {
-                transactions: raw_transactions
-                    .iter()
-                    .cloned()
-                    .map(RawTransaction)
-                    .collect(),
+                transactions: raw_transactions.clone(),
                 ommers: Vec::new(),
                 withdrawals: None,
             },
@@ -367,10 +425,35 @@ mod tests {
 
         let full_transaction_size = block_rlp_length_with_full_transactions(
             &hash_only_block,
-            raw_transactions.iter().map(Vec::len),
+            raw_transactions
+                .iter()
+                .map(raw_transaction_rlp_item_length_from_encodable),
         );
 
         assert_eq!(full_transaction_size, full_transaction_block.length());
         assert_ne!(full_transaction_size, hash_only_block.length());
+    }
+
+    #[test]
+    fn raw_transaction_item_length_matches_network_length() {
+        let legacy = RawTransaction::Legacy(vec![0xc1, 0x80]);
+        let typed = RawTransaction::Typed(vec![0x7e, 0xc1, 0x01]);
+
+        assert_eq!(
+            raw_transaction_rlp_item_length_from_encodable(&legacy),
+            legacy.network_len()
+        );
+        assert_eq!(
+            raw_transaction_rlp_item_length_from_encodable(&typed),
+            typed.network_len()
+        );
+    }
+
+    fn raw_transaction_rlp_item_length_from_encodable(tx: &RawTransaction) -> usize {
+        match tx {
+            RawTransaction::Legacy(raw) | RawTransaction::Typed(raw) => {
+                raw_transaction_rlp_item_length(raw)
+            }
+        }
     }
 }

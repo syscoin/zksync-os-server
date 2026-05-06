@@ -31,7 +31,7 @@ use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::eth::EthApiServer;
 use zksync_os_rpc_api::types::{
     L2FeeHistory, RpcBlockConvert, ZkApiBlock, ZkApiTransaction, ZkHeader, ZkTransactionReceipt,
-    block_rlp_length_with_full_transactions,
+    block_rlp_length_with_full_transactions, raw_transaction_rlp_item_length,
 };
 use zksync_os_storage_api::{RepositoryBlock, RepositoryError, StateError, TxMeta, ViewState};
 use zksync_os_types::{L2Envelope, TransactionAcceptanceState, ZkReceiptEnvelope};
@@ -123,7 +123,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
             let Some(raw_tx) = self.storage.repository().get_raw_transaction(*tx_hash)? else {
                 return Err(EthError::BlockNotFound(block_id));
             };
-            tx_rlp_lengths.push(raw_tx.len());
+            tx_rlp_lengths.push(raw_transaction_rlp_item_length(&raw_tx));
         }
 
         // SYSCOIN: repository blocks store only transaction hashes; RPC `size` must reflect the
