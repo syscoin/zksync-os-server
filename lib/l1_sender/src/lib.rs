@@ -451,27 +451,35 @@ where
                             );
                         }
                         Err(err) => {
-                            tracing::warn!(
-                                command_name,
-                                ?tx_hash,
-                                "Failed to rebroadcast L1 transaction; resubmitting command: {err}",
-                            );
-                            let resubmitted = submit_l1_transaction(
-                                provider,
-                                operator_address,
-                                to_address,
-                                config,
-                                gateway,
-                                command_name,
-                                &mut command,
-                                commit_submitted_tx,
-                            )
-                            .await?;
-                            receipt_fut = resubmitted.0;
-                            submitted_at = resubmitted.1;
-                            raw_tx = resubmitted.2;
-                            tx_hash = resubmitted.3;
-                            continue;
+                            if is_benign_rebroadcast_error(&err) {
+                                tracing::warn!(
+                                    command_name,
+                                    ?tx_hash,
+                                    "L1 transaction rebroadcast returned a benign error; continuing to wait: {err}",
+                                );
+                            } else {
+                                tracing::warn!(
+                                    command_name,
+                                    ?tx_hash,
+                                    "Failed to rebroadcast L1 transaction; resubmitting command: {err}",
+                                );
+                                let resubmitted = submit_l1_transaction(
+                                    provider,
+                                    operator_address,
+                                    to_address,
+                                    config,
+                                    gateway,
+                                    command_name,
+                                    &mut command,
+                                    commit_submitted_tx,
+                                )
+                                .await?;
+                                receipt_fut = resubmitted.0;
+                                submitted_at = resubmitted.1;
+                                raw_tx = resubmitted.2;
+                                tx_hash = resubmitted.3;
+                                continue;
+                            }
                         }
                     }
                     receipt_fut = wait_for_confirmed_receipt(
@@ -510,6 +518,20 @@ where
         }
     }
     Ok(())
+}
+
+fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
+    match err {
+        TransportError::ErrorResp(resp) => {
+            let message = resp.message.to_ascii_lowercase();
+            message.contains("already known")
+                || message.contains("known transaction")
+                || message.contains("already imported")
+                || message.contains("nonce too low")
+                || message.contains("replacement transaction underpriced")
+        }
+        _ => false,
+    }
 }
 
 async fn wait_for_confirmed_receipt<P>(
