@@ -461,21 +461,21 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         // original geth logic. Source:
         // https://github.com/paradigmxyz/reth/blob/5bc8589162b6e23b07919d82a57eee14353f2862/crates/rpc/rpc-eth-api/src/helpers/estimate.rs
 
-        // the gas limit of the corresponding block
-        let block_gas_limit = block_context.gas_limit;
+        // Cap estimate simulation to the lower of block gas limit and configured eth_call gas cap.
+        let estimate_gas_cap = block_context.gas_limit.min(self.config.eth_call_gas as u64);
 
         // Determine the highest possible gas limit, considering both the request's specified limit
-        // and the block's limit.
+        // and the estimation cap.
         let mut highest_gas_limit = request
             .gas
             .map(|mut tx_gas_limit| {
-                if block_gas_limit < tx_gas_limit {
-                    // requested gas limit is higher than the allowed gas limit, capping
-                    tx_gas_limit = block_gas_limit;
+                if estimate_gas_cap < tx_gas_limit {
+                    // requested gas limit is higher than the allowed estimate gas limit, capping
+                    tx_gas_limit = estimate_gas_cap;
                 }
                 tx_gas_limit
             })
-            .unwrap_or(block_gas_limit);
+            .unwrap_or(estimate_gas_cap);
 
         // Check funds of the sender (only useful to check if transaction gas price is more than 0).
         //
