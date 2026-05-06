@@ -23,7 +23,20 @@ impl StateLabel for GenericComponentState {
             GenericComponentState::WaitingRecv => "waiting_recv",
             GenericComponentState::Processing => "processing",
             GenericComponentState::WaitingSend => "waiting_send",
-            GenericComponentState::ProcessingOrWaitingRecv => "processing_or_waiting_send",
+            GenericComponentState::ProcessingOrWaitingRecv => "processing_or_waiting_recv",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processing_or_waiting_recv_specific_label_matches_state() {
+        assert_eq!(
+            GenericComponentState::ProcessingOrWaitingRecv.specific(),
+            "processing_or_waiting_recv"
+        );
     }
 }
