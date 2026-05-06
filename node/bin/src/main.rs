@@ -157,7 +157,11 @@ pub async fn main() {
     }
 
     let mut config = build_external_config(config_repo).await;
-    tracing::info!(?config, "Loaded config");
+    // SYSCOIN: avoid logging the full config because URL fields may embed credentials.
+    tracing::info!(
+        node_role = %config.general_config.node_role.as_str(),
+        "Loaded config"
+    );
     load_internal_config(&mut config);
     config.validate().await.expect("invalid config");
 
