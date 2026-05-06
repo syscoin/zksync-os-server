@@ -94,7 +94,7 @@ for as long as you need instrumentation.
 
 ## Sentry
 
-- `Sentry::new(dsn)` + `with_environment` configures WARN/ERROR span and event forwarding.
+- `Sentry::new(dsn)` + `with_environment` configures the Sentry client for explicit alerts and panic/error capture.
 - `ObservabilityGuard::force_flush` and `shutdown` run automatically on drop so events are sent even during abrupt shutdowns.
 
 ## Component State Reporting
