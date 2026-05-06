@@ -79,13 +79,24 @@ where
                         // to create unbounded polling work.
                         match pending_trigger {
                             Some((pending_migration_number, pending_block_number))
-                                if migration_number <= pending_migration_number =>
+                                if migration_number == pending_migration_number =>
                             {
                                 tracing::warn!(
                                     migration_number,
                                     pending_migration_number,
                                     pending_block_number,
-                                    "ignoring older or duplicate SetSLChainId while an external-node migration trigger lookup is pending"
+                                    "ignoring duplicate SetSLChainId while an external-node migration trigger lookup is pending"
+                                );
+                            }
+                            Some((pending_migration_number, pending_block_number))
+                                if block_number <= pending_block_number =>
+                            {
+                                tracing::warn!(
+                                    migration_number,
+                                    block_number,
+                                    pending_migration_number,
+                                    pending_block_number,
+                                    "ignoring stale SetSLChainId while an external-node migration trigger lookup is pending"
                                 );
                             }
                             Some((pending_migration_number, pending_block_number)) => {
