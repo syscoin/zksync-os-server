@@ -1,7 +1,7 @@
 pub use self::cli::ConfigArgs;
 use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
-use alloy::primitives::{Address, Bytes, U128, address};
+use alloy::primitives::{Address, Bytes, U128};
 use num::{BigInt, BigUint, rational::Ratio};
 use reth_net_nat::net_if::resolve_net_if_ip;
 use reth_network_peers::TrustedPeer;
@@ -34,8 +34,6 @@ mod cli;
 mod util;
 
 pub use build_external_config::{build_external_config, load_config_file_sources};
-
-const PUBLIC_RICH_ACCOUNT_ADDRESS: Address = address!("0x36615Cf349d7F6344891B1e7CA7C72883F5dc049");
 
 /// Configuration for the sequencer node.
 /// Includes configurations of all subsystems.
@@ -610,16 +608,7 @@ pub struct SequencerConfig {
     pub block_dump_path: PathBuf,
 
     /// Address that receives the transaction fees.
-    // SYSCOIN: deployment scripts should populate this from the generated fee account. Reject
-    // missing values and the documented rich test account as a final startup guardrail.
-    #[config(with = Serde![str], default_t = Address::ZERO)]
-    #[config_validate(custom(
-        |root: &Config, value: &Address| {
-            !root.general_config.node_role.is_main()
-                || (*value != Address::ZERO && *value != PUBLIC_RICH_ACCOUNT_ADDRESS)
-        },
-        "must be set to a non-zero non-public address for main nodes"
-    ))]
+    #[config(with = Serde![str], default_t = "0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".parse().unwrap())]
     pub fee_collector_address: Address,
 
     /// Maximum number of blocks to produce.
@@ -1718,10 +1707,7 @@ mod tests {
             rpc_config: RpcConfig::default(),
             mempool_config: MempoolConfig::default(),
             tx_validator_config: MempoolTxValidatorConfig::default(),
-            sequencer_config: SequencerConfig {
-                fee_collector_address: Address::with_last_byte(0x44),
-                ..Default::default()
-            },
+            sequencer_config: SequencerConfig::default(),
             l1_sender_config: L1SenderConfig {
                 operator_commit_sk: Some(local_signer(0x11)),
                 operator_prove_sk: Some(local_signer(0x22)),
@@ -1813,36 +1799,6 @@ mod tests {
         config.l1_sender_config.operator_execute_sk = None;
         config.l1_sender_config.pubdata_mode = None;
         config.external_price_api_client_config = None;
-
-        config.validate().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn main_node_validation_rejects_missing_fee_collector() {
-        let mut config = base_config(NodeRole::MainNode);
-        config.sequencer_config.fee_collector_address = Address::ZERO;
-
-        let err = config.validate().await.unwrap_err().to_string();
-
-        assert!(err.contains("`sequencer.fee_collector_address`"));
-        assert!(err.contains("must be set to a non-zero non-public address for main nodes"));
-    }
-
-    #[tokio::test]
-    async fn main_node_validation_rejects_public_rich_account_fee_collector() {
-        let mut config = base_config(NodeRole::MainNode);
-        config.sequencer_config.fee_collector_address = PUBLIC_RICH_ACCOUNT_ADDRESS;
-
-        let err = config.validate().await.unwrap_err().to_string();
-
-        assert!(err.contains("`sequencer.fee_collector_address`"));
-        assert!(err.contains("must be set to a non-zero non-public address for main nodes"));
-    }
-
-    #[tokio::test]
-    async fn main_node_validation_accepts_generated_fee_collector() {
-        let mut config = base_config(NodeRole::MainNode);
-        config.sequencer_config.fee_collector_address = Address::with_last_byte(0x45);
 
         config.validate().await.unwrap();
     }

@@ -5,8 +5,6 @@ genesis:
   bytecode_supplier_address: '0x9f3f32ea83c8a1c8e993fd9035d1d077545467ac'
   genesis_input_path: ./local-chains/v30.2/genesis.json
   chain_id: 6566
-sequencer:
-  fee_collector_address: '0xdd8634006b357057f6935edc7a8cf97218f9f48d'
 l1_sender:
   pubdata_mode: Blobs
   operator_commit_sk: '0xedc88f85d7a0e5aa8c48a11fc0261eb6bbe16f7fb1523df53bf570b250998a31'

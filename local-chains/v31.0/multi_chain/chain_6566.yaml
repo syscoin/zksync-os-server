@@ -6,8 +6,6 @@ genesis:
   bytecode_supplier_address: '0x04e7cfe87caff2c17cadb4b708ba08cc86a029bc'
   genesis_input_path: ./local-chains/v31.0/genesis.json
   chain_id: 6566
-sequencer:
-  fee_collector_address: '0x17623aadd8f1e51e44124f54a43e78652e89ed6a'
 l1_sender:
   pubdata_mode: RelayedL2Calldata
   operator_commit_sk: '0x0982b9d2a78fb2f0722210b8b6fe2a674cd1a8428b813a20f6029a199ab20ecc'
