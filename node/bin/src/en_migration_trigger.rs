@@ -36,10 +36,19 @@ where
         let mut pending_trigger = None;
         let mut lookup_interval = interval(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL);
         lookup_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut input_closed = false;
         loop {
             tokio::select! {
-                maybe_item = input.recv() => {
+                maybe_item = input.recv(), if !input_closed => {
                     let Some((block_output, replay_record)) = maybe_item else {
+                        if pending_trigger.is_some() {
+                            tracing::info!(
+                                ?pending_trigger,
+                                "inbound channel closed; draining pending external-node migration trigger lookup"
+                            );
+                            input_closed = true;
+                            continue;
+                        }
                         tracing::info!("inbound channel closed");
                         return Ok(());
                     };
@@ -120,6 +129,10 @@ where
                         );
                         let _ = self.migration_triggered.send(Some(trigger_batch_number));
                         pending_trigger = None;
+                        if input_closed {
+                            tracing::info!("pending external-node migration trigger drained");
+                            return Ok(());
+                        }
                         continue;
                     }
 
@@ -136,6 +149,10 @@ where
                             .migration_triggered
                             .send(Some(status.last_finalized_executed_batch));
                         pending_trigger = None;
+                        if input_closed {
+                            tracing::info!("pending external-node migration trigger drained");
+                            return Ok(());
+                        }
                     }
                 }
             }
