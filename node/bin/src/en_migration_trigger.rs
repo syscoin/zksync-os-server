@@ -33,7 +33,7 @@ where
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
-        let mut pending_trigger = None;
+        let mut pending_trigger: Option<(u64, u64, Option<u64>)> = None;
         let mut lookup_interval = interval(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL);
         lookup_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut input_closed = false;
