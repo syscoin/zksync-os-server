@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, MissedTickBehavior, interval};
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
@@ -34,6 +34,8 @@ where
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
         let mut pending_trigger = None;
+        let mut lookup_interval = interval(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL);
+        lookup_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 maybe_item = input.recv() => {
@@ -66,14 +68,30 @@ where
 
                         // SYSCOIN: keep at most one lookup alive; replay input must not be able
                         // to create unbounded polling work.
-                        if pending_trigger.is_some() {
-                            tracing::warn!(
-                                migration_number,
-                                ?pending_trigger,
-                                "SetSLChainId replayed while an external-node migration trigger lookup is already pending"
-                            );
-                        } else {
-                            pending_trigger = Some((migration_number, block_number));
+                        match pending_trigger {
+                            Some((pending_migration_number, pending_block_number))
+                                if migration_number < pending_migration_number =>
+                            {
+                                tracing::warn!(
+                                    migration_number,
+                                    pending_migration_number,
+                                    pending_block_number,
+                                    "ignoring older SetSLChainId while an external-node migration trigger lookup is pending"
+                                );
+                            }
+                            Some((pending_migration_number, pending_block_number)) => {
+                                tracing::warn!(
+                                    migration_number,
+                                    block_number,
+                                    pending_migration_number,
+                                    pending_block_number,
+                                    "replacing pending external-node migration trigger lookup"
+                                );
+                                pending_trigger = Some((migration_number, block_number));
+                            }
+                            None => {
+                                pending_trigger = Some((migration_number, block_number));
+                            }
                         }
                     }
 
@@ -85,7 +103,7 @@ where
 
                 // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay
                 // does not stall while waiting for the batch containing this block to be indexed.
-                _ = sleep(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL), if pending_trigger.is_some() => {
+                _ = lookup_interval.tick(), if pending_trigger.is_some() => {
                     let Some((migration_number, block_number)) = pending_trigger else {
                         continue;
                     };
