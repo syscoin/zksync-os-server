@@ -303,6 +303,7 @@ def materialize_chain(
     )
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
+    fee_collector_address = wallets["fee_account"]["address"]
     max_fee_per_gas_wei = parse_ether_amount_to_wei(
         os.environ.get("ETH_GAS_PRICE", ""),
         1 * 10**9,
@@ -332,6 +333,7 @@ def materialize_chain(
             "sequencer:",
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
+            f"  fee_collector_address: '{fee_collector_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
                 if chain_name == "zksys"
