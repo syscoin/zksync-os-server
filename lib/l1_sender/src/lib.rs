@@ -527,8 +527,6 @@ fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
             message.contains("already known")
                 || message.contains("known transaction")
                 || message.contains("already imported")
-                || message.contains("nonce too low")
-                || message.contains("replacement transaction underpriced")
         }
         _ => false,
     }
