@@ -856,9 +856,13 @@ pub struct L1WatcherConfig {
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
 pub struct MempoolConfig {
-    #[config(default_t = usize::MAX)]
+    // SYSCOIN: Keep the default pending pool bounded to avoid RPC memory DoS while still allowing
+    // high-throughput bursts to queue behind the 1-2s sequencer cadence.
+    #[config(default_t = 100_000)]
     pub max_pending_txs: usize,
-    #[config(default_t = usize::MAX)]
+    // SYSCOIN: 1 GiB is intentionally much higher than reth's default pending subpool cap, but it
+    // gives production nodes a finite backstop against unbounded attacker-controlled RAM growth.
+    #[config(default_t = 1024 * 1024 * 1024)]
     pub max_pending_size: usize,
     /// Minimal fee per gas (in WEI) for a transaction to be accepted by mempool
     /// Defaults to `7` which is the lowest possible value of base fee under mainnet EIP-1559 params
