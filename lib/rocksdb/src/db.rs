@@ -580,9 +580,13 @@ impl<CF: NamedColumnFamily> RocksDB<CF> {
                 }
                 Err(err) => {
                     let is_stalled_write = StalledWritesRetries::is_write_stall_error(&err);
-                    if is_stalled_write && !stalled_write_reported {
-                        metrics.write_stalled.inc();
-                        stalled_write_reported = true;
+                    // SYSCOIN: Keep retrying repeated RocksDB stalled-write errors for the
+                    // configured retry window, while reporting each stall only once.
+                    if is_stalled_write {
+                        if !stalled_write_reported {
+                            metrics.write_stalled.inc();
+                            stalled_write_reported = true;
+                        }
                     } else {
                         return Err(err);
                     }
