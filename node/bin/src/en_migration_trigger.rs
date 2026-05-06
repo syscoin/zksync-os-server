@@ -52,19 +52,25 @@ impl PipelineComponent for EnMigrationTrigger {
 
             if let Some(migration_number) = pending_migration_number {
                 let block_number = replay_record.block_context.block_number;
-                let trigger_batch = self
-                    .committed_batch_provider
-                    .wait_for_batch_containing_block(block_number)
-                    .await;
-                let trigger_batch_number = trigger_batch.number();
+                let committed_batch_provider = self.committed_batch_provider.clone();
+                let migration_triggered = self.migration_triggered.clone();
 
-                tracing::info!(
-                    migration_number,
-                    block_number,
-                    trigger_batch_number,
-                    "SetSLChainId block replayed on external node; signalling settlement layer watcher"
-                );
-                let _ = self.migration_triggered.send(Some(trigger_batch_number));
+                // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay
+                // does not stall while waiting for the batch containing this block to be indexed.
+                tokio::spawn(async move {
+                    let trigger_batch = committed_batch_provider
+                        .wait_for_batch_containing_block(block_number)
+                        .await;
+                    let trigger_batch_number = trigger_batch.number();
+
+                    tracing::info!(
+                        migration_number,
+                        block_number,
+                        trigger_batch_number,
+                        "SetSLChainId block replayed on external node; signalling settlement layer watcher"
+                    );
+                    let _ = migration_triggered.send(Some(trigger_batch_number));
+                });
             }
 
             if output.send((block_output, replay_record)).await.is_err() {
