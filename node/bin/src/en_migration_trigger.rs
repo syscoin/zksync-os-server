@@ -33,94 +33,93 @@ where
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
-        let mut pending_trigger_migration_number = None;
+        let mut pending_trigger = None;
         loop {
-            let Some((block_output, replay_record)) = input.recv().await else {
-                tracing::info!("inbound channel closed");
-                return Ok(());
-            };
-
-            let pending_migration_number = replay_record
-                .transactions
-                .iter()
-                .find_map(|tx| {
-                    let Some(SystemTxType::SetSLChainId(migration_number)) =
-                        tx.as_system_tx_type()
-                    else {
-                        return None;
+            tokio::select! {
+                maybe_item = input.recv() => {
+                    let Some((block_output, replay_record)) = maybe_item else {
+                        tracing::info!("inbound channel closed");
+                        return Ok(());
                     };
-                    let migration_number = *migration_number;
-                    if migration_number != u64::MAX
-                        && migration_number > *self.last_finalized_migration.borrow()
-                    {
-                        Some(migration_number)
-                    } else {
-                        None
-                    }
-                });
 
-            if let Some(migration_number) = pending_migration_number {
-                // SYSCOIN: keep at most one background lookup alive; replay input must not be able
-                // to create unbounded polling tasks.
-                if pending_trigger_migration_number.is_some() {
-                    tracing::warn!(
-                        migration_number,
-                        pending_trigger_migration_number,
-                        "SetSLChainId replayed while an external-node migration trigger lookup is already pending"
-                    );
+                    let pending_migration_number = replay_record
+                        .transactions
+                        .iter()
+                        .find_map(|tx| {
+                            let Some(SystemTxType::SetSLChainId(migration_number)) =
+                                tx.as_system_tx_type()
+                            else {
+                                return None;
+                            };
+                            let migration_number = *migration_number;
+                            if migration_number != u64::MAX
+                                && migration_number > *self.last_finalized_migration.borrow()
+                            {
+                                Some(migration_number)
+                            } else {
+                                None
+                            }
+                        });
+
+                    if let Some(migration_number) = pending_migration_number {
+                        let block_number = replay_record.block_context.block_number;
+
+                        // SYSCOIN: keep at most one lookup alive; replay input must not be able
+                        // to create unbounded polling work.
+                        if pending_trigger.is_some() {
+                            tracing::warn!(
+                                migration_number,
+                                ?pending_trigger,
+                                "SetSLChainId replayed while an external-node migration trigger lookup is already pending"
+                            );
+                        } else {
+                            pending_trigger = Some((migration_number, block_number));
+                        }
+                    }
+
                     if output.send((block_output, replay_record)).await.is_err() {
                         tracing::info!("outbound channel closed");
                         return Ok(());
                     }
-                    continue;
                 }
-
-                pending_trigger_migration_number = Some(migration_number);
-                let block_number = replay_record.block_context.block_number;
-                let committed_batch_provider = self.committed_batch_provider.clone();
-                let finality = self.finality.clone();
-                let migration_triggered = self.migration_triggered.clone();
 
                 // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay
                 // does not stall while waiting for the batch containing this block to be indexed.
-                tokio::spawn(async move {
-                    loop {
-                        if let Some(trigger_batch) =
-                            committed_batch_provider.get_batch_containing_block(block_number)
-                        {
-                            let trigger_batch_number = trigger_batch.number();
-                            tracing::info!(
-                                migration_number,
-                                block_number,
-                                trigger_batch_number,
-                                "SetSLChainId block replayed on external node; signalling settlement layer watcher"
-                            );
-                            let _ = migration_triggered.send(Some(trigger_batch_number));
-                            return;
-                        }
+                _ = sleep(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL), if pending_trigger.is_some() => {
+                    let Some((migration_number, block_number)) = pending_trigger else {
+                        continue;
+                    };
 
-                        let status = finality.get_finality_status();
-                        if status.last_finalized_executed_block >= block_number {
-                            tracing::info!(
-                                migration_number,
-                                block_number,
-                                last_finalized_executed_batch =
-                                    status.last_finalized_executed_batch,
-                                "SetSLChainId block already finalized on external node; signalling settlement layer watcher"
-                            );
-                            let _ = migration_triggered
-                                .send(Some(status.last_finalized_executed_batch));
-                            return;
-                        }
-
-                        sleep(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL).await;
+                    if let Some(trigger_batch) =
+                        self.committed_batch_provider.get_batch_containing_block(block_number)
+                    {
+                        let trigger_batch_number = trigger_batch.number();
+                        tracing::info!(
+                            migration_number,
+                            block_number,
+                            trigger_batch_number,
+                            "SetSLChainId block replayed on external node; signalling settlement layer watcher"
+                        );
+                        let _ = self.migration_triggered.send(Some(trigger_batch_number));
+                        pending_trigger = None;
+                        continue;
                     }
-                });
-            }
 
-            if output.send((block_output, replay_record)).await.is_err() {
-                tracing::info!("outbound channel closed");
-                return Ok(());
+                    let status = self.finality.get_finality_status();
+                    if status.last_finalized_executed_block >= block_number {
+                        tracing::info!(
+                            migration_number,
+                            block_number,
+                            last_finalized_executed_batch =
+                                status.last_finalized_executed_batch,
+                            "SetSLChainId block already finalized on external node; signalling settlement layer watcher"
+                        );
+                        let _ = self
+                            .migration_triggered
+                            .send(Some(status.last_finalized_executed_batch));
+                        pending_trigger = None;
+                    }
+                }
             }
         }
     }
