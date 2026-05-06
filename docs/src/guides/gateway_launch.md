@@ -134,7 +134,6 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_CREATE2_FACTORY_SALT` | Optional deterministic `create2_factory_salt` override for L1 deployment |
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
-| `GATEWAY_FEE_COLLECTOR_ADDRESS` / `EDGE_FEE_COLLECTOR_ADDRESS` | Optional fee collector overrides; generated OS-server configs default to `fee_account.address` from each chain's `wallets.yaml` |
 | `EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR` | Optional override for DA validator used by edge migration repair on Gateway |
 | `EDGE_GATEWAY_GOVERNOR_SIGNER` | Governor signer backend for Gateway migration repairs: `account` (default), `keystore`, `ledger`, `trezor`, `aws`, or `gcp` |
 | `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default `governor`) |
