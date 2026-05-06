@@ -7,6 +7,8 @@ pub mod batcher;
 mod command_source;
 pub mod config;
 pub mod default_protocol_version;
+// SYSCOIN
+mod en_migration_trigger;
 mod en_remote_config;
 mod migration_gate;
 mod node_state_on_startup;
@@ -28,6 +30,7 @@ use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSourc
 use crate::config::{
     Config, ProverApiConfig, base_token_price_updater_config, gas_adjuster_config,
 };
+use crate::en_migration_trigger::EnMigrationTrigger;
 use crate::en_remote_config::load_remote_config;
 use crate::node_state_on_startup::NodeStateOnStartup;
 use crate::prover_api::fake_fri_provers_pool::FakeFriProversPool;
@@ -1060,6 +1063,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             chain_id,
             verify_batch_rx,
             outgoing_verify_results.clone(),
+            last_finalized_migration_receiver,
+            // SYSCOIN
+            migration_triggered_sender,
         )
         .await;
     };
@@ -1475,6 +1481,8 @@ async fn run_en_pipeline(
     chain_id: u64,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
+    last_finalized_migration: watch::Receiver<u64>,
+    migration_triggered: watch::Sender<Option<u64>>,
 ) {
     let internal_config_manager = init_and_report_internal_config_manager(
         config
@@ -1503,6 +1511,13 @@ async fn run_en_pipeline(
             repositories: repositories.clone(),
             config: config.into(),
             applied_block_number_sender,
+        })
+        // SYSCOIN
+        .pipe(EnMigrationTrigger {
+            committed_batch_provider: committed_batch_provider.clone(),
+            finality: finality.clone(),
+            last_finalized_migration,
+            migration_triggered,
         })
         .pipe_opt(
             config
