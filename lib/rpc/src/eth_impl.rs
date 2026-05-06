@@ -31,8 +31,9 @@ use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::eth::EthApiServer;
 use zksync_os_rpc_api::types::{
     L2FeeHistory, RpcBlockConvert, ZkApiBlock, ZkApiTransaction, ZkHeader, ZkTransactionReceipt,
+    block_rlp_length_with_full_transactions, raw_transaction_rlp_item_length,
 };
-use zksync_os_storage_api::{RepositoryError, StateError, TxMeta, ViewState};
+use zksync_os_storage_api::{RepositoryBlock, RepositoryError, StateError, TxMeta, ViewState};
 use zksync_os_types::{L2Envelope, TransactionAcceptanceState, ZkReceiptEnvelope};
 
 pub struct EthNamespace<RpcStorage, Mempool> {
@@ -93,7 +94,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let Some(block) = self.storage.get_block_by_id(block_id)? else {
             return Ok(None);
         };
-        let mut rpc_block = block.into_rpc();
+        let block_rlp_length = self.block_rlp_length_with_full_transactions(block_id, &block)?;
+        let mut rpc_block = block.into_rpc_with_size(Some(U256::from(block_rlp_length)));
         if full {
             let tx_hashes = rpc_block.transactions().hashes();
             let mut full_txs = Vec::with_capacity(tx_hashes.len());
@@ -109,6 +111,27 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
             rpc_block.transactions = BlockTransactions::Full(full_txs);
         }
         Ok(Some(rpc_block))
+    }
+
+    fn block_rlp_length_with_full_transactions(
+        &self,
+        block_id: BlockId,
+        block: &RepositoryBlock,
+    ) -> EthResult<usize> {
+        let mut tx_rlp_lengths = Vec::with_capacity(block.body.transactions.len());
+        for tx_hash in &block.body.transactions {
+            let Some(raw_tx) = self.storage.repository().get_raw_transaction(*tx_hash)? else {
+                return Err(EthError::BlockNotFound(block_id));
+            };
+            tx_rlp_lengths.push(raw_transaction_rlp_item_length(&raw_tx));
+        }
+
+        // SYSCOIN: repository blocks store only transaction hashes; RPC `size` must reflect the
+        // serialized full transaction body that clients observe as the canonical block size.
+        Ok(block_rlp_length_with_full_transactions(
+            block.as_ref(),
+            tx_rlp_lengths,
+        ))
     }
 
     fn block_transaction_count_by_id_impl(&self, block_id: BlockId) -> EthResult<Option<U256>> {

@@ -2,6 +2,7 @@ use crate::eth_impl::build_api_log;
 use crate::rpc_storage::ReadRpcStorage;
 use alloy::consensus::Sealed;
 use alloy::consensus::transaction::TransactionInfo;
+use alloy::eips::Encodable2718;
 use alloy::primitives::{TxHash, U256};
 use alloy::rpc::types::pubsub::{Params, SubscriptionKind};
 use alloy::rpc::types::{Filter, Log, Transaction};
@@ -17,7 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{L2PooledTransaction, NewTransactionEvent};
 use zksync_os_rpc_api::pubsub::EthPubSubApiServer;
-use zksync_os_types::BlockExt;
+use zksync_os_rpc_api::types::block_rlp_length_with_full_transactions;
 
 #[derive(Clone)]
 pub struct EthPubsubNamespace<RpcStorage, Mempool> {
@@ -45,13 +46,39 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthPubsubNamespace<RpcStora
             .block_subscriptions()
             .block_stream()
             .map(|notification| {
+                let tx_rlp_lengths = notification
+                    .block
+                    .body
+                    .transactions
+                    .iter()
+                    .map(|tx_hash| {
+                        notification
+                            .transactions
+                            .get(tx_hash)
+                            .map(|tx| tx.tx.inner.network_len())
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let size = tx_rlp_lengths.map(|tx_rlp_lengths| {
+                    // SYSCOIN: newHeads must report the full block RLP size, not the repository's
+                    // hash-only transaction body size.
+                    U256::from(block_rlp_length_with_full_transactions(
+                        notification.block.as_ref().deref(),
+                        tx_rlp_lengths,
+                    ))
+                });
+                if size.is_none() {
+                    tracing::warn!(
+                        block_hash = ?notification.block.hash(),
+                        "newHeads notification is missing transaction data for RPC block size"
+                    );
+                }
                 alloy::rpc::types::Header::from_consensus(
                     Sealed::new_unchecked(
                         notification.block.as_ref().header.clone(),
                         notification.block.hash(),
                     ),
                     Some(U256::ZERO),
-                    Some(U256::from(notification.block.as_ref().deref().rlp_length())),
+                    size,
                 )
             })
     }
