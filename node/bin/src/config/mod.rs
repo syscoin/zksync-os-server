@@ -35,9 +35,6 @@ mod util;
 
 pub use build_external_config::{build_external_config, load_config_file_sources};
 
-// SYSCOIN: keep the documented rich account available for local dev only; it must never be
-// accepted implicitly as a main-node fee collector on production-like chains.
-const LOCAL_DEV_CHAIN_ID: u64 = 6565;
 const PUBLIC_RICH_ACCOUNT_ADDRESS: Address = address!("0x36615Cf349d7F6344891B1e7CA7C72883F5dc049");
 
 /// Configuration for the sequencer node.
@@ -613,15 +610,13 @@ pub struct SequencerConfig {
     pub block_dump_path: PathBuf,
 
     /// Address that receives the transaction fees.
-    // SYSCOIN: require production-like main nodes to set this explicitly instead of inheriting
-    // the public rich test account used by local development docs.
+    // SYSCOIN: deployment scripts should populate this from the generated fee account. Reject
+    // missing values and the documented rich test account as a final startup guardrail.
     #[config(with = Serde![str], default_t = Address::ZERO)]
     #[config_validate(custom(
         |root: &Config, value: &Address| {
             !root.general_config.node_role.is_main()
-                || (*value != Address::ZERO
-                    && (root.genesis_config.chain_id == Some(LOCAL_DEV_CHAIN_ID)
-                        || *value != PUBLIC_RICH_ACCOUNT_ADDRESS))
+                || (*value != Address::ZERO && *value != PUBLIC_RICH_ACCOUNT_ADDRESS)
         },
         "must be set to a non-zero non-public address for main nodes"
     ))]
@@ -1845,10 +1840,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_dev_chain_can_use_public_rich_account_fee_collector() {
+    async fn main_node_validation_accepts_generated_fee_collector() {
         let mut config = base_config(NodeRole::MainNode);
-        config.genesis_config.chain_id = Some(LOCAL_DEV_CHAIN_ID);
-        config.sequencer_config.fee_collector_address = PUBLIC_RICH_ACCOUNT_ADDRESS;
+        config.sequencer_config.fee_collector_address = Address::with_last_byte(0x45);
 
         config.validate().await.unwrap();
     }

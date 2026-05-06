@@ -43,6 +43,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${BITCOIN_DA_COOKIE_FILE:=}"
 : "${ETH_GAS_PRICE:=1gwei}"
 : "${ETH_PRIORITY_GAS_PRICE:=1gwei}"
+: "${GATEWAY_FEE_COLLECTOR_ADDRESS:=}"
+: "${EDGE_FEE_COLLECTOR_ADDRESS:=}"
 
 resolve_syscoin_cookie_file() {
   local cookie_file datadir network candidate
@@ -117,6 +119,8 @@ export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
 export ETH_GAS_PRICE
 export ETH_PRIORITY_GAS_PRICE
+export GATEWAY_FEE_COLLECTOR_ADDRESS
+export EDGE_FEE_COLLECTOR_ADDRESS
 export PROVER_MODE
 
 python3 - <<'PY'
@@ -303,6 +307,18 @@ def materialize_chain(
     )
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
+    fee_collector_env = (
+        "GATEWAY_FEE_COLLECTOR_ADDRESS"
+        if chain_name == os.environ["GATEWAY_CHAIN_NAME"]
+        else "EDGE_FEE_COLLECTOR_ADDRESS"
+    )
+    fee_collector_address = os.environ.get(fee_collector_env, "").strip()
+    if not fee_collector_address:
+        fee_collector_address = wallets.get("fee_account", {}).get("address", "")
+    if not fee_collector_address:
+        raise SystemExit(
+            f"missing fee collector for {chain_name}: set {fee_collector_env} or provide fee_account.address in {wallets_yaml}"
+        )
     max_fee_per_gas_wei = parse_ether_amount_to_wei(
         os.environ.get("ETH_GAS_PRICE", ""),
         1 * 10**9,
@@ -332,6 +348,7 @@ def materialize_chain(
             "sequencer:",
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
+            f"  fee_collector_address: '{fee_collector_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
                 if chain_name == "zksys"
