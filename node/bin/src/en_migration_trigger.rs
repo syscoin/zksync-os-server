@@ -9,6 +9,7 @@ use zksync_os_types::SystemTxType;
 /// SYSCOIN: mirrors the main-node MigrationGate trigger for external nodes.
 pub(crate) struct EnMigrationTrigger {
     pub committed_batch_provider: CommittedBatchProvider,
+    pub last_finalized_migration: watch::Receiver<u64>,
     pub migration_triggered: watch::Sender<Option<u64>>,
 }
 
@@ -31,13 +32,25 @@ impl PipelineComponent for EnMigrationTrigger {
                 return Ok(());
             };
 
-            if let Some(migration_number) = replay_record.transactions.iter().find_map(|tx| {
-                if let Some(SystemTxType::SetSLChainId(migration_number)) = tx.as_system_tx_type() {
-                    Some(migration_number)
-                } else {
-                    None
-                }
-            }) {
+            let pending_migration_number = replay_record
+                .transactions
+                .iter()
+                .find_map(|tx| {
+                    let Some(SystemTxType::SetSLChainId(migration_number)) =
+                        tx.as_system_tx_type()
+                    else {
+                        return None;
+                    };
+                    if migration_number != u64::MAX
+                        && migration_number > *self.last_finalized_migration.borrow()
+                    {
+                        Some(migration_number)
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(migration_number) = pending_migration_number {
                 let block_number = replay_record.block_context.block_number;
                 let trigger_batch = self
                     .committed_batch_provider

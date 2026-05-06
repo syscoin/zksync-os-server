@@ -1063,6 +1063,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             chain_id,
             verify_batch_rx,
             outgoing_verify_results.clone(),
+            last_finalized_migration_receiver,
             // SYSCOIN
             migration_triggered_sender,
         )
@@ -1480,6 +1481,7 @@ async fn run_en_pipeline(
     chain_id: u64,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
+    last_finalized_migration: watch::Receiver<u64>,
     migration_triggered: watch::Sender<Option<u64>>,
 ) {
     let internal_config_manager = init_and_report_internal_config_manager(
@@ -1513,6 +1515,7 @@ async fn run_en_pipeline(
         // SYSCOIN
         .pipe(EnMigrationTrigger {
             committed_batch_provider: committed_batch_provider.clone(),
+            last_finalized_migration,
             migration_triggered,
         })
         .pipe_opt(
