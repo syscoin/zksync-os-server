@@ -746,6 +746,11 @@ pub struct RpcConfig {
     /// because pubdata price increases or native price decreases in-between estimation and sequencing.
     #[config(default_t = 2.0)]
     pub estimate_gas_pubdata_price_factor: f64,
+
+    /// SYSCOIN: Whether to expose resource-intensive `debug_*` JSON-RPC methods.
+    /// Keep disabled on public RPC endpoints unless access is separately restricted.
+    #[config(default_t = false)]
+    pub enable_debug_namespace: bool,
 }
 
 /// L1 sender configuration. The signing key fields are only required on the Main Node;
@@ -1368,6 +1373,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             send_raw_transaction_sync_timeout: c.send_raw_transaction_sync_timeout,
             gas_price_scale_factor: c.gas_price_scale_factor,
             estimate_gas_pubdata_price_factor: c.estimate_gas_pubdata_price_factor,
+            enable_debug_namespace: c.enable_debug_namespace,
             edge_da_admission: None,
         }
     }
