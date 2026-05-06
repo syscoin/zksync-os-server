@@ -802,10 +802,10 @@ pub struct L1SenderConfig {
     #[config(default_t = 1 * TimeUnit::Seconds)]
     pub poll_interval: Duration,
 
-    /// Maximum time to wait for an L1 transaction to be included.
+    /// SYSCOIN: warning interval while waiting for an L1 transaction to be included.
     ///
-    /// Normally 15-30 seconds is sufficient for normal-priority transactions; 60-120s covers most
-    /// lower-gas-price cases. 600 seconds is a conservative default that handles heavy congestion.
+    /// Delayed L1 inclusion is not fatal. The sender keeps waiting and logs every time this
+    /// interval elapses so congestion does not crash the main node.
     #[config(default_t = 600 * TimeUnit::Seconds)]
     pub transaction_timeout: Duration,
 

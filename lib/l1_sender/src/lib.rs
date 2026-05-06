@@ -336,7 +336,7 @@ where
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
     for (receipt_fut, command, submitted_at) in pending_txs {
         let receipt = receipt_fut.await;
-        // Observe latency before propagating errors so timeout cases are recorded.
+        // Observe latency before propagating errors so provider/RPC failures are recorded.
         L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
             .observe(submitted_at.elapsed().as_secs_f64());
         let receipt = receipt?;
@@ -414,19 +414,12 @@ where
         }
 
         let elapsed = started_at.elapsed();
-        // SYSCOIN timeout to break out of loop
         let receipt_block_number = receipt.as_ref().and_then(|receipt| receipt.block_number);
         let confirmed_at =
             receipt_block_number.map(|block| block + required_confirmations.saturating_sub(1));
-        if !timeout.is_zero() && elapsed >= timeout {
-            anyhow::bail!(
-                "Timed out waiting for L1 transaction confirmation for tx {tx_hash}. \
-                 required_confirmations={required_confirmations}, \
-                 timeout_secs={}, latest_l1_block={latest_block}, \
-                 receipt_block_number={receipt_block_number:?}, confirmed_at={confirmed_at:?}",
-                timeout.as_secs_f64(),
-            );
-        }
+        // SYSCOIN: delayed L1 inclusion is an operational condition, not a fatal sender error.
+        // Keep waiting for the nonce-bearing transaction so congestion/censorship cannot crash
+        // the main node; use `transaction_timeout` only as the repeated warning interval.
         if let Some(warning_at) = next_warning_at
             && elapsed >= warning_at
         {
