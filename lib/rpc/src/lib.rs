@@ -144,6 +144,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
 
     let server_config = ServerConfigBuilder::default()
         .max_connections(config.max_connections)
+        .max_subscriptions_per_connection(config.max_subscriptions_per_connection)
         .max_request_body_size(config.max_request_size_bytes())
         .max_response_body_size(config.max_response_size_bytes())
         // `IdProvider` that generates hex-encoded numeric ids as expected in Ethereum
