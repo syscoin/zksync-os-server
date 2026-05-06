@@ -219,12 +219,12 @@ impl ObservabilityBuilder {
             .opentelemetry_layer
             .and_then(|layer| layer.logs_layer())
             .unzip();
-        let sentry_layer = self.sentry.as_ref().map(|sentry| sentry.layer());
+        // SYSCOIN: Do not install the generic Sentry tracing layer. It turns arbitrary WARN/ERROR
+        // tracing fields into external telemetry; explicit Sentry alerts still use the client below.
 
         tracing_subscriber::registry()
             .with(global_filter)
             .with(logs_layer)
-            .with(sentry_layer)
             .with(otlp_tracing_layer)
             .with(otlp_logging_layer)
             .try_init()
