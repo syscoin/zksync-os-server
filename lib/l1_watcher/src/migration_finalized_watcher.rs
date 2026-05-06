@@ -5,7 +5,9 @@ use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
 use tokio::sync::watch;
-use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
+use zksync_os_contract_interface::settlement_layer_intervals::{
+    IntervalSettlementLayer, SettlementLayerIntervals,
+};
 use zksync_os_contract_interface::{Bridgehub, IChainAssetHandler::MigrationFinalized, ZkChain};
 
 /// Limit the number of SL blocks to scan when performing the initial binary search.
@@ -36,10 +38,37 @@ impl MigrationFinalizedWatcher {
         intervals: &SettlementLayerIntervals,
         l2_chain_id: u64,
         l1_chain_id: u64,
+        current_sl_chain_id: u64,
         config: L1WatcherConfig,
         last_finalized_migration: watch::Sender<u64>,
     ) -> anyhow::Result<Option<L1Watcher>> {
         let active_migration_number = (intervals.intervals().len() - 1) as u64;
+        let active_interval = intervals
+            .intervals()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("settlement layer intervals must not be empty"))?;
+        let current_sl_matches_active = match active_interval.settlement_layer {
+            IntervalSettlementLayer::L1 => current_sl_chain_id == l1_chain_id,
+            IntervalSettlementLayer::Gateway(chain_id) => current_sl_chain_id == chain_id,
+        };
+
+        // SYSCOIN: when startup still points at the old SL during an in-flight migration, the
+        // old SL's migrationNumber is not proof that the destination finalized the migration.
+        // Keep the gate closed for the active migration and let SettlementLayerWatcher restart
+        // the node onto the destination SL, where finalization can be observed authoritatively.
+        if active_migration_number > 0 && !current_sl_matches_active {
+            let last_finalized_before_active = active_migration_number.saturating_sub(1);
+            let _ = last_finalized_migration.send(last_finalized_before_active);
+            tracing::info!(
+                current_sl_chain_id,
+                active_migration_number,
+                active_settlement_layer = %active_interval.settlement_layer,
+                last_finalized_migration = last_finalized_before_active,
+                "current settlement layer differs from active interval; deferring migration finalization to restart"
+            );
+            return Ok(None);
+        }
+
         let sl_migration_number: u64 = bridgehub_sl
             .migration_number(l2_chain_id)
             .await?

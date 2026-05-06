@@ -717,6 +717,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             &node_startup_state.l1_state.settlement_layer_intervals,
             chain_id,
             node_startup_state.l1_state.l1_chain_id,
+            node_startup_state.l1_state.sl_chain_id,
             config.l1_watcher_config.clone().into(),
             // SYSCOIN: keep a sender alive when the watcher is skipped so MigrationGate's
             // receiver is not closed before a future migration.
