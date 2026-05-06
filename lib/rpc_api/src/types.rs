@@ -2,12 +2,13 @@ use alloy::consensus::Sealed;
 use alloy::network::primitives::BlockTransactions;
 use alloy::primitives::{Address, B256, BlockHash, TxHash, U64, U256};
 use alloy::rpc::types::{FeeHistory, Log};
+use alloy_rlp::{Encodable, Header as RlpHeader};
 use anyhow::Context;
 use blake2::{Blake2s256, Digest};
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
 use zksync_os_merkle_tree_api::flat;
-use zksync_os_types::{BlockExt, ZkEnvelope, ZkReceiptEnvelope};
+use zksync_os_types::{ZkEnvelope, ZkReceiptEnvelope};
 
 pub type ZkTransactionReceipt =
     alloy::rpc::types::TransactionReceipt<ZkReceiptEnvelope<Log, L2ToL1Log>>;
@@ -19,22 +20,48 @@ pub type ZkApiBlock = alloy::rpc::types::Block<ZkApiTransaction>;
 
 pub trait RpcBlockConvert {
     fn into_rpc(self) -> ZkApiBlock;
+    fn into_rpc_with_size(self, size: Option<U256>) -> ZkApiBlock;
 }
 
 impl RpcBlockConvert for Sealed<alloy::consensus::Block<TxHash>> {
     fn into_rpc(self) -> ZkApiBlock {
+        // SYSCOIN: repository blocks store transaction hashes, so callers must provide a size
+        // computed from the persisted full transaction bytes if they want to expose one.
+        self.into_rpc_with_size(None)
+    }
+
+    fn into_rpc_with_size(self, size: Option<U256>) -> ZkApiBlock {
         let hash = self.hash();
         let block = self.unseal();
-        let rlp_length = block.rlp_length();
         ZkApiBlock::new(
-            ZkHeader::from_consensus(
-                block.header.seal(hash),
-                Some(U256::ZERO),
-                Some(U256::from(rlp_length)),
-            ),
+            ZkHeader::from_consensus(block.header.seal(hash), Some(U256::ZERO), size),
             BlockTransactions::Hashes(block.body.transactions),
         )
     }
+}
+
+// SYSCOIN: compute the RPC block size from the full EIP-2718 transaction byte lengths instead of
+// the hash-only repository body.
+pub fn block_rlp_length_with_full_transactions(
+    block: &alloy::consensus::Block<TxHash>,
+    tx_rlp_lengths: impl IntoIterator<Item = usize>,
+) -> usize {
+    let transactions_payload_length = tx_rlp_lengths.into_iter().sum();
+    let transactions_length = RlpHeader {
+        list: true,
+        payload_length: transactions_payload_length,
+    }
+    .length_with_payload();
+    let ommers_length = block.body.ommers.length();
+    let withdrawals_length = block.body.withdrawals.as_ref().map_or(0, Encodable::length);
+    let block_payload_length =
+        block.header.length() + transactions_length + ommers_length + withdrawals_length;
+
+    RlpHeader {
+        list: true,
+        payload_length: block_payload_length,
+    }
+    .length_with_payload()
 }
 
 /// A struct with the proof for the L2->L1 log in a specific block.
@@ -293,4 +320,57 @@ pub struct StorageView {
     pub storage_commitment: B256,
     /// Proven storage values in the order of queried keys.
     pub storage_values: Vec<Option<B256>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::consensus::{Block, BlockBody, Header};
+    use alloy_rlp::BufMut;
+
+    #[derive(Clone)]
+    struct RawTransaction(Vec<u8>);
+
+    impl Encodable for RawTransaction {
+        fn encode(&self, out: &mut dyn BufMut) {
+            out.put_slice(&self.0);
+        }
+
+        fn length(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    #[test]
+    fn full_transaction_block_size_uses_raw_transaction_lengths() {
+        let raw_transactions = vec![vec![0xc1, 0x80], vec![0x7e, 0xc1, 0x01]];
+        let hash_only_block = Block::new(
+            Header::default(),
+            BlockBody {
+                transactions: vec![TxHash::repeat_byte(0x11), TxHash::repeat_byte(0x22)],
+                ommers: Vec::new(),
+                withdrawals: None,
+            },
+        );
+        let full_transaction_block = Block::new(
+            hash_only_block.header.clone(),
+            BlockBody {
+                transactions: raw_transactions
+                    .iter()
+                    .cloned()
+                    .map(RawTransaction)
+                    .collect(),
+                ommers: Vec::new(),
+                withdrawals: None,
+            },
+        );
+
+        let full_transaction_size = block_rlp_length_with_full_transactions(
+            &hash_only_block,
+            raw_transactions.iter().map(Vec::len),
+        );
+
+        assert_eq!(full_transaction_size, full_transaction_block.length());
+        assert_ne!(full_transaction_size, hash_only_block.length());
+    }
 }
