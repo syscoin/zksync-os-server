@@ -26,7 +26,7 @@ const API_LEVEL: u64 = 8;
 const MAX_BLOCKS_TO_SCAN: u64 = 1000;
 
 /// SYSCOIN Maximum number of transactions returned by OTS search endpoints in a single response.
-const MAX_SEARCH_TRANSACTIONS_PAGE_SIZE: usize = 500;
+const MAX_TRANSACTIONS_PAGE_SIZE: usize = 500;
 
 pub struct OtsNamespace<RpcStorage> {
     storage: RpcStorage,
@@ -110,8 +110,15 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         let block = block.into_rpc();
         let transaction_count = block.transactions.len();
 
+        if page_size > MAX_TRANSACTIONS_PAGE_SIZE {
+            return Err(EthError::PageSizeTooLarge {
+                page_size,
+                max_page_size: MAX_TRANSACTIONS_PAGE_SIZE,
+            });
+        }
+
         // Crop page
-        let page_end = transaction_count.saturating_sub(page_number * page_size);
+        let page_end = transaction_count.saturating_sub(page_number.saturating_mul(page_size));
         let page_start = page_end.saturating_sub(page_size);
 
         // Crop transactions
@@ -166,10 +173,10 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         page_size: usize,
     ) -> EthResult<(Vec<ZkApiTransaction>, Vec<OtsTransactionReceipt>, bool)> {
         // SYSCOIN
-        if page_size > MAX_SEARCH_TRANSACTIONS_PAGE_SIZE {
+        if page_size > MAX_TRANSACTIONS_PAGE_SIZE {
             return Err(EthError::PageSizeTooLarge {
                 page_size,
-                max_page_size: MAX_SEARCH_TRANSACTIONS_PAGE_SIZE,
+                max_page_size: MAX_TRANSACTIONS_PAGE_SIZE,
             });
         }
 
