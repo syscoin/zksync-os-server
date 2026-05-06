@@ -33,6 +33,7 @@ where
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
     ) -> anyhow::Result<()> {
+        let mut pending_trigger_migration_number = None;
         loop {
             let Some((block_output, replay_record)) = input.recv().await else {
                 tracing::info!("inbound channel closed");
@@ -59,6 +60,22 @@ where
                 });
 
             if let Some(migration_number) = pending_migration_number {
+                // SYSCOIN: keep at most one background lookup alive; replay input must not be able
+                // to create unbounded polling tasks.
+                if pending_trigger_migration_number.is_some() {
+                    tracing::warn!(
+                        migration_number,
+                        pending_trigger_migration_number,
+                        "SetSLChainId replayed while an external-node migration trigger lookup is already pending"
+                    );
+                    if output.send((block_output, replay_record)).await.is_err() {
+                        tracing::info!("outbound channel closed");
+                        return Ok(());
+                    }
+                    continue;
+                }
+
+                pending_trigger_migration_number = Some(migration_number);
                 let block_number = replay_record.block_context.block_number;
                 let committed_batch_provider = self.committed_batch_provider.clone();
                 let finality = self.finality.clone();
