@@ -38,8 +38,11 @@ use zksync_os_pipeline::PeekableReceiver;
 
 /// A code for "method not found" error response as declared in JSON-RPC 2.0 spec.
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
-/// Future that resolves into a (fallible) transaction receipt wait outcome.
+/// SYSCOIN: future that resolves into a (fallible) transaction receipt wait outcome.
+/// The outcome distinguishes confirmed txs from dropped txs so delayed inclusion is non-fatal.
 type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<ReceiptWaitOutcome>>;
+// SYSCOIN: track the optional raw signed tx and current hash so dropped txs can be rebroadcast
+// or resubmitted without crashing the L1 sender.
 type PendingTx<Input> = (
     TransactionReceiptFuture,
     Input,
@@ -48,6 +51,7 @@ type PendingTx<Input> = (
     B256,
 );
 
+// SYSCOIN: non-fatal receipt wait result used to recover from L1 mempool eviction.
 enum ReceiptWaitOutcome {
     Confirmed(TransactionReceipt),
     Dropped,
@@ -103,6 +107,8 @@ pub async fn run_l1_sender<Input: SendToL1>(
         ComponentStateReporter::global().handle_for(Input::NAME, L1SenderState::WaitingRecv);
     let command_name = Input::NAME;
 
+    // SYSCOIN: keep `config` available after operator registration because dropped-tx recovery
+    // can resubmit commands through the same config.
     let operator_address =
         register_operator::<_, Input>(&mut provider, config.operator_signer.clone()).await?;
     let mut cmd_buffer = Vec::with_capacity(config.command_limit);
@@ -157,6 +163,8 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     config.transaction_timeout,
                 )
                 .boxed();
+                // SYSCOIN: recovered in-flight txs have no raw signed payload; if they disappear,
+                // recovery resubmits from the queued command instead.
                 (fut, cmd, Instant::now(), None, tx_hash)
             })
             .collect();
@@ -224,6 +232,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
+        // SYSCOIN: submit via a helper so dropped-tx recovery can reuse the exact same path.
         let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
             .then(|mut cmd| async {
                 let (receipt_fut, submitted_at, raw_tx, tx_hash) = submit_l1_transaction(
@@ -266,6 +275,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     }
 }
 
+// SYSCOIN: common L1 tx submission path used by the normal loop and by dropped-tx recovery.
 async fn submit_l1_transaction<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
@@ -378,6 +388,8 @@ where
         .iter_mut()
         .for_each(|envelope| envelope.set_stage(Input::SENT_STAGE));
 
+    // SYSCOIN: retain raw signed tx bytes for safe same-hash rebroadcast when the provider
+    // reports the transaction as dropped before a receipt appears.
     Ok((receipt_fut, submitted_at, Some(raw_tx), tx_hash))
 }
 
@@ -413,6 +425,9 @@ where
                 .observe(submitted_at.elapsed().as_secs_f64());
             match receipt? {
                 ReceiptWaitOutcome::Confirmed(receipt) => break receipt,
+                // SYSCOIN: timeout expiry is non-fatal. A dropped tx is recovered by rebroadcasting
+                // the same raw payload when available, or by resubmitting the original command for
+                // recovered startup txs where raw bytes are unavailable.
                 ReceiptWaitOutcome::Dropped => {
                     let Some(raw_tx_bytes) = raw_tx.as_ref() else {
                         tracing::warn!(
@@ -520,6 +535,8 @@ where
     Ok(())
 }
 
+// SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Nonce-conflict
+// or underpriced replacement errors must use the resubmission path instead of waiting on a stale hash.
 fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
     match err {
         TransportError::ErrorResp(resp) => {
