@@ -78,17 +78,7 @@ where
                         // SYSCOIN: keep at most one lookup alive; replay input must not be able
                         // to create unbounded polling work.
                         match pending_trigger {
-                            Some((pending_migration_number, pending_block_number))
-                                if migration_number == pending_migration_number =>
-                            {
-                                tracing::warn!(
-                                    migration_number,
-                                    pending_migration_number,
-                                    pending_block_number,
-                                    "ignoring duplicate SetSLChainId while an external-node migration trigger lookup is pending"
-                                );
-                            }
-                            Some((pending_migration_number, pending_block_number))
+                            Some((pending_migration_number, pending_block_number, _))
                                 if block_number <= pending_block_number =>
                             {
                                 tracing::warn!(
@@ -99,7 +89,33 @@ where
                                     "ignoring stale SetSLChainId while an external-node migration trigger lookup is pending"
                                 );
                             }
-                            Some((pending_migration_number, pending_block_number)) => {
+                            Some((
+                                pending_migration_number,
+                                pending_block_number,
+                                ref mut fallback_block_number,
+                            )) if migration_number == pending_migration_number => {
+                                if fallback_block_number
+                                    .as_ref()
+                                    .is_some_and(|fallback| block_number <= *fallback)
+                                {
+                                    tracing::warn!(
+                                        migration_number,
+                                        block_number,
+                                        pending_block_number,
+                                        ?fallback_block_number,
+                                        "ignoring duplicate SetSLChainId while an external-node migration trigger lookup is pending"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        migration_number,
+                                        block_number,
+                                        pending_block_number,
+                                        "recording fallback block for pending external-node migration trigger lookup"
+                                    );
+                                    *fallback_block_number = Some(block_number);
+                                }
+                            }
+                            Some((pending_migration_number, pending_block_number, _)) => {
                                 tracing::warn!(
                                     migration_number,
                                     block_number,
@@ -107,10 +123,10 @@ where
                                     pending_block_number,
                                     "replacing pending external-node migration trigger lookup"
                                 );
-                                pending_trigger = Some((migration_number, block_number));
+                                pending_trigger = Some((migration_number, block_number, None));
                             }
                             None => {
-                                pending_trigger = Some((migration_number, block_number));
+                                pending_trigger = Some((migration_number, block_number, None));
                             }
                         }
                     }
@@ -124,7 +140,7 @@ where
                 // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay
                 // does not stall while waiting for the batch containing this block to be indexed.
                 _ = lookup_interval.tick(), if pending_trigger.is_some() => {
-                    let Some((migration_number, block_number)) = pending_trigger else {
+                    let Some((migration_number, block_number, fallback_block_number)) = pending_trigger else {
                         continue;
                     };
 
@@ -147,11 +163,43 @@ where
                         continue;
                     }
 
+                    if let Some(fallback_block_number) = fallback_block_number {
+                        if let Some(trigger_batch) = self
+                            .committed_batch_provider
+                            .get_batch_containing_block(fallback_block_number)
+                        {
+                            let trigger_batch_number = trigger_batch.number();
+                            tracing::info!(
+                                migration_number,
+                                block_number = fallback_block_number,
+                                trigger_batch_number,
+                                "fallback SetSLChainId block replayed on external node; signalling settlement layer watcher"
+                            );
+                            let _ = self.migration_triggered.send(Some(trigger_batch_number));
+                            pending_trigger = None;
+                            if input_closed {
+                                tracing::info!("pending external-node migration trigger drained");
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                    }
+
                     let status = self.finality.get_finality_status();
-                    if status.last_finalized_executed_block >= block_number {
+                    let finalized_trigger_block =
+                        if status.last_finalized_executed_block >= block_number {
+                            Some(block_number)
+                        } else if fallback_block_number.is_some_and(|fallback_block_number| {
+                            status.last_finalized_executed_block >= fallback_block_number
+                        }) {
+                            fallback_block_number
+                        } else {
+                            None
+                        };
+                    if let Some(finalized_trigger_block) = finalized_trigger_block {
                         tracing::info!(
                             migration_number,
-                            block_number,
+                            block_number = finalized_trigger_block,
                             last_finalized_executed_batch =
                                 status.last_finalized_executed_batch,
                             "SetSLChainId block already finalized on external node; signalling settlement layer watcher"
