@@ -461,7 +461,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         // original geth logic. Source:
         // https://github.com/paradigmxyz/reth/blob/5bc8589162b6e23b07919d82a57eee14353f2862/crates/rpc/rpc-eth-api/src/helpers/estimate.rs
 
-        // Cap estimate simulation to the lower of block gas limit and configured eth_call gas cap.
+        // SYSCOIN Cap estimate simulation to the lower of block gas limit and configured eth_call gas cap.
         let estimate_gas_cap = block_context.gas_limit.min(self.config.eth_call_gas as u64);
 
         // Determine the highest possible gas limit, considering both the request's specified limit
