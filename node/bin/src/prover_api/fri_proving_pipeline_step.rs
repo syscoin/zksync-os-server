@@ -371,6 +371,7 @@ mod tests {
             logs: vec![],
             messages: vec![],
             multichain_root: B256::ZERO,
+            set_sl_chain_id_migration_number: None,
         }
     }
 
