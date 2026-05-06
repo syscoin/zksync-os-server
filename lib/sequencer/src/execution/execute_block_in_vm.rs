@@ -230,7 +230,29 @@ pub async fn execute_block_in_vm<V: ViewState>(
                         );
 
                         match (tx.tx_type(), command.invalid_tx_policy) {
-                            (ZkTxType::L1 | ZkTxType::Upgrade, _) => {
+                            (ZkTxType::L1, _) => {
+                                // SYSCOIN: priority txs that only exceed the remaining block limit
+                                // should seal the current block and be retried in the next one.
+                                if let Some(reason) = l1_block_limit_seal_reason(&e, executed_txs.is_empty()) {
+                                    tracing::info!(
+                                        block_number = ctx.block_number,
+                                        "Sealing block {} before L1 tx {} because it hit a sealing criterion: reason={reason:?}, error={e:?}, nonce={:?}",
+                                        ctx.block_number,
+                                        tx.hash(),
+                                        tx.nonce(),
+                                    );
+                                    break reason;
+                                }
+
+                                return Err(
+                                    BlockDump {
+                                        ctx,
+                                        txs: all_processed_txs.clone(),
+                                        error: format!("invalid {} tx: {e:?} ({})", tx.tx_type(), tx.hash()),
+                                    }
+                                )
+                            }
+                            (ZkTxType::Upgrade, _) => {
                                 return Err(
                                     BlockDump {
                                         ctx,
@@ -463,6 +485,22 @@ fn should_exclude_and_seal(
     None
 }
 
+fn l1_block_limit_seal_reason(
+    error: &InvalidTransaction,
+    is_first_tx_in_block: bool,
+) -> Option<SealReason> {
+    // SYSCOIN: keep truly invalid or individually too-large L1 txs fatal, but allow
+    // cumulative block-limit failures after prior txs to seal just like L2 txs.
+    if is_first_tx_in_block {
+        return None;
+    }
+
+    match rejection_method(error) {
+        TxRejectionMethod::SealBlock(reason) => Some(reason),
+        TxRejectionMethod::Purge | TxRejectionMethod::Skip => None,
+    }
+}
+
 enum TxRejectionMethod {
     // purge tx from the mempool
     Purge,
@@ -558,5 +596,34 @@ fn rejection_method(error: &InvalidTransaction) -> TxRejectionMethod {
             TxRejectionMethod::SealBlock(SealReason::Blobs)
         }
         InvalidTransaction::OtherLimitReached(_) => TxRejectionMethod::SealBlock(SealReason::Other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn l1_block_limit_error_seals_non_empty_block() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::BlockPubdataLimitReached, false),
+            Some(SealReason::Pubdata)
+        );
+    }
+
+    #[test]
+    fn l1_block_limit_error_is_fatal_for_empty_block() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::BlockPubdataLimitReached, true),
+            None
+        );
+    }
+
+    #[test]
+    fn l1_non_limit_error_remains_fatal() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::InvalidEncoding, false),
+            None
+        );
     }
 }
