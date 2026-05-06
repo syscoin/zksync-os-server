@@ -49,6 +49,7 @@ type PendingTx<Input> = (
     Instant,
     Option<Vec<u8>>,
     B256,
+    u64,
 );
 
 // SYSCOIN: non-fatal receipt wait result used to recover from L1 mempool eviction.
@@ -151,7 +152,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     if !recovered.is_empty() {
         let pending_txs: Vec<PendingTx<Input>> = recovered
             .into_iter()
-            .map(|(tx_hash, cmd)| {
+            .map(|(tx_hash, cmd, nonce)| {
                 let fut = wait_for_confirmed_receipt(
                     provider.root().clone(),
                     tx_hash,
@@ -165,7 +166,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                 .boxed();
                 // SYSCOIN: recovered in-flight txs have no raw signed payload; if they disappear,
                 // recovery resubmits from the queued command instead.
-                (fut, cmd, Instant::now(), None, tx_hash)
+                (fut, cmd, Instant::now(), None, tx_hash, nonce)
             })
             .collect();
         wait_for_txs_and_forward(
@@ -235,7 +236,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // SYSCOIN: submit via a helper so dropped-tx recovery can reuse the exact same path.
         let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
             .then(|mut cmd| async {
-                let (receipt_fut, submitted_at, raw_tx, tx_hash) = submit_l1_transaction(
+                let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce) = submit_l1_transaction(
                     &provider,
                     operator_address,
                     to_address,
@@ -246,7 +247,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     &commit_submitted_tx,
                 )
                 .await?;
-                anyhow::Ok((receipt_fut, cmd, submitted_at, raw_tx, tx_hash))
+                anyhow::Ok((receipt_fut, cmd, submitted_at, raw_tx, tx_hash, tx_nonce))
             })
             // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
             // but this is not necessary for now - we wait for them to be included in parallel
@@ -285,7 +286,13 @@ async fn submit_l1_transaction<F, P, Input>(
     command_name: &'static str,
     cmd: &mut Input,
     commit_submitted_tx: &Option<watch::Sender<u64>>,
-) -> anyhow::Result<(TransactionReceiptFuture, Instant, Option<Vec<u8>>, B256)>
+) -> anyhow::Result<(
+    TransactionReceiptFuture,
+    Instant,
+    Option<Vec<u8>>,
+    B256,
+    u64,
+)>
 where
     F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
     P: Provider<Ethereum>,
@@ -349,6 +356,7 @@ where
     };
 
     let raw_tx = tx.encoded_2718();
+    let tx_nonce = tx.nonce();
     let pending_tx = provider.send_raw_transaction(&raw_tx).await?;
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
@@ -390,7 +398,7 @@ where
 
     // SYSCOIN: retain raw signed tx bytes for safe same-hash rebroadcast when the provider
     // reports the transaction as dropped before a receipt appears.
-    Ok((receipt_fut, submitted_at, Some(raw_tx), tx_hash))
+    Ok((receipt_fut, submitted_at, Some(raw_tx), tx_hash, tx_nonce))
 }
 
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
@@ -417,7 +425,9 @@ where
     latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
 
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
-    for (mut receipt_fut, mut command, mut submitted_at, mut raw_tx, mut tx_hash) in pending_txs {
+    for (mut receipt_fut, mut command, mut submitted_at, mut raw_tx, mut tx_hash, mut tx_nonce) in
+        pending_txs
+    {
         let receipt = loop {
             let receipt = receipt_fut.await;
             // Observe latency before propagating errors so provider/RPC failures are recorded.
@@ -450,6 +460,7 @@ where
                         submitted_at = resubmitted.1;
                         raw_tx = resubmitted.2;
                         tx_hash = resubmitted.3;
+                        tx_nonce = resubmitted.4;
                         continue;
                     };
 
@@ -472,6 +483,34 @@ where
                                     ?tx_hash,
                                     "L1 transaction rebroadcast returned a benign error; continuing to wait: {err}",
                                 );
+                            } else if is_nonce_reuse_rebroadcast_error(&err) {
+                                if let Some(replacement_hash) = find_matching_sender_nonce_tx(
+                                    provider,
+                                    operator_address,
+                                    tx_nonce,
+                                    gateway,
+                                    command_name,
+                                    &command,
+                                )
+                                .await?
+                                {
+                                    tx_hash = replacement_hash;
+                                    raw_tx = None;
+                                    tracing::warn!(
+                                        command_name,
+                                        ?tx_hash,
+                                        tx_nonce,
+                                        "Tracking matching L1 transaction found at reused nonce"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        command_name,
+                                        ?tx_hash,
+                                        tx_nonce,
+                                        "L1 transaction rebroadcast returned a nonce-reuse error, \
+                                         but no matching same-nonce transaction was visible; continuing to wait: {err}",
+                                    );
+                                }
                             } else {
                                 tracing::warn!(
                                     command_name,
@@ -493,6 +532,7 @@ where
                                 submitted_at = resubmitted.1;
                                 raw_tx = resubmitted.2;
                                 tx_hash = resubmitted.3;
+                                tx_nonce = resubmitted.4;
                                 continue;
                             }
                         }
@@ -547,6 +587,66 @@ fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
         }
         _ => false,
     }
+}
+
+// SYSCOIN: nonce-reuse errors are ambiguous. The tx may already be accepted/mined by a different
+// backend, or the nonce may be occupied by a replacement. Do not blindly resubmit at a later nonce.
+fn is_nonce_reuse_rebroadcast_error(err: &TransportError) -> bool {
+    match err {
+        TransportError::ErrorResp(resp) => {
+            let message = resp.message.to_ascii_lowercase();
+            message.contains("nonce too low")
+                || message.contains("replacement transaction underpriced")
+        }
+        _ => false,
+    }
+}
+
+// SYSCOIN: if a rebroadcast reports nonce reuse, try to discover the tx currently occupying the
+// original sender nonce and track it only if it carries the same command calldata.
+async fn find_matching_sender_nonce_tx<F, P, Input>(
+    provider: &FillProvider<F, P>,
+    operator_address: Address,
+    nonce: u64,
+    gateway: bool,
+    command_name: &'static str,
+    command: &Input,
+) -> anyhow::Result<Option<B256>>
+where
+    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
+    P: Provider<Ethereum>,
+    Input: SendToL1,
+{
+    let tx = match provider
+        .get_transaction_by_sender_nonce(operator_address, nonce)
+        .await
+    {
+        Ok(tx) => tx,
+        Err(TransportError::ErrorResp(ref e)) if e.code == METHOD_NOT_FOUND_CODE => {
+            tracing::warn!(
+                command_name,
+                nonce,
+                "eth_getTransactionBySenderAndNonce is not supported; cannot discover same-nonce L1 transaction",
+            );
+            return Ok(None);
+        }
+        Err(err) => anyhow::bail!(
+            "Failed to fetch same-nonce L1 transaction for {command_name} at nonce {nonce}: {err}"
+        ),
+    };
+
+    let Some(tx) = tx else {
+        return Ok(None);
+    };
+
+    let expected_input = command.solidity_call(gateway, &operator_address);
+    if tx.input().as_ref() != expected_input.as_ref() {
+        anyhow::bail!(
+            "Same-nonce L1 transaction for {command_name} at nonce {nonce} has different calldata"
+        );
+    }
+
+    Ok(Some(tx.tx_hash()))
 }
 
 async fn wait_for_confirmed_receipt<P>(
@@ -656,7 +756,7 @@ async fn recover_in_flight_txs<F, P, Input>(
     inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
     command_name: &str,
     sl_block_number: u64,
-) -> anyhow::Result<Vec<(alloy::primitives::B256, Input)>>
+) -> anyhow::Result<Vec<(alloy::primitives::B256, Input, u64)>>
 where
     F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
     P: Provider<Ethereum>,
@@ -753,7 +853,7 @@ where
                 let Some(L1SenderCommand::SendToL1(cmd)) = inbound.recv().await else {
                     unreachable!("peek succeeded, recv must return the same item");
                 };
-                paired.push((tx.tx_hash(), cmd));
+                paired.push((tx.tx_hash(), cmd, nonce));
             }
         }
     }
