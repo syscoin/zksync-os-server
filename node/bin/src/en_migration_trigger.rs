@@ -48,6 +48,7 @@ where
                     else {
                         return None;
                     };
+                    let migration_number = *migration_number;
                     if migration_number != u64::MAX
                         && migration_number > *self.last_finalized_migration.borrow()
                     {
