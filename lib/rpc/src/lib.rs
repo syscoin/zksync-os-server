@@ -120,7 +120,11 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
         .into_rpc(),
     )?;
     rpc.merge(OtsNamespace::new(storage.clone()).into_rpc())?;
-    rpc.merge(DebugNamespace::new(storage.clone(), eth_call_handler).into_rpc())?;
+    // SYSCOIN: debug tracing can replay historical block prefixes, so it must be
+    // explicitly enabled for trusted/operator RPC endpoints only.
+    if config.enable_debug_namespace {
+        rpc.merge(DebugNamespace::new(storage.clone(), eth_call_handler).into_rpc())?;
+    }
     rpc.merge(TxpoolNamespace::new(mempool.clone()).into_rpc())?;
     rpc.merge(NetNamespace::new(chain_id).into_rpc())?;
     rpc.merge(Web3Namespace.into_rpc())?;

@@ -56,6 +56,10 @@ pub struct RpcConfig {
     /// users submitting unexecutable transactions (fail with `OutOfNativeResourcesDuringValidation`)
     /// because pubdata price increase in-between estimation and sequencing.
     pub estimate_gas_pubdata_price_factor: f64,
+
+    // SYSCOIN: keep resource-intensive debug RPC methods off unless an operator opts in.
+    pub enable_debug_namespace: bool,
+
     // SYSCOIN: when this node is a Gateway sequencer, reject compact edge DA commit txs
     // before mempool admission unless every referenced Bitcoin DA blob is retrievable.
     pub edge_da_admission: Option<EdgeDaAdmissionConfig>,

@@ -23,6 +23,8 @@ pub(crate) async fn build_node_config(
     config.general_config.gateway_rpc_poll_interval = Duration::from_millis(100);
     config.sequencer_config.fee_collector_address = Address::random();
     config.rpc_config.send_raw_transaction_sync_timeout = Duration::from_secs(10);
+    // SYSCOIN: integration tests intentionally exercise debug tracing on local RPC.
+    config.rpc_config.enable_debug_namespace = true;
     config.prover_api_config.fake_fri_provers.enabled = true;
     config.prover_api_config.fake_snark_provers.enabled = true;
     config.batch_verification_config.server_enabled = false;
