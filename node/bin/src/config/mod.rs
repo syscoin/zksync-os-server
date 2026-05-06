@@ -558,7 +558,7 @@ pub struct StatusServerConfig {
     pub enabled: bool,
 
     /// Status server address to listen on.
-    #[config(default_t = "0.0.0.0:3071".into())]
+    #[config(default_t = "127.0.0.1:3071".into())]
     pub address: String,
 }
 
