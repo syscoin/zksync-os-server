@@ -104,7 +104,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     let command_name = Input::NAME;
 
     let operator_address =
-        register_operator::<_, Input>(&mut provider, config.operator_signer).await?;
+        register_operator::<_, Input>(&mut provider, config.operator_signer.clone()).await?;
     let mut cmd_buffer = Vec::with_capacity(config.command_limit);
     // Process all potential passthrough commands first
     if process_prepending_passthrough_commands(
@@ -164,6 +164,10 @@ pub async fn run_l1_sender<Input: SendToL1>(
             pending_txs,
             &provider,
             operator_address,
+            to_address,
+            &config,
+            gateway,
+            &commit_submitted_tx,
             command_name,
             if gateway {
                 REQUIRED_CONFIRMATIONS_GATEWAY
@@ -220,112 +224,34 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
-        let pending_txs: Vec<PendingTx<Input>> =
-            futures::stream::iter(commands.drain(..))
-                .then(|mut cmd| async {
-                    let tx_range = Input::display_range(std::slice::from_ref(&cmd));
-                    let mut tx_request = tx_request_with_gas_fields(
-                        &provider,
-                        operator_address,
-                        config.max_fee_per_gas_wei,
-                        config.max_priority_fee_per_gas_wei,
-                    )
-                    .await?
-                    .with_to(to_address)
-                    .with_input(cmd.solidity_call(gateway, &operator_address));
-
-                    if let Some(blob_sidecar) = cmd.blob_sidecar() {
-                        let fee_per_blob_gas = provider.get_blob_base_fee().await?;
-                        L1_SENDER_METRICS
-                            .report_blob_base_fee(fee_per_blob_gas)?;
-                        let max_fee_per_blob_gas = config.max_fee_per_blob_gas_wei;
-
-                        if fee_per_blob_gas > max_fee_per_blob_gas {
-                            tracing::warn!(
-                                max_fee_per_blob_gas,
-                                fee_per_blob_gas,
-                                "L1 sender's configured maxFeePerBlobGas is lower than the one estimated from network"
-                            );
-                        }
-                        tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
-                        tx_request.set_blob_sidecar(blob_sidecar);
-                    };
-
-                    apply_l1_gas_limit(&provider, &mut tx_request).await?;
-
-                    // Fill the transaction (e.g., nonce, gas, etc.) using the provider and convert it to an
-                    // envelope.
-                    let envelope = provider.fill(tx_request).await?.try_into_envelope()?.try_into_pooled()?;
-
-                    let pending_block = provider.get_block(BlockId::pending()).await?.expect("no pending block");
-                    // todo: make conversion unconditional (and remove respective config) once anvil
-                    //       supports EIP-7594 blobs (see https://github.com/foundry-rs/foundry/issues/12222)
-                    let tx = if config.fusaka_upgrade_timestamp <= pending_block.header.timestamp {
-                        // Convert the envelope into an EIP-7594 transaction by converting the sidecar
-                        envelope.try_map_eip4844(|tx| {
-                            tx.try_map_sidecar(|sidecar| {
-                                Ok::<_, BlobTransactionValidationError>(
-                                    BlobTransactionSidecarVariant::Eip7594(sidecar.try_into_eip7594()?)
-                                )
-                            })
-                        })?
-                    } else {
-                        // Keep the regular EIP-4844 sidecar
-                        envelope
-                    };
-
-                    let raw_tx = tx.encoded_2718();
-                    let pending_tx = provider
-                        .send_raw_transaction(&raw_tx)
-                        .await?;
-                    let submitted_at = Instant::now();
-                    let tx_hash = *pending_tx.tx_hash();
-                    let receipt_fut = wait_for_confirmed_receipt(
-                        provider.root().clone(),
-                        tx_hash,
-                        if gateway {
-                            REQUIRED_CONFIRMATIONS_GATEWAY
-                        } else {
-                            REQUIRED_CONFIRMATIONS_L1
-                        },
-                        config.transaction_timeout,
-                    )
-                    .boxed();
-                    tracing::info!(
-                        "{command_name}: L1 transaction submitted for {tx_range}. Hash: {tx_hash:?} Waiting for inclusion...",
-                    );
-
-                    // Notify CommitWatcher: this batch number has been submitted to L1.
-                    if let Some(sender) = &commit_submitted_tx {
-                        let batch_number = cmd
-                            .as_ref()
-                            .last()
-                            .expect("commands is non-empty after recv_many")
-                            .batch_number();
-                        sender.send_if_modified(|current| {
-                            if batch_number > *current {
-                                *current = batch_number;
-                                true
-                            } else {
-                                false
-                            }
-                        });
-                    }
-
-                    cmd.as_mut()
-                        .iter_mut()
-                        .for_each(|envelope| envelope.set_stage(Input::SENT_STAGE));
-                    anyhow::Ok((receipt_fut, cmd, submitted_at, Some(raw_tx), tx_hash))
-                })
-                // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
-                // but this is not necessary for now - we wait for them to be included in parallel
-                .try_collect::<Vec<_>>()
+        let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
+            .then(|mut cmd| async {
+                let (receipt_fut, submitted_at, raw_tx, tx_hash) = submit_l1_transaction(
+                    &provider,
+                    operator_address,
+                    to_address,
+                    &config,
+                    gateway,
+                    command_name,
+                    &mut cmd,
+                    &commit_submitted_tx,
+                )
                 .await?;
+                anyhow::Ok((receipt_fut, cmd, submitted_at, raw_tx, tx_hash))
+            })
+            // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
+            // but this is not necessary for now - we wait for them to be included in parallel
+            .try_collect::<Vec<_>>()
+            .await?;
         tracing::info!(command_name, range, "sent to L1, waiting for inclusion");
         wait_for_txs_and_forward(
             pending_txs,
             &provider,
             operator_address,
+            to_address,
+            &config,
+            gateway,
+            &commit_submitted_tx,
             command_name,
             if gateway {
                 REQUIRED_CONFIRMATIONS_GATEWAY
@@ -340,12 +266,131 @@ pub async fn run_l1_sender<Input: SendToL1>(
     }
 }
 
+async fn submit_l1_transaction<F, P, Input>(
+    provider: &FillProvider<F, P>,
+    operator_address: Address,
+    to_address: Address,
+    config: &L1SenderConfig<Input>,
+    gateway: bool,
+    command_name: &'static str,
+    cmd: &mut Input,
+    commit_submitted_tx: &Option<watch::Sender<u64>>,
+) -> anyhow::Result<(TransactionReceiptFuture, Instant, Option<Vec<u8>>, B256)>
+where
+    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
+    P: Provider<Ethereum>,
+    Input: SendToL1,
+{
+    let tx_range = Input::display_range(std::slice::from_ref(cmd));
+    let mut tx_request = tx_request_with_gas_fields(
+        provider,
+        operator_address,
+        config.max_fee_per_gas_wei,
+        config.max_priority_fee_per_gas_wei,
+    )
+    .await?
+    .with_to(to_address)
+    .with_input(cmd.solidity_call(gateway, &operator_address));
+
+    if let Some(blob_sidecar) = cmd.blob_sidecar() {
+        let fee_per_blob_gas = provider.get_blob_base_fee().await?;
+        L1_SENDER_METRICS.report_blob_base_fee(fee_per_blob_gas)?;
+        let max_fee_per_blob_gas = config.max_fee_per_blob_gas_wei;
+
+        if fee_per_blob_gas > max_fee_per_blob_gas {
+            tracing::warn!(
+                max_fee_per_blob_gas,
+                fee_per_blob_gas,
+                "L1 sender's configured maxFeePerBlobGas is lower than the one estimated from network"
+            );
+        }
+        tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
+        tx_request.set_blob_sidecar(blob_sidecar);
+    };
+
+    apply_l1_gas_limit(provider, &mut tx_request).await?;
+
+    // Fill the transaction (e.g., nonce, gas, etc.) using the provider and convert it to an
+    // envelope.
+    let envelope = provider
+        .fill(tx_request)
+        .await?
+        .try_into_envelope()?
+        .try_into_pooled()?;
+
+    let pending_block = provider
+        .get_block(BlockId::pending())
+        .await?
+        .expect("no pending block");
+    // todo: make conversion unconditional (and remove respective config) once anvil
+    //       supports EIP-7594 blobs (see https://github.com/foundry-rs/foundry/issues/12222)
+    let tx = if config.fusaka_upgrade_timestamp <= pending_block.header.timestamp {
+        // Convert the envelope into an EIP-7594 transaction by converting the sidecar
+        envelope.try_map_eip4844(|tx| {
+            tx.try_map_sidecar(|sidecar| {
+                Ok::<_, BlobTransactionValidationError>(BlobTransactionSidecarVariant::Eip7594(
+                    sidecar.try_into_eip7594()?,
+                ))
+            })
+        })?
+    } else {
+        // Keep the regular EIP-4844 sidecar
+        envelope
+    };
+
+    let raw_tx = tx.encoded_2718();
+    let pending_tx = provider.send_raw_transaction(&raw_tx).await?;
+    let submitted_at = Instant::now();
+    let tx_hash = *pending_tx.tx_hash();
+    let receipt_fut = wait_for_confirmed_receipt(
+        provider.root().clone(),
+        tx_hash,
+        if gateway {
+            REQUIRED_CONFIRMATIONS_GATEWAY
+        } else {
+            REQUIRED_CONFIRMATIONS_L1
+        },
+        config.transaction_timeout,
+    )
+    .boxed();
+    tracing::info!(
+        "{command_name}: L1 transaction submitted for {tx_range}. Hash: {tx_hash:?} Waiting for inclusion...",
+    );
+
+    // Notify CommitWatcher: this batch number has been submitted to L1.
+    if let Some(sender) = commit_submitted_tx {
+        let batch_number = cmd
+            .as_ref()
+            .last()
+            .expect("commands is non-empty after recv_many")
+            .batch_number();
+        sender.send_if_modified(|current| {
+            if batch_number > *current {
+                *current = batch_number;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    cmd.as_mut()
+        .iter_mut()
+        .for_each(|envelope| envelope.set_stage(Input::SENT_STAGE));
+
+    Ok((receipt_fut, submitted_at, Some(raw_tx), tx_hash))
+}
+
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
 /// metrics, and forwards the completed commands downstream.
 async fn wait_for_txs_and_forward<F, P, Input>(
     pending_txs: Vec<PendingTx<Input>>,
     provider: &FillProvider<F, P>,
     operator_address: Address,
+    to_address: Address,
+    config: &L1SenderConfig<Input>,
+    gateway: bool,
+    commit_submitted_tx: &Option<watch::Sender<u64>>,
     command_name: &'static str,
     required_confirmations: u64,
     transaction_timeout: std::time::Duration,
@@ -360,7 +405,7 @@ where
     latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
 
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
-    for (mut receipt_fut, command, mut submitted_at, raw_tx, mut tx_hash) in pending_txs {
+    for (mut receipt_fut, mut command, mut submitted_at, mut raw_tx, mut tx_hash) in pending_txs {
         let receipt = loop {
             let receipt = receipt_fut.await;
             // Observe latency before propagating errors so provider/RPC failures are recorded.
@@ -373,17 +418,23 @@ where
                         tracing::warn!(
                             command_name,
                             ?tx_hash,
-                            "Recovered L1 transaction is no longer visible; continuing to wait \
-                             because the raw transaction is not available for rebroadcast"
+                            "Recovered L1 transaction is no longer visible; resubmitting command"
                         );
-                        receipt_fut = wait_for_confirmed_receipt(
-                            provider.root().clone(),
-                            tx_hash,
-                            required_confirmations,
-                            transaction_timeout,
+                        let resubmitted = submit_l1_transaction(
+                            provider,
+                            operator_address,
+                            to_address,
+                            config,
+                            gateway,
+                            command_name,
+                            &mut command,
+                            commit_submitted_tx,
                         )
-                        .boxed();
-                        submitted_at = Instant::now();
+                        .await?;
+                        receipt_fut = resubmitted.0;
+                        submitted_at = resubmitted.1;
+                        raw_tx = resubmitted.2;
+                        tx_hash = resubmitted.3;
                         continue;
                     };
 
