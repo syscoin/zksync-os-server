@@ -3,6 +3,9 @@ genesis:
   bytecode_supplier_address: '0x04e7cfe87caff2c17cadb4b708ba08cc86a029bc'
   genesis_input_path: ./local-chains/v31.0/genesis.json
   chain_id: 506
+sequencer:
+  # SYSCOIN: keep the gateway local config explicit so main-node startup never inherits defaults.
+  fee_collector_address: '0x0000000000000000000000000000000000000506'
 l1_sender:
   pubdata_mode: Blobs
   operator_commit_sk: '0x86f3921cd4548f6f11c88c2626eb2bae3f8947058fd0e186fb5f3de6c263bcdf'

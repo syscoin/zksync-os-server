@@ -3,6 +3,9 @@ genesis:
   bytecode_supplier_address: '0x9f3f32ea83c8a1c8e993fd9035d1d077545467ac'
   genesis_input_path: ./local-chains/v30.2/genesis.json
   chain_id: 6565
+sequencer:
+  # SYSCOIN: local dev may use the documented rich account; production configs must set their own fee collector.
+  fee_collector_address: '0x36615Cf349d7F6344891B1e7CA7C72883F5dc049'
 l1_sender:
   pubdata_mode: Blobs
   operator_commit_sk: '0xafc49c5bb410acc43973d0b6cf638220d3cedc3109a08aefa82cffb4853d4eb4'
