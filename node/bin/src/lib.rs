@@ -1515,6 +1515,7 @@ async fn run_en_pipeline(
         // SYSCOIN
         .pipe(EnMigrationTrigger {
             committed_batch_provider: committed_batch_provider.clone(),
+            finality: finality.clone(),
             last_finalized_migration,
             migration_triggered,
         })

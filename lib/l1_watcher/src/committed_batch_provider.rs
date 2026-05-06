@@ -155,39 +155,18 @@ impl CommittedBatchProvider {
         }
     }
 
-    /// SYSCOIN: waits until the committed batch containing the requested L2 block is available in
-    /// memory.
-    pub async fn wait_for_batch_containing_block(
+    /// SYSCOIN: returns the committed batch containing the requested L2 block if it is already
+    /// indexed in memory.
+    pub fn get_batch_containing_block(
         &self,
         block_number: BlockNumber,
-    ) -> DiscoveredCommittedBatch {
-        let mut logged_wait = false;
-        loop {
-            let batch = {
-                let inner = self.inner.read().expect("lock poisoned");
-                inner
-                    .block_range_index
-                    .get(&block_number)
-                    .and_then(|batch_number| inner.batches.get(batch_number))
-                    .cloned()
-            };
-            if let Some(batch) = batch {
-                tracing::info!(
-                    block_number,
-                    batch_number = batch.number(),
-                    "returning batch containing block {block_number} from CommittedBatchProvider"
-                );
-                return batch;
-            }
-            if !logged_wait {
-                tracing::info!(
-                    block_number,
-                    "waiting for committed batch containing block {block_number} to load"
-                );
-                logged_wait = true;
-            }
-            sleep(WAIT_FOR_BATCH_POLL_INTERVAL).await;
-        }
+    ) -> Option<DiscoveredCommittedBatch> {
+        let inner = self.inner.read().expect("lock poisoned");
+        inner
+            .block_range_index
+            .get(&block_number)
+            .and_then(|batch_number| inner.batches.get(batch_number))
+            .cloned()
     }
 
     /// Returns `DiscoveredCommittedBatch` from in-memory map if available.
