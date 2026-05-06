@@ -383,8 +383,9 @@ pub struct GeneralConfig {
     #[config(default_t = 7 * TimeUnit::Seconds)]
     pub gateway_rpc_poll_interval: Duration,
 
-    /// SYSCOIN Maximum time the main node waits on startup for pending settlement-layer state to become
-    /// finalized before aborting initialization.
+    /// SYSCOIN Interval for warning while the main node waits on startup for pending settlement-layer
+    /// state to become finalized. Kept under the original timeout key for config compatibility; startup
+    /// no longer aborts solely because pending state takes longer than this interval to finalize.
     #[config(default_t = 10 * TimeUnit::Seconds)]
     pub startup_sl_finalization_timeout: Duration,
 
