@@ -357,9 +357,10 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
     })
     .retry(retry_builder)
     .notify({
+        let pending_value = &pending_value;
         let mut retries = 0_u64;
         let mut next_warning_retry = 1_u64;
-        |(latest_block_number, last_value), _| {
+        move |(latest_block_number, last_value), _| {
             retries = retries.saturating_add(1);
             if retries >= next_warning_retry {
                 next_warning_retry = retries.saturating_add(warning_interval_retries);
