@@ -21,6 +21,18 @@ pub mod apps;
 pub use adapter::AbiTxSource;
 use zksync_os_types::ExecutionVersion;
 
+// SYSCOIN: Treat unsupported execution versions from replay/RPC data as recoverable errors.
+fn execution_version_from_context(
+    block_context: &BlockContext,
+) -> Result<ExecutionVersion, anyhow::Error> {
+    block_context.execution_version.try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "Unsupported ZKsync OS execution version: {}",
+            block_context.execution_version
+        )
+    })
+}
+
 pub fn run_block<
     Storage: ReadStorage,
     PreimgSrc: PreimageSource,
@@ -37,10 +49,7 @@ pub fn run_block<
     tracer: &mut Tracer,
     validator: &mut Validator,
 ) -> Result<BlockOutput, anyhow::Error> {
-    let execution_version: ExecutionVersion = block_context
-        .execution_version
-        .try_into()
-        .expect("Unsupported ZKsync OS execution version");
+    let execution_version = execution_version_from_context(&block_context)?;
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -118,10 +127,7 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
     preimage_source: PreimgSrc,
     tracer: &mut Tracer,
 ) -> Result<Result<TxOutput, InvalidTransaction>, anyhow::Error> {
-    let execution_version: ExecutionVersion = block_context
-        .execution_version
-        .try_into()
-        .expect("Unsupported ZKsync OS execution version");
+    let execution_version = execution_version_from_context(&block_context)?;
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -185,5 +191,39 @@ pub fn simulate_tx<Storage: ReadStorage, PreimgSrc: PreimageSource, Tracer: AnyT
                 )
                 .map_err(|err| anyhow::anyhow!(err))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execution_version_from_context;
+    use zksync_os_interface::types::BlockContext;
+    use zksync_os_types::ExecutionVersion;
+
+    #[test]
+    fn unsupported_execution_version_returns_error() {
+        let block_context = BlockContext {
+            execution_version: u32::MAX,
+            ..Default::default()
+        };
+
+        let error = execution_version_from_context(&block_context).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Unsupported ZKsync OS execution version: 4294967295"
+        );
+    }
+
+    #[test]
+    fn supported_execution_version_is_resolved() {
+        let block_context = BlockContext {
+            execution_version: ExecutionVersion::V6 as u32,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            execution_version_from_context(&block_context).unwrap(),
+            ExecutionVersion::V6
+        );
     }
 }
