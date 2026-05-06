@@ -414,7 +414,7 @@ where
             match receipt? {
                 ReceiptWaitOutcome::Confirmed(receipt) => break receipt,
                 ReceiptWaitOutcome::Dropped => {
-                    let Some(raw_tx) = raw_tx.as_ref() else {
+                    let Some(raw_tx_bytes) = raw_tx.as_ref() else {
                         tracing::warn!(
                             command_name,
                             ?tx_hash,
@@ -441,7 +441,7 @@ where
                     // SYSCOIN: if the provider no longer sees an unmined transaction by hash,
                     // rebroadcast the exact signed payload. This avoids crashing or advancing
                     // the nonce chain while giving dropped transactions a recovery path.
-                    match provider.send_raw_transaction(raw_tx).await {
+                    match provider.send_raw_transaction(raw_tx_bytes).await {
                         Ok(pending_tx) => {
                             tx_hash = *pending_tx.tx_hash();
                             tracing::warn!(
@@ -454,8 +454,24 @@ where
                             tracing::warn!(
                                 command_name,
                                 ?tx_hash,
-                                "Failed to rebroadcast L1 transaction; continuing to wait: {err}",
+                                "Failed to rebroadcast L1 transaction; resubmitting command: {err}",
                             );
+                            let resubmitted = submit_l1_transaction(
+                                provider,
+                                operator_address,
+                                to_address,
+                                config,
+                                gateway,
+                                command_name,
+                                &mut command,
+                                commit_submitted_tx,
+                            )
+                            .await?;
+                            receipt_fut = resubmitted.0;
+                            submitted_at = resubmitted.1;
+                            raw_tx = resubmitted.2;
+                            tx_hash = resubmitted.3;
+                            continue;
                         }
                     }
                     receipt_fut = wait_for_confirmed_receipt(
