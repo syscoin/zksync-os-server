@@ -124,8 +124,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, PubdataMode,
-    TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
+    PubdataMode, TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata,
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -139,6 +139,19 @@ const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
 const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
+
+// SYSCOIN: A main node configured to produce zero blocks must reject RPC txs before
+// the sequencer consumes its first Produce command, which can be delayed by replay.
+fn initial_transaction_acceptance_state(
+    node_role: NodeRole,
+    max_blocks_to_produce: Option<u64>,
+) -> TransactionAcceptanceState {
+    if node_role.is_main() && max_blocks_to_produce == Some(0) {
+        TransactionAcceptanceState::NotAccepting(NotAcceptingReason::BlockProductionDisabled)
+    } else {
+        TransactionAcceptanceState::Accepting
+    }
+}
 
 fn edge_da_admission_config(
     config: &Config,
@@ -778,7 +791,10 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
     // External nodes: always accepts, but may be rejected on the main node side during forwarding
     let (tx_acceptance_state_sender, tx_acceptance_state_receiver) =
-        watch::channel(TransactionAcceptanceState::Accepting);
+        watch::channel(initial_transaction_acceptance_state(
+            node_role,
+            config.sequencer_config.max_blocks_to_produce,
+        ));
 
     let main_node_provider = if let Some(url) = config.general_config.main_node_rpc_url.as_ref() {
         Some(
@@ -1862,12 +1878,37 @@ async fn find_last_matching_main_node_block(
 
 #[cfg(test)]
 mod tests {
-    use super::check_batch_verification_mismatch;
+    use super::{check_batch_verification_mismatch, initial_transaction_acceptance_state};
     use crate::config::BatchVerificationConfig;
     use alloy::primitives::address;
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
+    use zksync_os_types::{NodeRole, NotAcceptingReason, TransactionAcceptanceState};
+
+    #[test]
+    fn main_node_zero_block_cap_rejects_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0)),
+            TransactionAcceptanceState::NotAccepting(NotAcceptingReason::BlockProductionDisabled)
+        ));
+    }
+
+    #[test]
+    fn main_node_positive_block_cap_accepts_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1)),
+            TransactionAcceptanceState::Accepting
+        ));
+    }
+
+    #[test]
+    fn external_node_zero_block_cap_accepts_for_forwarding() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0)),
+            TransactionAcceptanceState::Accepting
+        ));
+    }
 
     #[test]
     fn test_batch_verification_is_disabled_on_server() {
