@@ -1,6 +1,6 @@
 use crate::metrics::STORAGE_MAP_METRICS;
 use crate::persistent_storage_map::PersistentStorageMap;
-use crate::storage_map_view::StorageMapView;
+use crate::storage_map_view::{ActiveStorageViews, StorageMapView};
 use alloy::primitives::B256;
 use dashmap::DashMap;
 use std::sync::atomic::AtomicU64;
@@ -33,6 +33,10 @@ pub struct StorageMap {
     /// RocksDB handle for the persistent base - cheap to clone
     pub persistent_storage_map: PersistentStorageMap,
 
+    // SYSCOIN: Active historical views constrain compaction so stale views
+    // cannot fall back to a future persistent base.
+    pub(crate) active_views: ActiveStorageViews,
+
     /// Configuration option. We always have at least `blocks_to_retain` elements in `diffs`
     pub blocks_to_retain: usize,
 }
@@ -52,6 +56,15 @@ impl Diff {
 
 impl StorageMap {
     pub fn view_at(&self, block_number: u64) -> StateResult<StorageMapView> {
+        // SYSCOIN: Register the view while holding the active-view lock. The
+        // compaction path holds the same lock while choosing and applying its
+        // target, so a view is either rejected after compaction or protected
+        // from future compaction past `block_number`.
+        let mut active_views = self.active_views.lock();
+        let mut active_view_guard = self
+            .active_views
+            .register_locked(block_number, &mut active_views);
+
         let latest_block = self.latest_block.load(Ordering::Relaxed);
         let persistent_block_upper_bound = self
             .persistent_storage_map
@@ -72,12 +85,16 @@ impl StorageMap {
         // we cannot provide keys for block N when it's already compacted
         // because view_at(N) should return view immediately after block N
         if block_number < persistent_block_upper_bound {
+            active_view_guard.unregister_with_lock(&mut active_views);
             return Err(StateError::Compacted(block_number));
         }
 
         if block_number > latest_block {
+            active_view_guard.unregister_with_lock(&mut active_views);
             return Err(StateError::NotFound(block_number));
         }
+
+        drop(active_views);
 
         Ok(StorageMapView {
             block: block_number,
@@ -85,6 +102,7 @@ impl StorageMap {
             base_block: persistent_block_lower_bound,
             diffs: self.diffs.clone(),
             persistent_storage_map: self.persistent_storage_map.clone(),
+            _active_view_guard: active_view_guard,
         })
     }
 
@@ -97,6 +115,7 @@ impl StorageMap {
             latest_block: Arc::new(AtomicU64::new(rocksdb_block)),
             diffs: Arc::new(DashMap::new()),
             persistent_storage_map,
+            active_views: ActiveStorageViews::default(),
             blocks_to_retain,
         }
     }
@@ -152,7 +171,18 @@ impl StorageMap {
     /// Only acts if there are more than `blocks_to_retain` blocks in memory
     pub fn compact(&self) {
         let latest_block = self.latest_block.load(Ordering::Relaxed);
-        let compacting_until = latest_block.saturating_sub(self.blocks_to_retain as u64);
+        let retention_compacting_until = latest_block.saturating_sub(self.blocks_to_retain as u64);
+
+        // SYSCOIN: Hold this lock for the full compaction. Otherwise a view can
+        // be created after we choose the target but before RocksDB advances,
+        // reintroducing the historical-read race.
+        let active_views = self.active_views.lock();
+        let compacting_until = self
+            .active_views
+            .oldest_locked(&active_views)
+            .map_or(retention_compacting_until, |oldest_view| {
+                retention_compacting_until.min(oldest_view)
+            });
 
         let initial_persistent_block_upper_bound =
             self.persistent_storage_map.persistent_block_upper_bound();
@@ -183,7 +213,9 @@ impl StorageMap {
             .compact_sync(compacting_until, compacted_diffs_to_compact);
 
         for block_number in (initial_persistent_block_upper_bound + 1..=compacting_until).rev() {
-            // todo: what will happen if there is a StorageMapView holding a reference to this diff?
+            // SYSCOIN: Active views only require that compaction does not move
+            // past their target block. Missing earlier diffs safely fall back
+            // to a persistent base that is no newer than the view.
             // todo: consider `try_unwrap`
             if let Some(_diff) = self.diffs.remove(&block_number) {
                 tracing::debug!("Compacted diff for block {}", block_number);
@@ -191,6 +223,8 @@ impl StorageMap {
                 panic!("No diff found for block {block_number} while compacting");
             }
         }
+
+        drop(active_views);
     }
 
     /// Aggregates all key-value updates between `from` and `to` (inclusive),
@@ -210,5 +244,85 @@ impl StorageMap {
         }
 
         Ok(aggregated_map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StorageMapCF;
+    use std::fs;
+    use std::sync::atomic::AtomicU64;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use zksync_os_interface::traits::ReadStorage;
+    use zksync_os_rocksdb::RocksDB;
+
+    fn b256(byte: u8) -> B256 {
+        B256::from([byte; 32])
+    }
+
+    fn storage_write(key: B256, value: B256) -> StorageWrite {
+        StorageWrite {
+            key,
+            value,
+            account: Default::default(),
+            account_key: Default::default(),
+        }
+    }
+
+    fn temp_db_path(test_name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "zksync-os-state-{test_name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn storage_map_for_test(
+        test_name: &str,
+        blocks_to_retain: usize,
+    ) -> (StorageMap, std::path::PathBuf) {
+        let path = temp_db_path(test_name);
+        let rocks = RocksDB::<StorageMapCF>::new(&path).expect("failed to open test RocksDB");
+        let persistent_storage_map = PersistentStorageMap {
+            rocks,
+            persistent_block_lower_bound: Arc::new(AtomicU64::new(0)),
+            persistent_block_upper_bound: Arc::new(AtomicU64::new(0)),
+        };
+        persistent_storage_map.compact_sync(0, HashMap::new());
+
+        (
+            StorageMap::new(persistent_storage_map, blocks_to_retain),
+            path,
+        )
+    }
+
+    #[test]
+    fn active_view_prevents_compaction_from_returning_future_state() {
+        let (storage_map, path) = storage_map_for_test("active-view-prevents-future-state", 1);
+        let key = b256(0xaa);
+
+        storage_map.add_diff(1, vec![storage_write(key, b256(0x11))]);
+        storage_map.add_diff(2, vec![storage_write(key, b256(0x22))]);
+        storage_map.add_diff(3, Vec::new());
+
+        let mut block_1_view = storage_map.view_at(1).expect("block 1 view must exist");
+        storage_map.compact();
+
+        assert_eq!(block_1_view.read(key), Some(b256(0x11)));
+
+        drop(block_1_view);
+        storage_map.compact();
+
+        assert!(matches!(
+            storage_map.view_at(1),
+            Err(StateError::Compacted(1))
+        ));
+
+        drop(storage_map);
+        fs::remove_dir_all(path).expect("failed to remove test RocksDB");
     }
 }
