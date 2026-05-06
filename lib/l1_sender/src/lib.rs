@@ -38,9 +38,20 @@ use zksync_os_pipeline::PeekableReceiver;
 
 /// A code for "method not found" error response as declared in JSON-RPC 2.0 spec.
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
-/// Future that resolves into a (fallible) transaction receipt.
-type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<TransactionReceipt>>;
-type PendingTx<Input> = (TransactionReceiptFuture, Input, Instant);
+/// Future that resolves into a (fallible) transaction receipt wait outcome.
+type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<ReceiptWaitOutcome>>;
+type PendingTx<Input> = (
+    TransactionReceiptFuture,
+    Input,
+    Instant,
+    Option<Vec<u8>>,
+    B256,
+);
+
+enum ReceiptWaitOutcome {
+    Confirmed(TransactionReceipt),
+    Dropped,
+}
 
 const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
 /// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
@@ -146,7 +157,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     config.transaction_timeout,
                 )
                 .boxed();
-                (fut, cmd, Instant::now())
+                (fut, cmd, Instant::now(), None, tx_hash)
             })
             .collect();
         wait_for_txs_and_forward(
@@ -154,6 +165,12 @@ pub async fn run_l1_sender<Input: SendToL1>(
             &provider,
             operator_address,
             command_name,
+            if gateway {
+                REQUIRED_CONFIRMATIONS_GATEWAY
+            } else {
+                REQUIRED_CONFIRMATIONS_L1
+            },
+            config.transaction_timeout,
             &latency_tracker,
             &outbound,
         )
@@ -257,8 +274,9 @@ pub async fn run_l1_sender<Input: SendToL1>(
                         envelope
                     };
 
+                    let raw_tx = tx.encoded_2718();
                     let pending_tx = provider
-                        .send_raw_transaction(&tx.encoded_2718())
+                        .send_raw_transaction(&raw_tx)
                         .await?;
                     let submitted_at = Instant::now();
                     let tx_hash = *pending_tx.tx_hash();
@@ -297,7 +315,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                     cmd.as_mut()
                         .iter_mut()
                         .for_each(|envelope| envelope.set_stage(Input::SENT_STAGE));
-                    anyhow::Ok((receipt_fut, cmd, submitted_at))
+                    anyhow::Ok((receipt_fut, cmd, submitted_at, Some(raw_tx), tx_hash))
                 })
                 // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
                 // but this is not necessary for now - we wait for them to be included in parallel
@@ -309,6 +327,12 @@ pub async fn run_l1_sender<Input: SendToL1>(
             &provider,
             operator_address,
             command_name,
+            if gateway {
+                REQUIRED_CONFIRMATIONS_GATEWAY
+            } else {
+                REQUIRED_CONFIRMATIONS_L1
+            },
+            config.transaction_timeout,
             &latency_tracker,
             &outbound,
         )
@@ -323,6 +347,8 @@ async fn wait_for_txs_and_forward<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
     command_name: &'static str,
+    required_confirmations: u64,
+    transaction_timeout: std::time::Duration,
     latency_tracker: &ComponentStateHandle<L1SenderState>,
     outbound: &Sender<SignedBatchEnvelope<FriProof>>,
 ) -> anyhow::Result<()>
@@ -334,12 +360,64 @@ where
     latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
 
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
-    for (receipt_fut, command, submitted_at) in pending_txs {
-        let receipt = receipt_fut.await;
-        // Observe latency before propagating errors so provider/RPC failures are recorded.
-        L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
-            .observe(submitted_at.elapsed().as_secs_f64());
-        let receipt = receipt?;
+    for (mut receipt_fut, command, mut submitted_at, raw_tx, mut tx_hash) in pending_txs {
+        let receipt = loop {
+            let receipt = receipt_fut.await;
+            // Observe latency before propagating errors so provider/RPC failures are recorded.
+            L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
+                .observe(submitted_at.elapsed().as_secs_f64());
+            match receipt? {
+                ReceiptWaitOutcome::Confirmed(receipt) => break receipt,
+                ReceiptWaitOutcome::Dropped => {
+                    let Some(raw_tx) = raw_tx.as_ref() else {
+                        tracing::warn!(
+                            command_name,
+                            ?tx_hash,
+                            "Recovered L1 transaction is no longer visible; continuing to wait \
+                             because the raw transaction is not available for rebroadcast"
+                        );
+                        receipt_fut = wait_for_confirmed_receipt(
+                            provider.root().clone(),
+                            tx_hash,
+                            required_confirmations,
+                            transaction_timeout,
+                        )
+                        .boxed();
+                        submitted_at = Instant::now();
+                        continue;
+                    };
+
+                    // SYSCOIN: if the provider no longer sees an unmined transaction by hash,
+                    // rebroadcast the exact signed payload. This avoids crashing or advancing
+                    // the nonce chain while giving dropped transactions a recovery path.
+                    match provider.send_raw_transaction(raw_tx).await {
+                        Ok(pending_tx) => {
+                            tx_hash = *pending_tx.tx_hash();
+                            tracing::warn!(
+                                command_name,
+                                ?tx_hash,
+                                "Rebroadcast dropped L1 transaction; waiting for inclusion"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                command_name,
+                                ?tx_hash,
+                                "Failed to rebroadcast L1 transaction; continuing to wait: {err}",
+                            );
+                        }
+                    }
+                    receipt_fut = wait_for_confirmed_receipt(
+                        provider.root().clone(),
+                        tx_hash,
+                        required_confirmations,
+                        transaction_timeout,
+                    )
+                    .boxed();
+                    submitted_at = Instant::now();
+                }
+            }
+        };
         validate_tx_receipt(provider, &command, receipt).await?;
         completed_commands.push(command);
     }
@@ -372,7 +450,7 @@ async fn wait_for_confirmed_receipt<P>(
     tx_hash: B256,
     required_confirmations: u64,
     timeout: std::time::Duration,
-) -> anyhow::Result<TransactionReceipt>
+) -> anyhow::Result<ReceiptWaitOutcome>
 where
     P: Provider<Ethereum>,
 {
@@ -409,7 +487,7 @@ where
             let confirmed_at =
                 receipt_block_number.saturating_add(required_confirmations.saturating_sub(1));
             if latest_block >= confirmed_at {
-                return Ok(receipt.clone());
+                return Ok(ReceiptWaitOutcome::Confirmed(receipt.clone()));
             }
         }
 
@@ -423,6 +501,24 @@ where
         if let Some(warning_at) = next_warning_at
             && elapsed >= warning_at
         {
+            if receipt.is_none() {
+                match provider.get_transaction_by_hash(tx_hash).await {
+                    Ok(None) => {
+                        tracing::warn!(
+                            "L1 transaction {tx_hash} is no longer visible by hash after \
+                             waiting for confirmation; it will be rebroadcast if possible"
+                        );
+                        return Ok(ReceiptWaitOutcome::Dropped);
+                    }
+                    Ok(Some(_)) => {}
+                    Err(err) => {
+                        tracing::warn!(
+                            "Failed to check whether L1 transaction {tx_hash} is still visible \
+                             while waiting for confirmation: {err}"
+                        );
+                    }
+                }
+            }
             tracing::warn!(
                 "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
                  required_confirmations={required_confirmations}, \
