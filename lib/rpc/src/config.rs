@@ -27,6 +27,9 @@ pub struct RpcConfig {
     /// Number of concurrent API connections (passed to jsonrpsee, default value there is 128)
     pub max_connections: u32,
 
+    /// Maximum number of active subscriptions accepted per websocket connection.
+    pub max_subscriptions_per_connection: u32,
+
     /// Maximum RPC request payload size for both HTTP and WS in megabytes
     pub max_request_size: u32,
 
