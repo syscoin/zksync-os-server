@@ -104,6 +104,11 @@ where
                 )
                 .await;
                 produced_blocks_count += 1;
+                // SYSCOIN: Close admission as soon as the final allowed Produce command starts,
+                // instead of waiting for a later command that may never arrive promptly.
+                if block_production_limit_reached(limit, produced_blocks_count) {
+                    signal_block_production_disabled(&self.tx_acceptance_state_sender);
+                }
             }
             latency_tracker.enter_state(SequencerState::BlockContextTxs);
 
@@ -234,7 +239,7 @@ async fn check_block_production_limit(
     tx_acceptance_state_sender: &watch::Sender<TransactionAcceptanceState>,
     latency_tracker: &ComponentStateHandle<SequencerState>,
 ) {
-    if already_produced_blocks_count >= limit {
+    if block_production_limit_reached(limit, already_produced_blocks_count) {
         tracing::warn!(
             already_produced_blocks_count,
             limit,
@@ -242,13 +247,23 @@ async fn check_block_production_limit(
         );
 
         // Signal to RPC that we're no longer accepting transactions
-        let _ = tx_acceptance_state_sender.send(TransactionAcceptanceState::NotAccepting(
-            NotAcceptingReason::BlockProductionDisabled,
-        ));
+        signal_block_production_disabled(tx_acceptance_state_sender);
 
         latency_tracker.enter_state(SequencerState::ConfiguredBlockLimitReached);
         std::future::pending::<()>().await;
     }
+}
+
+fn block_production_limit_reached(limit: u64, already_produced_blocks_count: u64) -> bool {
+    already_produced_blocks_count >= limit
+}
+
+fn signal_block_production_disabled(
+    tx_acceptance_state_sender: &watch::Sender<TransactionAcceptanceState>,
+) {
+    let _ = tx_acceptance_state_sender.send(TransactionAcceptanceState::NotAccepting(
+        NotAcceptingReason::BlockProductionDisabled,
+    ));
 }
 
 fn make_tx_validator(
@@ -273,4 +288,24 @@ fn make_deployment_filter(
     let tracer = deployment_filter::Tracer::new(unauthorized_flag.clone(), filter_config);
     let validator = deployment_filter::Validator::new(unauthorized_flag);
     (tracer, validator)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_production_limit_reached;
+
+    #[test]
+    fn block_production_limit_is_reached_for_zero_cap_at_startup() {
+        assert!(block_production_limit_reached(0, 0));
+    }
+
+    #[test]
+    fn block_production_limit_is_not_reached_before_positive_cap() {
+        assert!(!block_production_limit_reached(1, 0));
+    }
+
+    #[test]
+    fn block_production_limit_is_reached_after_final_allowed_block_starts() {
+        assert!(block_production_limit_reached(1, 1));
+    }
 }
