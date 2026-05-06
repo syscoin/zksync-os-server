@@ -9,6 +9,116 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::time::Instant;
 
+const UNKNOWN_METHOD_LABEL: &str = "unknown";
+
+// SYSCOIN: method names are client-controlled JSON-RPC input. Keep metric cardinality bounded
+// by mapping them to a static allowlist before indexing global metric families.
+fn normalize_method_label(method: &str) -> &'static str {
+    match method {
+        "batch" => "batch",
+        "debug_chainConfig" => "debug_chainConfig",
+        "debug_codeByHash" => "debug_codeByHash",
+        "debug_getRawBlock" => "debug_getRawBlock",
+        "debug_getRawHeader" => "debug_getRawHeader",
+        "debug_getRawReceipts" => "debug_getRawReceipts",
+        "debug_getRawTransaction" => "debug_getRawTransaction",
+        "debug_getRawTransactions" => "debug_getRawTransactions",
+        "debug_traceBlock" => "debug_traceBlock",
+        "debug_traceBlockByHash" => "debug_traceBlockByHash",
+        "debug_traceBlockByNumber" => "debug_traceBlockByNumber",
+        "debug_traceCall" => "debug_traceCall",
+        "debug_traceCallMany" => "debug_traceCallMany",
+        "debug_traceTransaction" => "debug_traceTransaction",
+        "erigon_getHeaderByNumber" => "erigon_getHeaderByNumber",
+        "eth_accounts" => "eth_accounts",
+        "eth_blobBaseFee" => "eth_blobBaseFee",
+        "eth_blockNumber" => "eth_blockNumber",
+        "eth_call" => "eth_call",
+        "eth_callMany" => "eth_callMany",
+        "eth_chainId" => "eth_chainId",
+        "eth_coinbase" => "eth_coinbase",
+        "eth_createAccessList" => "eth_createAccessList",
+        "eth_estimateGas" => "eth_estimateGas",
+        "eth_feeHistory" => "eth_feeHistory",
+        "eth_gasPrice" => "eth_gasPrice",
+        "eth_getAccount" => "eth_getAccount",
+        "eth_getAccountInfo" => "eth_getAccountInfo",
+        "eth_getBalance" => "eth_getBalance",
+        "eth_getBlockByHash" => "eth_getBlockByHash",
+        "eth_getBlockByNumber" => "eth_getBlockByNumber",
+        "eth_getBlockReceipts" => "eth_getBlockReceipts",
+        "eth_getBlockTransactionCountByHash" => "eth_getBlockTransactionCountByHash",
+        "eth_getBlockTransactionCountByNumber" => "eth_getBlockTransactionCountByNumber",
+        "eth_getCode" => "eth_getCode",
+        "eth_getFilterChanges" => "eth_getFilterChanges",
+        "eth_getFilterLogs" => "eth_getFilterLogs",
+        "eth_getHeaderByHash" => "eth_getHeaderByHash",
+        "eth_getHeaderByNumber" => "eth_getHeaderByNumber",
+        "eth_getLogs" => "eth_getLogs",
+        "eth_getProof" => "eth_getProof",
+        "eth_getRawTransactionByBlockHashAndIndex" => "eth_getRawTransactionByBlockHashAndIndex",
+        "eth_getRawTransactionByBlockNumberAndIndex" => {
+            "eth_getRawTransactionByBlockNumberAndIndex"
+        }
+        "eth_getRawTransactionByHash" => "eth_getRawTransactionByHash",
+        "eth_getStorageAt" => "eth_getStorageAt",
+        "eth_getTransactionByBlockHashAndIndex" => "eth_getTransactionByBlockHashAndIndex",
+        "eth_getTransactionByBlockNumberAndIndex" => "eth_getTransactionByBlockNumberAndIndex",
+        "eth_getTransactionByHash" => "eth_getTransactionByHash",
+        "eth_getTransactionBySenderAndNonce" => "eth_getTransactionBySenderAndNonce",
+        "eth_getTransactionCount" => "eth_getTransactionCount",
+        "eth_getTransactionReceipt" => "eth_getTransactionReceipt",
+        "eth_getUncleByBlockHashAndIndex" => "eth_getUncleByBlockHashAndIndex",
+        "eth_getUncleByBlockNumberAndIndex" => "eth_getUncleByBlockNumberAndIndex",
+        "eth_getUncleCountByBlockHash" => "eth_getUncleCountByBlockHash",
+        "eth_getUncleCountByBlockNumber" => "eth_getUncleCountByBlockNumber",
+        "eth_maxPriorityFeePerGas" => "eth_maxPriorityFeePerGas",
+        "eth_newBlockFilter" => "eth_newBlockFilter",
+        "eth_newFilter" => "eth_newFilter",
+        "eth_newPendingTransactionFilter" => "eth_newPendingTransactionFilter",
+        "eth_protocolVersion" => "eth_protocolVersion",
+        "eth_sendRawTransaction" => "eth_sendRawTransaction",
+        "eth_sendRawTransactionSync" => "eth_sendRawTransactionSync",
+        "eth_sendTransaction" => "eth_sendTransaction",
+        "eth_sign" => "eth_sign",
+        "eth_signTransaction" => "eth_signTransaction",
+        "eth_signTypedData" => "eth_signTypedData",
+        "eth_simulateV1" => "eth_simulateV1",
+        "eth_subscribe" => "eth_subscribe",
+        "eth_syncing" => "eth_syncing",
+        "eth_uninstallFilter" => "eth_uninstallFilter",
+        "eth_unsubscribe" => "eth_unsubscribe",
+        "net_version" => "net_version",
+        "ots_getApiLevel" => "ots_getApiLevel",
+        "ots_getBlockDetails" => "ots_getBlockDetails",
+        "ots_getBlockDetailsByHash" => "ots_getBlockDetailsByHash",
+        "ots_getBlockTransactions" => "ots_getBlockTransactions",
+        "ots_getContractCreator" => "ots_getContractCreator",
+        "ots_getHeaderByNumber" => "ots_getHeaderByNumber",
+        "ots_getInternalOperations" => "ots_getInternalOperations",
+        "ots_getTransactionBySenderAndNonce" => "ots_getTransactionBySenderAndNonce",
+        "ots_getTransactionError" => "ots_getTransactionError",
+        "ots_hasCode" => "ots_hasCode",
+        "ots_searchTransactionsAfter" => "ots_searchTransactionsAfter",
+        "ots_searchTransactionsBefore" => "ots_searchTransactionsBefore",
+        "ots_traceTransaction" => "ots_traceTransaction",
+        "txpool_content" => "txpool_content",
+        "txpool_inspect" => "txpool_inspect",
+        "txpool_status" => "txpool_status",
+        "unstable_getBatchByBlockNumber" => "unstable_getBatchByBlockNumber",
+        "unstable_getLocalRoot" => "unstable_getLocalRoot",
+        "web3_clientVersion" => "web3_clientVersion",
+        "web3_sha3" => "web3_sha3",
+        "zks_getBlockMetadataByNumber" => "zks_getBlockMetadataByNumber",
+        "zks_getBridgehubContract" => "zks_getBridgehubContract",
+        "zks_getBytecodeSupplierContract" => "zks_getBytecodeSupplierContract",
+        "zks_getGenesis" => "zks_getGenesis",
+        "zks_getL2ToL1LogProof" => "zks_getL2ToL1LogProof",
+        "zks_getProof" => "zks_getProof",
+        _ => UNKNOWN_METHOD_LABEL,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CallKind {
     Call,
@@ -33,7 +143,7 @@ impl Monitoring {
 /// Ensures latency is recorded even if the future is dropped mid-flight (client disconnected).
 struct CallGuard {
     kind: CallKind,
-    method: String,
+    method: &'static str,
     started: Instant,
     request_size: usize,
     /// `Some((output_size, error_code))` once the future has resolved.
@@ -42,7 +152,7 @@ struct CallGuard {
 }
 
 impl CallGuard {
-    fn new(kind: CallKind, method: String, request_size: usize) -> Self {
+    fn new(kind: CallKind, method: &'static str, request_size: usize) -> Self {
         Self {
             kind,
             method,
@@ -72,14 +182,14 @@ impl CallGuard {
 /// Ensures batch-level metrics are recorded even if the future is dropped mid-flight (client disconnected).
 struct BatchGuard {
     batch_input_size: usize,
-    request_counts: HashMap<String, u64>,
+    request_counts: HashMap<&'static str, u64>,
     started: Instant,
     /// `Some(response_size)` once the batch has resolved.
     completed: Option<usize>,
 }
 
 impl BatchGuard {
-    fn new(batch_input_size: usize, request_counts: HashMap<String, u64>) -> Self {
+    fn new(batch_input_size: usize, request_counts: HashMap<&'static str, u64>) -> Self {
         Self {
             batch_input_size,
             request_counts,
@@ -101,7 +211,7 @@ impl Drop for BatchGuard {
         API_METRICS.request_size["batch"].observe(self.batch_input_size);
         API_METRICS.response_size["batch"].observe(response_size);
         for (method, count) in &self.request_counts {
-            API_METRICS.requests_in_batch_count[method.as_str()].observe(*count);
+            API_METRICS.requests_in_batch_count[*method].observe(*count);
         }
         tracing::debug!(
             target: "rpc::monitoring::batch",
@@ -116,17 +226,17 @@ impl Drop for CallGuard {
         let elapsed = self.started.elapsed();
         let cancelled = self.completed.is_none();
         let (output_size, error_code) = self.completed.take().unwrap_or((0, None));
-        API_METRICS.response_time[&self.method].observe(elapsed);
-        API_METRICS.request_size[&self.method].observe(self.request_size);
-        API_METRICS.response_size[&self.method].observe(output_size);
+        API_METRICS.response_time[self.method].observe(elapsed);
+        API_METRICS.request_size[self.method].observe(self.request_size);
+        API_METRICS.response_size[self.method].observe(output_size);
         if let Some(code) = error_code {
-            API_METRICS.errors[&(self.method.clone(), code)].inc();
+            API_METRICS.errors[&(self.method.to_owned(), code)].inc();
         }
         if cancelled {
-            API_METRICS.cancelled[&self.method].inc();
+            API_METRICS.cancelled[self.method].inc();
         }
         if self.panicked {
-            API_METRICS.panicked[&self.method].inc();
+            API_METRICS.panicked[self.method].inc();
             match self.kind {
                 CallKind::Call => tracing::error!(method = %self.method, "RPC handler panicked"),
                 CallKind::Notification => {
@@ -146,7 +256,7 @@ impl Drop for CallGuard {
             };
         }
 
-        match self.method.as_str() {
+        match self.method {
             "eth_call" => log!("rpc::monitoring::eth::call"),
             "eth_sendRawTransaction" => log!("rpc::monitoring::eth::sendRawTransaction"),
             "debug_traceTransaction" => log!("rpc::monitoring::debug::traceTransaction"),
@@ -164,7 +274,7 @@ impl RpcServiceT for Monitoring {
         &self,
         request: Request<'a>,
     ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
-        let method = request.method_name().to_owned();
+        let method = normalize_method_label(request.method_name());
         let request_size = request.params.as_ref().map_or(0, |p| p.get().len());
         let inner = self.inner.clone();
 
@@ -195,7 +305,7 @@ impl RpcServiceT for Monitoring {
             .iter()
             .filter_map(|x| {
                 if let Ok(req) = x {
-                    Some(req.method_name().to_owned())
+                    Some(normalize_method_label(req.method_name()))
                 } else {
                     None
                 }
@@ -250,7 +360,7 @@ impl RpcServiceT for Monitoring {
         n: Notification<'a>,
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
         let request_size = n.params.as_ref().map_or(0, |p| p.get().len());
-        let method = n.method_name().to_owned();
+        let method = normalize_method_label(n.method_name());
         let inner = self.inner.clone();
 
         async move {
@@ -259,5 +369,35 @@ impl RpcServiceT for Monitoring {
                 .handle_result(handler, MethodResponse::notification)
                 .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UNKNOWN_METHOD_LABEL, normalize_method_label};
+
+    #[test]
+    fn known_methods_keep_specific_labels() {
+        assert_eq!(normalize_method_label("eth_call"), "eth_call");
+        assert_eq!(
+            normalize_method_label("debug_traceTransaction"),
+            "debug_traceTransaction"
+        );
+        assert_eq!(
+            normalize_method_label("zks_getBridgehubContract"),
+            "zks_getBridgehubContract"
+        );
+    }
+
+    #[test]
+    fn unknown_methods_share_one_bounded_label() {
+        assert_eq!(
+            normalize_method_label("attacker_unique_1"),
+            UNKNOWN_METHOD_LABEL
+        );
+        assert_eq!(
+            normalize_method_label(&"attacker_unique_2".repeat(1024)),
+            UNKNOWN_METHOD_LABEL
+        );
     }
 }
