@@ -413,21 +413,16 @@ def materialize_chain(
                 f"  bitcoin_da_gateway_l1_republish_enabled: {os.environ.get('BITCOIN_DA_GATEWAY_L1_REPUBLISH_ENABLED', 'true')}",
             ]
         )
+    if gateway_rpc_url is not None:
+        config_lines.extend(
+            [
+                "gateway_provider:",
+                f"  rpc_url: {gateway_rpc_url}",
+            ]
+        )
     config_lines.append("")
 
     write_text(out_dir / "config.yaml", "\n".join(config_lines))
-
-    if gateway_rpc_url is not None:
-        write_text(
-            out_dir / "gateway-overlay.yaml",
-            "\n".join(
-                [
-                    "gateway_provider:",
-                    f"  rpc_url: {gateway_rpc_url}",
-                    "",
-                ]
-            ),
-        )
 
     shutil.copy2(contracts_candidate, out_dir / "contracts.yaml")
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
@@ -435,8 +430,6 @@ def materialize_chain(
 
     config_path = out_dir / "config.yaml"
     start_config_args = f'--config "{config_path}"'
-    if gateway_rpc_url is not None:
-        start_config_args += f' --config "{out_dir / "gateway-overlay.yaml"}"'
 
     refresh_cookie_block = ""
     if uses_syscoin_da_refs:
