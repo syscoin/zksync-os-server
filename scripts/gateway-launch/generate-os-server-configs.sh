@@ -316,12 +316,13 @@ def materialize_chain(
     config_lines = [
         "general:",
         f"  rocks_db_path: {out_dir / 'db'}",
-        f"  l1_rpc_url: '{l1_rpc_url}'",
         *(
             ["  startup_sl_finalization_timeout: 3000s"]
             if pubdata_mode != "RelayedL2Calldata"
             else []
         ),
+        "l1_provider:",
+        f"  rpc_url: '{l1_rpc_url}'",
     ]
     config_lines.extend(
         [
@@ -421,8 +422,8 @@ def materialize_chain(
             out_dir / "gateway-overlay.yaml",
             "\n".join(
                 [
-                    "general:",
-                    f"  gateway_rpc_url: {gateway_rpc_url}",
+                    "gateway_provider:",
+                    f"  rpc_url: {gateway_rpc_url}",
                     "",
                 ]
             ),

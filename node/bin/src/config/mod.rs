@@ -454,10 +454,8 @@ pub struct GeneralConfig {
 
 /// Config for L1 or Gateway provider
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
-#[config(derive(Default))]
 pub struct ProviderConfig {
     /// JSON RPC API URL.
-    #[config(default_t = "http://localhost:8545".into())]
     pub rpc_url: String,
 
     /// Poll interval used by the alloy provider when waiting for transaction receipts.
@@ -472,6 +470,17 @@ pub struct ProviderConfig {
     /// Backoff used between retry attempts.
     #[config(default_t = Duration::from_millis(1000))]
     pub retry_backoff: Duration,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            rpc_url: String::new(),
+            rpc_poll_interval: 7 * TimeUnit::Seconds,
+            max_retries: 5,
+            retry_backoff: Duration::from_millis(1000),
+        }
+    }
 }
 
 impl ProviderConfig {
