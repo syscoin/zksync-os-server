@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
-use zksync_os_pipeline::{PeekableReceiver, SendAndRecordExt};
+use zksync_os_pipeline::{ComponentId, PeekableReceiver, SendAndRecordExt};
 
 /// Component-specific state for the L1 sender.
 pub enum L1SenderState {
@@ -239,7 +239,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         // command_limit items without waiting. cmd_buffer is emptied every iteration.
         // SYSCOIN: execute appends to MessageRoot sequentially, so tx N+1
         // cannot be prepared before tx N is mined. Keep commit/prove pipelining intact.
-        let command_limit = if command_name == "execute" {
+        let command_limit = if Input::COMPONENT_ID == ComponentId::L1SenderExecute {
             1
         } else {
             config.command_limit
