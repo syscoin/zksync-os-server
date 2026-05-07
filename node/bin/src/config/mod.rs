@@ -15,6 +15,8 @@ use smart_config::{
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
+// SYSCOIN
+use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
 use zksync_os_batch_verification;
 use zksync_os_config_validation_macros::ConfigValidate;
@@ -1295,9 +1297,21 @@ pub struct BatchVerificationConfig {
     pub client_enabled: bool,
     /// [main node] Threshold (number of needed signatures).
     #[config(default_t = 1)]
+    #[config_validate(custom(
+        |root: &Config, value: &u64| !root.batch_verification_config.server_enabled || *value > 0,
+        "requires a positive threshold when `batch_verification.server_enabled=true`"
+    ))]
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
-    #[config(default_t = vec!["0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".into()], with = Delimited::new(","))]
+    #[config(default_t = vec![], with = Delimited::new(","))]
+    // SYSCOIN
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<String>| {
+            !root.batch_verification_config.server_enabled
+                || value.iter().all(|signer| Address::from_str(signer).is_ok())
+        },
+        "requires valid signer addresses when `batch_verification.server_enabled=true`"
+    ))]
     pub accepted_signers: Vec<String>,
     /// [main node] Iteration timeout.
     #[config(default_t = Duration::from_secs(5))]
@@ -1309,8 +1323,15 @@ pub struct BatchVerificationConfig {
     #[config(default_t = Duration::from_secs(300))]
     pub total_timeout: Duration,
     /// [external node] Signing key.
-    // default address 0x36615Cf349d7F6344891B1e7CA7C72883F5dc049
-    #[config(default_t = "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110".into())]
+    #[config(default_t = "".into())]
+    // SYSCOIN
+    #[config_validate(custom(
+        |root: &Config, value: &SecretString| {
+            !root.batch_verification_config.client_enabled
+                || alloy::signers::local::PrivateKeySigner::from_str(value.expose_secret()).is_ok()
+        },
+        "requires a valid signing key when `batch_verification.client_enabled=true`"
+    ))]
     pub signing_key: SecretString,
     /// Stop accepting transactions when batch verification falls this many batches behind
     /// its upstream.
@@ -2111,5 +2132,47 @@ mod tests {
         assert!(
             err.contains("`batch_verification.client_enabled` requires `network.enabled=true`")
         );
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn batch_verification_server_allows_empty_local_signers_at_config_load() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.network_config.enabled = true;
+        config.network_config.secret_key = Some(SecretKey::from_slice(&[0x44; 32]).unwrap());
+        config.batch_verification_config.server_enabled = true;
+        config.batch_verification_config.accepted_signers.clear();
+
+        config.validate().await.unwrap();
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn batch_verification_server_requires_valid_signer_addresses() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.network_config.enabled = true;
+        config.batch_verification_config.server_enabled = true;
+        config.batch_verification_config.accepted_signers = vec!["not-an-address".into()];
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`batch_verification.accepted_signers` requires valid signer addresses when `batch_verification.server_enabled=true`"
+        ));
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn batch_verification_client_requires_valid_signing_key() {
+        let mut config = base_config(NodeRole::ExternalNode);
+        config.network_config.enabled = true;
+        config.batch_verification_config.client_enabled = true;
+        config.batch_verification_config.signing_key = "".into();
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`batch_verification.signing_key` requires a valid signing key when `batch_verification.client_enabled=true`"
+        ));
     }
 }

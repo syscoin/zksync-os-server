@@ -95,7 +95,9 @@ impl SnarkJobManager {
             .jobs
             .get_job_proving_vk_hash(batch_from)
             .await
-            .ok_or_else(|| anyhow::anyhow!("race condition: some batches were completed earlier"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("race condition: some batches were completed earlier")
+            })?;
         let prover_vk = proving_version.vk_hash();
         anyhow::ensure!(
             server_vk == prover_vk,
