@@ -11,5 +11,5 @@ pub mod batcher_model;
 
 pub use batch_info::{
     DiscoveredCommittedBatch, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch,
-    syscoin_blob_ids_and_chunks_from_pubdata,
+    syscoin_blob_ids_and_chunks_from_pubdata, syscoin_edge_da_refs_from_input,
 };

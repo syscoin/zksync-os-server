@@ -24,13 +24,16 @@ pub use latency_distribution_tracker::LatencyDistributionTracker;
 mod generic_component_state;
 pub use generic_component_state::GenericComponentState;
 
-pub mod component_state_reporter;
-pub use component_state_reporter::{ComponentStateHandle, ComponentStateReporter, StateLabel};
+mod state_label;
+pub use state_label::StateLabel;
 
 mod metrics;
 pub use metrics::GENERAL_METRICS;
 
 pub mod tokio_runtime;
+
+mod component_state_reporter;
+pub use component_state_reporter::{ComponentState, ComponentStateReporter, TrackingCoordinates};
 
 /// Internal trait used in `ObservabilityGuard::with_timeout()` to inspect action results.
 trait InspectResults {
@@ -219,12 +222,12 @@ impl ObservabilityBuilder {
             .opentelemetry_layer
             .and_then(|layer| layer.logs_layer())
             .unzip();
-        let sentry_layer = self.sentry.as_ref().map(|sentry| sentry.layer());
+        // SYSCOIN: Do not install the generic Sentry tracing layer. It turns arbitrary WARN/ERROR
+        // tracing fields into external telemetry; explicit Sentry alerts still use the client below.
 
         tracing_subscriber::registry()
             .with(global_filter)
             .with(logs_layer)
-            .with(sentry_layer)
             .with(otlp_tracing_layer)
             .with(otlp_logging_layer)
             .try_init()

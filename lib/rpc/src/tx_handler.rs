@@ -57,9 +57,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         &self,
         tx_bytes: Bytes,
     ) -> Result<B256, EthSendRawTransactionError> {
-        if let TransactionAcceptanceState::NotAccepting(reason) = &*self.acceptance_state.borrow() {
+        if let TransactionAcceptanceState::NotAccepting(reasons) = &*self.acceptance_state.borrow()
+        {
             return Err(EthSendRawTransactionError::NotAcceptingTransactions(
-                *reason,
+                reasons.clone(),
             ));
         }
 
@@ -73,7 +74,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
         // SYSCOIN
-        self.verify_compact_edge_da_refs(&l2_tx).await?;
+        self.verify_compact_edge_da_refs_available(&l2_tx).await?;
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -87,8 +88,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // We do not need to wait for pending transaction here, so it's safe to forget about it
             if let Err(err) = forwarding_result {
                 tracing::debug!(%err, "forwarding error from main node back to user");
-                // Remove previously added transaction from local mempool
-                self.mempool.remove_transactions(vec![hash]);
+                // SYSCOIN: keep EN pending state consistent when the main node already knows the
+                // transaction or when the forwarding result is ambiguous after local acceptance.
+                if forwarding_error_indicates_main_node_already_knows_tx(&err) {
+                    tracing::debug!(%err, %hash, "main node already knows forwarded transaction");
+                    return Ok(hash);
+                }
+                if forwarding_error_should_rollback_local_tx(&err) {
+                    self.mempool.remove_transactions(vec![hash]);
+                }
                 return Err(err.into());
             }
         }
@@ -96,11 +104,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         Ok(hash)
     }
     // SYSCOIN: verify compact edge DA refs emitted by chains settling to Gateway.
-    async fn verify_compact_edge_da_refs(
+    async fn verify_compact_edge_da_refs_available(
         &self,
         tx: &L2Transaction,
     ) -> Result<(), EthSendRawTransactionError> {
-        let Some(config) = self.config.edge_da_finality.as_ref() else {
+        let Some(config) = self.config.edge_da_admission.as_ref() else {
             return Ok(());
         };
         if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
@@ -119,26 +127,22 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             &config.wallet_name,
         )
         .map_err(|err| {
-            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
                 "failed to create Bitcoin DA client: {err}"
             ))
         })?;
         for (idx, version_hash) in version_hashes.iter().enumerate() {
-            let finalized = client
-                .check_blob_finality_with_mode(
-                    version_hash,
-                    config.finality_mode,
-                    config.confirmations,
-                )
+            let exists = client
+                .blob_exists(version_hash)
                 .await
                 .map_err(|err| {
-                    EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
-                        "failed to check Bitcoin DA finality for compact edge ref {idx} ({version_hash}): {err}"
+                    EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
+                        "failed to check Bitcoin DA availability for compact edge ref {idx} ({version_hash}): {err}"
                     ))
                 })?;
-            if !finalized {
-                return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
-                    format!("compact edge DA ref {idx} ({version_hash}) is not finalized"),
+            if !exists {
+                return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                    format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
                 ));
             }
         }
@@ -219,7 +223,7 @@ fn compact_edge_da_refs_from_commit_calldata(
     }
 
     let commit = CommitCalldata::decode(input).map_err(|err| {
-        EthSendRawTransactionError::EdgeDaFinalityCheckFailed(format!(
+        EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
             "failed to decode compact edge DA commit calldata: {err}"
         ))
     })?;
@@ -229,7 +233,7 @@ fn compact_edge_da_refs_from_commit_calldata(
         // Their scheme-specific validity remains enforced by the configured onchain DA validator.
         DACommitmentScheme::EmptyNoDA => return Ok(None),
         scheme => {
-            return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                 format!("unsupported child-chain DA commitment scheme for Gateway: {scheme:?}"),
             ));
         }
@@ -241,7 +245,7 @@ fn compact_edge_da_refs_from_commit_calldata(
         || operator_da_input.len() % 32 != 0
         || blob_hash_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
     {
-        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+        return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
             format!(
                 "compact edge DA operator input must be a non-empty array of at most {SYSCOIN_DA_MAX_BLOBS_PER_BATCH} 32-byte hashes"
             ),
@@ -249,7 +253,7 @@ fn compact_edge_da_refs_from_commit_calldata(
     }
     let actual_commitment = keccak256(operator_da_input);
     if actual_commitment != commit.commit_batch_info.da_commitment {
-        return Err(EthSendRawTransactionError::EdgeDaFinalityCheckFailed(
+        return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
             format!(
                 "compact edge DA commitment mismatch: expected {}, got {}",
                 commit.commit_batch_info.da_commitment, actual_commitment
@@ -265,6 +269,41 @@ fn compact_edge_da_refs_from_commit_calldata(
     ))
 }
 
+// SYSCOIN: forwarding can fail after local mempool insertion. Only roll back errors that are
+// definitely local/pre-send failures or explicit main-node rejections; keep the tx for ambiguous
+// transport/response failures so pending RPC state does not drop a tx the main node may include.
+fn forwarding_error_should_rollback_local_tx(err: &RpcError<TransportErrorKind>) -> bool {
+    match err {
+        RpcError::ErrorResp(_) => !forwarding_error_indicates_main_node_already_knows_tx(err),
+        RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_) => {
+            true
+        }
+        RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. } => false,
+    }
+}
+
+fn forwarding_error_indicates_main_node_already_knows_tx(
+    err: &RpcError<TransportErrorKind>,
+) -> bool {
+    let Some(payload) = err.as_error_resp() else {
+        return false;
+    };
+    contains_known_transaction_error(payload.message.as_ref())
+        || payload
+            .data
+            .as_ref()
+            .is_some_and(|data| contains_known_transaction_error(data.get()))
+}
+
+fn contains_known_transaction_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("already known")
+        || message.contains("already imported")
+        || message.contains("already in the pool")
+        || message.contains("transaction already")
+        || message.trim_start().starts_with("known transaction")
+}
+
 /// Error types returned by `eth_sendRawTransaction` implementation
 #[derive(Debug, thiserror::Error)]
 pub enum EthSendRawTransactionError {
@@ -275,8 +314,8 @@ pub enum EthSendRawTransactionError {
     #[error("invalid transaction signature")]
     InvalidTransactionSignature,
     /// When the node is not accepting new transactions
-    #[error(transparent)]
-    NotAcceptingTransactions(NotAcceptingReason),
+    #[error("{}", .0.iter().map(|r| r.to_string()).collect::<Vec<_>>().join("; "))]
+    NotAcceptingTransactions(Vec<NotAcceptingReason>),
     /// Errors related to the transaction pool
     #[error(transparent)]
     PoolError(#[from] PoolError),
@@ -285,8 +324,8 @@ pub enum EthSendRawTransactionError {
     ForwardError(#[from] RpcError<TransportErrorKind>),
     #[error("Signer is blacklisted")]
     BlacklistedSigner,
-    #[error("compact edge DA finality check failed: {0}")]
-    EdgeDaFinalityCheckFailed(String),
+    #[error("compact edge DA admission check failed: {0}")]
+    EdgeDaAdmissionCheckFailed(String),
 }
 
 impl From<&EthSendRawTransactionError> for TxRejectionReason {
@@ -296,7 +335,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::InvalidTransactionSignature => Self::InvalidSignature,
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
-            EthSendRawTransactionError::EdgeDaFinalityCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
             EthSendRawTransactionError::ForwardError(rpc_err) => match rpc_err {
                 RpcError::ErrorResp(_) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,
@@ -565,5 +604,33 @@ mod tests {
         let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
 
         assert!(err.to_string().contains("at most 32 32-byte hashes"));
+    }
+
+    #[test]
+    fn forwarding_duplicate_errors_are_known_transaction_errors() {
+        assert!(contains_known_transaction_error("already known"));
+        assert!(contains_known_transaction_error(
+            "transaction already imported"
+        ));
+        assert!(contains_known_transaction_error(
+            "transaction already in the pool"
+        ));
+        assert!(contains_known_transaction_error(
+            "transaction already exists"
+        ));
+        assert!(contains_known_transaction_error(
+            "known transaction: 0x1234"
+        ));
+        assert!(!contains_known_transaction_error("nonce too low"));
+        assert!(!contains_known_transaction_error(
+            "unknown transaction type"
+        ));
+    }
+
+    #[test]
+    fn forwarding_ambiguous_errors_do_not_rollback_local_tx() {
+        let null_response = RpcError::<TransportErrorKind>::NullResp;
+
+        assert!(!forwarding_error_should_rollback_local_tx(&null_response));
     }
 }

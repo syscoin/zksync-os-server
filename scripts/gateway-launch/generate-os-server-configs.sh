@@ -27,7 +27,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
 : "${EDGE_BLOCK_TIME:=2s}"
 : "${EDGE_PUBDATA_PRICING_MULTIPLIER:=32.0}"
-: "${EDGE_NATIVE_PER_GAS:=1}"
+: "${EDGE_NATIVE_PER_GAS:=100}"
+: "${EDGE_NATIVE_PRICE_USD:=3e-11}"
 : "${NATIVE_TOKEN_PRICE_USD:=0.01}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
@@ -102,6 +103,7 @@ export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
 export EDGE_BLOCK_TIME
 export EDGE_PUBDATA_PRICING_MULTIPLIER
 export EDGE_NATIVE_PER_GAS
+export EDGE_NATIVE_PRICE_USD
 export NATIVE_TOKEN_PRICE_USD
 export MATERIALIZE_EDGE_CONFIG
 export GATEWAY_ARCHIVE_L1_RPC_URL
@@ -301,6 +303,7 @@ def materialize_chain(
     )
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
+    fee_collector_address = wallets["fee_account"]["address"]
     max_fee_per_gas_wei = parse_ether_amount_to_wei(
         os.environ.get("ETH_GAS_PRICE", ""),
         1 * 10**9,
@@ -313,12 +316,13 @@ def materialize_chain(
     config_lines = [
         "general:",
         f"  rocks_db_path: {out_dir / 'db'}",
-        f"  l1_rpc_url: '{l1_rpc_url}'",
         *(
             ["  startup_sl_finalization_timeout: 3000s"]
             if pubdata_mode != "RelayedL2Calldata"
             else []
         ),
+        "l1_provider:",
+        f"  rpc_url: '{l1_rpc_url}'",
     ]
     config_lines.extend(
         [
@@ -330,6 +334,7 @@ def materialize_chain(
             "sequencer:",
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
+            f"  fee_collector_address: '{fee_collector_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
                 if chain_name == "zksys"
@@ -342,13 +347,9 @@ def materialize_chain(
             f"  operator_execute_sk: '{operator_execute_sk}'",
             f"  max_fee_per_gas: '{max_fee_per_gas_wei} wei'",
             f"  max_priority_fee_per_gas: '{max_priority_fee_per_gas_wei} wei'",
-            *(
-                # SYSCOIN: child-chain commits to Gateway must be serialized because
-                # each commit's previous batch hash depends on the prior commit landing.
-                ["  command_limit: 1"]
-                if chain_name == "zksys"
-                else []
-            ),
+            # SYSCOIN: commit batches are state-dependent on both settlement
+            # layers, so keep L1 submissions single-flight for now.
+            "  command_limit: 1",
             *(
                 ["  transaction_timeout: 3000s"]
                 if pubdata_mode != "RelayedL2Calldata"
@@ -366,6 +367,7 @@ def materialize_chain(
                 [
                     "fee:",
                     f"  native_per_gas: {os.environ['EDGE_NATIVE_PER_GAS']}",
+                    f"  native_price_usd: {os.environ['EDGE_NATIVE_PRICE_USD']}",
                 ]
                 if chain_name == "zksys"
                 else []
@@ -408,23 +410,19 @@ def materialize_chain(
                 f"  bitcoin_da_address_label: {os.environ['BITCOIN_DA_ADDRESS_LABEL']}",
                 f"  bitcoin_da_finality_mode: {os.environ['BITCOIN_DA_FINALITY_MODE']}",
                 f"  bitcoin_da_finality_confirmations: {os.environ['BITCOIN_DA_FINALITY_CONFIRMATIONS']}",
+                f"  bitcoin_da_gateway_l1_republish_enabled: {os.environ.get('BITCOIN_DA_GATEWAY_L1_REPUBLISH_ENABLED', 'true')}",
+            ]
+        )
+    if gateway_rpc_url is not None:
+        config_lines.extend(
+            [
+                "gateway_provider:",
+                f"  rpc_url: {gateway_rpc_url}",
             ]
         )
     config_lines.append("")
 
     write_text(out_dir / "config.yaml", "\n".join(config_lines))
-
-    if gateway_rpc_url is not None:
-        write_text(
-            out_dir / "gateway-overlay.yaml",
-            "\n".join(
-                [
-                    "general:",
-                    f"  gateway_rpc_url: {gateway_rpc_url}",
-                    "",
-                ]
-            ),
-        )
 
     shutil.copy2(contracts_candidate, out_dir / "contracts.yaml")
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
@@ -432,8 +430,6 @@ def materialize_chain(
 
     config_path = out_dir / "config.yaml"
     start_config_args = f'--config "{config_path}"'
-    if gateway_rpc_url is not None:
-        start_config_args += f' --config "{out_dir / "gateway-overlay.yaml"}"'
 
     refresh_cookie_block = ""
     if uses_syscoin_da_refs:

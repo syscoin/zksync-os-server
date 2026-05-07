@@ -1,16 +1,21 @@
 #![feature(allocator_api)]
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
+mod acceptance;
 mod batch_sink;
 mod batch_work;
 pub mod batcher;
 mod command_source;
 pub mod config;
 pub mod default_protocol_version;
+// SYSCOIN
+mod en_migration_trigger;
 mod en_remote_config;
+mod migration_gate;
 mod node_state_on_startup;
 mod priority_tree_pipeline_step;
 pub mod prover_api;
+mod prover_block;
 mod prover_input_generator;
 mod provider;
 mod state_initializer;
@@ -25,9 +30,9 @@ use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
 use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_batch_info};
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
-    BitcoinDaFinalityMode, Config, ProverApiConfig, base_token_price_updater_config,
-    gas_adjuster_config,
+    Config, ProverApiConfig, base_token_price_updater_config, gas_adjuster_config,
 };
+use crate::en_migration_trigger::EnMigrationTrigger;
 use crate::en_remote_config::load_remote_config;
 use crate::node_state_on_startup::NodeStateOnStartup;
 use crate::prover_api::fake_fri_provers_pool::FakeFriProversPool;
@@ -40,7 +45,7 @@ use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
 use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
 use crate::prover_input_generator::ProverInputGenerator;
-use crate::provider::build_node_provider;
+use crate::provider::{ProviderKind, build_node_provider};
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
@@ -60,6 +65,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
+use zksync_os_backpressure::{BackpressureMonitor, PipelineTracker};
 use zksync_os_base_token_adjuster::BaseTokenPriceUpdater;
 use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
@@ -78,7 +84,8 @@ use zksync_os_l1_sender::pipeline_component::L1Sender;
 use zksync_os_l1_sender::upgrade_gatekeeper::UpgradeGatekeeper;
 use zksync_os_l1_watcher::{
     CommittedBatchProvider, GatewayMigrationWatcher, L1CommitWatcher, L1ExecuteWatcher,
-    L1FinalizedExecuteWatcher, L1TxWatcher, L1UpgradeTxWatcher,
+    L1FinalizedExecuteWatcher, L1TxWatcher, L1UpgradeTxWatcher, MigrationFinalizedWatcher,
+    SettlementLayerWatcher,
 };
 use zksync_os_l1_watcher::{InteropWatcher, L1PersistBatchWatcher};
 use zksync_os_mempool::Pool;
@@ -120,8 +127,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, PubdataMode,
-    TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
+    PubdataMode, TransactionAcceptanceState, UpgradeInfo, UpgradeMetadata,
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -136,10 +143,23 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
-fn edge_da_finality_config(
+// SYSCOIN: A main node configured to produce zero blocks must reject RPC txs before
+// the sequencer consumes its first Produce command, which can be delayed by replay.
+fn initial_transaction_acceptance_state(
+    node_role: NodeRole,
+    max_blocks_to_produce: Option<u64>,
+) -> TransactionAcceptanceState {
+    if node_role.is_main() && max_blocks_to_produce == Some(0) {
+        TransactionAcceptanceState::NotAccepting(vec![NotAcceptingReason::BlockProductionDisabled])
+    } else {
+        TransactionAcceptanceState::Accepting
+    }
+}
+
+fn edge_da_admission_config(
     config: &Config,
     commit_tx_target: Address,
-) -> anyhow::Result<Option<zksync_os_rpc::EdgeDaFinalityConfig>> {
+) -> anyhow::Result<Option<zksync_os_rpc::EdgeDaAdmissionConfig>> {
     if config.l1_sender_config.pubdata_mode != Some(PubdataMode::Blobs) {
         return Ok(None);
     }
@@ -159,41 +179,32 @@ fn edge_da_finality_config(
         .as_ref()
         .map(|secret| secret.expose_secret())
         .filter(|value| !value.trim().is_empty());
-    let edge_da_finality_requested =
+    let edge_da_admission_requested =
         rpc_url.is_some() || rpc_user.is_some() || rpc_password.is_some();
-    if !edge_da_finality_requested {
+    if !edge_da_admission_requested {
         return Ok(None);
     }
 
-    let finality_mode = match batcher.bitcoin_da_finality_mode {
-        BitcoinDaFinalityMode::Chainlock => bitcoin_da_client::BitcoinDaFinalityMode::Chainlock,
-        BitcoinDaFinalityMode::Confirmations => {
-            bitcoin_da_client::BitcoinDaFinalityMode::Confirmations
-        }
-    };
-
-    Ok(Some(zksync_os_rpc::EdgeDaFinalityConfig {
+    Ok(Some(zksync_os_rpc::EdgeDaAdmissionConfig {
         commit_tx_target,
         rpc_url: rpc_url
             .context(
-                "`batcher.bitcoin_da_rpc_url` must be set when edge DA finality is configured",
+                "`batcher.bitcoin_da_rpc_url` must be set when edge DA admission is configured",
             )?
             .to_owned(),
         rpc_user: rpc_user
             .context(
-                "`batcher.bitcoin_da_rpc_user` must be set when edge DA finality is configured",
+                "`batcher.bitcoin_da_rpc_user` must be set when edge DA admission is configured",
             )?
             .to_owned(),
         rpc_password: rpc_password
             .context(
-                "`batcher.bitcoin_da_rpc_password` must be set when edge DA finality is configured",
+                "`batcher.bitcoin_da_rpc_password` must be set when edge DA admission is configured",
             )?
             .to_owned(),
         poda_url: batcher.bitcoin_da_poda_url.clone(),
         wallet_name: batcher.bitcoin_da_wallet_name.clone(),
         request_timeout: batcher.bitcoin_da_request_timeout,
-        finality_mode,
-        confirmations: batcher.bitcoin_da_finality_confirmations,
     }))
 }
 
@@ -263,16 +274,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // This is the only place where we initialize L1 provider, every component shares the same
     // cloned provider.
-    let l1_provider = build_node_provider(
-        &config.general_config.l1_rpc_url,
-        config.general_config.l1_rpc_poll_interval,
-    )
-    .await;
-    let gateway_provider = match &config.general_config.gateway_rpc_url {
-        Some(url) => {
-            Some(build_node_provider(url, config.general_config.gateway_rpc_poll_interval).await)
-        }
-        None => None,
+    let l1_provider = build_node_provider(&config.l1_provider_config, ProviderKind::L1).await;
+    let gateway_provider = if let Some(config) = &config.gateway_provider_config {
+        Some(build_node_provider(config, ProviderKind::Gateway).await)
+    } else {
+        None
     };
 
     tracing::info!("Reading L1 state");
@@ -335,10 +341,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             }
             _ => {}
         };
-        if let (PubdataMode::Blobs | PubdataMode::Calldata, true) = (
-            pubdata_mode,
-            config.general_config.gateway_rpc_url.is_some(),
-        ) {
+        if let (PubdataMode::Blobs | PubdataMode::Calldata, true) =
+            (pubdata_mode, config.gateway_provider_config.is_some())
+        {
             panic!(
                 "Pubdata mode {:?} cannot be used when settling on Gateway",
                 pubdata_mode
@@ -658,10 +663,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let upgrade_subpool = UpgradeSubpool::new(current_protocol_version.clone());
     let sl_chain_id_subpool = SlChainIdSubpool::default();
     let interop_fee_subpool = InteropFeeSubpool::new(next_cursors.interop_fee_number);
-    let interop_roots_subpool = InteropRootsSubpool::new(
-        // todo: change to config.sequencer_config.interop_roots_per_tx when contracts are updated
-        1,
-    );
+    let interop_roots_subpool =
+        InteropRootsSubpool::new(config.sequencer_config.interop_roots_per_tx);
 
     // If we start from the very first block, we should start by sending upgrade tx for genesis.
     if starting_block == 1 {
@@ -688,6 +691,17 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         upgrade_subpool.insert(upgrade_tx).await;
     }
 
+    // Last-finalized migration counter, the sole input to `MigrationGate`'s pause decision.
+    // Always created so the gate has a stable receiver regardless of protocol version; on
+    // pre-v31 chains it stays at 0 (no migrations exist) and the gate is transparent.
+    let (last_finalized_migration_sender, last_finalized_migration_receiver) =
+        watch::channel::<u64>(0);
+
+    // Carries the trigger batch number from MigrationGate to SettlementLayerWatcher.
+    // None until MigrationGate detects the SetSLChainId batch; Some(N) after detection.
+    let (migration_triggered_sender, migration_triggered_receiver) =
+        watch::channel::<Option<u64>>(None);
+
     if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
         runtime.spawn_critical_task(
             "gateway migration watcher",
@@ -706,7 +720,42 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .run(),
         );
 
-        if config.general_config.gateway_rpc_url.is_some() {
+        // Initializes `last_finalized_migration` from the SL's `migrationNumber(chainId)` and,
+        // if the current SL interval migration has not yet finalized, spawns a watcher to track
+        // future `MigrationFinalized` events. When the migration is already finalized at startup
+        // the watcher is skipped — the seeded counter alone keeps the gate transparent.
+        let migration_finalized_watcher = MigrationFinalizedWatcher::create_watcher(
+            node_startup_state.l1_state.diamond_proxy_sl.clone(),
+            node_startup_state.l1_state.bridgehub_sl.clone(),
+            &node_startup_state.l1_state.settlement_layer_intervals,
+            chain_id,
+            node_startup_state.l1_state.l1_chain_id,
+            node_startup_state.l1_state.sl_chain_id,
+            config.l1_watcher_config.clone().into(),
+            // SYSCOIN: keep a sender alive when the watcher is skipped so MigrationGate's
+            // receiver is not closed before a future migration.
+            last_finalized_migration_sender.clone(),
+        )
+        .await
+        .expect("failed to start migration finalized watcher");
+        if let Some(watcher) = migration_finalized_watcher {
+            runtime.spawn_critical_task("migration finalized watcher", watcher.run());
+        }
+
+        // Crashes the node when getSettlementLayer() changes, forcing a restart against the
+        // new settlement layer.
+        runtime.spawn_critical_task(
+            "settlement layer watcher",
+            SettlementLayerWatcher::new(
+                node_startup_state.l1_state.diamond_proxy_l1.clone(),
+                node_startup_state.l1_state.settlement_layer_address,
+                config.l1_watcher_config.poll_interval,
+                migration_triggered_receiver,
+            )
+            .run(),
+        );
+
+        if config.gateway_provider_config.is_some() {
             runtime.spawn_critical_task(
                 "interop roots watcher",
                 InteropWatcher::create_watcher(
@@ -742,7 +791,17 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
     // External nodes: always accepts, but may be rejected on the main node side during forwarding
     let (tx_acceptance_state_sender, tx_acceptance_state_receiver) =
-        watch::channel(TransactionAcceptanceState::Accepting);
+        watch::channel(initial_transaction_acceptance_state(
+            node_role,
+            config.sequencer_config.max_blocks_to_produce,
+        ));
+
+    let (stop_sender, stop_receiver) = watch::channel(false);
+    let stop_sender_for_shutdown = stop_sender.clone();
+    runtime.spawn_with_graceful_shutdown_signal(|shutdown| async move {
+        let _guard = shutdown.await;
+        let _ = stop_sender_for_shutdown.send(true);
+    });
 
     let main_node_provider = if let Some(url) = config.general_config.main_node_rpc_url.as_ref() {
         Some(
@@ -950,7 +1009,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     }
 
     if node_role.is_main()
-        && config.general_config.gateway_rpc_url.is_some()
+        && config.gateway_provider_config.is_some()
         && current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
     {
         let eth_call_handler = EthCallHandler::new(
@@ -984,7 +1043,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
-    if node_role.is_main() {
+    let backpressure_acceptance_rx = if node_role.is_main() {
         run_main_node_pipeline(
             &config,
             sl_provider.clone(),
@@ -1003,11 +1062,14 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             committed_batch_provider.clone(),
             canonization_engine,
             leadership,
+            stop_receiver.clone(),
             commit_submitted_tx,
             verify_request_tx,
             verify_result_rx,
+            last_finalized_migration_receiver,
+            migration_triggered_sender,
         )
-        .await;
+        .await
     } else {
         run_en_pipeline(
             &config,
@@ -1022,12 +1084,26 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             tree_db,
             repositories.clone(),
             finality_storage.clone(),
+            stop_receiver.clone(),
             tx_acceptance_state_sender,
             chain_id,
             verify_batch_rx,
             outgoing_verify_results.clone(),
+            last_finalized_migration_receiver,
+            // SYSCOIN
+            migration_triggered_sender,
         )
-        .await;
+        .await
+    };
+
+    // Aggregate all "not accepting" signals into a single combined receiver for the RPC server.
+    // Register additional sources here as needed — no other logic changes required.
+    let combined_acceptance_rx = {
+        let (mut gate, rx) = acceptance::TxAcceptanceGate::new();
+        gate.register(tx_acceptance_state_receiver); // BlockProductionDisabled
+        gate.register(backpressure_acceptance_rx); // PipelineBackpressure
+        runtime.spawn_critical_task("tx acceptance gate", gate.run(stop_receiver.clone()));
+        rx
     };
 
     // ======== Start Status Server ========
@@ -1052,9 +1128,10 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
-    // if the referenced Bitcoin DA hashes are not finalized yet.
-    rpc_config.edge_da_finality = edge_da_finality_config(&config, l1_state.validator_timelock_sl)
-        .expect("failed to build edge DA finality config");
+    // if the referenced Bitcoin DA hashes are not retrievable yet.
+    rpc_config.edge_da_admission =
+        edge_da_admission_config(&config, l1_state.validator_timelock_sl)
+            .expect("failed to build edge DA admission config");
     zksync_os_rpc::spawn(
         rpc_config,
         chain_id,
@@ -1063,7 +1140,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         rpc_storage,
         l2_subpool,
         genesis_input_source,
-        tx_acceptance_state_receiver,
+        combined_acceptance_rx,
         last_constructed_block_ctx_receiver,
         main_node_provider,
         gateway_provider.map(|p| p.erased()),
@@ -1099,10 +1176,13 @@ async fn run_main_node_pipeline(
     committed_batch_provider: CommittedBatchProvider,
     canonization_engine: BlockCanonizationEngine,
     leadership: LeadershipSignal,
+    stop_receiver: watch::Receiver<bool>,
     commit_submitted_tx: watch::Sender<u64>,
     verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
-) {
+    last_finalized_migration: watch::Receiver<u64>,
+    migration_triggered: watch::Sender<Option<u64>>,
+) -> watch::Receiver<TransactionAcceptanceState> {
     let pubdata_mode = config
         .l1_sender_config
         .pubdata_mode
@@ -1117,6 +1197,8 @@ async fn run_main_node_pipeline(
             .rocks_db_path
             .join(INTERNAL_CONFIG_FILE_NAME),
     );
+
+    let monitor = BackpressureMonitor::new(config.build_backpressure_config(), stop_receiver);
 
     let (replays_to_execute_sender, replays_to_execute) = tokio::sync::mpsc::channel(8);
     let (applied_block_number_sender, applied_block_number_receiver) =
@@ -1172,15 +1254,18 @@ async fn run_main_node_pipeline(
         tracing::warn!(
             "Batcher subsystem disabled — skipping prover input generation, L1 settlement, and downstream components"
         );
-        pipeline.pipe(NoOpSink::new()).spawn();
-        return;
+        let pipeline = pipeline.pipe(NoOpSink::new());
+        let components = pipeline.components();
+        pipeline.spawn();
+        let snapshot_rx = PipelineTracker::spawn(runtime, components);
+        return monitor.spawn(runtime, snapshot_rx);
     }
     // SYSCOIN
     let batch_work_state_history_reserve = config
         .prover_input_generator_config
         .maximum_in_flight_blocks
-        + <BatchWorkSource as PipelineComponent>::OUTPUT_BUFFER_SIZE
-        + <TreeManager as PipelineComponent>::OUTPUT_BUFFER_SIZE
+        + <BatchWorkSource as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
+        + <TreeManager as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
         + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
         + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
         + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
@@ -1335,6 +1420,7 @@ async fn run_main_node_pipeline(
             chain_id,
             sl_chain_id: node_state_on_startup.l1_state.sl_chain_id,
             chain_address_sl: node_state_on_startup.l1_state.diamond_proxy_address_sl(),
+            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,
@@ -1360,16 +1446,21 @@ async fn run_main_node_pipeline(
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
+        .pipe(migration_gate::MigrationGate {
+            last_finalized_migration,
+            migration_triggered,
+        })
         // SYSCOIN
         .pipe(BitcoinDaFinalityGate::new(
             config.batcher_config.clone(),
             bitcoin_da_status_storage.clone(),
+            config.gateway_provider_config.is_some(),
         ))
         .pipe(L1Sender::<_, _, CommitCommand> {
             provider: sl_provider.clone(),
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.general_config.gateway_rpc_url.is_some(),
+            gateway: config.gateway_provider_config.is_some(),
             commit_submitted_tx: Some(commit_submitted_tx),
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1383,7 +1474,7 @@ async fn run_main_node_pipeline(
             provider: sl_provider.clone(),
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.general_config.gateway_rpc_url.is_some(),
+            gateway: config.gateway_provider_config.is_some(),
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1400,16 +1491,20 @@ async fn run_main_node_pipeline(
             provider: sl_provider,
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.general_config.gateway_rpc_url.is_some(),
+            gateway: config.gateway_provider_config.is_some(),
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         .pipe(BatchSink::new(internal_config_manager));
-    // SYSCOIN
+
+    let mut components = execution_pipeline.components();
+    components.extend(batch_pipeline.components());
     tracing::info!("Launching execution pipeline");
     execution_pipeline.spawn();
     tracing::info!("Launching batch pipeline");
     batch_pipeline.spawn();
+    let snapshot_rx = PipelineTracker::spawn(runtime, components);
+    monitor.spawn(runtime, snapshot_rx)
 }
 
 /// Only for EN - we still populate channels destined for the batcher subsystem -
@@ -1428,11 +1523,14 @@ async fn run_en_pipeline(
     tree: MerkleTree<RocksDBWrapper>,
     repositories: impl WriteRepository + Clone,
     finality: impl ReadFinality + Clone,
+    stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
-) {
+    last_finalized_migration: watch::Receiver<u64>,
+    migration_triggered: watch::Sender<Option<u64>>,
+) -> watch::Receiver<TransactionAcceptanceState> {
     let internal_config_manager = init_and_report_internal_config_manager(
         config
             .general_config
@@ -1442,7 +1540,10 @@ async fn run_en_pipeline(
     let (applied_block_number_sender, applied_block_number_receiver) =
         watch::channel(starting_block - 1);
 
-    Pipeline::new(runtime.clone())
+    let monitor =
+        BackpressureMonitor::new(config.build_backpressure_config(), stop_receiver.clone());
+
+    let pipeline = Pipeline::new(runtime.clone())
         .pipe(ExternalNodeCommandSource {
             replays_for_sequencer,
             up_to_block: config.sequencer_config.en_sync_up_to_block,
@@ -1460,6 +1561,13 @@ async fn run_en_pipeline(
             repositories: repositories.clone(),
             config: config.into(),
             applied_block_number_sender,
+        })
+        // SYSCOIN
+        .pipe(EnMigrationTrigger {
+            committed_batch_provider: committed_batch_provider.clone(),
+            finality: finality.clone(),
+            last_finalized_migration,
+            migration_triggered,
         })
         .pipe_opt(
             config
@@ -1489,10 +1597,12 @@ async fn run_en_pipeline(
                 outgoing_verify_results,
             ),
             NoOpSink::new(),
-        )
-        .spawn();
+        );
 
-    // Run Priority Tree tasks for EN - not part of the pipeline.
+    let components = pipeline.components();
+    pipeline.spawn();
+    let snapshot_rx = PipelineTracker::spawn(runtime, components);
+
     if config.general_config.run_priority_tree {
         let priority_tree_manager = PriorityTreeManager::new(
             block_replay_storage,
@@ -1509,13 +1619,13 @@ async fn run_en_pipeline(
         runtime.spawn_critical_with_graceful_shutdown_signal(
             "priority tree caching",
             |shutdown| async move {
+                let (reporter, _rx) =
+                    zksync_os_observability::ComponentStateReporter::new("priority_tree");
                 tokio::select! {
-                    result = priority_tree_manager.run(None) => {
+                    result = priority_tree_manager.run(None, reporter) => {
                         result.expect("PriorityTreeManager run failed");
                     }
                     _guard = shutdown => {
-                        // Ensures both futures are dropped before we shutdown gracefully. Otherwise
-                        // priority tree manager might keep holding DB.
                     }
                 }
             },
@@ -1525,6 +1635,7 @@ async fn run_en_pipeline(
         "clear failing block config",
         clear_failing_block_config_task(finality, internal_config_manager),
     );
+    monitor.spawn(runtime, snapshot_rx)
 }
 
 fn block_hashes_for_first_block(repositories: &dyn ReadRepository) -> BlockHashes {
@@ -1827,12 +1938,41 @@ async fn find_last_matching_main_node_block(
 
 #[cfg(test)]
 mod tests {
-    use super::{check_batch_verification_mismatch, validate_batch_verification_startup_policy};
+    use super::{
+        check_batch_verification_mismatch, initial_transaction_acceptance_state,
+        validate_batch_verification_startup_policy,
+    };
     use crate::config::BatchVerificationConfig;
     use alloy::primitives::address;
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
+    use zksync_os_types::{NodeRole, NotAcceptingReason, TransactionAcceptanceState};
+
+    #[test]
+    fn main_node_zero_block_cap_rejects_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0)),
+            TransactionAcceptanceState::NotAccepting(reasons)
+                if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    #[test]
+    fn main_node_positive_block_cap_accepts_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1)),
+            TransactionAcceptanceState::Accepting
+        ));
+    }
+
+    #[test]
+    fn external_node_zero_block_cap_accepts_for_forwarding() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0)),
+            TransactionAcceptanceState::Accepting
+        ));
+    }
 
     #[test]
     fn test_batch_verification_is_disabled_on_server() {

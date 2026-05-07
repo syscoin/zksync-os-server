@@ -18,7 +18,8 @@ use zksync_os_network::protocol::{
     MainNodeProtocolConfig, ProtocolEvent, ZksProtocolHandler,
 };
 use zksync_os_network::version::{
-    ZksProtocolV0, ZksProtocolV1, ZksProtocolV2, ZksProtocolV3, ZksProtocolVersionSpec, ZksVersion,
+    ZksProtocolV0, ZksProtocolV1, ZksProtocolV2, ZksProtocolV3, ZksProtocolV4,
+    ZksProtocolVersionSpec, ZksVersion,
 };
 use zksync_os_network::{PeerVerifyBatchResult, VerifyBatchOutcome, VerifyBatchResult};
 use zksync_os_storage_api::{ReadReplay, ReplayRecord};
@@ -271,6 +272,7 @@ async fn send_replay_record_matching_version(version: ZksVersion) {
         ZksVersion::Zks1 => test_inner::<ZksProtocolV1>().await,
         ZksVersion::Zks2 => test_inner::<ZksProtocolV2>().await,
         ZksVersion::Zks3 => test_inner::<ZksProtocolV3>().await,
+        ZksVersion::Zks4 => test_inner::<ZksProtocolV4>().await,
     }
 }
 
@@ -760,6 +762,7 @@ async fn send_replay_record_different_versions(version: ZksVersion) {
         ZksVersion::Zks1 => test_inner::<ZksProtocolV1>().await,
         ZksVersion::Zks2 => test_inner::<ZksProtocolV2>().await,
         ZksVersion::Zks3 => test_inner::<ZksProtocolV3>().await,
+        ZksVersion::Zks4 => test_inner::<ZksProtocolV4>().await,
     }
 }
 

@@ -10,6 +10,33 @@ pub struct L1SenderConfig<Input> {
     /// Supports both local private keys and GCP KMS keys.
     pub operator_signer: SignerConfig,
 
+    /// Fee caps and replacement multipliers for L1 transactions.
+    pub fee_config: L1SenderFeeConfig,
+
+    /// Whether to skip in-flight recovery and replace pending L1 transactions on startup.
+    pub force_transaction_resubmission: bool,
+
+    /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
+    pub command_limit: usize,
+
+    /// How often to poll L1 for new blocks.
+    pub poll_interval: Duration,
+
+    /// SYSCOIN: warning interval while waiting for an L1 transaction to be included.
+    ///
+    /// A delayed L1 transaction must not terminate the main node; the sender keeps waiting and
+    /// logs every time this interval elapses.
+    pub transaction_timeout: Duration,
+
+    /// Use Fusaka blob transaction format if the timestamp has passed.
+    pub fusaka_upgrade_timestamp: u64,
+
+    pub phantom_data: PhantomData<Input>,
+}
+
+/// Fee configuration for L1 sender transactions.
+#[derive(Clone, Copy, Debug)]
+pub struct L1SenderFeeConfig {
     /// Max fee per gas we are willing to spend (in wei).
     pub max_fee_per_gas_wei: u128,
 
@@ -19,17 +46,12 @@ pub struct L1SenderConfig<Input> {
     /// Max fee per blob gas we are willing to spend (in wei).
     pub max_fee_per_blob_gas_wei: u128,
 
-    /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
-    pub command_limit: usize,
+    /// Multiplier applied to `max_fee_per_gas_wei` when forcing transaction resubmission.
+    pub max_fee_per_gas_replacement_multiplier: f64,
 
-    /// How often to poll L1 for new blocks.
-    pub poll_interval: Duration,
+    /// Multiplier applied to `max_priority_fee_per_gas_wei` when forcing transaction resubmission.
+    pub max_priority_fee_per_gas_replacement_multiplier: f64,
 
-    /// Maximum time to wait for a transaction to be included on L1.
-    pub transaction_timeout: Duration,
-
-    /// Use Fusaka blob transaction format if the timestamp has passed.
-    pub fusaka_upgrade_timestamp: u64,
-
-    pub phantom_data: PhantomData<Input>,
+    /// Multiplier applied to `max_fee_per_blob_gas_wei` when forcing transaction resubmission.
+    pub max_fee_per_blob_gas_replacement_multiplier: f64,
 }

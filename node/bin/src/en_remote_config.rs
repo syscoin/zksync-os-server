@@ -3,7 +3,7 @@ use alloy::primitives::Address;
 use anyhow::Context;
 use jsonrpsee::http_client::HttpClient;
 use std::sync::Arc;
-use zksync_os_genesis::{FileGenesisInputSource, GenesisInputSource};
+use zksync_os_genesis::{FileGenesisInputSource, GenesisInput, GenesisInputSource};
 use zksync_os_rpc_api::eth::EthApiClient;
 use zksync_os_rpc_api::zks::ZksApiClient;
 
@@ -64,21 +64,29 @@ pub async fn load_remote_config(
         );
     }
 
-    let genesis_input_source = Arc::new(MainNodeGenesisInputSource::new(main_node_rpc_client));
-    if let Some(local_genesis_path) = en_local_genesis_config.genesis_input_path.clone() {
-        let remote_genesis_input = genesis_input_source.genesis_input().await?;
-        let local_genesis_input = FileGenesisInputSource::new(local_genesis_path)
-            .genesis_input()
-            .await?;
+    let main_node_genesis_input_source =
+        Arc::new(MainNodeGenesisInputSource::new(main_node_rpc_client));
+    let genesis_input_source: Arc<dyn GenesisInputSource> =
+        if let Some(local_genesis_path) = en_local_genesis_config.genesis_input_path.clone() {
+            let remote_genesis_input = main_node_genesis_input_source.genesis_input().await?;
+            let local_genesis_input = FileGenesisInputSource::new(local_genesis_path)
+                .genesis_input()
+                .await?;
 
-        let remote_json = serde_json::to_string(&remote_genesis_input)?;
-        let local_json = serde_json::to_string(&local_genesis_input)?;
+            let remote_json = serde_json::to_string(&remote_genesis_input)?;
+            let local_json = serde_json::to_string(&local_genesis_input)?;
 
-        anyhow::ensure!(
-            local_genesis_input == remote_genesis_input,
-            "Genesis input mismatch: remote = {remote_json}, local = {local_json}",
-        );
-    }
+            anyhow::ensure!(
+                local_genesis_input == remote_genesis_input,
+                "Genesis input mismatch: remote = {remote_json}, local = {local_json}",
+            );
+
+            // SYSCOIN: Bind all later lazy genesis initialization to the value that was
+            // verified against the main node, rather than refetching mutable remote RPC data.
+            Arc::new(CachedGenesisInputSource::new(local_genesis_input))
+        } else {
+            main_node_genesis_input_source
+        };
 
     Ok((
         remote_bridgehub_address,
@@ -86,6 +94,24 @@ pub async fn load_remote_config(
         remote_chain_id,
         genesis_input_source,
     ))
+}
+
+#[derive(Debug)]
+struct CachedGenesisInputSource {
+    genesis_input: GenesisInput,
+}
+
+impl CachedGenesisInputSource {
+    fn new(genesis_input: GenesisInput) -> Self {
+        Self { genesis_input }
+    }
+}
+
+#[async_trait::async_trait]
+impl GenesisInputSource for CachedGenesisInputSource {
+    async fn genesis_input(&self) -> anyhow::Result<GenesisInput> {
+        Ok(self.genesis_input.clone())
+    }
 }
 
 #[derive(Debug)]
@@ -104,5 +130,27 @@ impl GenesisInputSource for MainNodeGenesisInputSource {
     async fn genesis_input(&self) -> anyhow::Result<zksync_os_genesis::GenesisInput> {
         let genesis = self.rpc_client.get_genesis().await?;
         Ok(genesis)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CachedGenesisInputSource, GenesisInputSource};
+    use alloy::primitives::B256;
+    use zksync_os_genesis::GenesisInput;
+
+    #[tokio::test]
+    async fn cached_genesis_input_source_returns_validated_input() {
+        let genesis_input = GenesisInput {
+            initial_contracts: Vec::new(),
+            additional_storage: Default::default(),
+            additional_storage_raw: Vec::new(),
+            additional_preimages: Vec::new(),
+            genesis_root: B256::repeat_byte(0x01),
+        };
+        let source = CachedGenesisInputSource::new(genesis_input.clone());
+
+        assert_eq!(source.genesis_input().await.unwrap(), genesis_input);
+        assert_eq!(source.genesis_input().await.unwrap(), genesis_input);
     }
 }

@@ -6,6 +6,9 @@ l1_watcher:
   poll_interval: 100ms
   confirmations: 0
 
+l1_provider:
+  rpc_url: http://localhost:8545
+
 l1_sender:
   poll_interval: 100ms
 

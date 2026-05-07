@@ -8,7 +8,6 @@ use sentry::{
     types::Dsn,
 };
 pub use sentry::{Level as AlertLevel, capture_message};
-use tracing_subscriber::{Layer, registry::LookupSpan};
 
 #[derive(Debug)]
 pub struct Sentry {
@@ -34,24 +33,6 @@ impl Sentry {
     pub fn with_environment(mut self, environment: Option<String>) -> Self {
         self.environment = environment;
         self
-    }
-
-    pub fn layer<S>(&self) -> impl Layer<S>
-    where
-        S: tracing::Subscriber + for<'span> LookupSpan<'span> + Send + Sync,
-    {
-        sentry::integrations::tracing::layer()
-            .event_filter(|metadata| match *metadata.level() {
-                tracing::Level::ERROR => sentry::integrations::tracing::EventFilter::Event,
-                tracing::Level::WARN => sentry::integrations::tracing::EventFilter::Event,
-                _ => sentry::integrations::tracing::EventFilter::Ignore,
-            })
-            .span_filter(|metadata| {
-                matches!(
-                    *metadata.level(),
-                    tracing::Level::ERROR | tracing::Level::WARN
-                )
-            })
     }
 
     pub fn install(self) -> ClientInitGuard {
