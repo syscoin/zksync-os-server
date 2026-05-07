@@ -1215,32 +1215,34 @@ async fn resolve_fee_params(
         "estimated priority and max fees"
     );
 
+    // SYSCOIN: Treat configured fees as floors, not caps. When the network estimate is
+    // higher during congestion, use it so L1 transactions do not get stuck underpriced.
     let max_fee_per_gas = if eip1559_est.max_fee_per_gas > configured_params.max_fee_per_gas {
         tracing::warn!(
             "L1 sender's configured maxFeePerGas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the configured base fee value ({}) - this may result in inclusion delay.",
+             using the estimated base fee value ({}).",
             configured_params.max_fee_per_gas,
             eip1559_est.max_fee_per_gas,
-            configured_params.max_fee_per_gas,
+            eip1559_est.max_fee_per_gas,
         );
-        configured_params.max_fee_per_gas
-    } else {
         eip1559_est.max_fee_per_gas
+    } else {
+        configured_params.max_fee_per_gas
     };
     let max_priority_fee_per_gas =
         if eip1559_est.max_priority_fee_per_gas > configured_params.max_priority_fee_per_gas {
             tracing::warn!(
                 "L1 sender's configured max_priority_fee_per_gas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the configured priority fee value ({}) - this may result in inclusion delay.",
+             using the estimated priority fee value ({}).",
                 configured_params.max_priority_fee_per_gas,
                 eip1559_est.max_priority_fee_per_gas,
-                configured_params.max_priority_fee_per_gas,
+                eip1559_est.max_priority_fee_per_gas,
             );
-            configured_params.max_priority_fee_per_gas
-        } else {
             eip1559_est.max_priority_fee_per_gas
+        } else {
+            configured_params.max_priority_fee_per_gas
         };
 
     Ok(FeeParams {
