@@ -13,6 +13,7 @@ use jsonrpsee::{PendingSubscriptionSink, SubscriptionMessage, SubscriptionSink};
 use reth_tasks::Runtime;
 use reth_tasks::shutdown::GracefulShutdown;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ops::Deref;
 use tokio_stream::wrappers::ReceiverStream;
 use zksync_os_mempool::subpools::l2::L2Subpool;
@@ -90,11 +91,16 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthPubsubNamespace<RpcStora
             .block_stream()
             .flat_map(move |notification| {
                 let mut logs = Vec::new();
-                for (tx_hash, stored_tx) in notification.transactions.iter() {
+                // SYSCOIN: keep notification transactions keyed for sync receipt lookup, but emit
+                // subscription logs in canonical block transaction order.
+                for (tx_hash, stored_tx) in ordered_notification_transactions(
+                    &notification.block.body.transactions,
+                    &notification.transactions,
+                ) {
                     for (i, log) in stored_tx.receipt.logs().iter().enumerate() {
                         if filter.matches(log) {
                             logs.push(build_api_log(
-                                *tx_hash,
+                                tx_hash,
                                 log.clone(),
                                 stored_tx.meta.clone(),
                                 i as u64,
@@ -175,6 +181,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthPubsubNamespace<RpcStora
             SubscriptionKind::Syncing => Err(EthPubsubError::SyncingNotSupported),
         }
     }
+}
+
+fn ordered_notification_transactions<'a, T>(
+    block_transactions: &'a [TxHash],
+    transactions: &'a HashMap<TxHash, T>,
+) -> impl Iterator<Item = (TxHash, &'a T)> + 'a {
+    block_transactions
+        .iter()
+        .filter_map(|tx_hash| transactions.get(tx_hash).map(|tx| (*tx_hash, tx)))
 }
 
 #[async_trait]
@@ -278,4 +293,41 @@ pub enum EthPubsubError {
     InvalidBoolForLogs,
     #[error("invalid params: specified for head subscription (expected none)")]
     InvalidParamsForNewHeads,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ordered_notification_transactions;
+    use alloy::primitives::TxHash;
+    use std::collections::HashMap;
+
+    #[test]
+    fn notification_transactions_follow_block_order() {
+        let tx_hashes = [
+            TxHash::repeat_byte(0x01),
+            TxHash::repeat_byte(0x02),
+            TxHash::repeat_byte(0x03),
+            TxHash::repeat_byte(0x04),
+        ];
+        let transactions = HashMap::from([
+            (tx_hashes[2], "third"),
+            (tx_hashes[0], "first"),
+            (tx_hashes[3], "fourth"),
+            (tx_hashes[1], "second"),
+        ]);
+
+        let ordered = ordered_notification_transactions(&tx_hashes, &transactions)
+            .map(|(tx_hash, tx)| (tx_hash, *tx))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered,
+            vec![
+                (tx_hashes[0], "first"),
+                (tx_hashes[1], "second"),
+                (tx_hashes[2], "third"),
+                (tx_hashes[3], "fourth"),
+            ]
+        );
+    }
 }
