@@ -15,6 +15,8 @@ use smart_config::{
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
+// SYSCOIN
+use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
 use zksync_os_batch_verification;
 use zksync_os_config_validation_macros::ConfigValidate;
@@ -1217,6 +1219,14 @@ pub struct BatchVerificationConfig {
     pub total_timeout: Duration,
     /// [external node] Signing key.
     #[config(default_t = "".into())]
+    // SYSCOIN
+    #[config_validate(custom(
+        |root: &Config, value: &SecretString| {
+            !root.batch_verification_config.client_enabled
+                || alloy::signers::local::PrivateKeySigner::from_str(value.expose_secret()).is_ok()
+        },
+        "requires a valid signing key when `batch_verification.client_enabled=true`"
+    ))]
     pub signing_key: SecretString,
 }
 
@@ -1853,6 +1863,21 @@ mod tests {
 
         assert!(err.contains(
             "`batch_verification.accepted_signers` requires at least one accepted signer when `batch_verification.server_enabled=true`"
+        ));
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn batch_verification_client_requires_valid_signing_key() {
+        let mut config = base_config(NodeRole::ExternalNode);
+        config.network_config.enabled = true;
+        config.batch_verification_config.client_enabled = true;
+        config.batch_verification_config.signing_key = "".into();
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`batch_verification.signing_key` requires a valid signing key when `batch_verification.client_enabled=true`"
         ));
     }
 }
