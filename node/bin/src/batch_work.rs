@@ -16,7 +16,7 @@ use zksync_os_interface::types::{
 };
 use zksync_os_merkle_tree::{MerkleTree, MerkleTreeVersion, RocksDBWrapper};
 use zksync_os_observability::ComponentStateReporter;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 use zksync_os_storage_api::{ReplayRecord, TreeBlock};
 
 #[derive(Clone, Debug)]
@@ -192,7 +192,7 @@ impl PipelineComponent for BatchWorkSource {
         mut self,
         _input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        _state_reporter: ComponentStateReporter,
+        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
             let block_number = handle.block_number;
@@ -209,18 +209,16 @@ impl PipelineComponent for BatchWorkSource {
                     block: block_number,
                 },
             };
-            if output
-                .send(TreeBlock {
-                    output: block_output,
-                    record: replay_record,
-                    tree,
-                })
-                .await
-                .is_err()
-            {
-                tracing::info!("outbound channel closed");
-                return Ok(());
-            }
+            output
+                .send_and_record(
+                    TreeBlock {
+                        output: block_output,
+                        record: replay_record,
+                        tree,
+                    },
+                    &state_reporter,
+                )
+                .await?;
             self.storage.delete(&handle).await?;
         }
         tracing::info!("batch work channel closed");
