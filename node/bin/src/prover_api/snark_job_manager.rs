@@ -87,6 +87,12 @@ impl SnarkJobManager {
         payload: Vec<u8>,
         prover_id: String,
     ) -> anyhow::Result<()> {
+        // SYSCOIN: Reject malformed external SNARK submit ranges before touching job state.
+        anyhow::ensure!(
+            batch_from <= batch_to,
+            "invalid batch range: from batch {batch_from} is greater than to batch {batch_to}"
+        );
+
         // Prover should generate the proof with VK received from server. These must always match.
         // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
         //

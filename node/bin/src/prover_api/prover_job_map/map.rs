@@ -340,6 +340,20 @@ impl<T: Clone> ProverJobMap<T> {
         prover_type: ProverType,
         prover_id: &str,
     ) -> Option<Vec<SignedBatchEnvelope<T>>> {
+        // SYSCOIN: Inverted external SNARK submit ranges must not reach JobBatchStats::new with
+        // an empty metadata list.
+        if batch_number_from > batch_number_to {
+            tracing::warn!(
+                batch_number_from,
+                batch_number_to,
+                prover_id,
+                ?prover_type,
+                ?self.prover_stage,
+                "Cannot complete jobs: invalid empty batch range"
+            );
+            return None;
+        }
+
         let mut jobs = self
             .lock_with_tracking(JobMapMethod::CompleteManyJobs)
             .await;
@@ -727,6 +741,25 @@ mod tests {
         // Original jobs should still be there
         assert!(map.get_job_batch_metadata(1).await.is_some());
         assert!(map.get_job_batch_metadata(3).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_complete_many_jobs_rejects_inverted_range() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+
+        map.add_job(create_test_batch_envelope(2)).await;
+
+        let result = map
+            .complete_many_jobs(
+                2,
+                1,
+                crate::prover_api::metrics::ProverType::Real,
+                "prover-1",
+            )
+            .await;
+
+        assert!(result.is_none());
+        assert!(map.get_job_batch_metadata(2).await.is_some());
     }
 
     #[tokio::test]
