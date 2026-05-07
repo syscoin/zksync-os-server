@@ -339,34 +339,51 @@ impl GasAdjuster {
 
             let pubdata_price_per_byte = fee_history
                 .pubdata_price_per_byte
-                .map(|v| v.into_iter().map(Some).collect())
-                .unwrap_or_else(|| vec![None; chunk_size as usize]);
-            // SYSCOIN
-            let blob_base_fee_per_gas = fee_history
-                .base
-                .base_fee_per_blob_gas
+                .unwrap_or_default()
                 .into_iter()
-                .map(|fee| fixed_blob_base_fee.unwrap_or(fee));
-            // We take `chunk_size` entries and drop data for the block after `chunk_end`.
-            for ((base_fee_per_gas, base_fee_per_blob_gas), pubdata_price_per_byte) in fee_history
-                .base
-                .base_fee_per_gas
-                .into_iter()
-                .zip(blob_base_fee_per_gas)
-                .zip(pubdata_price_per_byte)
-                .take(chunk_size as usize)
-            {
-                let fees = BaseFees {
-                    base_fee_per_gas,
-                    base_fee_per_blob_gas,
-                    pubdata_price_per_byte,
-                };
-                history.push(fees)
-            }
+                .map(Some);
+            // SYSCOIN: optional blob/gateway fields must not control whether we record L1 base-fee samples.
+            history.extend(Self::fee_history_samples(
+                fee_history.base.base_fee_per_gas,
+                fee_history.base.base_fee_per_blob_gas,
+                pubdata_price_per_byte,
+                fixed_blob_base_fee,
+                chunk_size as usize,
+            ));
         }
 
         Ok(history)
     }
+
+    // SYSCOIN: normalize optional fee-history extensions without dropping `baseFeePerGas`.
+    fn fee_history_samples(
+        base_fee_per_gas: impl IntoIterator<Item = u128>,
+        base_fee_per_blob_gas: impl IntoIterator<Item = u128>,
+        pubdata_price_per_byte: impl IntoIterator<Item = Option<U256>>,
+        fixed_blob_base_fee: Option<u128>,
+        chunk_size: usize,
+    ) -> Vec<BaseFees> {
+        let mut base_fee_per_blob_gas = base_fee_per_blob_gas.into_iter();
+        let mut pubdata_price_per_byte = pubdata_price_per_byte.into_iter();
+
+        // We take `chunk_size` entries and drop data for the block after `chunk_end`.
+        base_fee_per_gas
+            .into_iter()
+            .take(chunk_size)
+            .map(|base_fee_per_gas| {
+                let base_fee_per_blob_gas = fixed_blob_base_fee
+                    .unwrap_or_else(|| base_fee_per_blob_gas.next().unwrap_or_default());
+                let pubdata_price_per_byte = pubdata_price_per_byte.next().unwrap_or_default();
+
+                BaseFees {
+                    base_fee_per_gas,
+                    base_fee_per_blob_gas,
+                    pubdata_price_per_byte,
+                }
+            })
+            .collect()
+    }
+
     // SYSCOIN
     async fn bitcoin_blob_base_fee(config: &GasAdjusterConfig) -> anyhow::Result<u128> {
         let rpc_url = config
@@ -407,4 +424,81 @@ pub struct BaseFees {
     pub base_fee_per_gas: u128,
     pub base_fee_per_blob_gas: u128,
     pub pubdata_price_per_byte: Option<U256>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BaseFees, GasAdjuster};
+    use alloy::primitives::U256;
+
+    #[test]
+    fn fee_history_samples_keep_base_fees_when_blob_fees_are_missing() {
+        let samples = GasAdjuster::fee_history_samples([100, 110, 120, 130], [], [], None, 3);
+
+        assert_eq!(
+            samples,
+            vec![
+                BaseFees {
+                    base_fee_per_gas: 100,
+                    base_fee_per_blob_gas: 0,
+                    pubdata_price_per_byte: None,
+                },
+                BaseFees {
+                    base_fee_per_gas: 110,
+                    base_fee_per_blob_gas: 0,
+                    pubdata_price_per_byte: None,
+                },
+                BaseFees {
+                    base_fee_per_gas: 120,
+                    base_fee_per_blob_gas: 0,
+                    pubdata_price_per_byte: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fee_history_samples_apply_fixed_blob_fee_without_rpc_blob_fees() {
+        let samples = GasAdjuster::fee_history_samples([100, 110, 120, 130], [], [], Some(7), 3);
+
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| sample.base_fee_per_blob_gas)
+                .collect::<Vec<_>>(),
+            vec![7, 7, 7]
+        );
+    }
+
+    #[test]
+    fn fee_history_samples_do_not_require_gateway_pubdata_prices() {
+        let samples = GasAdjuster::fee_history_samples(
+            [100, 110, 120, 130],
+            [1, 2, 3, 4],
+            [Some(U256::from(10u32))],
+            None,
+            3,
+        );
+
+        assert_eq!(
+            samples,
+            vec![
+                BaseFees {
+                    base_fee_per_gas: 100,
+                    base_fee_per_blob_gas: 1,
+                    pubdata_price_per_byte: Some(U256::from(10u32)),
+                },
+                BaseFees {
+                    base_fee_per_gas: 110,
+                    base_fee_per_blob_gas: 2,
+                    pubdata_price_per_byte: None,
+                },
+                BaseFees {
+                    base_fee_per_gas: 120,
+                    base_fee_per_blob_gas: 3,
+                    pubdata_price_per_byte: None,
+                },
+            ]
+        );
+    }
 }
