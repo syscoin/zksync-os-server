@@ -774,13 +774,15 @@ where
     Ok(None)
 }
 
-// SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Nonce-conflict
-// and broad messages like "unknown transaction type" must not keep waiting on a stale hash.
+// SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Keep the
+// `known transaction` match anchored so messages like `unknown transaction type` are not benign.
 fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
     match err {
         TransportError::ErrorResp(resp) => {
             let message = resp.message.to_ascii_lowercase();
-            message.contains("already known") || message.contains("already imported")
+            message.contains("already known")
+                || message.contains("already imported")
+                || message.trim_start().starts_with("known transaction")
         }
         _ => false,
     }
