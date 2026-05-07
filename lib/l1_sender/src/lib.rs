@@ -14,7 +14,8 @@ use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
 use alloy::eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use alloy::network::{
-    Ethereum, EthereumWallet, TransactionBuilder, TransactionBuilder4844, TransactionResponse,
+    BlockResponse, Ethereum, EthereumWallet, TransactionBuilder, TransactionBuilder4844,
+    TransactionResponse,
 };
 use alloy::primitives::utils::{format_ether, format_units};
 use alloy::primitives::{Address, B256};
@@ -65,6 +66,9 @@ const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
+// SYSCOIN: fallback scan window when the provider does not support
+// `eth_getTransactionBySenderAndNonce`.
+const SAME_NONCE_MINED_TX_SCAN_DEPTH: u64 = 128;
 
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
@@ -588,6 +592,11 @@ where
 {
     let started_at = Instant::now();
     let poll_interval = provider.client().poll_interval();
+    let mut next_warning_at = if timeout.is_zero() {
+        None
+    } else {
+        Some(timeout)
+    };
 
     loop {
         match find_matching_sender_nonce_tx(
@@ -602,33 +611,87 @@ where
         {
             SameNonceTx::Found(tx_hash) => return Ok(tx_hash),
             SameNonceTx::NotFound => {
-                if !timeout.is_zero() && started_at.elapsed() >= timeout {
-                    anyhow::bail!(
-                        "L1 transaction rebroadcast returned a nonce-reuse error for \
-                         {command_name} tx {old_tx_hash:?} at nonce {nonce}, but no \
-                         matching same-nonce transaction became visible within {timeout:?}: \
-                         {rebroadcast_err}"
+                let elapsed = started_at.elapsed();
+                if let Some(warning_at) = next_warning_at
+                    && elapsed >= warning_at
+                {
+                    tracing::warn!(
+                        command_name,
+                        ?old_tx_hash,
+                        nonce,
+                        waited_secs = elapsed.as_secs_f64(),
+                        "L1 transaction rebroadcast returned a nonce-reuse error, but no matching \
+                         same-nonce transaction is visible yet; retrying discovery: {rebroadcast_err}",
                     );
+                    next_warning_at = Some(warning_at + timeout);
                 }
-                tracing::warn!(
-                    command_name,
-                    ?old_tx_hash,
-                    nonce,
-                    "L1 transaction rebroadcast returned a nonce-reuse error, but no matching \
-                     same-nonce transaction is visible yet; retrying discovery: {rebroadcast_err}",
-                );
                 tokio::time::sleep(poll_interval).await;
             }
             SameNonceTx::Unsupported => {
-                anyhow::bail!(
-                    "L1 transaction rebroadcast returned a nonce-reuse error for \
-                     {command_name} tx {old_tx_hash:?} at nonce {nonce}, but \
-                     eth_getTransactionBySenderAndNonce is unsupported; cannot safely \
-                     distinguish mined/accepted tx from a conflicting replacement: {rebroadcast_err}"
-                );
+                let elapsed = started_at.elapsed();
+                if let Some(warning_at) = next_warning_at
+                    && elapsed >= warning_at
+                {
+                    tracing::warn!(
+                        command_name,
+                        ?old_tx_hash,
+                        nonce,
+                        waited_secs = elapsed.as_secs_f64(),
+                        "L1 transaction rebroadcast returned a nonce-reuse error and \
+                         eth_getTransactionBySenderAndNonce is unsupported; retrying standard \
+                         block-scan recovery: {rebroadcast_err}",
+                    );
+                    next_warning_at = Some(warning_at + timeout);
+                }
+                tokio::time::sleep(poll_interval).await;
             }
         }
     }
+}
+
+// SYSCOIN: standard-RPC fallback for providers that do not implement sender+nonce lookup.
+// Scan recent mined blocks and accept only a transaction with the same sender, nonce, and calldata.
+async fn find_matching_mined_sender_nonce_tx<F, P, Input>(
+    provider: &FillProvider<F, P>,
+    operator_address: Address,
+    nonce: u64,
+    gateway: bool,
+    command_name: &'static str,
+    command: &Input,
+) -> anyhow::Result<Option<B256>>
+where
+    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
+    P: Provider<Ethereum>,
+    Input: SendToL1,
+{
+    let latest_block = provider.get_block_number().await?;
+    let first_block = latest_block.saturating_sub(SAME_NONCE_MINED_TX_SCAN_DEPTH);
+    let expected_input = command.solidity_call(gateway, &operator_address);
+
+    for block_number in (first_block..=latest_block).rev() {
+        let Some(block) = provider
+            .get_block(BlockId::number(block_number))
+            .full()
+            .await?
+        else {
+            continue;
+        };
+
+        for tx in block.transactions().txns() {
+            if tx.from() != operator_address || tx.nonce() != nonce {
+                continue;
+            }
+            if tx.input().as_ref() != expected_input.as_ref() {
+                anyhow::bail!(
+                    "Mined same-nonce L1 transaction for {command_name} at nonce {nonce} \
+                     has different calldata"
+                );
+            }
+            return Ok(Some(tx.tx_hash()));
+        }
+    }
+
+    Ok(None)
 }
 
 // SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Nonce-conflict
@@ -689,9 +752,19 @@ where
             tracing::warn!(
                 command_name,
                 nonce,
-                "eth_getTransactionBySenderAndNonce is not supported; cannot discover same-nonce L1 transaction",
+                scan_depth = SAME_NONCE_MINED_TX_SCAN_DEPTH,
+                "eth_getTransactionBySenderAndNonce is not supported; scanning recent mined blocks",
             );
-            return Ok(SameNonceTx::Unsupported);
+            return find_matching_mined_sender_nonce_tx(
+                provider,
+                operator_address,
+                nonce,
+                gateway,
+                command_name,
+                command,
+            )
+            .await
+            .map(|tx_hash| tx_hash.map_or(SameNonceTx::Unsupported, SameNonceTx::Found));
         }
         Err(err) => anyhow::bail!(
             "Failed to fetch same-nonce L1 transaction for {command_name} at nonce {nonce}: {err}"
