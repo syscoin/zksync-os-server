@@ -1207,6 +1207,14 @@ pub struct BatchVerificationConfig {
         },
         "requires at least one accepted signer when `batch_verification.server_enabled=true`"
     ))]
+    // SYSCOIN
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<String>| {
+            !root.batch_verification_config.server_enabled
+                || value.iter().all(|signer| Address::from_str(signer).is_ok())
+        },
+        "requires valid signer addresses when `batch_verification.server_enabled=true`"
+    ))]
     pub accepted_signers: Vec<String>,
     /// [main node] Iteration timeout.
     #[config(default_t = Duration::from_secs(5))]
@@ -1863,6 +1871,21 @@ mod tests {
 
         assert!(err.contains(
             "`batch_verification.accepted_signers` requires at least one accepted signer when `batch_verification.server_enabled=true`"
+        ));
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn batch_verification_server_requires_valid_signer_addresses() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.network_config.enabled = true;
+        config.batch_verification_config.server_enabled = true;
+        config.batch_verification_config.accepted_signers = vec!["not-an-address".into()];
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`batch_verification.accepted_signers` requires valid signer addresses when `batch_verification.server_enabled=true`"
         ));
     }
 
