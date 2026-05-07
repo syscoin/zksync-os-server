@@ -22,6 +22,9 @@ impl TxAcceptanceGate {
 
     pub fn register(&mut self, rx: watch::Receiver<TransactionAcceptanceState>) {
         self.receivers.push(rx);
+        // SYSCOIN: Seed the combined gate synchronously so RPC never observes a
+        // default Accepting state when a source is already rejecting at startup.
+        self.evaluate_and_send();
     }
 
     pub async fn run(self, mut stop_receiver: watch::Receiver<bool>) {
@@ -74,5 +77,43 @@ impl TxAcceptanceGate {
             *current = new_state.clone();
             true
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_seeds_combined_state_from_current_sources() {
+        let (source_tx, source_rx) =
+            watch::channel(TransactionAcceptanceState::NotAccepting(vec![
+                NotAcceptingReason::BlockProductionDisabled,
+            ]));
+        let (mut gate, combined_rx) = TxAcceptanceGate::new();
+
+        gate.register(source_rx);
+
+        assert_eq!(
+            combined_rx.borrow().clone(),
+            TransactionAcceptanceState::NotAccepting(vec![
+                NotAcceptingReason::BlockProductionDisabled
+            ])
+        );
+
+        drop(source_tx);
+    }
+
+    #[test]
+    fn register_keeps_combined_state_accepting_when_all_sources_accept() {
+        let (_source_tx, source_rx) = watch::channel(TransactionAcceptanceState::Accepting);
+        let (mut gate, combined_rx) = TxAcceptanceGate::new();
+
+        gate.register(source_rx);
+
+        assert_eq!(
+            combined_rx.borrow().clone(),
+            TransactionAcceptanceState::Accepting
+        );
     }
 }
