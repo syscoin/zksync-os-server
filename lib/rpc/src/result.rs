@@ -115,6 +115,9 @@ impl<Ok> ToRpcResult<Ok, EthCallError> for Result<Ok, EthCallError> {
                 revert.to_string(),
                 revert.output.as_ref().map(|out| out.as_ref()),
             ),
+            // SYSCOIN: Unsupported override shapes are request issues, not
+            // internal server failures.
+            EthCallError::StateOverride(_) => invalid_params_rpc_err(err.to_string()),
             err => internal_rpc_err(err.to_string()),
         })
     }

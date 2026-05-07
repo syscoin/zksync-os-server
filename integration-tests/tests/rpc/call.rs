@@ -184,18 +184,18 @@ async fn call_with_state_overrides(tester: Tester) -> anyhow::Result<()> {
     let baseline = U256::from_be_slice(&out);
     assert_eq!(baseline, initial_data);
 
-    // Prepare state override via JSON to match expected types: set slot 0 to 2
+    // Prepare a sparse stateDiff override: set slot 0 to 2
     let overrides = StateOverride::from_iter([(
         *contract.address(),
         AccountOverride {
             balance: None,
             nonce: None,
             code: None,
-            state: Some(HashMap::from_iter([(
+            state: None,
+            state_diff: Some(HashMap::from_iter([(
                 b256!("0x0000000000000000000000000000000000000000000000000000000000000000"),
                 b256!("0x0000000000000000000000000000000000000000000000000000000000000002"),
             )])),
-            state_diff: None,
             move_precompile_to: None,
         },
     )]);
