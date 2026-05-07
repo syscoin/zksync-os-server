@@ -71,7 +71,7 @@ where
 
             let initial_blacklist_size = config.l2_signer_blacklist.len();
             for tx in &replay_record.transactions {
-                config.l2_signer_blacklist.insert(tx.signer());
+                config.insert_revm_divergence_l2_signer(tx.signer());
             }
             let new_blacklist_size = config.l2_signer_blacklist.len();
             tracing::info!(
