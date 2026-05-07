@@ -1192,9 +1192,19 @@ pub struct BatchVerificationConfig {
     pub client_enabled: bool,
     /// [main node] Threshold (number of needed signatures).
     #[config(default_t = 1)]
+    #[config_validate(custom(
+        |root: &Config, value: &u64| !root.batch_verification_config.server_enabled || *value > 0,
+        "requires a positive threshold when `batch_verification.server_enabled=true`"
+    ))]
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
-    #[config(default_t = vec!["0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".into()], with = Delimited::new(","))]
+    #[config(default_t = vec![], with = Delimited::new(","))]
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<String>| {
+            !root.batch_verification_config.server_enabled || !value.is_empty()
+        },
+        "requires at least one accepted signer when `batch_verification.server_enabled=true`"
+    ))]
     pub accepted_signers: Vec<String>,
     /// [main node] Iteration timeout.
     #[config(default_t = Duration::from_secs(5))]
@@ -1206,8 +1216,7 @@ pub struct BatchVerificationConfig {
     #[config(default_t = Duration::from_secs(300))]
     pub total_timeout: Duration,
     /// [external node] Signing key.
-    // default address 0x36615Cf349d7F6344891B1e7CA7C72883F5dc049
-    #[config(default_t = "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110".into())]
+    #[config(default_t = "".into())]
     pub signing_key: SecretString,
 }
 
@@ -1831,5 +1840,19 @@ mod tests {
         assert!(
             err.contains("`batch_verification.client_enabled` requires `network.enabled=true`")
         );
+    }
+
+    #[tokio::test]
+    async fn batch_verification_server_requires_explicit_signers() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.network_config.enabled = true;
+        config.batch_verification_config.server_enabled = true;
+        config.batch_verification_config.accepted_signers.clear();
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`batch_verification.accepted_signers` requires at least one accepted signer when `batch_verification.server_enabled=true`"
+        ));
     }
 }
