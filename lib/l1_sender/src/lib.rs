@@ -627,6 +627,7 @@ where
 {
     let started_at = Instant::now();
     let poll_interval = provider.client().poll_interval();
+    let mut logged_unsupported_rpc = false;
     let mut next_warning_at = if timeout.is_zero() {
         None
     } else {
@@ -665,19 +666,28 @@ where
             }
             SameNonceTx::Unsupported => {
                 let elapsed = started_at.elapsed();
-                if let Some(warning_at) = next_warning_at
+                let should_log = if let Some(warning_at) = next_warning_at
                     && elapsed >= warning_at
                 {
+                    next_warning_at = Some(warning_at + timeout);
+                    true
+                } else if timeout.is_zero() && !logged_unsupported_rpc {
+                    logged_unsupported_rpc = true;
+                    true
+                } else {
+                    false
+                };
+                if should_log {
                     tracing::warn!(
                         command_name,
                         ?old_tx_hash,
                         nonce,
+                        first_block = submitted_l1_block,
                         waited_secs = elapsed.as_secs_f64(),
                         "L1 transaction rebroadcast returned a nonce-reuse error and \
                          eth_getTransactionBySenderAndNonce is unsupported; retrying standard \
                          block-scan recovery: {rebroadcast_err}",
                     );
-                    next_warning_at = Some(warning_at + timeout);
                 }
                 tokio::time::sleep(poll_interval).await;
             }
@@ -786,12 +796,6 @@ where
     {
         Ok(tx) => tx,
         Err(TransportError::ErrorResp(ref e)) if e.code == METHOD_NOT_FOUND_CODE => {
-            tracing::warn!(
-                command_name,
-                nonce,
-                first_block = submitted_l1_block,
-                "eth_getTransactionBySenderAndNonce is not supported; scanning mined blocks since submission",
-            );
             return find_matching_mined_sender_nonce_tx(
                 provider,
                 operator_address,
