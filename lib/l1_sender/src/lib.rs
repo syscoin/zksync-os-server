@@ -256,6 +256,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                         command_name,
                         &mut cmd,
                         &commit_submitted_tx,
+                        None,
                     )
                     .await?;
                 anyhow::Ok((
@@ -305,6 +306,7 @@ async fn submit_l1_transaction<F, P, Input>(
     command_name: &'static str,
     cmd: &mut Input,
     commit_submitted_tx: &Option<watch::Sender<u64>>,
+    nonce_override: Option<u64>,
 ) -> anyhow::Result<(
     TransactionReceiptFuture,
     Instant,
@@ -328,6 +330,11 @@ where
     .await?
     .with_to(to_address)
     .with_input(cmd.solidity_call(gateway, &operator_address));
+    // SYSCOIN: dropped-tx recovery must not advance to a fresh nonce. For normal sends the
+    // provider fills the nonce; for recovery resubmissions we pin the original nonce.
+    if let Some(nonce) = nonce_override {
+        tx_request.set_nonce(nonce);
+    }
 
     if let Some(blob_sidecar) = cmd.blob_sidecar() {
         let fee_per_blob_gas = provider.get_blob_base_fee().await?;
@@ -489,6 +496,7 @@ where
                             command_name,
                             &mut command,
                             commit_submitted_tx,
+                            Some(tx_nonce),
                         )
                         .await?;
                         receipt_fut = resubmitted.0;
@@ -523,6 +531,7 @@ where
                                 tx_hash = recover_same_nonce_tx(
                                     provider,
                                     operator_address,
+                                    to_address,
                                     tx_nonce,
                                     tx_hash,
                                     submitted_l1_block,
@@ -555,6 +564,7 @@ where
                                     command_name,
                                     &mut command,
                                     commit_submitted_tx,
+                                    Some(tx_nonce),
                                 )
                                 .await?;
                                 receipt_fut = resubmitted.0;
@@ -611,6 +621,7 @@ where
 async fn recover_same_nonce_tx<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
+    to_address: Address,
     nonce: u64,
     old_tx_hash: B256,
     submitted_l1_block: u64,
@@ -638,6 +649,7 @@ where
         match find_matching_sender_nonce_tx(
             provider,
             operator_address,
+            to_address,
             nonce,
             submitted_l1_block,
             gateway,
@@ -649,6 +661,13 @@ where
             SameNonceTx::Found(tx_hash) => return Ok(tx_hash),
             SameNonceTx::NotFound => {
                 let elapsed = started_at.elapsed();
+                if !timeout.is_zero() && elapsed >= timeout {
+                    anyhow::bail!(
+                        "L1 transaction rebroadcast returned a nonce-reuse error for \
+                         {command_name} tx {old_tx_hash:?} at nonce {nonce}, but no matching \
+                         same-nonce transaction became visible within {timeout:?}: {rebroadcast_err}"
+                    );
+                }
                 if let Some(warning_at) = next_warning_at
                     && elapsed >= warning_at
                 {
@@ -666,6 +685,14 @@ where
             }
             SameNonceTx::Unsupported => {
                 let elapsed = started_at.elapsed();
+                if !timeout.is_zero() && elapsed >= timeout {
+                    anyhow::bail!(
+                        "L1 transaction rebroadcast returned a nonce-reuse error for \
+                         {command_name} tx {old_tx_hash:?} at nonce {nonce}, but \
+                         eth_getTransactionBySenderAndNonce is unsupported and standard \
+                         block-scan recovery found no matching tx within {timeout:?}: {rebroadcast_err}"
+                    );
+                }
                 let should_log = if let Some(warning_at) = next_warning_at
                     && elapsed >= warning_at
                 {
@@ -700,6 +727,7 @@ where
 async fn find_matching_mined_sender_nonce_tx<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
+    to_address: Address,
     nonce: u64,
     first_block: u64,
     gateway: bool,
@@ -727,6 +755,12 @@ where
             if tx.from() != operator_address || tx.nonce() != nonce {
                 continue;
             }
+            if tx.to() != Some(to_address) {
+                anyhow::bail!(
+                    "Mined same-nonce L1 transaction for {command_name} at nonce {nonce} \
+                     targets a different address"
+                );
+            }
             if tx.input().as_ref() != expected_input.as_ref() {
                 anyhow::bail!(
                     "Mined same-nonce L1 transaction for {command_name} at nonce {nonce} \
@@ -740,15 +774,15 @@ where
     Ok(None)
 }
 
-// SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Nonce-conflict
-// or underpriced replacement errors must use the resubmission path instead of waiting on a stale hash.
+// SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Keep the
+// `known transaction` match anchored so messages like `unknown transaction type` are not benign.
 fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
     match err {
         TransportError::ErrorResp(resp) => {
             let message = resp.message.to_ascii_lowercase();
             message.contains("already known")
-                || message.contains("known transaction")
                 || message.contains("already imported")
+                || message.trim_start().starts_with("known transaction")
         }
         _ => false,
     }
@@ -779,6 +813,7 @@ enum SameNonceTx {
 async fn find_matching_sender_nonce_tx<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
+    to_address: Address,
     nonce: u64,
     submitted_l1_block: u64,
     gateway: bool,
@@ -799,6 +834,7 @@ where
             return find_matching_mined_sender_nonce_tx(
                 provider,
                 operator_address,
+                to_address,
                 nonce,
                 submitted_l1_block,
                 gateway,
@@ -816,6 +852,12 @@ where
     let Some(tx) = tx else {
         return Ok(SameNonceTx::NotFound);
     };
+
+    if tx.to() != Some(to_address) {
+        anyhow::bail!(
+            "Same-nonce L1 transaction for {command_name} at nonce {nonce} targets a different address"
+        );
+    }
 
     let expected_input = command.solidity_call(gateway, &operator_address);
     if tx.input().as_ref() != expected_input.as_ref() {
