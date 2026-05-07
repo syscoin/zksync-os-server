@@ -301,6 +301,7 @@ fn contains_known_transaction_error(message: &str) -> bool {
         || message.contains("already imported")
         || message.contains("already in the pool")
         || message.contains("transaction already")
+        || message.trim_start().starts_with("known transaction")
 }
 
 /// Error types returned by `eth_sendRawTransaction` implementation
@@ -616,6 +617,9 @@ mod tests {
         ));
         assert!(contains_known_transaction_error(
             "transaction already exists"
+        ));
+        assert!(contains_known_transaction_error(
+            "known transaction: 0x1234"
         ));
         assert!(!contains_known_transaction_error("nonce too low"));
         assert!(!contains_known_transaction_error(
