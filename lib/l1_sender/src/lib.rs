@@ -362,12 +362,8 @@ where
     Input: SendToL1,
 {
     let tx_range = Input::display_range(std::slice::from_ref(cmd));
-    let fee_params = resolve_fee_params(
-        provider,
-        config.fee_config,
-        use_replacement_fee_params || nonce_override.is_some(),
-    )
-    .await?;
+    let fee_params =
+        resolve_fee_params(provider, config.fee_config, use_replacement_fee_params).await?;
     let mut tx_request = tx_request_with_gas_fields(operator_address, fee_params)
         .with_to(to_address)
         .with_input(cmd.solidity_call(gateway, &operator_address));
@@ -1211,13 +1207,13 @@ impl L1SenderFeeConfig {
 async fn resolve_fee_params(
     provider: &dyn Provider,
     fee_config: L1SenderFeeConfig,
-    force_transaction_resubmission: bool,
+    use_replacement_fee_params: bool,
 ) -> anyhow::Result<FeeParams> {
-    if force_transaction_resubmission {
-        return Ok(fee_config.replacement_fee_params());
-    }
-
-    let configured_params = fee_config.configured_fee_params();
+    let configured_params = if use_replacement_fee_params {
+        fee_config.replacement_fee_params()
+    } else {
+        fee_config.configured_fee_params()
+    };
     let eip1559_est = provider.estimate_eip1559_fees().await?;
     L1_SENDER_METRICS.report_l1_eip_1559_estimation(eip1559_est)?;
     report_custom_priority_fee_metrics(provider).await?;
@@ -1228,34 +1224,34 @@ async fn resolve_fee_params(
         "estimated priority and max fees"
     );
 
-    // SYSCOIN: Treat configured fees as floors, not caps. When the network estimate is
-    // higher during congestion, use it so L1 transactions do not get stuck underpriced.
+    // Treat configured fees as caps. Replacement mode raises those caps via config multipliers
+    // but still estimates the current network fee instead of blindly using stale caps.
     let max_fee_per_gas = if eip1559_est.max_fee_per_gas > configured_params.max_fee_per_gas {
         tracing::warn!(
             "L1 sender's configured maxFeePerGas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the estimated base fee value ({}).",
+             using the configured base fee value ({}) - this may result in inclusion delay.",
             configured_params.max_fee_per_gas,
             eip1559_est.max_fee_per_gas,
-            eip1559_est.max_fee_per_gas,
+            configured_params.max_fee_per_gas,
         );
-        eip1559_est.max_fee_per_gas
-    } else {
         configured_params.max_fee_per_gas
+    } else {
+        eip1559_est.max_fee_per_gas
     };
     let max_priority_fee_per_gas =
         if eip1559_est.max_priority_fee_per_gas > configured_params.max_priority_fee_per_gas {
             tracing::warn!(
                 "L1 sender's configured max_priority_fee_per_gas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the estimated priority fee value ({}).",
+             using the configured priority fee value ({}) - this may result in inclusion delay.",
                 configured_params.max_priority_fee_per_gas,
                 eip1559_est.max_priority_fee_per_gas,
-                eip1559_est.max_priority_fee_per_gas,
+                configured_params.max_priority_fee_per_gas,
             );
-            eip1559_est.max_priority_fee_per_gas
-        } else {
             configured_params.max_priority_fee_per_gas
+        } else {
+            eip1559_est.max_priority_fee_per_gas
         };
 
     Ok(FeeParams {
