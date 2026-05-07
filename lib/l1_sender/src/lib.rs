@@ -362,8 +362,12 @@ where
     Input: SendToL1,
 {
     let tx_range = Input::display_range(std::slice::from_ref(cmd));
-    let fee_params =
-        resolve_fee_params(provider, config.fee_config, use_replacement_fee_params).await?;
+    let fee_params = resolve_fee_params(
+        provider,
+        config.fee_config,
+        use_replacement_fee_params || nonce_override.is_some(),
+    )
+    .await?;
     let mut tx_request = tx_request_with_gas_fields(operator_address, fee_params)
         .with_to(to_address)
         .with_input(cmd.solidity_call(gateway, &operator_address));
