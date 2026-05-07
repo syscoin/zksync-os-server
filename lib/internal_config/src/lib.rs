@@ -18,6 +18,10 @@ pub struct InternalConfig {
     /// To be merged with the external blacklist in the main config.
     #[serde(default)]
     pub l2_signer_blacklist: HashSet<Address>,
+    // SYSCOIN: signers newly added to `l2_signer_blacklist` as temporary REVM
+    // divergence mitigation, so cleanup can remove only those entries.
+    #[serde(default)]
+    pub revm_divergence_l2_signer_blacklist: HashSet<Address>,
 }
 
 /// Manager for reading and writing the internal configuration file.
@@ -28,6 +32,27 @@ pub struct InternalConfigManager {
     pub file_path: PathBuf,
     /// Lock to ensure exclusive access to the config file during writes.
     pub file_lock: Arc<Mutex<()>>,
+}
+
+impl InternalConfig {
+    // SYSCOIN: record only signers newly blacklisted by REVM divergence handling.
+    pub fn insert_revm_divergence_l2_signer(&mut self, signer: Address) -> bool {
+        if self.l2_signer_blacklist.insert(signer) {
+            self.revm_divergence_l2_signer_blacklist.insert(signer);
+            true
+        } else {
+            false
+        }
+    }
+
+    // SYSCOIN: clear temporary REVM divergence state without dropping pre-existing
+    // blacklist entries.
+    pub fn clear_revm_divergence_mitigation(&mut self) {
+        self.failing_block = None;
+        for signer in self.revm_divergence_l2_signer_blacklist.drain() {
+            self.l2_signer_blacklist.remove(&signer);
+        }
+    }
 }
 
 impl InternalConfigManager {
@@ -72,5 +97,72 @@ impl InternalConfigManager {
             .context("Failed to write internal config to file")?;
 
         panic!("Internal config was updated, panicking: {panic_message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_revm_divergence_mitigation_preserves_pre_existing_blacklist_entries() {
+        let pre_existing = Address::repeat_byte(0x01);
+        let temporary = Address::repeat_byte(0x02);
+
+        let mut config = InternalConfig {
+            failing_block: Some(42),
+            l2_signer_blacklist: HashSet::from([pre_existing, temporary]),
+            revm_divergence_l2_signer_blacklist: HashSet::from([temporary]),
+        };
+
+        config.clear_revm_divergence_mitigation();
+
+        assert_eq!(config.failing_block, None);
+        assert!(config.l2_signer_blacklist.contains(&pre_existing));
+        assert!(!config.l2_signer_blacklist.contains(&temporary));
+        assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
+    }
+
+    #[test]
+    fn insert_revm_divergence_l2_signer_tracks_only_new_blacklist_entries() {
+        let pre_existing = Address::repeat_byte(0x01);
+        let temporary = Address::repeat_byte(0x02);
+
+        let mut config = InternalConfig {
+            failing_block: Some(42),
+            l2_signer_blacklist: HashSet::from([pre_existing]),
+            revm_divergence_l2_signer_blacklist: HashSet::new(),
+        };
+
+        assert!(!config.insert_revm_divergence_l2_signer(pre_existing));
+        assert!(config.insert_revm_divergence_l2_signer(temporary));
+
+        assert!(config.l2_signer_blacklist.contains(&pre_existing));
+        assert!(config.l2_signer_blacklist.contains(&temporary));
+        assert!(
+            !config
+                .revm_divergence_l2_signer_blacklist
+                .contains(&pre_existing)
+        );
+        assert!(
+            config
+                .revm_divergence_l2_signer_blacklist
+                .contains(&temporary)
+        );
+    }
+
+    #[test]
+    fn internal_config_deserializes_without_revm_divergence_blacklist() {
+        let config: InternalConfig = serde_json::from_str(
+            r#"{
+                "failing_block": 42,
+                "l2_signer_blacklist": []
+            }"#,
+        )
+        .expect("legacy internal config should deserialize");
+
+        assert_eq!(config.failing_block, Some(42));
+        assert!(config.l2_signer_blacklist.is_empty());
+        assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
     }
 }

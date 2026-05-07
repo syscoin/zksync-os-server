@@ -59,9 +59,11 @@ impl PipelineComponent for BatchSink {
             if let Some(n) = internal_config.failing_block
                 && envelope.batch.last_block_number >= n
             {
-                let message = "Removing `failing_block` from the internal config";
+                let message = "Removing REVM divergence mitigation state from the internal config";
                 tracing::info!(message);
-                internal_config.failing_block = None;
+                // SYSCOIN: clear the temporary signer blacklist entries together with the
+                // failed block marker once the replacement block has been processed.
+                internal_config.clear_revm_divergence_mitigation();
                 self.internal_config_manager
                     .write_config_and_panic(&internal_config, message)?;
             }
@@ -125,9 +127,11 @@ pub async fn clear_failing_block_config_task<F: ReadFinality>(
         );
         loop {
             if finality.get_finality_status().last_executed_block >= failing_block_number {
-                let message = "Removing `failing_block` from the internal config";
+                let message = "Removing REVM divergence mitigation state from the internal config";
                 tracing::info!(message);
-                internal_config.failing_block = None;
+                // SYSCOIN: clear the temporary signer blacklist entries together with the
+                // failed block marker once the replacement block has reached this EN.
+                internal_config.clear_revm_divergence_mitigation();
                 internal_config_manager
                     .write_config_and_panic(&internal_config, message)
                     .expect("failed to write internal config");
