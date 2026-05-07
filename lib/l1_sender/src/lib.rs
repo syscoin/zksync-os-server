@@ -661,7 +661,7 @@ where
             SameNonceTx::Found(tx_hash) => return Ok(tx_hash),
             SameNonceTx::NotFound => {
                 let elapsed = started_at.elapsed();
-                if timeout.is_zero() || elapsed >= timeout {
+                if !timeout.is_zero() && elapsed >= timeout {
                     anyhow::bail!(
                         "L1 transaction rebroadcast returned a nonce-reuse error for \
                          {command_name} tx {old_tx_hash:?} at nonce {nonce}, but no matching \
@@ -685,7 +685,7 @@ where
             }
             SameNonceTx::Unsupported => {
                 let elapsed = started_at.elapsed();
-                if timeout.is_zero() || elapsed >= timeout {
+                if !timeout.is_zero() && elapsed >= timeout {
                     anyhow::bail!(
                         "L1 transaction rebroadcast returned a nonce-reuse error for \
                          {command_name} tx {old_tx_hash:?} at nonce {nonce}, but \
