@@ -1,9 +1,9 @@
 use crate::config::{
-    BackpressureConfig, BaseTokenPriceUpdaterConfig, BatchVerificationConfig, BatcherConfig,
-    Config, ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig,
-    GenesisConfig, InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig,
+    BaseTokenPriceUpdaterConfig, BatchVerificationConfig, BatcherConfig, Config,
+    ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig, GeneralConfig, GenesisConfig,
+    InteropFeeUpdaterConfig, L1SenderConfig, L1WatcherConfig, MempoolConfig,
     MempoolTxValidatorConfig, NetworkConfig, ObservabilityConfig, ProverApiConfig,
-    ProverInputGeneratorConfig, ProviderConfig, RpcConfig, SequencerConfig, StatusServerConfig,
+    ProverInputGeneratorConfig, RpcConfig, SequencerConfig, StatusServerConfig,
 };
 use smart_config::{ConfigRepository, ConfigSources, Json, Yaml};
 use std::fs;
@@ -18,18 +18,6 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .expect("Failed to load general config")
         .parse()
         .expect("Failed to parse general config");
-
-    let l1_provider_config = repo
-        .get::<ProviderConfig>("l1_provider")
-        .expect("Failed to load L1 provider config")
-        .parse()
-        .expect("Failed to parse L1 provider config");
-
-    let gateway_provider_config = repo
-        .get::<ProviderConfig>("gateway_provider")
-        .expect("Failed to load Gateway provider config")
-        .parse_opt()
-        .expect("Failed to parse Gateway provider config");
 
     let network_config = repo
         .single::<NetworkConfig>()
@@ -149,16 +137,8 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse fee config");
 
-    let backpressure_config = repo
-        .single::<BackpressureConfig>()
-        .expect("Failed to load backpressure config")
-        .parse()
-        .expect("Failed to parse backpressure config");
-
     Config {
         general_config,
-        l1_provider_config,
-        gateway_provider_config,
         network_config,
         genesis_config,
         rpc_config,
@@ -178,7 +158,6 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         interop_fee_updater_config,
         external_price_api_client_config,
         fee_config,
-        backpressure_config,
     }
 }
 

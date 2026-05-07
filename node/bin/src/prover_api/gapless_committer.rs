@@ -8,7 +8,7 @@ use zksync_os_contract_interface::l1_discovery::BatchVerificationSL;
 use zksync_os_l1_sender::commands::L1SenderCommand;
 use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 
 /// Receives Batches with proofs - potentially out of order;
 /// * Fixes the order (by filling in the `buffer` field);
@@ -29,23 +29,25 @@ impl PipelineComponent for GaplessCommitter {
     type Input = ProvenBatch;
     type Output = L1SenderCommand<CommitCommand>;
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::GaplessCommitter;
+    const NAME: &'static str = "gapless_committer";
+    const OUTPUT_BUFFER_SIZE: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
+        let latency_tracker = ComponentStateReporter::global()
+            .handle_for("gapless_committer", GenericComponentState::WaitingRecv);
+
         let mut buffer: BTreeMap<u64, ProvenBatch> = BTreeMap::new();
         let mut next_expected_batch_number = self.next_expected_batch_number;
 
         loop {
-            state_reporter.enter_state(GenericComponentState::Idle);
-            match input.recv_and_record_picked(&state_reporter).await {
+            latency_tracker.enter_state(GenericComponentState::WaitingRecv);
+            match input.recv().await {
                 Some(proven_batch) => {
-                    state_reporter.enter_state(GenericComponentState::Active);
+                    latency_tracker.enter_state(GenericComponentState::Processing);
                     let batch_number = proven_batch.batch.batch_number();
                     // SYSCOIN
                     if batch_number < next_expected_batch_number {
@@ -127,7 +129,9 @@ impl PipelineComponent for GaplessCommitter {
                                 .map(L1SenderCommand::SendToL1)
                                 .context("Committer batch signature failure")?
                             };
-                            output.send_and_record(result, &state_reporter)?;
+                            latency_tracker.enter_state(GenericComponentState::WaitingSend);
+                            output.send(result).await?;
+                            latency_tracker.enter_state(GenericComponentState::Processing);
                         }
                     }
                 }

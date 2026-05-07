@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use tokio::sync::mpsc;
 use zksync_os_contract_interface::ZkChain;
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_types::ProtocolSemanticVersion;
 
 /// Receives Batches with proofs - potentially with incompatible protocol version.
@@ -81,32 +81,36 @@ impl PipelineComponent for UpgradeGatekeeper {
     type Input = L1SenderCommand<CommitCommand>;
     type Output = L1SenderCommand<CommitCommand>;
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::UpgradeGatekeeper;
+    const NAME: &'static str = "upgrade_gatekeeper";
+    const OUTPUT_BUFFER_SIZE: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
+        let latency_tracker = ComponentStateReporter::global()
+            .handle_for("upgrade_gatekeeper", GenericComponentState::WaitingRecv);
+
         loop {
-            state_reporter.enter_state(GenericComponentState::Idle);
-            let Some(command) = input.recv_and_record_picked(&state_reporter).await else {
+            latency_tracker.enter_state(GenericComponentState::WaitingRecv);
+            let Some(command) = input.recv().await else {
                 tracing::info!("inbound channel closed");
                 return Ok(());
             };
 
             if let L1SenderCommand::SendToL1(command) = &command {
-                state_reporter.enter_state(GenericComponentState::Active);
+                latency_tracker.enter_state(GenericComponentState::Processing);
 
                 let batch_protocol_version =
                     command.input().batch.batch_info.protocol_version.clone();
+
                 self.wait_until_protocol_version(&batch_protocol_version)
                     .await?;
             }
 
-            output.send_and_record(command, &state_reporter)?;
+            latency_tracker.enter_state(GenericComponentState::WaitingSend);
+            output.send(command).await?;
         }
     }
 }

@@ -4,14 +4,15 @@ use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::Permit;
-use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::mpsc::Sender;
 use zksync_os_batch_types::batcher_model::{
     FriProof, RealSnarkProof, SignedBatchEnvelope, SnarkProof,
 };
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
+use zksync_os_observability::{
+    ComponentStateHandle, ComponentStateReporter, GenericComponentState,
+};
 use zksync_os_types::ProvingVersion;
 
 /// Job manager for SNARK proving.
@@ -24,18 +25,25 @@ use zksync_os_types::ProvingVersion;
 ///
 /// `SnarkJobManager` aims to assign real prover jobs to real SNARK provers -
 ///     but if jobs are not picked within a timeout (`max_batch_age`), it releases it to a fake prover
+///
+///
+/// `ComponentStateLatencyTracker`: Only tracks `Processing` / `WaitingSend` states
 pub struct SnarkJobManager {
     // == state ==
     jobs: ProverJobMap<FriProof>,
     // outbound
-    prove_batches_sender: mpsc::Sender<ProofCommand>,
+    prove_batches_sender: Sender<ProofCommand>,
     // config
     max_fris_per_snark: usize,
+    // metrics
+    latency_tracker: ComponentStateHandle<GenericComponentState>,
 }
 
 impl SnarkJobManager {
     pub fn new(
-        prove_batches_sender: mpsc::Sender<ProofCommand>,
+        // outbound
+        prove_batches_sender: Sender<ProofCommand>,
+        // config
         max_fris_per_snark: usize,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
@@ -45,13 +53,20 @@ impl SnarkJobManager {
             max_assigned_batch_range,
             ProverStage::Snark,
         );
+        let latency_tracker = ComponentStateReporter::global().handle_for(
+            "snark_job_manager",
+            GenericComponentState::ProcessingOrWaitingRecv,
+        );
         Self {
             jobs,
             prove_batches_sender,
             max_fris_per_snark,
+            latency_tracker,
         }
     }
 
+    /// Adds a pending job to the queue.
+    /// Awaits if queue is full (ProverJobMap.max_assigned_batch_range).
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<FriProof>) {
         self.jobs.add_job(batch_envelope).await
     }
@@ -95,25 +110,6 @@ impl SnarkJobManager {
         //     anyhow::bail!("proof validation failed")
         // }
 
-        // Prover should generate the proof with VK received from server. These must always match.
-        // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
-        //
-        // This should never happen, but we double-check to guarantee it's the case.
-        let Some(batch_metadata) = self.jobs.get_job_batch_metadata(batch_from).await else {
-            anyhow::bail!("race condition: some batches were completed earlier")
-        };
-        let server_vk = batch_metadata
-            .verification_key_hash()
-            .expect("verification key hash must be present as it was set by server");
-        let prover_vk = proving_version.vk_hash();
-        anyhow::ensure!(
-            server_vk == prover_vk,
-            "Verification key hash mismatch: server got {server_vk}, prover got {prover_vk}"
-        );
-
-        // Ensure we can send downstream before consuming jobs from the retryable map.
-        let permit = self.try_reserve_permit_downstream()?;
-
         // prove is valid - consuming proven batches
         let Some(consumed_batches_proven) = self
             .jobs
@@ -123,18 +119,33 @@ impl SnarkJobManager {
             anyhow::bail!("race condition: some batches were completed earlier")
         };
 
+        // Prover should generate the proof with VK received from server. These must always match.
+        // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
+        //
+        // This should never happen, but we double-check to guarantee it's the case.
+        let server_vk = consumed_batches_proven[0]
+            .batch
+            .verification_key_hash()
+            .expect("verification key hash must be present as it was set by server");
+        let prover_vk = proving_version.vk_hash();
+        anyhow::ensure!(
+            server_vk == prover_vk,
+            "Verification key hash mismatch: server got {server_vk}, prover got {prover_vk}"
+        );
+
         let consumed_batches_proven: Vec<_> = consumed_batches_proven
             .into_iter()
             .map(|batch| batch.with_stage(BatchExecutionStage::SnarkProvedReal))
             .collect();
 
-        permit.send(ProofCommand::new(
+        self.send_downstream(ProofCommand::new(
             consumed_batches_proven,
             SnarkProof::Real(RealSnarkProof::V2 {
                 proof: payload,
                 proving_execution_version: proving_version as u32,
             }),
-        ));
+        ))
+        .await?;
         Ok(())
     }
 
@@ -176,21 +187,16 @@ impl SnarkJobManager {
                 assigned.len() - real_proofs_count,
             );
 
-            let batch_from = assigned.first().unwrap().0.batch_number;
-            let batch_to = assigned.last().unwrap().0.batch_number;
-            let permit = self.try_reserve_permit_downstream()?;
-            let Some(completed) = self
-                .jobs
-                .complete_many_jobs(batch_from, batch_to, ProverType::Fake, "fake_prover")
-                .await
-            else {
-                tracing::info!(
-                    batch_from,
-                    batch_to,
-                    "skipping fake SNARK proof because another prover completed part of the range"
-                );
-                continue;
-            };
+            let mut completed = Vec::default();
+            for (job, _) in assigned {
+                if let Some(envelope) = self
+                    .jobs
+                    .complete_job(job.batch_number, ProverType::Fake, "fake_prover")
+                    .await
+                {
+                    completed.push(envelope);
+                }
+            }
 
             // Add observability traces
             let batches_with_fake_proofs = completed
@@ -198,23 +204,21 @@ impl SnarkJobManager {
                 .map(|batch| batch.with_stage(BatchExecutionStage::SnarkProvedFake))
                 .collect();
 
-            permit.send(ProofCommand::new(
+            self.send_downstream(ProofCommand::new(
                 batches_with_fake_proofs,
                 SnarkProof::Fake,
-            ));
+            ))
+            .await?;
         }
     }
 
-    fn try_reserve_permit_downstream(&self) -> anyhow::Result<Permit<'_, ProofCommand>> {
-        Ok(match self.prove_batches_sender.try_reserve() {
-            Ok(permit) => permit,
-            Err(TrySendError::Full(_)) => {
-                anyhow::bail!("downstream backpressure");
-            }
-            Err(TrySendError::Closed(_)) => {
-                anyhow::bail!("server is shutting down");
-            }
-        })
+    async fn send_downstream(&self, proof_command: ProofCommand) -> anyhow::Result<()> {
+        self.latency_tracker
+            .enter_state(GenericComponentState::WaitingSend);
+        self.prove_batches_sender.send(proof_command).await?;
+        self.latency_tracker
+            .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+        Ok(())
     }
     // SYSCOIN
     pub async fn status(&self) -> Vec<JobState> {
@@ -244,13 +248,10 @@ impl FakeSnarkProver {
     pub async fn run(self) {
         loop {
             tokio::time::sleep(self.polling_interval).await;
-            if let Err(err) = self
-                .job_manager
+            self.job_manager
                 .process_pending_fake_or_timed_out_fri_proofs(Some(self.max_batch_age))
                 .await
-            {
-                tracing::info!("`FakeSnarkProver` iteration failed: {err}");
-            }
+                .expect("snark prover failed");
         }
     }
 }

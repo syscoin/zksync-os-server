@@ -21,17 +21,12 @@ pub struct ProofCommand {
 
 impl ProofCommand {
     pub fn new(batches: Vec<SignedBatchEnvelope<FriProof>>, proof: SnarkProof) -> Self {
-        assert!(
-            !batches.is_empty(),
-            "ProofCommand must contain at least one batch"
-        );
         Self { batches, proof }
     }
 }
 
 impl SendToL1 for ProofCommand {
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::L1SenderProve;
+    const NAME: &'static str = "prove";
     const SENT_STAGE: BatchExecutionStage = BatchExecutionStage::ProveL1TxSent;
     const MINED_STAGE: BatchExecutionStage = BatchExecutionStage::ProveL1TxMined;
     const PASSTHROUGH_STAGE: BatchExecutionStage = BatchExecutionStage::ProveL1Passthrough;

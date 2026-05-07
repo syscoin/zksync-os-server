@@ -1,19 +1,42 @@
+use crate::StateLabel;
 use vise::EncodeLabelValue;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue)]
 #[metrics(label = "state", rename_all = "snake_case")]
 pub enum GenericComponentState {
-    /// No work available — waiting for upstream.
-    Idle,
-    /// Actively processing.
-    Active,
+    WaitingRecv,
+    Processing,
+    WaitingSend,
+    // for multithreaded components,
+    // we cannot effectively distinguish between Processing and Waiting for input,
+    // as both happen simultaneously
+    ProcessingOrWaitingRecv,
 }
 
-impl GenericComponentState {
-    pub fn as_str(self) -> &'static str {
+impl StateLabel for GenericComponentState {
+    fn generic(&self) -> GenericComponentState {
+        *self
+    }
+
+    fn specific(&self) -> &'static str {
         match self {
-            Self::Idle => "idle",
-            Self::Active => "active",
+            GenericComponentState::WaitingRecv => "waiting_recv",
+            GenericComponentState::Processing => "processing",
+            GenericComponentState::WaitingSend => "waiting_send",
+            GenericComponentState::ProcessingOrWaitingRecv => "processing_or_waiting_recv",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn processing_or_waiting_recv_specific_label_matches_state() {
+        assert_eq!(
+            GenericComponentState::ProcessingOrWaitingRecv.specific(),
+            "processing_or_waiting_recv"
+        );
     }
 }

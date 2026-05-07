@@ -8,6 +8,7 @@ use block_cache::BlockCache;
 use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
+use zksync_os_batch_types::BlockMerkleTreeData;
 use zksync_os_batch_types::{
     BatchSignature, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch,
 };
@@ -17,15 +18,14 @@ use zksync_os_merkle_tree::TreeBatchOutput;
 use zksync_os_network::{
     PeerVerifyBatch, PeerVerifyBatchResult, VerifyBatch, VerifyBatchOutcome, VerifyBatchResult,
 };
-use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReadFinality, ReadStateHistory};
-use zksync_os_storage_api::{ReplayRecord, StateError, TreeBlock, read_multichain_root};
+use zksync_os_storage_api::{ReplayRecord, StateError, read_multichain_root};
 
 mod block_cache;
 mod metrics;
 
-type VerificationInput = TreeBlock;
+type VerificationInput = (BlockOutput, ReplayRecord, BlockMerkleTreeData);
 
 /// Batch verification responder that consumes requests from the network.
 pub struct BatchVerificationResponder<Finality, ReadState> {
@@ -33,7 +33,7 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     diamond_proxy_sl: Address,
     l1_state: L1State,
     signer: PrivateKeySigner,
-    block_cache: BlockCache<Finality, TreeBlock>,
+    block_cache: BlockCache<Finality, (BlockOutput, ReplayRecord, BlockMerkleTreeData)>,
     read_state: ReadState,
     verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: broadcast::Sender<PeerVerifyBatchResult>,
@@ -103,12 +103,10 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         let blocks: Vec<(&BlockOutput, &ReplayRecord, TreeBatchOutput)> =
             (request.first_block_number..=request.last_block_number)
                 .map(|block_number| {
-                    let cached = self
+                    let (block_output, replay_record, tree_data) = self
                         .block_cache
                         .get(block_number)
                         .ok_or(BatchVerificationError::MissingBlock(block_number))?;
-                    let (block_output, replay_record, tree_data) =
-                        (&cached.output, &cached.record, &cached.tree);
 
                     let (root_hash, leaf_count) = tree_data
                         .block_end
@@ -231,27 +229,24 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory> PipelineComponent
     type Input = VerificationInput;
     type Output = ();
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::BatchVerificationResponder;
+    const NAME: &'static str = "batch_verification_responder";
+    const OUTPUT_BUFFER_SIZE: usize = 5;
 
     async fn run(
         mut self,
         mut input: PeekableReceiver<Self::Input>,
         _output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         tracing::info!("starting batch verification responder");
         loop {
-            state_reporter.enter_state(GenericComponentState::Idle);
             tokio::select! {
                 block = input.recv() => {
                     match block {
-                        Some(tree_block) => {
-                            state_reporter.enter_state(GenericComponentState::Active);
-                            let block_number = tree_block.record.block_context.block_number;
-                            let block_timestamp = tree_block.record.block_context.timestamp;
-                            self.block_cache.insert(block_number, tree_block)?;
-                            state_reporter.record_processed(block_number, Some(block_timestamp), None);
+                        Some((block_output, replay_record, tree_data)) => {
+                            self.block_cache.insert(
+                                replay_record.block_context.block_number,
+                                (block_output, replay_record, tree_data),
+                            )?;
                         }
                         None => return Ok(()),
                     }
@@ -260,7 +255,6 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory> PipelineComponent
                     let Some(request) = request else {
                         return Ok(());
                     };
-                    state_reporter.enter_state(GenericComponentState::Active);
                     let peer_id = request.peer_id;
                     let request_id = request.message.request_id;
                     let batch_number = request.message.batch_number;

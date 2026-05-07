@@ -17,5 +17,3 @@ futures.workspace = true
 tracing.workspace = true
 
 reth-tasks.workspace = true
-vise.workspace = true
-zksync_os_observability.workspace = true

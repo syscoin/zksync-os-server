@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use zksync_os_l1_sender::commands::L1SenderCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 
 /// Receives L1SenderCommands with ProofCommand - potentially out of order.
 /// Fixes the order and sends downstream.
@@ -25,30 +25,36 @@ impl PipelineComponent for GaplessL1ProofSender {
     type Input = L1SenderCommand<ProofCommand>;
     type Output = L1SenderCommand<ProofCommand>;
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::GaplessL1ProofSender;
+    const NAME: &'static str = "gapless_l1_proof_sender";
+    const OUTPUT_BUFFER_SIZE: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
+        let latency_tracker = ComponentStateReporter::global().handle_for(
+            "gapless_l1_proof_sender",
+            GenericComponentState::WaitingRecv,
+        );
+
         let mut buffer: BTreeMap<u64, L1SenderCommand<ProofCommand>> = BTreeMap::new();
         let mut next_expected_batch_number = self.next_expected_batch_number;
 
         loop {
-            state_reporter.enter_state(GenericComponentState::Idle);
-            match input.recv_and_record_picked(&state_reporter).await {
+            latency_tracker.enter_state(GenericComponentState::WaitingRecv);
+            match input.recv().await {
                 Some(command) => {
-                    let arrived_batch = command.first_batch_number();
-                    state_reporter.enter_state(GenericComponentState::Active);
+                    latency_tracker.enter_state(GenericComponentState::Processing);
 
-                    buffer.insert(arrived_batch, command);
+                    buffer.insert(command.first_batch_number(), command);
 
+                    // Flush ready commands
                     while let Some(next_command) = buffer.remove(&next_expected_batch_number) {
                         next_expected_batch_number += next_command.batch_count() as u64;
-                        output.send_and_record(next_command, &state_reporter)?;
+                        latency_tracker.enter_state(GenericComponentState::WaitingSend);
+                        output.send(next_command).await?;
+                        latency_tracker.enter_state(GenericComponentState::Processing);
                     }
                 }
                 None => {

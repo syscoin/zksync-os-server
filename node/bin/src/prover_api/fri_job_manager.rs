@@ -25,11 +25,15 @@ use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::Permit;
+use tokio::sync::mpsc::error::TrySendError;
 use zksync_os_batch_types::batcher_model::{
     BatchEnvelope, BatchMetadata, FriProof, ProverInput, RealFriProof, SignedBatchEnvelope,
 };
 use zksync_os_batcher_metrics::BatchExecutionStage;
-use zksync_os_observability::LatencyDistributionTracker;
+use zksync_os_observability::{
+    ComponentStateHandle, ComponentStateReporter, GenericComponentState, LatencyDistributionTracker,
+};
 use zksync_os_types::ProvingVersion;
 
 // SYSCOIN
@@ -51,8 +55,6 @@ pub enum SubmitError {
     // server execution version, prover execution version
     #[error("execution error mismatch - server expects {0:?}, but got {1:?} from prover")]
     ProvingVersionMismatch(ProvingVersion, ProvingVersion),
-    #[error("server is shutting down")]
-    ShuttingDown,
     #[error("internal error: {0}")]
     Other(String),
 }
@@ -101,6 +103,8 @@ pub struct FriJobManager {
     accepted_proof_sender: mpsc::UnboundedSender<AcceptedProof>,
     // == storage ==
     proof_storage: ProofStorage,
+    // == metrics ==
+    latency_tracker: ComponentStateHandle<GenericComponentState>,
 }
 
 impl FriJobManager {
@@ -114,6 +118,10 @@ impl FriJobManager {
             assignment_timeout,
             max_assigned_batch_range,
             ProverStage::Fri,
+        );
+        let latency_tracker = ComponentStateReporter::global().handle_for(
+            "fri_job_manager",
+            GenericComponentState::ProcessingOrWaitingRecv,
         );
         // SYSCOIN
         let (accepted_proof_sender, mut accepted_proof_receiver) =
@@ -185,6 +193,7 @@ impl FriJobManager {
             batches_with_proof_sender,
             accepted_proof_sender,
             proof_storage,
+            latency_tracker,
         }
     }
 
@@ -464,13 +473,21 @@ impl FriJobManager {
         })
     }
 
-    fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
-        match self.batches_with_proof_sender.try_reserve() {
-            Ok(permit) => Ok(permit),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                Err(SubmitError::Other("downstream backpressure".to_string()))
+    fn try_reserve_permit_downstream(&self) -> Result<Permit<'_, ProvenBatch>, SubmitError> {
+        Ok(match self.batches_with_proof_sender.try_reserve() {
+            Ok(permit) => {
+                self.latency_tracker
+                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
+                permit
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(SubmitError::ShuttingDown),
-        }
+            Err(TrySendError::Full(_)) => {
+                self.latency_tracker
+                    .enter_state(GenericComponentState::WaitingSend);
+                return Err(SubmitError::Other("downstream backpressure".to_string()));
+            }
+            Err(TrySendError::Closed(_)) => {
+                return Err(SubmitError::Other("server is shutting down".to_string()));
+            }
+        })
     }
 }
