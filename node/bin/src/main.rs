@@ -359,6 +359,12 @@ fn load_internal_config(config: &mut Config) {
         .rpc_config
         .l2_signer_blacklist
         .extend(internal_config.l2_signer_blacklist);
+    // SYSCOIN: keep exact known-divergent transaction hashes blocked after signer
+    // quarantine cleanup, preventing repeat divergence replay without censoring users.
+    config
+        .rpc_config
+        .l2_tx_blacklist
+        .extend(internal_config.revm_divergence_l2_tx_blacklist);
     if let Some(failing_block) = internal_config.failing_block {
         if config.sequencer_config.block_rebuild.is_some() {
             panic!(

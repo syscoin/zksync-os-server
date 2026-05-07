@@ -144,6 +144,8 @@ pub enum TxRejectionReason {
     NotAccepting,
     /// The signer address is on the blacklist.
     BlacklistedSigner,
+    /// The exact transaction hash is on the blacklist.
+    BlacklistedTransaction,
     /// Forwarding the transaction to the main node failed (transport error).
     ForwardTransportError,
     /// Forwarding the transaction to the main node failed (main node rejected it).
