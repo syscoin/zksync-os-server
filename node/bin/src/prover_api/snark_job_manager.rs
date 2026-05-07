@@ -102,6 +102,21 @@ impl SnarkJobManager {
         payload: Vec<u8>,
         prover_id: String,
     ) -> anyhow::Result<()> {
+        // Prover should generate the proof with VK received from server. These must always match.
+        // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
+        //
+        // This should never happen, but we double-check to guarantee it's the case before consuming jobs.
+        let server_vk = self
+            .jobs
+            .get_job_proving_vk_hash(batch_from)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("race condition: some batches were completed earlier"))?;
+        let prover_vk = proving_version.vk_hash();
+        anyhow::ensure!(
+            server_vk == prover_vk,
+            "Verification key hash mismatch: server got {server_vk}, prover got {prover_vk}"
+        );
+
         // note: we still hold mutex while verifying the proof -
         // this is desired since we don't want the batches to timeout
 
@@ -118,20 +133,6 @@ impl SnarkJobManager {
         else {
             anyhow::bail!("race condition: some batches were completed earlier")
         };
-
-        // Prover should generate the proof with VK received from server. These must always match.
-        // If they don't, proof won't be accepted, validation will fail, therefore it's pointless to proceed.
-        //
-        // This should never happen, but we double-check to guarantee it's the case.
-        let server_vk = consumed_batches_proven[0]
-            .batch
-            .verification_key_hash()
-            .expect("verification key hash must be present as it was set by server");
-        let prover_vk = proving_version.vk_hash();
-        anyhow::ensure!(
-            server_vk == prover_vk,
-            "Verification key hash mismatch: server got {server_vk}, prover got {prover_vk}"
-        );
 
         let consumed_batches_proven: Vec<_> = consumed_batches_proven
             .into_iter()

@@ -304,6 +304,13 @@ impl<T: Clone> ProverJobMap<T> {
         })
     }
 
+    /// If a job is present for the given batch_number, returns its proving VK hash.
+    pub async fn get_job_proving_vk_hash(&self, batch_number: u64) -> Option<&'static str> {
+        let jobs = self.lock_with_tracking(JobMapMethod::GetProverInput).await;
+        jobs.get(&batch_number)
+            .map(|entry| entry.metadata.proving_version.vk_hash())
+    }
+
     /// Marks a job as complete by removing it from the map.
     /// Notifies inbound jobs waiting in add_job() that space may be available.
     /// Records metrics and logs timing info. Returns the batch envelope if the job existed.
