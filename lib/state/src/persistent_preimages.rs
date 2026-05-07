@@ -108,9 +108,9 @@ impl PreimageSource for PersistentPreimages {
 }
 
 fn rocksdb_block_number(rocks_db: &RocksDB<PreimagesCF>) -> Option<u64> {
+    // SYSCOIN: missing metadata means a fresh DB; RocksDB read errors must fail fast.
     rocks_db
         .get_cf(PreimagesCF::Meta, PreimagesCF::block_key())
-        .ok()
-        .flatten()
+        .expect("RocksDB read failed")
         .map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()))
 }
