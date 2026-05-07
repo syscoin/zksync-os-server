@@ -81,6 +81,7 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
             EthSendRawTransactionError::FailedToDecodeSignedTransaction
             | EthSendRawTransactionError::InvalidTransactionSignature
             | EthSendRawTransactionError::BlacklistedSigner
+            | EthSendRawTransactionError::BlacklistedTransaction
             | EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_)
             | EthSendRawTransactionError::PoolError(_) => invalid_params_rpc_err(err.to_string()),
             EthSendRawTransactionError::NotAcceptingTransactions(_) => {

@@ -2,7 +2,7 @@
 //! Internal config is stored in a JSON file on disk and read/written as needed.
 //! Internal config is expected to be read at node startup and merged with the main config.
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -22,6 +22,11 @@ pub struct InternalConfig {
     // divergence mitigation, so cleanup can remove only those entries.
     #[serde(default)]
     pub revm_divergence_l2_signer_blacklist: HashSet<Address>,
+    // SYSCOIN: exact transactions observed in REVM-divergent blocks. Unlike the
+    // signer quarantine, this remains after cleanup to prevent replaying a
+    // known divergence-triggering transaction without censoring the signer.
+    #[serde(default)]
+    pub revm_divergence_l2_tx_blacklist: HashSet<B256>,
 }
 
 /// Manager for reading and writing the internal configuration file.
@@ -43,6 +48,11 @@ impl InternalConfig {
         } else {
             false
         }
+    }
+
+    // SYSCOIN: block exact transactions from replaying a known REVM divergence.
+    pub fn insert_revm_divergence_l2_tx(&mut self, tx_hash: B256) -> bool {
+        self.revm_divergence_l2_tx_blacklist.insert(tx_hash)
     }
 
     // SYSCOIN: clear temporary REVM divergence state without dropping pre-existing
@@ -113,6 +123,7 @@ mod tests {
             failing_block: Some(42),
             l2_signer_blacklist: HashSet::from([pre_existing, temporary]),
             revm_divergence_l2_signer_blacklist: HashSet::from([temporary]),
+            revm_divergence_l2_tx_blacklist: HashSet::from([B256::repeat_byte(0x03)]),
         };
 
         config.clear_revm_divergence_mitigation();
@@ -121,6 +132,11 @@ mod tests {
         assert!(config.l2_signer_blacklist.contains(&pre_existing));
         assert!(!config.l2_signer_blacklist.contains(&temporary));
         assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
+        assert!(
+            config
+                .revm_divergence_l2_tx_blacklist
+                .contains(&B256::repeat_byte(0x03))
+        );
     }
 
     #[test]
@@ -132,6 +148,7 @@ mod tests {
             failing_block: Some(42),
             l2_signer_blacklist: HashSet::from([pre_existing]),
             revm_divergence_l2_signer_blacklist: HashSet::new(),
+            revm_divergence_l2_tx_blacklist: HashSet::new(),
         };
 
         assert!(!config.insert_revm_divergence_l2_signer(pre_existing));
@@ -152,6 +169,25 @@ mod tests {
     }
 
     #[test]
+    fn insert_revm_divergence_l2_tx_keeps_known_divergent_tx_blacklisted() {
+        let tx_hash = B256::repeat_byte(0x03);
+
+        let mut config = InternalConfig {
+            failing_block: Some(42),
+            l2_signer_blacklist: HashSet::new(),
+            revm_divergence_l2_signer_blacklist: HashSet::new(),
+            revm_divergence_l2_tx_blacklist: HashSet::new(),
+        };
+
+        assert!(config.insert_revm_divergence_l2_tx(tx_hash));
+        assert!(!config.insert_revm_divergence_l2_tx(tx_hash));
+
+        config.clear_revm_divergence_mitigation();
+
+        assert!(config.revm_divergence_l2_tx_blacklist.contains(&tx_hash));
+    }
+
+    #[test]
     fn internal_config_deserializes_without_revm_divergence_blacklist() {
         let config: InternalConfig = serde_json::from_str(
             r#"{
@@ -164,5 +200,6 @@ mod tests {
         assert_eq!(config.failing_block, Some(42));
         assert!(config.l2_signer_blacklist.is_empty());
         assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
+        assert!(config.revm_divergence_l2_tx_blacklist.is_empty());
     }
 }

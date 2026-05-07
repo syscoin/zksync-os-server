@@ -1,7 +1,7 @@
 pub use self::cli::ConfigArgs;
 use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
-use alloy::primitives::{Address, Bytes, U128};
+use alloy::primitives::{Address, B256, Bytes, U128};
 use num::{BigInt, BigUint, rational::Ratio};
 use reth_net_nat::net_if::resolve_net_if_ip;
 use reth_network_peers::TrustedPeer;
@@ -765,6 +765,10 @@ pub struct RpcConfig {
     /// List of L2 signer addresses to blacklist (i.e. their transactions are rejected).
     #[config(default, with = Delimited::new(","))]
     pub l2_signer_blacklist: HashSet<Address>,
+
+    /// SYSCOIN: List of exact L2 transaction hashes to reject.
+    #[config(default, with = Delimited::new(","))]
+    pub l2_tx_blacklist: HashSet<B256>,
 
     /// Default timeout for `eth_sendRawTransactionSync`
     #[config(default_t = 2 * TimeUnit::Seconds)]
@@ -1530,6 +1534,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             max_blocks_per_filter: c.max_blocks_per_filter,
             max_logs_per_response: c.max_logs_per_response,
             l2_signer_blacklist: c.l2_signer_blacklist,
+            l2_tx_blacklist: c.l2_tx_blacklist,
             stale_filter_ttl: c.stale_filter_ttl,
             send_raw_transaction_sync_timeout: c.send_raw_transaction_sync_timeout,
             gas_price_scale_factor: c.gas_price_scale_factor,

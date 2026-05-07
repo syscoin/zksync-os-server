@@ -70,6 +70,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             .try_into_recovered()
             .map_err(|_| EthSendRawTransactionError::InvalidTransactionSignature)?;
         let hash = *l2_tx.hash();
+        if self.config.l2_tx_blacklist.contains(&hash) {
+            return Err(EthSendRawTransactionError::BlacklistedTransaction);
+        }
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
@@ -324,6 +327,8 @@ pub enum EthSendRawTransactionError {
     ForwardError(#[from] RpcError<TransportErrorKind>),
     #[error("Signer is blacklisted")]
     BlacklistedSigner,
+    #[error("Transaction is blacklisted")]
+    BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
 }
@@ -335,6 +340,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::InvalidTransactionSignature => Self::InvalidSignature,
             EthSendRawTransactionError::NotAcceptingTransactions(_) => Self::NotAccepting,
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
+            EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
             EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
             EthSendRawTransactionError::ForwardError(rpc_err) => match rpc_err {
                 RpcError::ErrorResp(_) => Self::ForwardRejected,

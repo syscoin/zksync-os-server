@@ -72,6 +72,9 @@ where
             let initial_blacklist_size = config.l2_signer_blacklist.len();
             for tx in &replay_record.transactions {
                 config.insert_revm_divergence_l2_signer(tx.signer());
+                // SYSCOIN: keep an exact transaction-level denylist entry after
+                // signer cleanup so the known divergent transaction cannot be replayed.
+                config.insert_revm_divergence_l2_tx(*tx.hash());
             }
             let new_blacklist_size = config.l2_signer_blacklist.len();
             tracing::info!(

@@ -1,4 +1,4 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -44,6 +44,10 @@ pub struct RpcConfig {
 
     /// List of L2 signer addresses to blacklist (i.e. their transactions are rejected).
     pub l2_signer_blacklist: HashSet<Address>,
+
+    // SYSCOIN: exact L2 transaction hashes to reject, used for known
+    // REVM-divergent transactions without permanently blacklisting signers.
+    pub l2_tx_blacklist: HashSet<B256>,
 
     /// Default timeout for `eth_sendRawTransactionSync`
     pub send_raw_transaction_sync_timeout: Duration,
