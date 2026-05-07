@@ -42,14 +42,15 @@ const METHOD_NOT_FOUND_CODE: i64 = -32601;
 /// SYSCOIN: future that resolves into a (fallible) transaction receipt wait outcome.
 /// The outcome distinguishes confirmed txs from dropped txs so delayed inclusion is non-fatal.
 type TransactionReceiptFuture = BoxFuture<'static, anyhow::Result<ReceiptWaitOutcome>>;
-// SYSCOIN: track the optional raw signed tx and current hash so dropped txs can be rebroadcast
-// or resubmitted without crashing the L1 sender.
+// SYSCOIN: track the optional raw signed tx, current hash, nonce, and submission L1 block so
+// dropped txs can be rebroadcast or recovered without crashing the L1 sender.
 type PendingTx<Input> = (
     TransactionReceiptFuture,
     Input,
     Instant,
     Option<Vec<u8>>,
     B256,
+    u64,
     u64,
 );
 
@@ -66,9 +67,6 @@ const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
-// SYSCOIN: fallback scan window when the provider does not support
-// `eth_getTransactionBySenderAndNonce`.
-const SAME_NONCE_MINED_TX_SCAN_DEPTH: u64 = 128;
 
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
@@ -170,7 +168,15 @@ pub async fn run_l1_sender<Input: SendToL1>(
                 .boxed();
                 // SYSCOIN: recovered in-flight txs have no raw signed payload; if they disappear,
                 // recovery resubmits from the queued command instead.
-                (fut, cmd, Instant::now(), None, tx_hash, nonce)
+                (
+                    fut,
+                    cmd,
+                    Instant::now(),
+                    None,
+                    tx_hash,
+                    nonce,
+                    sl_block_number,
+                )
             })
             .collect();
         wait_for_txs_and_forward(
@@ -240,18 +246,27 @@ pub async fn run_l1_sender<Input: SendToL1>(
         // SYSCOIN: submit via a helper so dropped-tx recovery can reuse the exact same path.
         let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
             .then(|mut cmd| async {
-                let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce) = submit_l1_transaction(
-                    &provider,
-                    operator_address,
-                    to_address,
-                    &config,
-                    gateway,
-                    command_name,
-                    &mut cmd,
-                    &commit_submitted_tx,
-                )
-                .await?;
-                anyhow::Ok((receipt_fut, cmd, submitted_at, raw_tx, tx_hash, tx_nonce))
+                let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce, submitted_l1_block) =
+                    submit_l1_transaction(
+                        &provider,
+                        operator_address,
+                        to_address,
+                        &config,
+                        gateway,
+                        command_name,
+                        &mut cmd,
+                        &commit_submitted_tx,
+                    )
+                    .await?;
+                anyhow::Ok((
+                    receipt_fut,
+                    cmd,
+                    submitted_at,
+                    raw_tx,
+                    tx_hash,
+                    tx_nonce,
+                    submitted_l1_block,
+                ))
             })
             // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
             // but this is not necessary for now - we wait for them to be included in parallel
@@ -295,6 +310,7 @@ async fn submit_l1_transaction<F, P, Input>(
     Instant,
     Option<Vec<u8>>,
     B256,
+    u64,
     u64,
 )>
 where
@@ -361,6 +377,7 @@ where
 
     let raw_tx = tx.encoded_2718();
     let tx_nonce = tx.nonce();
+    let submitted_l1_block = provider.get_block_number().await?;
     let pending_tx = provider.send_raw_transaction(&raw_tx).await?;
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
@@ -402,7 +419,14 @@ where
 
     // SYSCOIN: retain raw signed tx bytes for safe same-hash rebroadcast when the provider
     // reports the transaction as dropped before a receipt appears.
-    Ok((receipt_fut, submitted_at, Some(raw_tx), tx_hash, tx_nonce))
+    Ok((
+        receipt_fut,
+        submitted_at,
+        Some(raw_tx),
+        tx_hash,
+        tx_nonce,
+        submitted_l1_block,
+    ))
 }
 
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
@@ -429,8 +453,15 @@ where
     latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
 
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
-    for (mut receipt_fut, mut command, mut submitted_at, mut raw_tx, mut tx_hash, mut tx_nonce) in
-        pending_txs
+    for (
+        mut receipt_fut,
+        mut command,
+        mut submitted_at,
+        mut raw_tx,
+        mut tx_hash,
+        mut tx_nonce,
+        mut submitted_l1_block,
+    ) in pending_txs
     {
         let receipt = loop {
             let receipt = receipt_fut.await;
@@ -465,6 +496,7 @@ where
                         raw_tx = resubmitted.2;
                         tx_hash = resubmitted.3;
                         tx_nonce = resubmitted.4;
+                        submitted_l1_block = resubmitted.5;
                         continue;
                     };
 
@@ -493,6 +525,7 @@ where
                                     operator_address,
                                     tx_nonce,
                                     tx_hash,
+                                    submitted_l1_block,
                                     gateway,
                                     command_name,
                                     &command,
@@ -529,6 +562,7 @@ where
                                 raw_tx = resubmitted.2;
                                 tx_hash = resubmitted.3;
                                 tx_nonce = resubmitted.4;
+                                submitted_l1_block = resubmitted.5;
                                 continue;
                             }
                         }
@@ -579,6 +613,7 @@ async fn recover_same_nonce_tx<F, P, Input>(
     operator_address: Address,
     nonce: u64,
     old_tx_hash: B256,
+    submitted_l1_block: u64,
     gateway: bool,
     command_name: &'static str,
     command: &Input,
@@ -603,6 +638,7 @@ where
             provider,
             operator_address,
             nonce,
+            submitted_l1_block,
             gateway,
             command_name,
             command,
@@ -655,6 +691,7 @@ async fn find_matching_mined_sender_nonce_tx<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
     nonce: u64,
+    first_block: u64,
     gateway: bool,
     command_name: &'static str,
     command: &Input,
@@ -665,7 +702,6 @@ where
     Input: SendToL1,
 {
     let latest_block = provider.get_block_number().await?;
-    let first_block = latest_block.saturating_sub(SAME_NONCE_MINED_TX_SCAN_DEPTH);
     let expected_input = command.solidity_call(gateway, &operator_address);
 
     for block_number in (first_block..=latest_block).rev() {
@@ -734,6 +770,7 @@ async fn find_matching_sender_nonce_tx<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
     nonce: u64,
+    submitted_l1_block: u64,
     gateway: bool,
     command_name: &'static str,
     command: &Input,
@@ -752,13 +789,14 @@ where
             tracing::warn!(
                 command_name,
                 nonce,
-                scan_depth = SAME_NONCE_MINED_TX_SCAN_DEPTH,
-                "eth_getTransactionBySenderAndNonce is not supported; scanning recent mined blocks",
+                first_block = submitted_l1_block,
+                "eth_getTransactionBySenderAndNonce is not supported; scanning mined blocks since submission",
             );
             return find_matching_mined_sender_nonce_tx(
                 provider,
                 operator_address,
                 nonce,
+                submitted_l1_block,
                 gateway,
                 command_name,
                 command,
