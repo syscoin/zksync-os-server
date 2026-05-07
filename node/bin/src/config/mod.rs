@@ -1952,7 +1952,7 @@ mod tests {
     }
 
     #[test]
-    fn l1_sender_replacement_multipliers_must_be_positive() {
+    fn l1_sender_replacement_multipliers_must_be_greater_than_one() {
         let schema = ConfigSchema::new(&L1SenderConfig::DESCRIPTION, "l1_sender");
         let repo = ConfigRepository::new(&schema).with(Environment::from_iter(
             "",
@@ -1991,7 +1991,7 @@ mod tests {
             err.contains("max_fee_per_blob_gas_replacement_multiplier"),
             "{err}"
         );
-        assert!(err.contains("must be positive"), "{err}");
+        assert!(err.contains("must be greater than 1.0"), "{err}");
     }
 
     #[tokio::test]

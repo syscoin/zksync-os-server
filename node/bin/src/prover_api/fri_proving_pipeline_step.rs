@@ -320,6 +320,7 @@ mod tests {
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
+    use zksync_os_observability::ComponentStateReporter;
     use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
 
     fn dummy_commit_batch_info(batch_number: u64, from: u64, to: u64) -> CommitBatchInfo {
@@ -412,7 +413,9 @@ mod tests {
         input_tx.send(input_batch).await?;
         drop(input_tx);
 
-        let run_handle = tokio::spawn(async move { step.run(peekable, output_tx).await });
+        let (state_reporter, _) = ComponentStateReporter::new("fri_proving_pipeline_step_test");
+        let run_handle =
+            tokio::spawn(async move { step.run(peekable, output_tx, state_reporter).await });
 
         let out = timeout(Duration::from_secs(1), output_rx.recv())
             .await
@@ -449,7 +452,9 @@ mod tests {
         input_tx.send(input_batch).await?;
         drop(input_tx);
 
-        let run_handle = tokio::spawn(async move { step.run(peekable, output_tx).await });
+        let (state_reporter, _) = ComponentStateReporter::new("fri_proving_pipeline_step_test");
+        let run_handle =
+            tokio::spawn(async move { step.run(peekable, output_tx, state_reporter).await });
         run_handle.await.expect("run task should complete")?;
 
         assert!(output_rx.recv().await.is_none());
