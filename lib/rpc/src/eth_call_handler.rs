@@ -519,6 +519,18 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 .unwrap_or(highest_gas_limit)
                 .min(highest_gas_limit),
         );
+
+        if request.nonce.is_none() {
+            // SYSCOIN: derive omitted estimateGas nonces from the selected view so state overrides
+            // are applied consistently to transaction construction and execution.
+            let nonce = storage_view
+                .get_account(request.from.unwrap_or_default())
+                .as_ref()
+                .map(get_nonce)
+                .unwrap_or_default();
+            request.nonce = Some(nonce);
+        }
+
         let tx = self.create_tx_from_request(request, &block_context, true)?;
 
         // Execute the transaction with the highest possible gas limit.
