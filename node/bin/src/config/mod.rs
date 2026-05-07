@@ -1201,12 +1201,6 @@ pub struct BatchVerificationConfig {
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
     #[config(default_t = vec![], with = Delimited::new(","))]
-    #[config_validate(custom(
-        |root: &Config, value: &Vec<String>| {
-            !root.batch_verification_config.server_enabled || !value.is_empty()
-        },
-        "requires at least one accepted signer when `batch_verification.server_enabled=true`"
-    ))]
     // SYSCOIN
     #[config_validate(custom(
         |root: &Config, value: &Vec<String>| {
@@ -1860,18 +1854,16 @@ mod tests {
         );
     }
 
+    // SYSCOIN
     #[tokio::test]
-    async fn batch_verification_server_requires_explicit_signers() {
+    async fn batch_verification_server_allows_empty_local_signers_at_config_load() {
         let mut config = base_config(NodeRole::MainNode);
         config.network_config.enabled = true;
+        config.network_config.secret_key = Some(SecretKey::from_slice(&[0x44; 32]).unwrap());
         config.batch_verification_config.server_enabled = true;
         config.batch_verification_config.accepted_signers.clear();
 
-        let err = config.validate().await.unwrap_err().to_string();
-
-        assert!(err.contains(
-            "`batch_verification.accepted_signers` requires at least one accepted signer when `batch_verification.server_enabled=true`"
-        ));
+        config.validate().await.unwrap();
     }
 
     // SYSCOIN

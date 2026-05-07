@@ -305,6 +305,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     tracing::info!(?l1_state, "L1 state");
     l1_state.report_metrics();
     if node_role.is_main() {
+        // SYSCOIN
+        validate_batch_verification_startup_policy(
+            &config.batch_verification_config,
+            &l1_state.batch_verification,
+        );
         check_batch_verification_mismatch(
             &config.batch_verification_config,
             &l1_state.batch_verification,
@@ -1580,6 +1585,30 @@ fn check_batch_verification_mismatch(
     false
 }
 
+// SYSCOIN
+fn validate_batch_verification_startup_policy(
+    server_config: &config::BatchVerificationConfig,
+    l1_config: &BatchVerificationSL,
+) {
+    if !server_config.server_enabled {
+        return;
+    }
+
+    let l1_policy_overrides_local_signers = match l1_config {
+        BatchVerificationSL::Enabled(config) => {
+            !config.validators.is_empty() || config.threshold > 0
+        }
+        BatchVerificationSL::Disabled => false,
+    };
+
+    if !l1_policy_overrides_local_signers && server_config.accepted_signers.is_empty() {
+        panic!(
+            "`batch_verification.accepted_signers` requires at least one accepted signer when \
+             `batch_verification.server_enabled=true` and no L1 batch-verification policy is configured"
+        );
+    }
+}
+
 async fn commit_proof_execute_block_numbers(
     l1_state: &L1State,
     committed_batch_provider: &CommittedBatchProvider,
@@ -1798,7 +1827,7 @@ async fn find_last_matching_main_node_block(
 
 #[cfg(test)]
 mod tests {
-    use super::check_batch_verification_mismatch;
+    use super::{check_batch_verification_mismatch, validate_batch_verification_startup_policy};
     use crate::config::BatchVerificationConfig;
     use alloy::primitives::address;
     use zksync_os_contract_interface::l1_discovery::{
@@ -1865,5 +1894,36 @@ mod tests {
         let warned = check_batch_verification_mismatch(&server_config, &l1_config);
 
         assert!(!warned);
+    }
+
+    // SYSCOIN
+    #[test]
+    #[should_panic(
+        expected = "`batch_verification.accepted_signers` requires at least one accepted signer"
+    )]
+    fn test_batch_verification_requires_local_signers_without_l1_policy() {
+        let server_config = BatchVerificationConfig {
+            server_enabled: true,
+            accepted_signers: vec![],
+            ..Default::default()
+        };
+
+        validate_batch_verification_startup_policy(&server_config, &BatchVerificationSL::Disabled);
+    }
+
+    // SYSCOIN
+    #[test]
+    fn test_batch_verification_allows_empty_local_signers_with_l1_policy() {
+        let server_config = BatchVerificationConfig {
+            server_enabled: true,
+            accepted_signers: vec![],
+            ..Default::default()
+        };
+        let l1_config = BatchVerificationSL::Enabled(BatchVerificationSLConfig {
+            threshold: 1,
+            validators: vec![address!("0x0000000000000000000000000000000000000001")],
+        });
+
+        validate_batch_verification_startup_policy(&server_config, &l1_config);
     }
 }
