@@ -136,7 +136,7 @@ where
                                     command_type: cmd_type,
                                 },
                                 &state_reporter,
-                            )?;
+                            ).await?;
                     } else {
                         tracing::info!(
                             "Received new block {} (block output hash: {}) from Consensus. \
@@ -182,7 +182,7 @@ where
                                     command_type: cmd_type,
                                 },
                                 &state_reporter,
-                            )?;
+                            ).await?;
                         }
                         BlockCommandType::Produce | BlockCommandType::Rebuild => {
                             tracing::info!(

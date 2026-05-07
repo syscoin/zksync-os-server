@@ -264,11 +264,11 @@ impl PipelineComponent for FriProvingPipelineStep {
                     if batch.batch_number() > last_proved_batch_number {
                         // SYSCOIN
                         if let Some(stored_batch) = Self::try_rehydrate_pending_batch(&proof_storage, &batch).await {
-                            output.send_and_record(stored_batch, &state_reporter)?;
+                            output.send_and_record(stored_batch, &state_reporter).await?;
                             continue;
                         }
                         if let Some(stored_batch) = Self::try_rehydrate_batch(&proof_storage, &batch).await {
-                            output.send_and_record(ProvenBatch::new(stored_batch), &state_reporter)?;
+                            output.send_and_record(ProvenBatch::new(stored_batch), &state_reporter).await?;
                             continue;
                         }
                         tracing::info!(
@@ -281,7 +281,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                         // Already proven - send with fake proof to pass through the pipeline
                         let batch_with_fake_proof = batch.with_data(FriProof::AlreadySubmittedToL1);
                         output
-                            .send_and_record(ProvenBatch::new(batch_with_fake_proof), &state_reporter)?;
+                            .send_and_record(ProvenBatch::new(batch_with_fake_proof), &state_reporter).await?;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -296,7 +296,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                         "Received batch after FRI proving: {:?}",
                         proof.batch.batch_number()
                     );
-                    output.send_and_record(proof, &state_reporter)?;
+                    output.send_and_record(proof, &state_reporter).await?;
                 }
                 Ok::<(), anyhow::Error>(())
             } => {
