@@ -12,7 +12,7 @@ use zksync_os_mempool::{MarkingTxStream, Pool};
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
     BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, SystemTxEnvelope, SystemTxType,
-    ZkEnvelope, ZkTransaction,
+    UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
 
 /// Component that turns `BlockCommand`s into `PreparedBlockCommand`s.
@@ -128,34 +128,48 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
 
                 let timestamp = (millis_since_epoch() / 1000) as u64;
 
-                // SYSCOIN Check if we peeked an upgrade transaction info.
-                // It is possible that we peek an upgrade with version <= self.protocol_version
-                // since we do not consume patch upgrades when replaying/rebuilding blocks. Such upgrade can be safely skipped.
+                // SYSCOIN: Check if we peeked upgrade metadata.
+                // Patch-only upgrades with version <= self.protocol_version can be safely skipped,
+                // but equal-version full genesis upgrades must keep their forced preimages.
                 let (force_preimages, canonical_upgrade_tx_hash) = if let Some(upgrade_metadata) =
                     best_txs.upgrade_metadata
-                    && upgrade_metadata.protocol_version > self.protocol_version
                 {
-                    tracing::info!(
-                        block_number,
-                        ?upgrade_metadata,
-                        "including protocol upgrade transaction in the block"
-                    );
-                    // Invariant: transactions sent through this stream must be ready for execution, e.g.
-                    // transaction should not be sent until timestamp is reached.
-                    // We add some margin of error for timestamp comparison.
-                    let current_timestamp = timestamp.saturating_add(5);
                     anyhow::ensure!(
-                        upgrade_metadata.timestamp <= current_timestamp,
-                        "upgrade transaction with timestamp {} received too early at {}; tx: {upgrade_metadata:?}",
-                        upgrade_metadata.timestamp,
-                        current_timestamp
+                        upgrade_metadata.protocol_version >= self.protocol_version
+                            || !best_txs.stream_contains_upgrade_tx,
+                        "stale full upgrade transaction for protocol version {} received while current protocol version is {}",
+                        upgrade_metadata.protocol_version,
+                        self.protocol_version,
                     );
-                    self.protocol_version = upgrade_metadata.protocol_version.clone();
-                    // SYSCOIN
-                    (
-                        upgrade_metadata.force_preimages.clone(),
-                        upgrade_metadata.canonical_tx_hash,
-                    )
+
+                    if should_apply_upgrade_metadata(
+                        &upgrade_metadata,
+                        &self.protocol_version,
+                        best_txs.stream_contains_upgrade_tx,
+                    ) {
+                        tracing::info!(
+                            block_number,
+                            ?upgrade_metadata,
+                            "including protocol upgrade transaction in the block"
+                        );
+                        // Invariant: transactions sent through this stream must be ready for execution, e.g.
+                        // transaction should not be sent until timestamp is reached.
+                        // We add some margin of error for timestamp comparison.
+                        let current_timestamp = timestamp.saturating_add(5);
+                        anyhow::ensure!(
+                            upgrade_metadata.timestamp <= current_timestamp,
+                            "upgrade transaction with timestamp {} received too early at {}; tx: {upgrade_metadata:?}",
+                            upgrade_metadata.timestamp,
+                            current_timestamp
+                        );
+                        self.protocol_version = upgrade_metadata.protocol_version.clone();
+                        (
+                            upgrade_metadata.force_preimages.clone(),
+                            upgrade_metadata.canonical_tx_hash,
+                        )
+                    } else {
+                        (Vec::new(), B256::ZERO)
+                    }
                 } else {
                     (Vec::new(), B256::ZERO)
                 };
@@ -457,4 +471,66 @@ pub fn millis_since_epoch() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("Incorrect system time")
         .as_millis()
+}
+
+// SYSCOIN: full upgrade transactions can be valid at the current protocol version on a fresh
+// v31 genesis start; patch-only equal/lower metadata should remain skippable.
+fn should_apply_upgrade_metadata(
+    upgrade_metadata: &UpgradeMetadata,
+    current_protocol_version: &ProtocolSemanticVersion,
+    stream_contains_upgrade_tx: bool,
+) -> bool {
+    upgrade_metadata.protocol_version > *current_protocol_version
+        || (stream_contains_upgrade_tx
+            && upgrade_metadata.protocol_version == *current_protocol_version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upgrade_metadata(protocol_version: ProtocolSemanticVersion) -> UpgradeMetadata {
+        UpgradeMetadata {
+            timestamp: 0,
+            protocol_version,
+            force_preimages: Vec::new(),
+            canonical_tx_hash: B256::ZERO,
+        }
+    }
+
+    #[test]
+    fn applies_equal_version_full_upgrade_metadata() {
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
+        let upgrade_metadata = upgrade_metadata(current_protocol_version.clone());
+
+        assert!(should_apply_upgrade_metadata(
+            &upgrade_metadata,
+            &current_protocol_version,
+            true,
+        ));
+    }
+
+    #[test]
+    fn skips_equal_version_patch_upgrade_metadata() {
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
+        let upgrade_metadata = upgrade_metadata(current_protocol_version.clone());
+
+        assert!(!should_apply_upgrade_metadata(
+            &upgrade_metadata,
+            &current_protocol_version,
+            false,
+        ));
+    }
+
+    #[test]
+    fn applies_newer_patch_upgrade_metadata() {
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
+        let upgrade_metadata = upgrade_metadata(ProtocolSemanticVersion::new(0, 31, 1));
+
+        assert!(should_apply_upgrade_metadata(
+            &upgrade_metadata,
+            &current_protocol_version,
+            false,
+        ));
+    }
 }
