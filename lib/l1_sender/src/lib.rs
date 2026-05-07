@@ -231,8 +231,10 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
     }
 
     // At this point, recovered in-flight transactions are confirmed. If force resubmission is
-    // enabled, the queued commands stay in `inbound` and the normal send path replaces them.
+    // enabled, only commands already queued at startup need replacement pricing.
     // Only actual SendToL1 commands are expected from here on.
+    let mut use_startup_replacement_fees =
+        force_transaction_resubmission && inbound.peek_with(|_| ()).is_some();
     loop {
         state_reporter.enter_state(L1SenderState::Idle);
         // Sleeps until at least one command is available, then greedily drains up to
@@ -258,6 +260,13 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             last.block_timestamp(),
             Some(last.last_batch_number()),
         );
+        let use_replacement_fee_params_for_commands = use_startup_replacement_fees;
+        // Keep replacement pricing while draining the immediate startup queue, but do not turn
+        // `force_transaction_resubmission` into a permanent fee mode for later L1 traffic.
+        if use_startup_replacement_fees && inbound.peek_with(|_| ()).is_none() {
+            use_startup_replacement_fees = false;
+        }
+
         let mut commands = cmd_buffer
             .drain(..)
             .map(|cmd| -> anyhow::Result<Input> {
@@ -293,6 +302,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                         &mut cmd,
                         &commit_submitted_tx,
                         None,
+                        use_replacement_fee_params_for_commands,
                     )
                     .await?;
                 anyhow::Ok((
@@ -337,6 +347,7 @@ async fn submit_l1_transaction<F, P, Input>(
     cmd: &mut Input,
     commit_submitted_tx: &Option<watch::Sender<u64>>,
     nonce_override: Option<u64>,
+    use_replacement_fee_params: bool,
 ) -> anyhow::Result<(
     TransactionReceiptFuture,
     Instant,
@@ -354,7 +365,7 @@ where
     let fee_params = resolve_fee_params(
         provider,
         config.fee_config,
-        config.force_transaction_resubmission,
+        use_replacement_fee_params || nonce_override.is_some(),
     )
     .await?;
     let mut tx_request = tx_request_with_gas_fields(operator_address, fee_params)
@@ -531,6 +542,7 @@ where
                             &mut command,
                             commit_submitted_tx,
                             Some(tx_nonce),
+                            false,
                         )
                         .await?;
                         receipt_fut = resubmitted.0;
@@ -599,6 +611,7 @@ where
                                     &mut command,
                                     commit_submitted_tx,
                                     Some(tx_nonce),
+                                    false,
                                 )
                                 .await?;
                                 receipt_fut = resubmitted.0;
