@@ -41,6 +41,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::ProverInputGenerator;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     /// Works on multiple blocks in parallel, up to [Self::maximum_in_flight_blocks].
     /// Each computation runs on the blocking pool and is tracked as a graceful task so

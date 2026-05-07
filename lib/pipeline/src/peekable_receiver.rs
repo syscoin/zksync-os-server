@@ -47,6 +47,10 @@ impl<T> PeekableReceiver<T> {
     /// additional items from the channel via `try_recv` up to `limit`. If the local
     /// buffer is empty, blocks on `recv` for the first item before draining.
     pub async fn recv_many(&mut self, buf: &mut Vec<T>, limit: usize) -> usize {
+        if limit == 0 {
+            return 0;
+        }
+
         let mut count = 0;
         if !self.buf.is_empty() {
             let n = self.buf.len().min(limit);
@@ -208,6 +212,21 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(buf, vec![1, 2]);
         assert_eq!(rx.recv().await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn recv_many_zero_limit_returns_without_consuming() {
+        let (tx, mut rx) = channel::<u32>();
+        tx.try_send(1).unwrap();
+        assert_eq!(rx.peek_with(|v| *v), Some(1));
+        tx.try_send(2).unwrap();
+
+        let mut buf = vec![];
+        let n = rx.recv_many(&mut buf, 0).await;
+        assert_eq!(n, 0);
+        assert!(buf.is_empty());
+        assert_eq!(rx.recv().await, Some(1));
+        assert_eq!(rx.recv().await, Some(2));
     }
 
     #[tokio::test]

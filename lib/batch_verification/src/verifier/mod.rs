@@ -233,6 +233,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory> PipelineComponent
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::BatchVerificationResponder;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         mut self,

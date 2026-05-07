@@ -27,6 +27,7 @@ impl PipelineComponent for GaplessL1ProofSender {
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::GaplessL1ProofSender;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         self,

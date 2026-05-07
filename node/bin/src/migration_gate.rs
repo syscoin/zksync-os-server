@@ -33,6 +33,7 @@ impl PipelineComponent for MigrationGate {
     type Output = L1SenderCommand<CommitCommand>;
 
     const COMPONENT_ID: ComponentId = ComponentId::MigrationGate;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
         mut self,

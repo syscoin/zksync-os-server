@@ -21,7 +21,7 @@ pub trait PipelineComponent: Send + 'static {
     const COMPONENT_ID: ComponentId;
 
     /// Capacity of the output channel for this component.
-    const OUTPUT_CHANNEL_CAPACITY: usize = 4096;
+    const OUTPUT_CHANNEL_CAPACITY: usize;
 
     /// Run the component, receiving from input and sending to output.
     async fn run(

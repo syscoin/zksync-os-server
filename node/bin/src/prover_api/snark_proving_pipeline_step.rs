@@ -126,6 +126,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::SnarkJobManager;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         mut self,

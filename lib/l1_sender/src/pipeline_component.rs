@@ -35,6 +35,7 @@ where
     type Output = SignedBatchEnvelope<FriProof>;
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId = C::COMPONENT_ID;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
         self,

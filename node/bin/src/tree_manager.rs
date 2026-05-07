@@ -28,6 +28,7 @@ impl PipelineComponent for TreeManager {
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::TreeManager;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 10;
 
     async fn run(
         self,

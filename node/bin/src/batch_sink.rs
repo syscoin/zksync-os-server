@@ -28,6 +28,7 @@ impl PipelineComponent for BatchSink {
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::BatchSink;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
         self,
@@ -94,6 +95,7 @@ impl<T: Send + 'static> PipelineComponent for NoOpSink<T> {
     type Output = ();
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId = zksync_os_pipeline::ComponentId::NoopSink;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
         self,
