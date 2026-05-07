@@ -25,7 +25,10 @@ pub struct L1SenderConfig<Input> {
     /// How often to poll L1 for new blocks.
     pub poll_interval: Duration,
 
-    /// Maximum time to wait for a transaction to be included on L1.
+    /// SYSCOIN: warning interval while waiting for an L1 transaction to be included.
+    ///
+    /// A delayed L1 transaction must not terminate the main node; the sender keeps waiting and
+    /// logs every time this interval elapses.
     pub transaction_timeout: Duration,
 
     /// Use Fusaka blob transaction format if the timestamp has passed.
