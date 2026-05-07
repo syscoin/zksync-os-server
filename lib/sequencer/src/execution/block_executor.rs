@@ -4,17 +4,18 @@ use crate::execution::block_context_provider::BlockContextProvider;
 use crate::execution::execute_block_in_vm::execute_block_in_vm;
 use crate::execution::metrics::{EXECUTION_METRICS, SequencerState};
 use crate::execution::utils::save_dump;
-use crate::model::blocks::{BlockCommand, BlockCommandType, BlockPayload};
+use crate::model::blocks::{BlockCommand, BlockCommandType};
 use anyhow::Context;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
+use zksync_os_interface::types::BlockOutput;
 use zksync_os_mempool::subpools::l2::L2Subpool;
-use zksync_os_observability::ComponentStateReporter;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
-use zksync_os_storage_api::{OverlayBuffer, ReadStateHistory, WriteState};
+use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+use zksync_os_storage_api::{OverlayBuffer, ReadStateHistory, ReplayRecord, WriteState};
 use zksync_os_tx_validators::deployment_filter;
 use zksync_os_types::{NotAcceptingReason, TransactionAcceptanceState};
 
@@ -50,17 +51,24 @@ where
     /// Output to `BlockCanonizer`
     /// Outputs executed blocks. Passes along information whether it's a replayed or new block -
     ///  new blocks need to be canonized by network (enforced by `BlockCanonizer`)
-    type Output = BlockPayload;
+    type Output = (BlockOutput, ReplayRecord, BlockCommandType);
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::BlockExecutor;
+    const NAME: &'static str = "block_executor";
+
+    /// We don't need much buffer before `BlockCanonizer`,
+    /// because `BlockCanonizer` has a buffer within (see `produced_queue`).
+    /// This still allows us to be producing block `X+2`, while block `X+1` is in the buffer,
+    /// and block `X` is being canonized.
+    const OUTPUT_BUFFER_SIZE: usize = 1;
 
     async fn run(
         mut self,
-        mut input: PeekableReceiver<Self::Input>,
-        output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
+        mut input: PeekableReceiver<Self::Input>, // PeekableReceiver<BlockCommand>
+        output: mpsc::Sender<Self::Output>, // Sender<(BlockOutput, ReplayRecord, BlockCommandType)>
     ) -> anyhow::Result<()> {
+        let latency_tracker = ComponentStateReporter::global()
+            .handle_for("block_executor", SequencerState::WaitingForCommand);
+
         // Track how many Produce commands we've processed (for `sequencer_max_blocks_to_produce` config)
         let mut produced_blocks_count = 0u64;
 
@@ -70,7 +78,7 @@ where
         // Instead, we keep the diff in memory - and apply it on top of the last persisted block
         let mut state_overlay_buffer = OverlayBuffer::default();
         loop {
-            state_reporter.enter_state(SequencerState::WaitingForCommand);
+            latency_tracker.enter_state(SequencerState::WaitingForCommand);
 
             let Some(cmd) = input.recv().await else {
                 tracing::info!("inbound channel closed");
@@ -78,7 +86,6 @@ where
             };
             tracing::info!("Command {cmd} received by BlockExecutor");
             let cmd_type = cmd.command_type();
-            state_reporter.enter_state(SequencerState::WaitingForApplier);
             wait_for_block_applier(
                 &mut self.applied_block_number_receiver,
                 self.block_context_provider.next_block_number() - 1,
@@ -93,7 +100,7 @@ where
                     limit,
                     produced_blocks_count,
                     &self.tx_acceptance_state_sender,
-                    &state_reporter,
+                    &latency_tracker,
                 )
                 .await;
                 produced_blocks_count += 1;
@@ -103,18 +110,11 @@ where
                     signal_block_production_disabled(&self.tx_acceptance_state_sender);
                 }
             }
-            state_reporter.enter_state(SequencerState::WaitingForTransaction);
+            latency_tracker.enter_state(SequencerState::BlockContextTxs);
 
             let prepared_command = self.block_context_provider.prepare_command(cmd).await?;
 
-            state_reporter.enter_state(SequencerState::InitializingVm);
-
             let block_number = prepared_command.block_context.block_number;
-            state_reporter.record_picked(
-                block_number,
-                Some(prepared_command.block_context.timestamp),
-                None,
-            );
             tracing::info!(
                 block_number,
                 "Prepared context for block {block_number}. expected_block_output_hash: {:?}, starting_l1_priority_id: {}, timestamp: {}, execution_version: {}. Executing..",
@@ -133,7 +133,7 @@ where
                 execute_block_in_vm(
                     prepared_command,
                     exec_view,
-                    &state_reporter,
+                    &latency_tracker,
                     tracer,
                     validator,
                 )
@@ -159,7 +159,7 @@ where
             last_processed_block_at = Some(Instant::now());
 
             tracing::info!(block_number, "Executed. Updating mempools...");
-            state_reporter.enter_state(SequencerState::UpdatingMempool);
+            latency_tracker.enter_state(SequencerState::UpdatingMempool);
 
             self.block_context_provider
                 .on_canonical_state_change(&block_output, &replay_record, strict_subpool_cleanup)
@@ -184,14 +184,14 @@ where
                 .last_execution_version
                 .set(replay_record.block_context.execution_version as u64);
 
-            output.send_and_record(
-                BlockPayload {
-                    output: block_output.clone(),
-                    record: replay_record.clone(),
-                    command_type: cmd_type,
-                },
-                &state_reporter,
-            )?;
+            latency_tracker.enter_state(SequencerState::WaitingSend);
+            if output
+                .send((block_output.clone(), replay_record.clone(), cmd_type))
+                .await
+                .is_err()
+            {
+                anyhow::bail!("Outbound channel closed");
+            }
         }
     }
 }
@@ -237,7 +237,7 @@ async fn check_block_production_limit(
     limit: u64,
     already_produced_blocks_count: u64,
     tx_acceptance_state_sender: &watch::Sender<TransactionAcceptanceState>,
-    state_reporter: &ComponentStateReporter,
+    latency_tracker: &ComponentStateHandle<SequencerState>,
 ) {
     if block_production_limit_reached(limit, already_produced_blocks_count) {
         tracing::warn!(
@@ -249,7 +249,7 @@ async fn check_block_production_limit(
         // Signal to RPC that we're no longer accepting transactions
         signal_block_production_disabled(tx_acceptance_state_sender);
 
-        state_reporter.enter_state(SequencerState::ConfiguredBlockLimitReached);
+        latency_tracker.enter_state(SequencerState::ConfiguredBlockLimitReached);
         std::future::pending::<()>().await;
     }
 }
@@ -261,9 +261,9 @@ fn block_production_limit_reached(limit: u64, already_produced_blocks_count: u64
 fn signal_block_production_disabled(
     tx_acceptance_state_sender: &watch::Sender<TransactionAcceptanceState>,
 ) {
-    let _ = tx_acceptance_state_sender.send(TransactionAcceptanceState::NotAccepting(vec![
+    let _ = tx_acceptance_state_sender.send(TransactionAcceptanceState::NotAccepting(
         NotAcceptingReason::BlockProductionDisabled,
-    ]));
+    ));
 }
 
 fn make_tx_validator(

@@ -24,16 +24,13 @@ pub use latency_distribution_tracker::LatencyDistributionTracker;
 mod generic_component_state;
 pub use generic_component_state::GenericComponentState;
 
-mod state_label;
-pub use state_label::StateLabel;
+pub mod component_state_reporter;
+pub use component_state_reporter::{ComponentStateHandle, ComponentStateReporter, StateLabel};
 
 mod metrics;
 pub use metrics::GENERAL_METRICS;
 
 pub mod tokio_runtime;
-
-mod component_state_reporter;
-pub use component_state_reporter::{ComponentState, ComponentStateReporter, TrackingCoordinates};
 
 /// Internal trait used in `ObservabilityGuard::with_timeout()` to inspect action results.
 trait InspectResults {

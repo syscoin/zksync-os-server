@@ -1,12 +1,11 @@
 use crate::config::SequencerConfig;
-use crate::execution::metrics::BlockApplierState;
-use crate::model::blocks::{AppliedBlock, BlockCommandType, BlockPayload};
+use crate::model::blocks::BlockCommandType;
 use alloy::consensus::Sealed;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
-use zksync_os_observability::ComponentStateReporter;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
-use zksync_os_storage_api::{WriteReplay, WriteRepository, WriteState};
+use zksync_os_interface::types::BlockOutput;
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+use zksync_os_storage_api::{ReplayRecord, WriteReplay, WriteRepository, WriteState};
 
 /// Persists blocks in various local storages.
 /// Used to be part of the Sequencer - was split into `BlockExecutor` and `BlockApplier`.
@@ -30,26 +29,19 @@ where
     Replay: WriteReplay + Send + 'static,
     Repo: WriteRepository + Send + 'static,
 {
-    type Input = BlockPayload;
-    type Output = AppliedBlock;
+    type Input = (BlockOutput, ReplayRecord, BlockCommandType);
+    type Output = (BlockOutput, ReplayRecord);
 
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::BlockApplier;
+    const NAME: &'static str = "block_applier";
+    const OUTPUT_BUFFER_SIZE: usize = 5;
 
     async fn run(
         mut self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         loop {
-            state_reporter.enter_state(BlockApplierState::Idle);
-            let Some(BlockPayload {
-                output: block_output,
-                record: executed_replay,
-                command_type: cmd_type,
-            }) = input.recv_and_record_picked(&state_reporter).await
-            else {
+            let Some((block_output, executed_replay, cmd_type)) = input.recv().await else {
                 tracing::info!("inbound channel closed");
                 return Ok(());
             };
@@ -61,8 +53,10 @@ where
                 _ => false,
             };
 
-            state_reporter.enter_state(BlockApplierState::AddingToStorage);
-            tracing::info!(block_number, "Persisting block {block_number}");
+            tracing::info!(
+                block_number,
+                "Received canonized block {block_number}. Saving to disc."
+            );
             self.replay.write(
                 Sealed::new_unchecked(executed_replay.clone(), block_output.header.hash()),
                 override_allowed,
@@ -78,20 +72,16 @@ where
                 override_allowed,
             )?;
 
-            state_reporter.enter_state(BlockApplierState::PopulatingRepos);
             self.repositories
                 .populate(block_output.clone(), executed_replay.transactions.clone())
                 .await?;
 
             self.applied_block_number_sender.send_replace(block_number);
 
-            output.send_and_record(
-                AppliedBlock {
-                    output: block_output,
-                    record: executed_replay,
-                },
-                &state_reporter,
-            )?;
+            if output.send((block_output, executed_replay)).await.is_err() {
+                tracing::info!("outbound channel closed");
+                return Ok(());
+            }
         }
     }
 }

@@ -2,8 +2,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 use zksync_os_l1_sender::commands::L1SenderCommand;
 use zksync_os_l1_sender::commands::commit::CommitCommand;
-use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{ComponentId, PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 
 /// A pipeline component that acts as a gate in front of the L1 commit sender.
 ///
@@ -32,23 +31,20 @@ impl PipelineComponent for MigrationGate {
     type Input = L1SenderCommand<CommitCommand>;
     type Output = L1SenderCommand<CommitCommand>;
 
-    const COMPONENT_ID: ComponentId = ComponentId::MigrationGate;
+    const NAME: &'static str = "migration_gate";
+    // 1-sized buffer so back-pressure propagates immediately upstream when the gate is closed.
+    const OUTPUT_BUFFER_SIZE: usize = 1;
 
     async fn run(
         mut self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         loop {
-            state_reporter.enter_state(GenericComponentState::Idle);
-
-            let Some(item) = input.recv_and_record_picked(&state_reporter).await else {
+            let Some(item) = input.recv().await else {
                 tracing::info!("inbound channel closed");
                 return Ok(());
             };
-
-            state_reporter.enter_state(GenericComponentState::Active);
 
             // Only `SendToL1` batches go through the gate; already-committed `Passthrough`
             // batches are forwarded unconditionally.
@@ -83,7 +79,10 @@ impl PipelineComponent for MigrationGate {
                 );
             }
 
-            output.send_and_record(item, &state_reporter)?;
+            if output.send(item).await.is_err() {
+                tracing::info!("outbound channel closed");
+                return Ok(());
+            }
         }
     }
 }

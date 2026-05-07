@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::sync::Mutex;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
-use zksync_os_pipeline::HasBlockRangeEnd;
 
 /// Persists FRI proofs to disk together with the batch if proof is successful
 #[derive(Clone, Debug)]
@@ -50,20 +49,6 @@ impl ProvenBatch {
             batch,
             pending_proof_key: Some(pending_proof_key),
         }
-    }
-}
-
-impl HasBlockRangeEnd for ProvenBatch {
-    fn block_number(&self) -> u64 {
-        self.batch.block_number()
-    }
-
-    fn block_timestamp(&self) -> Option<u64> {
-        self.batch.block_timestamp()
-    }
-
-    fn batch_number(&self) -> Option<u64> {
-        Some(self.batch.batch_number())
     }
 }
 
