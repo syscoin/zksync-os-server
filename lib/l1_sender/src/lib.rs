@@ -6,9 +6,7 @@ pub mod upgrade_gatekeeper;
 
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderConfig, L1SenderFeeConfig};
-use crate::metrics::{
-    L1_SENDER_METRICS, L1SenderState, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow,
-};
+use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use alloy::consensus::BlobTransactionValidationError;
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
@@ -29,12 +27,38 @@ use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::time::Instant;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
-use zksync_os_observability::{ComponentStateHandle, ComponentStateReporter};
+use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
-use zksync_os_pipeline::PeekableReceiver;
+use zksync_os_pipeline::{PeekableReceiver, SendAndRecordExt};
+
+/// Component-specific state for the L1 sender.
+pub enum L1SenderState {
+    /// Waiting for the next batch to commit/prove/execute.
+    Idle,
+    /// Submitting a transaction to L1.
+    SendingToL1,
+    /// Transaction submitted; waiting for L1 block inclusion.
+    WaitingL1Inclusion,
+}
+
+impl StateLabel for L1SenderState {
+    fn generic(&self) -> GenericComponentState {
+        match self {
+            Self::Idle => GenericComponentState::Idle,
+            Self::SendingToL1 => GenericComponentState::Active,
+            Self::WaitingL1Inclusion => GenericComponentState::Active,
+        }
+    }
+    fn specific(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::SendingToL1 => "sending_to_l1",
+            Self::WaitingL1Inclusion => "waiting_l1_inclusion",
+        }
+    }
+}
 
 /// A code for "method not found" error response as declared in JSON-RPC 2.0 spec.
 const METHOD_NOT_FOUND_CODE: i64 = -32601;
@@ -70,10 +94,10 @@ struct FeeParams {
 /// Note: we pass `to_address` - L1 contract address to send transactions to.
 /// It differs between commit/prove/execute (e.g., timelock vs diamond proxy)
 #[allow(clippy::too_many_arguments)]
-pub async fn run_l1_sender<Input: SendToL1>(
+pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
     // == plumbing ==
     mut inbound: PeekableReceiver<L1SenderCommand<Input>>,
-    outbound: Sender<SignedBatchEnvelope<FriProof>>,
+    outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
 
     // == command-specific settings ==
     to_address: Address,
@@ -85,6 +109,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     >,
     config: L1SenderConfig<Input>,
     gateway: bool,
+    state_reporter: ComponentStateReporter,
     commit_submitted_tx: Option<watch::Sender<u64>>,
     // The SL block number at which `getTotalBatches*` was called on startup. Pinning the
     // confirmed-nonce baseline to this block ensures it is consistent with where the
@@ -92,9 +117,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     // the `getTotalBatches` call and the nonce check.
     sl_block_number: u64,
 ) -> anyhow::Result<()> {
-    let latency_tracker =
-        ComponentStateReporter::global().handle_for(Input::NAME, L1SenderState::WaitingRecv);
-    let command_name = Input::NAME;
+    let command_name = Input::COMPONENT_ID.as_str();
     let fee_config = config.fee_config;
     let force_transaction_resubmission = config.force_transaction_resubmission;
 
@@ -105,7 +128,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
     if process_prepending_passthrough_commands(
         &mut inbound,
         &outbound,
-        &latency_tracker,
+        &state_reporter,
         command_name,
     )
     .await?
@@ -127,6 +150,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
             &mut inbound,
             command_name,
             sl_block_number,
+            &state_reporter,
         )
         .await
         {
@@ -164,7 +188,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
             &provider,
             operator_address,
             command_name,
-            &latency_tracker,
+            &state_reporter,
             &outbound,
         )
         .await?;
@@ -174,14 +198,25 @@ pub async fn run_l1_sender<Input: SendToL1>(
     // enabled, the queued commands stay in `inbound` and the normal send path replaces them.
     // Only actual SendToL1 commands are expected from here on.
     loop {
-        latency_tracker.enter_state(L1SenderState::WaitingRecv);
-        // This sleeps until **at least one** command is received from the channel. Additionally,
-        // receives up to `self.command_limit` commands from the channel if they are ready (i.e. does
-        // not wait for them). Extends `cmd_buffer` with received values and, as `cmd_buffer` is
-        // emptied in every iteration, its size never exceeds `self.command_limit`.
+        state_reporter.enter_state(L1SenderState::Idle);
+        // Sleeps until at least one command is available, then greedily drains up to
+        // command_limit items without waiting. cmd_buffer is emptied every iteration.
         let received = inbound
             .recv_many(&mut cmd_buffer, config.command_limit)
             .await;
+        // Only returns 0 when the channel is closed and drained.
+        if received == 0 {
+            tracing::info!("inbound channel closed");
+            return Ok(());
+        }
+        let last = cmd_buffer
+            .last()
+            .context("recv_many returned non-zero count but cmd_buffer is empty")?;
+        state_reporter.record_picked(
+            last.last_block_number(),
+            last.block_timestamp(),
+            Some(last.last_batch_number()),
+        );
         let mut commands = cmd_buffer
             .drain(..)
             .map(|cmd| -> anyhow::Result<Input> {
@@ -195,13 +230,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
                 }
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        // This method only returns `0` if the channel has been closed and there are no more items
-        // in the queue.
-        if received == 0 {
-            tracing::info!("inbound channel closed");
-            return Ok(());
-        }
-        latency_tracker.enter_state(L1SenderState::SendingToL1);
+        state_reporter.enter_state(L1SenderState::SendingToL1);
         let range = Input::display_range(&commands); // Only for logging
         tracing::info!(command_name, range, "sending L1 transactions");
         L1_SENDER_METRICS.parallel_transactions[&command_name].set(commands.len() as u64);
@@ -312,7 +341,7 @@ pub async fn run_l1_sender<Input: SendToL1>(
             &provider,
             operator_address,
             command_name,
-            &latency_tracker,
+            &state_reporter,
             &outbound,
         )
         .await?;
@@ -326,26 +355,30 @@ async fn wait_for_txs_and_forward<F, P, Input>(
     provider: &FillProvider<F, P>,
     operator_address: Address,
     command_name: &'static str,
-    latency_tracker: &ComponentStateHandle<L1SenderState>,
-    outbound: &Sender<SignedBatchEnvelope<FriProof>>,
+    state_reporter: &ComponentStateReporter,
+    outbound: &mpsc::Sender<SignedBatchEnvelope<FriProof>>,
 ) -> anyhow::Result<()>
 where
     F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
     P: Provider<Ethereum>,
     Input: SendToL1,
 {
-    latency_tracker.enter_state(L1SenderState::WaitingL1Inclusion);
+    state_reporter.enter_state(L1SenderState::WaitingL1Inclusion);
 
-    let mut completed_commands = Vec::with_capacity(pending_txs.len());
-    for (receipt_fut, command, submitted_at) in pending_txs {
-        let receipt = receipt_fut.await;
-        // Observe latency before propagating errors so timeout cases are recorded.
-        L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
-            .observe(submitted_at.elapsed().as_secs_f64());
-        let receipt = receipt?;
-        validate_tx_receipt(provider, &command, receipt).await?;
-        completed_commands.push(command);
+    let completed_commands: Vec<Input> = async {
+        let mut completed = Vec::with_capacity(pending_txs.len());
+        for (receipt_fut, command, submitted_at) in pending_txs.into_iter() {
+            let receipt = receipt_fut.await;
+            // Observe latency before propagating errors so timeout cases are recorded.
+            L1_SENDER_METRICS.tx_inclusion_latency_seconds[&command_name]
+                .observe(submitted_at.elapsed().as_secs_f64());
+            let receipt = receipt?;
+            validate_tx_receipt(provider, &command, receipt).await?;
+            completed.push(command);
+        }
+        anyhow::Ok(completed)
     }
+    .await?;
 
     let range = Input::display_range(&completed_commands);
     let balance = format_ether(provider.get_balance(operator_address).await?);
@@ -360,11 +393,10 @@ where
     L1_SENDER_METRICS.balance[&command_name].set(balance.parse()?);
     L1_SENDER_METRICS.nonce[&command_name].set(nonce);
 
-    latency_tracker.enter_state(L1SenderState::WaitingSend);
     for command in completed_commands {
         for mut output_envelope in command.into() {
             output_envelope.set_stage(Input::MINED_STAGE);
-            outbound.send(output_envelope).await?;
+            outbound.send_and_record(output_envelope, state_reporter)?;
         }
     }
     Ok(())
@@ -456,11 +488,12 @@ async fn recover_in_flight_txs<F, P, Input>(
     inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
     command_name: &str,
     sl_block_number: u64,
+    state_reporter: &ComponentStateReporter,
 ) -> anyhow::Result<Vec<(alloy::primitives::B256, Input)>>
 where
     F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
     P: Provider<Ethereum>,
-    Input: SendToL1,
+    Input: SendToL1 + Send + 'static,
 {
     let latest_nonce = provider
         .get_transaction_count(operator_address)
@@ -550,7 +583,9 @@ where
                 break;
             }
             Some(true) => {
-                let Some(L1SenderCommand::SendToL1(cmd)) = inbound.recv().await else {
+                let Some(L1SenderCommand::SendToL1(cmd)) =
+                    inbound.recv_and_record_picked(state_reporter).await
+                else {
                     unreachable!("peek succeeded, recv must return the same item");
                 };
                 paired.push((tx.tx_hash(), cmd));
@@ -568,14 +603,14 @@ where
     Ok(paired)
 }
 
-async fn process_prepending_passthrough_commands<Input: SendToL1>(
+async fn process_prepending_passthrough_commands<Input: SendToL1 + Send + 'static>(
     inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
-    outbound: &Sender<SignedBatchEnvelope<FriProof>>,
-    latency_tracker: &ComponentStateHandle<L1SenderState>,
+    outbound: &mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+    state_reporter: &ComponentStateReporter,
     command_name: &str,
 ) -> anyhow::Result<Option<()>> {
     loop {
-        latency_tracker.enter_state(L1SenderState::WaitingRecv);
+        state_reporter.enter_state(L1SenderState::Idle);
         match inbound
             .peek_recv(|command| matches!(command, L1SenderCommand::Passthrough(_)))
             .await
@@ -586,7 +621,8 @@ async fn process_prepending_passthrough_commands<Input: SendToL1>(
             Some(false) => return Ok(Some(())),
             // command is passthrough
             Some(true) => {
-                let Some(next_command) = inbound.recv().await else {
+                let Some(next_command) = inbound.recv_and_record_picked(state_reporter).await
+                else {
                     return Ok(None);
                 };
                 match next_command {
@@ -599,10 +635,10 @@ async fn process_prepending_passthrough_commands<Input: SendToL1>(
                             batch_number = batch.batch_number(),
                             "Not actually sending to L1, just passing through"
                         );
-                        latency_tracker.enter_state(L1SenderState::WaitingSend);
-                        outbound
-                            .send((*batch).with_stage(Input::PASSTHROUGH_STAGE))
-                            .await?;
+                        outbound.send_and_record(
+                            (*batch).with_stage(Input::PASSTHROUGH_STAGE),
+                            state_reporter,
+                        )?;
                     }
                 }
             }
@@ -757,16 +793,16 @@ async fn register_operator<
         .await?;
 
     let balance = provider.get_balance(address).await?;
-    L1_SENDER_METRICS.balance[&Input::NAME].set(format_ether(balance).parse()?);
+    L1_SENDER_METRICS.balance[&Input::COMPONENT_ID.as_str()].set(format_ether(balance).parse()?);
     let address_string: &'static str = address.to_string().leak();
-    L1_SENDER_METRICS.l1_operator_address[&(Input::NAME, address_string)].set(1);
+    L1_SENDER_METRICS.l1_operator_address[&(Input::COMPONENT_ID.as_str(), address_string)].set(1);
 
     if balance.is_zero() {
         anyhow::bail!("L1 sender's address {address} has zero balance");
     }
 
     tracing::info!(
-        command_name = Input::NAME,
+        command_name = Input::COMPONENT_ID.as_str(),
         balance_eth = format_ether(balance),
         %address,
         "initialized L1 sender",

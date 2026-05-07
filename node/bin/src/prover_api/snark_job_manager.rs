@@ -3,16 +3,14 @@ use crate::prover_api::metrics::{ProverStage, ProverType};
 use crate::prover_api::prover_job_map::ProverJobMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::Permit;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::{Permit, Sender};
 use zksync_os_batch_types::batcher_model::{
     FriProof, RealSnarkProof, SignedBatchEnvelope, SnarkProof,
 };
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
-use zksync_os_observability::{
-    ComponentStateHandle, ComponentStateReporter, GenericComponentState,
-};
 use zksync_os_types::ProvingVersion;
 
 /// Job manager for SNARK proving.
@@ -25,25 +23,18 @@ use zksync_os_types::ProvingVersion;
 ///
 /// `SnarkJobManager` aims to assign real prover jobs to real SNARK provers -
 ///     but if jobs are not picked within a timeout (`max_batch_age`), it releases it to a fake prover
-///
-///
-/// `ComponentStateLatencyTracker`: Only tracks `Processing` / `WaitingSend` states
 pub struct SnarkJobManager {
     // == state ==
     jobs: ProverJobMap<FriProof>,
     // outbound
-    prove_batches_sender: Sender<ProofCommand>,
+    prove_batches_sender: mpsc::Sender<ProofCommand>,
     // config
     max_fris_per_snark: usize,
-    // metrics
-    latency_tracker: ComponentStateHandle<GenericComponentState>,
 }
 
 impl SnarkJobManager {
     pub fn new(
-        // outbound
-        prove_batches_sender: Sender<ProofCommand>,
-        // config
+        prove_batches_sender: mpsc::Sender<ProofCommand>,
         max_fris_per_snark: usize,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
@@ -53,20 +44,13 @@ impl SnarkJobManager {
             max_assigned_batch_range,
             ProverStage::Snark,
         );
-        let latency_tracker = ComponentStateReporter::global().handle_for(
-            "snark_job_manager",
-            GenericComponentState::ProcessingOrWaitingRecv,
-        );
         Self {
             jobs,
             prove_batches_sender,
             max_fris_per_snark,
-            latency_tracker,
         }
     }
 
-    /// Adds a pending job to the queue.
-    /// Awaits if queue is full (ProverJobMap.max_assigned_batch_range).
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<FriProof>) {
         self.jobs.add_job(batch_envelope).await
     }
@@ -222,14 +206,8 @@ impl SnarkJobManager {
 
     fn try_reserve_permit_downstream(&self) -> anyhow::Result<Permit<'_, ProofCommand>> {
         Ok(match self.prove_batches_sender.try_reserve() {
-            Ok(permit) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::ProcessingOrWaitingRecv);
-                permit
-            }
+            Ok(permit) => permit,
             Err(TrySendError::Full(_)) => {
-                self.latency_tracker
-                    .enter_state(GenericComponentState::WaitingSend);
                 anyhow::bail!("downstream backpressure");
             }
             Err(TrySendError::Closed(_)) => {
