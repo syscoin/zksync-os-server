@@ -15,8 +15,9 @@ use zksync_os_interface::types::{
     StorageWrite, TxOutput,
 };
 use zksync_os_merkle_tree::{MerkleTree, MerkleTreeVersion, RocksDBWrapper};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
-use zksync_os_storage_api::ReplayRecord;
+use zksync_os_observability::ComponentStateReporter;
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_storage_api::{ReplayRecord, TreeBlock};
 
 #[derive(Clone, Debug)]
 pub struct BatchWorkStorage {
@@ -78,7 +79,7 @@ impl BatchWorkStorage {
         Ok(handle)
     }
 
-    pub async fn load(&self, handle: &BatchWorkHandle) -> anyhow::Result<BatchWorkItem> {
+    async fn load(&self, handle: &BatchWorkHandle) -> anyhow::Result<BatchWorkItem> {
         let data = fs::read(self.path_for(handle)).await?;
         Ok(serde_json::from_slice(&data)?)
     }
@@ -122,18 +123,25 @@ impl BatchWorkDispatcher {
 
 #[async_trait]
 impl PipelineComponent for BatchWorkDispatcher {
-    type Input = (BlockOutput, ReplayRecord, BlockMerkleTreeData);
+    type Input = TreeBlock;
     type Output = ();
 
-    const NAME: &'static str = "batch_work_dispatcher";
-    const OUTPUT_BUFFER_SIZE: usize = 1;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::BatchWorkDispatcher;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         _output: mpsc::Sender<Self::Output>,
+        _state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
-        while let Some((block_output, replay_record, _tree)) = input.recv().await {
+        while let Some(TreeBlock {
+            output: block_output,
+            record: replay_record,
+            tree: _,
+        }) = input.recv().await
+        {
             let block_number = replay_record.block_context.block_number;
             let handle = self.storage.store(block_output, replay_record).await?;
             anyhow::ensure!(
@@ -174,15 +182,17 @@ impl BatchWorkSource {
 #[async_trait]
 impl PipelineComponent for BatchWorkSource {
     type Input = ();
-    type Output = (BlockOutput, ReplayRecord, BlockMerkleTreeData);
+    type Output = TreeBlock;
 
-    const NAME: &'static str = "batch_work_source";
-    const OUTPUT_BUFFER_SIZE: usize = 5;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::BatchWorkSource;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         mut self,
         _input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
+        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
             let block_number = handle.block_number;
@@ -199,14 +209,16 @@ impl PipelineComponent for BatchWorkSource {
                     block: block_number,
                 },
             };
-            if output
-                .send((block_output, replay_record, tree))
-                .await
-                .is_err()
-            {
-                tracing::info!("outbound channel closed");
-                return Ok(());
-            }
+            output
+                .send_and_record(
+                    TreeBlock {
+                        output: block_output,
+                        record: replay_record,
+                        tree,
+                    },
+                    &state_reporter,
+                )
+                .await?;
             self.storage.delete(&handle).await?;
         }
         tracing::info!("batch work channel closed");

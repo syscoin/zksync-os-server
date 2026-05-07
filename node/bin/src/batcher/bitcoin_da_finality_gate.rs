@@ -12,7 +12,8 @@ use tokio::time::Instant;
 use zksync_os_batch_types::syscoin_edge_da_refs_from_input;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_l1_sender::commands::{L1SenderCommand, commit::CommitCommand};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+use zksync_os_observability::ComponentStateReporter;
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 
 pub struct BitcoinDaFinalityGate {
     config: BatcherConfig,
@@ -314,22 +315,21 @@ impl PipelineComponent for BitcoinDaFinalityGate {
     type Input = L1SenderCommand<CommitCommand>;
     type Output = L1SenderCommand<CommitCommand>;
 
-    const NAME: &'static str = "bitcoin_da_finality_gate";
-    const OUTPUT_BUFFER_SIZE: usize = 5;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::BitcoinDaFinalityGate;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
+        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(command) = input.recv().await {
             if let L1SenderCommand::SendToL1(commit_command) = &command {
                 self.wait_for_command_da(commit_command).await?;
             }
-            if output.send(command).await.is_err() {
-                tracing::info!("outbound channel closed");
-                return Ok(());
-            }
+            output.send_and_record(command, &state_reporter).await?;
         }
         tracing::info!("inbound channel closed");
         Ok(())

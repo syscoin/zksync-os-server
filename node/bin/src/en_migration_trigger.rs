@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, MissedTickBehavior, interval};
-use zksync_os_interface::types::BlockOutput;
 use zksync_os_l1_watcher::CommittedBatchProvider;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
-use zksync_os_storage_api::{ReadFinality, ReplayRecord};
+use zksync_os_observability::ComponentStateReporter;
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_sequencer::model::blocks::AppliedBlock;
+use zksync_os_storage_api::ReadFinality;
 use zksync_os_types::SystemTxType;
 
 const MIGRATION_BATCH_LOOKUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -22,16 +23,18 @@ impl<Finality> PipelineComponent for EnMigrationTrigger<Finality>
 where
     Finality: ReadFinality + Clone,
 {
-    type Input = (BlockOutput, ReplayRecord);
-    type Output = (BlockOutput, ReplayRecord);
+    type Input = AppliedBlock;
+    type Output = AppliedBlock;
 
-    const NAME: &'static str = "en_migration_trigger";
-    const OUTPUT_BUFFER_SIZE: usize = 5;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::EnMigrationTrigger;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
+        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         let mut pending_trigger: Option<(u64, u64, Option<u64>)> = None;
         let mut lookup_interval = interval(MIGRATION_BATCH_LOOKUP_POLL_INTERVAL);
@@ -39,8 +42,8 @@ where
         let mut input_closed = false;
         loop {
             tokio::select! {
-                maybe_item = input.recv(), if !input_closed => {
-                    let Some((block_output, replay_record)) = maybe_item else {
+                maybe_item = input.recv_and_record_picked(&state_reporter), if !input_closed => {
+                    let Some(applied_block) = maybe_item else {
                         if pending_trigger.is_some() {
                             tracing::info!(
                                 ?pending_trigger,
@@ -52,6 +55,7 @@ where
                         tracing::info!("inbound channel closed");
                         return Ok(());
                     };
+                    let replay_record = &applied_block.record;
 
                     let pending_migration_number = replay_record
                         .transactions
@@ -131,10 +135,7 @@ where
                         }
                     }
 
-                    if output.send((block_output, replay_record)).await.is_err() {
-                        tracing::info!("outbound channel closed");
-                        return Ok(());
-                    }
+                    output.send_and_record(applied_block, &state_reporter).await?;
                 }
 
                 // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay

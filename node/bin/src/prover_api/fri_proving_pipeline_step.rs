@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use zksync_os_batch_types::batcher_model::{FriProof, ProverInput, SignedBatchEnvelope};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
+use zksync_os_observability::ComponentStateReporter;
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 
 /// Pipeline step that waits for batches to be FRI proved.
 ///
@@ -240,13 +241,15 @@ impl PipelineComponent for FriProvingPipelineStep {
     type Input = SignedBatchEnvelope<ProverInput>;
     type Output = ProvenBatch;
 
-    const NAME: &'static str = "fri_proving";
-    const OUTPUT_BUFFER_SIZE: usize = 5;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::FriJobManager;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         mut self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
+        state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         let last_proved_batch_number = self.last_proved_batch_number;
         let proof_storage = self.proof_storage.clone();
@@ -257,15 +260,15 @@ impl PipelineComponent for FriProvingPipelineStep {
         // Two concurrent tasks handle the bidirectional flow
         tokio::select! {
             result = async {
-                while let Some(batch) = input.recv().await {
+                while let Some(batch) = input.recv_and_record_picked(&state_reporter).await {
                     if batch.batch_number() > last_proved_batch_number {
                         // SYSCOIN
                         if let Some(stored_batch) = Self::try_rehydrate_pending_batch(&proof_storage, &batch).await {
-                            output.send(stored_batch).await?;
+                            output.send_and_record(stored_batch, &state_reporter).await?;
                             continue;
                         }
                         if let Some(stored_batch) = Self::try_rehydrate_batch(&proof_storage, &batch).await {
-                            output.send(ProvenBatch::new(stored_batch)).await?;
+                            output.send_and_record(ProvenBatch::new(stored_batch), &state_reporter).await?;
                             continue;
                         }
                         tracing::info!(
@@ -277,7 +280,8 @@ impl PipelineComponent for FriProvingPipelineStep {
                     } else {
                         // Already proven - send with fake proof to pass through the pipeline
                         let batch_with_fake_proof = batch.with_data(FriProof::AlreadySubmittedToL1);
-                        output.send(ProvenBatch::new(batch_with_fake_proof)).await?;
+                        output
+                            .send_and_record(ProvenBatch::new(batch_with_fake_proof), &state_reporter).await?;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -292,7 +296,7 @@ impl PipelineComponent for FriProvingPipelineStep {
                         "Received batch after FRI proving: {:?}",
                         proof.batch.batch_number()
                     );
-                    output.send(proof).await?;
+                    output.send_and_record(proof, &state_reporter).await?;
                 }
                 Ok::<(), anyhow::Error>(())
             } => {
@@ -317,6 +321,7 @@ mod tests {
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
+    use zksync_os_observability::ComponentStateReporter;
     use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
 
     fn dummy_commit_batch_info(batch_number: u64, from: u64, to: u64) -> CommitBatchInfo {
@@ -409,7 +414,9 @@ mod tests {
         input_tx.send(input_batch).await?;
         drop(input_tx);
 
-        let run_handle = tokio::spawn(async move { step.run(peekable, output_tx).await });
+        let (state_reporter, _) = ComponentStateReporter::new("fri_proving_pipeline_step_test");
+        let run_handle =
+            tokio::spawn(async move { step.run(peekable, output_tx, state_reporter).await });
 
         let out = timeout(Duration::from_secs(1), output_rx.recv())
             .await
@@ -446,7 +453,9 @@ mod tests {
         input_tx.send(input_batch).await?;
         drop(input_tx);
 
-        let run_handle = tokio::spawn(async move { step.run(peekable, output_tx).await });
+        let (state_reporter, _) = ComponentStateReporter::new("fri_proving_pipeline_step_test");
+        let run_handle =
+            tokio::spawn(async move { step.run(peekable, output_tx, state_reporter).await });
         run_handle.await.expect("run task should complete")?;
 
         assert!(output_rx.recv().await.is_none());
