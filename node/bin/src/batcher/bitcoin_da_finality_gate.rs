@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use zksync_os_batch_types::syscoin_edge_da_refs_from_input;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_l1_sender::commands::{L1SenderCommand, commit::CommitCommand};
+use zksync_os_observability::ComponentStateReporter;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 
 pub struct BitcoinDaFinalityGate {
@@ -314,13 +315,15 @@ impl PipelineComponent for BitcoinDaFinalityGate {
     type Input = L1SenderCommand<CommitCommand>;
     type Output = L1SenderCommand<CommitCommand>;
 
-    const NAME: &'static str = "bitcoin_da_finality_gate";
-    const OUTPUT_BUFFER_SIZE: usize = 5;
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::BitcoinDaFinalityGate;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
 
     async fn run(
         self,
         mut input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
+        _state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(command) = input.recv().await {
             if let L1SenderCommand::SendToL1(commit_command) = &command {
