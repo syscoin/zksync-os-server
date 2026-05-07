@@ -65,7 +65,7 @@ impl ProvingVersion {
     const V6_VK_HASH: &'static str =
         "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337";
 
-    /// verification key hash generated from patched zksync-os dev-20260421 multiblock proving binary.
+    /// verification key hash generated from patched zksync-os v0.3.0 multiblock proving binary.
     const V7_VK_HASH: &'static str =
         "0xb4cdc2235d292f3ae22ee3385d82217770f4b0c4908d00ccba5ef5a8c4d69e09";
 
