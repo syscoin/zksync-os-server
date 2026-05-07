@@ -125,20 +125,20 @@ impl ComponentStateReporter {
         let component = self.component;
         if let Some(highest_seen) = highest_seen {
             if let Some(batch) = batch_number {
-                tracing::info!(
+                tracing::debug!(
                     component,
                     "picked batch={batch} last_block={block_number} (out of order, highest_seen={highest_seen})"
                 );
             } else {
-                tracing::info!(
+                tracing::debug!(
                     component,
                     "picked block={block_number} (out of order, highest_seen={highest_seen})"
                 );
             }
         } else if let Some(batch) = batch_number {
-            tracing::info!(component, "picked batch={batch} last_block={block_number}");
+            tracing::debug!(component, "picked batch={batch} last_block={block_number}");
         } else {
-            tracing::info!(component, "picked block={block_number}");
+            tracing::debug!(component, "picked block={block_number}");
         }
     }
 
@@ -169,23 +169,23 @@ impl ComponentStateReporter {
         let component = self.component;
         if let Some(highest_seen) = highest_seen {
             if let Some(batch) = batch_number {
-                tracing::info!(
+                tracing::debug!(
                     component,
                     "processed batch={batch} last_block={block_number} (out of order, highest_seen={highest_seen})"
                 );
             } else {
-                tracing::info!(
+                tracing::debug!(
                     component,
                     "processed block={block_number} (out of order, highest_seen={highest_seen})"
                 );
             }
         } else if let Some(batch) = batch_number {
-            tracing::info!(
+            tracing::debug!(
                 component,
                 "processed batch={batch} last_block={block_number}"
             );
         } else {
-            tracing::info!(component, "processed block={block_number}");
+            tracing::debug!(component, "processed block={block_number}");
         }
     }
 }
