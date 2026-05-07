@@ -1211,13 +1211,13 @@ impl L1SenderFeeConfig {
 async fn resolve_fee_params(
     provider: &dyn Provider,
     fee_config: L1SenderFeeConfig,
-    force_transaction_resubmission: bool,
+    use_replacement_fee_params: bool,
 ) -> anyhow::Result<FeeParams> {
-    if force_transaction_resubmission {
-        return Ok(fee_config.replacement_fee_params());
-    }
-
-    let configured_params = fee_config.configured_fee_params();
+    let cap_params = if use_replacement_fee_params {
+        fee_config.replacement_fee_params()
+    } else {
+        fee_config.configured_fee_params()
+    };
     let eip1559_est = provider.estimate_eip1559_fees().await?;
     L1_SENDER_METRICS.report_l1_eip_1559_estimation(eip1559_est)?;
     report_custom_priority_fee_metrics(provider).await?;
@@ -1228,40 +1228,45 @@ async fn resolve_fee_params(
         "estimated priority and max fees"
     );
 
-    // SYSCOIN: Treat configured fees as floors, not caps. When the network estimate is
-    // higher during congestion, use it so L1 transactions do not get stuck underpriced.
-    let max_fee_per_gas = if eip1559_est.max_fee_per_gas > configured_params.max_fee_per_gas {
+    // SYSCOIN: Treat configured fees as caps. Replacement mode uses the multiplied caps as
+    // the required bump floor too, because startup resubmission does not persist the prior
+    // tx's exact fee fields; using a lower live estimate can be rejected as underpriced.
+    let max_fee_per_gas = if eip1559_est.max_fee_per_gas > cap_params.max_fee_per_gas {
         tracing::warn!(
             "L1 sender's configured maxFeePerGas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the estimated base fee value ({}).",
-            configured_params.max_fee_per_gas,
+             using the configured base fee value ({}) - this may result in inclusion delay.",
+            cap_params.max_fee_per_gas,
             eip1559_est.max_fee_per_gas,
-            eip1559_est.max_fee_per_gas,
+            cap_params.max_fee_per_gas,
         );
-        eip1559_est.max_fee_per_gas
+        cap_params.max_fee_per_gas
+    } else if use_replacement_fee_params {
+        cap_params.max_fee_per_gas
     } else {
-        configured_params.max_fee_per_gas
+        eip1559_est.max_fee_per_gas
     };
     let max_priority_fee_per_gas =
-        if eip1559_est.max_priority_fee_per_gas > configured_params.max_priority_fee_per_gas {
+        if eip1559_est.max_priority_fee_per_gas > cap_params.max_priority_fee_per_gas {
             tracing::warn!(
                 "L1 sender's configured max_priority_fee_per_gas ({}) \
              is lower than the one estimated from network  ({}), \
-             using the estimated priority fee value ({}).",
-                configured_params.max_priority_fee_per_gas,
+             using the configured priority fee value ({}) - this may result in inclusion delay.",
+                cap_params.max_priority_fee_per_gas,
                 eip1559_est.max_priority_fee_per_gas,
-                eip1559_est.max_priority_fee_per_gas,
+                cap_params.max_priority_fee_per_gas,
             );
-            eip1559_est.max_priority_fee_per_gas
+            cap_params.max_priority_fee_per_gas
+        } else if use_replacement_fee_params {
+            cap_params.max_priority_fee_per_gas
         } else {
-            configured_params.max_priority_fee_per_gas
+            eip1559_est.max_priority_fee_per_gas
         };
 
     Ok(FeeParams {
         max_fee_per_gas,
         max_priority_fee_per_gas,
-        max_fee_per_blob_gas: configured_params.max_fee_per_blob_gas,
+        max_fee_per_blob_gas: cap_params.max_fee_per_blob_gas,
     })
 }
 
