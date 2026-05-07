@@ -484,33 +484,25 @@ where
                                     "L1 transaction rebroadcast returned a benign error; continuing to wait: {err}",
                                 );
                             } else if is_nonce_reuse_rebroadcast_error(&err) {
-                                if let Some(replacement_hash) = find_matching_sender_nonce_tx(
+                                tx_hash = recover_same_nonce_tx(
                                     provider,
                                     operator_address,
                                     tx_nonce,
+                                    tx_hash,
                                     gateway,
                                     command_name,
                                     &command,
+                                    transaction_timeout,
+                                    &err,
                                 )
-                                .await?
-                                {
-                                    tx_hash = replacement_hash;
-                                    raw_tx = None;
-                                    tracing::warn!(
-                                        command_name,
-                                        ?tx_hash,
-                                        tx_nonce,
-                                        "Tracking matching L1 transaction found at reused nonce"
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        command_name,
-                                        ?tx_hash,
-                                        tx_nonce,
-                                        "L1 transaction rebroadcast returned a nonce-reuse error, \
-                                         but no matching same-nonce transaction was visible; continuing to wait: {err}",
-                                    );
-                                }
+                                .await?;
+                                raw_tx = None;
+                                tracing::warn!(
+                                    command_name,
+                                    ?tx_hash,
+                                    tx_nonce,
+                                    "Tracking matching L1 transaction found at reused nonce"
+                                );
                             } else {
                                 tracing::warn!(
                                     command_name,
@@ -575,6 +567,70 @@ where
     Ok(())
 }
 
+// SYSCOIN: nonce-reuse rebroadcast errors mean the original nonce may already be occupied.
+// Keep looking for the same-nonce tx instead of resubmitting the command at a later nonce or
+// re-arming a waiter for the dropped hash.
+async fn recover_same_nonce_tx<F, P, Input>(
+    provider: &FillProvider<F, P>,
+    operator_address: Address,
+    nonce: u64,
+    old_tx_hash: B256,
+    gateway: bool,
+    command_name: &'static str,
+    command: &Input,
+    timeout: std::time::Duration,
+    rebroadcast_err: &TransportError,
+) -> anyhow::Result<B256>
+where
+    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
+    P: Provider<Ethereum>,
+    Input: SendToL1,
+{
+    let started_at = Instant::now();
+    let poll_interval = provider.client().poll_interval();
+
+    loop {
+        match find_matching_sender_nonce_tx(
+            provider,
+            operator_address,
+            nonce,
+            gateway,
+            command_name,
+            command,
+        )
+        .await?
+        {
+            SameNonceTx::Found(tx_hash) => return Ok(tx_hash),
+            SameNonceTx::NotFound => {
+                if !timeout.is_zero() && started_at.elapsed() >= timeout {
+                    anyhow::bail!(
+                        "L1 transaction rebroadcast returned a nonce-reuse error for \
+                         {command_name} tx {old_tx_hash:?} at nonce {nonce}, but no \
+                         matching same-nonce transaction became visible within {timeout:?}: \
+                         {rebroadcast_err}"
+                    );
+                }
+                tracing::warn!(
+                    command_name,
+                    ?old_tx_hash,
+                    nonce,
+                    "L1 transaction rebroadcast returned a nonce-reuse error, but no matching \
+                     same-nonce transaction is visible yet; retrying discovery: {rebroadcast_err}",
+                );
+                tokio::time::sleep(poll_interval).await;
+            }
+            SameNonceTx::Unsupported => {
+                anyhow::bail!(
+                    "L1 transaction rebroadcast returned a nonce-reuse error for \
+                     {command_name} tx {old_tx_hash:?} at nonce {nonce}, but \
+                     eth_getTransactionBySenderAndNonce is unsupported; cannot safely \
+                     distinguish mined/accepted tx from a conflicting replacement: {rebroadcast_err}"
+                );
+            }
+        }
+    }
+}
+
 // SYSCOIN: only errors that indicate the exact raw tx is still known are benign. Nonce-conflict
 // or underpriced replacement errors must use the resubmission path instead of waiting on a stale hash.
 fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
@@ -602,6 +658,13 @@ fn is_nonce_reuse_rebroadcast_error(err: &TransportError) -> bool {
     }
 }
 
+// SYSCOIN: outcome of same-nonce discovery after a nonce-reuse rebroadcast error.
+enum SameNonceTx {
+    Found(B256),
+    NotFound,
+    Unsupported,
+}
+
 // SYSCOIN: if a rebroadcast reports nonce reuse, try to discover the tx currently occupying the
 // original sender nonce and track it only if it carries the same command calldata.
 async fn find_matching_sender_nonce_tx<F, P, Input>(
@@ -611,7 +674,7 @@ async fn find_matching_sender_nonce_tx<F, P, Input>(
     gateway: bool,
     command_name: &'static str,
     command: &Input,
-) -> anyhow::Result<Option<B256>>
+) -> anyhow::Result<SameNonceTx>
 where
     F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
     P: Provider<Ethereum>,
@@ -628,7 +691,7 @@ where
                 nonce,
                 "eth_getTransactionBySenderAndNonce is not supported; cannot discover same-nonce L1 transaction",
             );
-            return Ok(None);
+            return Ok(SameNonceTx::Unsupported);
         }
         Err(err) => anyhow::bail!(
             "Failed to fetch same-nonce L1 transaction for {command_name} at nonce {nonce}: {err}"
@@ -636,7 +699,7 @@ where
     };
 
     let Some(tx) = tx else {
-        return Ok(None);
+        return Ok(SameNonceTx::NotFound);
     };
 
     let expected_input = command.solidity_call(gateway, &operator_address);
@@ -646,7 +709,7 @@ where
         );
     }
 
-    Ok(Some(tx.tx_hash()))
+    Ok(SameNonceTx::Found(tx.tx_hash()))
 }
 
 async fn wait_for_confirmed_receipt<P>(
