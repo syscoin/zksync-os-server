@@ -40,6 +40,7 @@ impl UpgradeSubpool {
         // `1` as buffer is enough because upgrade transactions are rare.
         let (sender, receiver) = mpsc::channel(1);
         let mut inner = self.inner.write().await;
+        inner.drop_stale_full_upgrades();
         inner.sender = Some(sender);
         let state = if let Some(pending_tx) = inner.pending_upgrades.back() {
             StreamState::Pending(pending_tx.clone())
@@ -129,6 +130,25 @@ impl UpgradeSubpool {
 
         // Write protocol version we ended up with.
         self.inner.write().await.current_protocol_version = current_protocol_version;
+    }
+}
+
+impl Inner {
+    fn drop_stale_full_upgrades(&mut self) {
+        while self.pending_upgrades.back().is_some_and(|upgrade| {
+            upgrade.tx.is_some() && upgrade.protocol_version() < &self.current_protocol_version
+        }) {
+            // SYSCOIN: a lower-version full upgrade transaction cannot be applied anymore. Drop it
+            // before stream selection so the executor does not fail liveness on stale metadata.
+            let Some(upgrade) = self.pending_upgrades.pop_back() else {
+                break;
+            };
+            tracing::warn!(
+                protocol_version = %upgrade.protocol_version(),
+                current_protocol_version = %self.current_protocol_version,
+                "dropping stale full protocol upgrade transaction"
+            );
+        }
     }
 }
 
