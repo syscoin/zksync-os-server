@@ -145,9 +145,9 @@ impl GasAdjuster {
             }
 
             // SYSCOIN: provider base-fee samples are independent from Syscoin DA fee
-            // sampling. Blob mode keeps the Syscoin fee authoritative and never inserts
+            // sampling. Syscoin DA modes keep the Syscoin fee authoritative and never insert
             // provider/default blob fees into pubdata pricing.
-            let blob_base_fee_samples = if self.config.pubdata_mode == PubdataMode::Blobs {
+            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
                 let fixed_blob_base_fee = Self::bitcoin_blob_base_fee(&self.config).await?;
                 let blob_n_blocks = current_block
                     .saturating_sub(self.blob_base_fee_statistics.last_processed_block());
@@ -263,7 +263,9 @@ impl GasAdjuster {
 
     pub fn pubdata_price(&self) -> U256 {
         let price = match self.config.pubdata_mode {
-            PubdataMode::Blobs => {
+            // SYSCOIN: Gateway-settled child chains use `RelayedL2Calldata`, but their
+            // pubdata is still published to Syscoin DA as compact blob references.
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata => {
                 const BLOB_GAS_PER_BYTE: u128 = 1; // `BYTES_PER_BLOB` = `GAS_PER_BLOB` = 2 ^ 17.
 
                 let blob_base_fee_median = self.blob_base_fee_statistics.median();
@@ -277,7 +279,6 @@ impl GasAdjuster {
                 U256::from(self.gas_price()).saturating_mul(U256::from(L1_GAS_PER_PUBDATA_BYTE))
             }
             PubdataMode::Validium => U256::from(0u32),
-            PubdataMode::RelayedL2Calldata => self.gw_pubdata_price_statistics.median(),
         };
 
         if price <= U256::from(u128::MAX) {
@@ -389,14 +390,14 @@ impl GasAdjuster {
         sl_provider: &DynProvider,
         config: &GasAdjusterConfig,
     ) -> anyhow::Result<(u64, Vec<BaseFees>)> {
-        if config.pubdata_mode == PubdataMode::Blobs {
+        if Self::uses_syscoin_blob_da(config.pubdata_mode) {
             Self::validate_bitcoin_da_fee_config(config)?;
         }
 
         loop {
             let result = async {
                 let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
-                let fixed_blob_base_fee = if config.pubdata_mode == PubdataMode::Blobs {
+                let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(config.pubdata_mode) {
                     Some(Self::bitcoin_blob_base_fee(config).await?)
                 } else {
                     None
@@ -415,10 +416,10 @@ impl GasAdjuster {
             match result {
                 Ok(result) => return Ok(result),
                 Err(err)
-                    if config.pubdata_mode == PubdataMode::Blobs
+                    if Self::uses_syscoin_blob_da(config.pubdata_mode)
                         && Self::is_retriable_blob_fee_startup_error(&err) =>
                 {
-                    // SYSCOIN: Blob mode depends on the Syscoin DA fee as the authoritative
+                    // SYSCOIN: Syscoin DA modes depend on the Syscoin fee as the authoritative
                     // base pubdata price. Retry instead of crashing or seeding unsafe zeros.
                     tracing::warn!(
                         retry_after = ?config.poll_period,
@@ -430,6 +431,14 @@ impl GasAdjuster {
                 Err(err) => return Err(err),
             }
         }
+    }
+
+    // SYSCOIN
+    fn uses_syscoin_blob_da(pubdata_mode: PubdataMode) -> bool {
+        matches!(
+            pubdata_mode,
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+        )
     }
 
     // SYSCOIN
@@ -608,6 +617,16 @@ mod tests {
 
         let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
         assert!(err.to_string().contains("missing bitcoin_da_rpc_url"));
+    }
+
+    #[test]
+    fn syscoin_blob_da_modes_include_gateway_relayed_mode() {
+        assert!(GasAdjuster::uses_syscoin_blob_da(PubdataMode::Blobs));
+        assert!(GasAdjuster::uses_syscoin_blob_da(
+            PubdataMode::RelayedL2Calldata
+        ));
+        assert!(!GasAdjuster::uses_syscoin_blob_da(PubdataMode::Calldata));
+        assert!(!GasAdjuster::uses_syscoin_blob_da(PubdataMode::Validium));
     }
 
     #[test]
