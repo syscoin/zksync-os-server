@@ -158,6 +158,7 @@ impl TryFrom<u8> for ZksVersion {
             1 => Ok(Self::Zks1),
             2 => Ok(Self::Zks2),
             3 => Ok(Self::Zks3),
+            4 => Ok(Self::Zks4),
             _ => Err(ParseVersionError(u.to_string())),
         }
     }
@@ -193,7 +194,12 @@ mod tests {
     #[test]
     fn test_zks_version_rlp_encode() {
         // Version 0 is purposefully left out as it encodes to 0x80 (prefix for 0-length string)
-        let versions = [ZksVersion::Zks1, ZksVersion::Zks2, ZksVersion::Zks3];
+        let versions = [
+            ZksVersion::Zks1,
+            ZksVersion::Zks2,
+            ZksVersion::Zks3,
+            ZksVersion::Zks4,
+        ];
 
         for version in versions {
             let mut encoded = BytesMut::new();
@@ -211,7 +217,8 @@ mod tests {
             (1_u8, Ok(ZksVersion::Zks1)),
             (2_u8, Ok(ZksVersion::Zks2)),
             (3_u8, Ok(ZksVersion::Zks3)),
-            (4_u8, Err(RlpError::Custom("invalid zks version"))),
+            (4_u8, Ok(ZksVersion::Zks4)),
+            (5_u8, Err(RlpError::Custom("invalid zks version"))),
         ];
 
         for (input, expected) in test_cases {
@@ -231,6 +238,7 @@ mod tests {
             (ZksVersion::Zks1, 2),
             (ZksVersion::Zks2, 2),
             (ZksVersion::Zks3, 7),
+            (ZksVersion::Zks4, 7),
         ];
 
         for (version, expected_count) in test_cases {
@@ -258,8 +266,10 @@ mod tests {
             }
         }
 
-        for message in old_messages.into_iter().chain(new_messages) {
-            assert!(ZksVersion::Zks3.supports_message(message));
+        for version in [ZksVersion::Zks3, ZksVersion::Zks4] {
+            for message in old_messages.into_iter().chain(new_messages) {
+                assert!(version.supports_message(message));
+            }
         }
     }
 }

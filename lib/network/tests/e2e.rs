@@ -241,7 +241,15 @@ where
     }
 }
 
-#[test_casing(3, [ZksVersion::Zks1, ZksVersion::Zks2, ZksVersion::Zks3])]
+#[test_casing(
+    4,
+    [
+        ZksVersion::Zks1,
+        ZksVersion::Zks2,
+        ZksVersion::Zks3,
+        ZksVersion::Zks4
+    ]
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn send_replay_record_matching_version(version: ZksVersion) {
     // Run two peers that both communicate on exactly one matching zks protocol and successfully
@@ -792,7 +800,15 @@ async fn forwards_verify_batch_result_to_main_node() {
     assert_eq!(forwarded.message, result);
 }
 
-#[test_casing(3, [ZksVersion::Zks1, ZksVersion::Zks2, ZksVersion::Zks3])]
+#[test_casing(
+    4,
+    [
+        ZksVersion::Zks1,
+        ZksVersion::Zks2,
+        ZksVersion::Zks3,
+        ZksVersion::Zks4
+    ]
+)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn send_replay_record_different_versions(version: ZksVersion) {
     // Run two peers where peer0 can communicate on zks protocol v0 AND v1, while peer1 can only
