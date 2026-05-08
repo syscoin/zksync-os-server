@@ -5,7 +5,8 @@ use alloy::rpc::types::pubsub::{Params, SubscriptionKind};
 use jsonrpsee::proc_macros::rpc;
 
 /// Ethereum pub-sub rpc interface.
-#[rpc(server, namespace = "eth")]
+#[cfg_attr(not(feature = "server"), rpc(client, namespace = "eth"))]
+#[cfg_attr(feature = "server", rpc(server, client, namespace = "eth"))]
 pub trait EthPubSubApi {
     /// Create an ethereum subscription for the given params
     #[subscription(
