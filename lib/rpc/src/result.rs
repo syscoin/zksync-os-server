@@ -51,9 +51,10 @@ impl<Ok> ToRpcResult<Ok, EthError> for Result<Ok, EthError> {
             // SYSCOIN
             | EthError::InvalidRewardPercentiles
             | EthError::PageSizeTooLarge { .. } => invalid_params_rpc_err(err.to_string()),
-            EthError::RpcStorage(_) | EthError::Repository(_) | EthError::State(_) => {
-                internal_rpc_err(err.to_string())
-            }
+            EthError::ReceiptMetadataUnavailable(_)
+            | EthError::RpcStorage(_)
+            | EthError::Repository(_)
+            | EthError::State(_) => internal_rpc_err(err.to_string()),
         })
     }
 }

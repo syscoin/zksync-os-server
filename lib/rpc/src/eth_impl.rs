@@ -280,10 +280,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let Some(stored_tx) = self.storage.repository().get_stored_transaction(tx_hash)? else {
             return Ok(None);
         };
-        let Some(l2_to_l1_logs_before_this_tx) =
+        let l2_to_l1_logs_before_this_tx = if stored_tx.receipt.l2_to_l1_logs().is_empty() {
+            0
+        } else {
             self.l2_to_l1_logs_before_tx(tx_hash, &stored_tx.meta)?
-        else {
-            return Ok(None);
         };
         Ok(Some(build_api_receipt(
             tx_hash,
@@ -294,31 +294,31 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         )))
     }
 
-    fn l2_to_l1_logs_before_tx(&self, tx_hash: B256, meta: &TxMeta) -> EthResult<Option<u64>> {
+    fn l2_to_l1_logs_before_tx(&self, tx_hash: B256, meta: &TxMeta) -> EthResult<u64> {
         let Some(block) = self
             .storage
             .repository()
             .get_block_by_hash(meta.block_hash)?
         else {
-            return Ok(None);
+            return Err(EthError::ReceiptMetadataUnavailable(tx_hash));
         };
 
         let mut l2_to_l1_logs_before_this_tx = 0;
         for block_tx_hash in &block.body.transactions {
             if *block_tx_hash == tx_hash {
-                return Ok(Some(l2_to_l1_logs_before_this_tx));
+                return Ok(l2_to_l1_logs_before_this_tx);
             }
             let Some(receipt) = self
                 .storage
                 .repository()
                 .get_transaction_receipt(*block_tx_hash)?
             else {
-                return Ok(None);
+                return Err(EthError::ReceiptMetadataUnavailable(tx_hash));
             };
             l2_to_l1_logs_before_this_tx += receipt.l2_to_l1_logs().len() as u64;
         }
 
-        Ok(None)
+        Err(EthError::ReceiptMetadataUnavailable(tx_hash))
     }
 
     fn balance_impl(&self, address: Address, block_id: Option<BlockId>) -> EthResult<U256> {
@@ -1037,6 +1037,9 @@ pub enum EthError {
         /// Maximum page size allowed by the RPC server.
         max_page_size: usize,
     },
+    /// SYSCOIN: returned when tx data is visible but block-level receipt context is not.
+    #[error("receipt metadata unavailable for transaction {0}")]
+    ReceiptMetadataUnavailable(TxHash),
 
     #[error(transparent)]
     RpcStorage(#[from] RpcStorageError),
