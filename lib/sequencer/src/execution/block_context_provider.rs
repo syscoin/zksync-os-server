@@ -134,14 +134,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 let (force_preimages, canonical_upgrade_tx_hash) = if let Some(upgrade_metadata) =
                     best_txs.upgrade_metadata
                 {
-                    anyhow::ensure!(
-                        upgrade_metadata.protocol_version >= self.protocol_version
-                            || !best_txs.stream_contains_upgrade_tx,
-                        "stale full upgrade transaction for protocol version {} received while current protocol version is {}",
-                        upgrade_metadata.protocol_version,
-                        self.protocol_version,
-                    );
-
                     if should_apply_upgrade_metadata(
                         &upgrade_metadata,
                         &self.protocol_version,
