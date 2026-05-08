@@ -221,7 +221,14 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         // Shift block hashes one to the left and append latest block's hash
         let mut block_hashes = latest_block_context.block_hashes.0;
         block_hashes.rotate_left(1);
-        block_hashes[255] = U256::from_be_bytes(latest_block.block_output_hash.0);
+        // SYSCOIN: BLOCKHASH semantics require the canonical L2 block header hash, not the
+        // replay-output divergence hash stored in `ReplayRecord::block_output_hash`.
+        let latest_block_hash = self
+            .storage
+            .replay_storage()
+            .get_canonical_block_hash(latest_block_number)
+            .expect("latest block canonical hash must exist");
+        block_hashes[255] = U256::from_be_bytes(latest_block_hash.0);
 
         // Use current timestamp for pending block
         let millis_since_epoch = SystemTime::now()

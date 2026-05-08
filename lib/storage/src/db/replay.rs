@@ -260,7 +260,7 @@ impl BlockReplayStorage {
     }
 
     /// Given `block_number` retrieve block's hash.
-    fn get_canonical_block_hash(&self, block_number: BlockNumber) -> BlockHash {
+    fn canonical_block_hash_unchecked(&self, block_number: BlockNumber) -> BlockHash {
         let get_hash = |block_number: BlockNumber| -> Option<BlockHash> {
             let key = block_number.to_be_bytes();
             self.db
@@ -299,6 +299,14 @@ impl ReadReplay for BlockReplayStorage {
                     .expect("Failed to deserialize context")
             })
             .map(|(context, _)| context)
+    }
+
+    fn get_canonical_block_hash(&self, block_number: BlockNumber) -> Option<BlockHash> {
+        // SYSCOIN: Canonical hash is written atomically with canonical replay records.
+        // Returning it from replay storage avoids pending RPC simulations observing a replay record
+        // before the RPC repository has been populated with the same block.
+        self.get_context(block_number)?;
+        Some(self.canonical_block_hash_unchecked(block_number))
     }
 
     fn get_replay_record_by_key(
@@ -520,7 +528,8 @@ impl WriteReplay for BlockReplayStorage {
                 .get_replay_record(block_context.block_number)
                 .expect("Old record must exist");
             if &old_record != block_record {
-                let old_record_hash = self.get_canonical_block_hash(block_context.block_number);
+                let old_record_hash =
+                    self.canonical_block_hash_unchecked(block_context.block_number);
                 let old_record_hash_hex = alloy::hex::encode_prefixed(old_record_hash.0);
                 tracing::warn!(
                     block_number = block_context.block_number,
