@@ -13,6 +13,10 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use zksync_os_storage_api::{ReadReplay, ReadReplayExt};
 
+// SYSCOIN: Main-node replay responses may contain large records, so do not aggregate multiple
+// records into one outbound frame before the network has applied backpressure.
+const MAX_REPLAY_RECORDS_PER_RESPONSE: usize = 1;
+
 /// Background task that drives a main-node side of a connection.
 ///
 /// Waits for a `GetBlockReplays` request from the EN, then streams replay records from storage to
@@ -103,6 +107,7 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
         .max_blocks_per_message
         .unwrap_or(1)
         .clamp(1, MAX_BLOCKS_PER_MESSAGE) as usize;
+    let max_blocks_per_message = max_blocks_per_message.min(MAX_REPLAY_RECORDS_PER_RESPONSE);
 
     // Stream records to the EN indefinitely.
     let mut stream = replay
