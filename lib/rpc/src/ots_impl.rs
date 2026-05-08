@@ -121,23 +121,43 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         let page_end = transaction_count.saturating_sub(page_number.saturating_mul(page_size));
         let page_start = page_end.saturating_sub(page_size);
 
-        let page_capacity = page_size.min(transaction_count);
-        let mut full_transactions = Vec::with_capacity(page_capacity);
-        let mut receipts = Vec::with_capacity(page_capacity);
-        let mut l2_to_l1_logs_before_this_tx = 0;
-        for (tx_index, tx_hash) in block.transactions.hashes().enumerate() {
-            let StoredTxData { tx, receipt, meta } = self
+        let page_tx_hashes = block
+            .transactions
+            .hashes()
+            .skip(page_start)
+            .take(page_end - page_start)
+            .collect::<Vec<_>>();
+
+        let mut page_txs = Vec::with_capacity(page_tx_hashes.len());
+        for tx_hash in page_tx_hashes {
+            let stored_tx = self
                 .storage
                 .repository()
                 .get_stored_transaction(tx_hash)?
                 .ok_or(EthError::BlockNotFound(block_id))?;
+            page_txs.push((tx_hash, stored_tx));
+        }
 
-            let l2_to_l1_logs_in_tx = receipt.l2_to_l1_logs().len() as u64;
-            if tx_index < page_start || tx_index >= page_end {
-                l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
-                continue;
+        let mut l2_to_l1_logs_before_this_tx = 0;
+        if page_txs
+            .iter()
+            .any(|(_, stored_tx)| !stored_tx.receipt.l2_to_l1_logs().is_empty())
+        {
+            for tx_hash in block.transactions.hashes().take(page_start) {
+                let receipt = self
+                    .storage
+                    .repository()
+                    .get_transaction_receipt(tx_hash)?
+                    .ok_or(EthError::BlockNotFound(block_id))?;
+                l2_to_l1_logs_before_this_tx += receipt.l2_to_l1_logs().len() as u64;
             }
+        }
 
+        let mut full_transactions = Vec::with_capacity(page_txs.len());
+        let mut receipts = Vec::with_capacity(page_txs.len());
+        for (tx_hash, stored_tx) in page_txs {
+            let StoredTxData { tx, receipt, meta } = stored_tx;
+            let l2_to_l1_logs_in_tx = receipt.l2_to_l1_logs().len() as u64;
             let receipt =
                 build_api_receipt(tx_hash, receipt, &tx, &meta, l2_to_l1_logs_before_this_tx)
                     .map_inner(|receipt| {
