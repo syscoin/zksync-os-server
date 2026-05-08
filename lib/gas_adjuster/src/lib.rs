@@ -123,6 +123,20 @@ impl GasAdjuster {
             let fee_data =
                 Self::base_fee_history(&self.sl_provider, current_block, n_blocks, None).await?;
 
+            // SYSCOIN: fetch the authoritative Syscoin DA fee before mutating any
+            // statistics. If the RPC fails, this tick must leave all fee windows unchanged.
+            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
+                let fixed_blob_base_fee = Self::bitcoin_blob_base_fee(&self.config).await?;
+                let blob_n_blocks = current_block
+                    .saturating_sub(self.blob_base_fee_statistics.last_processed_block());
+                vec![fixed_blob_base_fee; blob_n_blocks as usize]
+            } else {
+                fee_data
+                    .iter()
+                    .map(|fee| fee.base_fee_per_blob_gas)
+                    .collect()
+            };
+
             // We shouldn't rely on provider to return consistent results, so we check that we have at least one new sample.
             if let Some(current_base_fee_per_gas) = fee_data.last().map(|fee| fee.base_fee_per_gas)
             {
@@ -143,21 +157,6 @@ impl GasAdjuster {
                     .median_base_fee_per_gas
                     .set(self.base_fee_statistics.median() as u64);
             }
-
-            // SYSCOIN: provider base-fee samples are independent from Syscoin DA fee
-            // sampling. Syscoin DA modes keep the Syscoin fee authoritative and never insert
-            // provider/default blob fees into pubdata pricing.
-            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
-                let fixed_blob_base_fee = Self::bitcoin_blob_base_fee(&self.config).await?;
-                let blob_n_blocks = current_block
-                    .saturating_sub(self.blob_base_fee_statistics.last_processed_block());
-                vec![fixed_blob_base_fee; blob_n_blocks as usize]
-            } else {
-                fee_data
-                    .iter()
-                    .map(|fee| fee.base_fee_per_blob_gas)
-                    .collect()
-            };
 
             if let Some(&current_blob_base_fee) = blob_base_fee_samples.last() {
                 if current_blob_base_fee > u64::MAX as u128 {
