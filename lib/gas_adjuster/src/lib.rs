@@ -68,14 +68,8 @@ impl GasAdjuster {
         // Subtracting 1 from the "latest" block number to prevent errors in case
         // the info about the latest block is not yet present on the node.
         // This sometimes happens on Infura.
-        let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
-        let fee_history = Self::base_fee_history(
-            &sl_provider,
-            current_block,
-            config.max_base_fee_samples as u64,
-            &config,
-        )
-        .await?;
+        let (current_block, fee_history) =
+            Self::initial_base_fee_history(&sl_provider, &config).await?;
 
         let base_fee_statistics = GasStatistics::new(
             config.max_base_fee_samples,
@@ -305,7 +299,7 @@ impl GasAdjuster {
         let from_block = upto_block.saturating_sub(block_count - 1);
         // SYSCOIN
         let fixed_blob_base_fee = if config.pubdata_mode == PubdataMode::Blobs {
-            Self::syscoin_blob_base_fee_override(config).await
+            Some(Self::bitcoin_blob_base_fee(config).await?)
         } else {
             None
         };
@@ -385,14 +379,37 @@ impl GasAdjuster {
     }
 
     // SYSCOIN
-    async fn syscoin_blob_base_fee_override(config: &GasAdjusterConfig) -> Option<u128> {
-        match Self::bitcoin_blob_base_fee(config).await {
-            Ok(fee) => Some(fee),
-            Err(err) => {
-                tracing::warn!(
-                    "Failed to estimate Syscoin blob base fee; falling back to provider fee history: {err}"
-                );
-                None
+    async fn initial_base_fee_history(
+        sl_provider: &DynProvider,
+        config: &GasAdjusterConfig,
+    ) -> anyhow::Result<(u64, Vec<BaseFees>)> {
+        loop {
+            let result = async {
+                let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
+                let fee_history = Self::base_fee_history(
+                    sl_provider,
+                    current_block,
+                    config.max_base_fee_samples as u64,
+                    config,
+                )
+                .await?;
+                anyhow::Ok((current_block, fee_history))
+            }
+            .await;
+
+            match result {
+                Ok(result) => return Ok(result),
+                Err(err) if config.pubdata_mode == PubdataMode::Blobs => {
+                    // SYSCOIN: Blob mode depends on the Syscoin DA fee as the authoritative
+                    // base pubdata price. Retry instead of crashing or seeding unsafe zeros.
+                    tracing::warn!(
+                        retry_after = ?config.poll_period,
+                        error = %err,
+                        "Failed to initialize blob-mode gas adjuster; retrying"
+                    );
+                    tokio::time::sleep(config.poll_period).await;
+                }
+                Err(err) => return Err(err),
             }
         }
     }
