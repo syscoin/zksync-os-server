@@ -1,17 +1,22 @@
 use super::MAX_BLOCKS_PER_MESSAGE;
 use super::ProtocolEvent;
 use super::config::MainNodeProtocolConfig;
+use super::connection::OutboundMessage;
 use crate::service::PeerVerifyBatchResult;
 use crate::version::ZksProtocolVersionSpec;
 use crate::wire::auth::recover_verifier_signer;
 use crate::wire::message::ZksMessage;
 use alloy::primitives::B256;
-use alloy::primitives::bytes::BytesMut;
 use futures::{FutureExt, Stream, StreamExt};
 use reth_network_peers::PeerId;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{Semaphore, mpsc};
 use zksync_os_storage_api::{ReadReplay, ReadReplayExt};
+
+// SYSCOIN: Main-node replay responses may contain large records, so do not aggregate multiple
+// records into one outbound frame before the network has applied backpressure.
+const MAX_REPLAY_RECORDS_PER_RESPONSE: usize = 1;
 
 /// Background task that drives a main-node side of a connection.
 ///
@@ -19,7 +24,8 @@ use zksync_os_storage_api::{ReadReplay, ReadReplayExt};
 /// the EN indefinitely.
 pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadReplay + Clone>(
     mut conn: impl Stream<Item = ZksMessage<P>> + Unpin,
-    outbound_tx: mpsc::Sender<BytesMut>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
+    replay_queue_permits: Arc<Semaphore>,
     events_sender: mpsc::UnboundedSender<ProtocolEvent>,
     peer_id: PeerId,
     replay: Replay,
@@ -40,7 +46,9 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
                     .ok();
                 let nonce = B256::random();
                 if outbound_tx
-                    .send(ZksMessage::<P>::verifier_challenge(nonce).encoded())
+                    .send(OutboundMessage::control(
+                        ZksMessage::<P>::verifier_challenge(nonce).encoded(),
+                    ))
                     .await
                     .is_err()
                 {
@@ -103,6 +111,7 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
         .max_blocks_per_message
         .unwrap_or(1)
         .clamp(1, MAX_BLOCKS_PER_MESSAGE) as usize;
+    let max_blocks_per_message = max_blocks_per_message.min(MAX_REPLAY_RECORDS_PER_RESPONSE);
 
     // Stream records to the EN indefinitely.
     let mut stream = replay
@@ -161,10 +170,20 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
                     .iter()
                     .map(|record| record.block_context.block_number)
                     .collect();
-                let encoded = ZksMessage::<P>::block_replays(records).encoded();
-                if outbound_tx.send(encoded).await.is_err() {
+                // SYSCOIN: Limit only replay frames in the outbound queue. Control traffic keeps
+                // the general channel capacity, while slow peers cannot prebuffer many large
+                // replay responses.
+                let Ok(replay_queue_permit) = replay_queue_permits.clone().acquire_owned().await
+                else {
                     return;
-                }
+                };
+                // SYSCOIN: Wait for outbound buffer capacity before encoding the full replay
+                // response. Slow peers must not retain an extra pending encoded BytesMut.
+                let Ok(permit) = outbound_tx.reserve().await else {
+                    return;
+                };
+                let encoded = ZksMessage::<P>::block_replays(records).encoded();
+                permit.send(OutboundMessage::replay(encoded, replay_queue_permit));
                 for block_number in block_numbers {
                     events_sender
                         .send(ProtocolEvent::ReplayBlockSent {
