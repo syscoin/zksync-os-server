@@ -122,9 +122,7 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
             tracing::debug!(batch_number, "discovered committed batch");
             let tx_hash = log.transaction_hash.expect("indexed log without tx hash");
             let zk_chain = ZkChain::new(log.address(), provider.clone());
-            let batch_info = util::fetch_committed_batch_data(&zk_chain, tx_hash)
-                .await?
-                .into_stored();
+            let batch_info = util::fetch_committed_batch_data(&zk_chain, tx_hash).await?;
             let committed_batch = DiscoveredCommittedBatch {
                 batch_info,
                 block_range: report.firstBlockNumber..=report.lastBlockNumber,
