@@ -121,13 +121,20 @@ impl GasAdjuster {
 
         if current_block > last_processed_block {
             let n_blocks = current_block - last_processed_block;
+            // SYSCOIN: fetch the authoritative Syscoin DA fee before requesting any
+            // backfilled fee history. If the RPC fails, this tick must not repeatedly
+            // allocate/fetch growing L1 fee-history ranges.
+            let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
+                Some(Self::bitcoin_blob_base_fee(&self.config).await?)
+            } else {
+                None
+            };
             let fee_data =
                 Self::base_fee_history(&self.sl_provider, current_block, n_blocks, None).await?;
 
-            // SYSCOIN: fetch the authoritative Syscoin DA fee before mutating any
-            // statistics. If the RPC fails, this tick must leave all fee windows unchanged.
-            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
-                let fixed_blob_base_fee = Self::bitcoin_blob_base_fee(&self.config).await?;
+            // SYSCOIN: only build samples after all fallible fetches have succeeded, so a
+            // failed tick leaves all fee windows unchanged.
+            let blob_base_fee_samples = if let Some(fixed_blob_base_fee) = fixed_blob_base_fee {
                 vec![fixed_blob_base_fee; fee_data.len()]
             } else {
                 fee_data
@@ -463,9 +470,28 @@ impl GasAdjuster {
     // SYSCOIN
     fn is_retriable_blob_fee_startup_error(err: &anyhow::Error) -> bool {
         let err = err.to_string();
-        !(err.contains("missing bitcoin_da_rpc_")
-            || err.contains("HTTP error: 401")
-            || err.contains("HTTP error: 403"))
+        if err.contains("missing bitcoin_da_rpc_")
+            || err.contains("invalid bitcoin_da_rpc_")
+            || err.contains("failed to construct Syscoin client")
+        {
+            return false;
+        }
+
+        match Self::blob_fee_http_status(&err) {
+            Some(408 | 429) => true,
+            Some(status) => status >= 500,
+            None => true,
+        }
+    }
+
+    // SYSCOIN
+    fn blob_fee_http_status(err: &str) -> Option<u16> {
+        let (_, after_marker) = err.split_once("HTTP error:")?;
+        let status = after_marker
+            .trim_start()
+            .split(|ch: char| !ch.is_ascii_digit())
+            .next()?;
+        status.parse().ok()
     }
 
     // SYSCOIN
@@ -647,6 +673,26 @@ mod tests {
         assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
                 "failed to estimate Syscoin blob base fee: HTTP error: 403 returned body: forbidden"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 404 returned body: not found"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to construct Syscoin client for blob fee estimation: invalid URL"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 408 returned body: timeout"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 429 returned body: too many requests"
             )
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
