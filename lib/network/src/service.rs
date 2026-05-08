@@ -5,7 +5,7 @@ use crate::protocol::{
 };
 use crate::raft::protocol::RaftProtocolHandler;
 use crate::session::PeerSessionStore;
-use crate::version::{ZksProtocolV1, ZksProtocolV2, ZksProtocolV3, ZksProtocolV4};
+use crate::version::ZksProtocolV4;
 use crate::wire::message::ZksMessage;
 use crate::{VerifyBatch, VerifyBatchResult};
 use alloy::eips::eip2124::Head;
@@ -316,27 +316,8 @@ impl NetworkService {
     ) -> NetworkConfigBuilder {
         let state = HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS);
         builder
-            // Support for v1 must be dropped before upgrade to protocol version v31.0. Otherwise,
-            // we might send invalid record to ENs that are still using v1 protocol (`starting_migration_number`
-            // in those record is always 0).
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV1, _>::for_main_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV2, _>::for_main_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV3, _>::for_main_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
+            // SYSCOIN: Syscoin starts production networking at v31, so only advertise the
+            // non-lossy zks/4 replay protocol. Older replay formats cannot carry all start cursors.
             .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV4, _>::for_main_node(
                 replay,
                 protocol,
@@ -354,24 +335,7 @@ impl NetworkService {
     ) -> NetworkConfigBuilder {
         let state = HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS);
         builder
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV1, _>::for_external_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV2, _>::for_external_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV3, _>::for_external_node(
-                replay.clone(),
-                protocol.clone(),
-                state.clone(),
-                connection_registry.clone(),
-            ))
+            // SYSCOIN: Match main-node policy and avoid downgrade/truncation of replay cursors.
             .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV4, _>::for_external_node(
                 replay,
                 protocol,
@@ -554,7 +518,8 @@ async fn dispatch_verify_batch(
             );
             continue;
         }
-        let encoded = ZksMessage::<ZksProtocolV3>::VerifyBatch(request.clone()).encoded();
+        // SYSCOIN: Only zks/4 is registered for production networking.
+        let encoded = ZksMessage::<ZksProtocolV4>::VerifyBatch(request.clone()).encoded();
         if connection.outbound_tx.send(encoded).await.is_err() {
             tracing::warn!(
                 peer_id = %peer_id,
