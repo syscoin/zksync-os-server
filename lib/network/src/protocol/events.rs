@@ -1,4 +1,4 @@
-use alloy::primitives::bytes::BytesMut;
+use super::connection::OutboundMessage;
 use alloy::primitives::{Address, B256, BlockNumber};
 use reth_network::Direction;
 use reth_network_peers::PeerId;
@@ -76,7 +76,10 @@ pub struct PeerConnectionHandle {
     /// Negotiated `zks` protocol version for this live connection.
     pub version: crate::version::ZksVersion,
     /// Channel used to queue encoded protocol frames to the peer.
-    pub outbound_tx: mpsc::Sender<BytesMut>,
+    ///
+    /// SYSCOIN: The message wrapper carries replay-only flow-control permits without reducing the
+    /// existing control-message queue capacity.
+    pub outbound_tx: mpsc::Sender<OutboundMessage>,
 }
 
 /// Registry of currently connected peers and their live protocol send handles.

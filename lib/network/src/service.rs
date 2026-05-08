@@ -1,7 +1,7 @@
 use crate::config::NetworkConfig;
 use crate::protocol::{
     ConnectionRegistry, ExternalNodeProtocolConfig, HandlerSharedState, MainNodeProtocolConfig,
-    ProtocolEvent, ZksProtocolConfig, ZksProtocolHandler,
+    OutboundMessage, ProtocolEvent, ZksProtocolConfig, ZksProtocolHandler,
 };
 use crate::raft::protocol::RaftProtocolHandler;
 use crate::session::PeerSessionStore;
@@ -520,7 +520,12 @@ async fn dispatch_verify_batch(
         }
         // SYSCOIN: Only zks/4 is registered for production networking.
         let encoded = ZksMessage::<ZksProtocolV4>::VerifyBatch(request.clone()).encoded();
-        if connection.outbound_tx.send(encoded).await.is_err() {
+        if connection
+            .outbound_tx
+            .send(OutboundMessage::control(encoded))
+            .await
+            .is_err()
+        {
             tracing::warn!(
                 peer_id = %peer_id,
                 request_id = request.request_id,

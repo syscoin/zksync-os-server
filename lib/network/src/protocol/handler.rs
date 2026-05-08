@@ -16,16 +16,17 @@ use reth_network::protocol::{ConnectionHandler, OnNotSupported, ProtocolHandler}
 use reth_network_peers::PeerId;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use tokio::sync::{OwnedSemaphorePermit, mpsc};
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tracing::Instrument;
 use zksync_os_storage_api::ReadReplay;
 
-/// Channel capacity for outbound protocol messages.
-///
-/// SYSCOIN: Replay responses can contain large transaction/preimage payloads, so keep the
-/// background protocol task tightly coupled to outbound demand instead of prebuffering many full
-/// encoded replay records for slow peers.
-const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+/// Channel capacity for outbound protocol messages. Provides natural backpressure so the MN
+/// does not produce records faster than the EN can consume them.
+const OUTBOUND_CHANNEL_CAPACITY: usize = 32;
+/// SYSCOIN: Replay responses can contain large transaction/preimage payloads. Limit queued replay
+/// frames separately from the general outbound channel so control traffic keeps its existing buffer.
+const REPLAY_OUTBOUND_CHANNEL_CAPACITY: usize = 1;
 
 #[derive(Debug, Clone)]
 enum ProtocolRole<Replay> {
@@ -200,17 +201,22 @@ impl<P: ZksProtocolVersionSpec, Replay: ReadReplay + Clone> ConnectionHandler
         let connection_registry = self.connection_registry.clone();
 
         let task = match self.role {
-            ProtocolRole::MainNode { replay, config } => tokio::spawn(
-                run_mn_connection::<P, _>(
-                    conn,
-                    outbound_tx,
-                    events_sender.clone(),
-                    peer_id,
-                    replay,
-                    config,
+            ProtocolRole::MainNode { replay, config } => {
+                let replay_queue_permits =
+                    Arc::new(Semaphore::new(REPLAY_OUTBOUND_CHANNEL_CAPACITY));
+                tokio::spawn(
+                    run_mn_connection::<P, _>(
+                        conn,
+                        outbound_tx,
+                        replay_queue_permits,
+                        events_sender.clone(),
+                        peer_id,
+                        replay,
+                        config,
+                    )
+                    .instrument(tracing::info_span!("mn_connection", %peer_id)),
                 )
-                .instrument(tracing::info_span!("mn_connection", %peer_id)),
-            ),
+            }
             ProtocolRole::ExternalNode(config) => tokio::spawn(
                 run_en_connection::<P>(conn, outbound_tx, peer_id, config)
                     .instrument(tracing::info_span!("en_connection", %peer_id)),

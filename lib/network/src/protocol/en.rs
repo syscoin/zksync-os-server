@@ -1,12 +1,12 @@
 use super::MAX_BLOCKS_PER_MESSAGE;
 use super::config::{ExternalNodeProtocolConfig, ExternalNodeVerifierConfig};
+use super::connection::OutboundMessage;
 use crate::service::{PeerVerifyBatch, PeerVerifyBatchResult};
 use crate::version::ZksProtocolVersionSpec;
 use crate::wire::auth::{VerifierAuth, verifier_auth_prehash};
 use crate::wire::message::{ZksMessage, ZksMessageId};
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
 use alloy::primitives::BlockNumber;
-use alloy::primitives::bytes::BytesMut;
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use futures::{Stream, StreamExt};
 use reth_network_peers::PeerId;
@@ -22,7 +22,7 @@ use zksync_os_storage_api::ReplayRecord;
 /// record to the local sequencer via `replay_sender` and advances `starting_block`.
 pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
     mut conn: impl Stream<Item = ZksMessage<P>> + Unpin,
-    outbound_tx: mpsc::Sender<BytesMut>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
     peer_id: PeerId,
     config: ExternalNodeProtocolConfig,
 ) {
@@ -75,7 +75,7 @@ pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
 
 async fn perform_verifier_handshake<P: ZksProtocolVersionSpec>(
     conn: &mut (impl Stream<Item = ZksMessage<P>> + Unpin),
-    outbound_tx: &mpsc::Sender<BytesMut>,
+    outbound_tx: &mpsc::Sender<OutboundMessage>,
     verifier: Option<&ExternalNodeVerifierConfig>,
 ) -> Result<(), ()> {
     let Some(verifier) = verifier else {
@@ -86,7 +86,11 @@ async fn perform_verifier_handshake<P: ZksProtocolVersionSpec>(
     }
 
     let msg = ZksMessage::<P>::VerifierRoleRequest(Default::default());
-    if outbound_tx.send(msg.encoded()).await.is_err() {
+    if outbound_tx
+        .send(OutboundMessage::control(msg.encoded()))
+        .await
+        .is_err()
+    {
         return Err(());
     }
 
@@ -121,14 +125,18 @@ async fn perform_verifier_handshake<P: ZksProtocolVersionSpec>(
     let msg = ZksMessage::<P>::VerifierAuth(VerifierAuth {
         signature: signature.as_bytes().to_vec().into(),
     });
-    if outbound_tx.send(msg.encoded()).await.is_err() {
+    if outbound_tx
+        .send(OutboundMessage::control(msg.encoded()))
+        .await
+        .is_err()
+    {
         return Err(());
     }
     Ok(())
 }
 
 async fn send_replay_request<P: ZksProtocolVersionSpec>(
-    outbound_tx: &mpsc::Sender<BytesMut>,
+    outbound_tx: &mpsc::Sender<OutboundMessage>,
     starting_block: &Arc<RwLock<BlockNumber>>,
     record_overrides: Vec<RecordOverride>,
     max_blocks_per_message: u64,
@@ -140,12 +148,15 @@ async fn send_replay_request<P: ZksProtocolVersionSpec>(
         .then_some(max_blocks_per_message.clamp(1, MAX_BLOCKS_PER_MESSAGE));
     let msg =
         ZksMessage::<P>::get_block_replays(next_block, max_blocks_per_message, record_overrides);
-    outbound_tx.send(msg.encoded()).await.map_err(|_| ())
+    outbound_tx
+        .send(OutboundMessage::control(msg.encoded()))
+        .await
+        .map_err(|_| ())
 }
 
 async fn receive_replay_and_verification<P: ZksProtocolVersionSpec>(
     mut conn: impl Stream<Item = ZksMessage<P>> + Unpin,
-    outbound_tx: mpsc::Sender<BytesMut>,
+    outbound_tx: mpsc::Sender<OutboundMessage>,
     starting_block: Arc<RwLock<BlockNumber>>,
     replay_sender: mpsc::Sender<ReplayRecord>,
     peer_id: PeerId,
@@ -220,7 +231,9 @@ async fn receive_replay_and_verification<P: ZksProtocolVersionSpec>(
                     continue;
                 }
                 if outbound_tx
-                    .send(ZksMessage::<P>::VerifyBatchResult(result.message).encoded())
+                    .send(OutboundMessage::control(
+                        ZksMessage::<P>::VerifyBatchResult(result.message).encoded(),
+                    ))
                     .await
                     .is_err()
                 {
