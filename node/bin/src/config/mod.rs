@@ -534,6 +534,15 @@ pub struct NetworkConfig {
         default,
         with = Delimited::repeat(Serde![str], ",")
     )]
+    // SYSCOIN: external nodes must have at least one trusted main-node identity for replay sync.
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<TrustedPeer>| {
+            !root.general_config.node_role.is_external()
+                || !root.network_config.enabled
+                || !value.is_empty()
+        },
+        "must include the trusted main-node enode when `general.node_role=external`"
+    ))]
     pub boot_nodes: Vec<TrustedPeer>,
 }
 
@@ -1814,6 +1823,7 @@ mod tests {
 
     const TEST_SECRET_KEY: &str =
         "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const TEST_BOOT_NODE: &str = "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301";
 
     fn loopback_interface() -> &'static str {
         ["lo", "lo0"]
@@ -1861,10 +1871,7 @@ mod tests {
 
     #[test]
     fn network_boot_nodes_accept_dns_names() {
-        let config = parse_network_config([(
-            "NETWORK_BOOT_NODES",
-            "enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@localhost:30303?discport=30301",
-        )]);
+        let config = parse_network_config([("NETWORK_BOOT_NODES", TEST_BOOT_NODE)]);
 
         assert_eq!(config.boot_nodes.len(), 1);
         assert_eq!(config.boot_nodes[0].host.to_string(), "localhost");
@@ -2109,6 +2116,7 @@ mod tests {
         config.general_config.main_node_rpc_url = Some("http://127.0.0.1:3050".into());
         config.network_config.enabled = true;
         config.network_config.secret_key = Some(SecretKey::from_slice(&[0x44; 32]).unwrap());
+        config.network_config.boot_nodes = vec![TEST_BOOT_NODE.parse().unwrap()];
         config.genesis_config.bridgehub_address = None;
         config.genesis_config.bytecode_supplier_address = None;
         config.genesis_config.chain_id = None;
@@ -2120,6 +2128,22 @@ mod tests {
         config.external_price_api_client_config = None;
 
         config.validate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn external_node_requires_trusted_main_node_boot_node() {
+        let mut config = base_config(NodeRole::ExternalNode);
+        config.general_config.main_node_rpc_url = Some("http://127.0.0.1:3050".into());
+        config.network_config.enabled = true;
+        config.network_config.secret_key = Some(SecretKey::from_slice(&[0x44; 32]).unwrap());
+
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "`network.boot_nodes` must include the trusted main-node enode when `general.node_role=external`"
+            ),
+            "{err}"
+        );
     }
 
     #[tokio::test]
