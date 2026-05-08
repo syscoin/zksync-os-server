@@ -98,7 +98,10 @@ impl PriceApiClient for CoinGeckoPriceAPIClient {
             .get_price(&token_id, &"usd".to_owned())
             .with_context(|| format!("Price not found for token: {token_id}"))?;
 
-        let res = TokenApiRatio::from_f64_decimals_and_timestamp(price_f64, decimals, None);
+        // SYSCOIN: Treat malformed upstream API prices as fetch errors so the updater can retry
+        // instead of panicking a critical main-node task.
+        let res = TokenApiRatio::try_from_f64_decimals_and_timestamp(price_f64, decimals, None)
+            .with_context(|| format!("Invalid CoinGecko USD price for token: {token_id}"))?;
         tracing::trace!("fetch_ratio({token:?}): ratio {:?}", res.ratio.to_f64());
         Ok(res)
     }
@@ -268,6 +271,34 @@ mod test {
         let error_string = error_test(error_missing_setup).await.to_string();
         assert!(
             error_string.starts_with("Price not found for token"),
+            "Error was: {error_string}",
+        )
+    }
+
+    fn error_malformed_price_setup(
+        server: &MockServer,
+        address: Address,
+        _base_token_price: f64,
+    ) -> SetupResult {
+        let api_key = Some("FILLER".to_string());
+        add_mock_by_address(server, address, Some(0.0), api_key.clone());
+        SetupResult {
+            client: Box::new(
+                CoinGeckoPriceAPIClient::new(
+                    Some(server.url("")),
+                    api_key.map(Into::into),
+                    Duration::from_secs(1),
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_malformed_price() {
+        let error_string = error_test(error_malformed_price_setup).await.to_string();
+        assert!(
+            error_string.starts_with("Invalid CoinGecko USD price for token"),
             "Error was: {error_string}",
         )
     }

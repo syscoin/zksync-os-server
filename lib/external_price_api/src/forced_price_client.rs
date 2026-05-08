@@ -1,4 +1,5 @@
 use alloy::primitives::Address;
+use anyhow::Context;
 use async_trait::async_trait;
 use num::{BigInt, BigUint, ToPrimitive, rational::Ratio};
 use rand::Rng;
@@ -26,40 +27,52 @@ pub struct ForcedPriceClient {
 }
 
 impl ForcedPriceClient {
-    pub fn new(mut forced_config: ForcedPriceClientConfig) -> Self {
+    pub fn new(mut forced_config: ForcedPriceClientConfig) -> anyhow::Result<Self> {
         tracing::debug!(?forced_config, "Creating ForcedPriceClient");
 
         let eth_base_ratio = forced_config
             .prices
             .remove(&Address::ZERO)
             .or_else(|| forced_config.prices.remove(&Address::with_last_byte(0x01)))
-            .map(|p| TokenApiRatio::from_f64_decimals_and_timestamp(p, 0, None).ratio);
+            .map(|p| {
+                // SYSCOIN: Validate configured prices at startup instead of panicking.
+                TokenApiRatio::try_from_f64_decimals_and_timestamp(p, 0, None)
+                    .context("Invalid forced ETH price")
+                    .map(|price| price.ratio)
+            })
+            .transpose()?;
         let zk_base_ratio = forced_config
             .prices
             .remove(&ZK_L1_ADDRESS)
-            .map(|p| TokenApiRatio::from_f64_decimals_and_timestamp(p, 0, None).ratio);
+            .map(|p| {
+                // SYSCOIN: Validate configured prices at startup instead of panicking.
+                TokenApiRatio::try_from_f64_decimals_and_timestamp(p, 0, None)
+                    .context("Invalid forced ZK price")
+                    .map(|price| price.ratio)
+            })
+            .transpose()?;
         let erc20_base_ratios = forced_config
             .prices
             .into_iter()
             .map(|(k, v)| {
-                (
-                    k,
-                    TokenApiRatio::from_f64_decimals_and_timestamp(v, 0, None).ratio,
-                )
+                // SYSCOIN: Validate configured prices at startup instead of panicking.
+                TokenApiRatio::try_from_f64_decimals_and_timestamp(v, 0, None)
+                    .with_context(|| format!("Invalid forced ERC20 price for token {k}"))
+                    .map(|price| (k, price.ratio))
             })
-            .collect();
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
 
         let total_fluctuation_limit = forced_config.fluctuation.clamp(0.0, 100.0);
         let next_value_fluctuation_limit = forced_config.next_value_fluctuation.clamp(0.0, 100.0);
 
-        Self {
+        Ok(Self {
             eth_base_ratio,
             zk_base_ratio,
             erc20_base_ratios,
             previous_ratios: Mutex::new(HashMap::new()),
             total_fluctuation_limit,
             next_value_fluctuation_limit,
-        }
+        })
     }
 }
 
