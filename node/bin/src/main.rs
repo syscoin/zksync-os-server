@@ -173,6 +173,11 @@ pub async fn main() {
     // SYSCOIN: select the ephemeral storage path before reading internal_config.json,
     // so sandbox runs cannot inherit stale persistent node-local config.
     let _ephemeral_guard = ephemeral_enabled.then(|| enable_ephemeral_mode(&mut config));
+    // SYSCOIN: for real ephemeral runs, restore state before loading internal_config.json
+    // so snapshot-carried internal controls are still honored.
+    if ephemeral_enabled && !opt.no_run {
+        unpack_ephemeral_state(&config);
+    }
     load_internal_config(&mut config);
     config.validate().await.expect("invalid config");
 
@@ -182,10 +187,6 @@ pub async fn main() {
     }
 
     // ======= Run tasks ===========
-    // SYSCOIN: keep archive unpacking after --no-run, matching the previous side-effect boundary.
-    if ephemeral_enabled {
-        unpack_ephemeral_state(&config);
-    }
     let prometheus_config = config.observability_config.prometheus.clone();
     let prometheus_port = prometheus_config.port;
 
