@@ -259,32 +259,35 @@ impl BlockReplayStorage {
             })
     }
 
+    fn read_canonical_block_hash(&self, block_number: BlockNumber) -> Option<BlockHash> {
+        let key = block_number.to_be_bytes();
+        self.db
+            .get_cf(BlockReplayColumnFamily::CanonicalHash, &key)
+            .expect("Failed to read from CanonicalHash DB")
+            .map(|bytes| BlockHash::from_slice(&bytes))
+    }
+
     /// Given `block_number` retrieve block's hash.
     fn canonical_block_hash_unchecked(&self, block_number: BlockNumber) -> BlockHash {
-        let get_hash = |block_number: BlockNumber| -> Option<BlockHash> {
-            let key = block_number.to_be_bytes();
-            self.db
-                .get_cf(BlockReplayColumnFamily::CanonicalHash, &key)
-                .expect("Failed to read from CanonicalHash DB")
-                .map(|bytes| BlockHash::from_slice(&bytes))
-        };
-
-        get_hash(block_number).unwrap_or_else(|| {
-            //There are some rare corner cases related to rebuilds right after introducing the CF
-            //I choose to panic in such cases as I really don't expect them to happen
-            let latest = self.latest_record();
-            assert!(latest > block_number);
-            let _ = get_hash(latest).expect("Cannot guarantee correctness until latest is updated");
-            BlockHash::from(
-                *self
-                    .get_context(block_number + 1)
-                    .expect("Record is missing")
-                    .block_hashes
-                    .0
-                    .last()
-                    .unwrap(),
-            )
-        })
+        self.read_canonical_block_hash(block_number)
+            .unwrap_or_else(|| {
+                //There are some rare corner cases related to rebuilds right after introducing the CF
+                //I choose to panic in such cases as I really don't expect them to happen
+                let latest = self.latest_record();
+                assert!(latest > block_number);
+                let _ = self
+                    .read_canonical_block_hash(latest)
+                    .expect("Cannot guarantee correctness until latest is updated");
+                BlockHash::from(
+                    *self
+                        .get_context(block_number + 1)
+                        .expect("Record is missing")
+                        .block_hashes
+                        .0
+                        .last()
+                        .unwrap(),
+                )
+            })
     }
 }
 
@@ -306,7 +309,21 @@ impl ReadReplay for BlockReplayStorage {
         // Returning it from replay storage avoids pending RPC simulations observing a replay record
         // before the RPC repository has been populated with the same block.
         self.get_context(block_number)?;
-        Some(self.canonical_block_hash_unchecked(block_number))
+        self.read_canonical_block_hash(block_number).or_else(|| {
+            // Older DBs may miss `CanonicalHash` at the current tip. We can reconstruct older block
+            // hashes from the next record's BLOCKHASH window, but not the latest block hash.
+            (self.latest_record() > block_number).then(|| {
+                BlockHash::from(
+                    *self
+                        .get_context(block_number + 1)
+                        .expect("Record is missing")
+                        .block_hashes
+                        .0
+                        .last()
+                        .unwrap(),
+                )
+            })
+        })
     }
 
     fn get_replay_record_by_key(
