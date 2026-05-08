@@ -388,41 +388,36 @@ impl GasAdjuster {
         sl_provider: &DynProvider,
         config: &GasAdjusterConfig,
     ) -> anyhow::Result<(u64, Vec<BaseFees>)> {
-        if Self::uses_syscoin_blob_da(config.pubdata_mode) {
+        let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(config.pubdata_mode) {
             Self::validate_bitcoin_da_fee_config(config)?;
-        }
+            Some(Self::initial_syscoin_blob_base_fee(config).await?)
+        } else {
+            None
+        };
 
+        let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
+        let fee_history = Self::base_fee_history(
+            sl_provider,
+            current_block,
+            config.max_base_fee_samples as u64,
+            fixed_blob_base_fee,
+        )
+        .await?;
+        Ok((current_block, fee_history))
+    }
+
+    // SYSCOIN
+    async fn initial_syscoin_blob_base_fee(config: &GasAdjusterConfig) -> anyhow::Result<u128> {
         loop {
-            let result = async {
-                let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
-                let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(config.pubdata_mode) {
-                    Some(Self::bitcoin_blob_base_fee(config).await?)
-                } else {
-                    None
-                };
-                let fee_history = Self::base_fee_history(
-                    sl_provider,
-                    current_block,
-                    config.max_base_fee_samples as u64,
-                    fixed_blob_base_fee,
-                )
-                .await?;
-                anyhow::Ok((current_block, fee_history))
-            }
-            .await;
-
-            match result {
-                Ok(result) => return Ok(result),
-                Err(err)
-                    if Self::uses_syscoin_blob_da(config.pubdata_mode)
-                        && Self::is_retriable_blob_fee_startup_error(&err) =>
-                {
-                    // SYSCOIN: Syscoin DA modes depend on the Syscoin fee as the authoritative
-                    // base pubdata price. Retry instead of crashing or seeding unsafe zeros.
+            match Self::bitcoin_blob_base_fee(config).await {
+                Ok(fee) => return Ok(fee),
+                Err(err) if Self::is_retriable_blob_fee_startup_error(&err) => {
+                    // SYSCOIN: retry only the authoritative Syscoin DA fee fetch. Other
+                    // initialization failures still surface immediately to operators.
                     tracing::warn!(
                         retry_after = ?config.poll_period,
                         error = %err,
-                        "Failed to initialize blob-mode gas adjuster; retrying"
+                        "Failed to initialize blob-mode gas adjuster; retrying Syscoin fee fetch"
                     );
                     tokio::time::sleep(config.poll_period).await;
                 }
