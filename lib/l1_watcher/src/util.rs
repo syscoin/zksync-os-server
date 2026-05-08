@@ -66,6 +66,10 @@ pub async fn find_block_by_migration_number(
 ///
 /// Rough calculations: 10min * 10 req/s * 1000 blocks/req = 600 * 10 * 1000 = 6_000_000
 const MAX_L1_BLOCKS_TO_SCAN_LINEARLY: u64 = 6_000_000;
+// SYSCOIN: a stale RPC height must not make a revert scan succeed as "no events".
+const STALE_L1_HEIGHT_RETRY_DELAY: Duration = Duration::from_millis(200);
+// SYSCOIN: keep startup fail-closed while allowing brief load-balanced RPC lag to recover.
+const STALE_L1_HEIGHT_RETRY_ATTEMPTS: usize = 10;
 
 pub async fn find_l1_block_by_predicate<Fut: Future<Output = anyhow::Result<bool>>>(
     zk_chain: Arc<ZkChain<DynProvider>>,
@@ -123,7 +127,7 @@ async fn find_last_matching_event<E: SolEvent + Debug>(
     predicate: impl Fn(&E) -> bool,
 ) -> anyhow::Result<Option<BlockNumber>> {
     let mut current_block = start_block_number;
-    let latest_block = provider.get_block_number().await?;
+    let latest_block = latest_block_for_event_scan(provider, start_block_number).await?;
 
     tracing::debug!(
         %address,
@@ -134,27 +138,25 @@ async fn find_last_matching_event<E: SolEvent + Debug>(
         "looking for last matching event"
     );
 
-    // Early return if latest block is behind start block. This can happen if we hit different
-    // L1 nodes between calls where the second node is behind the first.
-    if latest_block < start_block_number {
-        tracing::info!(
-            "latest block is behind start block (hitting different L1 nodes?), skipping revert checks"
-        );
-        return Ok(None);
-    }
-
-    let blocks_to_scan = latest_block + 1 - start_block_number;
+    let blocks_to_scan = event_scan_block_count(start_block_number, latest_block)?;
     if blocks_to_scan > MAX_L1_BLOCKS_TO_SCAN_LINEARLY {
         tracing::warn!(blocks_to_scan, "scanning a lot of L1 blocks");
     }
+    // SYSCOIN: avoid a non-advancing event scan; callers rely on this helper to prove the range.
+    anyhow::ensure!(
+        max_blocks_to_scan > 0,
+        "max_blocks_to_scan must be non-zero"
+    );
 
     let mut filter = Filter::new()
         .address(address)
         .event_signature(E::SIGNATURE_HASH);
     let mut last_block_with_event = None;
-    while current_block < latest_block {
+    // SYSCOIN: scan the documented inclusive range `[start_block_number; latest_block]`.
+    while current_block <= latest_block {
         // Inspect up to `max_blocks_to_scan` L1 blocks at a time
-        let filter_to_block = latest_block.min(current_block + max_blocks_to_scan - 1);
+        let filter_to_block =
+            latest_block.min(current_block.saturating_add(max_blocks_to_scan - 1));
         filter = filter.from_block(current_block).to_block(filter_to_block);
         let logs = provider.get_logs(&filter).await?;
         tracing::trace!(
@@ -177,9 +179,46 @@ async fn find_last_matching_event<E: SolEvent + Debug>(
                 last_block_with_event = Some(l1_block);
             }
         }
-        current_block = filter_to_block + 1;
+        let Some(next_block) = filter_to_block.checked_add(1) else {
+            break;
+        };
+        current_block = next_block;
     }
     Ok(last_block_with_event)
+}
+
+// SYSCOIN: retry transient stale heights, but fail closed if the scan range still cannot be
+// proven against the provider tip.
+async fn latest_block_for_event_scan(
+    provider: &DynProvider,
+    start_block_number: BlockNumber,
+) -> anyhow::Result<BlockNumber> {
+    (|| async {
+        let latest_block = provider.get_block_number().await?;
+        event_scan_block_count(start_block_number, latest_block).map(|_| latest_block)
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(STALE_L1_HEIGHT_RETRY_DELAY)
+            .with_max_times(STALE_L1_HEIGHT_RETRY_ATTEMPTS),
+    )
+    .await
+}
+
+// SYSCOIN: keep the stale-height check separate so regressions are unit-tested without a live RPC.
+fn event_scan_block_count(
+    start_block_number: BlockNumber,
+    latest_block: BlockNumber,
+) -> anyhow::Result<u64> {
+    latest_block
+        .checked_sub(start_block_number)
+        .and_then(|span| span.checked_add(1))
+        .with_context(|| {
+            format!(
+                "L1 RPC latest block {latest_block} is behind event scan start block \
+                 {start_block_number}; refusing to treat the unscanned range as empty"
+            )
+        })
 }
 
 /// Looks for an L1 batch revert event that happened in block range `[start_block_number; latest_block]`
@@ -533,4 +572,24 @@ pub async fn fetch_committed_batch_data(
         // unused
         last_block_timestamp: Some(0),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::event_scan_block_count;
+
+    #[test]
+    fn event_scan_block_count_is_inclusive() {
+        assert_eq!(event_scan_block_count(10, 10).unwrap(), 1);
+        assert_eq!(event_scan_block_count(10, 12).unwrap(), 3);
+    }
+
+    #[test]
+    fn event_scan_block_count_rejects_stale_latest_height() {
+        let err = event_scan_block_count(11, 5).unwrap_err();
+        assert!(
+            err.to_string().contains("behind event scan start block"),
+            "{err}"
+        );
+    }
 }
