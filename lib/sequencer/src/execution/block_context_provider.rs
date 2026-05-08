@@ -127,9 +127,11 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     ) -> anyhow::Result<PreparedBlockCommand<'_>> {
         let prepared_command = match block_command {
             BlockCommand::Produce(_) => {
-                let fee_params = self.fee_provider.produce_fee_params().await?;
-                self.pool
-                    .update_pending_block_fees(fee_params.eip1559_basefee.saturating_to(), None);
+                let pending_fee_params = self.fee_provider.produce_fee_params().await?;
+                self.pool.update_pending_block_fees(
+                    pending_fee_params.eip1559_basefee.saturating_to(),
+                    None,
+                );
                 let block_number = self.next_block_number;
                 // Create stream:
                 // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
@@ -142,6 +144,14 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     )
                     .await
                     .context("mempool is closed")?;
+
+                // SYSCOIN: `best_transactions_stream` can wait indefinitely while the mempool is
+                // empty. Refresh fees after that wait so the block context is priced from the
+                // current fee inputs, while the earlier snapshot only keeps pending-pool
+                // classification from falling back to zero.
+                let fee_params = self.fee_provider.produce_fee_params().await?;
+                self.pool
+                    .update_pending_block_fees(fee_params.eip1559_basefee.saturating_to(), None);
 
                 let timestamp = (millis_since_epoch() / 1000) as u64;
 
