@@ -1,9 +1,11 @@
 use alloy::eips::eip1559::Eip1559Estimation;
 use alloy::network::{EthereumWallet, TxSigner};
+use alloy::primitives::utils::parse_ether;
 use alloy::primitives::{Address, U256};
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::signers::local::LocalSigner;
+use anyhow::{Context, ensure};
 use clap::Parser;
 use std::str::FromStr;
 use zksync_os_contract_interface::Bridgehub;
@@ -27,7 +29,31 @@ struct Args {
     private_key: Option<String>,
     /// Deposit amount in ether
     #[arg(short, long)]
-    amount: Option<f64>,
+    amount: Option<String>,
+}
+
+fn parse_deposit_amount(amount_ether: &str) -> anyhow::Result<U256> {
+    // SYSCOIN: Parse the ether amount as an exact decimal string. Floating-point
+    // conversion can silently round or saturate monetary values.
+    let (whole, fractional) = amount_ether.split_once('.').unwrap_or((amount_ether, ""));
+    ensure!(
+        !whole.is_empty(),
+        "deposit amount must include whole ether digits"
+    );
+    ensure!(
+        fractional.len() <= 18,
+        "deposit amount cannot have more than 18 fractional digits"
+    );
+    ensure!(
+        whole.chars().all(|c| c.is_ascii_digit()) && fractional.chars().all(|c| c.is_ascii_digit()),
+        "deposit amount must be a non-negative decimal ether amount"
+    );
+
+    parse_ether(amount_ether).with_context(|| {
+        format!(
+            "invalid deposit amount `{amount_ether}`; expected a non-negative decimal ether amount with at most 18 fractional digits"
+        )
+    })
 }
 
 /// Submits an L1->L2 deposit transaction to local L1
@@ -42,8 +68,8 @@ async fn main() -> anyhow::Result<()> {
         "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110".to_owned()
     });
     // Deposit 0.01 ETH by default
-    let amount_ether = args.amount.unwrap_or(0.01);
-    let amount = U256::from((amount_ether * 1e18) as u128);
+    let amount_ether = args.amount.as_deref().unwrap_or("0.01");
+    let amount = parse_deposit_amount(amount_ether)?;
 
     let l1_wallet = EthereumWallet::new(LocalSigner::from_str(&private_key).unwrap());
     let l1_provider = ProviderBuilder::new()
@@ -108,4 +134,28 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Successfully submitted L1->L2 deposit tx with hash '{l2_tx_hash}'");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_decimal_ether_exactly() {
+        assert_eq!(
+            parse_deposit_amount("1.1").unwrap(),
+            U256::from(1_100_000_000_000_000_000u128)
+        );
+        assert_eq!(
+            parse_deposit_amount("0.01").unwrap(),
+            U256::from(10_000_000_000_000_000u128)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_amounts() {
+        for amount in ["NaN", "inf", "-1", "1.0000000000000000001"] {
+            assert!(parse_deposit_amount(amount).is_err());
+        }
+    }
 }
