@@ -128,9 +128,7 @@ impl GasAdjuster {
             // statistics. If the RPC fails, this tick must leave all fee windows unchanged.
             let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
                 let fixed_blob_base_fee = Self::bitcoin_blob_base_fee(&self.config).await?;
-                let blob_n_blocks = current_block
-                    .saturating_sub(self.blob_base_fee_statistics.last_processed_block());
-                vec![fixed_blob_base_fee; blob_n_blocks as usize]
+                vec![fixed_blob_base_fee; fee_data.len()]
             } else {
                 fee_data
                     .iter()
