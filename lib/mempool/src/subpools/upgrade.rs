@@ -135,13 +135,9 @@ impl UpgradeSubpool {
 
 impl Inner {
     fn drop_stale_full_upgrades(&mut self) {
-        while self
-            .pending_upgrades
-            .back()
-            .is_some_and(|upgrade| {
-                upgrade.tx.is_some() && upgrade.protocol_version() < &self.current_protocol_version
-            })
-        {
+        while self.pending_upgrades.back().is_some_and(|upgrade| {
+            upgrade.tx.is_some() && upgrade.protocol_version() < &self.current_protocol_version
+        }) {
             // SYSCOIN: a lower-version full upgrade transaction cannot be applied anymore. Drop it
             // before stream selection so the executor does not fail liveness on stale metadata.
             let Some(upgrade) = self.pending_upgrades.pop_back() else {
