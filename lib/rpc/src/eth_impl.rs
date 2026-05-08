@@ -500,8 +500,10 @@ fn scale_gas_price(base_fee: U256, factor: f64) -> U256 {
 
 #[cfg(test)]
 mod tests {
-    use super::scale_gas_price;
-    use alloy::primitives::U256;
+    use super::{build_l2_to_l1_api_log, scale_gas_price};
+    use alloy::primitives::{Address, B256, TxHash, U256};
+    use zksync_os_storage_api::TxMeta;
+    use zksync_os_types::L2ToL1Log;
 
     #[test]
     fn gas_price_scale_default_factor() {
@@ -512,6 +514,38 @@ mod tests {
     #[test]
     fn gas_price_scale_custom_factor() {
         assert_eq!(scale_gas_price(U256::from(100u64), 2.0), U256::from(200u64));
+    }
+
+    #[test]
+    fn l2_to_l1_log_index_uses_l2_to_l1_block_prefix() {
+        let tx_meta = TxMeta {
+            block_hash: B256::ZERO,
+            block_number: 1,
+            block_timestamp: 2,
+            tx_index_in_block: 3,
+            effective_gas_price: 4,
+            number_of_logs_before_this_tx: 10,
+            number_of_l2_to_l1_logs_before_this_tx: 1,
+            gas_used: 5,
+            contract_address: None,
+        };
+
+        let log = build_l2_to_l1_api_log(
+            TxHash::ZERO,
+            L2ToL1Log {
+                l2_shard_id: 0,
+                is_service: true,
+                tx_number_in_block: 3,
+                sender: Address::ZERO,
+                key: B256::ZERO,
+                value: B256::ZERO,
+            },
+            tx_meta,
+            2,
+        );
+
+        assert_eq!(log.log_index, Some(3));
+        assert_eq!(log.transaction_log_index, Some(2));
     }
 }
 
@@ -870,7 +904,9 @@ pub fn build_l2_to_l1_api_log(
         block_timestamp: Some(tx_meta.block_timestamp),
         transaction_hash: Some(tx_hash),
         transaction_index: Some(tx_meta.tx_index_in_block),
-        log_index: Some(tx_meta.number_of_logs_before_this_tx + log_index_in_tx),
+        // SYSCOIN: L2-to-L1 logs have an Era-compatible block-level index that is independent
+        // from ordinary EVM receipt logs.
+        log_index: Some(tx_meta.number_of_l2_to_l1_logs_before_this_tx + log_index_in_tx),
         transaction_log_index: Some(log_index_in_tx),
         shard_id: primitive_l2_to_l1_log.l2_shard_id.into(),
         is_service: primitive_l2_to_l1_log.is_service,

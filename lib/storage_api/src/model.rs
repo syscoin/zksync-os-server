@@ -17,6 +17,8 @@ pub struct TxMeta {
     pub tx_index_in_block: u64,
     pub effective_gas_price: u128,
     pub number_of_logs_before_this_tx: u64,
+    // SYSCOIN: L2-to-L1 receipt logs have their own Era-compatible block-level index.
+    pub number_of_l2_to_l1_logs_before_this_tx: u64,
     pub gas_used: u64,
     pub contract_address: Option<Address>,
 }
