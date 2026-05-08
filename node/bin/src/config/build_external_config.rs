@@ -192,7 +192,9 @@ pub fn load_config_file_sources(config_sources: &mut ConfigSources, config_paths
 
         // Detect file format based on extension
         let path = Path::new(config_path);
-        match ConfigFormat::from_path(path) {
+        // SYSCOIN: Keep CLI config loading fail-fast while making ConfigFormat reusable by
+        // fallible callers that must not unwind.
+        match ConfigFormat::from_path(path).unwrap_or_else(|err| panic!("{err}")) {
             ConfigFormat::Yaml => {
                 let config_yaml: serde_yaml::Mapping = serde_yaml::from_str(&config_contents)
                     .unwrap_or_else(|_| {
