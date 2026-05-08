@@ -55,11 +55,61 @@ pub trait MerkleTreeProver: Send + Sync + fmt::Debug {
         let Some((proof, batch_output)) = self.prove(version, keys)? else {
             return Ok(None);
         };
+        if keys.is_empty() {
+            // SYSCOIN: Empty storage proof requests are valid RPC input; avoid flattening a
+            // degenerate proof with no leaves.
+            return Ok(Some((vec![], batch_output)));
+        }
         let proofs = proof
             .to_flat(self.tree_depth(), batch_output.leaf_count)
             .zip(keys)
             .map(|(proof, key)| flat::StorageSlotProof { key: *key, proof });
         let proofs = proofs.collect();
         Ok(Some((proofs, batch_output)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct EmptyProofProver;
+
+    impl MerkleTreeProver for EmptyProofProver {
+        fn tree_depth(&self) -> u8 {
+            MAX_TREE_DEPTH
+        }
+
+        fn prove(
+            &self,
+            _version: u64,
+            keys: &[B256],
+        ) -> anyhow::Result<Option<(BatchTreeProof, TreeBatchOutput)>> {
+            assert!(keys.is_empty());
+            Ok(Some((
+                BatchTreeProof {
+                    operations: vec![],
+                    read_operations: vec![],
+                    sorted_leaves: BTreeMap::new(),
+                    hashes: vec![],
+                },
+                TreeBatchOutput {
+                    root_hash: B256::ZERO,
+                    leaf_count: 2,
+                },
+            )))
+        }
+    }
+
+    #[test]
+    fn prove_flat_allows_empty_key_requests() {
+        let (proofs, batch_output) = EmptyProofProver.prove_flat(0, &[]).unwrap().unwrap();
+
+        assert!(proofs.is_empty());
+        assert_eq!(batch_output.leaf_count, 2);
+        assert_eq!(batch_output.root_hash, B256::ZERO);
     }
 }
