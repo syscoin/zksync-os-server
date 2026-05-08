@@ -20,9 +20,12 @@ use tokio::sync::{OwnedSemaphorePermit, mpsc};
 use tracing::Instrument;
 use zksync_os_storage_api::ReadReplay;
 
-/// Channel capacity for outbound protocol messages. Provides natural backpressure so the MN
-/// does not produce records faster than the EN can consume them.
-const OUTBOUND_CHANNEL_CAPACITY: usize = 32;
+/// Channel capacity for outbound protocol messages.
+///
+/// SYSCOIN: Replay responses can contain large transaction/preimage payloads, so keep the
+/// background protocol task tightly coupled to outbound demand instead of prebuffering many full
+/// encoded replay records for slow peers.
+const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
 
 #[derive(Debug, Clone)]
 enum ProtocolRole<Replay> {

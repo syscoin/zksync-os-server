@@ -161,10 +161,13 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
                     .iter()
                     .map(|record| record.block_context.block_number)
                     .collect();
-                let encoded = ZksMessage::<P>::block_replays(records).encoded();
-                if outbound_tx.send(encoded).await.is_err() {
+                // SYSCOIN: Wait for outbound buffer capacity before encoding the full replay
+                // response. Slow peers must not retain an extra pending encoded BytesMut.
+                let Ok(permit) = outbound_tx.reserve().await else {
                     return;
-                }
+                };
+                let encoded = ZksMessage::<P>::block_replays(records).encoded();
+                permit.send(encoded);
                 for block_number in block_numbers {
                     events_sender
                         .send(ProtocolEvent::ReplayBlockSent {
