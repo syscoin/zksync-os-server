@@ -223,11 +223,22 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_hashes.rotate_left(1);
         // SYSCOIN: BLOCKHASH semantics require the canonical L2 block header hash, not the
         // replay-output divergence hash stored in `ReplayRecord::block_output_hash`.
-        let latest_block_hash = self
+        let latest_block_hash = if let Some(hash) = self
             .storage
             .replay_storage()
             .get_canonical_block_hash(latest_block_number)
-            .ok_or(EthCallError::MissingCanonicalBlockHash(latest_block_number))?;
+        {
+            hash
+        } else {
+            // SYSCOIN: Older replay DBs may be missing `CanonicalHash` for the current tip.
+            // Fall back to the RPC repository only in that migration case; normal new writes use
+            // replay storage above, which is atomic with replay record insertion.
+            self.storage
+                .repository()
+                .get_block_by_number(latest_block_number)?
+                .map(|block| block.hash())
+                .ok_or(EthCallError::MissingCanonicalBlockHash(latest_block_number))?
+        };
         block_hashes[255] = U256::from_be_bytes(latest_block_hash.0);
 
         // Use current timestamp for pending block
