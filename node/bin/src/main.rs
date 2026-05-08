@@ -169,6 +169,10 @@ pub async fn main() {
         node_role = %config.general_config.node_role.as_str(),
         "Loaded config"
     );
+    let ephemeral_enabled = config.general_config.ephemeral;
+    // SYSCOIN: select the ephemeral storage path before reading internal_config.json,
+    // so sandbox runs cannot inherit stale persistent node-local config.
+    let _ephemeral_guard = ephemeral_enabled.then(|| enable_ephemeral_mode(&mut config));
     load_internal_config(&mut config);
     config.validate().await.expect("invalid config");
 
@@ -178,8 +182,10 @@ pub async fn main() {
     }
 
     // ======= Run tasks ===========
-    let ephemeral_enabled = config.general_config.ephemeral;
-    let _ephemeral_guard = ephemeral_enabled.then(|| enable_ephemeral_mode(&mut config));
+    // SYSCOIN: keep archive unpacking after --no-run, matching the previous side-effect boundary.
+    if ephemeral_enabled {
+        unpack_ephemeral_state(&config);
+    }
     let prometheus_config = config.observability_config.prometheus.clone();
     let prometheus_port = prometheus_config.port;
 
@@ -331,6 +337,10 @@ fn enable_ephemeral_mode(config: &mut Config) -> Option<TempDir> {
     // todo: consider force-disabling
     // config.network_config.enabled = false;
 
+    Some(tempdir)
+}
+
+fn unpack_ephemeral_state(config: &Config) {
     if let Some(ephemeral_state) = &config.general_config.ephemeral_state {
         tracing::info!("Loading ephemeral state from {}", ephemeral_state.display());
         zksync_os_server::util::unpack_ephemeral_state(
@@ -338,8 +348,6 @@ fn enable_ephemeral_mode(config: &mut Config) -> Option<TempDir> {
             &config.general_config.rocks_db_path,
         );
     }
-
-    Some(tempdir)
 }
 
 fn load_internal_config(config: &mut Config) {
