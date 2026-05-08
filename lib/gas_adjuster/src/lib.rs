@@ -305,7 +305,7 @@ impl GasAdjuster {
         let from_block = upto_block.saturating_sub(block_count - 1);
         // SYSCOIN
         let fixed_blob_base_fee = if config.pubdata_mode == PubdataMode::Blobs {
-            Some(Self::bitcoin_blob_base_fee(config).await?)
+            Self::syscoin_blob_base_fee_override(config).await
         } else {
             None
         };
@@ -382,6 +382,19 @@ impl GasAdjuster {
                 }
             })
             .collect()
+    }
+
+    // SYSCOIN
+    async fn syscoin_blob_base_fee_override(config: &GasAdjusterConfig) -> Option<u128> {
+        match Self::bitcoin_blob_base_fee(config).await {
+            Ok(fee) => Some(fee),
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to estimate Syscoin blob base fee; falling back to provider fee history: {err}"
+                );
+                None
+            }
+        }
     }
 
     // SYSCOIN
