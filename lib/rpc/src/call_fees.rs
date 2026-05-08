@@ -48,13 +48,15 @@ impl CallFees {
             }
             (None, max_fee_per_gas, max_priority_fee_per_gas) => {
                 let effective_gas_price = match max_fee_per_gas {
-                    None | Some(0) => match max_priority_fee_per_gas {
+                    None => match max_priority_fee_per_gas {
                         None | Some(0) => 0,
                         // respect basefee when priority fee is non-zero
                         Some(max_priority_fee_per_gas) => block_base_fee
                             .checked_add(max_priority_fee_per_gas)
                             .ok_or(CallFeesError::TipVeryHigh)?,
                     },
+                    // SYSCOIN: An explicit zero fee cap is still a provided cap and must be
+                    // validated below instead of being treated like a missing cap.
                     Some(max_fee_per_gas) => {
                         let max_priority_fee_per_gas = max_priority_fee_per_gas.unwrap_or_default();
 
@@ -102,4 +104,34 @@ pub enum CallFeesError {
     /// A sanity error to avoid huge numbers specified in the tip field.
     #[error("`maxPriorityFeePerGas` is too high")]
     TipVeryHigh,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CallFees, CallFeesError};
+
+    const BLOCK_BASE_FEE: u128 = 100;
+
+    #[test]
+    fn missing_eip1559_fee_cap_uses_base_fee_when_tip_is_non_zero() {
+        let fees = CallFees::ensure_fees(None, None, Some(7), BLOCK_BASE_FEE, true).unwrap();
+
+        assert_eq!(fees.gas_price, 107);
+        assert_eq!(fees.max_priority_fee_per_gas, Some(7));
+    }
+
+    #[test]
+    fn explicit_zero_eip1559_fee_cap_with_zero_tip_remains_zero() {
+        let fees = CallFees::ensure_fees(None, Some(0), Some(0), BLOCK_BASE_FEE, true).unwrap();
+
+        assert_eq!(fees.gas_price, 0);
+        assert_eq!(fees.max_priority_fee_per_gas, Some(0));
+    }
+
+    #[test]
+    fn explicit_zero_eip1559_fee_cap_with_tip_is_rejected() {
+        let err = CallFees::ensure_fees(None, Some(0), Some(7), BLOCK_BASE_FEE, true).unwrap_err();
+
+        assert!(matches!(err, CallFeesError::FeeCapTooLow));
+    }
 }
