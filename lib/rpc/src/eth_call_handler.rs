@@ -1,6 +1,7 @@
 use crate::call_fees::{CallFees, CallFeesError};
 use crate::config::RpcConfig;
 use crate::js_tracer;
+use crate::metrics::API_METRICS;
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use crate::sandbox::{call_trace_simulate, execute};
@@ -302,25 +303,25 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<Bytes, EthCallError> {
         let mut execution_env = self.prepare_execution_env(request, block, block_overrides)?;
+        execution_env.block_context.eip1559_basefee = U256::from(0);
+
         let storage_view = self
             .storage
             .state_at_block_number_or_latest(execution_env.block_context.block_number)?;
+        let state_view = OverriddenStateView::with_state_overrides(
+            storage_view,
+            state_overrides.unwrap_or_default(),
+        );
 
-        execution_env.block_context.eip1559_basefee = U256::from(0);
-        let res = match state_overrides {
-            Some(overrides) => execute(
-                execution_env.transaction,
-                execution_env.block_context,
-                OverriddenStateView::with_state_overrides(storage_view, overrides),
-            ),
-            None => execute(
-                execution_env.transaction,
-                execution_env.block_context,
-                storage_view,
-            ),
-        }
+        let res = execute(
+            execution_env.transaction,
+            execution_env.block_context,
+            state_view,
+        )
         .map_err(EthCallError::ForwardSubsystemError)?
         .map_err(EthCallError::InvalidTransaction)?;
+
+        API_METRICS.call_gas_used[&"eth_call".to_string()].observe(res.gas_used);
 
         match res.execution_result {
             ExecutionResult::Success(
@@ -461,21 +462,21 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         // original geth logic. Source:
         // https://github.com/paradigmxyz/reth/blob/5bc8589162b6e23b07919d82a57eee14353f2862/crates/rpc/rpc-eth-api/src/helpers/estimate.rs
 
-        // the gas limit of the corresponding block
-        let block_gas_limit = block_context.gas_limit;
+        // SYSCOIN Cap estimate simulation to the lower of block gas limit and configured eth_call gas cap.
+        let estimate_gas_cap = block_context.gas_limit.min(self.config.eth_call_gas as u64);
 
         // Determine the highest possible gas limit, considering both the request's specified limit
-        // and the block's limit.
+        // and the estimation cap.
         let mut highest_gas_limit = request
             .gas
             .map(|mut tx_gas_limit| {
-                if block_gas_limit < tx_gas_limit {
-                    // requested gas limit is higher than the allowed gas limit, capping
-                    tx_gas_limit = block_gas_limit;
+                if estimate_gas_cap < tx_gas_limit {
+                    // requested gas limit is higher than the allowed estimate gas limit, capping
+                    tx_gas_limit = estimate_gas_cap;
                 }
                 tx_gas_limit
             })
-            .unwrap_or(block_gas_limit);
+            .unwrap_or(estimate_gas_cap);
 
         // Check funds of the sender (only useful to check if transaction gas price is more than 0).
         //
@@ -519,6 +520,18 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 .unwrap_or(highest_gas_limit)
                 .min(highest_gas_limit),
         );
+
+        if request.nonce.is_none() {
+            // SYSCOIN: derive omitted estimateGas nonces from the selected view so state overrides
+            // are applied consistently to transaction construction and execution.
+            let nonce = storage_view
+                .get_account(request.from.unwrap_or_default())
+                .as_ref()
+                .map(get_nonce)
+                .unwrap_or_default();
+            request.nonce = Some(nonce);
+        }
+
         let tx = self.create_tx_from_request(request, &block_context, true)?;
 
         // Execute the transaction with the highest possible gas limit.

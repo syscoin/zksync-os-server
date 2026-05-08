@@ -43,6 +43,9 @@ pub struct L1State {
     pub da_input_mode: BatchDaInputMode,
     pub l1_chain_id: u64,
     pub sl_chain_id: u64,
+    /// The address returned by `getSettlementLayer()` on the L1 diamond proxy at startup.
+    /// `Address::ZERO` means the chain is settling on L1; any other address is the Gateway.
+    pub settlement_layer_address: Address,
     /// Settlement layer intervals discovered on startup. Can be used to route batch lookups to the
     /// diamond proxy of the SL the batch was committed to.
     pub settlement_layer_intervals: SettlementLayerIntervals,
@@ -183,6 +186,7 @@ impl L1State {
             da_input_mode,
             l1_chain_id,
             sl_chain_id,
+            settlement_layer_address,
             settlement_layer_intervals,
         })
     }
@@ -236,9 +240,10 @@ impl L1State {
                     last_proved_batch: zk_chain_sl.get_total_batches_proved(block_id).await?,
                     last_executed_batch: zk_chain_sl.get_total_batches_executed(block_id).await?,
                 })
-            })
-            .await
-            .context("failed to fetch finalized batch state")?;
+            },
+        )
+        .await
+        .context("failed to fetch finalized batch state")?;
         let (finalized_sl_block_number, last_finalized_executed_batch) =
             fetch_finalized_executed_batch(zk_chain_sl).await?;
         Ok(Self {
@@ -257,6 +262,7 @@ impl L1State {
             da_input_mode: this.da_input_mode,
             l1_chain_id: this.l1_chain_id,
             sl_chain_id: this.sl_chain_id,
+            settlement_layer_address: this.settlement_layer_address,
             settlement_layer_intervals: this.settlement_layer_intervals,
         })
     }
@@ -306,17 +312,23 @@ async fn fetch_finalized_executed_batch(
     Ok((finalized_sl_block_number, last_finalized_executed_batch))
 }
 
-/// Waits until the pending SL state matches the latest finalized SL block.
+/// Waits until the pending SL state matches the latest SL block.
 async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Result<T>>>(
     provider: &DynProvider,
-    timeout: Duration,
+    warning_interval: Duration,
     f: impl Fn(BlockId) -> Fut,
 ) -> anyhow::Result<(u64, T)> {
     /// SYSCOIN We probe once per second so startup can proceed as soon as pending SL state finalizes.
     const RETRY_DELAY: Duration = Duration::from_secs(1);
     let retry_builder = ConstantBuilder::new()
         .with_delay(RETRY_DELAY)
-        .with_max_times(timeout.as_millis().div_ceil(RETRY_DELAY.as_millis()).max(1) as usize);
+        // SYSCOIN: pending settlement-layer transactions can stay pending longer than any fixed
+        // startup budget. Keep the safety gate, but do not crash-loop the node while waiting.
+        .without_max_times();
+    let warning_interval_retries = warning_interval
+        .as_millis()
+        .div_ceil(RETRY_DELAY.as_millis())
+        .max(1) as u64;
 
     let pending_value = f(BlockId::pending())
         .await
@@ -344,13 +356,29 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
         }
     })
     .retry(retry_builder)
-    .notify(|(latest_block_number, last_value), _| {
-        tracing::info!(
-            pending_value = ?pending_value,
-            latest_block_number,
-            latest_value = ?last_value,
-            "encountered a pending SL state change; waiting for it to finalize"
-        );
+    .notify({
+        let pending_value = &pending_value;
+        let mut retries = 0_u64;
+        let mut next_warning_retry = 1_u64;
+        move |(latest_block_number, last_value), _| {
+            retries = retries.saturating_add(1);
+            if retries >= next_warning_retry {
+                next_warning_retry = retries.saturating_add(warning_interval_retries);
+                tracing::warn!(
+                    pending_value = ?pending_value,
+                    latest_block_number,
+                    latest_value = ?last_value,
+                    "encountered a pending SL state change; waiting for it to finalize"
+                );
+            } else {
+                tracing::debug!(
+                    pending_value = ?pending_value,
+                    latest_block_number,
+                    latest_value = ?last_value,
+                    "encountered a pending SL state change; waiting for it to finalize"
+                );
+            }
+        }
     })
     .await;
 
@@ -370,7 +398,7 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
             }
         }
         Err((latest_block_number, last_value)) => Err(anyhow::anyhow!(
-            "pending state did not finalize in time at SL block {latest_block_number}; last value: {last_value:?}"
+            "pending state finalization retry loop stopped unexpectedly at SL block {latest_block_number}; last value: {last_value:?}"
         )),
     }
 }

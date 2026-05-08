@@ -84,7 +84,10 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
                 );
                 last_persisted_batch
             } else {
-                interval.first_batch
+                // First batch in the interval might not have been committed yet. We will find the
+                // canonical start of the segment instead where previous batch got imported during
+                // migration.
+                interval.first_batch - 1
             };
             segments.push(SegmentSpec {
                 zk_chain,
@@ -116,9 +119,7 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
     ) -> Result<DiscoveredCommittedBatch, L1WatcherError> {
         let tx_hash = log.transaction_hash.expect("indexed log without tx hash");
         let zk_chain = ZkChain::new(log.address(), provider.clone());
-        let batch_info = util::fetch_committed_batch_data(&zk_chain, tx_hash)
-            .await?
-            .into_stored();
+        let batch_info = util::fetch_committed_batch_data(&zk_chain, tx_hash).await?;
 
         Ok(DiscoveredCommittedBatch {
             batch_info,

@@ -54,6 +54,7 @@ zksync_os_interop_fee_updater.workspace = true
 zksync_os_raft.workspace = true
 zksync_os_tx_validators.workspace = true
 zksync_os_config_validation_macros.workspace = true
+zksync_os_backpressure.workspace = true
 
 zk_ee.workspace = true
 zk_os_forward_system.workspace = true
@@ -84,6 +85,7 @@ ruint.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true
 tokio-util.workspace = true
+tower.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 futures.workspace = true
@@ -113,7 +115,7 @@ tar.workspace = true
 tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd"] }
 # SYSCOIN: batcher-side Bitcoin DA RPC client and secret handling.
 secrecy.workspace = true
-bitcoin_da_client = { git = "https://github.com/SYS-Labs/bitcoin_da_client.git", tag = "v0.1.9" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.10" }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }

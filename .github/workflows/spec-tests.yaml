@@ -9,8 +9,6 @@ on:
 # Set default permissions
 permissions:
   contents: read
-  pull-requests: write
-  checks: write
 
 # Cancel workflow if a new run for the same commit has been triggered
 concurrency:
@@ -60,7 +58,8 @@ jobs:
         with:
           repository: Romsters/boojumos-e2e-tests
           submodules: recursive
-          ref: stable # use tag to pin a stable version
+          ref: stable # TODO: replace with immutable commit SHA
+          persist-credentials: false
 
       - name: Install python
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
@@ -157,6 +156,9 @@ jobs:
   # Run Eth spec tests on ZKsync OS node
   zk-os-tests:
     runs-on: matterlabs-ci-runner-high-performance
+    permissions:
+      contents: read
+      checks: write
     env:
       RPC_URL: http://localhost:3050
       CHAIN_ID: 6565
@@ -215,7 +217,8 @@ jobs:
         with:
           repository: Romsters/boojumos-e2e-tests
           submodules: recursive
-          ref: stable # use tag to pin a stable version
+          ref: stable # TODO: replace with immutable commit SHA
+          persist-credentials: false
           path: ${{ env.TESTS_WORKING_DIR }}
 
       - name: Run spec tests

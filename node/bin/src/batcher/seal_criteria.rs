@@ -161,6 +161,14 @@ impl BatchInfoAccumulator {
             return true;
         }
 
+        // SYSCOIN: Keep the batcher forward-progress invariant explicit. `create_batch`
+        // evaluates sealing criteria by peeking at the next block before consuming it;
+        // rejecting the first candidate would leave `blocks` empty and downstream batch
+        // sealing assumes a non-empty slice.
+        if self.block_count <= 1 {
+            return false;
+        }
+
         if self.tx_count > self.tx_per_batch_limit {
             BATCHER_METRICS.seal_reason[&"tx_per_batch"].inc();
             tracing::debug!("Batcher: reached tx per batch limit");
@@ -241,5 +249,34 @@ impl BatchInfoAccumulator {
         BATCHER_METRICS
             .pubdata_per_batch
             .observe(self.pubdata_bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BatchInfoAccumulator;
+
+    #[test]
+    fn oversized_first_block_does_not_trigger_batch_seal() {
+        let accumulator = BatchInfoAccumulator {
+            block_count: 1,
+            pubdata_bytes: 101,
+            batch_pubdata_limit_bytes: 100,
+            ..Default::default()
+        };
+
+        assert!(!accumulator.should_seal());
+    }
+
+    #[test]
+    fn oversized_multi_block_batch_triggers_batch_seal() {
+        let accumulator = BatchInfoAccumulator {
+            block_count: 2,
+            pubdata_bytes: 101,
+            batch_pubdata_limit_bytes: 100,
+            ..Default::default()
+        };
+
+        assert!(accumulator.should_seal());
     }
 }

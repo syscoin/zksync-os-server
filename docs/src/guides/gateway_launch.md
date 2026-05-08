@@ -23,6 +23,8 @@ cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x...
+export EDGE_GATEWAY_GOVERNOR_SIGNER=account
+export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
 ```
 
@@ -32,8 +34,12 @@ Mainnet:
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
 export FUNDER_PRIVATE_KEY=0x...
+export EDGE_GATEWAY_GOVERNOR_SIGNER=account
+export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet
 ```
+
+The governor signer is used only for Gateway migration repair transactions. Do not pass this key as a raw command-line argument. Import it into Foundry's keystore first with `cast wallet import governor --interactive`, or use `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore`, `ledger`, `trezor`, `aws`, or `gcp`.
 
 Optional log override:
 
@@ -129,6 +135,10 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
 | `EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR` | Optional override for DA validator used by edge migration repair on Gateway |
+| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Governor signer backend for Gateway migration repairs: `account` (default), `keystore`, `ledger`, `trezor`, `aws`, or `gcp` |
+| `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default `governor`) |
+| `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` |
+| `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv |
 | `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
 
 ## Notes

@@ -63,6 +63,7 @@ impl<Ok> ToRpcResult<Ok, DebugError> for Result<Ok, DebugError> {
         self.map_err(|err| match err {
             DebugError::UnsupportedDefaultTracer
             | DebugError::UnsupportedTracer(_)
+            | DebugError::UnsupportedJsTracer
             | DebugError::UnsupportedTxIndex
             | DebugError::InvalidTracerConfig
             | DebugError::TransactionNotFound
@@ -81,7 +82,8 @@ impl<Ok> ToRpcResult<Ok, EthSendRawTransactionError> for Result<Ok, EthSendRawTr
             EthSendRawTransactionError::FailedToDecodeSignedTransaction
             | EthSendRawTransactionError::InvalidTransactionSignature
             | EthSendRawTransactionError::BlacklistedSigner
-            | EthSendRawTransactionError::EdgeDaFinalityCheckFailed(_)
+            | EthSendRawTransactionError::BlacklistedTransaction
+            | EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_)
             | EthSendRawTransactionError::PoolError(_) => invalid_params_rpc_err(err.to_string()),
             EthSendRawTransactionError::NotAcceptingTransactions(_) => {
                 internal_rpc_err(err.to_string())

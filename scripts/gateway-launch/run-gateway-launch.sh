@@ -197,19 +197,32 @@ set_gateway_runtime_l1_rpc_url() {
 
   python3 - "${config_path}" "${migration_l1_rpc}" <<'PY'
 import json
-import re
 import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
 new_rpc_url = sys.argv[2]
-text = config_path.read_text(encoding="utf-8")
-updated, n = re.subn(r"^(\s*l1_rpc_url:\s*).*$", lambda m: f'{m.group(1)}{json.dumps(new_rpc_url)}', text, count=1, flags=re.MULTILINE)
-if n != 1:
-    raise SystemExit(f"failed to patch l1_rpc_url in {config_path}")
-if updated != text:
-    config_path.write_text(updated, encoding="utf-8")
-print(f"gateway-launch: set {config_path} l1_rpc_url -> {new_rpc_url}")
+lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+in_l1_provider = False
+patched = False
+
+for idx, line in enumerate(lines):
+    stripped = line.strip()
+    if line and not line.startswith((" ", "\t")):
+        in_l1_provider = stripped == "l1_provider:"
+        continue
+    if in_l1_provider and stripped.startswith("rpc_url:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        newline = "\n" if line.endswith("\n") else ""
+        lines[idx] = f"{indent}rpc_url: {json.dumps(new_rpc_url)}{newline}"
+        patched = True
+        break
+
+if not patched:
+    raise SystemExit(f"failed to patch l1_provider.rpc_url in {config_path}")
+
+config_path.write_text("".join(lines), encoding="utf-8")
+print(f"gateway-launch: set {config_path} l1_provider.rpc_url -> {new_rpc_url}")
 PY
 }
 

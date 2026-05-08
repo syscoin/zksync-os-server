@@ -155,6 +155,20 @@ impl CommittedBatchProvider {
         }
     }
 
+    /// SYSCOIN: returns the committed batch containing the requested L2 block if it is already
+    /// indexed in memory.
+    pub fn get_batch_containing_block(
+        &self,
+        block_number: BlockNumber,
+    ) -> Option<DiscoveredCommittedBatch> {
+        let inner = self.inner.read().expect("lock poisoned");
+        inner
+            .block_range_index
+            .get(&block_number)
+            .and_then(|batch_number| inner.batches.get(batch_number))
+            .cloned()
+    }
+
     /// Returns `DiscoveredCommittedBatch` from in-memory map if available.
     pub fn get(&self, batch_number: u64) -> Option<DiscoveredCommittedBatch> {
         let inner = self.inner.read().expect("lock poisoned");

@@ -14,7 +14,7 @@ use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{AnyTracer, AnyTxValidator};
 use zksync_os_interface::types::{BlockContext, BlockOutput};
 use zksync_os_metadata::NODE_SEMVER_VERSION;
-use zksync_os_observability::ComponentStateHandle;
+use zksync_os_observability::ComponentStateReporter;
 use zksync_os_storage_api::{MeteredViewState, OverriddenStateView, ReplayRecord, ViewState};
 use zksync_os_types::{SystemTxType, ZkTransaction, ZkTxType, ZksyncOsEncode};
 // Note that this is a pure function without a container struct (e.g. `struct BlockExecutor`)
@@ -26,7 +26,7 @@ use zksync_os_types::{SystemTxType, ZkTransaction, ZkTxType, ZksyncOsEncode};
 pub async fn execute_block_in_vm<V: ViewState>(
     mut command: PreparedBlockCommand<'_>,
     state_view: V,
-    latency_tracker: &ComponentStateHandle<SequencerState>,
+    latency_tracker: &ComponentStateReporter,
     tracer: impl AnyTracer + Send + 'static,
     validator: impl AnyTxValidator + Send + 'static,
 ) -> Result<
@@ -47,10 +47,10 @@ pub async fn execute_block_in_vm<V: ViewState>(
     // after the block is executed.
     let state_view_with_force_preimages =
         OverriddenStateView::with_preimages(state_view, &command.force_preimages);
-    let metered_state_view = MeteredViewState {
-        component_state_tracker: latency_tracker.clone(),
-        state_view: state_view_with_force_preimages,
-    };
+    let metered_state_view = MeteredViewState::<SequencerState, _>::new(
+        latency_tracker.clone(),
+        state_view_with_force_preimages,
+    );
     let mut runner = VmWrapper::new(ctx, metered_state_view, tracer, validator);
 
     let mut executed_txs = Vec::<ZkTransaction>::new();
@@ -89,7 +89,6 @@ pub async fn execute_block_in_vm<V: ViewState>(
 
             /* -------- stream branch ------------------------------- */
             maybe_tx = command.tx_source.stream.next() => {
-                latency_tracker.enter_state(SequencerState::Execution);
                 let Some(tx) = maybe_tx else {
                     tracing::info!(
                         block_number = ctx.block_number,
@@ -230,7 +229,35 @@ pub async fn execute_block_in_vm<V: ViewState>(
                         );
 
                         match (tx.tx_type(), command.invalid_tx_policy) {
-                            (ZkTxType::L1 | ZkTxType::Upgrade, _) => {
+                            (ZkTxType::L1, _) => {
+                                // SYSCOIN: priority txs that only exceed the remaining block limit
+                                // should seal the current block and be retried in the next one.
+                                let can_seal_on_l1_block_limit =
+                                    matches!(command.seal_policy, SealPolicy::Decide(..));
+                                if let Some(reason) = l1_block_limit_seal_reason(
+                                    &e,
+                                    executed_txs.is_empty(),
+                                    can_seal_on_l1_block_limit,
+                                ) {
+                                    tracing::info!(
+                                        block_number = ctx.block_number,
+                                        "Sealing block {} before L1 tx {} because it hit a sealing criterion: reason={reason:?}, error={e:?}, nonce={:?}",
+                                        ctx.block_number,
+                                        tx.hash(),
+                                        tx.nonce(),
+                                    );
+                                    break reason;
+                                }
+
+                                return Err(
+                                    BlockDump {
+                                        ctx,
+                                        txs: all_processed_txs.clone(),
+                                        error: format!("invalid {} tx: {e:?} ({})", tx.tx_type(), tx.hash()),
+                                    }
+                                )
+                            }
+                            (ZkTxType::Upgrade, _) => {
                                 return Err(
                                     BlockDump {
                                         ctx,
@@ -345,8 +372,6 @@ pub async fn execute_block_in_vm<V: ViewState>(
             }
         }
     }
-
-    latency_tracker.enter_state(SequencerState::Sealing);
 
     /* ---------- seal & return ------------------------------------- */
     let mut output = runner.seal_block().await.map_err(|e| BlockDump {
@@ -463,6 +488,23 @@ fn should_exclude_and_seal(
     None
 }
 
+fn l1_block_limit_seal_reason(
+    error: &InvalidTransaction,
+    is_first_tx_in_block: bool,
+    can_seal_on_l1_block_limit: bool,
+) -> Option<SealReason> {
+    // SYSCOIN: keep truly invalid or individually too-large L1 txs fatal, but allow
+    // cumulative block-limit failures in produce mode to seal just like L2 txs.
+    if is_first_tx_in_block || !can_seal_on_l1_block_limit {
+        return None;
+    }
+
+    match rejection_method(error) {
+        TxRejectionMethod::SealBlock(reason) => Some(reason),
+        TxRejectionMethod::Purge | TxRejectionMethod::Skip => None,
+    }
+}
+
 enum TxRejectionMethod {
     // purge tx from the mempool
     Purge,
@@ -558,5 +600,42 @@ fn rejection_method(error: &InvalidTransaction) -> TxRejectionMethod {
             TxRejectionMethod::SealBlock(SealReason::Blobs)
         }
         InvalidTransaction::OtherLimitReached(_) => TxRejectionMethod::SealBlock(SealReason::Other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn l1_block_limit_error_seals_non_empty_block() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::BlockPubdataLimitReached, false, true),
+            Some(SealReason::Pubdata)
+        );
+    }
+
+    #[test]
+    fn l1_block_limit_error_is_fatal_for_empty_block() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::BlockPubdataLimitReached, true, true),
+            None
+        );
+    }
+
+    #[test]
+    fn l1_block_limit_error_is_fatal_outside_produce_mode() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::BlockPubdataLimitReached, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn l1_non_limit_error_remains_fatal() {
+        assert_eq!(
+            l1_block_limit_seal_reason(&InvalidTransaction::InvalidEncoding, false, true),
+            None
+        );
     }
 }

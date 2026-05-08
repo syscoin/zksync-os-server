@@ -50,6 +50,9 @@ COPY --from=builder /app/local-chains/v30.2/default/genesis.json /app/local-chai
 USER app
 WORKDIR /app
 
+ENV general_rocks_db_path=/db/node1
+ENV prover_api_proof_storage_path=/db/fri_proofs/
+
 EXPOSE 3050 3124 3312 3060
 VOLUME ["/db"]
 

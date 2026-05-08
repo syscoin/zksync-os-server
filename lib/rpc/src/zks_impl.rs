@@ -291,17 +291,14 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
         &self,
         block_number: u64,
     ) -> ZksResult<Option<BlockMetadata>> {
-        let Some(block) = self
-            .storage
-            .replay_storage()
-            .get_replay_record(block_number)
-        else {
+        // SYSCOIN: This metadata-only RPC must not deserialize the full replay record.
+        let Some(block_context) = self.storage.replay_storage().get_context(block_number) else {
             return Ok(None);
         };
 
-        let pubdata_price_per_byte = block.block_context.pubdata_price;
-        let native_price = block.block_context.native_price;
-        let execution_version = block.block_context.execution_version;
+        let pubdata_price_per_byte = block_context.pubdata_price;
+        let native_price = block_context.native_price;
+        let execution_version = block_context.execution_version;
         Ok(Some(BlockMetadata {
             pubdata_price_per_byte,
             native_price,

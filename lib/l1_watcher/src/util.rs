@@ -1,7 +1,6 @@
 use crate::watcher::L1WatcherError;
 use alloy::consensus::Transaction;
-use alloy::eips::BlockId;
-use alloy::primitives::{Address, BlockNumber, TxHash};
+use alloy::primitives::{Address, BlockNumber, TxHash, U256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
@@ -10,13 +9,58 @@ use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
-use zksync_os_batch_types::{DiscoveredCommittedBatch, ExtendedCommitBatchInfo};
-use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
+use zksync_os_batch_types::DiscoveredCommittedBatch;
+use zksync_os_contract_interface::IChainAssetHandler;
+use zksync_os_contract_interface::IExecutor::{BlockCommit, ReportCommittedBatchRangeZKsyncOS};
 use zksync_os_contract_interface::calldata::CommitCalldata;
-use zksync_os_contract_interface::{Bridgehub, Error as ContractInterfaceError, IExecutor, MessageRoot, ZkChain};
-use zksync_os_types::ProtocolSemanticVersion;
+use zksync_os_contract_interface::models::StoredBatchInfo;
+use zksync_os_contract_interface::{
+    Bridgehub, Error as ContractInterfaceError, IExecutor, MessageRoot, ZkChain,
+};
 
 pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
+
+/// Finds the first block where `IChainAssetHandler::migrationNumber(chain_id)` is at least one
+/// less than `migration_number`, using binary search.
+///
+/// Used by both [`GatewayMigrationWatcher`][crate::GatewayMigrationWatcher] (on L1) and
+/// [`MigrationCompleteWatcher`][crate::MigrationCompleteWatcher] (on the current settlement layer)
+/// to determine the block from which to start scanning for migration events.
+pub async fn find_block_by_migration_number(
+    zk_chain: ZkChain<DynProvider>,
+    chain_asset_handler: Address,
+    chain_id: u64,
+    migration_number: u64,
+) -> anyhow::Result<BlockNumber> {
+    let instance = Arc::new(IChainAssetHandler::new(
+        chain_asset_handler,
+        zk_chain.provider().clone(),
+    ));
+    // SYSCOIN: preserve the legacy next-migration lookup offset so startup does not fail
+    // before the next migration has been observed on-chain.
+    let target = U256::from(migration_number.saturating_sub(1));
+
+    find_l1_block_by_predicate(Arc::new(zk_chain), 0, move |zk, block| {
+        let instance = instance.clone();
+        async move {
+            let code = zk
+                .provider()
+                .get_code_at(*instance.address())
+                .block_id(block.into())
+                .await?;
+            if code.0.is_empty() {
+                return Ok(false);
+            }
+            let res = instance
+                .migrationNumber(U256::from(chain_id))
+                .block(block.into())
+                .call()
+                .await?;
+            Ok(res >= target)
+        }
+    })
+    .await
+}
 
 /// Maximum number of L1 blocks that we can scan in a reasonable amount of time.
 ///
@@ -405,9 +449,7 @@ pub async fn fetch_stored_batch_data(
     }) else {
         return Ok(None);
     };
-    let batch_info = fetch_committed_batch_data(zk_chain, tx_hash)
-        .await?
-        .into_stored();
+    let batch_info = fetch_committed_batch_data(zk_chain, tx_hash).await?;
 
     Ok(Some(DiscoveredCommittedBatch {
         batch_info,
@@ -420,7 +462,7 @@ pub async fn fetch_stored_batch_data(
 pub async fn fetch_committed_batch_data(
     zk_chain: &ZkChain<DynProvider>,
     tx_hash: TxHash,
-) -> Result<ExtendedCommitBatchInfo, L1WatcherError> {
+) -> Result<StoredBatchInfo, L1WatcherError> {
     let tx = (|| async {
         let tx = zk_chain
             .provider()
@@ -448,42 +490,47 @@ pub async fn fetch_committed_batch_data(
         commit_batch_info, ..
     } = CommitCalldata::decode(tx.input()).map_err(L1WatcherError::Other)?;
 
-    // L1 block where this batch got committed.
-    let l1_block_id = BlockId::number(
-        tx.block_number
-            .expect("mined transaction has no block number"),
-    );
+    let receipt = (|| async {
+        zk_chain
+            .provider()
+            .get_transaction_receipt(tx_hash)
+            .await
+            .map_err(|e| L1WatcherError::Other(e.into()))?
+            .ok_or_else(|| {
+                L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} receipt not found"))
+            })
+    })
+    .retry(
+        ConstantBuilder::default()
+            .with_delay(Duration::from_millis(200))
+            .with_max_times(50),
+    )
+    .await?;
 
-    // To recreate batch's commitment (and hence it's `StoredBatchInfo` form) we need to
-    // know any potential upgrade transaction hash that was applied in this batch.
-    //
-    // Unfortunately, this information is not passed in `CommitBatchInfo` so we must derive
-    // it through other means. Querying `getL2SystemContractsUpgradeTxHash()` and
-    // `getL2SystemContractsUpgradeBatchNumber()` should work for the vast majority of cases
-    // except when the batch got committed and executed in the same L1 block (which should
-    // never happen in current implementation as commit->prove->execute operations are submitted
-    // sequentially after at least 1 block confirmation).
-    let upgrade_batch_number = zk_chain.get_upgrade_batch_number(l1_block_id).await?;
-    let upgrade_tx_hash = if upgrade_batch_number == commit_batch_info.batch_number {
-        // If the latest upgrade transaction belongs to this batch then current upgrade tx
-        // hash must also be present on L1. Thus, we fetch it.
-        Some(zk_chain.get_upgrade_tx_hash(l1_block_id).await?)
-    } else {
-        // Either latest in-progress upgrade transaction belongs to a different batch or
-        // there is none. If none, `upgrade_batch_number` would be `0` and thus never equal
-        // to the currently inspected batch as genesis does not get committed via this flow.
-        None
-    };
-    // Fetch active protocol version at the moment the batch got committed. This should work
-    // for the vast majority of cases except when upgrade gets applied in the same L1 block
-    // but after batch was committed.
-    let packed_protocol_version = zk_chain.get_raw_protocol_version(l1_block_id).await?;
+    // SYSCOIN: use the exact commitment emitted by the commit transaction instead of
+    // reconstructing hash-sensitive upgrade/protocol metadata from end-of-L1-block state.
+    let block_commit = receipt
+        .logs()
+        .iter()
+        .filter(|log| log.address() == *zk_chain.address())
+        .filter_map(|log| log.log_decode::<BlockCommit>().ok())
+        .find(|log| log.inner.batchNumber == U256::from(commit_batch_info.batch_number))
+        .ok_or_else(|| {
+            L1WatcherError::Other(anyhow::anyhow!(
+                "commit tx {tx_hash} has no BlockCommit log for batch {}",
+                commit_batch_info.batch_number
+            ))
+        })?;
 
-    Ok(ExtendedCommitBatchInfo {
-        commit_info: commit_batch_info,
-        upgrade_tx_hash,
-        protocol_version: ProtocolSemanticVersion::try_from(packed_protocol_version)
-            .context("invalid protocol version fetched from L1")
-            .map_err(L1WatcherError::Other)?,
+    Ok(StoredBatchInfo {
+        batch_number: commit_batch_info.batch_number,
+        state_commitment: block_commit.inner.batchHash,
+        number_of_layer1_txs: commit_batch_info.number_of_layer1_txs,
+        priority_operations_hash: commit_batch_info.priority_operations_hash,
+        dependency_roots_rolling_hash: commit_batch_info.dependency_roots_rolling_hash,
+        l2_to_l1_logs_root_hash: commit_batch_info.l2_to_l1_logs_root_hash,
+        commitment: block_commit.inner.commitment,
+        // unused
+        last_block_timestamp: Some(0),
     })
 }

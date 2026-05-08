@@ -1,5 +1,6 @@
 use crate::metrics::PREIMAGES_METRICS;
 use alloy::primitives::B256;
+use zksync_os_genesis::Genesis;
 use zksync_os_interface::traits::PreimageSource;
 use zksync_os_rocksdb::RocksDB;
 use zksync_os_rocksdb::db::NamedColumnFamily;
@@ -35,8 +36,28 @@ impl PreimagesCF {
 }
 
 impl PersistentPreimages {
-    pub async fn new(rocks: RocksDB<PreimagesCF>) -> Self {
-        Self { rocks }
+    pub async fn new(rocks: RocksDB<PreimagesCF>, genesis: &Genesis) -> Self {
+        let rocksdb_block_number = rocksdb_block_number(&rocks);
+        let this = Self { rocks };
+
+        if rocksdb_block_number.is_none() {
+            // SYSCOIN: initialize fresh compacted-state preimages DBs with the
+            // genesis and force-deploy preimages, matching the full-diffs backend.
+            let genesis_preimages = genesis.state().await.preimages.clone();
+            let force_deploy_preimages = genesis
+                .genesis_upgrade_tx()
+                .await
+                .force_deploy_preimages
+                .clone();
+            let preimages = genesis_preimages
+                .iter()
+                .chain(force_deploy_preimages.iter())
+                .map(|(k, v)| (*k, v));
+
+            this.add(0, preimages);
+        }
+
+        this
     }
 
     pub fn rocksdb_block_number(&self) -> u64 {
@@ -87,9 +108,9 @@ impl PreimageSource for PersistentPreimages {
 }
 
 fn rocksdb_block_number(rocks_db: &RocksDB<PreimagesCF>) -> Option<u64> {
+    // SYSCOIN: missing metadata means a fresh DB; RocksDB read errors must fail fast.
     rocks_db
         .get_cf(PreimagesCF::Meta, PreimagesCF::block_key())
-        .ok()
-        .flatten()
+        .expect("RocksDB read failed")
         .map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()))
 }
