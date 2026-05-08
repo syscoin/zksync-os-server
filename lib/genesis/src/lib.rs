@@ -62,7 +62,8 @@ impl GenesisInput {
     pub fn load_from_file(path: &Path) -> anyhow::Result<Self> {
         let file = std::fs::File::open(path).context("Failed to open genesis input file")?;
 
-        match ConfigFormat::from_path(path) {
+        // SYSCOIN: Propagate unsupported genesis input extensions as errors instead of panicking.
+        match ConfigFormat::from_path(path)? {
             ConfigFormat::Yaml => {
                 serde_yaml::from_reader(file).context("Failed to parse YAML genesis input file")
             }
