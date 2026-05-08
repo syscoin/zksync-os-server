@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::watch;
+use url::Url;
 use zksync_os_rpc_api::types::L2FeeHistory;
 use zksync_os_types::PubdataMode;
 
@@ -442,11 +443,17 @@ impl GasAdjuster {
 
     // SYSCOIN
     fn validate_bitcoin_da_fee_config(config: &GasAdjusterConfig) -> anyhow::Result<()> {
-        config
+        let rpc_url = config
             .bitcoin_da_rpc_url
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .context("missing bitcoin_da_rpc_url for blob fee estimation")?;
+        let parsed_url =
+            Url::parse(rpc_url).context("invalid bitcoin_da_rpc_url for blob fee estimation")?;
+        anyhow::ensure!(
+            matches!(parsed_url.scheme(), "http" | "https"),
+            "invalid bitcoin_da_rpc_url scheme for blob fee estimation"
+        );
         config
             .bitcoin_da_rpc_user
             .as_deref()
@@ -616,6 +623,15 @@ mod tests {
 
         let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
         assert!(err.to_string().contains("missing bitcoin_da_rpc_url"));
+    }
+
+    #[test]
+    fn bitcoin_da_fee_config_rejects_invalid_rpc_url() {
+        let mut config = gas_adjuster_config();
+        config.bitcoin_da_rpc_url = Some("not a url".to_owned());
+
+        let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
+        assert!(err.to_string().contains("invalid bitcoin_da_rpc_url"));
     }
 
     #[test]
