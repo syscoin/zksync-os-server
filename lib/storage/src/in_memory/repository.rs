@@ -80,9 +80,6 @@ impl RepositoryInMemory {
 
         // Add transaction receipts to the transaction receipt repository
         let mut log_index = 0;
-        // SYSCOIN: ordinary EVM logs and L2-to-L1 logs are exposed as separate RPC arrays, so
-        // their block-level indexes must be accumulated independently.
-        let mut l2_to_l1_log_index = 0;
         let mut cumulative_gas_used = 0;
         let mut block_bloom = Bloom::default();
         let mut stored_txs = HashMap::new();
@@ -94,12 +91,10 @@ impl RepositoryInMemory {
                 &sealed_block_output,
                 tx_index,
                 log_index,
-                l2_to_l1_log_index,
                 cumulative_gas_used,
                 tx,
             ));
             log_index += stored_tx.receipt.logs().len() as u64;
-            l2_to_l1_log_index += stored_tx.receipt.l2_to_l1_logs().len() as u64;
             cumulative_gas_used += stored_tx.meta.gas_used;
             block_bloom.accrue_bloom(stored_tx.receipt.logs_bloom());
             stored_txs.insert(tx_hash, stored_tx);
@@ -386,7 +381,6 @@ fn transaction_to_api_data(
     block_output: &Sealed<BlockOutput>,
     index: usize,
     number_of_logs_before_this_tx: u64,
-    number_of_l2_to_l1_logs_before_this_tx: u64,
     cumulative_gas_used_before_this_tx: u64,
     tx: ZkTransaction,
 ) -> StoredTxData {
@@ -423,7 +417,6 @@ fn transaction_to_api_data(
             .inner()
             .effective_gas_price(block_output.header.base_fee_per_gas),
         number_of_logs_before_this_tx,
-        number_of_l2_to_l1_logs_before_this_tx,
         gas_used: tx_output.gas_used,
         contract_address: tx_output.contract_address,
     };

@@ -193,13 +193,21 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     return Err(EthSendRawTransactionSyncError::Timeout(timeout_duration));
                 };
 
-                if let Some(stored_tx) = block.transactions.get(&tx_hash) {
-                    return Ok(build_api_receipt(
-                        tx_hash,
-                        stored_tx.receipt.clone(),
-                        &stored_tx.tx,
-                        &stored_tx.meta,
-                    ));
+                let mut l2_to_l1_logs_before_this_tx = 0;
+                for block_tx_hash in &block.block.body.transactions {
+                    let Some(stored_tx) = block.transactions.get(block_tx_hash) else {
+                        continue;
+                    };
+                    if *block_tx_hash == tx_hash {
+                        return Ok(build_api_receipt(
+                            tx_hash,
+                            stored_tx.receipt.clone(),
+                            &stored_tx.tx,
+                            &stored_tx.meta,
+                            l2_to_l1_logs_before_this_tx,
+                        ));
+                    }
+                    l2_to_l1_logs_before_this_tx += stored_tx.receipt.l2_to_l1_logs().len() as u64;
                 }
             }
         })

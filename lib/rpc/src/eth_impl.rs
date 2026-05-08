@@ -149,11 +149,21 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
             return Ok(None);
         };
         let mut receipts = Vec::new();
+        let mut l2_to_l1_logs_before_this_tx = 0;
         for tx_hash in block.unseal().body.transactions {
-            let Some(rpc_receipt) = self.transaction_receipt_impl(tx_hash)? else {
+            let Some(stored_tx) = self.storage.repository().get_stored_transaction(tx_hash)? else {
                 return Ok(None);
             };
+            let l2_to_l1_logs_in_tx = stored_tx.receipt.l2_to_l1_logs().len() as u64;
+            let rpc_receipt = build_api_receipt(
+                tx_hash,
+                stored_tx.receipt,
+                &stored_tx.tx,
+                &stored_tx.meta,
+                l2_to_l1_logs_before_this_tx,
+            );
             receipts.push(rpc_receipt);
+            l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
         }
         Ok(Some(receipts))
     }
@@ -270,12 +280,45 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let Some(stored_tx) = self.storage.repository().get_stored_transaction(tx_hash)? else {
             return Ok(None);
         };
+        let Some(l2_to_l1_logs_before_this_tx) =
+            self.l2_to_l1_logs_before_tx(tx_hash, &stored_tx.meta)?
+        else {
+            return Ok(None);
+        };
         Ok(Some(build_api_receipt(
             tx_hash,
             stored_tx.receipt,
             &stored_tx.tx,
             &stored_tx.meta,
+            l2_to_l1_logs_before_this_tx,
         )))
+    }
+
+    fn l2_to_l1_logs_before_tx(&self, tx_hash: B256, meta: &TxMeta) -> EthResult<Option<u64>> {
+        let Some(block) = self
+            .storage
+            .repository()
+            .get_block_by_hash(meta.block_hash)?
+        else {
+            return Ok(None);
+        };
+
+        let mut l2_to_l1_logs_before_this_tx = 0;
+        for block_tx_hash in &block.body.transactions {
+            if *block_tx_hash == tx_hash {
+                return Ok(Some(l2_to_l1_logs_before_this_tx));
+            }
+            let Some(receipt) = self
+                .storage
+                .repository()
+                .get_transaction_receipt(*block_tx_hash)?
+            else {
+                return Ok(None);
+            };
+            l2_to_l1_logs_before_this_tx += receipt.l2_to_l1_logs().len() as u64;
+        }
+
+        Ok(None)
     }
 
     fn balance_impl(&self, address: Address, block_id: Option<BlockId>) -> EthResult<U256> {
@@ -525,7 +568,6 @@ mod tests {
             tx_index_in_block: 3,
             effective_gas_price: 4,
             number_of_logs_before_this_tx: 10,
-            number_of_l2_to_l1_logs_before_this_tx: 1,
             gas_used: 5,
             contract_address: None,
         };
@@ -541,6 +583,7 @@ mod tests {
                 value: B256::ZERO,
             },
             tx_meta,
+            1,
             2,
         );
 
@@ -896,6 +939,7 @@ pub fn build_l2_to_l1_api_log(
     tx_hash: TxHash,
     primitive_l2_to_l1_log: zksync_os_types::L2ToL1Log,
     tx_meta: TxMeta,
+    l2_to_l1_logs_before_this_tx: u64,
     log_index_in_tx: u64,
 ) -> zksync_os_rpc_api::types::L2ToL1Log {
     zksync_os_rpc_api::types::L2ToL1Log {
@@ -906,7 +950,7 @@ pub fn build_l2_to_l1_api_log(
         transaction_index: Some(tx_meta.tx_index_in_block),
         // SYSCOIN: L2-to-L1 logs have an Era-compatible block-level index that is independent
         // from ordinary EVM receipt logs.
-        log_index: Some(tx_meta.number_of_l2_to_l1_logs_before_this_tx + log_index_in_tx),
+        log_index: Some(l2_to_l1_logs_before_this_tx + log_index_in_tx),
         transaction_log_index: Some(log_index_in_tx),
         shard_id: primitive_l2_to_l1_log.l2_shard_id.into(),
         is_service: primitive_l2_to_l1_log.is_service,
@@ -921,6 +965,7 @@ pub fn build_api_receipt(
     receipt: ZkReceiptEnvelope,
     tx: &zksync_os_types::ZkTransaction,
     meta: &TxMeta,
+    l2_to_l1_logs_before_this_tx: u64,
 ) -> ZkTransactionReceipt {
     let mut log_index_in_tx = 0;
     let mut l2_to_l1_log_index_in_tx = 0;
@@ -935,6 +980,7 @@ pub fn build_api_receipt(
                 tx_hash,
                 inner_l2_to_l1_log,
                 meta.clone(),
+                l2_to_l1_logs_before_this_tx,
                 l2_to_l1_log_index_in_tx,
             );
             l2_to_l1_log_index_in_tx += 1;
