@@ -209,22 +209,8 @@ jobs:
           done
           echo "Sequencer is up and running."
 
-      - name: Checkout solidity tests
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          repository: antonbaliasnikov/solidity-tester
-          ref: main # use latest main branch to get test updates on early stages
-          path: solidity-tester
-          persist-credentials: false
-
-      - name: Install NodeJS
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-
-      - name: Run tests
-        working-directory: solidity-tester
-        run: cargo nextest run --retries 3
+      # NOTE: Intentionally do not execute tests from an unpinned external repository.
+      # If re-enabled, use an immutable commit SHA and least-privilege permissions.
 
       - name: Checkout tests
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
