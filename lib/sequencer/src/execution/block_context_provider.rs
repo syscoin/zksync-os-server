@@ -127,31 +127,42 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     ) -> anyhow::Result<PreparedBlockCommand<'_>> {
         let prepared_command = match block_command {
             BlockCommand::Produce(_) => {
-                let pending_fee_params = self.fee_provider.produce_fee_params().await?;
-                self.pool.update_pending_block_fees(
-                    pending_fee_params.eip1559_basefee.saturating_to(),
-                    None,
-                );
                 let block_number = self.next_block_number;
-                // Create stream:
-                // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
-                // - L1 transactions first, then L2 transactions.
-                let best_txs = self
-                    .pool
-                    .best_transactions_stream(
-                        self.next_interop_tx_allowed_after,
-                        self.settles_on_gateway(),
-                    )
-                    .await
-                    .context("mempool is closed")?;
+                let (fee_params, best_txs) = loop {
+                    let pending_fee_params = self.fee_provider.produce_fee_params().await?;
+                    self.pool.update_pending_block_fees(
+                        pending_fee_params.eip1559_basefee.saturating_to(),
+                        None,
+                    );
 
-                // SYSCOIN: `best_transactions_stream` can wait indefinitely while the mempool is
-                // empty. Refresh fees after that wait so the block context is priced from the
-                // current fee inputs, while the earlier snapshot only keeps pending-pool
-                // classification from falling back to zero.
-                let fee_params = self.fee_provider.produce_fee_params().await?;
-                self.pool
-                    .update_pending_block_fees(fee_params.eip1559_basefee.saturating_to(), None);
+                    // Create stream:
+                    // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
+                    // - L1 transactions first, then L2 transactions.
+                    let best_txs = self
+                        .pool
+                        .best_transactions_stream(
+                            self.next_interop_tx_allowed_after,
+                            self.settles_on_gateway(),
+                        )
+                        .await
+                        .context("mempool is closed")?;
+
+                    // SYSCOIN: `best_transactions_stream` can wait indefinitely while the mempool
+                    // is empty. If fee inputs changed during that wait, discard the selected stream
+                    // and reselect under fresh pending fees so tx selection and BlockContext use the
+                    // same fee snapshot.
+                    let fee_params = self.fee_provider.produce_fee_params().await?;
+                    if fee_params == pending_fee_params {
+                        break (fee_params, best_txs);
+                    }
+
+                    tracing::info!(
+                        ?pending_fee_params,
+                        ?fee_params,
+                        "fee params changed while waiting for transactions; reselecting tx stream"
+                    );
+                    drop(best_txs);
+                };
 
                 let timestamp = (millis_since_epoch() / 1000) as u64;
 
