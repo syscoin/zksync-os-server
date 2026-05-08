@@ -149,11 +149,21 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
             return Ok(None);
         };
         let mut receipts = Vec::new();
+        let mut l2_to_l1_logs_before_this_tx = 0;
         for tx_hash in block.unseal().body.transactions {
-            let Some(rpc_receipt) = self.transaction_receipt_impl(tx_hash)? else {
+            let Some(stored_tx) = self.storage.repository().get_stored_transaction(tx_hash)? else {
                 return Ok(None);
             };
+            let l2_to_l1_logs_in_tx = stored_tx.receipt.l2_to_l1_logs().len() as u64;
+            let rpc_receipt = build_api_receipt(
+                tx_hash,
+                stored_tx.receipt,
+                &stored_tx.tx,
+                &stored_tx.meta,
+                l2_to_l1_logs_before_this_tx,
+            );
             receipts.push(rpc_receipt);
+            l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
         }
         Ok(Some(receipts))
     }
@@ -270,12 +280,45 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let Some(stored_tx) = self.storage.repository().get_stored_transaction(tx_hash)? else {
             return Ok(None);
         };
+        let l2_to_l1_logs_before_this_tx = if stored_tx.receipt.l2_to_l1_logs().is_empty() {
+            0
+        } else {
+            self.l2_to_l1_logs_before_tx(tx_hash, &stored_tx.meta)?
+        };
         Ok(Some(build_api_receipt(
             tx_hash,
             stored_tx.receipt,
             &stored_tx.tx,
             &stored_tx.meta,
+            l2_to_l1_logs_before_this_tx,
         )))
+    }
+
+    fn l2_to_l1_logs_before_tx(&self, tx_hash: B256, meta: &TxMeta) -> EthResult<u64> {
+        let Some(block) = self
+            .storage
+            .repository()
+            .get_block_by_hash(meta.block_hash)?
+        else {
+            return Err(EthError::ReceiptMetadataUnavailable(tx_hash));
+        };
+
+        let mut l2_to_l1_logs_before_this_tx = 0;
+        for block_tx_hash in &block.body.transactions {
+            if *block_tx_hash == tx_hash {
+                return Ok(l2_to_l1_logs_before_this_tx);
+            }
+            let Some(receipt) = self
+                .storage
+                .repository()
+                .get_transaction_receipt(*block_tx_hash)?
+            else {
+                return Err(EthError::ReceiptMetadataUnavailable(tx_hash));
+            };
+            l2_to_l1_logs_before_this_tx += receipt.l2_to_l1_logs().len() as u64;
+        }
+
+        Err(EthError::ReceiptMetadataUnavailable(tx_hash))
     }
 
     fn balance_impl(&self, address: Address, block_id: Option<BlockId>) -> EthResult<U256> {
@@ -500,8 +543,10 @@ fn scale_gas_price(base_fee: U256, factor: f64) -> U256 {
 
 #[cfg(test)]
 mod tests {
-    use super::scale_gas_price;
-    use alloy::primitives::U256;
+    use super::{build_l2_to_l1_api_log, scale_gas_price};
+    use alloy::primitives::{Address, B256, TxHash, U256};
+    use zksync_os_storage_api::TxMeta;
+    use zksync_os_types::L2ToL1Log;
 
     #[test]
     fn gas_price_scale_default_factor() {
@@ -512,6 +557,38 @@ mod tests {
     #[test]
     fn gas_price_scale_custom_factor() {
         assert_eq!(scale_gas_price(U256::from(100u64), 2.0), U256::from(200u64));
+    }
+
+    #[test]
+    fn l2_to_l1_log_index_uses_l2_to_l1_block_prefix() {
+        let tx_meta = TxMeta {
+            block_hash: B256::ZERO,
+            block_number: 1,
+            block_timestamp: 2,
+            tx_index_in_block: 3,
+            effective_gas_price: 4,
+            number_of_logs_before_this_tx: 10,
+            gas_used: 5,
+            contract_address: None,
+        };
+
+        let log = build_l2_to_l1_api_log(
+            TxHash::ZERO,
+            L2ToL1Log {
+                l2_shard_id: 0,
+                is_service: true,
+                tx_number_in_block: 3,
+                sender: Address::ZERO,
+                key: B256::ZERO,
+                value: B256::ZERO,
+            },
+            tx_meta,
+            1,
+            2,
+        );
+
+        assert_eq!(log.log_index, Some(3));
+        assert_eq!(log.transaction_log_index, Some(2));
     }
 }
 
@@ -862,6 +939,7 @@ pub fn build_l2_to_l1_api_log(
     tx_hash: TxHash,
     primitive_l2_to_l1_log: zksync_os_types::L2ToL1Log,
     tx_meta: TxMeta,
+    l2_to_l1_logs_before_this_tx: u64,
     log_index_in_tx: u64,
 ) -> zksync_os_rpc_api::types::L2ToL1Log {
     zksync_os_rpc_api::types::L2ToL1Log {
@@ -870,7 +948,9 @@ pub fn build_l2_to_l1_api_log(
         block_timestamp: Some(tx_meta.block_timestamp),
         transaction_hash: Some(tx_hash),
         transaction_index: Some(tx_meta.tx_index_in_block),
-        log_index: Some(tx_meta.number_of_logs_before_this_tx + log_index_in_tx),
+        // SYSCOIN: L2-to-L1 logs have an Era-compatible block-level index that is independent
+        // from ordinary EVM receipt logs.
+        log_index: Some(l2_to_l1_logs_before_this_tx + log_index_in_tx),
         transaction_log_index: Some(log_index_in_tx),
         shard_id: primitive_l2_to_l1_log.l2_shard_id.into(),
         is_service: primitive_l2_to_l1_log.is_service,
@@ -885,6 +965,7 @@ pub fn build_api_receipt(
     receipt: ZkReceiptEnvelope,
     tx: &zksync_os_types::ZkTransaction,
     meta: &TxMeta,
+    l2_to_l1_logs_before_this_tx: u64,
 ) -> ZkTransactionReceipt {
     let mut log_index_in_tx = 0;
     let mut l2_to_l1_log_index_in_tx = 0;
@@ -899,6 +980,7 @@ pub fn build_api_receipt(
                 tx_hash,
                 inner_l2_to_l1_log,
                 meta.clone(),
+                l2_to_l1_logs_before_this_tx,
                 l2_to_l1_log_index_in_tx,
             );
             l2_to_l1_log_index_in_tx += 1;
@@ -955,6 +1037,9 @@ pub enum EthError {
         /// Maximum page size allowed by the RPC server.
         max_page_size: usize,
     },
+    /// SYSCOIN: returned when tx data is visible but block-level receipt context is not.
+    #[error("receipt metadata unavailable for transaction {0}")]
+    ReceiptMetadataUnavailable(TxHash),
 
     #[error(transparent)]
     RpcStorage(#[from] RpcStorageError),

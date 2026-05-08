@@ -121,40 +121,63 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         let page_end = transaction_count.saturating_sub(page_number.saturating_mul(page_size));
         let page_start = page_end.saturating_sub(page_size);
 
-        // Crop transactions
-        let transactions = block
+        let page_tx_hashes = block
             .transactions
             .hashes()
             .skip(page_start)
-            .take(page_size)
+            .take(page_end - page_start)
             .collect::<Vec<_>>();
 
-        let mut full_transactions = Vec::with_capacity(transactions.len());
-        let mut receipts = Vec::with_capacity(transactions.len());
-        for tx_hash in transactions {
-            let StoredTxData { tx, receipt, meta } = self
+        let mut page_txs = Vec::with_capacity(page_tx_hashes.len());
+        for tx_hash in page_tx_hashes {
+            let stored_tx = self
                 .storage
                 .repository()
                 .get_stored_transaction(tx_hash)?
                 .ok_or(EthError::BlockNotFound(block_id))?;
+            page_txs.push((tx_hash, stored_tx));
+        }
 
-            let receipt = build_api_receipt(tx_hash, receipt, &tx, &meta).map_inner(|receipt| {
-                let r#type = api_receipt_type(&receipt);
-                // Report logs/logs_bloom as `null` here to avoid unnecessary network traffic.
-                // See https://docs.otterscan.io/api-docs/ots-api#ots_getblocktransactions
-                OtsReceipt {
-                    status: receipt.status(),
-                    cumulative_gas_used: receipt.cumulative_gas_used(),
-                    logs: None,
-                    logs_bloom: None,
-                    r#type,
-                }
-            });
+        let mut l2_to_l1_logs_before_this_tx = 0;
+        if page_txs
+            .iter()
+            .any(|(_, stored_tx)| !stored_tx.receipt.l2_to_l1_logs().is_empty())
+        {
+            for tx_hash in block.transactions.hashes().take(page_start) {
+                let receipt = self
+                    .storage
+                    .repository()
+                    .get_transaction_receipt(tx_hash)?
+                    .ok_or(EthError::BlockNotFound(block_id))?;
+                l2_to_l1_logs_before_this_tx += receipt.l2_to_l1_logs().len() as u64;
+            }
+        }
+
+        let mut full_transactions = Vec::with_capacity(page_txs.len());
+        let mut receipts = Vec::with_capacity(page_txs.len());
+        for (tx_hash, stored_tx) in page_txs {
+            let StoredTxData { tx, receipt, meta } = stored_tx;
+            let l2_to_l1_logs_in_tx = receipt.l2_to_l1_logs().len() as u64;
+            let receipt =
+                build_api_receipt(tx_hash, receipt, &tx, &meta, l2_to_l1_logs_before_this_tx)
+                    .map_inner(|receipt| {
+                        let r#type = api_receipt_type(&receipt);
+                        // Report logs/logs_bloom as `null` here to avoid unnecessary network traffic.
+                        // See https://docs.otterscan.io/api-docs/ots-api#ots_getblocktransactions
+                        OtsReceipt {
+                            status: receipt.status(),
+                            cumulative_gas_used: receipt.cumulative_gas_used(),
+                            logs: None,
+                            logs_bloom: None,
+                            r#type,
+                        }
+                    });
             full_transactions.push(build_api_tx(tx, Some(&meta)));
             receipts.push(OtsTransactionReceipt {
                 receipt,
                 timestamp: Some(block.header.timestamp),
             });
+            l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
         }
 
         Ok(OtsBlockTransactions {
@@ -196,34 +219,39 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
                 break;
             };
             let (block, _) = block.into_parts();
+            let mut l2_to_l1_logs_before_this_tx = 0;
             for tx_hash in block.body.transactions {
                 let Some(StoredTxData { tx, receipt, meta }) =
                     self.storage.repository().get_stored_transaction(tx_hash)?
                 else {
                     continue;
                 };
+                let l2_to_l1_logs_in_tx = receipt.l2_to_l1_logs().len() as u64;
                 if !(tx.signer() == address || tx.to() == Some(address)) {
+                    l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
                     continue;
                 }
 
                 let receipt =
-                    build_api_receipt(tx_hash, receipt, &tx, &meta).map_inner(|receipt| {
-                        let logs_bloom = Some(*receipt.logs_bloom());
-                        let r#type = api_receipt_type(&receipt);
-                        OtsReceipt {
-                            status: receipt.status(),
-                            cumulative_gas_used: receipt.cumulative_gas_used(),
-                            logs: Some(receipt.into_logs()),
-                            logs_bloom,
-                            r#type,
-                        }
-                    });
+                    build_api_receipt(tx_hash, receipt, &tx, &meta, l2_to_l1_logs_before_this_tx)
+                        .map_inner(|receipt| {
+                            let logs_bloom = Some(*receipt.logs_bloom());
+                            let r#type = api_receipt_type(&receipt);
+                            OtsReceipt {
+                                status: receipt.status(),
+                                cumulative_gas_used: receipt.cumulative_gas_used(),
+                                logs: Some(receipt.into_logs()),
+                                logs_bloom,
+                                r#type,
+                            }
+                        });
 
                 txs.push(build_api_tx(tx, Some(&meta)));
                 receipts.push(OtsTransactionReceipt {
                     receipt,
                     timestamp: Some(block.header.timestamp),
                 });
+                l2_to_l1_logs_before_this_tx += l2_to_l1_logs_in_tx;
             }
         }
         Ok((txs, receipts, has_more))
