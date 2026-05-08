@@ -69,7 +69,7 @@ use zksync_os_backpressure::{BackpressureMonitor, PipelineTracker};
 use zksync_os_base_token_adjuster::BaseTokenPriceUpdater;
 use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
-    BatchVerificationResponder, effective_verification_policy,
+    BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::BatchDaInputMode;
@@ -206,6 +206,28 @@ fn edge_da_admission_config(
         wallet_name: batcher.bitcoin_da_wallet_name.clone(),
         request_timeout: batcher.bitcoin_da_request_timeout,
     }))
+}
+
+// SYSCOIN: batch-verifier clients use the same Bitcoin DA settings as the batcher
+// to independently check committed blob availability before returning signatures.
+fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificationConfig> {
+    let batcher = &config.batcher_config;
+    let rpc_url = batcher
+        .bitcoin_da_rpc_url
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())?
+        .to_owned();
+    let rpc_user = batcher.bitcoin_da_rpc_user.clone()?;
+    let rpc_password = batcher.bitcoin_da_rpc_password.clone()?;
+
+    Some(SyscoinDaVerificationConfig {
+        rpc_url,
+        rpc_user,
+        rpc_password,
+        poda_url: batcher.bitcoin_da_poda_url.clone(),
+        wallet_name: batcher.bitcoin_da_wallet_name.clone(),
+        request_timeout: batcher.bitcoin_da_request_timeout,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1603,6 +1625,7 @@ async fn run_en_pipeline(
                 chain_id,
                 node_state_on_startup.l1_state.diamond_proxy_address_sl(),
                 config.batch_verification_config.signing_key.clone(),
+                syscoin_da_verification_config(config),
                 finality.clone(),
                 node_state_on_startup.l1_state.clone(),
                 state.clone(),

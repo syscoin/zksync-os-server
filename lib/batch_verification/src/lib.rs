@@ -2,7 +2,7 @@ mod verifier;
 pub use verifier::BatchVerificationResponder;
 
 mod config;
-pub use config::BatchVerificationConfig;
+pub use config::{BatchVerificationConfig, SyscoinDaVerificationConfig};
 
 mod main_node;
 pub use main_node::component::{BatchVerificationPipelineStep, effective_verification_policy};

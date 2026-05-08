@@ -1693,6 +1693,7 @@ impl From<BatchVerificationConfig> for zksync_os_batch_verification::BatchVerifi
             retry_delay: c.retry_delay,
             total_timeout: c.total_timeout,
             signing_key: c.signing_key,
+            syscoin_da_verification: None,
         }
     }
 }
