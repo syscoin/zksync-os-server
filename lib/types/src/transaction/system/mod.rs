@@ -23,7 +23,7 @@ use zksync_os_contract_interface::IInteropCenter::setInteropFeeCall;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     into = "tx_serde::TransactionSerdeHelper",
-    from = "tx_serde::TransactionSerdeHelper"
+    try_from = "tx_serde::TransactionSerdeHelper"
 )]
 pub struct SystemTxEnvelope {
     /// Hash of the transaction
@@ -88,44 +88,61 @@ impl SystemTxEnvelope {
         }
     }
 
-    fn decoded_input(&self) -> SystemTxInput {
-        let data = self.inner.input();
+    // SYSCOIN: System transactions are unsigned and are later executed as the bootloader.
+    // Reject non-canonical payloads while decoding instead of allowing arbitrary
+    // target/calldata to reach privileged execution paths.
+    fn try_from_inner(inner: SystemTx) -> Result<Self, &'static str> {
+        Self::decode_input(inner.input(), inner.salt).and_then(|input| {
+            if inner.to != input.to_address() {
+                return Err("system transaction target does not match calldata selector");
+            }
+            Ok(Self {
+                hash: inner.calculate_hash(),
+                inner,
+                subtype: OnceLock::new(),
+            })
+        })
+    }
 
-        let selector_bytes: [u8; 4] = data
-            .slice(..4)
-            .to_vec()
+    fn decode_input(data: &Bytes, salt: u64) -> Result<SystemTxInput, &'static str> {
+        let selector = data
+            .get(..4)
+            .ok_or("system transaction input is shorter than selector")?;
+        let selector_bytes: [u8; 4] = selector
             .try_into()
-            .expect("Failed to get selector bytes from system transaction data");
+            .expect("selector slice length is checked above");
         match selector_bytes {
             addInteropRootsInBatchCall::SELECTOR => {
                 let call = addInteropRootsInBatchCall::abi_decode(data)
-                    .expect("failed to decode interop roots system transaction");
-                SystemTxInput::ImportInteropRoots(call.interopRootsInput)
+                    .map_err(|_| "failed to decode interop roots system transaction")?;
+                Ok(SystemTxInput::ImportInteropRoots(call.interopRootsInput))
             }
             setSettlementLayerChainIdCall::SELECTOR => {
                 let call = setSettlementLayerChainIdCall::abi_decode(data)
-                    .expect("failed to decode SL chain id system transaction");
-                SystemTxInput::SetSLChainId(
-                    call._newSettlementLayerChainId.try_into().unwrap(),
-                    self.inner.salt,
-                )
+                    .map_err(|_| "failed to decode SL chain id system transaction")?;
+                let chain_id = call
+                    ._newSettlementLayerChainId
+                    .try_into()
+                    .map_err(|_| "SL chain id does not fit in ChainId")?;
+                Ok(SystemTxInput::SetSLChainId(chain_id, salt))
             }
             setInteropFeeCall::SELECTOR => {
                 let call = setInteropFeeCall::abi_decode(data)
-                    .expect("failed to decode interop fee system transaction");
-                SystemTxInput::SetInteropFee(call._interopFee, self.inner.salt)
+                    .map_err(|_| "failed to decode interop fee system transaction")?;
+                Ok(SystemTxInput::SetInteropFee(call._interopFee, salt))
             }
-            _ => panic!(
-                "unknown system transaction selector: {}",
-                alloy::hex::encode(selector_bytes)
-            ),
+            _ => Err("unknown system transaction selector"),
         }
+    }
+
+    fn decoded_input(&self) -> SystemTxInput {
+        Self::decode_input(self.inner.input(), self.inner.salt)
+            .expect("system transaction payload was validated during construction")
     }
 
     pub fn system_subtype(&self) -> &SystemTxType {
         self.subtype.get_or_init(|| {
             let input = self.decoded_input();
-            assert_eq!(self.to(), Some(input.to_address()));
             match input {
                 SystemTxInput::ImportInteropRoots(roots) => {
                     SystemTxType::ImportInteropRoots(roots.len() as u64)
@@ -214,24 +231,21 @@ mod tx_serde {
         }
     }
     // SYSCOIN
-    impl From<TransactionSerdeHelper> for SystemTxEnvelope {
-        fn from(tx: TransactionSerdeHelper) -> Self {
+    impl TryFrom<TransactionSerdeHelper> for SystemTxEnvelope {
+        type Error = String;
+
+        fn try_from(tx: TransactionSerdeHelper) -> Result<Self, Self::Error> {
             let inner = SystemTx {
                 to: tx.to,
                 input: tx.input,
                 salt: tx.nonce,
             };
-            let computed_hash = inner.calculate_hash();
-            debug_assert_eq!(
-                tx.hash, computed_hash,
-                "system transaction JSON hash does not match reconstructed payload"
-            );
-
-            SystemTxEnvelope {
-                hash: computed_hash,
-                inner,
-                subtype: OnceLock::new(),
+            let envelope = SystemTxEnvelope::try_from_inner(inner).map_err(str::to_owned)?;
+            if tx.hash != *envelope.hash() {
+                return Err("system transaction JSON hash does not match payload".to_owned());
             }
+
+            Ok(envelope)
         }
     }
 }
@@ -287,11 +301,8 @@ impl RlpEcdsaDecodableTx for SystemTxEnvelope {
 
     fn rlp_decode_fields(buf: &mut &[u8]) -> alloy::rlp::Result<Self> {
         let transaction = SystemTx::rlp_decode_fields(buf)?;
-        Ok(Self {
-            hash: transaction.calculate_hash(),
-            inner: transaction,
-            subtype: OnceLock::new(),
-        })
+        Self::try_from_inner(transaction)
+            .map_err(|_| alloy::rlp::Error::Custom("invalid system transaction"))
     }
 }
 
@@ -324,12 +335,8 @@ impl Decodable2718 for SystemTxEnvelope {
         let transaction = SystemTx::rlp_decode(buf)
             .map_err(|_| Eip2718Error::RlpError(alloy::rlp::Error::Custom("decode failed")))?;
 
-        let hash = transaction.calculate_hash();
-
-        Ok(Self {
-            hash,
-            inner: transaction,
-            subtype: OnceLock::new(),
+        Self::try_from_inner(transaction).map_err(|_| {
+            Eip2718Error::RlpError(alloy::rlp::Error::Custom("invalid system transaction"))
         })
     }
 
@@ -411,10 +418,23 @@ impl Transaction for SystemTxEnvelope {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{B256, U256, Uint};
-    use zksync_os_contract_interface::InteropRoot;
+    use alloy::consensus::Transaction;
+    use alloy::eips::{Decodable2718, Encodable2718};
+    use alloy::primitives::{Address, B256, Bytes, U256, Uint};
+    use alloy::sol_types::SolCall;
+    use zksync_os_contract_interface::{IInteropCenter::setInteropFeeCall, InteropRoot};
 
-    use crate::{SystemTxEnvelope, SystemTxType};
+    use crate::{
+        SystemTxEnvelope, SystemTxType, transaction::system::utils::L2_INTEROP_CENTER_ADDRESS,
+    };
+
+    use super::tx::SystemTx;
+
+    fn encode_system_tx(tx: SystemTx) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        tx.encode_2718(&mut encoded);
+        encoded
+    }
 
     /// System transaction serialization should be consistent with Ethereum JSON-RPC spec
     /// See https://ethereum.github.io/execution-apis/api-documentation/
@@ -519,5 +539,39 @@ mod tests {
             deserialized.system_subtype(),
             &SystemTxType::SetSLChainId(u64::MAX)
         );
+    }
+
+    #[test]
+    fn system_tx_decode_rejects_wrong_target() {
+        let tx = SystemTxEnvelope::set_interop_fee(U256::from(42), 1);
+        let encoded = encode_system_tx(SystemTx {
+            to: Address::ZERO,
+            input: tx.input().clone(),
+            salt: tx.nonce(),
+        });
+
+        assert!(SystemTxEnvelope::decode_2718(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn system_tx_decode_rejects_unknown_selector() {
+        let encoded = encode_system_tx(SystemTx {
+            to: L2_INTEROP_CENTER_ADDRESS,
+            input: Bytes::from_static(&[0xde, 0xad, 0xbe, 0xef]),
+            salt: 0,
+        });
+
+        assert!(SystemTxEnvelope::decode_2718(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn system_tx_decode_rejects_malformed_calldata() {
+        let encoded = encode_system_tx(SystemTx {
+            to: L2_INTEROP_CENTER_ADDRESS,
+            input: Bytes::copy_from_slice(&setInteropFeeCall::SELECTOR),
+            salt: 0,
+        });
+
+        assert!(SystemTxEnvelope::decode_2718(&mut encoded.as_slice()).is_err());
     }
 }
