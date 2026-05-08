@@ -1,5 +1,5 @@
 use crate::ReplayRecord;
-use alloy::primitives::{BlockNumber, Sealed};
+use alloy::primitives::{BlockHash, BlockNumber, Sealed};
 use futures::Stream;
 use futures::stream::BoxStream;
 use pin_project::pin_project;
@@ -55,6 +55,12 @@ pub trait ReadReplay: Debug + Send + Sync + Unpin + 'static {
         block_number: BlockNumber,
         db_key: Option<Vec<u8>>,
     ) -> Option<ReplayRecord>;
+
+    /// Returns the canonical L2 block header hash for a replay record.
+    ///
+    /// SYSCOIN: Keep the canonical sealed hash available from replay storage so pending RPC
+    /// simulations can advance the BLOCKHASH window without racing repository population.
+    fn get_canonical_block_hash(&self, block_number: BlockNumber) -> Option<BlockHash>;
 
     /// Returns the latest (greatest) record's block number.
     ///

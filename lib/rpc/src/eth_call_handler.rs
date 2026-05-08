@@ -209,7 +209,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
     }
 
     /// Builds new block context for theoretical pending block using current system state.
-    fn build_pending_block_context(&self) -> BlockContext {
+    fn build_pending_block_context(&self) -> Result<BlockContext, EthCallError> {
         let latest_block_number = self.storage.replay_storage().latest_record();
         let latest_block = self
             .storage
@@ -221,7 +221,25 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         // Shift block hashes one to the left and append latest block's hash
         let mut block_hashes = latest_block_context.block_hashes.0;
         block_hashes.rotate_left(1);
-        block_hashes[255] = U256::from_be_bytes(latest_block.block_output_hash.0);
+        // SYSCOIN: BLOCKHASH semantics require the canonical L2 block header hash, not the
+        // replay-output divergence hash stored in `ReplayRecord::block_output_hash`.
+        let latest_block_hash = if let Some(hash) = self
+            .storage
+            .replay_storage()
+            .get_canonical_block_hash(latest_block_number)
+        {
+            hash
+        } else {
+            // SYSCOIN: Older replay DBs may be missing `CanonicalHash` for the current tip.
+            // Fall back to the RPC repository only in that migration case; normal new writes use
+            // replay storage above, which is atomic with replay record insertion.
+            self.storage
+                .repository()
+                .get_block_by_number(latest_block_number)?
+                .map(|block| block.hash())
+                .ok_or(EthCallError::MissingCanonicalBlockHash(latest_block_number))?
+        };
+        block_hashes[255] = U256::from_be_bytes(latest_block_hash.0);
 
         // Use current timestamp for pending block
         let millis_since_epoch = SystemTime::now()
@@ -230,7 +248,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             .as_millis();
         let timestamp = (millis_since_epoch / 1000) as u64;
 
-        BlockContext {
+        Ok(BlockContext {
             chain_id: self.chain_id,
             block_number: latest_block_number + 1,
             block_hashes: BlockHashes(block_hashes),
@@ -245,7 +263,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             mix_hash: latest_block_context.mix_hash,
             execution_version: latest_block_context.execution_version,
             blob_fee: latest_block_context.blob_fee,
-        }
+        })
     }
 
     fn resolve_block_context(
@@ -263,7 +281,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 Ok(pending_block_context)
             } else {
                 // If it has, we build new block context using current system state
-                Ok(self.build_pending_block_context())
+                self.build_pending_block_context()
             }
         } else {
             let Some(block_number) = self.storage.resolve_block_number(block_id)? else {
@@ -738,6 +756,8 @@ pub enum EthCallError {
     UpgradeTxNotEstimatable,
     #[error("system transactions cannot be estimated")]
     SystemTxNotEstimatable,
+    #[error("missing canonical block hash for block {0}")]
+    MissingCanonicalBlockHash(u64),
 
     /// Error while decoding or validating transaction request fees.
     #[error(transparent)]

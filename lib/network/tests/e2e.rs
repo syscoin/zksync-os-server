@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, BlockNumber, Bytes};
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes};
 use alloy::signers::local::PrivateKeySigner;
 use assert_matches::assert_matches;
 use reth_network::test_utils::Peer;
@@ -39,6 +39,12 @@ impl ReadReplay for InMemReplay {
         _db_key: Option<Vec<u8>>,
     ) -> Option<ReplayRecord> {
         self.0.get(&block_number).cloned()
+    }
+
+    fn get_canonical_block_hash(&self, _block_number: BlockNumber) -> Option<BlockHash> {
+        // SYSCOIN: This in-memory test replay store is only used for network replay payload tests,
+        // which do not exercise canonical block hash lookups.
+        None
     }
 
     fn latest_record(&self) -> BlockNumber {
