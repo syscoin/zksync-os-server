@@ -763,7 +763,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .run(),
         );
 
-        if config.gateway_provider_config.is_some() {
+        // SYSCOIN: A Gateway RPC can be configured before/after migrations even while the chain
+        // currently settles on L1. Only ingest interop roots when the active settlement layer is
+        // Gateway; otherwise produced blocks intentionally exclude interop-root system txs and the
+        // subpool would retain watched roots indefinitely.
+        if node_startup_state.l1_state.sl_chain_id != node_startup_state.l1_state.l1_chain_id {
             runtime.spawn_critical_task(
                 "interop roots watcher",
                 InteropWatcher::create_watcher(
