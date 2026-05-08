@@ -151,9 +151,9 @@ pub fn in_memory(
             EthTransactionValidatorBuilder::new(zk_provider_factory, EthEvmConfig::new(chain_spec))
                 .no_prague()
                 .with_max_tx_input_bytes(validator_config.max_input_bytes)
-                // set tx_fee_cap to 0, effectively disabling the tx fee checks in the reth mempool
-                // this is necessary to process transactions with more than 1e18 tx fee
-                .set_tx_fee_cap(0)
+                // SYSCOIN: Operators may disable this with 0 for cheap base-token chains, or set a
+                // nonzero cap to retain reth's maximum-fee sanity check.
+                .set_tx_fee_cap(validator_config.tx_fee_cap)
                 .build(blob_store),
             CoinbaseTipOrdering::default(),
             blob_store,

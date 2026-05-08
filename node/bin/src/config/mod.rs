@@ -958,6 +958,11 @@ pub struct MempoolTxValidatorConfig {
     /// Max input size of a transaction to be accepted by mempool
     #[config(default_t = 128 * 1024 * 1024)]
     pub max_input_bytes: usize,
+
+    /// SYSCOIN: Maximum total transaction fee accepted by the reth mempool validator.
+    /// Set to `0 wei` to disable the cap for chains with a cheap base token.
+    #[config(default_t = 0 * EtherUnit::Wei)]
+    pub tx_fee_cap: EtherAmount,
 }
 
 /// Only used on the Main Node.
@@ -1653,6 +1658,7 @@ impl From<MempoolTxValidatorConfig> for zksync_os_mempool::TxValidatorConfig {
     fn from(c: MempoolTxValidatorConfig) -> Self {
         Self {
             max_input_bytes: c.max_input_bytes,
+            tx_fee_cap: c.tx_fee_cap.0,
         }
     }
 }
@@ -1828,6 +1834,17 @@ mod tests {
         repo.single::<L1SenderConfig>().unwrap().parse().unwrap()
     }
 
+    fn parse_mempool_tx_validator_config<const N: usize>(
+        env_vars: [(&str, &str); N],
+    ) -> MempoolTxValidatorConfig {
+        let schema = ConfigSchema::new(&MempoolTxValidatorConfig::DESCRIPTION, "tx_validator");
+        let repo = ConfigRepository::new(&schema).with(Environment::from_iter("", env_vars));
+        repo.single::<MempoolTxValidatorConfig>()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
     #[test]
     fn network_interface_is_a_separate_field_and_overrides_address() {
         let config = parse_network_config([
@@ -1915,6 +1932,19 @@ mod tests {
                 .max_fee_per_blob_gas_replacement_multiplier,
             1.75
         );
+    }
+
+    #[test]
+    fn mempool_tx_fee_cap_is_configurable() {
+        let default_config = parse_mempool_tx_validator_config([]);
+        assert_eq!(default_config.tx_fee_cap, EtherAmount(0));
+        let runtime_default = zksync_os_mempool::TxValidatorConfig::from(default_config);
+        assert_eq!(runtime_default.tx_fee_cap, 0);
+
+        let config = parse_mempool_tx_validator_config([("TX_VALIDATOR_TX_FEE_CAP", "2.5e12 wei")]);
+        assert_eq!(config.tx_fee_cap, EtherAmount(2_500_000_000_000));
+        let runtime_config = zksync_os_mempool::TxValidatorConfig::from(config);
+        assert_eq!(runtime_config.tx_fee_cap, 2_500_000_000_000);
     }
 
     #[test]
