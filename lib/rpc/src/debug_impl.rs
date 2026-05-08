@@ -90,22 +90,9 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     }
                 }
             }
-            GethDebugTracerType::JsTracer(js) => {
-                match crate::js_tracer::tracer::trace_block(txs, block_context, prev_state_view, js)
-                {
-                    Ok(outputs) => Ok(outputs
-                        .into_iter()
-                        .zip(&block.body.transactions)
-                        .map(|(value, tx_hash)| {
-                            TraceResult::new_success(GethTrace::JS(value), Some(*tx_hash))
-                        })
-                        .collect()),
-                    Err(err) => {
-                        tracing::error!(?err, "Failed to trace transaction with JS tracer");
-                        Err(DebugError::InternalError)
-                    }
-                }
-            }
+            // SYSCOIN: Do not execute attacker-supplied JavaScript tracers on RPC threads.
+            // Boa execution is not resource bounded here, so only built-in tracers are exposed.
+            GethDebugTracerType::JsTracer(_) => Err(DebugError::UnsupportedJsTracer),
             other => Err(DebugError::UnsupportedTracer(other)),
         }
     }
@@ -177,17 +164,9 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     block_overrides.map(Box::new),
                 )?)
             }
-            (GethDebugTracerType::JsTracer(js_cfg), state_overrides, block_overrides) => {
-                let value = self.eth_call_handler.call_js_tracer_impl(
-                    request,
-                    block_id,
-                    js_cfg,
-                    state_overrides,
-                    block_overrides.map(Box::new),
-                )?;
-
-                Ok(GethTrace::JS(value))
-            }
+            // SYSCOIN: Do not execute attacker-supplied JavaScript tracers on RPC threads.
+            // Boa execution is not resource bounded here, so only built-in tracers are exposed.
+            (GethDebugTracerType::JsTracer(_), ..) => Err(DebugError::UnsupportedJsTracer),
             (other, ..) => Err(DebugError::UnsupportedTracer(other)),
         }
     }
@@ -294,6 +273,9 @@ pub enum DebugError {
     /// Unsupported tracer type
     #[error("tracer {} is not supported", .0.as_str())]
     UnsupportedTracer(GethDebugTracerType),
+    /// Unsupported JS tracer
+    #[error("js tracer is not supported")]
+    UnsupportedJsTracer,
     /// Tracing with `tx_index` is not supported
     #[error("tracing with tx index is not supported")]
     UnsupportedTxIndex,
