@@ -529,6 +529,13 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             )
             .await
         } else {
+            // SYSCOIN: EN replay records are accepted only from configured main-node boot peers.
+            let trusted_main_node_peers = config
+                .network_config
+                .boot_nodes
+                .iter()
+                .map(|peer| peer.id)
+                .collect();
             let record_overrides = config
                 .sequencer_config
                 .en_replay_record_overrides
@@ -546,6 +553,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                     max_blocks_per_message: config
                         .sequencer_config
                         .en_max_blocks_per_replay_message,
+                    trusted_main_node_peers,
                     replay_sender,
                     verification: config.batch_verification_config.client_enabled.then(|| {
                         ExternalNodeVerifierConfig {

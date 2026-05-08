@@ -30,9 +30,20 @@ pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
         starting_block,
         record_overrides,
         max_blocks_per_message,
+        trusted_main_node_peers,
         replay_sender,
         verification: verifier,
     } = config;
+    // SYSCOIN: Only the configured main-node enode is allowed to feed replay records to an EN.
+    if !trusted_main_node_peers.contains(&peer_id) {
+        tracing::warn!(
+            %peer_id,
+            trusted_main_node_peers = ?trusted_main_node_peers,
+            "terminating replay connection from untrusted peer"
+        );
+        return;
+    }
+
     if perform_verifier_handshake::<P>(&mut conn, &outbound_tx, verifier.as_ref())
         .await
         .is_err()

@@ -1,6 +1,7 @@
 use crate::service::{PeerVerifyBatch, PeerVerifyBatchResult};
 use crate::wire::replays::RecordOverride;
 use alloy::primitives::{Address, BlockNumber};
+use reth_network_peers::PeerId;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_storage_api::ReplayRecord;
@@ -23,6 +24,8 @@ pub struct ExternalNodeProtocolConfig {
     pub record_overrides: Vec<RecordOverride>,
     /// Maximum replay records requested per `BlockReplays` response message.
     pub max_blocks_per_message: u64,
+    // SYSCOIN: EN replay sync must only trust the configured main-node peer identity.
+    pub trusted_main_node_peers: Vec<PeerId>,
     /// Channel used to forward replay records into the local sequencer.
     pub replay_sender: mpsc::Sender<ReplayRecord>,
     /// Optional verifier configuration. When absent, this EN only participates in replay sync.

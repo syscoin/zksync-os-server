@@ -3,6 +3,7 @@ use alloy::signers::local::PrivateKeySigner;
 use assert_matches::assert_matches;
 use reth_network::test_utils::Peer;
 use reth_network::{Peers, test_utils::Testnet};
+use reth_network_peers::PeerId;
 use reth_provider::test_utils::MockEthProvider;
 use reth_provider::{BlockReader, HeaderProvider};
 use secrecy::{ExposeSecret, SecretString};
@@ -122,6 +123,7 @@ trait PeerExt {
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
         verifier_enabled: bool,
+        trusted_main_node_peers: Vec<PeerId>,
     ) -> (
         mpsc::UnboundedReceiver<ProtocolEvent>,
         mpsc::Receiver<ReplayRecord>,
@@ -134,6 +136,7 @@ trait PeerExt {
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
         verifier_signing_key: Option<SecretString>,
+        trusted_main_node_peers: Vec<PeerId>,
     ) -> TestPeerProtocolHandles;
 }
 
@@ -148,6 +151,7 @@ where
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
         verifier_enabled: bool,
+        trusted_main_node_peers: Vec<PeerId>,
     ) -> (
         mpsc::UnboundedReceiver<ProtocolEvent>,
         mpsc::Receiver<ReplayRecord>,
@@ -162,6 +166,7 @@ where
             replays,
             max_active_connections,
             verifier_enabled.then(default_verifier_signing_key),
+            trusted_main_node_peers,
         );
         (protocol_rx, replay_rx)
     }
@@ -173,6 +178,7 @@ where
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
         verifier_signing_key: Option<SecretString>,
+        trusted_main_node_peers: Vec<PeerId>,
     ) -> TestPeerProtocolHandles {
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let (replay_tx, replay_rx) = mpsc::channel(8);
@@ -215,6 +221,7 @@ where
                         starting_block: Arc::new(RwLock::new(starting_block)),
                         record_overrides: vec![],
                         max_blocks_per_message: 64,
+                        trusted_main_node_peers,
                         replay_sender: replay_tx,
                         verification,
                     },
@@ -242,6 +249,7 @@ async fn send_replay_record_matching_version(version: ZksVersion) {
     async fn test_inner<P: ZksProtocolVersionSpec>() {
         let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
         let record1 = dummy_record::<P>(1);
+        let main_peer_id = net.peers_mut()[0].peer_id();
 
         let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<P>(
             NodeRole::MainNode,
@@ -249,6 +257,7 @@ async fn send_replay_record_matching_version(version: ZksVersion) {
             [(1, record1.clone())],
             100,
             false,
+            vec![],
         );
         let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<P>(
             NodeRole::ExternalNode,
@@ -256,6 +265,7 @@ async fn send_replay_record_matching_version(version: ZksVersion) {
             [(1, record1.clone())],
             100,
             false,
+            vec![main_peer_id],
         );
 
         // Spawn and connect all the peers
@@ -286,6 +296,7 @@ async fn send_replay_record_matching_version(version: ZksVersion) {
 async fn emits_replay_session_events() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::MainNode,
@@ -293,6 +304,7 @@ async fn emits_replay_session_events() {
         [(1, record1.clone())],
         100,
         false,
+        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -300,6 +312,7 @@ async fn emits_replay_session_events() {
         [(1, record1.clone())],
         100,
         false,
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -353,10 +366,68 @@ async fn emits_replay_session_events() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn external_node_rejects_replay_from_untrusted_peer() {
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let record1 = dummy_record::<ZksProtocolV3>(1);
+    let external_peer_id = net.peers_mut()[1].peer_id();
+
+    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
+        NodeRole::MainNode,
+        0,
+        [(1, record1)],
+        100,
+        false,
+        vec![],
+    );
+    let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
+        NodeRole::ExternalNode,
+        1,
+        [],
+        100,
+        false,
+        vec![external_peer_id],
+    );
+
+    let handle = net.spawn();
+    handle.connect_peers().await;
+
+    assert_matches!(from_peer0.recv().await, Some(ProtocolEvent::Established { peer_id, .. }) => {
+        assert_eq!(peer_id, *handle.peers()[1].peer_id());
+    });
+    let forbidden_replay_event =
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            loop {
+                match from_peer0.recv().await {
+                    Some(
+                        event @ (ProtocolEvent::ReplayRequested { .. }
+                        | ProtocolEvent::ReplayBlockSent { .. }),
+                    ) => return event,
+                    Some(_) => {}
+                    None => panic!("protocol event stream closed unexpectedly"),
+                }
+            }
+        })
+        .await;
+    assert!(
+        forbidden_replay_event.is_err(),
+        "untrusted peer must not receive a replay request or send replay records"
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            replay_rx_peer1.recv()
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn batches_multiple_replay_records_on_zks3() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
     let record2 = dummy_record::<ZksProtocolV3>(2);
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::MainNode,
@@ -364,6 +435,7 @@ async fn batches_multiple_replay_records_on_zks3() {
         [(1, record1.clone()), (2, record2.clone())],
         100,
         false,
+        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -371,6 +443,7 @@ async fn batches_multiple_replay_records_on_zks3() {
         [(1, record1.clone()), (2, record2.clone())],
         100,
         false,
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -416,6 +489,7 @@ async fn batches_multiple_replay_records_on_zks3() {
 async fn emits_verifier_role_request_event() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::MainNode,
@@ -423,6 +497,7 @@ async fn emits_verifier_role_request_event() {
         [(1, record1.clone())],
         100,
         false,
+        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -430,6 +505,7 @@ async fn emits_verifier_role_request_event() {
         [(1, record1.clone())],
         100,
         true,
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -475,6 +551,7 @@ async fn emits_verifier_role_request_event() {
 async fn authorizes_verifier_before_replay() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
     let expected_signer = PrivateKeySigner::from_str(
         "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110",
     )
@@ -487,6 +564,7 @@ async fn authorizes_verifier_before_replay() {
         [(1, record1.clone())],
         100,
         false,
+        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -494,6 +572,7 @@ async fn authorizes_verifier_before_replay() {
         [(1, record1.clone())],
         100,
         true,
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -552,6 +631,7 @@ async fn authorizes_verifier_before_replay() {
 async fn emits_verifier_unauthorized_before_replay() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let mut main = net.peers_mut()[0].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::MainNode,
@@ -559,6 +639,7 @@ async fn emits_verifier_unauthorized_before_replay() {
         [(1, record1.clone())],
         100,
         None,
+        vec![],
     );
     let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -566,6 +647,7 @@ async fn emits_verifier_unauthorized_before_replay() {
         [(1, record1.clone())],
         100,
         Some(alternate_verifier_signing_key()),
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -627,6 +709,7 @@ async fn emits_verifier_unauthorized_before_replay() {
 async fn forwards_verify_batch_result_to_main_node() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV3>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let mut main = net.peers_mut()[0].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::MainNode,
@@ -634,6 +717,7 @@ async fn forwards_verify_batch_result_to_main_node() {
         [(1, record1.clone())],
         100,
         None,
+        vec![],
     );
     let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -641,6 +725,7 @@ async fn forwards_verify_batch_result_to_main_node() {
         [(1, record1.clone())],
         100,
         Some(default_verifier_signing_key()),
+        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -717,12 +802,14 @@ async fn send_replay_record_different_versions(version: ZksVersion) {
     async fn test_inner<P: ZksProtocolVersionSpec>() {
         let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
         let record1 = dummy_record::<P>(1);
+        let main_peer_id = net.peers_mut()[0].peer_id();
         let (_, _) = net.peers_mut()[0].add_zks_sub_protocol::<P>(
             NodeRole::MainNode,
             0,
             [(1, record1.clone())],
             100,
             false,
+            vec![],
         );
         let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV0>(
             NodeRole::MainNode,
@@ -730,6 +817,7 @@ async fn send_replay_record_different_versions(version: ZksVersion) {
             [(1, record1.clone())],
             100,
             false,
+            vec![],
         );
 
         let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1]
@@ -739,6 +827,7 @@ async fn send_replay_record_different_versions(version: ZksVersion) {
                 [(1, record1.clone())],
                 100,
                 false,
+                vec![main_peer_id],
             );
 
         // Spawn and connect all the peers
@@ -778,6 +867,7 @@ async fn max_active_connections() {
     // successfully connected first while peer2 is expected to error out with
     // `MaxActiveConnectionsExceeded`.
     let mut net = Testnet::create_with(3, MockEthProvider::default()).await;
+    let main_peer_id = net.peers_mut()[0].peer_id();
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV1>(
         NodeRole::MainNode,
@@ -785,19 +875,32 @@ async fn max_active_connections() {
         [],
         1,
         false,
+        vec![],
     );
 
     let peer1 = &mut net.peers_mut()[1];
     let peer1_id = peer1.peer_id();
     let peer1_addr = peer1.local_addr();
-    let (_, _) =
-        peer1.add_zks_sub_protocol::<ZksProtocolV1>(NodeRole::ExternalNode, 1, [], 100, false);
+    let (_, _) = peer1.add_zks_sub_protocol::<ZksProtocolV1>(
+        NodeRole::ExternalNode,
+        1,
+        [],
+        100,
+        false,
+        vec![main_peer_id],
+    );
 
     let peer2 = &mut net.peers_mut()[2];
     let peer2_id = peer2.peer_id();
     let peer2_addr = peer2.local_addr();
-    let (_, _) =
-        peer2.add_zks_sub_protocol::<ZksProtocolV1>(NodeRole::ExternalNode, 1, [], 100, false);
+    let (_, _) = peer2.add_zks_sub_protocol::<ZksProtocolV1>(
+        NodeRole::ExternalNode,
+        1,
+        [],
+        100,
+        false,
+        vec![main_peer_id],
+    );
 
     let handle = net.spawn();
 
