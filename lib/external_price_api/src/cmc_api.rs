@@ -176,7 +176,10 @@ impl PriceApiClient for CmcPriceApiClient {
             APIToken::ZK => (self.get_token_price_by_id(ZKSYNC_ID).await?, ZK_DECIMALS),
         };
 
-        let res = TokenApiRatio::from_f64_decimals_and_timestamp(price_f64, decimals, None);
+        // SYSCOIN: Treat malformed upstream API prices as fetch errors so the updater can retry
+        // instead of panicking a critical main-node task.
+        let res = TokenApiRatio::try_from_f64_decimals_and_timestamp(price_f64, decimals, None)
+            .with_context(|| format!("Invalid CoinMarketCap USD price for token: {token}"))?;
         tracing::trace!("fetch_ratio({token:?}): ratio {:?}", res.ratio.to_f64());
         Ok(res)
     }
@@ -368,5 +371,43 @@ mod tests {
             .await
             .unwrap();
         println!("token unit price: {}", r.ratio.to_f64().unwrap());
+    }
+
+    #[tokio::test]
+    async fn mock_malformed_price_returns_error() {
+        let mock_server = MockServer::start();
+        mock_server.mock(|when, then| {
+            when.method(GET)
+                .header_exists(AUTH_HEADER)
+                .path("/v2/cryptocurrency/quotes/latest")
+                .query_param("id", ETHEREUM_ID.to_string());
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({
+                    "data": {
+                        ETHEREUM_ID.to_string(): {
+                            "quote": {
+                                "USD": {
+                                    "price": 0.0
+                                }
+                            }
+                        }
+                    }
+                }));
+        });
+        let client = make_client(
+            &mock_server,
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        );
+
+        let error_string = client
+            .fetch_ratio(APIToken::ETH)
+            .await
+            .expect_err("malformed price should be returned as an error")
+            .to_string();
+        assert!(
+            error_string.starts_with("Invalid CoinMarketCap USD price for token"),
+            "Error was: {error_string}",
+        );
     }
 }

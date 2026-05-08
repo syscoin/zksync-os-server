@@ -68,9 +68,15 @@ impl BaseTokenPriceUpdaterConfig {
             APIToken::ERC20 { address, .. } => self.fallback_prices.get(&address).copied()?,
         };
         let decimals = token.decimals();
-        Some(TokenApiRatio::from_f64_decimals_and_timestamp(
-            price_f64, decimals, None,
-        ))
+        // SYSCOIN: Fallback prices are operator-provided config, but keep invalid values from
+        // panicking while handling an API outage.
+        match TokenApiRatio::try_from_f64_decimals_and_timestamp(price_f64, decimals, None) {
+            Ok(price) => Some(price),
+            Err(err) => {
+                tracing::warn!(?token, price_f64, %err, "Ignoring invalid fallback token price");
+                None
+            }
+        }
     }
 }
 
@@ -164,7 +170,7 @@ impl<F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>, P: Provide
 
         let price_api_client = match external_price_api_client_config {
             ExternalPriceApiClientConfig::Forced { forced } => {
-                Box::new(ForcedPriceClient::new(forced)) as Box<dyn PriceApiClient>
+                Box::new(ForcedPriceClient::new(forced)?) as Box<dyn PriceApiClient>
             }
             ExternalPriceApiClientConfig::CoinGecko {
                 base_url,
