@@ -237,28 +237,39 @@ impl FeeProvider {
             base_pubdata_price
         };
 
-        // Limit pubdata price increase to 1.5x per block.
+        // SYSCOIN: Bound pubdata price movement symmetrically so manipulated token
+        // prices cannot slash DA fees immediately and then recover slowly.
         let mut pubdata_price = if let Some(prev_pubdata_price) =
             self.previous_block_fee_params.map(|p| p.pubdata_price)
         {
-            let capped_price = {
+            let (min_pubdata_price, max_pubdata_price) = {
                 const PUBDATA_PRICE_MAX_CHANGE_DENOMINATOR: u32 = 2;
 
-                let mut r = BigUint::from_bytes_le(prev_pubdata_price.as_le_slice());
-                r += (&r / BigUint::from(PUBDATA_PRICE_MAX_CHANGE_DENOMINATOR))
+                let previous_pubdata_price =
+                    BigUint::from_bytes_le(prev_pubdata_price.as_le_slice());
+                let min_pubdata_price = &previous_pubdata_price
+                    - (&previous_pubdata_price
+                        / BigUint::from(PUBDATA_PRICE_MAX_CHANGE_DENOMINATOR));
+                let max_pubdata_price = &previous_pubdata_price
+                    + (&previous_pubdata_price
+                        / BigUint::from(PUBDATA_PRICE_MAX_CHANGE_DENOMINATOR))
                     .max(BigUint::from(1u32));
-                r
+
+                (min_pubdata_price, max_pubdata_price)
             };
 
-            if capped_price < desired_pubdata_price {
+            if desired_pubdata_price < min_pubdata_price
+                || max_pubdata_price < desired_pubdata_price
+            {
                 tracing::debug!(
-                    %capped_price,
+                    %min_pubdata_price,
+                    %max_pubdata_price,
                     %prev_pubdata_price,
                     %desired_pubdata_price,
-                    "Capping pubdata price to 1.5*prev_pubdata_price",
+                    "Capping pubdata price change from previous block",
                 );
             }
-            desired_pubdata_price.min(capped_price)
+            desired_pubdata_price.clamp(min_pubdata_price, max_pubdata_price)
         } else {
             desired_pubdata_price
         };
@@ -311,4 +322,79 @@ pub struct FeeParams {
     pub eip1559_basefee: U256,
     pub native_price: U256,
     pub pubdata_price: U256,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FeeConfig, FeeParams, FeeProvider};
+    use alloy::primitives::U256;
+    use num::BigUint;
+    use num::rational::Ratio;
+    use tokio::sync::watch;
+    use zksync_os_types::{PubdataMode, TokenApiRatio, TokenPricesForFees};
+
+    fn token_prices(base_token_usd_price: f64, sl_token_usd_price: f64) -> TokenPricesForFees {
+        TokenPricesForFees {
+            base_token_usd_price: TokenApiRatio::from_f64_decimals_and_timestamp(
+                base_token_usd_price,
+                0,
+                None,
+            ),
+            sl_token_usd_price: TokenApiRatio::from_f64_decimals_and_timestamp(
+                sl_token_usd_price,
+                0,
+                None,
+            ),
+        }
+    }
+
+    fn fee_provider(
+        previous_pubdata_price: Option<u64>,
+        pubdata_price_in_sl_token: u64,
+    ) -> FeeProvider {
+        let (_pubdata_price_sender, pubdata_price_receiver) =
+            watch::channel(Some(U256::from(pubdata_price_in_sl_token)));
+        let (_blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
+        let (_token_price_sender, token_price_receiver) = watch::channel(None);
+        let previous_block_fee_params = previous_pubdata_price.map(|pubdata_price| FeeParams {
+            eip1559_basefee: U256::ZERO,
+            native_price: U256::ZERO,
+            pubdata_price: U256::from(pubdata_price),
+        });
+
+        FeeProvider::new(
+            FeeConfig {
+                native_price_usd: Ratio::from_integer(BigUint::from(1u32)),
+                base_fee_override: None,
+                native_per_gas: 1,
+                pubdata_price_override: None,
+                pubdata_price_cap: None,
+                native_price_override: None,
+            },
+            previous_block_fee_params,
+            pubdata_price_receiver,
+            blob_fill_ratio_receiver,
+            token_price_receiver,
+            Some(PubdataMode::Calldata),
+        )
+    }
+
+    #[test]
+    fn pubdata_price_decrease_is_capped_from_previous_block() {
+        let provider = fee_provider(Some(1_000), 1_000);
+
+        let price =
+            provider.calculate_pubdata_price(&BigUint::from(1u32), &token_prices(100.0, 1.0));
+
+        assert_eq!(price, BigUint::from(500u32));
+    }
+
+    #[test]
+    fn pubdata_price_increase_is_capped_from_previous_block() {
+        let provider = fee_provider(Some(1_000), 2_000);
+
+        let price = provider.calculate_pubdata_price(&BigUint::from(1u32), &token_prices(1.0, 1.0));
+
+        assert_eq!(price, BigUint::from(1_500u32));
+    }
 }
