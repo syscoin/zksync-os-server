@@ -227,10 +227,23 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             );
 
             if let Some(sidecar) = batch_envelope.batch.blob_sidecar.clone() {
-                self.sidecar_sender
-                    .send(sidecar)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to send sidecar: {e}"))?;
+                // SYSCOIN: Blob sidecars only feed gas-adjuster fill-ratio statistics. Keep this
+                // path lossy so a full stats channel cannot backpressure sealed batch output.
+                match self.sidecar_sender.try_send(sidecar) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::debug!(
+                            batch_number = batch_envelope.batch_number(),
+                            "Dropping blob sidecar gas-adjuster sample because the channel is full"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            batch_number = batch_envelope.batch_number(),
+                            "Dropping blob sidecar gas-adjuster sample because the receiver is closed"
+                        );
+                    }
+                }
             }
             output
                 .send_and_record(batch_envelope, &state_reporter)
