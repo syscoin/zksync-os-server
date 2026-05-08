@@ -484,6 +484,7 @@ mod tests {
             signing_key: SecretString::new(
                 "0xa4cabe6332985182371b02c0b117d9e83c8d608714b63f71fb000178ef25fa65".into(),
             ),
+            syscoin_da_verification: None,
         }
     }
 

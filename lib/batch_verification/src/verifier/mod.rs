@@ -1,17 +1,21 @@
+use crate::config::SyscoinDaVerificationConfig;
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::{VerificationRequest, normalized_commit_data};
 use alloy::eips::BlockId;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, keccak256};
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
+use bitcoin_da_client::SyscoinClient;
 use block_cache::BlockCache;
 use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::{
-    BatchSignature, ExtendedCommitBatchInfo, expected_upgrade_tx_hash_for_batch,
+    BatchSignature, ExtendedCommitBatchInfo, SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+    expected_upgrade_tx_hash_for_batch, syscoin_edge_da_refs_from_input,
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
+use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_interface::types::BlockOutput;
 use zksync_os_merkle_tree::TreeBatchOutput;
 use zksync_os_network::{
@@ -33,6 +37,7 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     diamond_proxy_sl: Address,
     l1_state: L1State,
     signer: PrivateKeySigner,
+    syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
     block_cache: BlockCache<Finality, TreeBlock>,
     read_state: ReadState,
     verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
@@ -49,6 +54,15 @@ enum BatchVerificationError {
     BatchDataMismatch,
     #[error("State error: {0}")]
     State(#[from] StateError),
+    // SYSCOIN
+    #[error("Missing Syscoin DA verification config")]
+    MissingSyscoinDaVerificationConfig,
+    // SYSCOIN
+    #[error("Invalid Syscoin DA commitment: {0}")]
+    InvalidSyscoinDaCommitment(String),
+    // SYSCOIN
+    #[error("Syscoin DA verification failed: {0}")]
+    SyscoinDaVerificationFailed(String),
 }
 
 impl<Finality: ReadFinality, ReadState: ReadStateHistory>
@@ -59,6 +73,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         chain_id: u64,
         diamond_proxy_sl: Address,
         private_key: SecretString,
+        syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
         finality: Finality,
         l1_state: L1State,
         read_state: ReadState,
@@ -81,6 +96,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             diamond_proxy_sl,
             l1_state,
             signer,
+            syscoin_da_verification,
             block_cache: BlockCache::new(finality),
             read_state,
             verify_request_rx,
@@ -182,6 +198,8 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         if expected_commit_data != request.commit_data {
             return Err(BatchVerificationError::BatchDataMismatch);
         }
+        self.verify_syscoin_da_before_signing(&expected_commit_data)
+            .await?;
 
         let signature = BatchSignature::sign_batch(
             &request.prev_commit_data,
@@ -195,6 +213,124 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         .await;
 
         Ok(signature)
+    }
+
+    // SYSCOIN: batch-verifier signatures should not attest to a Syscoin DA batch
+    // unless the batch DA blobs and compact edge DA refs are independently
+    // retrievable on the DA layer.
+    async fn verify_syscoin_da_before_signing(
+        &self,
+        commit_data: &zksync_os_contract_interface::models::CommitBatchInfo,
+    ) -> Result<(), BatchVerificationError> {
+        let has_batch_da = commit_data.l2_da_commitment_scheme == DACommitmentScheme::BlobsZKsyncOS;
+        let has_edge_da_refs = !commit_data.edge_da_refs_input.is_empty();
+        if !has_batch_da && !has_edge_da_refs {
+            return Ok(());
+        }
+
+        if has_batch_da {
+            if commit_data.operator_da_input.is_empty()
+                || commit_data.operator_da_input.len() % 32 != 0
+            {
+                return Err(BatchVerificationError::InvalidSyscoinDaCommitment(
+                    "operator DA input must be a non-empty array of 32-byte blob hashes"
+                        .to_string(),
+                ));
+            }
+            let blob_count = commit_data.operator_da_input.len() / 32;
+            if blob_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH {
+                return Err(BatchVerificationError::InvalidSyscoinDaCommitment(format!(
+                    "operator DA input has {blob_count} blobs, max is {SYSCOIN_DA_MAX_BLOBS_PER_BATCH}"
+                )));
+            }
+            let actual_commitment = keccak256(&commit_data.operator_da_input);
+            if actual_commitment != commit_data.da_commitment {
+                return Err(BatchVerificationError::InvalidSyscoinDaCommitment(format!(
+                    "commitment mismatch: expected {}, got {}",
+                    commit_data.da_commitment, actual_commitment
+                )));
+            }
+        }
+
+        let config = self
+            .syscoin_da_verification
+            .as_ref()
+            .ok_or(BatchVerificationError::MissingSyscoinDaVerificationConfig)?;
+        let client = SyscoinClient::new(
+            &config.rpc_url,
+            config.rpc_user.expose_secret(),
+            config.rpc_password.expose_secret(),
+            &config.poda_url,
+            Some(config.request_timeout),
+            &config.wallet_name,
+        )
+        .map_err(|err| {
+            BatchVerificationError::SyscoinDaVerificationFailed(format!(
+                "failed to create Bitcoin DA client: {err}"
+            ))
+        })?;
+
+        if has_batch_da {
+            for (idx, version_hash) in commit_data.operator_da_input.chunks_exact(32).enumerate() {
+                let version_hash = alloy::hex::encode(version_hash);
+                Self::verify_syscoin_blob_available(
+                    &client,
+                    &version_hash,
+                    &format!("batch DA blob {idx}"),
+                )
+                .await?;
+            }
+        }
+
+        if has_edge_da_refs {
+            let edge_refs = syscoin_edge_da_refs_from_input(&commit_data.edge_da_refs_input)
+                .ok_or_else(|| {
+                    BatchVerificationError::InvalidSyscoinDaCommitment(
+                        "failed to parse compact edge DA refs".to_string(),
+                    )
+                })?;
+            for edge_ref in edge_refs {
+                for (idx, version_hash) in edge_ref.blob_version_hashes.chunks_exact(32).enumerate()
+                {
+                    let version_hash = alloy::hex::encode(version_hash);
+                    Self::verify_syscoin_blob_available(
+                        &client,
+                        &version_hash,
+                        &format!(
+                            "edge DA ref chain {}, batch {}, blob {}",
+                            edge_ref.edge_chain_id, edge_ref.edge_batch_number, idx
+                        ),
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // SYSCOIN
+    async fn verify_syscoin_blob_available(
+        client: &SyscoinClient,
+        version_hash: &str,
+        context: &str,
+    ) -> Result<(), BatchVerificationError> {
+        let exists = client.blob_exists(version_hash).await.map_err(|err| {
+            BatchVerificationError::SyscoinDaVerificationFailed(format!(
+                "failed to check {context} ({version_hash}) availability: {err}"
+            ))
+        })?;
+        if !exists {
+            return Err(BatchVerificationError::SyscoinDaVerificationFailed(
+                format!("{context} ({version_hash}) is not retrievable"),
+            ));
+        }
+        tracing::info!(
+            version_hash,
+            context,
+            "Syscoin DA blob retrievable before batch signing"
+        );
+        Ok(())
     }
 
     async fn handle_verification_message(
