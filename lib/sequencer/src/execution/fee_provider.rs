@@ -317,7 +317,9 @@ fn biguint_to_u256_checked(value: &BigUint) -> Option<U256> {
     Some(U256::from_le_slice(&bytes))
 }
 
-#[derive(Debug, Clone, Copy)]
+// SYSCOIN: Fee snapshots are compared after transaction-source waits to keep tx selection and
+// BlockContext pricing on the same fee inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FeeParams {
     pub eip1559_basefee: U256,
     pub native_price: U256,

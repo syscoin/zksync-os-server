@@ -60,8 +60,10 @@ impl<T: L2Subpool> Pool<T> {
     /// flow through Gateway settlement) and must not be included in produced blocks.
     ///
     /// Returns `None` if all transaction sources are closed.
+    // SYSCOIN: Stream selection only needs shared access. Keeping this borrow immutable lets the
+    // sequencer refresh pending fees after the wait without rebuilding unrelated pool state.
     pub async fn best_transactions_stream<'a>(
-        &'a mut self,
+        &'a self,
         next_interop_tx_allowed_after: Instant,
         include_interop_traffic: bool,
     ) -> Option<StreamOutcome<'a>> {
