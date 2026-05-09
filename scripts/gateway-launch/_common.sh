@@ -918,22 +918,10 @@ post_fund_poll_interval = float(
 )
 
 
-funder = subprocess.check_output(
-    ["cast", "wallet", "address", "--private-key", pk],
-    text=True,
-).strip()
-funder_balance = wei_balance(funder)
-starting_nonce = int(
-    subprocess.check_output(
-        ["cast", "nonce", funder, "--block", "pending", "--rpc-url", rpc],
-        text=True,
-    ).strip()
-)
-
 recipients = {}
 for wallet_path in wallet_paths:
-    w = yaml.safe_load(wallet_path.read_text()) or {}
-    if not isinstance(w, dict):
+    w = yaml.safe_load(wallet_path.read_text())
+    if not isinstance(w, dict) or not w:
         raise SystemExit(f"invalid wallets yaml object in {wallet_path}")
     for role, cfg in w.items():
         if role == "test_wallet":
@@ -955,6 +943,21 @@ for wallet_path in wallet_paths:
             }
         else:
             existing["labels"].append(label)
+
+if not recipients:
+    raise SystemExit("no fundable wallet entries found in selected wallet files")
+
+funder = subprocess.check_output(
+    ["cast", "wallet", "address", "--private-key", pk],
+    text=True,
+).strip()
+funder_balance = wei_balance(funder)
+starting_nonce = int(
+    subprocess.check_output(
+        ["cast", "nonce", funder, "--block", "pending", "--rpc-url", rpc],
+        text=True,
+    ).strip()
+)
 
 transfers = []
 wait_only = []
