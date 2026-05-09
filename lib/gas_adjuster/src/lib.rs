@@ -472,6 +472,7 @@ impl GasAdjuster {
         let err = err.to_string();
         if err.contains("missing bitcoin_da_rpc_")
             || err.contains("invalid bitcoin_da_rpc_")
+            || err.contains("RPC error:")
             || err.contains("failed to construct Syscoin client")
         {
             return false;
@@ -683,6 +684,11 @@ mod tests {
         assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
                 "failed to construct Syscoin client for blob fee estimation: invalid URL"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: RPC error: method not found"
             )
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
