@@ -75,7 +75,7 @@ if not isinstance(current, str) or current.strip() == "":
     )
     print(
         f"gateway-launch: patched {secrets_path} "
-        f"(set l1.gateway_rpc_url={gateway_rpc_url})"
+        "(set l1.gateway_rpc_url=<redacted>)"
     )
 PY
 }
@@ -672,7 +672,7 @@ PY
 ${raw_candidates}
 EOF
 
-  echo "no DA validator candidate has bytecode on Gateway RPC (${gateway_rpc_url}) for ${edge_chain_name}; set EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR to a Gateway-deployed IL1DAValidator contract" >&2
+  echo "no DA validator candidate has bytecode on the configured Gateway RPC for ${edge_chain_name}; set EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR to a Gateway-deployed IL1DAValidator contract" >&2
   return 1
 }
 
