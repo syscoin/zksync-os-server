@@ -121,27 +121,8 @@ impl GasAdjuster {
 
         if current_block > last_processed_block {
             let n_blocks = current_block - last_processed_block;
-            // SYSCOIN: fetch the authoritative Syscoin DA fee before requesting any
-            // backfilled fee history. If the RPC fails, this tick must not repeatedly
-            // allocate/fetch growing L1 fee-history ranges.
-            let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
-                Some(Self::bitcoin_blob_base_fee(&self.config).await?)
-            } else {
-                None
-            };
             let fee_data =
                 Self::base_fee_history(&self.sl_provider, current_block, n_blocks, None).await?;
-
-            // SYSCOIN: only build samples after all fallible fetches have succeeded, so a
-            // failed tick leaves all fee windows unchanged.
-            let blob_base_fee_samples = if let Some(fixed_blob_base_fee) = fixed_blob_base_fee {
-                vec![fixed_blob_base_fee; fee_data.len()]
-            } else {
-                fee_data
-                    .iter()
-                    .map(|fee| fee.base_fee_per_blob_gas)
-                    .collect()
-            };
 
             // We shouldn't rely on provider to return consistent results, so we check that we have at least one new sample.
             if let Some(current_base_fee_per_gas) = fee_data.last().map(|fee| fee.base_fee_per_gas)
@@ -164,23 +145,48 @@ impl GasAdjuster {
                     .set(self.base_fee_statistics.median() as u64);
             }
 
-            if let Some(&current_blob_base_fee) = blob_base_fee_samples.last() {
-                if current_blob_base_fee > u64::MAX as u128 {
-                    tracing::info!(
-                        "Failed to report current_blob_base_fee = {current_blob_base_fee}, it exceeds u64::MAX"
-                    );
-                } else {
-                    METRICS
-                        .current_blob_base_fee
-                        .set(current_blob_base_fee as u64);
+            // SYSCOIN: Syscoin DA fee sampling is independent from L1 base-fee sampling.
+            // A transient Syscoin RPC failure leaves the blob/pubdata median unchanged,
+            // while base_fee_statistics still advances so gas_price() does not go stale.
+            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
+                match Self::bitcoin_blob_base_fee(&self.config).await {
+                    Ok(fixed_blob_base_fee) => Some(vec![fixed_blob_base_fee; fee_data.len()]),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "Failed to update Syscoin blob base fee; keeping previous blob fee median"
+                        );
+                        None
+                    }
                 }
-            }
-            self.blob_base_fee_statistics
-                .add_samples(blob_base_fee_samples);
-            if self.blob_base_fee_statistics.median() <= u64::MAX as u128 {
-                METRICS
-                    .median_blob_base_fee
-                    .set(self.blob_base_fee_statistics.median() as u64);
+            } else {
+                Some(
+                    fee_data
+                        .iter()
+                        .map(|fee| fee.base_fee_per_blob_gas)
+                        .collect(),
+                )
+            };
+
+            if let Some(blob_base_fee_samples) = blob_base_fee_samples {
+                if let Some(&current_blob_base_fee) = blob_base_fee_samples.last() {
+                    if current_blob_base_fee > u64::MAX as u128 {
+                        tracing::info!(
+                            "Failed to report current_blob_base_fee = {current_blob_base_fee}, it exceeds u64::MAX"
+                        );
+                    } else {
+                        METRICS
+                            .current_blob_base_fee
+                            .set(current_blob_base_fee as u64);
+                    }
+                }
+                self.blob_base_fee_statistics
+                    .add_samples(blob_base_fee_samples);
+                if self.blob_base_fee_statistics.median() <= u64::MAX as u128 {
+                    METRICS
+                        .median_blob_base_fee
+                        .set(self.blob_base_fee_statistics.median() as u64);
+                }
             }
 
             if let Some(current_pubdata_price_per_byte) =
