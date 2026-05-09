@@ -159,7 +159,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 - Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).
 - For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
 - Changing `GATEWAY_CREATE2_FACTORY_SALT` resets checkpoint state automatically (new redeploy run context).
-- If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf $GATEWAY_DIR/.gateway-launch`.
+- If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf "${GATEWAY_DIR:-${HOME}/gateway}/.gateway-launch"`.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
 - For `v31.x`, `start-node.sh` runs through a launcher wrapper that copies the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrites only the `*_dev` `zksync-os` deps to the patched upstream checkout, and uses that isolated workspace for `cargo run`.
