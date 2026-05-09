@@ -1239,6 +1239,21 @@ if current and current != expected:
         for key in set(current.keys()) | set(expected.keys())
         if current.get(key) != expected.get(key)
     )
+    if (
+        diff_keys == ["gateway_create2_factory_salt"]
+        and "gateway_create2_factory_salt" not in current
+        and expected.get("gateway_create2_factory_salt") == ""
+    ):
+        # SYSCOIN: backfill legacy fingerprints without clearing checkpoint history.
+        current["gateway_create2_factory_salt"] = ""
+        state["fingerprint"] = current
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        print(
+            "gateway-launch: migrated legacy checkpoint fingerprint with default create2 salt",
+            file=sys.stderr,
+        )
+        raise SystemExit(0)
     # Changing create2 salt indicates explicit redeploy intent; rotate checkpoint state.
     # Keep this auto-reset narrowly scoped to avoid clearing checkpoints for unrelated drift.
     if set(diff_keys).issubset({"gateway_create2_factory_salt"}):
