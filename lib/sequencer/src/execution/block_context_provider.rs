@@ -3,7 +3,6 @@ use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{BlockCommand, InvalidTxPolicy, PreparedBlockCommand, SealPolicy};
 use alloy::primitives::{Address, B256, TxHash, U256};
 use anyhow::Context as _;
-use futures::StreamExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::watch, time::Instant};
 use zksync_os_interface::types::{BlockContext, BlockHashes, BlockOutput};
@@ -208,26 +207,32 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                     .try_into()
                     .context("Cannot instantiate a block for unsupported execution version")?;
 
-                // Append a SetSLChainId system transaction exactly once: when the protocol
+                // Insert a SetSLChainId system transaction exactly once: when the protocol
                 // version is v31 (either via upgrade from v30, or on the first block of a
                 // fresh v31 chain). After it fires once, `sl_chain_id_set` prevents it from
                 // ever triggering again.
-                let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if !self.sl_chain_id_set
-                    && self.protocol_version.minor == 31
-                {
-                    self.sl_chain_id_set = true;
-                    let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
-                        self.sl_chain_id_at_startup,
-                        // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                        u64::MAX,
-                    );
-                    let tx_source = MarkingTxStream::unmarkable(best_txs.stream.stream.chain(
-                        futures::stream::once(async move { ZkTransaction::from(sl_chain_id_tx) }),
-                    ));
-                    (tx_source, true)
-                } else {
-                    (best_txs.stream, false)
-                };
+                let (tx_source, expect_sl_chain_id_tx_after_upgrade) =
+                    if !self.sl_chain_id_set && self.protocol_version.minor == 31 {
+                        self.sl_chain_id_set = true;
+                        let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
+                            self.sl_chain_id_at_startup,
+                            // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                            u64::MAX,
+                        );
+                        // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
+                        // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
+                        // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
+                        // rejection when the stream is markable.
+                        let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
+                        let tx_source = if best_txs.stream_contains_upgrade_tx {
+                            best_txs.stream.append_tx(sl_chain_id_tx)
+                        } else {
+                            best_txs.stream.prepend_tx(sl_chain_id_tx)
+                        };
+                        (tx_source, true)
+                    } else {
+                        (best_txs.stream, false)
+                    };
 
                 let FeeParams {
                     eip1559_basefee,

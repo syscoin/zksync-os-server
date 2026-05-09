@@ -348,4 +348,27 @@ impl<'a> MarkingTxStream<'a> {
         };
         marker.mark_last_tx_as_invalid()
     }
+
+    // SYSCOIN: Allows sequencer-injected transactions to run before a live L2 stream without
+    // dropping the stream marker used to reject VM-invalid L2 transactions from the mempool.
+    pub fn prepend_tx(self, tx: ZkTransaction) -> Self {
+        Self {
+            stream: futures::stream::once(async move { tx })
+                .chain(self.stream)
+                .boxed(),
+            marker: self.marker,
+        }
+    }
+
+    // SYSCOIN: Preserve stream metadata while allowing finite system streams, such as a protocol
+    // upgrade transaction, to be followed by a sequencer-injected transaction.
+    pub fn append_tx(self, tx: ZkTransaction) -> Self {
+        Self {
+            stream: self
+                .stream
+                .chain(futures::stream::once(async move { tx }))
+                .boxed(),
+            marker: self.marker,
+        }
+    }
 }
