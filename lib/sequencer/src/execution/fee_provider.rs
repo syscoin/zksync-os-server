@@ -62,6 +62,9 @@ impl FeeProvider {
     }
 
     pub async fn produce_fee_params(&mut self) -> anyhow::Result<FeeParams> {
+        self.pubdata_price_provider
+            .wait_for(|price| price.is_some())
+            .await?;
         let token_prices = self
             .token_price_provider
             .wait_for(|prices| prices.is_some())
