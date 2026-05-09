@@ -360,21 +360,47 @@ run_ecosystem_init_once() {
 }
 
 extract_l1_contracts_dir_from_log() {
-  python3 - "${1}" <<'PY'
-import re, sys
+  python3 - "${1}" "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" <<'PY'
+import re
+import sys
 from pathlib import Path
+
 p = Path(sys.argv[1])
+expected = Path(sys.argv[2]).resolve(strict=True)
 t = p.read_text(encoding="utf-8", errors="ignore")
 m = re.search(r"Transactions saved to:\s*(/[^ \n]+/contracts/l1-contracts/broadcast/DeployL1CoreContracts\.s\.sol/\d+/run-latest\.json)", t)
 if not m:
     raise SystemExit(0)
-run_latest = Path(m.group(1))
-print(run_latest.parents[3])  # .../contracts/l1-contracts
+run_latest = Path(m.group(1)).resolve(strict=False)
+l1_contracts_dir = run_latest.parents[3]
+if l1_contracts_dir != expected:
+    print(
+        f"gateway-launch: ignoring forge resume path outside pinned checkout: {l1_contracts_dir}",
+        file=sys.stderr,
+    )
+    raise SystemExit(0)
+print(l1_contracts_dir)
 PY
 }
 
 run_ecosystem_init_resume() {
   local l1_contracts_dir="${1}"
+  local expected_l1_contracts_dir
+  expected_l1_contracts_dir="$(python3 - "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" <<'PY'
+import sys
+from pathlib import Path
+print(Path(sys.argv[1]).resolve(strict=True))
+PY
+)"
+  l1_contracts_dir="$(python3 - "${l1_contracts_dir}" <<'PY'
+import sys
+from pathlib import Path
+print(Path(sys.argv[1]).resolve(strict=True))
+PY
+)"
+  if [ "${l1_contracts_dir}" != "${expected_l1_contracts_dir}" ]; then
+    gl_die "refusing forge resume outside pinned l1-contracts checkout: ${l1_contracts_dir}"
+  fi
   (
     cd "${l1_contracts_dir}"
     forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol \
