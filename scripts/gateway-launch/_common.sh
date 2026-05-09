@@ -611,7 +611,9 @@ def normalize_address(value):
     parsed = _parse_hex_like(value)
     if parsed is None:
         return normalize_scalar(value)
-    return "0x" + format(parsed & ((1 << 160) - 1), "040x")
+    if parsed < 0 or parsed >= (1 << 160):
+        raise SystemExit(f"invalid address outside 160-bit range: {value}")
+    return "0x" + format(parsed, "040x")
 
 def normalize_bytes_hex(value, raw_value=None):
     parsed = _parse_hex_like(value)
