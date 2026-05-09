@@ -838,10 +838,12 @@ required_l1_da_fields = (
 )
 for l1_key in required_l1_da_fields:
     current_value = l1.get(l1_key)
+    eco_value = maybe_get(eco, l1_key)
     gw_l1_value = maybe_get(gateway_l1, l1_key)
     gw_eco_value = maybe_get(gateway_eco, l1_key)
     value = pick_value(
         current_value,
+        eco_value,
         gw_l1_value,
         gw_eco_value,
         prefer_non_zero=True,
