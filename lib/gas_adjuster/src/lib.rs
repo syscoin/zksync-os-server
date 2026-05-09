@@ -509,8 +509,11 @@ impl GasAdjuster {
             .unwrap_or(err)
             .to_ascii_lowercase();
 
-        body.contains("\"error\"")
-            || body.contains("rpc error")
+        body.contains("rpc error")
+            || body.contains("\"code\":-32601")
+            || body.contains("\"code\": -32601")
+            || body.contains("\"code\":-32602")
+            || body.contains("\"code\": -32602")
             || body.contains("method not found")
             || body.contains("invalid parameter")
             || body.contains("invalid params")
@@ -742,6 +745,12 @@ mod tests {
         assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
                 "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: requested wallet does not exist"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "{}",
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: {\"error\":{\"code\":-28,\"message\":\"Loading block index...\"}}"
             )
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
