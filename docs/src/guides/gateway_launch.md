@@ -135,6 +135,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
+| `GATEWAY_REUSE_ZKSYS_TOKEN` | Set to `true` only for explicit recovery reuse of an already deployed ZKSYS token; normal launches deploy ZKSYS and derive the asset id |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
 | `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace |

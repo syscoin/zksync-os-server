@@ -101,10 +101,38 @@ if v < 0 or v >= (1 << 160):
 print("0x" + format(v, "040x"))
 PY
 )"
-test "$(cast code "${CREATE2_FACTORY_ADDR}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
-  echo "create2 factory has no code at ${CREATE2_FACTORY_ADDR}" >&2
-  exit 1
+
+cast_code_or_die() {
+  local addr="${1:?address required}"
+  local code
+  if ! code="$(cast code "${addr}" --rpc-url "${L1_RPC_URL}")"; then
+    echo "failed to read code at ${addr}" >&2
+    return 1
+  fi
+  [ -n "${code}" ] || {
+    echo "empty code response for ${addr}" >&2
+    return 1
+  }
+  printf '%s\n' "${code}"
 }
+
+address_has_code_or_die() {
+  local addr="${1:?address required}"
+  local code
+  code="$(cast_code_or_die "${addr}")" || return 1
+  [ "${code}" != "0x" ]
+}
+
+require_code_at() {
+  local addr="${1:?address required}"
+  local label="${2:?label required}"
+  if ! address_has_code_or_die "${addr}"; then
+    echo "${label} has no code at ${addr}" >&2
+    exit 1
+  fi
+}
+
+require_code_at "${CREATE2_FACTORY_ADDR}" "create2 factory"
 
 cat > script-config/permanent-values.toml <<EOF
 [permanent_contracts]
@@ -171,14 +199,32 @@ print(m.group(1))
 PY
 }
 
-KNOWN_ZKSYS_ADDRESS="${ZKSYS_L1_TOKEN_ADDRESS:-}"
-if [ -z "${KNOWN_ZKSYS_ADDRESS}" ]; then
-  KNOWN_ZKSYS_ADDRESS="$(extract_zksys_address_from_output || true)"
+GATEWAY_REUSE_ZKSYS_TOKEN="$(gl_to_lower "${GATEWAY_REUSE_ZKSYS_TOKEN:-false}")"
+case "${GATEWAY_REUSE_ZKSYS_TOKEN}" in
+true | false) ;;
+*) gl_die "invalid GATEWAY_REUSE_ZKSYS_TOKEN='${GATEWAY_REUSE_ZKSYS_TOKEN}' (expected: true | false)" ;;
+esac
+
+KNOWN_ZKSYS_ADDRESS=""
+if [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" = true ]; then
+  # SYSCOIN: reusing a token is an explicit recovery path only. Otherwise stale
+  # script-out artifacts or ambient env must not control native-token binding.
+  KNOWN_ZKSYS_ADDRESS="${ZKSYS_L1_TOKEN_ADDRESS:-}"
+  if [ -z "${KNOWN_ZKSYS_ADDRESS}" ]; then
+    KNOWN_ZKSYS_ADDRESS="$(extract_zksys_address_from_output || true)"
+  fi
+elif [ -n "${ZKSYS_L1_TOKEN_ADDRESS:-}" ]; then
+  gl_die "ZKSYS_L1_TOKEN_ADDRESS requires GATEWAY_REUSE_ZKSYS_TOKEN=true"
 fi
 
-if [ -n "${KNOWN_ZKSYS_ADDRESS}" ] && [ "$(cast code "${KNOWN_ZKSYS_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" ]; then
+if [ -n "${KNOWN_ZKSYS_ADDRESS}" ]; then
+  if ! address_has_code_or_die "${KNOWN_ZKSYS_ADDRESS}"; then
+    gl_die "requested ZKSYS token reuse but no code was found at ${KNOWN_ZKSYS_ADDRESS}"
+  fi
   export ZKSYS_L1_TOKEN_ADDRESS="${KNOWN_ZKSYS_ADDRESS}"
-  echo "gateway-launch: reusing existing ZKSYS token at ${ZKSYS_L1_TOKEN_ADDRESS}; skipping DeployErc20"
+  echo "gateway-launch: explicitly reusing existing ZKSYS token at ${ZKSYS_L1_TOKEN_ADDRESS}; skipping DeployErc20"
+elif [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" = true ]; then
+  gl_die "GATEWAY_REUSE_ZKSYS_TOKEN=true requires ZKSYS_L1_TOKEN_ADDRESS or script-out/output-deploy-erc20.toml"
 else
   : "${GATEWAY_DEPLOY_ERC20_TIMEOUT:=1800}"
   : "${GATEWAY_DEPLOY_ERC20_MAX_ATTEMPTS:=4}"
@@ -234,7 +280,7 @@ else
       break
     fi
 
-    if [ -n "${ZKSYS_L1_TOKEN_ADDRESS}" ] && [ "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" ]; then
+    if [ -n "${ZKSYS_L1_TOKEN_ADDRESS}" ] && address_has_code_or_die "${ZKSYS_L1_TOKEN_ADDRESS}"; then
       echo "gateway-launch: DeployErc20 exited non-zero (${erc20_ec}) but token is deployed at ${ZKSYS_L1_TOKEN_ADDRESS}; continuing"
       rm -f "${tmp_erc20_log}"
       break
@@ -268,22 +314,19 @@ PY
   done
 fi
 
-test "$(cast code "${ZKSYS_L1_TOKEN_ADDRESS}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
-  echo "zksys token has no code at ${ZKSYS_L1_TOKEN_ADDRESS}" >&2
-  exit 1
-}
+require_code_at "${ZKSYS_L1_TOKEN_ADDRESS}" "zksys token"
 
 export L2_NATIVE_TOKEN_VAULT_ADDR=0x0000000000000000000000000000000000010004
-if [ -z "${ZK_TOKEN_ASSET_ID:-}" ]; then
-  export ZK_TOKEN_ASSET_ID="$(cast abi-encode \
-    "f(uint256,address,address)" \
-    "${L1_CHAIN_ID}" \
-    "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
-    "${ZKSYS_L1_TOKEN_ADDRESS}" | cast keccak)"
-  echo "gateway-launch: derived ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
-else
-  echo "gateway-launch: using provided ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
+DERIVED_ZK_TOKEN_ASSET_ID="$(cast abi-encode \
+  "f(uint256,address,address)" \
+  "${L1_CHAIN_ID}" \
+  "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
+  "${ZKSYS_L1_TOKEN_ADDRESS}" | cast keccak)"
+if [ -n "${ZK_TOKEN_ASSET_ID:-}" ] && [ "$(gl_to_lower "${ZK_TOKEN_ASSET_ID}")" != "$(gl_to_lower "${DERIVED_ZK_TOKEN_ASSET_ID}")" ]; then
+  gl_die "ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID} does not match derived ${DERIVED_ZK_TOKEN_ASSET_ID}"
 fi
+export ZK_TOKEN_ASSET_ID="${DERIVED_ZK_TOKEN_ASSET_ID}"
+echo "gateway-launch: derived ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
 
 test -f script-config/config-deploy-ctm.toml || \
   cp deploy-script-config-template/config-deploy-ctm.toml script-config/config-deploy-ctm.toml
@@ -368,8 +411,8 @@ PY
 
   [ -n "${bridgehub_addr}" ] || return 1
   [ -n "${bytecodes_addr}" ] || return 1
-  [ "$(cast code "${bridgehub_addr}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
-  [ "$(cast code "${bytecodes_addr}" --rpc-url "${L1_RPC_URL}")" != "0x" ] || return 1
+  address_has_code_or_die "${bridgehub_addr}" || return 1
+  address_has_code_or_die "${bytecodes_addr}" || return 1
   return 0
 }
 
