@@ -31,6 +31,10 @@ struct Args {
     #[arg(long)]
     bridgehub: Option<Address>,
 
+    /// Trusted L2 chain ID expected from the selected endpoint (required with --bridgehub)
+    #[arg(long)]
+    expected_chain_id: Option<u64>,
+
     /// Seconds to wait for batch commitment on L1 (0 = fail immediately)
     #[arg(long, default_value = "60", value_name = "SECS")]
     commit_timeout: u64,
@@ -72,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
             batch_number: args.batch_number,
             l1_contract: args.l1_contract,
             bridgehub: args.bridgehub,
+            expected_chain_id: args.expected_chain_id,
             commit_timeout,
         },
     )

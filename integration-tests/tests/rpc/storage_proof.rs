@@ -72,11 +72,13 @@ async fn wait_for_batch_commitment(tester: &Tester, batch_number: u64) {
         .get_bridgehub_contract()
         .await
         .unwrap();
+    let chain_id = tester.l2_provider.get_chain_id().await.unwrap();
     let diamond_proxy = resolve_diamond_proxy(
         tester.l1_provider(),
         &tester.l2_zk_provider,
         None,
         Some(bridgehub_address),
+        Some(chain_id),
     )
     .await
     .unwrap();
@@ -160,6 +162,7 @@ async fn verify_storage_proof_with_l1_contract() -> anyhow::Result<()> {
             batch_number,
             l1_contract: Some(diamond_proxy_address),
             bridgehub: None,
+            expected_chain_id: None,
             commit_timeout: None,
         },
     )
@@ -182,7 +185,12 @@ async fn verify_storage_proof_with_bridgehub_discovery() -> anyhow::Result<()> {
     let tester = Tester::setup().await?;
 
     let bridgehub_address = tester.l2_zk_provider.get_bridgehub_contract().await?;
-    tracing::info!(?bridgehub_address, "using bridgehub auto-discovery");
+    let chain_id = tester.l2_provider.get_chain_id().await?;
+    tracing::info!(
+        ?bridgehub_address,
+        chain_id,
+        "using bridgehub auto-discovery"
+    );
 
     // Deploy a counter contract
     let deploy_tx_receipt = Counter::deploy_builder(tester.l2_provider.clone())
@@ -226,6 +234,7 @@ async fn verify_storage_proof_with_bridgehub_discovery() -> anyhow::Result<()> {
             batch_number,
             l1_contract: None,
             bridgehub: Some(bridgehub_address),
+            expected_chain_id: Some(chain_id),
             commit_timeout: None,
         },
     )
@@ -301,6 +310,7 @@ async fn verify_storage_proof_empty_slot() -> anyhow::Result<()> {
             batch_number,
             l1_contract: Some(diamond_proxy_address),
             bridgehub: None,
+            expected_chain_id: None,
             commit_timeout: None,
         },
     )

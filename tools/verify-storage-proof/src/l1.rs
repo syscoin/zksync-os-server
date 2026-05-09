@@ -15,12 +15,13 @@ sol! {
 }
 
 /// Resolves the diamond proxy address. Uses the override if provided, otherwise
-/// auto-discovers via bridgehub by fetching the chain ID from L2.
+/// auto-discovers via bridgehub using a trusted expected chain ID.
 pub async fn resolve_diamond_proxy<N: Network>(
     l1_provider: &impl Provider,
     l2_provider: &impl Provider<N>,
     l1_contract_override: Option<Address>,
     bridgehub_override: Option<Address>,
+    expected_chain_id: Option<u64>,
 ) -> anyhow::Result<Address> {
     if let Some(addr) = l1_contract_override {
         return Ok(addr);
@@ -28,20 +29,29 @@ pub async fn resolve_diamond_proxy<N: Network>(
 
     let bridgehub =
         bridgehub_override.context("Either --l1-contract or --bridgehub must be provided")?;
+    let expected_chain_id = expected_chain_id
+        .context("--expected-chain-id is required when using --bridgehub auto-discovery")?;
 
-    discover_diamond_proxy(l1_provider, l2_provider, bridgehub).await
+    discover_diamond_proxy(l1_provider, l2_provider, bridgehub, expected_chain_id).await
 }
 
-/// Fetches chain ID from L2, then calls `bridgehub.getZKChain(chainId)` on L1.
+/// Verifies the L2 chain ID against the trusted expected value, then calls
+/// `bridgehub.getZKChain(expectedChainId)` on L1.
 async fn discover_diamond_proxy<N: Network>(
     l1_provider: &impl Provider,
     l2_provider: &impl Provider<N>,
     bridgehub: Address,
+    expected_chain_id: u64,
 ) -> anyhow::Result<Address> {
     let chain_id = l2_provider.get_chain_id().await?;
+    // SYSCOIN: Do not trust the L2 RPC to choose which L1 diamond proxy is verified.
+    anyhow::ensure!(
+        chain_id == expected_chain_id,
+        "L2 chain ID mismatch: expected {expected_chain_id}, RPC returned {chain_id}",
+    );
 
     let call = IBridgehub::getZKChainCall {
-        _chainId: U256::from(chain_id),
+        _chainId: U256::from(expected_chain_id),
     };
     let result = l1_provider
         .call(
@@ -62,7 +72,7 @@ async fn discover_diamond_proxy<N: Network>(
 
     anyhow::ensure!(
         diamond_proxy != Address::ZERO,
-        "Bridgehub returned zero address for chain ID {chain_id} — chain not registered"
+        "Bridgehub returned zero address for chain ID {expected_chain_id} — chain not registered"
     );
 
     Ok(diamond_proxy)
