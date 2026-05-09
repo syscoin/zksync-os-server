@@ -299,22 +299,12 @@ def materialize_chain(
     if not wallets_yaml.exists():
         raise FileNotFoundError(f"missing wallets config under {source_dir}: expected wallets.yaml")
 
-    contracts_candidate = contracts_yaml
-    if not contracts_candidate.exists():
-        # `zkstack chain create` may leave `contracts_<id>.yaml` before a canonical
-        # `contracts.yaml` appears; pick the newest one as source of truth.
-        contract_candidates = sorted(
-            [p for p in source_dir.glob("contracts_*.yaml") if p.is_file()],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if contract_candidates:
-            contracts_candidate = contract_candidates[0]
-
-    if not contracts_candidate.exists() or not genesis_json.exists():
+    # SYSCOIN: do not infer privileged contract addresses from contracts_*.yaml by
+    # mtime; the canonical contracts.yaml must be an explicit operator choice.
+    if not contracts_yaml.exists() or not genesis_json.exists():
         missing = []
-        if not contracts_candidate.exists():
-            missing.append("contracts.yaml|contracts_*.yaml")
+        if not contracts_yaml.exists():
+            missing.append("contracts.yaml")
         if not genesis_json.exists():
             missing.append("genesis.json")
         raise FileNotFoundError(
@@ -450,7 +440,7 @@ def materialize_chain(
 
     write_secret_text(out_dir / "config.yaml", "\n".join(config_lines))
 
-    shutil.copy2(contracts_candidate, out_dir / "contracts.yaml")
+    shutil.copy2(contracts_yaml, out_dir / "contracts.yaml")
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
     # SYSCOIN: wallets.yaml is copied for operator convenience but still carries
     # private keys, so force the generated copy to owner-only permissions.
