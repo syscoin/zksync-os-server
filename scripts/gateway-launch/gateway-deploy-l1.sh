@@ -418,22 +418,18 @@ ecosystem_contracts_ready() {
   contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
   [ -f "${contracts_file}" ] || return 1
 
-  bridgehub_addr="$(python3 - "${contracts_file}" <<'PY'
+  # SYSCOIN: contracts.yaml stores these deployment outputs under the current
+  # zkstack schema sections, not a top-level contracts map.
+  read -r bridgehub_addr bytecodes_addr < <(python3 - "${contracts_file}" <<'PY'
 import sys, yaml
 from pathlib import Path
 p = Path(sys.argv[1])
 d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-print(d.get("contracts", {}).get("bridgehub_proxy_addr", ""))
+bridgehub = d.get("core_ecosystem_contracts", {}).get("bridgehub_proxy_addr", "")
+bytecodes = d.get("zksync_os_ctm", {}).get("l1_bytecodes_supplier_addr", "")
+print(bridgehub, bytecodes)
 PY
-)"
-  bytecodes_addr="$(python3 - "${contracts_file}" <<'PY'
-import sys, yaml
-from pathlib import Path
-p = Path(sys.argv[1])
-d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-print(d.get("contracts", {}).get("l1_bytecodes_supplier_addr", ""))
-PY
-)"
+)
 
   [ -n "${bridgehub_addr}" ] || return 1
   [ -n "${bytecodes_addr}" ] || return 1
