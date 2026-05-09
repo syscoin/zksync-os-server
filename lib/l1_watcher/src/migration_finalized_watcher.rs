@@ -128,7 +128,9 @@ impl MigrationFinalizedWatcher {
             chain_asset_handler.into(),
             starting_block,
             None,
-            l1_chain_id,
+            // SYSCOIN: migration finalization is emitted on the current settlement layer,
+            // so preserve confirmation lag against that provider's chain ID.
+            current_sl_chain_id,
             Box::new(Self {
                 l2_chain_id,
                 last_finalized_migration,
