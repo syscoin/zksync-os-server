@@ -46,8 +46,6 @@ import sys
 from pathlib import Path
 import yaml
 
-sys.set_int_max_str_digits(0)
-
 secrets_path = Path(sys.argv[1])
 gateway_rpc_url = sys.argv[2].strip()
 if gateway_rpc_url == "":
@@ -89,8 +87,6 @@ import sys
 from pathlib import Path
 import yaml
 
-sys.set_int_max_str_digits(0)
-
 p = Path(sys.argv[1])
 if not p.exists():
     raise SystemExit(f"missing chain config: {p}")
@@ -109,8 +105,6 @@ get_settlement_layer_chain_id() {
 import sys
 from pathlib import Path
 import yaml
-
-sys.set_int_max_str_digits(0)
 
 p = Path(sys.argv[1])
 if not p.exists():
@@ -141,8 +135,6 @@ get_chain_diamond_proxy_from_l1() {
 import sys
 from pathlib import Path
 import yaml
-
-sys.set_int_max_str_digits(0)
 
 p = Path(sys.argv[1])
 if not p.exists():
@@ -183,8 +175,6 @@ import sys
 from pathlib import Path
 import yaml
 
-sys.set_int_max_str_digits(0)
-
 for path_str in sys.argv[1:]:
     p = Path(path_str)
     if not p.exists():
@@ -216,8 +206,6 @@ get_wallet_address_from_wallets() {
 import sys
 from pathlib import Path
 import yaml
-
-sys.set_int_max_str_digits(0)
 
 wallet_name = sys.argv[1]
 for path_str in sys.argv[2:]:
@@ -301,8 +289,6 @@ import sys
 from pathlib import Path
 import yaml
 
-sys.set_int_max_str_digits(0)
-
 p = Path(sys.argv[1])
 data = yaml.safe_load(p.read_text(encoding="utf-8"))
 eco = data.get("ecosystem_contracts") if isinstance(data, dict) else None
@@ -323,8 +309,6 @@ get_gateway_validator_timelock_addr() {
 import sys
 from pathlib import Path
 import yaml
-
-sys.set_int_max_str_digits(0)
 
 p = Path(sys.argv[1])
 if not p.exists():
@@ -590,8 +574,6 @@ get_l1_da_validator_for_edge() {
 import sys
 from pathlib import Path
 import yaml
-
-sys.set_int_max_str_digits(0)
 
 def norm(value):
     if value is None:
