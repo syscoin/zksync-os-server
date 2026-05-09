@@ -754,7 +754,7 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     echo "${pause_output}"
     pause_output_lc="$(gl_to_lower "${pause_output}")"
     case "${pause_output_lc}" in
-    *"already paused"* | *"already been paused"* | *"depositsalreadypaused"*)
+    *"already paused"* | *"already been paused"* | *"alreadypaused"* | *"depositsalreadypaused"*)
       echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
       ;;
     *)
