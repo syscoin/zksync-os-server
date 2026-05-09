@@ -481,7 +481,7 @@ impl GasAdjuster {
         match Self::blob_fee_http_status(&err) {
             Some(408 | 429) => true,
             Some(status) => status >= 500,
-            None => true,
+            None => Self::is_transport_blob_fee_error(&err),
         }
     }
 
@@ -493,6 +493,17 @@ impl GasAdjuster {
             .split(|ch: char| !ch.is_ascii_digit())
             .next()?;
         status.parse().ok()
+    }
+
+    // SYSCOIN
+    fn is_transport_blob_fee_error(err: &str) -> bool {
+        err.contains("error sending request")
+            || err.contains("connection refused")
+            || err.contains("connection reset")
+            || err.contains("connection closed")
+            || err.contains("deadline has elapsed")
+            || err.contains("timed out")
+            || err.contains("timeout")
     }
 
     // SYSCOIN
@@ -690,6 +701,17 @@ mod tests {
             &anyhow::anyhow!(
                 "failed to estimate Syscoin blob base fee: RPC error: method not found"
             )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: malformed response")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: error sending request for url"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: operation timed out")
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
