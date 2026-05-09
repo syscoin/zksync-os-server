@@ -143,13 +143,14 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
-// SYSCOIN: A main node configured to produce zero blocks must reject RPC txs before
-// the sequencer consumes its first Produce command, which can be delayed by replay.
+// SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
+// its first Produce command, which can be delayed by replay.
 fn initial_transaction_acceptance_state(
     node_role: NodeRole,
     max_blocks_to_produce: Option<u64>,
+    batcher_enabled: bool,
 ) -> TransactionAcceptanceState {
-    if node_role.is_main() && max_blocks_to_produce == Some(0) {
+    if node_role.is_main() && (!batcher_enabled || max_blocks_to_produce == Some(0)) {
         TransactionAcceptanceState::NotAccepting(vec![NotAcceptingReason::BlockProductionDisabled])
     } else {
         TransactionAcceptanceState::Accepting
@@ -249,7 +250,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .unwrap()
             .as_secs() as i64,
     );
-    if !config.l1_sender_config.enabled {
+    // SYSCOIN: `batcher.enabled=false` skips L1 settlement entirely, so disabled-batcher
+    // main nodes must be able to start without enabling L1 senders.
+    if config.batcher_config.enabled && !config.l1_sender_config.enabled {
         unimplemented!("running without L1 Senders is temporarily not supported");
     }
     tracing::info!(version = NODE_VERSION, role, "Initializing Node");
@@ -344,7 +347,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
-    if node_role.is_main() {
+    if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = config
             .l1_sender_config
             .pubdata_mode
@@ -828,6 +831,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         watch::channel(initial_transaction_acceptance_state(
             node_role,
             config.sequencer_config.max_blocks_to_produce,
+            config.batcher_config.enabled,
         ));
 
     let (stop_sender, stop_receiver) = watch::channel(false);
@@ -858,7 +862,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let (blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
     // Channel for Batcher->GasAdjuster communication. Batcher send sidecar to gas adjuster to estimate blob fill ratio.
     let (sidecar_sender, sidecar_receiver) = tokio::sync::mpsc::channel(10);
-    if node_role.is_main() {
+    if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = config
             .l1_sender_config
             .pubdata_mode
@@ -1218,10 +1222,6 @@ async fn run_main_node_pipeline(
     last_finalized_migration: watch::Receiver<u64>,
     migration_triggered: watch::Sender<Option<u64>>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
-    let pubdata_mode = config
-        .l1_sender_config
-        .pubdata_mode
-        .expect("l1_sender_pubdata_mode must be set on the Main Node");
     let priority_tree_db_path = config
         .general_config
         .rocks_db_path
@@ -1250,6 +1250,7 @@ async fn run_main_node_pipeline(
                 .map(Into::into),
             replays_to_execute,
             leadership,
+            produce_enabled: config.batcher_config.enabled,
         })
         .pipe(BlockExecutor {
             block_context_provider,
@@ -1295,6 +1296,10 @@ async fn run_main_node_pipeline(
         let snapshot_rx = PipelineTracker::spawn(runtime, components);
         return monitor.spawn(runtime, snapshot_rx);
     }
+    let pubdata_mode = config
+        .l1_sender_config
+        .pubdata_mode
+        .expect("l1_sender_pubdata_mode must be set on the Main Node");
     // SYSCOIN
     let batch_work_state_history_reserve = config
         .prover_input_generator_config
@@ -1988,7 +1993,16 @@ mod tests {
     #[test]
     fn main_node_zero_block_cap_rejects_transactions_at_startup() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0)),
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0), true),
+            TransactionAcceptanceState::NotAccepting(reasons)
+                if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    #[test]
+    fn main_node_disabled_batcher_rejects_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
         ));
@@ -1997,7 +2011,7 @@ mod tests {
     #[test]
     fn main_node_positive_block_cap_accepts_transactions_at_startup() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1)),
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1), true),
             TransactionAcceptanceState::Accepting
         ));
     }
@@ -2005,7 +2019,7 @@ mod tests {
     #[test]
     fn external_node_zero_block_cap_accepts_for_forwarding() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0)),
+            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0), true),
             TransactionAcceptanceState::Accepting
         ));
     }
