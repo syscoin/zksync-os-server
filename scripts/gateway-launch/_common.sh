@@ -754,6 +754,11 @@ address_ctm_fields = {
     "avail_l1_da_validator_addr",
     "l1_rollup_da_manager",
 }
+shared_admin_fields = {
+    "governance",
+    "chain_admin",
+    "proxy_admin",
+}
 for eco_key, l1_keys in required_eco_fields.items():
     current_value = eco.get(eco_key)
 
@@ -765,15 +770,26 @@ for eco_key, l1_keys in required_eco_fields.items():
     gw_value = maybe_get(gateway_eco, eco_key)
     transparent_proxy_admin_value = maybe_get(eco, "transparent_proxy_admin_addr") if eco_key == "proxy_admin" else None
 
-    # For address-like CTM fields, avoid keeping zero placeholders from stale edge
-    # configs when canonical ecosystem values are available.
-    value = pick_value(
-        current_value,
-        l1_value,
-        gw_value,
-        transparent_proxy_admin_value,
-        prefer_non_zero=(eco_key in address_ctm_fields),
-    )
+    # SYSCOIN: shared ecosystem admin principals are not aliases for the target
+    # chain's l1.* admin fields. Prefer the gateway ecosystem source and only
+    # fall back to l1 values for non-admin CTM fields that are chain-local.
+    if eco_key in shared_admin_fields:
+        value = pick_value(
+            current_value,
+            gw_value,
+            transparent_proxy_admin_value,
+            prefer_non_zero=True,
+        )
+    else:
+        # For address-like CTM fields, avoid keeping zero placeholders from stale edge
+        # configs when canonical ecosystem values are available.
+        value = pick_value(
+            current_value,
+            l1_value,
+            gw_value,
+            transparent_proxy_admin_value,
+            prefer_non_zero=(eco_key in address_ctm_fields),
+        )
 
     if value is None:
         unresolved.append(eco_key)
