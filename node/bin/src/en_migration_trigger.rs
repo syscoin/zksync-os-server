@@ -61,7 +61,7 @@ where
                         .transactions
                         .iter()
                         .find_map(|tx| {
-                            let Some(SystemTxType::SetSLChainId(migration_number)) =
+                            let Some(SystemTxType::SetSLChainId(_, migration_number)) =
                                 tx.as_system_tx_type()
                             else {
                                 return None;
