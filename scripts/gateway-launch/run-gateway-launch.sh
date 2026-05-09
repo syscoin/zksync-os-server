@@ -260,6 +260,24 @@ PY
 GATEWAY_NODE_PID=""
 GATEWAY_STARTED_FOR_MIGRATION=false
 
+normalize_migration_start_uint() {
+  local name="${1:?name required}"
+  local raw="${2:?value required}"
+  local max="${3:?max required}"
+  python3 - "${name}" "${raw}" "${max}" <<'PY'
+import sys
+
+name, raw, max_raw = sys.argv[1:]
+if not raw.isdecimal():
+    raise SystemExit(f"{name} must be an unsigned decimal integer")
+value = int(raw, 10)
+max_value = int(max_raw, 10)
+if value > max_value:
+    raise SystemExit(f"{name} must be <= {max_value}")
+print(value)
+PY
+}
+
 start_gateway_for_migration() {
   local start_script log_file i start_timeout_s poll_interval_s max_checks chain_name
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
@@ -276,8 +294,9 @@ start_gateway_for_migration() {
   : "${GATEWAY_MIGRATION_GATEWAY_LOG:=${HOME}/gateway-migration-gateway-node.log}"
   : "${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT:=3600}"
   : "${GATEWAY_MIGRATION_GATEWAY_START_POLL:=2}"
-  start_timeout_s="${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT}"
-  poll_interval_s="${GATEWAY_MIGRATION_GATEWAY_START_POLL}"
+  # SYSCOIN: validate env-controlled values before Bash arithmetic expansion.
+  start_timeout_s="$(normalize_migration_start_uint GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT "${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT}" 86400)"
+  poll_interval_s="$(normalize_migration_start_uint GATEWAY_MIGRATION_GATEWAY_START_POLL "${GATEWAY_MIGRATION_GATEWAY_START_POLL}" 3600)"
   [ "${poll_interval_s}" -gt 0 ] || poll_interval_s=2
   max_checks=$((start_timeout_s / poll_interval_s))
   [ "${max_checks}" -gt 0 ] || max_checks=1
