@@ -85,7 +85,20 @@ CREATE2_FACTORY_ADDR="$(python3 - <<'PY'
 import os, yaml
 from pathlib import Path
 d = yaml.safe_load((Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml").read_text())
-print(d.get("create2_factory_addr", "0x4e59b44847b379578588920cA78FbF26c0B4956C"))
+addr = d.get("create2_factory_addr", "0x4e59b44847b379578588920cA78FbF26c0B4956C")
+if isinstance(addr, int):
+    v = addr
+else:
+    raw = str(addr).strip()
+    if raw.startswith(("0x", "0X")):
+        v = int(raw[2:], 16)
+    elif len(raw) > 40 and raw.isdecimal():
+        v = int(raw, 10)
+    else:
+        v = int(raw, 16)
+if v < 0 or v >= (1 << 160):
+    raise SystemExit("create2_factory_addr must fit address")
+print("0x" + format(v, "040x"))
 PY
 )"
 test "$(cast code "${CREATE2_FACTORY_ADDR}" --rpc-url "${L1_RPC_URL}")" != "0x" || {
