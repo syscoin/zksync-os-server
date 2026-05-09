@@ -497,7 +497,13 @@ impl GasAdjuster {
 
     // SYSCOIN
     fn is_transport_blob_fee_error(err: &str) -> bool {
+        let err = err.to_ascii_lowercase();
         err.contains("error sending request")
+            || err.contains("error trying to connect")
+            || err.contains("dns error")
+            || err.contains("tls")
+            || err.contains("certificate")
+            || err.contains("handshake")
             || err.contains("connection refused")
             || err.contains("connection reset")
             || err.contains("connection closed")
@@ -712,6 +718,12 @@ mod tests {
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!("failed to estimate Syscoin blob base fee: operation timed out")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: dns error")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: TLS handshake failed")
         ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
