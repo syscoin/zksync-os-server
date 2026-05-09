@@ -47,6 +47,10 @@ Optional log override:
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --log /tmp/gateway-launch.log
 ```
 
+To intentionally continue from an existing ecosystem directory that already has
+`ZkStack.yaml`, pass `--reuse-ecosystem`. Without this flag, the launcher fails
+instead of silently bypassing wallet creation controls.
+
 ## Checkpoint model
 
 State file:
@@ -93,7 +97,7 @@ Then rerun the canonical launcher command.
 
 ## What the launcher does
 
-- Creates/reuses ecosystem.
+- Creates a new ecosystem, or reuses one only when `--reuse-ecosystem` is explicit.
 - Funds required wallets.
 - Deploys/initializes gateway contracts and chain.
 - Converts gateway settlement.
@@ -123,6 +127,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 |---|---|
 | `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint used for broadcasts (expected: local Syscoin node/proxy, e.g. `http://127.0.0.1:8545`) |
 | `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
+| `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
