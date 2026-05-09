@@ -11,10 +11,13 @@ Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `
   -gethcommandline=--http \
   -gethcommandline=--http.addr=127.0.0.1 \
   -gethcommandline=--http.port=8545 \
-  -gethcommandline=--http.api=eth,net,web3,txpool,debug \
-  -gethcommandline=--http.vhosts=* \
-  -gethcommandline=--http.corsdomain=*
+  -gethcommandline=--http.api=eth,net,web3 \
+  -gethcommandline=--http.vhosts=localhost,127.0.0.1
 ```
+
+Keep the local RPC bound to loopback and do not enable wildcard CORS. Only add
+extra namespaces such as `txpool` or `debug` for a short, trusted debugging
+session, then restart the node with the restricted API list above.
 
 Run from a `zksync-os-server` clone:
 
