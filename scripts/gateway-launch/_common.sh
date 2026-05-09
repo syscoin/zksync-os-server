@@ -41,6 +41,89 @@ gl_require() {
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
 }
 
+gl_prepare_wallet_file_for_in_file() {
+  local wallet_path="$1"
+
+  # SYSCOIN: wallet files carry deployer/governor/operator private keys. Do not
+  # trust predictable in-file wallet paths unless the file is owned by this user,
+  # is a regular non-symlink file, and cannot be modified by group/other users.
+  python3 - "${wallet_path}" <<'PY' || gl_die "unsafe wallet file: ${wallet_path}"
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    st = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(f"wallet file does not exist: {path}")
+
+if stat.S_ISLNK(st.st_mode):
+    raise SystemExit(f"wallet file must not be a symlink: {path}")
+if not stat.S_ISREG(st.st_mode):
+    raise SystemExit(f"wallet file must be a regular file: {path}")
+if st.st_uid != os.geteuid():
+    raise SystemExit(f"wallet file must be owned by the launching user: {path}")
+
+mode = stat.S_IMODE(st.st_mode)
+if mode & 0o022:
+    raise SystemExit(f"wallet file must not be writable by group/other users: {path}")
+if mode & 0o077:
+    os.chmod(path, 0o600)
+PY
+}
+
+gl_wallet_creation_for_path() {
+  local wallet_path="$1"
+  if [ -e "${wallet_path}" ] || [ -L "${wallet_path}" ]; then
+    gl_prepare_wallet_file_for_in_file "${wallet_path}"
+    printf 'in-file\n'
+  else
+    printf 'random\n'
+  fi
+}
+
+gl_persist_wallet_file() {
+  local source_path="$1"
+  local dest_path="$2"
+
+  [ -f "${source_path}" ] || gl_die "missing generated wallets file: ${source_path}"
+
+  # SYSCOIN: persist generated private-key material with exclusive 0600 creation
+  # so a pre-existing path or symlink cannot be overwritten or followed.
+  python3 - "${source_path}" "${dest_path}" <<'PY' || gl_die "failed to persist wallets to ${dest_path}"
+import os
+import shutil
+import sys
+
+source_path = sys.argv[1]
+dest_path = sys.argv[2]
+parent = os.path.dirname(dest_path) or "."
+os.makedirs(parent, exist_ok=True)
+
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+fd = None
+created = False
+try:
+    fd = os.open(dest_path, flags, 0o600)
+    created = True
+    with os.fdopen(fd, "wb") as dst:
+        fd = None
+        with open(source_path, "rb") as src:
+            shutil.copyfileobj(src, dst)
+    os.chmod(dest_path, 0o600)
+except BaseException:
+    if fd is not None:
+        os.close(fd)
+    if created:
+        try:
+            os.unlink(dest_path)
+        except FileNotFoundError:
+            pass
+    raise
+PY
+}
+
 gl_export_foundry_evm_version() {
   : "${FOUNDRY_EVM_VERSION:=shanghai}"
   export FOUNDRY_EVM_VERSION

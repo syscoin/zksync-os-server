@@ -24,11 +24,7 @@ if [ -z "${SKIP_FUND:-}" ]; then
 fi
 
 if [ -z "${EDGE_WALLET_CREATION}" ]; then
-  if [ -f "${EDGE_WALLET_PATH}" ]; then
-    EDGE_WALLET_CREATION="in-file"
-  else
-    EDGE_WALLET_CREATION="random"
-  fi
+  EDGE_WALLET_CREATION="$(gl_wallet_creation_for_path "${EDGE_WALLET_PATH}")"
 fi
 
 if [ -z "${EDGE_PROVER_MODE}" ]; then
@@ -41,6 +37,7 @@ fi
 
 if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   gl_require EDGE_WALLET_PATH
+  gl_prepare_wallet_file_for_in_file "${EDGE_WALLET_PATH}"
 fi
 
 wallet_args=(--wallet-creation "${EDGE_WALLET_CREATION}")
@@ -64,8 +61,8 @@ else
     --evm-emulator false \
     --zksync-os
 
-  if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -f "${EDGE_WALLET_PATH}" ]; then
-    cp "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
+  if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -e "${EDGE_WALLET_PATH}" ] && [ ! -L "${EDGE_WALLET_PATH}" ]; then
+    gl_persist_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
     echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
   fi
 fi

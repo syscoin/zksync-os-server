@@ -26,15 +26,12 @@ gl_path_for_zkstack
 : "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
 
 if [ -z "${GATEWAY_WALLET_CREATION}" ]; then
-  if [ -f "${GATEWAY_WALLET_PATH}" ]; then
-    GATEWAY_WALLET_CREATION="in-file"
-  else
-    GATEWAY_WALLET_CREATION="random"
-  fi
+  GATEWAY_WALLET_CREATION="$(gl_wallet_creation_for_path "${GATEWAY_WALLET_PATH}")"
 fi
 
 if [ "${GATEWAY_WALLET_CREATION}" = "in-file" ]; then
   gl_require GATEWAY_WALLET_PATH
+  gl_prepare_wallet_file_for_in_file "${GATEWAY_WALLET_PATH}"
 fi
 
 cd "${GATEWAY_ECOSYSTEM_PARENT_DIR:-$(dirname "${GATEWAY_DIR}")}"
@@ -67,7 +64,7 @@ zkstack ecosystem create \
 gl_checkout_contracts_sha
 gl_assert_contracts_sha
 
-if [ "${GATEWAY_WALLET_CREATION}" = "random" ] && [ ! -f "${GATEWAY_WALLET_PATH}" ]; then
-  cp "${GATEWAY_DIR}/configs/wallets.yaml" "${GATEWAY_WALLET_PATH}"
+if [ "${GATEWAY_WALLET_CREATION}" = "random" ] && [ ! -e "${GATEWAY_WALLET_PATH}" ] && [ ! -L "${GATEWAY_WALLET_PATH}" ]; then
+  gl_persist_wallet_file "${GATEWAY_DIR}/configs/wallets.yaml" "${GATEWAY_WALLET_PATH}"
   echo "gateway-launch: persisted ecosystem wallets to ${GATEWAY_WALLET_PATH}"
 fi
