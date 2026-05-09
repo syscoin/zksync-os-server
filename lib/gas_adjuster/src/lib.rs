@@ -486,7 +486,7 @@ impl GasAdjuster {
 
         match Self::blob_fee_http_status(&err) {
             Some(408 | 429) => true,
-            Some(status) => status >= 500,
+            Some(status) => status >= 500 && !Self::is_permanent_blob_fee_http_error(&err),
             None => Self::is_transport_blob_fee_error(&err),
         }
     }
@@ -499,6 +499,22 @@ impl GasAdjuster {
             .split(|ch: char| !ch.is_ascii_digit())
             .next()?;
         status.parse().ok()
+    }
+
+    // SYSCOIN
+    fn is_permanent_blob_fee_http_error(err: &str) -> bool {
+        let body = err
+            .split_once("returned body:")
+            .map(|(_, body)| body)
+            .unwrap_or(err)
+            .to_ascii_lowercase();
+
+        body.contains("\"error\"")
+            || body.contains("rpc error")
+            || body.contains("method not found")
+            || body.contains("invalid parameter")
+            || body.contains("invalid params")
+            || body.contains("wallet")
     }
 
     // SYSCOIN
@@ -717,6 +733,17 @@ mod tests {
         assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!("failed to estimate Syscoin blob base fee: malformed response")
         ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "{}",
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: {\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: requested wallet does not exist"
+            )
+        ));
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
                 "failed to estimate Syscoin blob base fee: error sending request for url"
@@ -744,6 +771,11 @@ mod tests {
         assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
             &anyhow::anyhow!(
                 "failed to estimate Syscoin blob base fee: HTTP error: 503 returned body: unavailable"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: internal server error"
             )
         ));
     }
