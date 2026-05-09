@@ -10,13 +10,14 @@ cargo build -p zksync_os_verify_storage_proof --release
 
 ## Usage
 
-With bridgehub auto-discovery (recommended):
+With bridgehub auto-discovery:
 
 ```bash
 cargo run --release -p zksync_os_verify_storage_proof -- \
   --l2-rpc https://mainnet.era.zksync.io \
   --l1-rpc https://eth.llamarpc.com \
   --bridgehub 0x303a465B659cBB0ab36eE643eA362c509EEb5213 \
+  --expected-chain-id 324 \
   --batch-number 12345 \
   0x... 0x...,0x...
 ```
@@ -38,7 +39,7 @@ cargo run --release -p zksync_os_verify_storage_proof -- \
 2. Verifies the proof internally (Blake2s Merkle tree, depth 64) and computes the state commitment
 3. Reconstructs `StoredBatchInfo` from the proof data and state commitment, hashes it, and compares against `storedBatchHash(batchNumber)` on the diamond proxy contract
 
-If auto-discovery is used (`--bridgehub`), the tool calls `eth_chainId` on L2 and `bridgehub.getZKChain(chainId)` on L1 to find the diamond proxy address.
+If auto-discovery is used (`--bridgehub`), the tool requires `--expected-chain-id`, checks it against `eth_chainId` on L2, and calls `bridgehub.getZKChain(expectedChainId)` on L1 to find the diamond proxy address. This binds verification to the intended chain instead of trusting the L2 RPC endpoint to select the chain.
 
 ## Options
 
@@ -50,6 +51,7 @@ If auto-discovery is used (`--bridgehub`), the tool calls `eth_chainId` on L2 an
 | `<KEYS>` | Yes | Comma-separated storage keys to verify (positional) |
 | `--batch-number` | Yes | L1 batch number to verify against |
 | `--bridgehub` | * | Bridgehub address on L1 (enables auto-discovery) |
+| `--expected-chain-id` | With `--bridgehub` | Trusted L2 chain ID for bridgehub auto-discovery |
 | `--l1-contract` | * | Diamond proxy address on L1 (skips auto-discovery) |
 | `--commit-timeout` | No | Seconds to wait for L1 batch commitment (default: 60, 0 = fail immediately) |
 

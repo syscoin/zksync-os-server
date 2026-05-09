@@ -30,6 +30,9 @@ pub struct VerifyParams {
     pub batch_number: u64,
     pub l1_contract: Option<Address>,
     pub bridgehub: Option<Address>,
+    /// SYSCOIN: Trusted chain ID used to bind bridgehub discovery to the
+    /// intended L2 chain instead of the RPC-reported chain identity.
+    pub expected_chain_id: Option<u64>,
     /// If set, wait up to this duration for the batch to be committed on L1
     /// instead of failing immediately when `storedBatchHash` returns zero.
     pub commit_timeout: Option<Duration>,
@@ -86,6 +89,7 @@ pub async fn verify_storage_proof<N: Network>(
         l2_provider,
         params.l1_contract,
         params.bridgehub,
+        params.expected_chain_id,
     )
     .await?;
 
