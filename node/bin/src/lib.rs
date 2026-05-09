@@ -249,7 +249,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .unwrap()
             .as_secs() as i64,
     );
-    if !config.l1_sender_config.enabled {
+    // SYSCOIN: `batcher.enabled=false` skips L1 settlement entirely, so disabled-batcher
+    // main nodes must be able to start without enabling L1 senders.
+    if config.batcher_config.enabled && !config.l1_sender_config.enabled {
         unimplemented!("running without L1 Senders is temporarily not supported");
     }
     tracing::info!(version = NODE_VERSION, role, "Initializing Node");
@@ -344,7 +346,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
-    if node_role.is_main() {
+    if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = config
             .l1_sender_config
             .pubdata_mode
@@ -858,7 +860,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let (blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
     // Channel for Batcher->GasAdjuster communication. Batcher send sidecar to gas adjuster to estimate blob fill ratio.
     let (sidecar_sender, sidecar_receiver) = tokio::sync::mpsc::channel(10);
-    if node_role.is_main() {
+    if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = config
             .l1_sender_config
             .pubdata_mode
@@ -1218,10 +1220,6 @@ async fn run_main_node_pipeline(
     last_finalized_migration: watch::Receiver<u64>,
     migration_triggered: watch::Sender<Option<u64>>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
-    let pubdata_mode = config
-        .l1_sender_config
-        .pubdata_mode
-        .expect("l1_sender_pubdata_mode must be set on the Main Node");
     let priority_tree_db_path = config
         .general_config
         .rocks_db_path
@@ -1295,6 +1293,10 @@ async fn run_main_node_pipeline(
         let snapshot_rx = PipelineTracker::spawn(runtime, components);
         return monitor.spawn(runtime, snapshot_rx);
     }
+    let pubdata_mode = config
+        .l1_sender_config
+        .pubdata_mode
+        .expect("l1_sender_pubdata_mode must be set on the Main Node");
     // SYSCOIN
     let batch_work_state_history_reserve = config
         .prover_input_generator_config

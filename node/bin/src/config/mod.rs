@@ -804,8 +804,14 @@ pub struct RpcConfig {
     pub enable_debug_namespace: bool,
 }
 
-/// L1 sender configuration. The signing key fields are only required on the Main Node;
-/// External Nodes do not send L1 transactions and may omit them.
+// SYSCOIN: A disabled batcher does not start L1 settlement, so it should not force
+// operators to configure L1 sender credentials for read-only / replay-only main nodes.
+fn required_for_batching_main_node<T>(root: &Config, value: &Option<T>) -> bool {
+    !root.general_config.node_role.is_main() || !root.batcher_config.enabled || value.is_some()
+}
+
+/// L1 sender configuration. The signing key fields are only required on the Main Node
+/// when the batcher is enabled; External Nodes do not send L1 transactions and may omit them.
 ///
 /// Each operator accepts either a hex private key string (backward-compatible) or a GCP KMS
 /// resource object: `{"type": "gcp_kms", "resource": "projects/.../cryptoKeyVersions/N"}`.
@@ -814,21 +820,30 @@ pub struct L1SenderConfig {
     /// Signer to commit batches to L1.
     /// Must be consistent with the operator key set on the contract (permissioned!)
     /// Not required for External Nodes, which do not send L1 transactions.
-    #[config_validate(required_if = NodeRole::MainNode)]
+    #[config_validate(custom(
+        required_for_batching_main_node,
+        "is required when `general.node_role=main` and `batcher.enabled=true`"
+    ))]
     #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
     pub operator_commit_sk: Option<SignerConfig>,
 
     /// Signer to submit proofs to L1.
     /// Can be arbitrary funded address - proof submission is permissionless.
     /// Not required for External Nodes, which do not send L1 transactions.
-    #[config_validate(required_if = NodeRole::MainNode)]
+    #[config_validate(custom(
+        required_for_batching_main_node,
+        "is required when `general.node_role=main` and `batcher.enabled=true`"
+    ))]
     #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
     pub operator_prove_sk: Option<SignerConfig>,
 
     /// Signer to execute batches on L1.
     /// Can be arbitrary funded address - execute submission is permissionless.
     /// Not required for External Nodes, which do not send L1 transactions.
-    #[config_validate(required_if = NodeRole::MainNode)]
+    #[config_validate(custom(
+        required_for_batching_main_node,
+        "is required when `general.node_role=main` and `batcher.enabled=true`"
+    ))]
     #[config(secret, alias = "operator_execute_pk", with = SignerConfigDeserializer)]
     pub operator_execute_sk: Option<SignerConfig>,
 
@@ -879,7 +894,10 @@ pub struct L1SenderConfig {
 
     /// Pubdata mode is used by block-producing components on the Main Node.
     /// External Nodes only replay blocks, so they may leave this unset.
-    #[config_validate(required_if = NodeRole::MainNode)]
+    #[config_validate(custom(
+        required_for_batching_main_node,
+        "is required when `general.node_role=main` and `batcher.enabled=true`"
+    ))]
     #[config(with = Serde![str])]
     pub pubdata_mode: Option<PubdataMode>,
 
@@ -2098,21 +2116,37 @@ mod tests {
         );
         assert!(
             err.contains(
-                "`l1_sender.operator_commit_sk` is required when `general.node_role=main`"
+                "`l1_sender.operator_commit_sk` is required when `general.node_role=main` and `batcher.enabled=true`"
             )
         );
         assert!(
-            err.contains("`l1_sender.operator_prove_sk` is required when `general.node_role=main`")
+            err.contains("`l1_sender.operator_prove_sk` is required when `general.node_role=main` and `batcher.enabled=true`")
         );
         assert!(
             err.contains(
-                "`l1_sender.operator_execute_sk` is required when `general.node_role=main`"
+                "`l1_sender.operator_execute_sk` is required when `general.node_role=main` and `batcher.enabled=true`"
             )
         );
-        assert!(err.contains("`l1_sender.pubdata_mode` is required when `general.node_role=main`"));
+        assert!(err.contains(
+            "`l1_sender.pubdata_mode` is required when `general.node_role=main` and `batcher.enabled=true`"
+        ));
         assert!(
             err.contains("`external_price_api_client` is required when `general.node_role=main`")
         );
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn disabled_batcher_main_node_can_omit_l1_sender_fields() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.batcher_config.enabled = false;
+        config.l1_sender_config.enabled = false;
+        config.l1_sender_config.operator_commit_sk = None;
+        config.l1_sender_config.operator_prove_sk = None;
+        config.l1_sender_config.operator_execute_sk = None;
+        config.l1_sender_config.pubdata_mode = None;
+
+        config.validate().await.unwrap();
     }
 
     #[tokio::test]
