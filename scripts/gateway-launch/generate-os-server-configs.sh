@@ -485,19 +485,19 @@ resolve_syscoin_cookie_file() {{
 
 COOKIE_FILE="$(resolve_syscoin_cookie_file || true)"
 if [ -n "${{COOKIE_FILE}}" ]; then
-  COOKIE="$(< "${{COOKIE_FILE}}")"
-  BITCOIN_DA_RPC_USER="${{COOKIE%%:*}}"
-  BITCOIN_DA_RPC_PASSWORD="${{COOKIE#*:}}"
-
-  python3 - "{config_path}" "${{BITCOIN_DA_RPC_USER}}" "${{BITCOIN_DA_RPC_PASSWORD}}" <<'PYCOOKIE'
+  # SYSCOIN: keep cookie-derived credentials out of process argv.
+  python3 - "{config_path}" "${{COOKIE_FILE}}" <<'PYCOOKIE'
 import json
 import re
 import sys
 from pathlib import Path
 
 config_path = Path(sys.argv[1])
-rpc_user = sys.argv[2]
-rpc_password = sys.argv[3]
+cookie_path = Path(sys.argv[2])
+cookie = cookie_path.read_text(encoding="utf-8").rstrip("\\r\\n")
+rpc_user, separator, rpc_password = cookie.partition(":")
+if separator != ":" or not rpc_user or not rpc_password:
+    raise SystemExit(f"invalid Syscoin RPC cookie format in {{cookie_path}}")
 text = config_path.read_text(encoding="utf-8")
 text, user_count = re.subn(
     r"^(\\s*bitcoin_da_rpc_user:\\s*).*$",
