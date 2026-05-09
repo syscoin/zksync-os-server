@@ -616,7 +616,7 @@ def _parse_hex_like(value):
     # Also accept decimal-encoded integers and float-like integer strings.
     if re.fullmatch(r"[0-9]+", s):
         return int(s, 10)
-    if re.fullmatch(r"[0-9]+\\.0+", s):
+    if re.fullmatch(r"[0-9]+\.0+", s):
         return int(s.split(".", 1)[0], 10)
     return None
 
