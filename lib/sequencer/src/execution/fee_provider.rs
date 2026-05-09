@@ -62,25 +62,32 @@ impl FeeProvider {
     }
 
     pub async fn produce_fee_params(&mut self) -> anyhow::Result<FeeParams> {
-        let token_prices = self
-            .token_price_provider
-            .wait_for(|prices| prices.is_some())
-            .await?
-            .clone()
-            .unwrap();
-
-        let pubdata_price_in_sl_token = if self.fee_config.pubdata_price_override.is_none() {
-            Some(
-                *self
-                    .pubdata_price_provider
-                    .wait_for(|price| price.is_some())
+        let (token_prices, pubdata_price_in_sl_token) =
+            if self.fee_config.pubdata_price_override.is_some() {
+                let token_prices = self
+                    .token_price_provider
+                    .wait_for(|prices| prices.is_some())
                     .await?
-                    .as_ref()
-                    .expect("wait_for ensures pubdata price is present"),
-            )
-        } else {
-            None
-        };
+                    .clone()
+                    .unwrap();
+                (token_prices, None)
+            } else {
+                loop {
+                    self.token_price_provider
+                        .wait_for(|prices| prices.is_some())
+                        .await?;
+                    let pubdata_price_in_sl_token = *self
+                        .pubdata_price_provider
+                        .wait_for(|price| price.is_some())
+                        .await?
+                        .as_ref()
+                        .expect("wait_for ensures pubdata price is present");
+
+                    if let Some(token_prices) = self.token_price_provider.borrow().clone() {
+                        break (token_prices, Some(pubdata_price_in_sl_token));
+                    }
+                }
+            };
 
         let native_price = self.calculate_native_price(&token_prices);
         let eip1559_basefee = self.calculate_base_fee(&native_price);
