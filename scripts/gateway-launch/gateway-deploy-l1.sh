@@ -92,7 +92,7 @@ else:
     raw = str(addr).strip()
     if raw.startswith(("0x", "0X")):
         v = int(raw[2:], 16)
-    elif len(raw) > 40 and raw.isdecimal():
+    elif raw.isdecimal():
         v = int(raw, 10)
     else:
         v = int(raw, 16)
