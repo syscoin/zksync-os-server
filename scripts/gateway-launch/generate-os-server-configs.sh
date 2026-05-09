@@ -124,6 +124,7 @@ from pathlib import Path
 import os
 import re
 import shutil
+import tempfile
 import yaml
 
 
@@ -138,6 +139,30 @@ def load_yaml(path: Path):
 def write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def write_secret_text(path: Path, text: str, mode: int = 0o600):
+    # SYSCOIN: generated OS server configs contain operator private keys; create
+    # them independent of the caller's umask so staging artifacts are not world-readable.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(text)
+        tmp_path.chmod(mode)
+        os.replace(tmp_path, path)
+        path.chmod(mode)
+    except BaseException:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def parse_ether_amount_to_wei(value: str, default_wei: int) -> int:
@@ -422,10 +447,13 @@ def materialize_chain(
         )
     config_lines.append("")
 
-    write_text(out_dir / "config.yaml", "\n".join(config_lines))
+    write_secret_text(out_dir / "config.yaml", "\n".join(config_lines))
 
     shutil.copy2(contracts_candidate, out_dir / "contracts.yaml")
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
+    # SYSCOIN: wallets.yaml is copied for operator convenience but still carries
+    # private keys, so force the generated copy to owner-only permissions.
+    (out_dir / "wallets.yaml").chmod(0o600)
     shutil.copy2(genesis_json, out_dir / "genesis.json")
 
     config_path = out_dir / "config.yaml"
