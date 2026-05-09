@@ -41,7 +41,7 @@ from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 m = re.search(
-    r'zk_os_forward_system_dev\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"https://github\.com/matter-labs/zksync-os",\s*tag\s*=\s*"([^"]+)"',
+    r'zk_os_forward_system_dev\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"[^"]+",\s*tag\s*=\s*"([^"]+)"',
     text,
     re.MULTILINE,
 )
@@ -51,14 +51,87 @@ print(m.group(1))
 PY
 }
 
+extract_dev_git_url() {
+  python3 - "${ZKSYNC_OS_SERVER_PATH}/Cargo.toml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+m = re.search(
+    r'zk_os_forward_system_dev\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"([^"]+)"',
+    text,
+    re.MULTILINE,
+)
+if not m:
+    raise SystemExit("failed to locate zk_os_forward_system_dev git URL in Cargo.toml")
+print(m.group(1))
+PY
+}
+
+extract_locked_rev() {
+  python3 - "${ZKSYNC_OS_SERVER_PATH}/Cargo.lock" "$1" "$2" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+def normalize_git_url(url: str) -> str:
+    return url.removesuffix(".git")
+
+lock_text = Path(sys.argv[1]).read_text(encoding="utf-8")
+dev_git_url = normalize_git_url(sys.argv[2])
+dev_tag = sys.argv[3]
+
+for m in re.finditer(
+    r'source\s*=\s*"git\+([^"?]+)\?tag=([^"#]+)#([0-9a-f]{40})"',
+    lock_text,
+):
+    source_url, source_tag, locked_rev = m.groups()
+    if normalize_git_url(source_url) == dev_git_url and source_tag == dev_tag:
+        print(locked_rev)
+        raise SystemExit(0)
+
+raise SystemExit(
+    f"failed to locate locked zksync-os revision for {sys.argv[2]} tag {dev_tag}"
+)
+PY
+}
+
+checkout_locked_base() {
+  local dev_path="$1"
+  local locked_rev="$2"
+
+  if ! git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null; then
+    git -C "${dev_path}" fetch --tags "${ZKSYNC_OS_GIT_URL}" >/dev/null || \
+      gl_die "failed to fetch locked zksync-os revision ${locked_rev} from ${ZKSYNC_OS_GIT_URL}"
+  fi
+  git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null || \
+    gl_die "locked zksync-os revision ${locked_rev} is unavailable in ${dev_path}"
+
+  if [ -n "$(git -C "${dev_path}" status --porcelain)" ]; then
+    gl_die "zksync-os checkout has local changes; cannot reset to locked revision: ${dev_path}"
+  fi
+
+  git -C "${dev_path}" checkout --detach "${locked_rev}" >/dev/null
+  local checked_out_rev
+  checked_out_rev="$(git -C "${dev_path}" rev-parse HEAD)"
+  [ "${checked_out_rev}" = "${locked_rev}" ] || \
+    gl_die "zksync-os checkout ${checked_out_rev} != locked revision ${locked_rev}"
+}
+
 prepare_dev_checkout() {
-  local dev_tag dev_root dev_path
+  local dev_tag dev_git_url locked_rev dev_root dev_path
   dev_tag="${1:?dev tag required}"
+  dev_git_url="$(extract_dev_git_url)"
+  locked_rev="$(extract_locked_rev "${dev_git_url}" "${dev_tag}")"
 
   if [ -n "${ZKSYNC_OS_DEV_PATH:-}" ]; then
     dev_path="${ZKSYNC_OS_DEV_PATH}"
     git -C "${dev_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
       gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${dev_path}"
+    # SYSCOIN: the launcher rewrites dependencies to a patched local zksync-os
+    # checkout, so re-anchor that checkout to Cargo.lock before applying the patch.
+    checkout_locked_base "${dev_path}" "${locked_rev}"
     bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
     git -C "${dev_path}" add -A
     if ! git -C "${dev_path}" diff --cached --quiet; then
@@ -76,9 +149,10 @@ prepare_dev_checkout() {
   if [ ! -d "${dev_path}/.git" ]; then
     mkdir -p "${dev_root}"
     git clone "${ZKSYNC_OS_GIT_URL}" "${dev_path}"
-    git -C "${dev_path}" checkout "${dev_tag}"
   fi
 
+  # SYSCOIN: use Cargo.lock's immutable git revision, not the mutable upstream tag.
+  checkout_locked_base "${dev_path}" "${locked_rev}"
   bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
   git -C "${dev_path}" add -A
   if ! git -C "${dev_path}" diff --cached --quiet; then
