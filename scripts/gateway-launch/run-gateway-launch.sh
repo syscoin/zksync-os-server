@@ -9,10 +9,9 @@ ORIG_ARGS=("$@")
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
 
-if [ -f "${HOME}/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  source "${HOME}/.cargo/env"
-fi
+# SYSCOIN: do not source HOME-relative Cargo env files in the deployment
+# launcher. _common.sh already prepends ~/.cargo/bin to PATH without executing
+# attacker-controlled shell code in the process that carries deployment secrets.
 
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
   if [ "${PROVER_MODE}" = "no-proofs" ]; then
