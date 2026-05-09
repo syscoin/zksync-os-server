@@ -38,7 +38,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
         sl_block_initial_finality_init_at: u64,
-        l1_chain_id: u64,
+        sl_chain_id: u64,
         commit_submitted_rx: Option<watch::Receiver<u64>>,
     ) -> anyhow::Result<L1Watcher> {
         let last_committed_batch = finality.get_finality_status().last_committed_batch;
@@ -74,7 +74,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
             // one.
             last_l1_block,
             None,
-            l1_chain_id,
+            sl_chain_id,
             Box::new(this),
         )
         .await

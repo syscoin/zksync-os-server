@@ -36,15 +36,17 @@ impl L1Watcher {
         address: ValueOrArray<Address>,
         next_block: BlockNumber,
         end_block: Option<BlockNumber>,
-        l1_chain_id: u64,
+        expected_chain_id: u64,
         processor: Box<dyn ProcessRawEvents>,
     ) -> anyhow::Result<Self> {
-        let confirmations = if provider.get_chain_id().await? != l1_chain_id {
-            // Gateway case, zero out confirmations.
-            0
-        } else {
-            config.confirmations
-        };
+        // SYSCOIN: the confirmation lag must apply to the chain being watched. Callers
+        // pass the expected provider chain ID so gateway/SL watchers keep the same reorg
+        // protection instead of silently falling back to latest-block processing.
+        let provider_chain_id = provider.get_chain_id().await?;
+        anyhow::ensure!(
+            provider_chain_id == expected_chain_id,
+            "L1 watcher provider chain ID mismatch: expected {expected_chain_id}, got {provider_chain_id}"
+        );
 
         Ok(Self {
             provider,
@@ -52,7 +54,9 @@ impl L1Watcher {
             next_block,
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
-            block_boundary: BlockBoundary::Confirmed { confirmations },
+            block_boundary: BlockBoundary::Confirmed {
+                confirmations: config.confirmations,
+            },
             poll_interval: config.poll_interval,
             processor,
         })

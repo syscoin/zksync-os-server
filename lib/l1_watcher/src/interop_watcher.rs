@@ -29,7 +29,7 @@ impl InteropWatcher {
         config: L1WatcherConfig,
         starting_interop_root_id: u64,
         interop_roots_subpool: InteropRootsSubpool,
-        l1_chain_id: u64,
+        sl_chain_id: u64,
     ) -> anyhow::Result<L1Watcher> {
         let contract_address = bridgehub.message_root_address().await?;
 
@@ -53,7 +53,7 @@ impl InteropWatcher {
             contract_address.into(),
             next_l1_block,
             None,
-            l1_chain_id,
+            sl_chain_id,
             Box::new(this),
         )
         .await

@@ -625,7 +625,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             committed_batch_provider.clone(),
             finality_storage.clone(),
             l1_state.sl_block_number,
-            node_startup_state.l1_state.l1_chain_id,
+            // SYSCOIN: this watcher follows the active settlement layer, so validate
+            // against the SL provider chain ID and preserve the configured confirmations.
+            node_startup_state.l1_state.sl_chain_id,
             node_role.is_main().then_some(commit_submitted_rx),
         )
         .await
@@ -640,7 +642,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
             finality_storage.clone(),
-            node_startup_state.l1_state.l1_chain_id,
+            // SYSCOIN: this watcher follows the active settlement layer, so validate
+            // against the SL provider chain ID and preserve the configured confirmations.
+            node_startup_state.l1_state.sl_chain_id,
         )
         .await
         .expect("failed to start L1 execute watcher")
@@ -800,7 +804,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                     config.l1_watcher_config.clone().into(),
                     next_cursors.interop_root_id,
                     interop_roots_subpool.clone(),
-                    node_startup_state.l1_state.l1_chain_id,
+                    // SYSCOIN: interop roots are emitted on the active settlement layer.
+                    node_startup_state.l1_state.sl_chain_id,
                 )
                 .await
                 .expect("failed to start L1 interop roots watcher")
