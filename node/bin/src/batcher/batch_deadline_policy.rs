@@ -30,9 +30,10 @@ pub fn deadline_from_block_timestamp(
         // as the maximum timer delay so malformed future timestamps cannot stall sealing or
         // overflow `Instant` arithmetic.
         let delay = delay.min(batch_timeout);
-        let instant = Instant::now()
-            .checked_add(delay)
-            .unwrap_or_else(Instant::now);
+        let now_instant = Instant::now();
+        let Some(instant) = now_instant.checked_add(delay) else {
+            return (now_instant, now_unix);
+        };
         let unix_deadline = now_unix.saturating_add(delay.as_secs());
 
         (instant, unix_deadline)
