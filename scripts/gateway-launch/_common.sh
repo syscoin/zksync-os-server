@@ -332,7 +332,8 @@ gl_resolve_gateway_dir_after_ecosystem_create() {
 # panics (select.rs NotConnected). util-linux `script` runs the command with a real PTY slave.
 gl_zkstack_pty() {
   if [[ "$(uname -s)" == "Linux" ]]; then
-    script -q -c "$(printf '%q ' "$@")" /dev/null
+    # SYSCOIN: preserve the wrapped zkstack exit status; migration callers rely on set -e.
+    script -e -q -c "$(printf '%q ' "$@")" /dev/null
   else
     "$@"
   fi
