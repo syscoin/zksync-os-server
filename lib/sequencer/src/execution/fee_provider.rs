@@ -62,9 +62,18 @@ impl FeeProvider {
     }
 
     pub async fn produce_fee_params(&mut self) -> anyhow::Result<FeeParams> {
-        self.pubdata_price_provider
-            .wait_for(|price| price.is_some())
-            .await?;
+        let pubdata_price_in_sl_token = if self.fee_config.pubdata_price_override.is_none() {
+            Some(
+                *self
+                    .pubdata_price_provider
+                    .wait_for(|price| price.is_some())
+                    .await?
+                    .as_ref()
+                    .expect("wait_for ensures pubdata price is present"),
+            )
+        } else {
+            None
+        };
         let token_prices = self
             .token_price_provider
             .wait_for(|prices| prices.is_some())
@@ -74,7 +83,8 @@ impl FeeProvider {
 
         let native_price = self.calculate_native_price(&token_prices);
         let eip1559_basefee = self.calculate_base_fee(&native_price);
-        let pubdata_price = self.calculate_pubdata_price(&native_price, &token_prices);
+        let pubdata_price =
+            self.calculate_pubdata_price(&native_price, &token_prices, pubdata_price_in_sl_token);
         Self::record_metrics(&native_price, &eip1559_basefee, &pubdata_price);
 
         let native_price = biguint_to_u256_checked(&native_price).unwrap_or_else(|| {
@@ -170,14 +180,14 @@ impl FeeProvider {
         &self,
         native_price: &BigUint,
         token_prices: &TokenPricesForFees,
+        pubdata_price_in_sl_token: Option<U256>,
     ) -> BigUint {
         if let Some(o) = self.fee_config.pubdata_price_override.clone() {
             return o;
         }
 
         let base_pubdata_price_in_sl_token = BigUint::from_bytes_le(
-            self.pubdata_price_provider
-                .borrow()
+            pubdata_price_in_sl_token
                 .expect("Pubdata price must be available")
                 .as_le_slice(),
         );
@@ -394,8 +404,11 @@ mod tests {
     fn pubdata_price_decrease_is_capped_from_previous_block() {
         let provider = fee_provider(Some(1_000), 1_000);
 
-        let price =
-            provider.calculate_pubdata_price(&BigUint::from(1u32), &token_prices(100.0, 1.0));
+        let price = provider.calculate_pubdata_price(
+            &BigUint::from(1u32),
+            &token_prices(100.0, 1.0),
+            Some(U256::from(1_000)),
+        );
 
         assert_eq!(price, BigUint::from(500u32));
     }
@@ -404,7 +417,11 @@ mod tests {
     fn pubdata_price_increase_is_capped_from_previous_block() {
         let provider = fee_provider(Some(1_000), 2_000);
 
-        let price = provider.calculate_pubdata_price(&BigUint::from(1u32), &token_prices(1.0, 1.0));
+        let price = provider.calculate_pubdata_price(
+            &BigUint::from(1u32),
+            &token_prices(1.0, 1.0),
+            Some(U256::from(2_000)),
+        );
 
         assert_eq!(price, BigUint::from(1_500u32));
     }
