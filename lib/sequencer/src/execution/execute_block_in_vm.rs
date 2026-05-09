@@ -9,7 +9,6 @@ use futures::StreamExt;
 use std::pin::Pin;
 use tokio::time::Sleep;
 use vise::EncodeLabelValue;
-use zk_ee::memory::stack_trait::Stack;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{AnyTracer, AnyTxValidator};
 use zksync_os_interface::types::{BlockContext, BlockOutput};
