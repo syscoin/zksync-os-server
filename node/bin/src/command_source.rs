@@ -23,6 +23,8 @@ pub struct ConsensusNodeCommandSource<Replay> {
     pub replays_to_execute: mpsc::Receiver<ReplayRecord>,
     /// Current leadership status from consensus.
     pub leadership: LeadershipSignal,
+    /// SYSCOIN: Disabled-batcher nodes are replay-only; they must not emit new Produce commands.
+    pub produce_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -155,7 +157,7 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                     }
                     state_reporter.record_processed(block_number, Some(timestamp), None);
                 }
-                send_res = output.send(BlockCommand::Produce(ProduceCommand)), if role == ConsensusRole::Leader => {
+                send_res = output.send(BlockCommand::Produce(ProduceCommand)), if role == ConsensusRole::Leader && self.produce_enabled => {
                     if send_res.is_err() {
                         tracing::info!("Command output channel closed, stopping source");
                         break;

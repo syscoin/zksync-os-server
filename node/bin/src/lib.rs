@@ -143,13 +143,14 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
-// SYSCOIN: A main node configured to produce zero blocks must reject RPC txs before
-// the sequencer consumes its first Produce command, which can be delayed by replay.
+// SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
+// its first Produce command, which can be delayed by replay.
 fn initial_transaction_acceptance_state(
     node_role: NodeRole,
     max_blocks_to_produce: Option<u64>,
+    batcher_enabled: bool,
 ) -> TransactionAcceptanceState {
-    if node_role.is_main() && max_blocks_to_produce == Some(0) {
+    if node_role.is_main() && (!batcher_enabled || max_blocks_to_produce == Some(0)) {
         TransactionAcceptanceState::NotAccepting(vec![NotAcceptingReason::BlockProductionDisabled])
     } else {
         TransactionAcceptanceState::Accepting
@@ -830,6 +831,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         watch::channel(initial_transaction_acceptance_state(
             node_role,
             config.sequencer_config.max_blocks_to_produce,
+            config.batcher_config.enabled,
         ));
 
     let (stop_sender, stop_receiver) = watch::channel(false);
@@ -1248,6 +1250,7 @@ async fn run_main_node_pipeline(
                 .map(Into::into),
             replays_to_execute,
             leadership,
+            produce_enabled: config.batcher_config.enabled,
         })
         .pipe(BlockExecutor {
             block_context_provider,
@@ -1990,7 +1993,16 @@ mod tests {
     #[test]
     fn main_node_zero_block_cap_rejects_transactions_at_startup() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0)),
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(0), true),
+            TransactionAcceptanceState::NotAccepting(reasons)
+                if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    #[test]
+    fn main_node_disabled_batcher_rejects_transactions_at_startup() {
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
         ));
@@ -1999,7 +2011,7 @@ mod tests {
     #[test]
     fn main_node_positive_block_cap_accepts_transactions_at_startup() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1)),
+            initial_transaction_acceptance_state(NodeRole::MainNode, Some(1), true),
             TransactionAcceptanceState::Accepting
         ));
     }
@@ -2007,7 +2019,7 @@ mod tests {
     #[test]
     fn external_node_zero_block_cap_accepts_for_forwarding() {
         assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0)),
+            initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0), true),
             TransactionAcceptanceState::Accepting
         ));
     }
