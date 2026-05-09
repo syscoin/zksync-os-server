@@ -1,6 +1,10 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
+// SYSCOIN: Preserve the timestamp-based deadline for benign clock skew while bounding malformed
+// future replay/canonization timestamps.
+const MAX_FUTURE_TIMESTAMP_SKEW: Duration = Duration::from_secs(5 * 60);
+
 /// Converts a block's L2 unix timestamp into an absolute `tokio::time::Instant` at which
 /// the batch containing that block should be sealed.
 ///
@@ -26,10 +30,12 @@ pub fn deadline_from_block_timestamp(
     } else {
         let delay = Duration::from_secs(deadline_unix - now_unix);
         // SYSCOIN: Replay/canonized timestamps are not a public transaction input in the current
-        // fork, but they can still come from WAL/rebuild/consensus state. Treat `batch_timeout`
-        // as the maximum timer delay so malformed future timestamps cannot stall sealing or
-        // overflow `Instant` arithmetic.
-        let delay = delay.min(batch_timeout);
+        // fork, but they can still come from WAL/rebuild/consensus state. Preserve the documented
+        // `first_block_timestamp + batch_timeout` deadline within a small clock-skew window, but
+        // cap malformed future timestamps so they cannot stall sealing or overflow `Instant`
+        // arithmetic.
+        let max_delay = batch_timeout.saturating_add(MAX_FUTURE_TIMESTAMP_SKEW);
+        let delay = delay.min(max_delay);
         let now_instant = Instant::now();
         let Some(instant) = now_instant.checked_add(delay) else {
             return (now_instant, now_unix);
@@ -72,15 +78,28 @@ mod tests {
     }
 
     #[test]
-    fn future_timestamp_is_capped_to_configured_timeout() {
+    fn small_future_timestamp_preserves_timestamp_based_slack() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(300);
+        let future_timestamp = now_unix().saturating_add(60);
+        let (deadline, unix_deadline) = deadline_from_block_timestamp(future_timestamp, timeout);
+
+        assert!(deadline >= now + timeout);
+        assert!(deadline <= now + timeout + Duration::from_secs(61));
+        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs() + 60));
+    }
+
+    #[test]
+    fn far_future_timestamp_is_capped_to_reasonable_delay() {
         let now = Instant::now();
         let timeout = Duration::from_secs(300);
         let future_timestamp = now_unix().saturating_add(10 * 365 * 24 * 60 * 60);
         let (deadline, unix_deadline) = deadline_from_block_timestamp(future_timestamp, timeout);
 
+        let max_delay = timeout + MAX_FUTURE_TIMESTAMP_SKEW;
         assert!(deadline >= now);
-        assert!(deadline <= now + timeout + Duration::from_secs(1));
-        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs()));
+        assert!(deadline <= now + max_delay + Duration::from_secs(1));
+        assert!(unix_deadline <= now_unix().saturating_add(max_delay.as_secs()));
     }
 
     #[test]
@@ -89,8 +108,9 @@ mod tests {
         let timeout = Duration::from_secs(300);
         let (deadline, unix_deadline) = deadline_from_block_timestamp(u64::MAX, timeout);
 
+        let max_delay = timeout + MAX_FUTURE_TIMESTAMP_SKEW;
         assert!(deadline >= now);
-        assert!(deadline <= now + timeout + Duration::from_secs(1));
-        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs()));
+        assert!(deadline <= now + max_delay + Duration::from_secs(1));
+        assert!(unix_deadline <= now_unix().saturating_add(max_delay.as_secs()));
     }
 }
