@@ -36,6 +36,7 @@ Optional env:
   PROTOCOL_VERSION             default v31.0
   GATEWAY_DIR                  default ~/gateway
   REUSE_ECOSYSTEM              true|false, default false
+  MIGRATE_EDGE                 true|false, default false
   PROVER_MODE                  gpu|no-proofs (default gpu)
   GATEWAY_PROVER_MODE          ecosystem prover mode, defaults from PROVER_MODE
   GATEWAY_LAUNCH_LOG           default ~/gateway-launch.log
@@ -46,6 +47,7 @@ Options:
   --l1 tanenbaum|mainnet
   --log PATH
   --reuse-ecosystem            reuse an existing GATEWAY_DIR/ZkStack.yaml instead of creating wallets/ecosystem
+  --migrate-edge               pause deposits and migrate/finalize edge settlement to Gateway
   -h, --help
 EOF
   exit "${1:-0}"
@@ -63,6 +65,10 @@ while [ "${1:-}" != "" ]; do
     ;;
   --reuse-ecosystem)
     REUSE_ECOSYSTEM=true
+    shift
+    ;;
+  --migrate-edge)
+    MIGRATE_EDGE=true
     shift
     ;;
   -h | --help) usage 0 ;;
@@ -140,6 +146,13 @@ true | false) ;;
 *) gl_die "invalid REUSE_ECOSYSTEM='${REUSE_ECOSYSTEM}' (expected: true | false)" ;;
 esac
 export REUSE_ECOSYSTEM
+: "${MIGRATE_EDGE:=false}"
+MIGRATE_EDGE="$(gl_to_lower "${MIGRATE_EDGE}")"
+case "${MIGRATE_EDGE}" in
+true | false) ;;
+*) gl_die "invalid MIGRATE_EDGE='${MIGRATE_EDGE}' (expected: true | false)" ;;
+esac
+export MIGRATE_EDGE
 if [ "${REUSE_ECOSYSTEM}" = true ] &&
   { [ -n "${GATEWAY_WALLET_CREATION:-}" ] || [ -n "${GATEWAY_WALLET_PATH:-}" ]; }; then
   gl_die "GATEWAY_WALLET_CREATION/GATEWAY_WALLET_PATH are ignored with --reuse-ecosystem; unset them or use a fresh GATEWAY_DIR"
@@ -473,7 +486,17 @@ run_checkpoint_with_validation "gl.gateway_settlement" validate_gateway_settleme
 run_checkpoint_with_validation "gl.os_configs_gateway" validate_os_configs_gateway env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
 run_checkpoint_with_validation "gl.edge_chain_inited" validate_edge_chain_inited step_edge_chain_inited || exit $?
 
-if checkpoint_should_skip "gl.migration" validate_migration; then
+if [ "${MIGRATE_EDGE}" != true ] && [ "$(gl_checkpoint_get_status "gl.migration")" != "passed" ]; then
+  # SYSCOIN: edge migration pauses deposits and finalizes settlement changes, so
+  # require an explicit operator opt-in before running it with deployment keys.
+  echo "gateway-launch: edge chain is initialized; migration was not run."
+  echo "gateway-launch: rerun this command with --migrate-edge when ready to pause deposits and migrate/finalize edge settlement."
+  echo "gateway-launch: final os-server configs will be generated after migration completes."
+  trap - EXIT INT TERM
+  exit 0
+fi
+
+if [ "$(gl_checkpoint_get_status "gl.migration")" = "passed" ]; then
   echo "checkpoint gl.migration already passed; skipping"
 else
   gl_checkpoint_mark_in_progress "gl.migration"

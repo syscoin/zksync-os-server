@@ -25,7 +25,7 @@ export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
-bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --migrate-edge
 ```
 
 Mainnet:
@@ -36,10 +36,11 @@ export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
-bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet
+bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet --migrate-edge
 ```
 
 The governor signer is used only for Gateway migration repair transactions. Do not pass this key as a raw command-line argument. Import it into Foundry's keystore first with `cast wallet import governor --interactive`, or use `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore`, `ledger`, `trezor`, `aws`, or `gcp`.
+The `--migrate-edge` flag is required for the normal full launch because it pauses deposits and finalizes the edge-chain migration to Gateway settlement. If omitted, the launcher stops after edge-chain initialization and can be resumed later with the same command plus `--migrate-edge`.
 
 Optional log override:
 
@@ -128,6 +129,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint used for broadcasts (expected: local Syscoin node/proxy, e.g. `http://127.0.0.1:8545`) |
 | `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
 | `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
+| `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
