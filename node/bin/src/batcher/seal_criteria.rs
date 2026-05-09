@@ -61,6 +61,7 @@ pub(crate) struct BatchInfoAccumulator {
     pub execution_versions: HashSet<u32>,
 
     // Limits
+    pub blocks_per_batch_limit: u64,
     pub tx_per_batch_limit: u64,
     pub batch_pubdata_limit_bytes: u64,
     pub interop_roots_per_batch_limit: u64,
@@ -68,11 +69,13 @@ pub(crate) struct BatchInfoAccumulator {
 
 impl BatchInfoAccumulator {
     pub fn new(
+        blocks_per_batch_limit: u64,
         tx_per_batch_limit: u64,
         batch_pubdata_limit_bytes: u64,
         interop_roots_per_batch_limit: u64,
     ) -> Self {
         Self {
+            blocks_per_batch_limit,
             tx_per_batch_limit,
             batch_pubdata_limit_bytes,
             interop_roots_per_batch_limit,
@@ -170,6 +173,14 @@ impl BatchInfoAccumulator {
             return false;
         }
 
+        // SYSCOIN: Keep a direct block-count cap so low-resource blocks cannot accumulate
+        // indefinitely when other batch limits and the timeout have not been reached.
+        if self.block_count > self.blocks_per_batch_limit {
+            BATCHER_METRICS.seal_reason[&"blocks_per_batch"].inc();
+            tracing::debug!("Batcher: reached blocks per batch limit");
+            return true;
+        }
+
         if self.tx_count > self.tx_per_batch_limit {
             BATCHER_METRICS.seal_reason[&"tx_per_batch"].inc();
             tracing::debug!("Batcher: reached tx per batch limit");
@@ -263,6 +274,7 @@ mod tests {
             block_count: 1,
             pubdata_bytes: 101,
             batch_pubdata_limit_bytes: 100,
+            blocks_per_batch_limit: 1,
             ..Default::default()
         };
 
@@ -275,6 +287,21 @@ mod tests {
             block_count: 2,
             pubdata_bytes: 101,
             batch_pubdata_limit_bytes: 100,
+            blocks_per_batch_limit: 2,
+            ..Default::default()
+        };
+
+        assert!(accumulator.should_seal());
+    }
+
+    #[test]
+    fn block_count_limit_triggers_batch_seal() {
+        let accumulator = BatchInfoAccumulator {
+            block_count: 3,
+            blocks_per_batch_limit: 2,
+            batch_pubdata_limit_bytes: u64::MAX,
+            tx_per_batch_limit: u64::MAX,
+            interop_roots_per_batch_limit: u64::MAX,
             ..Default::default()
         };
 
