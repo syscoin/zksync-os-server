@@ -525,10 +525,9 @@ fi
 
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
-if [ -f "${{HOME}}/.cargo/env" ]; then
-  # shellcheck disable=SC1091
-  source "${{HOME}}/.cargo/env"
-fi
+# SYSCOIN: do not source HOME-relative Cargo env files in generated node
+# start scripts. The wrapped runner sources _common.sh, which prepends
+# ~/.cargo/bin to PATH without executing shell code from HOME.
 : "${{OS_SERVER_NOFILE_TARGET:=1048576}}"
 : "${{OS_SERVER_NOFILE_RECOMMENDED:=131072}}"
 : "${{OS_SERVER_NOFILE_MIN:=65536}}"

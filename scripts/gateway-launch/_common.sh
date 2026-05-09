@@ -280,8 +280,8 @@ gl_build_zkstack_cli_release() {
   gl_require ZKSYNC_ERA_PATH
   gl_require ZKSYNC_OS_SERVER_PATH
   bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"
-  # shellcheck source=/dev/null
-  source "${HOME}/.cargo/env" >/dev/null 2>&1 || true
+  # SYSCOIN: Cargo is discovered via PATH setup at source time; do not execute
+  # HOME-relative shell code while deployment secrets are present.
   local toolchain
   toolchain="${GATEWAY_ZKSTACK_CARGO_TOOLCHAIN:-$(gl_detect_gateway_zkstack_nightly)}"
   [ -n "${toolchain}" ] || gl_die "no nightly Rust toolchain found; install one with rustup"
