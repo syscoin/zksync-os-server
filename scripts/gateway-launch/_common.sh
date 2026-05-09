@@ -1458,6 +1458,9 @@ gl_clear_os_server_chain_db() {
   gl_require GATEWAY_DIR
   local chain_name="${1:?chain name required}"
   local db_dir
+  if [[ ! "${chain_name}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    gl_die "refusing to clear DB for unsafe chain name: ${chain_name}"
+  fi
   db_dir="${GATEWAY_DIR}/os-server-configs/${chain_name}/db"
   case "${db_dir}" in
   "${GATEWAY_DIR}/os-server-configs/"*/db) ;;
