@@ -24,9 +24,72 @@ pub fn deadline_from_block_timestamp(
         // Seal as soon as possible — once catch-up replay is complete.
         (Instant::now(), now_unix)
     } else {
-        (
-            Instant::now() + Duration::from_secs(deadline_unix - now_unix),
-            deadline_unix,
-        )
+        let delay = Duration::from_secs(deadline_unix - now_unix);
+        // SYSCOIN: Replay/canonized timestamps are not a public transaction input in the current
+        // fork, but they can still come from WAL/rebuild/consensus state. Treat `batch_timeout`
+        // as the maximum timer delay so malformed future timestamps cannot stall sealing or
+        // overflow `Instant` arithmetic.
+        let delay = delay.min(batch_timeout);
+        let instant = Instant::now()
+            .checked_add(delay)
+            .unwrap_or_else(Instant::now);
+        let unix_deadline = now_unix.saturating_add(delay.as_secs());
+
+        (instant, unix_deadline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now_unix() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before UNIX epoch")
+            .as_secs()
+    }
+
+    #[test]
+    fn past_deadline_seals_immediately() {
+        let now = Instant::now();
+        let (deadline, unix_deadline) = deadline_from_block_timestamp(1, Duration::from_secs(300));
+
+        assert!(deadline <= now + Duration::from_secs(1));
+        assert!(unix_deadline >= now_unix().saturating_sub(1));
+    }
+
+    #[test]
+    fn current_timestamp_uses_configured_timeout() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(300);
+        let (deadline, unix_deadline) = deadline_from_block_timestamp(now_unix(), timeout);
+
+        assert!(deadline >= now);
+        assert!(deadline <= now + timeout + Duration::from_secs(1));
+        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs()));
+    }
+
+    #[test]
+    fn future_timestamp_is_capped_to_configured_timeout() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(300);
+        let future_timestamp = now_unix().saturating_add(10 * 365 * 24 * 60 * 60);
+        let (deadline, unix_deadline) = deadline_from_block_timestamp(future_timestamp, timeout);
+
+        assert!(deadline >= now);
+        assert!(deadline <= now + timeout + Duration::from_secs(1));
+        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs()));
+    }
+
+    #[test]
+    fn extreme_future_timestamp_does_not_panic() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(300);
+        let (deadline, unix_deadline) = deadline_from_block_timestamp(u64::MAX, timeout);
+
+        assert!(deadline >= now);
+        assert!(deadline <= now + timeout + Duration::from_secs(1));
+        assert!(unix_deadline <= now_unix().saturating_add(timeout.as_secs()));
     }
 }
