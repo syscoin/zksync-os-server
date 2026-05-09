@@ -66,7 +66,7 @@ impl SnarkProvingPipelineStep {
 // SYSCOIN
 impl SnarkProvingPipelineStep {
     fn can_rehydrate_batch(
-        &self,
+        committed_batch_provider: &CommittedBatchProvider,
         expected_batch_number: u64,
         batch: &SignedBatchEnvelope<FriProof>,
     ) -> bool {
@@ -81,7 +81,7 @@ impl SnarkProvingPipelineStep {
 
         let local_stored_batch = batch.batch.batch_info.clone().into_stored();
         let local_hash = local_stored_batch.hash();
-        let Some(committed_batch) = self.committed_batch_provider.get(expected_batch_number) else {
+        let Some(committed_batch) = committed_batch_provider.get(expected_batch_number) else {
             tracing::warn!(
                 batch_number = expected_batch_number,
                 "skipping SNARK rehydration because canonical committed batch is missing"
@@ -117,30 +117,22 @@ impl SnarkProvingPipelineStep {
 
         true
     }
-}
 
-#[async_trait]
-impl PipelineComponent for SnarkProvingPipelineStep {
-    type Input = SignedBatchEnvelope<FriProof>;
-    type Output = L1SenderCommand<ProofCommand>;
-
-    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
-        zksync_os_pipeline::ComponentId::SnarkJobManager;
-    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
-
-    async fn run(
-        mut self,
-        mut input: PeekableReceiver<Self::Input>,
-        output: mpsc::Sender<Self::Output>,
-        state_reporter: ComponentStateReporter,
-    ) -> anyhow::Result<()> {
+    // SYSCOIN
+    async fn rehydrate_snark_queue(
+        proof_storage: &ProofStorage,
+        committed_batch_provider: &CommittedBatchProvider,
+        snark_job_manager: &SnarkJobManager,
+        last_proved_batch_number: u64,
+        last_committed_batch_number: u64,
+    ) {
         // SYSCOIN On restart, rehydrate SNARK queue from stored FRI proofs that are already committed but not proved.
         let mut rehydrated_jobs = 0u64;
-        for batch_number in (self.last_proved_batch_number + 1)..=self.last_committed_batch_number {
-            match self.proof_storage.get_batch_with_proof(batch_number).await {
+        for batch_number in (last_proved_batch_number + 1)..=last_committed_batch_number {
+            match proof_storage.get_batch_with_proof(batch_number).await {
                 Ok(Some(batch)) => {
-                    if self.can_rehydrate_batch(batch_number, &batch) {
-                        self.snark_job_manager.add_job(batch).await;
+                    if Self::can_rehydrate_batch(committed_batch_provider, batch_number, &batch) {
+                        snark_job_manager.add_job(batch).await;
                         rehydrated_jobs += 1;
                     }
                 }
@@ -156,18 +148,72 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         }
         tracing::info!(
             rehydrated_jobs,
-            from = self.last_proved_batch_number + 1,
-            to = self.last_committed_batch_number,
+            from = last_proved_batch_number + 1,
+            to = last_committed_batch_number,
             "SNARK queue rehydration completed"
         );
+    }
+}
+
+#[async_trait]
+impl PipelineComponent for SnarkProvingPipelineStep {
+    type Input = SignedBatchEnvelope<FriProof>;
+    type Output = L1SenderCommand<ProofCommand>;
+
+    const COMPONENT_ID: zksync_os_pipeline::ComponentId =
+        zksync_os_pipeline::ComponentId::SnarkJobManager;
+    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
+
+    async fn run(
+        self,
+        mut input: PeekableReceiver<Self::Input>,
+        output: mpsc::Sender<Self::Output>,
+        state_reporter: ComponentStateReporter,
+    ) -> anyhow::Result<()> {
+        let last_proved_batch_number = self.last_proved_batch_number;
+        let last_committed_batch_number = self.last_committed_batch_number;
+        let proof_storage = self.proof_storage.clone();
+        let committed_batch_provider = self.committed_batch_provider.clone();
+        let snark_job_manager = self.snark_job_manager.clone();
+        let mut proof_commands_receiver = self.proof_commands_receiver;
+        let proof_output = output.clone();
+        let proof_state_reporter = state_reporter.clone();
+
+        // SYSCOIN Keep completed SNARK proofs draining while startup rehydration may wait for job-map space.
+        let mut proof_forwarder = tokio::spawn(async move {
+            while let Some(proof_command) = proof_commands_receiver.recv().await {
+                proof_output
+                    .send_and_record(
+                        L1SenderCommand::SendToL1(proof_command),
+                        &proof_state_reporter,
+                    )
+                    .await?;
+            }
+            Ok::<(), anyhow::Error>(())
+        });
+
+        tokio::select! {
+            _ = Self::rehydrate_snark_queue(
+                &proof_storage,
+                &committed_batch_provider,
+                &snark_job_manager,
+                last_proved_batch_number,
+                last_committed_batch_number,
+            ) => {}
+            result = &mut proof_forwarder => {
+                result??;
+                tracing::info!("outbound channel closed");
+                return Ok(());
+            }
+        }
 
         // Forward batches: pipeline input → SnarkJobManager → pipeline output
         // Two concurrent tasks handle the bidirectional flow
         tokio::select! {
             result = async {
                 while let Some(batch) = input.recv_and_record_picked(&state_reporter).await {
-                    if batch.batch_number() > self.last_proved_batch_number {
-                        self.snark_job_manager.add_job(batch).await;
+                    if batch.batch_number() > last_proved_batch_number {
+                        snark_job_manager.add_job(batch).await;
                     } else {
                         let passthrough = L1SenderCommand::Passthrough(Box::new(batch));
                         output.send_and_record(passthrough, &state_reporter).await?;
@@ -177,18 +223,11 @@ impl PipelineComponent for SnarkProvingPipelineStep {
             } => {
                 result?;
                 tracing::info!("inbound channel closed");
+                proof_forwarder.abort();
                 return Ok(());
             },
-            result = async {
-                while let Some(proof_command) = self.proof_commands_receiver.recv().await {
-                    output.send_and_record(
-                        L1SenderCommand::SendToL1(proof_command),
-                        &state_reporter,
-                    ).await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            } => {
-                result?;
+            result = &mut proof_forwarder => {
+                result??;
                 tracing::info!("outbound channel closed");
                 return Ok(());
             },
