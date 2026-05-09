@@ -62,6 +62,13 @@ impl FeeProvider {
     }
 
     pub async fn produce_fee_params(&mut self) -> anyhow::Result<FeeParams> {
+        let token_prices = self
+            .token_price_provider
+            .wait_for(|prices| prices.is_some())
+            .await?
+            .clone()
+            .unwrap();
+
         let pubdata_price_in_sl_token = if self.fee_config.pubdata_price_override.is_none() {
             Some(
                 *self
@@ -74,12 +81,6 @@ impl FeeProvider {
         } else {
             None
         };
-        let token_prices = self
-            .token_price_provider
-            .wait_for(|prices| prices.is_some())
-            .await?
-            .clone()
-            .unwrap();
 
         let native_price = self.calculate_native_price(&token_prices);
         let eip1559_basefee = self.calculate_base_fee(&native_price);
