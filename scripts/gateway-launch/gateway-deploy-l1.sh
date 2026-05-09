@@ -420,6 +420,14 @@ PY
 : "${GATEWAY_RETRY_GAS_BUMP_PCT:=20}"
 LAST_L1_CONTRACTS_DIR=""
 
+if ecosystem_contracts_ready; then
+  # SYSCOIN: checkpoint repair/reruns can reach this step after L1 ecosystem
+  # contracts were already deployed. Treat confirmed on-chain readiness as
+  # idempotent success instead of rerunning one-time initialization.
+  echo "gateway-launch: ecosystem contracts already present in configs/contracts.yaml and on-chain; skipping ecosystem init"
+  exit 0
+fi
+
 set_retry_gas_price() {
   local attempt base_wei bump_pct bump_factor gas_price_wei
   attempt="${1}"
@@ -474,6 +482,7 @@ retry_signals = (
     "nonce too low",
     "eoa nonce changed unexpectedly while sending transactions",
     "already known",
+    "nativetokenvaultalreadyset()",
 )
 sys.exit(0 if any(sig in t for sig in retry_signals) else 1)
 PY
@@ -484,10 +493,10 @@ PY
       break
     fi
     if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
-      echo "gateway-launch: ecosystem init failed after ${attempt} attempts due to nonce/replacement retryable errors" >&2
+      echo "gateway-launch: ecosystem init failed after ${attempt} retryable/idempotent attempts" >&2
       exit 1
     fi
-    echo "gateway-launch: detected nonce/replacement retryable error; waiting for nonce sync before retry"
+    echo "gateway-launch: detected retryable/idempotent ecosystem init error; waiting for nonce sync before retry"
     wait_for_deployer_nonce_sync
     sleep 10
     attempt=$((attempt + 1))
