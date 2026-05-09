@@ -93,6 +93,7 @@ mainnet)
   gl_die "invalid --l1: ${L1_PROFILE}"
   ;;
 esac
+gl_reject_no_proofs_on_mainnet
 
 case "${L1_RPC_URL}" in
 http://* | https://*) ;;
