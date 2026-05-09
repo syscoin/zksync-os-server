@@ -328,10 +328,14 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .await
         .expect("failed to fetch L1 state")
     };
-    let sl_provider = if l1_state.l1_chain_id == l1_state.sl_chain_id {
-        l1_provider.clone()
-    } else {
+    // SYSCOIN: Settlement mode is discovered from the L1 diamond, not from the
+    // optional Gateway provider config. A Gateway RPC may be configured before
+    // or after migration while the chain still settles directly on L1.
+    let settling_on_gateway = l1_state.l1_chain_id != l1_state.sl_chain_id;
+    let sl_provider = if settling_on_gateway {
         gateway_provider.clone().unwrap()
+    } else {
+        l1_provider.clone()
     };
     tracing::info!(?l1_state, "L1 state");
     l1_state.report_metrics();
@@ -367,7 +371,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             _ => {}
         };
         if let (PubdataMode::Blobs | PubdataMode::Calldata, true) =
-            (pubdata_mode, config.gateway_provider_config.is_some())
+            (pubdata_mode, settling_on_gateway)
         {
             panic!(
                 "Pubdata mode {:?} cannot be used when settling on Gateway",
@@ -1053,7 +1057,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     }
 
     if node_role.is_main()
-        && config.gateway_provider_config.is_some()
+        && settling_on_gateway
         && current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
     {
         let eth_call_handler = EthCallHandler::new(
@@ -1227,6 +1231,11 @@ async fn run_main_node_pipeline(
     last_finalized_migration: watch::Receiver<u64>,
     migration_triggered: watch::Sender<Option<u64>>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
+    // SYSCOIN: Use the discovered settlement layer for all Gateway-mode pipeline
+    // behavior. The Gateway provider config only means the RPC is available.
+    let settling_on_gateway =
+        node_state_on_startup.l1_state.l1_chain_id != node_state_on_startup.l1_state.sl_chain_id;
+
     let priority_tree_db_path = config
         .general_config
         .rocks_db_path
@@ -1499,13 +1508,13 @@ async fn run_main_node_pipeline(
         .pipe(BitcoinDaFinalityGate::new(
             config.batcher_config.clone(),
             bitcoin_da_status_storage.clone(),
-            config.gateway_provider_config.is_some(),
+            settling_on_gateway,
         ))
         .pipe(L1Sender::<_, _, CommitCommand> {
             provider: sl_provider.clone(),
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.gateway_provider_config.is_some(),
+            gateway: settling_on_gateway,
             commit_submitted_tx: Some(commit_submitted_tx),
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1519,7 +1528,7 @@ async fn run_main_node_pipeline(
             provider: sl_provider.clone(),
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.gateway_provider_config.is_some(),
+            gateway: settling_on_gateway,
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1536,7 +1545,7 @@ async fn run_main_node_pipeline(
             provider: sl_provider,
             config: config.l1_sender_config.clone().into(),
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: config.gateway_provider_config.is_some(),
+            gateway: settling_on_gateway,
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
