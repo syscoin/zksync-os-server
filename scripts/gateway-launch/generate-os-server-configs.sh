@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
+gl_reject_no_proofs_on_mainnet
 
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH

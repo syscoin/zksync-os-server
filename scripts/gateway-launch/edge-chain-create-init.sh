@@ -34,6 +34,7 @@ if [ -z "${EDGE_PROVER_MODE}" ]; then
     EDGE_PROVER_MODE="gpu"
   fi
 fi
+gl_reject_no_proofs_on_mainnet
 
 if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   gl_require EDGE_WALLET_PATH

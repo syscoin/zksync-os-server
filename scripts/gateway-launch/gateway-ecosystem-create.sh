@@ -24,6 +24,7 @@ gl_path_for_zkstack
 : "${L1_NETWORK:=localhost}"
 : "${GATEWAY_WALLET_CREATION:=}"
 : "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
+gl_reject_no_proofs_on_mainnet
 
 if [ -z "${GATEWAY_WALLET_CREATION}" ]; then
   GATEWAY_WALLET_CREATION="$(gl_wallet_creation_for_path "${GATEWAY_WALLET_PATH}")"

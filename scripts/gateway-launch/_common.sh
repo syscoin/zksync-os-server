@@ -36,6 +36,19 @@ gl_validate_prover_mode() {
   export PROVER_MODE
 }
 
+gl_reject_no_proofs_on_mainnet() {
+  local l1_network_lc mode_name mode_value
+  l1_network_lc="$(gl_to_lower "${L1_NETWORK:-}")"
+  [ "${l1_network_lc}" = "mainnet" ] || return 0
+
+  for mode_name in PROVER_MODE GATEWAY_PROVER_MODE EDGE_PROVER_MODE; do
+    mode_value="$(gl_to_lower "${!mode_name:-}")"
+    if [ "${mode_value}" = "no-proofs" ]; then
+      gl_die "${mode_name}=no-proofs is not allowed for mainnet deployments"
+    fi
+  done
+}
+
 gl_require() {
   local n="$1"
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
