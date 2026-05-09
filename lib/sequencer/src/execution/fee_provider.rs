@@ -185,11 +185,17 @@ impl FeeProvider {
             price.ceil().to_integer()
         };
 
-        let desired_pubdata_price = if self
+        let pubdata_mode = self
             .pubdata_mode
-            .expect("pubdata_mode must be set when producing blocks")
-            == PubdataMode::Blobs
-        {
+            .expect("pubdata_mode must be set when producing blocks");
+        // SYSCOIN: Gateway-settled child chains use `RelayedL2Calldata`, but their pubdata
+        // is still stored in Syscoin DA blobs and should use blob overhead/fill accounting.
+        let uses_blob_da = matches!(
+            pubdata_mode,
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+        );
+
+        let desired_pubdata_price = if uses_blob_da {
             // Blobs are special in a way that
             // 1. They require additional overhead depending on native price.
             // 2. Blob fill ratio affects the effective pubdata price.

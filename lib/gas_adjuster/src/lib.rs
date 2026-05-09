@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::watch;
+use url::Url;
 use zksync_os_rpc_api::types::L2FeeHistory;
 use zksync_os_types::PubdataMode;
 
@@ -68,14 +69,8 @@ impl GasAdjuster {
         // Subtracting 1 from the "latest" block number to prevent errors in case
         // the info about the latest block is not yet present on the node.
         // This sometimes happens on Infura.
-        let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
-        let fee_history = Self::base_fee_history(
-            &sl_provider,
-            current_block,
-            config.max_base_fee_samples as u64,
-            &config,
-        )
-        .await?;
+        let (current_block, fee_history) =
+            Self::initial_base_fee_history(&sl_provider, &config).await?;
 
         let base_fee_statistics = GasStatistics::new(
             config.max_base_fee_samples,
@@ -127,8 +122,7 @@ impl GasAdjuster {
         if current_block > last_processed_block {
             let n_blocks = current_block - last_processed_block;
             let fee_data =
-                Self::base_fee_history(&self.sl_provider, current_block, n_blocks, &self.config)
-                    .await?;
+                Self::base_fee_history(&self.sl_provider, current_block, n_blocks, None).await?;
 
             // We shouldn't rely on provider to return consistent results, so we check that we have at least one new sample.
             if let Some(current_base_fee_per_gas) = fee_data.last().map(|fee| fee.base_fee_per_gas)
@@ -151,25 +145,48 @@ impl GasAdjuster {
                     .set(self.base_fee_statistics.median() as u64);
             }
 
-            if let Some(current_blob_base_fee) =
-                fee_data.last().map(|fee| fee.base_fee_per_blob_gas)
-            {
-                if current_blob_base_fee > u64::MAX as u128 {
-                    tracing::info!(
-                        "Failed to report current_blob_base_fee = {current_blob_base_fee}, it exceeds u64::MAX"
-                    );
-                } else {
-                    METRICS
-                        .current_blob_base_fee
-                        .set(current_blob_base_fee as u64);
+            // SYSCOIN: Syscoin DA fee sampling is independent from L1 base-fee sampling.
+            // A transient Syscoin RPC failure leaves the blob/pubdata median unchanged,
+            // while base_fee_statistics still advances so gas_price() does not go stale.
+            let blob_base_fee_samples = if Self::uses_syscoin_blob_da(self.config.pubdata_mode) {
+                match Self::bitcoin_blob_base_fee(&self.config).await {
+                    Ok(fixed_blob_base_fee) => Some(vec![fixed_blob_base_fee; fee_data.len()]),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "Failed to update Syscoin blob base fee; keeping previous blob fee median"
+                        );
+                        None
+                    }
                 }
-            }
-            self.blob_base_fee_statistics
-                .add_samples(fee_data.iter().map(|fee| fee.base_fee_per_blob_gas));
-            if self.blob_base_fee_statistics.median() <= u64::MAX as u128 {
-                METRICS
-                    .median_blob_base_fee
-                    .set(self.blob_base_fee_statistics.median() as u64);
+            } else {
+                Some(
+                    fee_data
+                        .iter()
+                        .map(|fee| fee.base_fee_per_blob_gas)
+                        .collect(),
+                )
+            };
+
+            if let Some(blob_base_fee_samples) = blob_base_fee_samples {
+                if let Some(&current_blob_base_fee) = blob_base_fee_samples.last() {
+                    if current_blob_base_fee > u64::MAX as u128 {
+                        tracing::info!(
+                            "Failed to report current_blob_base_fee = {current_blob_base_fee}, it exceeds u64::MAX"
+                        );
+                    } else {
+                        METRICS
+                            .current_blob_base_fee
+                            .set(current_blob_base_fee as u64);
+                    }
+                }
+                self.blob_base_fee_statistics
+                    .add_samples(blob_base_fee_samples);
+                if self.blob_base_fee_statistics.median() <= u64::MAX as u128 {
+                    METRICS
+                        .median_blob_base_fee
+                        .set(self.blob_base_fee_statistics.median() as u64);
+                }
             }
 
             if let Some(current_pubdata_price_per_byte) =
@@ -257,7 +274,9 @@ impl GasAdjuster {
 
     pub fn pubdata_price(&self) -> U256 {
         let price = match self.config.pubdata_mode {
-            PubdataMode::Blobs => {
+            // SYSCOIN: Gateway-settled child chains use `RelayedL2Calldata`, but their
+            // pubdata is still published to Syscoin DA as compact blob references.
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata => {
                 const BLOB_GAS_PER_BYTE: u128 = 1; // `BYTES_PER_BLOB` = `GAS_PER_BLOB` = 2 ^ 17.
 
                 let blob_base_fee_median = self.blob_base_fee_statistics.median();
@@ -271,7 +290,6 @@ impl GasAdjuster {
                 U256::from(self.gas_price()).saturating_mul(U256::from(L1_GAS_PER_PUBDATA_BYTE))
             }
             PubdataMode::Validium => U256::from(0u32),
-            PubdataMode::RelayedL2Calldata => self.gw_pubdata_price_statistics.median(),
         };
 
         if price <= U256::from(u128::MAX) {
@@ -297,18 +315,12 @@ impl GasAdjuster {
         provider: &DynProvider,
         upto_block: u64,
         block_count: u64,
-        config: &GasAdjusterConfig,
+        fixed_blob_base_fee: Option<u128>,
     ) -> anyhow::Result<Vec<BaseFees>> {
         const FEE_HISTORY_MAX_REQUEST_CHUNK: usize = 1023;
 
         let mut history = Vec::with_capacity(block_count as usize);
         let from_block = upto_block.saturating_sub(block_count - 1);
-        // SYSCOIN
-        let fixed_blob_base_fee = if config.pubdata_mode == PubdataMode::Blobs {
-            Self::syscoin_blob_base_fee_override(config).await
-        } else {
-            None
-        };
 
         // Here we are requesting `fee_history` from blocks
         // `[from_block; upto_block]` in chunks of size `FEE_HISTORY_MAX_REQUEST_CHUNK`
@@ -385,20 +397,150 @@ impl GasAdjuster {
     }
 
     // SYSCOIN
-    async fn syscoin_blob_base_fee_override(config: &GasAdjusterConfig) -> Option<u128> {
-        match Self::bitcoin_blob_base_fee(config).await {
-            Ok(fee) => Some(fee),
-            Err(err) => {
-                tracing::warn!(
-                    "Failed to estimate Syscoin blob base fee; falling back to provider fee history: {err}"
-                );
-                None
+    async fn initial_base_fee_history(
+        sl_provider: &DynProvider,
+        config: &GasAdjusterConfig,
+    ) -> anyhow::Result<(u64, Vec<BaseFees>)> {
+        let fixed_blob_base_fee = if Self::uses_syscoin_blob_da(config.pubdata_mode) {
+            Self::validate_bitcoin_da_fee_config(config)?;
+            Some(Self::initial_syscoin_blob_base_fee(config).await?)
+        } else {
+            None
+        };
+
+        let current_block = sl_provider.get_block_number().await?.saturating_sub(1);
+        let fee_history = Self::base_fee_history(
+            sl_provider,
+            current_block,
+            config.max_base_fee_samples as u64,
+            fixed_blob_base_fee,
+        )
+        .await?;
+        Ok((current_block, fee_history))
+    }
+
+    // SYSCOIN
+    async fn initial_syscoin_blob_base_fee(config: &GasAdjusterConfig) -> anyhow::Result<u128> {
+        loop {
+            match Self::bitcoin_blob_base_fee(config).await {
+                Ok(fee) => return Ok(fee),
+                Err(err) if Self::is_retriable_blob_fee_startup_error(&err) => {
+                    // SYSCOIN: retry only the authoritative Syscoin DA fee fetch. Other
+                    // initialization failures still surface immediately to operators.
+                    tracing::warn!(
+                        retry_after = ?config.poll_period,
+                        error = %err,
+                        "Failed to initialize blob-mode gas adjuster; retrying Syscoin fee fetch"
+                    );
+                    tokio::time::sleep(config.poll_period).await;
+                }
+                Err(err) => return Err(err),
             }
         }
     }
 
     // SYSCOIN
+    fn uses_syscoin_blob_da(pubdata_mode: PubdataMode) -> bool {
+        matches!(
+            pubdata_mode,
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+        )
+    }
+
+    // SYSCOIN
+    fn validate_bitcoin_da_fee_config(config: &GasAdjusterConfig) -> anyhow::Result<()> {
+        let rpc_url = config
+            .bitcoin_da_rpc_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .context("missing bitcoin_da_rpc_url for blob fee estimation")?;
+        let parsed_url =
+            Url::parse(rpc_url).context("invalid bitcoin_da_rpc_url for blob fee estimation")?;
+        anyhow::ensure!(
+            matches!(parsed_url.scheme(), "http" | "https"),
+            "invalid bitcoin_da_rpc_url scheme for blob fee estimation"
+        );
+        config
+            .bitcoin_da_rpc_user
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .context("missing bitcoin_da_rpc_user for blob fee estimation")?;
+        config
+            .bitcoin_da_rpc_password
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .context("missing bitcoin_da_rpc_password for blob fee estimation")?;
+        Ok(())
+    }
+
+    // SYSCOIN
+    fn is_retriable_blob_fee_startup_error(err: &anyhow::Error) -> bool {
+        let err = err.to_string();
+        if err.contains("missing bitcoin_da_rpc_")
+            || err.contains("invalid bitcoin_da_rpc_")
+            || err.contains("RPC error:")
+            || err.contains("failed to construct Syscoin client")
+        {
+            return false;
+        }
+
+        match Self::blob_fee_http_status(&err) {
+            Some(408 | 429) => true,
+            Some(status) => status >= 500 && !Self::is_permanent_blob_fee_http_error(&err),
+            None => Self::is_transport_blob_fee_error(&err),
+        }
+    }
+
+    // SYSCOIN
+    fn blob_fee_http_status(err: &str) -> Option<u16> {
+        let (_, after_marker) = err.split_once("HTTP error:")?;
+        let status = after_marker
+            .trim_start()
+            .split(|ch: char| !ch.is_ascii_digit())
+            .next()?;
+        status.parse().ok()
+    }
+
+    // SYSCOIN
+    fn is_permanent_blob_fee_http_error(err: &str) -> bool {
+        let body = err
+            .split_once("returned body:")
+            .map(|(_, body)| body)
+            .unwrap_or(err)
+            .to_ascii_lowercase();
+
+        body.contains("rpc error")
+            || body.contains("\"code\":-32601")
+            || body.contains("\"code\": -32601")
+            || body.contains("\"code\":-32602")
+            || body.contains("\"code\": -32602")
+            || body.contains("method not found")
+            || body.contains("invalid parameter")
+            || body.contains("invalid params")
+            || body.contains("wallet")
+    }
+
+    // SYSCOIN
+    fn is_transport_blob_fee_error(err: &str) -> bool {
+        let err = err.to_ascii_lowercase();
+        err.contains("error sending request")
+            || err.contains("error trying to connect")
+            || err.contains("dns error")
+            || err.contains("tls")
+            || err.contains("certificate")
+            || err.contains("handshake")
+            || err.contains("connection refused")
+            || err.contains("connection reset")
+            || err.contains("connection closed")
+            || err.contains("deadline has elapsed")
+            || err.contains("timed out")
+            || err.contains("timeout")
+    }
+
+    // SYSCOIN
     async fn bitcoin_blob_base_fee(config: &GasAdjusterConfig) -> anyhow::Result<u128> {
+        Self::validate_bitcoin_da_fee_config(config)?;
+
         let rpc_url = config
             .bitcoin_da_rpc_url
             .as_deref()
@@ -441,8 +583,29 @@ pub struct BaseFees {
 
 #[cfg(test)]
 mod tests {
-    use super::{BaseFees, GasAdjuster};
+    use super::{BaseFees, GasAdjuster, GasAdjusterConfig};
     use alloy::primitives::U256;
+    use std::time::Duration;
+    use zksync_os_types::PubdataMode;
+
+    fn gas_adjuster_config() -> GasAdjusterConfig {
+        GasAdjusterConfig {
+            pubdata_mode: PubdataMode::Blobs,
+            max_base_fee_samples: 100,
+            num_samples_for_blob_base_fee_estimate: 100,
+            max_blob_fill_ratio_samples: 100,
+            max_priority_fee_per_gas: 0,
+            poll_period: Duration::from_secs(1),
+            pubdata_pricing_multiplier: 1.0,
+            bitcoin_da_rpc_url: Some("http://127.0.0.1:8370".to_owned()),
+            bitcoin_da_rpc_user: Some("user".to_owned()),
+            bitcoin_da_rpc_password: Some("password".to_owned()),
+            bitcoin_da_poda_url: "http://127.0.0.1:8371".to_owned(),
+            bitcoin_da_wallet_name: "zksync-os".to_owned(),
+            bitcoin_da_request_timeout: Duration::from_secs(1),
+            bitcoin_da_fee_conf_target: 6,
+        }
+    }
 
     #[test]
     fn fee_history_samples_keep_base_fees_when_blob_fees_are_missing() {
@@ -513,5 +676,116 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn bitcoin_da_fee_config_rejects_missing_or_empty_credentials() {
+        let mut config = gas_adjuster_config();
+        config.bitcoin_da_rpc_url = Some(" ".to_owned());
+
+        let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
+        assert!(err.to_string().contains("missing bitcoin_da_rpc_url"));
+    }
+
+    #[test]
+    fn bitcoin_da_fee_config_rejects_invalid_rpc_url() {
+        let mut config = gas_adjuster_config();
+        config.bitcoin_da_rpc_url = Some("not a url".to_owned());
+
+        let err = GasAdjuster::validate_bitcoin_da_fee_config(&config).unwrap_err();
+        assert!(err.to_string().contains("invalid bitcoin_da_rpc_url"));
+    }
+
+    #[test]
+    fn syscoin_blob_da_modes_include_gateway_relayed_mode() {
+        assert!(GasAdjuster::uses_syscoin_blob_da(PubdataMode::Blobs));
+        assert!(GasAdjuster::uses_syscoin_blob_da(
+            PubdataMode::RelayedL2Calldata
+        ));
+        assert!(!GasAdjuster::uses_syscoin_blob_da(PubdataMode::Calldata));
+        assert!(!GasAdjuster::uses_syscoin_blob_da(PubdataMode::Validium));
+    }
+
+    #[test]
+    fn blob_fee_startup_retry_filter_rejects_auth_errors() {
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 401 returned body: unauthorized"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 403 returned body: forbidden"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 404 returned body: not found"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to construct Syscoin client for blob fee estimation: invalid URL"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: RPC error: method not found"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: malformed response")
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "{}",
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: {\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}"
+            )
+        ));
+        assert!(!GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: requested wallet does not exist"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "{}",
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: {\"error\":{\"code\":-28,\"message\":\"Loading block index...\"}}"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: error sending request for url"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: operation timed out")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: dns error")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!("failed to estimate Syscoin blob base fee: TLS handshake failed")
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 408 returned body: timeout"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 429 returned body: too many requests"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 503 returned body: unavailable"
+            )
+        ));
+        assert!(GasAdjuster::is_retriable_blob_fee_startup_error(
+            &anyhow::anyhow!(
+                "failed to estimate Syscoin blob base fee: HTTP error: 500 returned body: internal server error"
+            )
+        ));
     }
 }
