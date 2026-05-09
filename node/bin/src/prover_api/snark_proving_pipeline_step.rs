@@ -221,9 +221,9 @@ impl PipelineComponent for SnarkProvingPipelineStep {
                 }
                 Ok::<(), anyhow::Error>(())
             } => {
+                proof_forwarder.abort();
                 result?;
                 tracing::info!("inbound channel closed");
-                proof_forwarder.abort();
                 return Ok(());
             },
             result = &mut proof_forwarder => {
