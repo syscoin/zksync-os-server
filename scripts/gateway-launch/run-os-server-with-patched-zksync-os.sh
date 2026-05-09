@@ -102,7 +102,8 @@ checkout_locked_base() {
   local locked_rev="$2"
 
   if ! git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null; then
-    git -C "${dev_path}" fetch --tags origin >/dev/null
+    git -C "${dev_path}" fetch --tags "${ZKSYNC_OS_GIT_URL}" >/dev/null || \
+      gl_die "failed to fetch locked zksync-os revision ${locked_rev} from ${ZKSYNC_OS_GIT_URL}"
   fi
   git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null || \
     gl_die "locked zksync-os revision ${locked_rev} is unavailable in ${dev_path}"
