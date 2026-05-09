@@ -418,6 +418,30 @@ PY
 
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"
 : "${GATEWAY_RETRY_GAS_BUMP_PCT:=20}"
+normalize_uint() {
+  local name="${1:?name required}"
+  local raw="${2:?value required}"
+  local max="${3:?max required}"
+  python3 - "${name}" "${raw}" "${max}" <<'PY'
+import sys
+
+name, raw, max_raw = sys.argv[1:]
+if not raw.isdecimal():
+    raise SystemExit(f"{name} must be an unsigned decimal integer")
+value = int(raw, 10)
+max_value = int(max_raw, 10)
+if value > max_value:
+    raise SystemExit(f"{name} must be <= {max_value}")
+print(value)
+PY
+}
+
+GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS="$(
+  normalize_uint GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" 100
+)"
+GATEWAY_RETRY_GAS_BUMP_PCT="$(
+  normalize_uint GATEWAY_RETRY_GAS_BUMP_PCT "${GATEWAY_RETRY_GAS_BUMP_PCT}" 10000
+)"
 LAST_L1_CONTRACTS_DIR=""
 
 if ecosystem_contracts_ready; then
@@ -430,9 +454,10 @@ fi
 
 set_retry_gas_price() {
   local attempt base_wei bump_pct bump_factor gas_price_wei
-  attempt="${1}"
+  attempt="$(normalize_uint "retry attempt" "${1}" "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}")"
   bump_pct="${GATEWAY_RETRY_GAS_BUMP_PCT}"
   base_wei="$(cast gas-price --rpc-url "${L1_RPC_URL}")"
+  base_wei="$(normalize_uint "cast gas-price" "${base_wei}" 1000000000000000)"
   if [ "${base_wei}" -lt 1000000000 ]; then
     base_wei=1000000000
   fi
