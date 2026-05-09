@@ -299,12 +299,16 @@ def materialize_chain(
     if not wallets_yaml.exists():
         raise FileNotFoundError(f"missing wallets config under {source_dir}: expected wallets.yaml")
 
-    # SYSCOIN: do not infer privileged contract addresses from contracts_*.yaml by
-    # mtime; the canonical contracts.yaml must be an explicit operator choice.
-    if not contracts_yaml.exists() or not genesis_json.exists():
+    contracts_source = contracts_yaml
+    if not contracts_source.exists():
+        # SYSCOIN: zkstack may emit contracts_<chain-id>.yaml before canonical
+        # contracts.yaml; only accept the file matching this chain's expected ID.
+        contracts_source = source_dir / f"contracts_{chain_id}.yaml"
+
+    if not contracts_source.exists() or not genesis_json.exists():
         missing = []
-        if not contracts_yaml.exists():
-            missing.append("contracts.yaml")
+        if not contracts_source.exists():
+            missing.append(f"contracts.yaml|contracts_{chain_id}.yaml")
         if not genesis_json.exists():
             missing.append("genesis.json")
         raise FileNotFoundError(
@@ -440,7 +444,7 @@ def materialize_chain(
 
     write_secret_text(out_dir / "config.yaml", "\n".join(config_lines))
 
-    shutil.copy2(contracts_yaml, out_dir / "contracts.yaml")
+    shutil.copy2(contracts_source, out_dir / "contracts.yaml")
     shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
     # SYSCOIN: wallets.yaml is copied for operator convenience but still carries
     # private keys, so force the generated copy to owner-only permissions.

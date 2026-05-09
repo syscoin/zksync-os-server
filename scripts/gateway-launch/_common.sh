@@ -441,8 +441,33 @@ gl_ensure_chain_contracts_yaml_schema() {
   chain_name="${1:?chain name required}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
-  # SYSCOIN: contracts.yaml carries privileged deployment/admin addresses. Require
-  # operators to choose it explicitly instead of guessing from contracts_*.yaml.
+  if [ ! -f "${contracts_yaml}" ]; then
+    local chain_id contracts_candidate
+    chain_id="$(python3 - "${GATEWAY_DIR}/chains/${chain_name}/ZkStack.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+sys.set_int_max_str_digits(0)
+
+path = Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(f"missing chain config: {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict) or data.get("chain_id") is None:
+    raise SystemExit(f"missing chain_id in {path}")
+print(int(data["chain_id"]))
+PY
+)"
+    contracts_candidate="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts_${chain_id}.yaml"
+    if [ -f "${contracts_candidate}" ]; then
+      # SYSCOIN: zkstack may emit contracts_<chain-id>.yaml before canonical
+      # contracts.yaml; only materialize the file matching this chain's ID.
+      cp "${contracts_candidate}" "${contracts_yaml}"
+      echo "gateway-launch: materialized ${contracts_yaml} from ${contracts_candidate}"
+    fi
+  fi
   [ -f "${contracts_yaml}" ] || gl_die "missing contracts config: ${contracts_yaml}"
   gateway_contracts_yaml="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml"
 
