@@ -51,14 +51,59 @@ print(m.group(1))
 PY
 }
 
+extract_locked_rev() {
+  python3 - "${ZKSYNC_OS_SERVER_PATH}/Cargo.lock" "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+lock_text = Path(sys.argv[1]).read_text(encoding="utf-8")
+dev_tag = re.escape(sys.argv[2])
+m = re.search(
+    r'source\s*=\s*"git\+https://github\.com/matter-labs/zksync-os\?tag='
+    + dev_tag
+    + r'#([0-9a-f]{40})"',
+    lock_text,
+)
+if not m:
+    raise SystemExit(f"failed to locate locked zksync-os revision for tag {sys.argv[2]}")
+print(m.group(1))
+PY
+}
+
+checkout_locked_base() {
+  local dev_path="$1"
+  local locked_rev="$2"
+
+  if ! git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null; then
+    git -C "${dev_path}" fetch --tags origin >/dev/null
+  fi
+  git -C "${dev_path}" cat-file -e "${locked_rev}^{commit}" 2>/dev/null || \
+    gl_die "locked zksync-os revision ${locked_rev} is unavailable in ${dev_path}"
+
+  if [ -n "$(git -C "${dev_path}" status --porcelain)" ]; then
+    gl_die "zksync-os checkout has local changes; cannot reset to locked revision: ${dev_path}"
+  fi
+
+  git -C "${dev_path}" checkout --detach "${locked_rev}" >/dev/null
+  local checked_out_rev
+  checked_out_rev="$(git -C "${dev_path}" rev-parse HEAD)"
+  [ "${checked_out_rev}" = "${locked_rev}" ] || \
+    gl_die "zksync-os checkout ${checked_out_rev} != locked revision ${locked_rev}"
+}
+
 prepare_dev_checkout() {
-  local dev_tag dev_root dev_path
+  local dev_tag locked_rev dev_root dev_path
   dev_tag="${1:?dev tag required}"
+  locked_rev="$(extract_locked_rev "${dev_tag}")"
 
   if [ -n "${ZKSYNC_OS_DEV_PATH:-}" ]; then
     dev_path="${ZKSYNC_OS_DEV_PATH}"
     git -C "${dev_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
       gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${dev_path}"
+    # SYSCOIN: the launcher rewrites dependencies to a patched local zksync-os
+    # checkout, so re-anchor that checkout to Cargo.lock before applying the patch.
+    checkout_locked_base "${dev_path}" "${locked_rev}"
     bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
     git -C "${dev_path}" add -A
     if ! git -C "${dev_path}" diff --cached --quiet; then
@@ -76,9 +121,10 @@ prepare_dev_checkout() {
   if [ ! -d "${dev_path}/.git" ]; then
     mkdir -p "${dev_root}"
     git clone "${ZKSYNC_OS_GIT_URL}" "${dev_path}"
-    git -C "${dev_path}" checkout "${dev_tag}"
   fi
 
+  # SYSCOIN: use Cargo.lock's immutable git revision, not the mutable upstream tag.
+  checkout_locked_base "${dev_path}" "${locked_rev}"
   bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
   git -C "${dev_path}" add -A
   if ! git -C "${dev_path}" diff --cached --quiet; then
