@@ -598,9 +598,10 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             res = execute(optimistic_tx, block_context, storage_view.clone())
                 .map_err(EthCallError::ForwardSubsystemError)?
                 .map_err(EthCallError::InvalidTransaction)?;
+            // SYSCOIN: log the gas limit actually used for this simulation.
             tracing::trace!(
                 "Executed tx in estimate_gas with optimistic gas limit {}, result {res:?}",
-                tx.gas_limit()
+                optimistic_gas_limit,
             );
 
             // Update the gas used based on the new result.
@@ -666,9 +667,10 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 ethres => {
                     // Unpack the result and environment if the transaction was successful.
                     res = ethres.map_err(EthCallError::InvalidTransaction)?;
+                    // SYSCOIN: log the binary-search gas limit actually used for this simulation.
                     tracing::trace!(
                         "Executed tx in estimate_gas with gas limit {}, result {res:?}",
-                        tx.gas_limit(),
+                        mid_gas_limit,
                     );
                     // Update the estimated gas range based on the transaction result.
                     update_estimated_gas_range(
