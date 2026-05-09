@@ -472,9 +472,13 @@ chain_name = sys.argv[2]
 gateway_chain_name = sys.argv[3]
 gateway_contracts_path = Path(sys.argv[4])
 initial_deployments_path = Path(sys.argv[5])
-data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+contracts_text = contracts_path.read_text(encoding="utf-8")
+data = yaml.safe_load(contracts_text)
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {contracts_path}")
+raw_data = yaml.load(contracts_text, Loader=yaml.BaseLoader)
+if not isinstance(raw_data, dict):
+    raw_data = {}
 
 gateway_data = None
 if chain_name != gateway_chain_name and gateway_contracts_path.exists():
@@ -553,11 +557,26 @@ if isinstance(gateway_data, dict):
     if isinstance(candidate, dict):
         gateway_l2 = candidate
 
-def normalize_scalar(value):
+def original_hex_body(value):
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s.startswith(("0x", "0X")):
+        return None
+    body = s[2:]
+    if body == "" or not re.fullmatch(r"[0-9a-fA-F]+", body):
+        return None
+    return body
+
+def normalize_scalar(value, raw_value=None):
     # YAML can parse 0x-prefixed scalars as Python ints; convert back to hex
     # to avoid huge decimal string conversion failures when dumping.
     if isinstance(value, int):
-        return hex(value)
+        body = format(value, "x")
+        raw_body = original_hex_body(raw_value)
+        if raw_body is not None:
+            body = body.zfill(max(len(body), len(raw_body)))
+        return "0x" + body
     return value
 
 def _parse_hex_like(value):
@@ -594,12 +613,15 @@ def normalize_address(value):
         return normalize_scalar(value)
     return "0x" + format(parsed & ((1 << 160) - 1), "040x")
 
-def normalize_bytes_hex(value):
+def normalize_bytes_hex(value, raw_value=None):
     parsed = _parse_hex_like(value)
     if parsed is None:
-        return normalize_scalar(value)
+        return normalize_scalar(value, raw_value)
     body = format(parsed, "x")
-    if len(body) % 2 == 1:
+    raw_body = original_hex_body(raw_value)
+    if raw_body is not None:
+        body = body.zfill(max(len(body), len(raw_body)))
+    elif len(body) % 2 == 1:
         body = "0" + body
     return "0x" + body
 
@@ -814,20 +836,25 @@ address_key_hints = {
     "l1_rollup_da_manager",
 }
 
-def normalize_tree(obj, key_hint=None):
+def normalize_tree(obj, raw_obj=None, key_hint=None):
     if isinstance(obj, dict):
-        return {k: normalize_tree(v, k) for k, v in obj.items()}
+        raw_mapping = raw_obj if isinstance(raw_obj, dict) else {}
+        return {k: normalize_tree(v, raw_mapping.get(k), k) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [normalize_tree(v, key_hint) for v in obj]
+        raw_items = raw_obj if isinstance(raw_obj, list) else []
+        return [
+            normalize_tree(v, raw_items[i] if i < len(raw_items) else None, key_hint)
+            for i, v in enumerate(obj)
+        ]
 
     if isinstance(key_hint, str):
         if key_hint in address_key_hints or key_hint.endswith("_addr") or key_hint.endswith("_address"):
             return normalize_address(obj)
         if key_hint in {"diamond_cut_data", "force_deployments_data"}:
-            return normalize_bytes_hex(obj)
-    return normalize_scalar(obj)
+            return normalize_bytes_hex(obj, raw_obj)
+    return normalize_scalar(obj, raw_obj)
 
-normalized_data = normalize_tree(data)
+normalized_data = normalize_tree(data, raw_data)
 if normalized_data != data:
     data = normalized_data
     updated = True
