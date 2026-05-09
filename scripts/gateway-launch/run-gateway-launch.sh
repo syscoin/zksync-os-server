@@ -35,6 +35,7 @@ Optional env:
   GATEWAY_ARCHIVE_L1_RPC_URL   runtime L1 RPC for os-server/migration startup (defaults to L1_RPC_URL)
   PROTOCOL_VERSION             default v31.0
   GATEWAY_DIR                  default ~/gateway
+  REUSE_ECOSYSTEM              true|false, default false
   PROVER_MODE                  gpu|no-proofs (default gpu)
   GATEWAY_PROVER_MODE          ecosystem prover mode, defaults from PROVER_MODE
   GATEWAY_LAUNCH_LOG           default ~/gateway-launch.log
@@ -44,6 +45,7 @@ Optional env:
 Options:
   --l1 tanenbaum|mainnet
   --log PATH
+  --reuse-ecosystem            reuse an existing GATEWAY_DIR/ZkStack.yaml instead of creating wallets/ecosystem
   -h, --help
 EOF
   exit "${1:-0}"
@@ -58,6 +60,10 @@ while [ "${1:-}" != "" ]; do
   --log)
     GATEWAY_LAUNCH_LOG="${2:?}"
     shift 2
+    ;;
+  --reuse-ecosystem)
+    REUSE_ECOSYSTEM=true
+    shift
     ;;
   -h | --help) usage 0 ;;
   *)
@@ -127,6 +133,17 @@ export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 : "${PROTOCOL_VERSION:=v31.0}"
+: "${REUSE_ECOSYSTEM:=false}"
+REUSE_ECOSYSTEM="$(gl_to_lower "${REUSE_ECOSYSTEM}")"
+case "${REUSE_ECOSYSTEM}" in
+true | false) ;;
+*) gl_die "invalid REUSE_ECOSYSTEM='${REUSE_ECOSYSTEM}' (expected: true | false)" ;;
+esac
+export REUSE_ECOSYSTEM
+if [ "${REUSE_ECOSYSTEM}" = true ] &&
+  { [ -n "${GATEWAY_WALLET_CREATION:-}" ] || [ -n "${GATEWAY_WALLET_PATH:-}" ]; }; then
+  gl_die "GATEWAY_WALLET_CREATION/GATEWAY_WALLET_PATH are ignored with --reuse-ecosystem; unset them or use a fresh GATEWAY_DIR"
+fi
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 
@@ -403,8 +420,16 @@ step_workspace() {
 
 step_ecosystem() {
   if [ -f "${GATEWAY_DIR}/ZkStack.yaml" ]; then
+    if [ "${REUSE_ECOSYSTEM}" != true ]; then
+      # SYSCOIN: do not silently bypass gateway-ecosystem-create.sh; that is where
+      # wallet creation/path controls are applied before funding and deployment.
+      gl_die "existing ecosystem found at ${GATEWAY_DIR}; pass --reuse-ecosystem to trust and reuse it, or choose/remove GATEWAY_DIR"
+    fi
     echo "gateway-launch: reusing existing ecosystem at ${GATEWAY_DIR}"
   else
+    if [ "${REUSE_ECOSYSTEM}" = true ]; then
+      gl_die "--reuse-ecosystem requested but no ecosystem exists at ${GATEWAY_DIR}/ZkStack.yaml"
+    fi
     "${SCRIPT_DIR}/gateway-ecosystem-create.sh"
   fi
   gl_resolve_gateway_dir_after_ecosystem_create
