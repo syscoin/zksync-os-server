@@ -22,18 +22,39 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
+validate_wallet_path_in_gateway_dir() {
+  local p="$1"
+  python3 - "${GATEWAY_DIR}" "${p}" <<'PY'
+import sys
+from pathlib import Path
+
+gateway_dir = Path(sys.argv[1]).resolve(strict=True)
+wallet_path = Path(sys.argv[2]).resolve(strict=True)
+try:
+    wallet_path.relative_to(gateway_dir)
+except ValueError:
+    raise SystemExit(
+        f"wallet file must be inside GATEWAY_DIR ({gateway_dir}): {wallet_path}"
+    )
+PY
+}
+
 declare -a wallet_files=()
 declare -a wallet_files_norm=()
 
 add_wallet_file() {
   local p="$1" norm existing
   [ -f "${p}" ] || return 0
+  validate_wallet_path_in_gateway_dir "${p}"
+  gl_prepare_wallet_file_for_in_file "${p}"
   norm="$(normalize_path "${p}")"
-  for existing in "${wallet_files_norm[@]}"; do
-    if [ "${existing}" = "${norm}" ]; then
-      return 0
-    fi
-  done
+  if [ "${#wallet_files_norm[@]}" -gt 0 ]; then
+    for existing in "${wallet_files_norm[@]}"; do
+      if [ "${existing}" = "${norm}" ]; then
+        return 0
+      fi
+    done
+  fi
   wallet_files+=("${p}")
   wallet_files_norm+=("${norm}")
 }
@@ -55,7 +76,14 @@ if [ "${#wallet_files[@]}" -eq 0 ]; then
   gl_die "no wallets.yaml found (tried ${ROOT_W} and ${CHAIN_W}; GATEWAY_FUND_WALLETS_PATHS='${GATEWAY_FUND_WALLETS_PATHS:-}')"
 fi
 
+wallet_files_joined=""
 for wf in "${wallet_files[@]}"; do
   echo "gateway-launch: funding wallets from ${wf}"
-  WALLETS_YAML_PATH="${wf}" gl_fund_wallets_yaml
+  if [ -z "${wallet_files_joined}" ]; then
+    wallet_files_joined="${wf}"
+  else
+    wallet_files_joined="${wallet_files_joined}:${wf}"
+  fi
 done
+
+WALLETS_YAML_PATHS="${wallet_files_joined}" gl_fund_wallets_yaml

@@ -843,10 +843,12 @@ PY
 gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
-  gl_require WALLETS_YAML_PATH
-  [ -f "${WALLETS_YAML_PATH}" ] || gl_die "missing wallets file ${WALLETS_YAML_PATH}"
+  if [ -z "${WALLETS_YAML_PATHS:-}" ]; then
+    gl_require WALLETS_YAML_PATH
+    WALLETS_YAML_PATHS="${WALLETS_YAML_PATH}"
+  fi
   export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
-  export WALLETS_YAML_PATH
+  export WALLETS_YAML_PATHS
   python3 - <<'PY'
 import os
 import subprocess
@@ -855,7 +857,13 @@ import time
 import yaml
 from pathlib import Path
 
-w = yaml.safe_load(Path(os.environ["WALLETS_YAML_PATH"]).read_text())
+wallet_paths = [Path(p) for p in os.environ["WALLETS_YAML_PATHS"].split(":") if p]
+if not wallet_paths:
+    raise SystemExit("no wallet files selected for funding")
+for path in wallet_paths:
+    if not path.is_file():
+        raise SystemExit(f"missing wallets file {path}")
+
 rpc = os.environ["L1_RPC_URL"]
 pk = os.environ["FUNDER_PRIVATE_KEY"]
 l1_network = os.environ.get("L1_NETWORK", "").lower()
@@ -910,6 +918,35 @@ post_fund_poll_interval = float(
 )
 
 
+recipients = {}
+for wallet_path in wallet_paths:
+    w = yaml.safe_load(wallet_path.read_text())
+    if not isinstance(w, dict) or not w:
+        raise SystemExit(f"invalid wallets yaml object in {wallet_path}")
+    for role, cfg in w.items():
+        if role == "test_wallet":
+            continue
+        if not isinstance(cfg, dict) or "address" not in cfg:
+            raise SystemExit(f"invalid wallet entry {role} in {wallet_path}")
+        address = addr_hex(cfg["address"])
+        key = address.lower()
+        target = required_balance(role)
+        existing = recipients.get(key)
+        label = f"{wallet_path}:{role}"
+        if existing is None or target > existing["target"]:
+            labels = [] if existing is None else existing["labels"]
+            recipients[key] = {
+                "role": role,
+                "address": address,
+                "target": target,
+                "labels": [*labels, label],
+            }
+        else:
+            existing["labels"].append(label)
+
+if not recipients:
+    raise SystemExit("no fundable wallet entries found in selected wallet files")
+
 funder = subprocess.check_output(
     ["cast", "wallet", "address", "--private-key", pk],
     text=True,
@@ -924,35 +961,36 @@ starting_nonce = int(
 
 transfers = []
 wait_only = []
-for role, cfg in w.items():
-    if role == "test_wallet":
-        continue
-    address = addr_hex(cfg["address"])
+for recipient in recipients.values():
+    role = recipient["role"]
+    address = recipient["address"]
     target = required_balance(role)
+    target = recipient["target"]
     current_latest = wei_balance_latest(address)
     current_pending = wei_balance(address)
     deficit = max(0, target - current_latest)
+    label = ",".join(recipient["labels"])
     if deficit == 0:
         print(
-            f"wallet {role} already funded on latest: current_latest={current_latest} "
+            f"wallet {label} already funded on latest: current_latest={current_latest} "
             f"current_pending={current_pending} target={target}"
         )
         continue
     if current_pending >= target:
         print(
-            f"wallet {role} has pending top-up in-flight: current_latest={current_latest} "
+            f"wallet {label} has pending top-up in-flight: current_latest={current_latest} "
             f"current_pending={current_pending} target={target}; waiting for confirmation"
         )
-        wait_only.append((role, address, current_latest, target))
+        wait_only.append((label, address, current_latest, target))
         continue
     if deficit < min_topup_wei:
         print(
-            f"wallet {role} below target by dust: current_latest={current_latest} "
+            f"wallet {label} below target by dust: current_latest={current_latest} "
             f"current_pending={current_pending} target={target} "
             f"deficit={deficit} min_topup_wei={min_topup_wei}; skipping top-up"
         )
         continue
-    transfers.append((role, address, current_latest, target, deficit))
+    transfers.append((label, address, current_latest, target, deficit))
 
 if not transfers and not wait_only:
     print("all wallets already meet required balances on latest; skipping funding")
