@@ -1005,6 +1005,10 @@ pub struct BatcherConfig {
     #[config(default_t = 10000)]
     pub tx_per_batch_limit: u64,
 
+    /// SYSCOIN Max number of L2 blocks per batch.
+    #[config(default_t = 1000)]
+    pub blocks_per_batch_limit: u64,
+
     /// Max number of interop roots per batch
     #[config(default_t = 1000)]
     pub interop_roots_per_batch_limit: u64,
