@@ -621,7 +621,7 @@ def normalize_bytes_hex(value, raw_value=None):
     raw_body = original_hex_body(raw_value)
     if raw_body is not None:
         body = body.zfill(max(len(body), len(raw_body)))
-    elif len(body) % 2 == 1:
+    if len(body) % 2 == 1:
         body = "0" + body
     return "0x" + body
 
