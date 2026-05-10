@@ -224,6 +224,7 @@ impl<T: Clone> ProverJobMap<T> {
     /// - Being either pending or timed out
     /// - Passing the external predicate
     /// - Maintaining consecutive batch numbers and matching proving version
+    /// - Keeping SNARK proof range boundaries around protocol upgrade batches
     fn is_job_eligible<F>(
         &self,
         already_selected_jobs: &[JobMetadata],
@@ -251,6 +252,19 @@ impl<T: Clone> ProverJobMap<T> {
 
         // Predicate passed from outside should return `true`
         if !predicate(next_job_entry) {
+            return false;
+        }
+
+        // SYSCOIN: Upgrade batches carry an upgrade public input that must be proven as its own
+        // L1 range. A normal SNARK range stops before an upgrade batch, and an upgrade range stops
+        // after that batch.
+        if self.prover_stage == ProverStage::Snark
+            && !already_selected_jobs.is_empty()
+            && (next_job_entry.metadata.requires_standalone_snark_proof
+                || already_selected_jobs
+                    .iter()
+                    .any(|job| job.requires_standalone_snark_proof))
+        {
             return false;
         }
 
@@ -541,6 +555,13 @@ mod tests {
     use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
 
     fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
+        create_test_batch_envelope_with_upgrade(batch_number, None)
+    }
+
+    fn create_test_batch_envelope_with_upgrade(
+        batch_number: u64,
+        upgrade_tx_hash: Option<B256>,
+    ) -> SignedBatchEnvelope<Vec<u8>> {
         let batch = BatchMetadata {
             previous_stored_batch_info: StoredBatchInfo {
                 batch_number: batch_number.saturating_sub(1),
@@ -577,7 +598,7 @@ mod tests {
                     sl_chain_id: 2,
                 },
                 protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
-                upgrade_tx_hash: None,
+                upgrade_tx_hash,
             },
             chain_address: Address::ZERO,
             blob_sidecar: None,
@@ -687,6 +708,44 @@ mod tests {
         map.add_job(create_test_batch_envelope(3)).await; // Gap: no batch 2
 
         // Should only pick batch 1, not 3 (due to gap)
+        let jobs = map
+            .pick_jobs_while_with_limit(5, "prover-1", |_| true)
+            .await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0.batch_number, 1);
+    }
+
+    #[tokio::test]
+    async fn test_snark_pick_keeps_upgrade_batch_standalone() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+
+        map.add_job(create_test_batch_envelope_with_upgrade(
+            1,
+            Some(B256::from([1; 32])),
+        ))
+        .await;
+        map.add_job(create_test_batch_envelope(2)).await;
+        map.add_job(create_test_batch_envelope(3)).await;
+
+        let jobs = map
+            .pick_jobs_while_with_limit(5, "prover-1", |_| true)
+            .await;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0.batch_number, 1);
+    }
+
+    #[tokio::test]
+    async fn test_snark_pick_stops_before_upgrade_batch() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope_with_upgrade(
+            2,
+            Some(B256::from([2; 32])),
+        ))
+        .await;
+        map.add_job(create_test_batch_envelope(3)).await;
+
         let jobs = map
             .pick_jobs_while_with_limit(5, "prover-1", |_| true)
             .await;

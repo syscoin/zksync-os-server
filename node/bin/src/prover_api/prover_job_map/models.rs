@@ -13,6 +13,7 @@ pub struct JobEntry<T> {
 pub struct JobMetadata {
     pub batch_number: u64,
     pub proving_version: ProvingVersion,
+    pub requires_standalone_snark_proof: bool,
     pub tx_count: usize,
     pub computational_native_used: Option<u64>,
     pub added_at: Instant,
@@ -60,10 +61,13 @@ impl JobMetadata {
             .expect("Must be valid execution as set by the server");
         let tx_count = batch_envelope.batch.tx_count;
         let computational_native_used = batch_envelope.batch.computational_native_used;
+        let requires_standalone_snark_proof =
+            batch_envelope.batch.requires_standalone_snark_proof();
 
         Self {
             batch_number,
             proving_version,
+            requires_standalone_snark_proof,
             tx_count,
             computational_native_used,
             added_at: Instant::now(),

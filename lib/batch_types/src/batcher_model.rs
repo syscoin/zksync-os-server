@@ -69,6 +69,12 @@ impl BatchMetadata {
             self.batch_info.protocol_version.clone(),
         )?)
     }
+
+    // SYSCOIN: Upgrade batches are proof-range boundaries on L1; do not aggregate
+    // them with neighboring FRI proofs into a multi-batch SNARK.
+    pub fn requires_standalone_snark_proof(&self) -> bool {
+        self.batch_info.upgrade_tx_hash.is_some()
+    }
 }
 
 fn default_pubdata_mode() -> PubdataMode {
