@@ -13,14 +13,24 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-/Users/jagsidhu/work/Documents/GitHub/PVUGC.prv}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/gateway/ui/blockscout}"
 PROJECT_NAME="blockscout-${INSTANCE}"
 
-ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" "mkdir -p \"${REMOTE_DIR}/envs\""
-scp -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" -r \
-  "${SCRIPT_DIR}/docker-compose.yml" \
-  "${SCRIPT_DIR}/proxy" \
-  "${REMOTE_HOST}:${REMOTE_DIR}/"
-scp -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" \
-  "${SCRIPT_DIR}/envs/${INSTANCE}.env" \
-  "${REMOTE_HOST}:${REMOTE_DIR}/envs/${INSTANCE}.env"
+tar -C "${SCRIPT_DIR}" -cf - docker-compose.yml proxy "envs/${INSTANCE}.env" | \
+  ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" bash -s -- \
+    "${REMOTE_DIR}" "${INSTANCE}" <<'REMOTE_SCRIPT'
+set -euo pipefail
+
+remote_dir="$1"
+instance="$2"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "${tmp_dir}"' EXIT
+
+tar -C "${tmp_dir}" -xf -
+
+mkdir -p "${remote_dir}/envs"
+cp "${tmp_dir}/docker-compose.yml" "${remote_dir}/docker-compose.yml"
+rm -rf "${remote_dir}/proxy"
+cp -R "${tmp_dir}/proxy" "${remote_dir}/proxy"
+cp "${tmp_dir}/envs/${instance}.env" "${remote_dir}/envs/${instance}.env"
+REMOTE_SCRIPT
 
 ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" bash -s -- \
   "${REMOTE_DIR}" "${INSTANCE}" "${PROJECT_NAME}" <<'REMOTE_SCRIPT'
