@@ -1,9 +1,11 @@
-use crate::{IChainAssetHandler, ZkChain, is_method_missing};
-use alloy::primitives::{Address, U256};
-use alloy::providers::DynProvider;
+use crate::{Bridgehub, IChainAssetHandler, ZkChain, is_method_missing};
+use alloy::primitives::{Address, U256, address};
+use alloy::providers::{DynProvider, Provider};
 use anyhow::Context;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+const L2_BRIDGEHUB_ADDRESS: Address = address!("0x0000000000000000000000000000000000010002");
 
 /// Settlement layer that a chain was committing to during a given batch range.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,10 +61,78 @@ impl fmt::Display for SettlementLayerInterval {
 pub struct SettlementLayerIntervals {
     intervals: Arc<Vec<SettlementLayerInterval>>,
     diamond_proxy_l1: ZkChain<DynProvider>,
-    /// Diamond proxy of the chain's current settlement layer, paired with that SL's chain ID.
-    /// `None` means the chain currently settles on L1, in which case lookups for historical
-    /// Gateway intervals are unsupported (no Gateway provider is configured).
-    diamond_proxy_gw: Option<(u64, ZkChain<DynProvider>)>,
+    /// Diamond proxy of a configured Gateway provider, paired with that SL's chain ID.
+    /// `None` means no Gateway provider is available, in which case lookups for Gateway intervals
+    /// are unsupported.
+    diamond_proxy_gw: Option<GatewayProxy>,
+}
+
+// SYSCOIN: keep historical Gateway access lazy after a chain has returned to L1, so current-L1
+// startup does not require Gateway RPC availability unless a Gateway interval is actually read.
+#[derive(Debug, Clone)]
+enum GatewayProxy {
+    Ready {
+        chain_id: u64,
+        proxy: ZkChain<DynProvider>,
+    },
+    Lazy {
+        chain_id: u64,
+        provider: DynProvider,
+        l2_chain_id: u64,
+        cached_proxy: Arc<Mutex<Option<ZkChain<DynProvider>>>>,
+    },
+}
+
+impl GatewayProxy {
+    fn chain_id(&self) -> u64 {
+        match self {
+            Self::Ready { chain_id, .. } | Self::Lazy { chain_id, .. } => *chain_id,
+        }
+    }
+
+    async fn proxy(&self) -> anyhow::Result<ZkChain<DynProvider>> {
+        match self {
+            Self::Ready { proxy, .. } => Ok(proxy.clone()),
+            Self::Lazy {
+                chain_id,
+                provider,
+                l2_chain_id,
+                cached_proxy,
+            } => {
+                if let Some(proxy) = cached_proxy
+                    .lock()
+                    .expect("gateway proxy cache lock poisoned")
+                    .clone()
+                {
+                    return Ok(proxy);
+                }
+
+                let provider_chain_id = provider
+                    .get_chain_id()
+                    .await
+                    .context("failed to fetch configured Gateway chain ID")?;
+                anyhow::ensure!(
+                    provider_chain_id == *chain_id,
+                    "configured Gateway chain ID {provider_chain_id} does not match historical Gateway chain ID {chain_id}"
+                );
+                let proxy = Bridgehub::new(L2_BRIDGEHUB_ADDRESS, provider.clone(), *l2_chain_id)
+                    .zk_chain()
+                    .await
+                    .with_context(|| {
+                        format!("failed to fetch historical Gateway diamond proxy for chain {l2_chain_id}")
+                    })?;
+                let mut cached_proxy = cached_proxy
+                    .lock()
+                    .expect("gateway proxy cache lock poisoned");
+                if let Some(cached_proxy) = cached_proxy.as_ref() {
+                    Ok(cached_proxy.clone())
+                } else {
+                    *cached_proxy = Some(proxy.clone());
+                    Ok(proxy)
+                }
+            }
+        }
+    }
 }
 
 impl SettlementLayerIntervals {
@@ -84,7 +154,8 @@ impl SettlementLayerIntervals {
         Ok(Self {
             intervals: Arc::new(intervals),
             diamond_proxy_l1,
-            diamond_proxy_gw,
+            diamond_proxy_gw: diamond_proxy_gw
+                .map(|(chain_id, proxy)| GatewayProxy::Ready { chain_id, proxy }),
         })
     }
 
@@ -92,24 +163,46 @@ impl SettlementLayerIntervals {
         &self.intervals
     }
 
+    pub fn gateway_chain_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        gateway_chain_ids(self.intervals())
+    }
+
+    // SYSCOIN: attach the configured Gateway RPC without touching the network until a historical
+    // Gateway batch/interval must be resolved.
+    pub fn set_lazy_gateway_provider(
+        &mut self,
+        chain_id: u64,
+        provider: DynProvider,
+        l2_chain_id: u64,
+    ) {
+        self.diamond_proxy_gw = Some(GatewayProxy::Lazy {
+            chain_id,
+            provider,
+            l2_chain_id,
+            cached_proxy: Arc::new(Mutex::new(None)),
+        });
+    }
+
     /// Returns the diamond proxy that should be used to fetch data about `batch_number`, based on
     /// which settlement layer interval it falls into.
-    pub fn resolve_proxy(&self, batch_number: u64) -> anyhow::Result<&ZkChain<DynProvider>> {
+    pub async fn resolve_proxy(&self, batch_number: u64) -> anyhow::Result<ZkChain<DynProvider>> {
         let interval = self.find_interval(batch_number).with_context(|| {
             format!("batch {batch_number} does not belong to any known settlement layer interval")
         })?;
         match interval.settlement_layer {
-            IntervalSettlementLayer::L1 => Ok(&self.diamond_proxy_l1),
+            IntervalSettlementLayer::L1 => Ok(self.diamond_proxy_l1.clone()),
             IntervalSettlementLayer::Gateway(chain_id) => match &self.diamond_proxy_gw {
-                Some((gw_chain_id, gw)) if *gw_chain_id == chain_id => Ok(gw),
-                Some((gw_chain_id, _)) => anyhow::bail!(
+                Some(gateway_proxy) if gateway_proxy.chain_id() == chain_id => {
+                    gateway_proxy.proxy().await
+                }
+                Some(gateway_proxy) => anyhow::bail!(
                     "batch {batch_number} was committed on Gateway with chain ID {chain_id} but \
-                     the chain's current Gateway is {gw_chain_id}; no provider is available for \
-                     the historical Gateway"
+                     the configured Gateway provider is for chain ID {}",
+                    gateway_proxy.chain_id()
                 ),
                 None => anyhow::bail!(
                     "batch {batch_number} was committed on Gateway with chain ID {chain_id} but \
-                     the chain currently settles on L1; no Gateway provider is configured"
+                     no Gateway provider is configured"
                 ),
             },
         }
@@ -234,4 +327,41 @@ async fn find_settlement_layer_intervals(
         });
     }
     Ok(intervals)
+}
+
+fn gateway_chain_ids(intervals: &[SettlementLayerInterval]) -> impl Iterator<Item = u64> + '_ {
+    intervals
+        .iter()
+        .filter_map(|interval| match interval.settlement_layer {
+            IntervalSettlementLayer::L1 => None,
+            IntervalSettlementLayer::Gateway(chain_id) => Some(chain_id),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IntervalSettlementLayer, SettlementLayerInterval, gateway_chain_ids};
+
+    #[test]
+    fn reports_gateway_chain_ids_from_discovered_intervals() {
+        let intervals = vec![
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::L1,
+                first_batch: 1,
+                last_batch: Some(5),
+            },
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::Gateway(506),
+                first_batch: 6,
+                last_batch: Some(8),
+            },
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::L1,
+                first_batch: 9,
+                last_batch: None,
+            },
+        ];
+
+        assert_eq!(gateway_chain_ids(&intervals).collect::<Vec<_>>(), vec![506]);
+    }
 }

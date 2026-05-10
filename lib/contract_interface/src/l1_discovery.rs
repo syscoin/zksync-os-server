@@ -81,6 +81,10 @@ impl L1State {
         let settlement_layer_address = diamond_proxy_l1
             .get_settlement_layer(BlockId::latest())
             .await?;
+        // SYSCOIN: keep the optional Gateway RPC available after settlement mode detection. Even
+        // when the chain currently settles on L1, historical Gateway intervals may need it for
+        // startup catch-up after an L1 -> Gateway -> L1 cycle.
+        let configured_gateway_provider = gateway_provider.clone();
 
         let (sl_chain_id, bridgehub_sl) = if settlement_layer_address.is_zero() {
             // Settling on L1: the settlement layer is L1 itself.
@@ -158,13 +162,41 @@ impl L1State {
         } else {
             Some((sl_chain_id, diamond_proxy_sl.clone()))
         };
-        let settlement_layer_intervals = SettlementLayerIntervals::discover(
+        let mut settlement_layer_intervals = SettlementLayerIntervals::discover(
             chain_asset_handler,
             diamond_proxy_l1.clone(),
             diamond_proxy_gw,
             l2_chain_id,
         )
         .await?;
+        // SYSCOIN: if current settlement is back on L1, do not discard a configured Gateway RPC
+        // when discovered history still contains Gateway-settled batches. Keep this lazy so a
+        // pre-migration L1 node with an optional Gateway URL does not have to query Gateway at all.
+        if sl_chain_id == l1_chain_id {
+            let historical_gateway_chain_ids = settlement_layer_intervals.gateway_chain_ids().fold(
+                Vec::<u64>::new(),
+                |mut chain_ids, chain_id| {
+                    if !chain_ids.contains(&chain_id) {
+                        chain_ids.push(chain_id);
+                    }
+                    chain_ids
+                },
+            );
+            if !historical_gateway_chain_ids.is_empty() {
+                anyhow::ensure!(
+                    historical_gateway_chain_ids.len() == 1,
+                    "historical Gateway intervals reference multiple chain IDs: {historical_gateway_chain_ids:?}"
+                );
+
+                if let Some(gateway_provider) = configured_gateway_provider {
+                    settlement_layer_intervals.set_lazy_gateway_provider(
+                        historical_gateway_chain_ids[0],
+                        gateway_provider,
+                        l2_chain_id,
+                    );
+                }
+            }
+        }
         tracing::info!(
             "discovered {} settlement layer intervals",
             settlement_layer_intervals.intervals().len()

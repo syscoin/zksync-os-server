@@ -40,7 +40,7 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
     /// chain can migrate off an SL (`Migrator.sol`), so each closed interval is self-contained:
     /// every commit on that SL has a matching execute on the same SL, and the in-memory
     /// `committed_batches` map is empty at interval boundaries.
-    pub fn create_watcher(
+    pub async fn create_watcher(
         config: L1WatcherConfig,
         intervals: SettlementLayerIntervals,
         batch_storage: BatchStorage,
@@ -75,7 +75,9 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
                 continue;
             }
 
-            let zk_chain = intervals.resolve_proxy(interval.first_batch)?.clone();
+            // SYSCOIN: resolving a historical Gateway segment may lazily initialize the
+            // configured Gateway proxy, and only for segments still pending persistence.
+            let zk_chain = intervals.resolve_proxy(interval.first_batch).await?;
             let first_batch = if segments.is_empty() {
                 anyhow::ensure!(
                     interval.first_batch <= last_persisted_batch + 1,
