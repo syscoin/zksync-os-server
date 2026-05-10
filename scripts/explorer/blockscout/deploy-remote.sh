@@ -13,7 +13,31 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-/Users/jagsidhu/work/Documents/GitHub/PVUGC.prv}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/gateway/ui/blockscout}"
 PROJECT_NAME="blockscout-${INSTANCE}"
 
-ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" "mkdir -p \"${REMOTE_DIR}\""
+ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" bash -s -- \
+  "${REMOTE_DIR}" "${INSTANCE}" <<'REMOTE_SCRIPT'
+set -euo pipefail
+
+remote_dir="$1"
+instance="$2"
+
+mkdir -p "${remote_dir}/envs"
+cd "${remote_dir}"
+
+secrets_file="envs/${instance}.secrets.env"
+legacy_env_file="envs/${instance}.env"
+if [[ ! -f "${secrets_file}" && -f "${legacy_env_file}" ]]; then
+  legacy_postgres_password="$(awk -F= '$1 == "POSTGRES_PASSWORD" { print substr($0, index($0, "=") + 1); exit }' "${legacy_env_file}")"
+  if [[ -n "${legacy_postgres_password}" ]]; then
+    # Preserve connectivity for already-initialized Postgres volumes while rotating app signing material.
+    umask 077
+    {
+      printf 'POSTGRES_PASSWORD=%s\n' "${legacy_postgres_password}"
+      printf 'SECRET_KEY_BASE=%s\n' "$(openssl rand -base64 48 | tr '/+' '_-' | tr -d '\n')"
+    } > "${secrets_file}"
+  fi
+fi
+REMOTE_SCRIPT
+
 scp -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" -r \
   "${SCRIPT_DIR}/docker-compose.yml" \
   "${SCRIPT_DIR}/proxy" \
