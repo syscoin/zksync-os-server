@@ -1381,12 +1381,15 @@ async fn run_main_node_pipeline(
     );
 
     if config.prover_api_config.enabled {
+        // SYSCOIN: `prover_server` enforces this header when remote Basic Auth is configured.
+        let prover_api_basic_auth = config.prover_api_config.basic_auth_header();
         runtime.spawn_critical_with_graceful_shutdown_signal("prover server", |shutdown| {
             prover_server::run(
                 fri_job_manager.clone(),
                 snark_job_manager.clone(),
                 proof_storage.clone(),
                 config.prover_api_config.address.clone(),
+                prover_api_basic_auth.clone(),
                 shutdown,
             )
         });

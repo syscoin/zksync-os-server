@@ -23,6 +23,9 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${PROVER_API_BIND_HOST:=127.0.0.1}"
+: "${PROVER_API_AUTH_USER:=syscoin-prover}"
+: "${PROVER_API_AUTH_PASSWORD:=}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 : "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
@@ -98,6 +101,9 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export PROVER_API_BIND_HOST
+export PROVER_API_AUTH_USER
+export PROVER_API_AUTH_PASSWORD
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
 export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
@@ -122,6 +128,7 @@ export PROVER_MODE
 
 python3 - <<'PY'
 from pathlib import Path
+import json
 import os
 import re
 import shutil
@@ -164,6 +171,10 @@ def write_secret_text(path: Path, text: str, mode: int = 0o600):
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def yaml_scalar(value: str) -> str:
+    return json.dumps(value)
 
 
 def parse_ether_amount_to_wei(value: str, default_wei: int) -> int:
@@ -264,6 +275,15 @@ l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
 if not l1_rpc_url:
     raise SystemExit(
         "missing gateway runtime L1 RPC URL: set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL"
+    )
+prover_api_auth_user = os.environ.get("PROVER_API_AUTH_USER", "").strip()
+prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip()
+prover_api_bind_host = os.environ.get("PROVER_API_BIND_HOST", "").strip()
+if not prover_api_bind_host:
+    raise SystemExit("missing prover API bind host: set PROVER_API_BIND_HOST")
+if not prover_api_auth_user or not prover_api_auth_password:
+    raise SystemExit(
+        "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
     )
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
@@ -395,7 +415,9 @@ def materialize_chain(
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
-            f"  address: 0.0.0.0:{prover_api_port}",
+            f"  address: {prover_api_bind_host}:{prover_api_port}",
+            f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
+            f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
             "  fake_fri_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
@@ -553,6 +575,24 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
 """
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
+
+    prover_proxy_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+# SYSCOIN: optional HTTPS terminator for internet-facing Airbender provers.
+# Keep zksync-os-server's prover API bound to localhost and expose this proxy instead.
+: "${{PROVER_API_DOMAIN:?set PROVER_API_DOMAIN, e.g. prover-api.example.com}}"
+: "${{PROVER_API_PROXY_TO:=127.0.0.1:{prover_api_port}}}"
+
+if ! command -v caddy >/dev/null 2>&1; then
+  echo "gateway-launch: caddy is required for start-prover-api-proxy.sh" >&2
+  echo "gateway-launch: install caddy, or run an equivalent HTTPS reverse proxy to http://${{PROVER_API_PROXY_TO}}" >&2
+  exit 1
+fi
+
+exec caddy reverse-proxy --from "${{PROVER_API_DOMAIN}}" --to "${{PROVER_API_PROXY_TO}}"
+"""
+    write_text(out_dir / "start-prover-api-proxy.sh", prover_proxy_script)
+    (out_dir / "start-prover-api-proxy.sh").chmod(0o755)
 
 materialize_chain(
     chain_name=os.environ["GATEWAY_CHAIN_NAME"],

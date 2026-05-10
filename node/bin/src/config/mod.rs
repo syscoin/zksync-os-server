@@ -2,6 +2,7 @@ pub use self::cli::ConfigArgs;
 use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
 use alloy::primitives::{Address, B256, Bytes, U128};
+use base64::{Engine as _, engine::general_purpose};
 use num::{BigInt, BigUint, rational::Ratio};
 use reth_net_nat::net_if::resolve_net_if_ip;
 use reth_network_peers::TrustedPeer;
@@ -14,7 +15,7 @@ use smart_config::{
     EtherAmount, ParseErrors, Serde, de::Delimited, metadata::EtherUnit,
 };
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 // SYSCOIN
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -1118,8 +1119,40 @@ pub struct ProverApiConfig {
     pub enabled: bool,
 
     /// Prover API address to listen on.
-    #[config(default_t = "0.0.0.0:3124".into())]
+    // SYSCOIN: keep unauthenticated defaults local-only. Non-loopback binds are allowed only when
+    // Basic Auth credentials are configured, because pick requests lease proving jobs.
+    #[config(default_t = "127.0.0.1:3124".into())]
+    #[config_validate(custom(
+        |root: &Config, value: &String| {
+            !root.prover_api_config.enabled
+                || prover_api_bind_is_loopback(value)
+                || root.prover_api_config.basic_auth_header().is_some()
+        },
+        "requires `prover_api.auth_user` and `prover_api.auth_password` when binding to a non-loopback address"
+    ))]
     pub address: String,
+
+    /// SYSCOIN Basic Auth username for remote prover API access.
+    #[config(secret)]
+    #[config_validate(custom(
+        |root: &Config, value: &Option<SecretString>| {
+            value.as_ref().is_none_or(|user| !user.expose_secret().trim().is_empty())
+                && (value.is_none() || root.prover_api_config.auth_password.is_some())
+        },
+        "must be non-empty and paired with `prover_api.auth_password`"
+    ))]
+    pub auth_user: Option<SecretString>,
+
+    /// SYSCOIN Basic Auth password for remote prover API access.
+    #[config(secret)]
+    #[config_validate(custom(
+        |root: &Config, value: &Option<SecretString>| {
+            value.as_ref().is_none_or(|password| !password.expose_secret().trim().is_empty())
+                && (value.is_none() || root.prover_api_config.auth_user.is_some())
+        },
+        "must be non-empty and paired with `prover_api.auth_user`"
+    ))]
+    pub auth_password: Option<SecretString>,
 
     /// Pool of in-process fake FRI provers that instantly produce dummy proofs, bypassing real proving.
     /// Useful for local development and testnets where real provers are unavailable or insufficient.
@@ -1162,6 +1195,27 @@ pub struct ProverApiConfig {
     /// Stop accepting transactions when the prover pipeline falls this many batches behind
     /// its upstream. Applied to both FRI and SNARK job managers.
     pub max_batch_diff_to_upstream: Option<u64>,
+}
+
+fn prover_api_bind_is_loopback(address: &str) -> bool {
+    address
+        .parse::<SocketAddr>()
+        .is_ok_and(|address| address.ip().is_loopback())
+}
+
+impl ProverApiConfig {
+    pub fn basic_auth_header(&self) -> Option<String> {
+        let user = self.auth_user.as_ref()?.expose_secret().trim();
+        let password = self.auth_password.as_ref()?.expose_secret().trim();
+        if user.is_empty() || password.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "Basic {}",
+            general_purpose::STANDARD.encode(format!("{user}:{password}"))
+        ))
+    }
 }
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
@@ -2044,6 +2098,44 @@ mod tests {
             fee_config: FeeConfig::default(),
             backpressure_config: BackpressureConfig::default(),
         }
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn prover_api_default_loopback_bind_does_not_require_auth() {
+        let config = base_config(NodeRole::MainNode);
+
+        assert_eq!(config.prover_api_config.address, "127.0.0.1:3124");
+        assert!(config.prover_api_config.basic_auth_header().is_none());
+        config.validate().await.unwrap();
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn prover_api_non_loopback_bind_requires_auth() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.address = "0.0.0.0:3124".into();
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains(
+            "`prover_api.address` requires `prover_api.auth_user` and `prover_api.auth_password` when binding to a non-loopback address"
+        ));
+    }
+
+    // SYSCOIN
+    #[tokio::test]
+    async fn prover_api_non_loopback_bind_allows_basic_auth() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.address = "0.0.0.0:3124".into();
+        config.prover_api_config.auth_user = Some("user".into());
+        config.prover_api_config.auth_password = Some("pass".into());
+
+        assert_eq!(
+            config.prover_api_config.basic_auth_header().as_deref(),
+            Some("Basic dXNlcjpwYXNz")
+        );
+        config.validate().await.unwrap();
     }
 
     #[test]

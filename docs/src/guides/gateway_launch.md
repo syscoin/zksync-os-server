@@ -25,6 +25,7 @@ Run from a `zksync-os-server` clone:
 cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
+export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
@@ -36,6 +37,7 @@ Mainnet:
 ```bash
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
+export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
@@ -117,6 +119,22 @@ Then rerun the canonical launcher command.
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
 ```
 
+For internet-facing prover access, run the generated HTTPS proxy helper on the
+node host after DNS points at that host:
+
+```bash
+PROVER_API_DOMAIN=prover-api.example.com "$GATEWAY_DIR/os-server-configs/gateway/start-prover-api-proxy.sh"
+```
+
+Then start Airbender provers with a credentialed HTTPS sequencer URL, for
+example `https://syscoin-prover:...@prover-api.example.com`.
+
+Generated configs bind the prover API to `127.0.0.1` by default. If you need
+direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
+when generating configs and give provers a URL such as
+`http://syscoin-prover:...@node-host:3124`. This is not recommended over the
+public internet because Basic Auth is not encrypted without HTTPS.
+
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
 - it tries to raise `ulimit -n` to `1048576`
@@ -134,6 +152,9 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
 | `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
+| `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; defaults to `127.0.0.1` so public access should go through HTTPS/VPN/reverse proxy termination |
+| `PROVER_API_DOMAIN` | Runtime domain for generated `start-prover-api-proxy.sh`; Caddy obtains/renews TLS certs and forwards to the local prover API |
+| `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; password is required for generated configs |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
@@ -158,6 +179,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 - `run-gateway-launch.sh` still enforces L1 chain-id preflight before broadcast steps.
 - Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).
 - For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
+- The prover API is plain HTTP in the node process. For internet-reachable provers, keep `PROVER_API_BIND_HOST=127.0.0.1` and expose it through HTTPS, VPN, or another trusted transport that forwards the Basic Auth header to the node.
 - Changing `GATEWAY_CREATE2_FACTORY_SALT` resets checkpoint state automatically (new redeploy run context).
 - If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf "${GATEWAY_DIR:-${HOME}/gateway}/.gateway-launch"`.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
