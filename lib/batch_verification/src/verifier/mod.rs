@@ -177,7 +177,10 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             Some(self.l1_state.validator_timelock_sl),
         )
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
-        if batch_info.upgrade_tx_hash.is_some() && expected_upgrade_tx_hash.is_none() {
+        if batch_info.protocol_version.is_post_v31()
+            && batch_info.upgrade_tx_hash.is_some()
+            && expected_upgrade_tx_hash.is_none()
+        {
             return Err(BatchVerificationError::MissingCanonicalUpgradeTxHash);
         }
 
