@@ -59,9 +59,9 @@ impl fmt::Display for SettlementLayerInterval {
 pub struct SettlementLayerIntervals {
     intervals: Arc<Vec<SettlementLayerInterval>>,
     diamond_proxy_l1: ZkChain<DynProvider>,
-    /// Diamond proxy of the chain's current settlement layer, paired with that SL's chain ID.
-    /// `None` means the chain currently settles on L1, in which case lookups for historical
-    /// Gateway intervals are unsupported (no Gateway provider is configured).
+    /// Diamond proxy of a configured Gateway provider, paired with that SL's chain ID.
+    /// `None` means no Gateway provider is available, in which case lookups for Gateway intervals
+    /// are unsupported.
     diamond_proxy_gw: Option<(u64, ZkChain<DynProvider>)>,
 }
 
@@ -92,6 +92,14 @@ impl SettlementLayerIntervals {
         &self.intervals
     }
 
+    pub fn gateway_chain_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        gateway_chain_ids(self.intervals())
+    }
+
+    pub fn set_gateway_proxy(&mut self, diamond_proxy_gw: Option<(u64, ZkChain<DynProvider>)>) {
+        self.diamond_proxy_gw = diamond_proxy_gw;
+    }
+
     /// Returns the diamond proxy that should be used to fetch data about `batch_number`, based on
     /// which settlement layer interval it falls into.
     pub fn resolve_proxy(&self, batch_number: u64) -> anyhow::Result<&ZkChain<DynProvider>> {
@@ -104,12 +112,11 @@ impl SettlementLayerIntervals {
                 Some((gw_chain_id, gw)) if *gw_chain_id == chain_id => Ok(gw),
                 Some((gw_chain_id, _)) => anyhow::bail!(
                     "batch {batch_number} was committed on Gateway with chain ID {chain_id} but \
-                     the chain's current Gateway is {gw_chain_id}; no provider is available for \
-                     the historical Gateway"
+                     the configured Gateway provider is for chain ID {gw_chain_id}"
                 ),
                 None => anyhow::bail!(
                     "batch {batch_number} was committed on Gateway with chain ID {chain_id} but \
-                     the chain currently settles on L1; no Gateway provider is configured"
+                     no Gateway provider is configured"
                 ),
             },
         }
@@ -234,4 +241,41 @@ async fn find_settlement_layer_intervals(
         });
     }
     Ok(intervals)
+}
+
+fn gateway_chain_ids(intervals: &[SettlementLayerInterval]) -> impl Iterator<Item = u64> + '_ {
+    intervals
+        .iter()
+        .filter_map(|interval| match interval.settlement_layer {
+            IntervalSettlementLayer::L1 => None,
+            IntervalSettlementLayer::Gateway(chain_id) => Some(chain_id),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IntervalSettlementLayer, SettlementLayerInterval, gateway_chain_ids};
+
+    #[test]
+    fn reports_gateway_chain_ids_from_discovered_intervals() {
+        let intervals = vec![
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::L1,
+                first_batch: 1,
+                last_batch: Some(5),
+            },
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::Gateway(506),
+                first_batch: 6,
+                last_batch: Some(8),
+            },
+            SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::L1,
+                first_batch: 9,
+                last_batch: None,
+            },
+        ];
+
+        assert_eq!(gateway_chain_ids(&intervals).collect::<Vec<_>>(), vec![506]);
+    }
 }
