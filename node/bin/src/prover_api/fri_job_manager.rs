@@ -177,7 +177,7 @@ impl FriJobManager {
                     }
                     tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;
                 };
-                let Some(mut batch_envelope) = jobs_for_forwarder
+                let Some(batch_envelope) = jobs_for_forwarder
                     .complete_job(batch_number, ProverType::Real, &prover_id)
                     .await
                 else {
@@ -188,6 +188,8 @@ impl FriJobManager {
                         .await;
                     continue 'forwarder;
                 };
+                let mut batch_envelope =
+                    batch_envelope.with_stage(BatchExecutionStage::FriProvedReal);
                 stored_batch.latency_tracker = std::mem::take(&mut batch_envelope.latency_tracker);
 
                 if downstream_sender
