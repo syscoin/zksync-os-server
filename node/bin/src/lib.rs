@@ -1600,47 +1600,6 @@ async fn run_en_pipeline(
     let monitor =
         BackpressureMonitor::new(config.build_backpressure_config(), stop_receiver.clone());
 
-    // SYSCOIN: batch-verifier clients use startup settlement metadata when
-    // checking upgrade tx hashes. Keep these reads out of the peer-triggered
-    // VerifyBatch request path.
-    let (upgrade_batch_number, upgrade_tx_hash) = if config.batch_verification_config.client_enabled
-    {
-        let upgrade_batch_number = match node_state_on_startup
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_batch_number(BlockId::latest())
-            .await
-        {
-            Ok(batch_number) => batch_number,
-            Err(err) => {
-                tracing::warn!(
-                    ?err,
-                    "failed to fetch upgrade batch marker from settlement layer"
-                );
-                0
-            }
-        };
-        let upgrade_tx_hash = match node_state_on_startup
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_tx_hash(BlockId::latest())
-            .await
-        {
-            Ok(hash) if !hash.is_zero() => Some(hash),
-            Ok(_) => None,
-            Err(err) => {
-                tracing::warn!(
-                    ?err,
-                    "failed to fetch upgrade tx hash from settlement layer"
-                );
-                None
-            }
-        };
-        (upgrade_batch_number, upgrade_tx_hash)
-    } else {
-        (0, None)
-    };
-
     let pipeline = Pipeline::new(runtime.clone())
         .pipe(ExternalNodeCommandSource {
             replays_for_sequencer,
@@ -1689,8 +1648,6 @@ async fn run_en_pipeline(
                 node_state_on_startup.l1_state.diamond_proxy_address_sl(),
                 config.batch_verification_config.signing_key.clone(),
                 syscoin_da_verification_config(config),
-                upgrade_batch_number,
-                upgrade_tx_hash,
                 finality.clone(),
                 node_state_on_startup.l1_state.clone(),
                 state.clone(),
