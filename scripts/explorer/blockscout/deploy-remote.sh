@@ -56,6 +56,12 @@ cd "${remote_dir}"
 
 secrets_file="envs/${instance}.secrets.env"
 if [[ ! -f "${secrets_file}" ]]; then
+  if docker volume inspect "${project_name}_db-data" >/dev/null 2>&1; then
+    echo "Existing Blockscout DB volume found but ${secrets_file} is missing." >&2
+    echo "Create ${secrets_file} with the current POSTGRES_PASSWORD before deploying." >&2
+    exit 1
+  fi
+
   umask 077
   {
     printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -base64 24 | tr '/+' '_-' | tr -d '\n')"
