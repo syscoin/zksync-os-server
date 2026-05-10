@@ -661,8 +661,10 @@ mod tests {
     #[test]
     fn blob_da_fields_reject_over_capacity_without_panicking() {
         let pubdata = vec![0u8; SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES + 1];
-        let err = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6)
-            .expect_err("over-capacity Syscoin blob DA pubdata must be rejected");
+        let err = match calculate_da_fields(&pubdata, PubdataMode::Blobs, 6) {
+            Ok(_) => panic!("over-capacity Syscoin blob DA pubdata must be rejected"),
+            Err(err) => err,
+        };
 
         assert!(
             err.to_string()
