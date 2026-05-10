@@ -51,11 +51,18 @@ impl CommitCalldata {
                 );
             };
 
-        if commit_data[0] != V30_ENCODING_VERSION && commit_data[0] != V31_ENCODING_VERSION {
-            anyhow::bail!("unexpected encoding version: {}", commit_data[0]);
+        // SYSCOIN: malformed multisig commit calldata can contain an empty batch payload.
+        // Reject it before reading the encoding byte so RPC admission returns an error
+        // instead of panicking.
+        let Some(&encoding_version) = commit_data.first() else {
+            anyhow::bail!("commit data is empty");
+        };
+
+        if encoding_version != V30_ENCODING_VERSION && encoding_version != V31_ENCODING_VERSION {
+            anyhow::bail!("unexpected encoding version: {}", encoding_version);
         }
 
-        let (stored_batch_info, commit_batch_info) = match commit_data[0] {
+        let (stored_batch_info, commit_batch_info) = match encoding_version {
             V30_ENCODING_VERSION => {
                 let (stored_batch_info, mut commit_batch_infos) =
                     <(

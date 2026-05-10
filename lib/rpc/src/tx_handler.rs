@@ -563,6 +563,23 @@ mod tests {
     }
 
     #[test]
+    fn compact_edge_da_refs_rejects_empty_multisig_batch_data() {
+        let input = IMultisigCommitter::commitBatchesMultisigCall {
+            chainAddress: Address::ZERO,
+            _processBatchFrom: U256::ZERO,
+            _processBatchTo: U256::from(1),
+            _batchData: Bytes::new(),
+            signers: Vec::new(),
+            signatures: Vec::new(),
+        }
+        .abi_encode();
+
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
+
+        assert!(err.to_string().contains("commit data is empty"));
+    }
+
+    #[test]
     fn compact_edge_da_refs_allows_validium_without_refs() {
         let input = commit_call_data(dummy_commit_batch_info(
             DACommitmentScheme::EmptyNoDA,
