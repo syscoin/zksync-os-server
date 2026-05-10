@@ -1,4 +1,4 @@
-use crate::metrics::ViseRecorder;
+use crate::metrics::{TRANSACTION_POOL_METRICS, ViseRecorder};
 use crate::{L2PooledTransaction, TxValidatorConfig};
 use alloy::consensus::transaction::Recovered;
 use alloy::primitives::TxHash;
@@ -52,6 +52,15 @@ pub trait L2Subpool:
             TransactionOrigin::Local,
             L2PooledTransaction::from_pooled(transaction),
         )
+    }
+
+    // SYSCOIN: RPC forwarding rollbacks operate directly on the L2 subpool, not the aggregate
+    // `Pool` wrapper, so account for the rollback at the abstraction used by `TxHandler`.
+    fn remove_forwarding_rollback_transactions(&self, tx_hashes: Vec<TxHash>) {
+        TRANSACTION_POOL_METRICS
+            .forwarding_rollback_transactions
+            .inc_by(tx_hashes.len() as u64);
+        self.remove_transactions(tx_hashes);
     }
 
     fn best_transactions_stream(&self) -> L2TransactionsStream {

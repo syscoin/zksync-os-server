@@ -98,7 +98,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     return Ok(hash);
                 }
                 if forwarding_error_should_rollback_local_tx(&err) {
-                    self.mempool.remove_transactions(vec![hash]);
+                    self.mempool
+                        .remove_forwarding_rollback_transactions(vec![hash]);
                 }
                 return Err(err.into());
             }
