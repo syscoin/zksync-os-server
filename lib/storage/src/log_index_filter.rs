@@ -92,7 +92,16 @@ impl Candidates {
     /// Returns `true` if the block at `number` may contain matching logs.
     /// Blocks outside the covered range always return `true` (must fall back to bloom).
     pub fn may_contain(&self, block_number: u64) -> bool {
-        !self.covered.contains(&block_number) || self.bitmap.contains(block_number as u32)
+        if !self.covered.contains(&block_number) {
+            return true;
+        }
+
+        // SYSCOIN: Bitmap candidates are u32 block numbers. Non-representable blocks must be
+        // scanned via bloom filters rather than wrapped into the bitmap domain.
+        let Ok(block_number) = u32::try_from(block_number) else {
+            return true;
+        };
+        self.bitmap.contains(block_number)
     }
 
     /// Returns the number of blocks the index covers.
@@ -265,5 +274,16 @@ mod tests {
         let c = candidates(&index, &filter, 0..10).unwrap();
         assert!(c.bitmap.is_empty());
         assert_eq!(c.covered, 0..0);
+    }
+
+    #[test]
+    fn unrepresentable_block_numbers_fall_back_to_bloom() {
+        let block = u32::MAX as u64 + 1;
+        let c = Candidates {
+            bitmap: RoaringBitmap::new(),
+            covered: block..block + 1,
+        };
+
+        assert!(c.may_contain(block));
     }
 }
