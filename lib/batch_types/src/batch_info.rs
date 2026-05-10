@@ -180,8 +180,8 @@ fn blob_data_id(data: &[u8]) -> [u8; 32] {
     keccak256(data).0
 }
 
-fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
-    assert!(
+fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
+    ensure!(
         pubdata.len() <= SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES,
         "Syscoin DA blob pubdata exceeds 32-blob capacity: {} > {}",
         pubdata.len(),
@@ -193,33 +193,35 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> Vec<Vec<u8>> {
     let mut encoded = vec![0u8; BLOB_CHUNK_SIZE];
     encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
     encoded.extend_from_slice(pubdata);
-    encoded
+    Ok(encoded
         .chunks(SYSCOIN_DA_BYTES_PER_BLOB)
         .map(|chunk| chunk.to_vec())
-        .collect()
+        .collect())
 }
 
-fn syscoin_da_blob_count_for_pubdata(pubdata_len: usize) -> usize {
+fn syscoin_da_blob_count_for_pubdata(pubdata_len: usize) -> anyhow::Result<usize> {
     let blob_count = pubdata_len
         .saturating_add(BLOB_CHUNK_SIZE)
         .div_ceil(SYSCOIN_DA_BYTES_PER_BLOB)
         .max(1);
-    assert!(
+    ensure!(
         blob_count <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
         "Syscoin DA pubdata exceeds 32-blob capacity: {} blobs > {}",
         blob_count,
         SYSCOIN_DA_MAX_BLOBS_PER_BATCH
     );
-    blob_count
+    Ok(blob_count)
 }
 
-pub fn syscoin_blob_ids_and_chunks_from_pubdata(pubdata: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
-    let blob_chunks = encoded_blob_chunks_from_pubdata(pubdata);
+pub fn syscoin_blob_ids_and_chunks_from_pubdata(
+    pubdata: &[u8],
+) -> anyhow::Result<(Vec<u8>, Vec<Vec<u8>>)> {
+    let blob_chunks = encoded_blob_chunks_from_pubdata(pubdata)?;
     let blob_ids = blob_chunks
         .iter()
         .flat_map(|chunk| blob_data_id(chunk))
         .collect();
-    (blob_ids, blob_chunks)
+    Ok((blob_ids, blob_chunks))
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -360,7 +362,7 @@ impl ExtendedCommitBatchInfo {
             &total_pubdata,
             pubdata_mode,
             last_block_context.execution_version,
-        );
+        )?;
 
         /* ---------- new state commitment ---------- */
         // FIXME: extract to a type common batch types?
@@ -503,11 +505,11 @@ fn calculate_da_fields(
     pubdata: &[u8],
     pubdata_mode: PubdataMode,
     batch_execution_version: u32,
-) -> DAFields {
+) -> anyhow::Result<DAFields> {
     let (da_commitment, operator_da_input, blob_sidecar) =
         match (pubdata_mode, batch_execution_version) {
             (PubdataMode::Calldata, _) | (PubdataMode::Validium, 4) => {
-                let blobs_provided = syscoin_da_blob_count_for_pubdata(pubdata.len());
+                let blobs_provided = syscoin_da_blob_count_for_pubdata(pubdata.len())?;
                 let mut operator_da_input = Vec::with_capacity(
                     32 * 2 + 1 + 32 * blobs_provided + 1 + pubdata.len() + 32 * blobs_provided,
                 );
@@ -553,26 +555,28 @@ fn calculate_da_fields(
                 // SYSCOIN: edge chains that settle to Gateway publish pubdata directly to Bitcoin
                 // DA and commit only the compact ordered blob hash array to Gateway.
                 let (blob_ids_from_pubdata, _blob_chunks_from_pubdata) =
-                    syscoin_blob_ids_and_chunks_from_pubdata(pubdata);
+                    syscoin_blob_ids_and_chunks_from_pubdata(pubdata)?;
                 let blob_ids = blob_ids_from_pubdata;
                 let da_commitment = keccak256(&blob_ids);
                 let operator_da_input = blob_ids;
                 (da_commitment, operator_da_input, None)
             }
         };
-    DAFields {
+    Ok(DAFields {
         da_commitment,
         operator_da_input,
         blob_sidecar,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::calculate_da_fields;
     use super::{
-        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, checked_upgrade_tx_hash,
-        is_compact_edge_da_commit_tx, syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
+        SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES, SyscoinEdgeDaRef,
+        blob_data_id, checked_upgrade_tx_hash, is_compact_edge_da_commit_tx,
+        syscoin_da_blob_count_for_pubdata, syscoin_edge_da_ref_hash,
+        syscoin_edge_da_refs_from_input,
     };
     use alloy::primitives::{B256, U256, address, keccak256};
     use alloy::sol_types::SolCall;
@@ -611,7 +615,7 @@ mod tests {
     fn blob_da_fields_match_os_chunk_ids_for_single_blob() {
         let pubdata = b"hello-syscoin-da";
 
-        let fields = calculate_da_fields(pubdata, PubdataMode::Blobs, 6);
+        let fields = calculate_da_fields(pubdata, PubdataMode::Blobs, 6).unwrap();
         let expected_blob_ids = expected_blob_ids(pubdata);
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
@@ -623,7 +627,7 @@ mod tests {
     fn blob_da_fields_match_os_chunk_ids_for_multiple_blobs() {
         let pubdata = vec![0x42; SYSCOIN_DA_BYTES_PER_BLOB + 17];
 
-        let fields = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6);
+        let fields = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6).unwrap();
         let expected_blob_ids = expected_blob_ids(&pubdata);
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
@@ -635,12 +639,36 @@ mod tests {
     fn relayed_l2_calldata_uses_compact_syscoin_da_refs() {
         let pubdata = b"edge-chain-pubdata";
 
-        let fields = calculate_da_fields(pubdata, PubdataMode::RelayedL2Calldata, 6);
+        let fields = calculate_da_fields(pubdata, PubdataMode::RelayedL2Calldata, 6).unwrap();
         let expected_blob_ids = expected_blob_ids(pubdata);
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
         assert!(fields.blob_sidecar.is_none());
+    }
+
+    #[test]
+    fn syscoin_da_blob_count_rejects_over_capacity_without_panicking() {
+        let err = syscoin_da_blob_count_for_pubdata(SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES + 1)
+            .expect_err("over-capacity Syscoin DA pubdata must be rejected");
+
+        assert!(
+            err.to_string().contains("exceeds 32-blob capacity"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn blob_da_fields_reject_over_capacity_without_panicking() {
+        let pubdata = vec![0u8; SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES + 1];
+        let err = calculate_da_fields(&pubdata, PubdataMode::Blobs, 6)
+            .expect_err("over-capacity Syscoin blob DA pubdata must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("Syscoin DA blob pubdata exceeds 32-blob capacity"),
+            "{err}"
+        );
     }
 
     #[test]
