@@ -127,13 +127,14 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
         let mut leadership = self.leadership.clone();
         let mut role = leadership.current_role();
         let mut next_rebuild_block = rebuild_options.from_block;
-        let mut following_canonized_rebuilds = false;
 
         loop {
-            if role == ConsensusRole::Leader && !following_canonized_rebuilds {
+            if role == ConsensusRole::Leader {
                 // SYSCOIN: Rebuilds can reset timestamps using the local wall clock. In a real
                 // consensus runtime, only the current leader may construct and propose them; all
                 // other nodes must replay the canonized records to avoid divergent block contexts.
+                // If leadership changes mid-rebuild, the new leader continues from the next block
+                // that was not already received from consensus.
                 self.send_block_rebuilds(
                     rebuild_options,
                     next_rebuild_block,
@@ -187,7 +188,6 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
                         return Ok(());
                     }
                     next_rebuild_block = block_number + 1;
-                    following_canonized_rebuilds = true;
                 }
             }
         }
