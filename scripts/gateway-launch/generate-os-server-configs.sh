@@ -23,6 +23,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${PROVER_API_BIND_HOST:=127.0.0.1}"
 : "${PROVER_API_AUTH_USER:=syscoin-prover}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
@@ -100,6 +101,7 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export PROVER_API_BIND_HOST
 export PROVER_API_AUTH_USER
 export PROVER_API_AUTH_PASSWORD
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
@@ -276,6 +278,9 @@ if not l1_rpc_url:
     )
 prover_api_auth_user = os.environ.get("PROVER_API_AUTH_USER", "").strip()
 prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip()
+prover_api_bind_host = os.environ.get("PROVER_API_BIND_HOST", "").strip()
+if not prover_api_bind_host:
+    raise SystemExit("missing prover API bind host: set PROVER_API_BIND_HOST")
 if not prover_api_auth_user or not prover_api_auth_password:
     raise SystemExit(
         "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
@@ -410,7 +415,7 @@ def materialize_chain(
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
-            f"  address: 0.0.0.0:{prover_api_port}",
+            f"  address: {prover_api_bind_host}:{prover_api_port}",
             f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
             f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
             "  fake_fri_provers:",
