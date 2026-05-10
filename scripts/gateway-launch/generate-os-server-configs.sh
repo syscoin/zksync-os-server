@@ -576,6 +576,24 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
 
+    prover_proxy_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+# SYSCOIN: optional HTTPS terminator for internet-facing Airbender provers.
+# Keep zksync-os-server's prover API bound to localhost and expose this proxy instead.
+: "${{PROVER_API_DOMAIN:?set PROVER_API_DOMAIN, e.g. prover-api.example.com}}"
+: "${{PROVER_API_PROXY_TO:=127.0.0.1:{prover_api_port}}}"
+
+if ! command -v caddy >/dev/null 2>&1; then
+  echo "gateway-launch: caddy is required for start-prover-api-proxy.sh" >&2
+  echo "gateway-launch: install caddy, or run an equivalent HTTPS reverse proxy to http://${{PROVER_API_PROXY_TO}}" >&2
+  exit 1
+fi
+
+exec caddy reverse-proxy --from "${{PROVER_API_DOMAIN}}" --to "${{PROVER_API_PROXY_TO}}"
+"""
+    write_text(out_dir / "start-prover-api-proxy.sh", prover_proxy_script)
+    (out_dir / "start-prover-api-proxy.sh").chmod(0o755)
+
 materialize_chain(
     chain_name=os.environ["GATEWAY_CHAIN_NAME"],
     chain_id=os.environ["GATEWAY_CHAIN_ID"],
