@@ -314,23 +314,25 @@ impl FriJobManager {
             .await
             .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
 
-        // SYSCOIN: The accepted-proof queue is bounded and lightweight. The full prover input
-        // remains in the job map until the forwarder has reloaded the pending proof and can hand
-        // it downstream, so any forwarder failure leaves the batch retriable.
-        if self
-            .accepted_proof_sender
-            .send(AcceptedProof {
-                batch_number,
-                proof_key: pending_proof_key.clone(),
-                prover_id: prover_id.to_string(),
-            })
-            .await
-            .is_err()
-        {
-            self.proof_storage
-                .release_pending_batch_with_proof(&pending_proof_key)
-                .await;
-            return Err(SubmitError::ShuttingDown);
+        // SYSCOIN: The accepted-proof queue is bounded and lightweight. Use `try_send` so there is
+        // no cancellation point after the pending proof is persisted; if forwarding is saturated,
+        // the job remains in the map and the proof is released for a clean retry.
+        match self.accepted_proof_sender.try_send(AcceptedProof {
+            batch_number,
+            proof_key: pending_proof_key.clone(),
+            prover_id: prover_id.to_string(),
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.release_pending_batch_with_proof_in_background(pending_proof_key);
+                return Err(SubmitError::Other(
+                    "accepted FRI proof forwarder backpressure".to_string(),
+                ));
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.release_pending_batch_with_proof_in_background(pending_proof_key);
+                return Err(SubmitError::ShuttingDown);
+            }
         }
 
         Ok(())
@@ -449,6 +451,19 @@ impl FriJobManager {
 
     pub async fn status(&self) -> Vec<JobState> {
         self.jobs.status().await
+    }
+
+    // SYSCOIN
+    fn release_pending_batch_with_proof_in_background(
+        &self,
+        pending_proof_key: PendingBatchProofKey,
+    ) {
+        let proof_storage = self.proof_storage.clone();
+        tokio::spawn(async move {
+            proof_storage
+                .release_pending_batch_with_proof(&pending_proof_key)
+                .await;
+        });
     }
 
     fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
