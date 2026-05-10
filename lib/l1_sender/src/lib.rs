@@ -191,6 +191,10 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         let pending_txs: Vec<PendingTx<Input>> = recovered
             .into_iter()
             .map(|(tx_hash, cmd, nonce)| {
+                // SYSCOIN: recovered commit txs were submitted by a prior session but are now
+                // owned by this sender loop. Announce them before waiting so the commit watcher
+                // does not classify their eventual L1 event as an unexpected external commit.
+                notify_commit_submitted(&commit_submitted_tx, &cmd);
                 let fut = wait_for_confirmed_receipt(
                     provider.root().clone(),
                     tx_hash,
@@ -449,21 +453,7 @@ where
     );
 
     // Notify CommitWatcher: this batch number has been submitted to L1.
-    if let Some(sender) = commit_submitted_tx {
-        let batch_number = cmd
-            .as_ref()
-            .last()
-            .expect("commands is non-empty after recv_many")
-            .batch_number();
-        sender.send_if_modified(|current| {
-            if batch_number > *current {
-                *current = batch_number;
-                true
-            } else {
-                false
-            }
-        });
-    }
+    notify_commit_submitted(commit_submitted_tx, cmd);
 
     cmd.as_mut()
         .iter_mut()
@@ -479,6 +469,39 @@ where
         tx_nonce,
         submitted_l1_block,
     ))
+}
+
+// SYSCOIN: keep the commit watcher marker update identical for freshly submitted, resubmitted,
+// and recovered in-flight commit transactions. Non-commit senders pass `None`.
+fn notify_commit_submitted<Input: SendToL1>(
+    commit_submitted_tx: &Option<watch::Sender<u64>>,
+    cmd: &Input,
+) {
+    if commit_submitted_tx.is_some() {
+        let batch_number = cmd
+            .as_ref()
+            .last()
+            .expect("commands is non-empty when notifying commit watcher")
+            .batch_number();
+        notify_commit_submitted_batch(commit_submitted_tx, batch_number);
+    }
+}
+
+// SYSCOIN: monotonic marker update used by `notify_commit_submitted` and unit tests.
+fn notify_commit_submitted_batch(
+    commit_submitted_tx: &Option<watch::Sender<u64>>,
+    batch_number: u64,
+) {
+    if let Some(sender) = commit_submitted_tx {
+        sender.send_if_modified(|current| {
+            if batch_number > *current {
+                *current = batch_number;
+                true
+            } else {
+                false
+            }
+        });
+    }
 }
 
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
@@ -1469,5 +1492,34 @@ async fn validate_tx_receipt<Input: SendToL1>(
             command,
             receipt.transaction_hash
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::notify_commit_submitted_batch;
+    use tokio::sync::watch;
+
+    #[test]
+    fn commit_submitted_marker_advances_to_recovered_batch() {
+        let (tx, rx) = watch::channel(10);
+
+        notify_commit_submitted_batch(&Some(tx), 11);
+
+        assert_eq!(*rx.borrow(), 11);
+    }
+
+    #[test]
+    fn commit_submitted_marker_never_moves_backward() {
+        let (tx, rx) = watch::channel(10);
+
+        notify_commit_submitted_batch(&Some(tx), 9);
+
+        assert_eq!(*rx.borrow(), 10);
+    }
+
+    #[test]
+    fn commit_submitted_marker_is_optional_for_non_commit_senders() {
+        notify_commit_submitted_batch(&None, 11);
     }
 }
