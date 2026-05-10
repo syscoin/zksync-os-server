@@ -129,6 +129,12 @@ PROVER_API_DOMAIN=prover-api.example.com "$GATEWAY_DIR/os-server-configs/gateway
 Then start Airbender provers with a credentialed HTTPS sequencer URL, for
 example `https://syscoin-prover:...@prover-api.example.com`.
 
+Generated configs bind the prover API to `127.0.0.1` by default. If you need
+direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
+when generating configs and give provers a URL such as
+`http://syscoin-prover:...@node-host:3124`. This is not recommended over the
+public internet because Basic Auth is not encrypted without HTTPS.
+
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
 - it tries to raise `ulimit -n` to `1048576`
