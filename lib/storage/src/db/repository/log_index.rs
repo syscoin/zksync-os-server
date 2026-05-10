@@ -12,6 +12,7 @@ use zksync_os_storage_api::{LogIndex, RepositoryResult};
 /// internal container boundary: all block numbers within a chunk share the same high 16 bits,
 /// so each chunk serializes to exactly one roaring container (max 8 KB).
 pub(super) const CHUNK_SIZE: u64 = 1 << 16;
+const MAX_BITMAP_BLOCK_EXCLUSIVE: u64 = u32::MAX as u64 + 1;
 
 pub(super) fn chunk_start(block_number: u64) -> u64 {
     // Round down to the nearest CHUNK_SIZE boundary (equivalent to
@@ -248,10 +249,15 @@ fn read_range(
         let chunk_bytes: [u8; 8] = key[key_prefix.len()..]
             .try_into()
             .expect("chunk key suffix must be 8 bytes");
-        let chunk_base = u64::from_be_bytes(chunk_bytes) as u32;
+        let chunk_base = u32::try_from(u64::from_be_bytes(chunk_bytes))
+            .expect("covered log index range must fit into u32 block numbers");
         result |= deserialize_bitmap(&value)
             .into_iter()
-            .map(|offset| chunk_base + offset)
+            .map(|offset| {
+                chunk_base
+                    .checked_add(offset)
+                    .expect("chunk bitmap offsets must stay within u32 block numbers")
+            })
             .collect::<RoaringBitmap>();
     }
 
@@ -259,8 +265,10 @@ fn read_range(
     // partially-overlapping boundary chunks. `remove_range` runs in
     // O(containers removed) time rather than O(bits), so this is efficient
     // even when the trimmed region is large.
-    result.remove_range(..range.start as u32);
-    result.remove_range(range.end as u32..);
+    result.remove_range(..u32::try_from(range.start).expect("range start must fit into u32"));
+    if let Ok(end) = u32::try_from(range.end) {
+        result.remove_range(end..);
+    }
     Ok(result)
 }
 
@@ -274,7 +282,11 @@ pub(super) fn query(
     let Some(cov) = coverage(db)? else {
         return Ok((RoaringBitmap::new(), 0..0));
     };
-    let covered = range.start.max(cov.start)..range.end.min(cov.end);
+    // SYSCOIN: The log-index bitmap stores absolute block numbers as u32 values. Once block
+    // numbers exceed that representation, return an uncovered range so RPC log scans fall back to
+    // bloom filtering instead of wrapping and producing false negatives.
+    let covered =
+        range.start.max(cov.start)..range.end.min(cov.end).min(MAX_BITMAP_BLOCK_EXCLUSIVE);
     if covered.is_empty() {
         return Ok((RoaringBitmap::new(), 0..0));
     }
@@ -486,6 +498,49 @@ mod tests {
         assert!(bitmap.contains(last_in_chunk0 as u32));
         assert!(bitmap.contains(first_in_chunk1 as u32));
         assert_eq!(covered, last_in_chunk0..first_in_chunk1 + 1);
+    }
+
+    #[test]
+    fn query_at_u32_boundary_keeps_last_representable_block() {
+        let (db, _dir) = open_test_db();
+        let addr = Address::repeat_byte(1);
+        let log = make_log(addr, &[]);
+        let last_representable_block = u32::MAX as u64;
+
+        index_block(&db, last_representable_block, &[log]);
+
+        let (bitmap, covered) = query(
+            &db,
+            RepositoryCF::LogBlocksByAddress,
+            addr.as_slice(),
+            last_representable_block..last_representable_block + 1,
+        )
+        .unwrap();
+        assert_eq!(
+            covered,
+            last_representable_block..last_representable_block + 1
+        );
+        assert!(bitmap.contains(u32::MAX));
+    }
+
+    #[test]
+    fn query_above_u32_boundary_is_uncovered() {
+        let (db, _dir) = open_test_db();
+        let addr = Address::repeat_byte(1);
+        let log = make_log(addr, &[]);
+        let first_unrepresentable_block = u32::MAX as u64 + 1;
+
+        index_block(&db, first_unrepresentable_block, &[log]);
+
+        let (bitmap, covered) = query(
+            &db,
+            RepositoryCF::LogBlocksByAddress,
+            addr.as_slice(),
+            first_unrepresentable_block..first_unrepresentable_block + 1,
+        )
+        .unwrap();
+        assert!(covered.is_empty());
+        assert!(bitmap.is_empty());
     }
 
     /// Regression test: rolling back multiple consecutive blocks that all emitted logs for the
