@@ -1,6 +1,7 @@
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::primitives::{Address, B256, BlockNumber, U256, keccak256};
 use alloy::sol_types::{SolCall, SolValue};
+use anyhow::ensure;
 use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::ops;
@@ -165,14 +166,14 @@ pub fn expected_upgrade_tx_hash_for_batch(
 fn checked_upgrade_tx_hash(
     expected_upgrade_tx_hash: Option<B256>,
     actual_upgrade_tx_hash: B256,
-) -> B256 {
+) -> anyhow::Result<B256> {
     if let Some(expected_upgrade_tx_hash) = expected_upgrade_tx_hash {
-        assert_eq!(
-            expected_upgrade_tx_hash, actual_upgrade_tx_hash,
+        ensure!(
+            expected_upgrade_tx_hash == actual_upgrade_tx_hash,
             "canonical upgrade tx hash mismatch: expected {expected_upgrade_tx_hash}, actual {actual_upgrade_tx_hash}"
         );
     }
-    actual_upgrade_tx_hash
+    Ok(actual_upgrade_tx_hash)
 }
 
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
@@ -248,7 +249,7 @@ impl ExtendedCommitBatchInfo {
         protocol_version: &ProtocolSemanticVersion,
         expected_upgrade_tx_hash: Option<B256>,
         compact_edge_da_commit_target: Option<Address>,
-    ) -> (Self, Option<BlobTransactionSidecar>) {
+    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
         let mut number_of_layer2_txs = 0;
@@ -298,7 +299,7 @@ impl ExtendedCommitBatchInfo {
                         number_of_layer1_txs += 1;
                     }
                     ZkEnvelope::Upgrade(_) => {
-                        assert!(
+                        ensure!(
                             upgrade_tx_hash.is_none(),
                             "more than one upgrade tx in a batch: first {upgrade_tx_hash:?}, second {}",
                             tx.hash()
@@ -306,7 +307,7 @@ impl ExtendedCommitBatchInfo {
                         upgrade_tx_hash = Some(checked_upgrade_tx_hash(
                             expected_upgrade_tx_hash,
                             *tx.hash(),
-                        ));
+                        )?);
                     }
                 }
             }
@@ -406,14 +407,14 @@ impl ExtendedCommitBatchInfo {
             edge_da_refs_root,
             sl_chain_id,
         };
-        (
+        Ok((
             Self {
                 commit_info,
                 protocol_version: protocol_version.clone(),
                 upgrade_tx_hash,
             },
             da_fields.blob_sidecar,
-        )
+        ))
     }
 
     /// Calculate keccak256 hash of BatchOutput part of public input
@@ -646,20 +647,29 @@ mod tests {
     fn upgrade_tx_hash_uses_actual_hash_when_expected_missing() {
         let actual = B256::from([1; 32]);
 
-        assert_eq!(checked_upgrade_tx_hash(None, actual), actual);
+        assert_eq!(checked_upgrade_tx_hash(None, actual).unwrap(), actual);
     }
 
     #[test]
     fn upgrade_tx_hash_accepts_matching_expected_hash() {
         let actual = B256::from([2; 32]);
 
-        assert_eq!(checked_upgrade_tx_hash(Some(actual), actual), actual);
+        assert_eq!(
+            checked_upgrade_tx_hash(Some(actual), actual).unwrap(),
+            actual
+        );
     }
 
     #[test]
-    #[should_panic(expected = "canonical upgrade tx hash mismatch")]
-    fn upgrade_tx_hash_rejects_mismatched_expected_hash() {
-        checked_upgrade_tx_hash(Some(B256::from([3; 32])), B256::from([4; 32]));
+    fn upgrade_tx_hash_rejects_mismatched_expected_hash_without_panicking() {
+        let err = checked_upgrade_tx_hash(Some(B256::from([3; 32])), B256::from([4; 32]))
+            .expect_err("mismatched upgrade tx hashes must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("canonical upgrade tx hash mismatch"),
+            "{err}"
+        );
     }
 
     #[test]
