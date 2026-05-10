@@ -334,13 +334,15 @@ impl FriJobManager {
         }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(accepted_proof)) => {
-                self.restore_job_and_release_pending_batch_with_proof_in_background(accepted_proof);
+                self.restore_job_and_release_pending_batch_with_proof(accepted_proof)
+                    .await;
                 return Err(SubmitError::Other(
                     "accepted FRI proof forwarder backpressure".to_string(),
                 ));
             }
             Err(mpsc::error::TrySendError::Closed(accepted_proof)) => {
-                self.restore_job_and_release_pending_batch_with_proof_in_background(accepted_proof);
+                self.restore_job_and_release_pending_batch_with_proof(accepted_proof)
+                    .await;
                 return Err(SubmitError::ShuttingDown);
             }
         }
@@ -477,18 +479,13 @@ impl FriJobManager {
     }
 
     // SYSCOIN
-    fn restore_job_and_release_pending_batch_with_proof_in_background(
+    async fn restore_job_and_release_pending_batch_with_proof(
         &self,
         accepted_proof: AcceptedProof,
     ) {
-        let jobs = self.jobs.clone();
-        let proof_storage = self.proof_storage.clone();
-        tokio::spawn(async move {
-            proof_storage
-                .release_pending_batch_with_proof(&accepted_proof.proof_key)
-                .await;
-            jobs.restore_job(accepted_proof.batch_envelope).await;
-        });
+        let pending_proof_key = accepted_proof.proof_key;
+        self.jobs.restore_job(accepted_proof.batch_envelope).await;
+        self.release_pending_batch_with_proof_in_background(pending_proof_key);
     }
 
     fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
