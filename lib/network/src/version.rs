@@ -60,6 +60,9 @@ impl ZksProtocolVersionSpec for ZksProtocolV3 {
 
 /// Protocol version 4 keeps the replay transport from v3 but carries canonical upgrade hashes in
 /// replay records.
+///
+/// SYSCOIN: This is the v31 launch wire shape. No Syscoin production network has used the
+/// previous zks/4 replay layout, so redefine zks/4 here instead of adding a needless zks/5.
 #[derive(Debug, Clone)]
 pub struct ZksProtocolV4;
 
