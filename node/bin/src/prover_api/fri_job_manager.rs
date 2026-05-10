@@ -334,15 +334,21 @@ impl FriJobManager {
         }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(accepted_proof)) => {
-                self.restore_job_and_release_pending_batch_with_proof(accepted_proof)
-                    .await;
+                // SYSCOIN: Move cleanup into an owned task before awaiting; dropping this request
+                // future must not drop the completed job before it is restored.
+                let restore_task = self
+                    .restore_job_and_release_pending_batch_with_proof_in_background(accepted_proof);
+                let _ = restore_task.await;
                 return Err(SubmitError::Other(
                     "accepted FRI proof forwarder backpressure".to_string(),
                 ));
             }
             Err(mpsc::error::TrySendError::Closed(accepted_proof)) => {
-                self.restore_job_and_release_pending_batch_with_proof(accepted_proof)
-                    .await;
+                // SYSCOIN: Same as the backpressure path: cleanup must outlive request
+                // cancellation once the job has been completed.
+                let restore_task = self
+                    .restore_job_and_release_pending_batch_with_proof_in_background(accepted_proof);
+                let _ = restore_task.await;
                 return Err(SubmitError::ShuttingDown);
             }
         }
@@ -479,13 +485,18 @@ impl FriJobManager {
     }
 
     // SYSCOIN
-    async fn restore_job_and_release_pending_batch_with_proof(
+    fn restore_job_and_release_pending_batch_with_proof_in_background(
         &self,
         accepted_proof: AcceptedProof,
-    ) {
-        let pending_proof_key = accepted_proof.proof_key;
-        self.jobs.restore_job(accepted_proof.batch_envelope).await;
-        self.release_pending_batch_with_proof_in_background(pending_proof_key);
+    ) -> tokio::task::JoinHandle<()> {
+        let jobs = self.jobs.clone();
+        let proof_storage = self.proof_storage.clone();
+        tokio::spawn(async move {
+            jobs.restore_job(accepted_proof.batch_envelope).await;
+            proof_storage
+                .release_pending_batch_with_proof(&accepted_proof.proof_key)
+                .await;
+        })
     }
 
     fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
@@ -583,6 +594,57 @@ mod tests {
             ..ProofStorageConfig::default()
         };
         ProofStorage::new(config).await
+    }
+
+    #[tokio::test]
+    async fn cancelled_restore_handle_still_restores_fri_job() -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, _downstream_rx) = mpsc::channel(1);
+        let manager = FriJobManager::new(
+            downstream_tx,
+            proof_storage.clone(),
+            Duration::from_secs(30),
+            16,
+        );
+
+        manager.add_job(dummy_input_batch(1)).await;
+        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let pending_key = proof_storage
+            .save_pending_batch_with_proof(&stored_batch)
+            .await?;
+        let completed_job = manager
+            .jobs
+            .complete_job(1, ProverType::Real, "prover-1")
+            .await
+            .expect("job should exist")
+            .with_stage(BatchExecutionStage::FriProvedReal);
+        assert!(manager.status().await.is_empty());
+
+        let restore_handle = manager
+            .restore_job_and_release_pending_batch_with_proof_in_background(AcceptedProof {
+                batch_number: 1,
+                proof_key: pending_key.clone(),
+                batch_envelope: completed_job,
+            });
+        drop(restore_handle);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if proof_storage
+                    .get_pending_batch_with_proof(&pending_key)
+                    .await
+                    .expect("pending proof lookup should not fail")
+                    .is_none()
+                    && manager.status().await.len() == 1
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await?;
+
+        Ok(())
     }
 
     #[tokio::test]
