@@ -64,6 +64,10 @@ pub struct RpcConfig {
     // SYSCOIN: keep resource-intensive debug RPC methods off unless an operator opts in.
     pub enable_debug_namespace: bool,
 
+    // SYSCOIN: keep mempool-enumerating txpool RPC methods off on public endpoints
+    // unless an operator explicitly exposes them on a trusted interface.
+    pub enable_txpool_namespace: bool,
+
     // SYSCOIN: when this node is a Gateway sequencer, reject compact edge DA commit txs
     // before mempool admission unless every referenced Bitcoin DA blob is retrievable.
     pub edge_da_admission: Option<EdgeDaAdmissionConfig>,

@@ -803,6 +803,11 @@ pub struct RpcConfig {
     /// Keep disabled on public RPC endpoints unless access is separately restricted.
     #[config(default_t = false)]
     pub enable_debug_namespace: bool,
+
+    /// SYSCOIN: Whether to expose mempool-enumerating `txpool_*` JSON-RPC methods.
+    /// Keep disabled on public RPC endpoints unless access is separately restricted.
+    #[config(default_t = false)]
+    pub enable_txpool_namespace: bool,
 }
 
 // SYSCOIN: A disabled batcher does not start L1 settlement, so it should not force
@@ -1643,6 +1648,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             gas_price_scale_factor: c.gas_price_scale_factor,
             estimate_gas_pubdata_price_factor: c.estimate_gas_pubdata_price_factor,
             enable_debug_namespace: c.enable_debug_namespace,
+            enable_txpool_namespace: c.enable_txpool_namespace,
             edge_da_admission: None,
         }
     }
