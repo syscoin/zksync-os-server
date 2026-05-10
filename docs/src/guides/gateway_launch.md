@@ -25,6 +25,7 @@ Run from a `zksync-os-server` clone:
 cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
+export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
@@ -36,6 +37,7 @@ Mainnet:
 ```bash
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
+export PROVER_API_AUTH_PASSWORD=...
 export FUNDER_PRIVATE_KEY=0x...
 export EDGE_GATEWAY_GOVERNOR_SIGNER=account
 export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
@@ -134,6 +136,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
 | `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
+| `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; password is required for generated configs because they bind the prover API to `0.0.0.0` |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |

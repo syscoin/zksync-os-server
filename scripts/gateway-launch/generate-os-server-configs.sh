@@ -23,6 +23,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+: "${PROVER_API_AUTH_USER:=syscoin-prover}"
+: "${PROVER_API_AUTH_PASSWORD:=}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 : "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
@@ -98,6 +100,8 @@ export GATEWAY_STATUS_PORT
 export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
+export PROVER_API_AUTH_USER
+export PROVER_API_AUTH_PASSWORD
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
 export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
@@ -122,6 +126,7 @@ export PROVER_MODE
 
 python3 - <<'PY'
 from pathlib import Path
+import json
 import os
 import re
 import shutil
@@ -164,6 +169,10 @@ def write_secret_text(path: Path, text: str, mode: int = 0o600):
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def yaml_scalar(value: str) -> str:
+    return json.dumps(value)
 
 
 def parse_ether_amount_to_wei(value: str, default_wei: int) -> int:
@@ -264,6 +273,12 @@ l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
 if not l1_rpc_url:
     raise SystemExit(
         "missing gateway runtime L1 RPC URL: set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL"
+    )
+prover_api_auth_user = os.environ.get("PROVER_API_AUTH_USER", "").strip()
+prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip()
+if not prover_api_auth_user or not prover_api_auth_password:
+    raise SystemExit(
+        "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
     )
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
@@ -396,6 +411,8 @@ def materialize_chain(
             f"  address: 0.0.0.0:{rpc_port}",
             "prover_api:",
             f"  address: 0.0.0.0:{prover_api_port}",
+            f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
+            f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
             "  fake_fri_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
