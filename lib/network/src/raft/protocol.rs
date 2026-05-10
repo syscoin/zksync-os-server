@@ -27,6 +27,8 @@ const RAFT_OUTBOUND_CHANNEL_CAPACITY: usize = 64;
 
 #[derive(Debug)]
 struct PendingRequest {
+    // SYSCOIN: Keep the intended peer with the request so spoofed responses can be diagnosed.
+    peer_id: PeerId,
     connection_id: u64,
     response_tx: oneshot::Sender<Result<RaftResponse, String>>,
 }
@@ -40,8 +42,8 @@ pub trait RaftRequestHandler: Send + Sync + 'static {
 pub struct RaftRouter {
     next_request_id: Arc<AtomicU64>,
     next_connection_id: Arc<AtomicU64>,
-    // Stores (connection_id, response_sender) so that when a connection drops we can cancel
-    // all requests that were routed through it.
+    // Stores (peer_id, connection_id, response_sender) so that when a connection drops we can
+    // cancel all requests that were routed through it.
     pending: Arc<DashMap<RequestId, PendingRequest>>,
     // Vec<PeerChannel> rather than a single PeerChannel because devp2p can establish two
     // simultaneous TCP connections for the same peer when both nodes dial each other at the same
@@ -128,6 +130,7 @@ impl RaftRouter {
                     self.pending.insert(
                         id,
                         PendingRequest {
+                            peer_id,
                             connection_id: ch.connection_id,
                             response_tx: tx,
                         },
@@ -183,7 +186,29 @@ impl RaftRouter {
         }
     }
 
-    pub fn complete_response(&self, id: RequestId, resp: Result<RaftResponse, String>) {
+    // SYSCOIN: A response is valid only on the same authenticated connection that carried the
+    // request. Request IDs alone are not an authentication boundary.
+    pub fn complete_response(
+        &self,
+        id: RequestId,
+        connection_id: u64,
+        resp: Result<RaftResponse, String>,
+    ) {
+        let Some(entry) = self.pending.get(&id) else {
+            return;
+        };
+        if entry.connection_id != connection_id {
+            tracing::warn!(
+                request_id = id,
+                response_connection_id = connection_id,
+                expected_connection_id = entry.connection_id,
+                expected_peer_id = %entry.peer_id,
+                "ignoring raft response from non-request connection"
+            );
+            return;
+        }
+        drop(entry);
+
         if let Some((_, entry)) = self.pending.remove(&id) {
             let _ = entry.response_tx.send(resp);
         }
@@ -204,6 +229,23 @@ impl RaftRouter {
             }
         }
     }
+}
+
+// SYSCOIN: Bind inbound Raft sender identity to the authenticated RLPx PeerId.
+fn validate_request_peer(peer_id: PeerId, request: &RaftRequest) -> Result<(), String> {
+    let claimed_peer_id = match request {
+        RaftRequest::AppendEntries(req) => req.vote.leader_id.voted_for(),
+        RaftRequest::Vote(req) => req.vote.leader_id.voted_for(),
+        RaftRequest::InstallSnapshot(req) => req.vote.leader_id.voted_for(),
+    };
+
+    if claimed_peer_id == Some(peer_id) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "raft request claimed sender {claimed_peer_id:?}, authenticated peer is {peer_id}"
+    ))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -383,7 +425,12 @@ async fn run_raft_connection(
                         let handler = handler.clone();
                         let outbound_tx = outbound_tx.clone();
                         tokio::spawn(async move {
-                            let resp = handler.handle(req).await;
+                            // SYSCOIN: Raft NodeId is the authenticated RLPx PeerId. Reject
+                            // requests whose claimed Raft sender does not match this connection.
+                            let resp = match validate_request_peer(peer_id, &req) {
+                                Ok(()) => handler.handle(req).await,
+                                Err(error) => Err(error),
+                            };
                             let encoded = RaftWireMessage::Response { id, resp };
                             let buf = alloy::primitives::bytes::BytesMut::from(
                                 encoded.encode().as_slice(),
@@ -393,7 +440,9 @@ async fn run_raft_connection(
                     }
                     Ok(RaftWireMessage::Response { id, resp }) => {
                         tracing::debug!(%peer_id, request_id = id, "received raft response");
-                        router.complete_response(id, resp);
+                        // SYSCOIN: Bind responses to the exact connection that carried the
+                        // outbound request so another peer cannot satisfy guessed request IDs.
+                        router.complete_response(id, connection_id, resp);
                     }
                     Err(error) => {
                         let preview_len = bytes.len().min(64);
@@ -422,5 +471,74 @@ async fn run_raft_connection(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RaftRequest, RaftRouter, RaftWireMessage, validate_request_peer};
+    use alloy::primitives::b512;
+    use openraft::raft::VoteRequest;
+    use reth_network_peers::PeerId;
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    fn peer_id(byte: u8) -> PeerId {
+        PeerId::repeat_byte(byte)
+    }
+
+    fn vote_request(claimed_peer_id: PeerId) -> RaftRequest {
+        RaftRequest::Vote(VoteRequest::new(
+            openraft::Vote::new(1, claimed_peer_id),
+            None,
+        ))
+    }
+
+    #[test]
+    fn raft_request_sender_must_match_authenticated_peer() {
+        let authenticated_peer_id = b512!(
+            "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+        );
+        let other_peer_id = b512!(
+            "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002"
+        );
+
+        assert!(
+            validate_request_peer(authenticated_peer_id, &vote_request(authenticated_peer_id))
+                .is_ok()
+        );
+        assert!(
+            validate_request_peer(authenticated_peer_id, &vote_request(other_peer_id)).is_err()
+        );
+    }
+
+    #[test]
+    fn raft_response_must_arrive_on_request_connection() {
+        let router = RaftRouter::default();
+        let peer1 = peer_id(0x11);
+        let peer2 = peer_id(0x22);
+        let (peer1_tx, mut peer1_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (peer2_tx, _peer2_rx) = tokio::sync::mpsc::unbounded_channel();
+        let peer1_connection_id = router.register_peer(peer1, peer1_tx);
+        let peer2_connection_id = router.register_peer(peer2, peer2_tx);
+
+        let mut response_rx = router
+            .send_request(peer1, vote_request(peer1))
+            .expect("peer1 is connected");
+        let sent = peer1_rx.try_recv().expect("request sent to peer1");
+        let RaftWireMessage::Request { id, .. } = sent else {
+            panic!("expected raft request");
+        };
+
+        router.complete_response(id, peer2_connection_id, Err("spoofed".to_string()));
+        assert!(matches!(response_rx.try_recv(), Err(TryRecvError::Empty)));
+
+        router.complete_response(id, peer1_connection_id, Err("legitimate".to_string()));
+        assert_eq!(
+            response_rx
+                .try_recv()
+                .expect("response delivered")
+                .expect_err("test sends an error response"),
+            "legitimate"
+        );
     }
 }
