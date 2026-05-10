@@ -43,7 +43,15 @@ if [[ "${ACTUAL_NESTED_SHA}" != "${EXPECTED_NESTED_SHA}" ]]; then
   exit 1
 fi
 
-base_patch_applied() {
+deploy_ctm_path() {
+  if [[ -f "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol" ]]; then
+    printf '%s\n' "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol"
+  else
+    printf '%s\n' "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/DeployCTM.s.sol"
+  fi
+}
+
+base_patch_core_applied() {
   grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
@@ -52,12 +60,41 @@ base_patch_applied() {
   && grep -q "return (create2FactoryAddr, create2FactorySalt);" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/utils/deploy/Create2FactoryUtils.s.sol"
 }
 
+syscoin_verifier_version_pinned() {
+  grep -q "DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7" "$(deploy_ctm_path)"
+}
+
+base_patch_applied() {
+  base_patch_core_applied && syscoin_verifier_version_pinned
+}
+
 da_limits_patch_applied() {
   grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/CalldataDA.sol" \
   && grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/DAUtils.sol" \
   && grep -q "uint256 constant MAX_NUMBER_OF_BLOBS = 32;" "${CONTRACTS_PATH}/system-contracts/contracts/Constants.sol" \
   && grep -q "uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 32;" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol"
 }
+
+if base_patch_core_applied && ! syscoin_verifier_version_pinned; then
+  echo "Updating already-applied era-contracts Syscoin patch to register the V7 verifier slot..."
+  python3 - "$(deploy_ctm_path)" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;"
+new = (
+    "// SYSCOIN: fresh v31+ deployments use the patched V7 ZKsync OS verification key.\n"
+    "uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;"
+)
+if new in text:
+    raise SystemExit(0)
+if old not in text:
+    raise SystemExit("unable to update DEFAULT_ZKSYNC_OS_VERIFIER_VERSION to 7")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+fi
 
 # Marker-based idempotency check: if these patch-introduced strings exist, skip.
 if base_patch_applied && da_limits_patch_applied; then

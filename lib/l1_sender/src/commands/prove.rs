@@ -79,6 +79,25 @@ impl Display for ProofCommand {
 }
 
 impl ProofCommand {
+    fn verifier_version_for_proving_execution_version(
+        proving_execution_version: Option<u32>,
+    ) -> u32 {
+        match proving_execution_version {
+            // Use default verifier for fake proofs.
+            None => 0,
+            Some(4) => 4,
+            Some(5) => 5,
+            Some(6) => 6,
+            // SYSCOIN: the fork starts v31+ on the V7 proving key, so route real
+            // V7 proofs through the explicit V7 verifier slot instead of relying
+            // on mutable default slot 0.
+            Some(7) => 7,
+            Some(execution_version) => panic!(
+                "unsupported or old execution version: {execution_version}; there's no verifier defined for it"
+            ),
+        }
+    }
+
     fn shift_b256_right(input: &B256) -> B256 {
         let mut bytes = [0_u8; 32];
         bytes[4..32].copy_from_slice(&input.as_slice()[0..28]);
@@ -138,18 +157,9 @@ impl ProofCommand {
             .map(|batch| batch.batch.batch_info.clone().into_stored())
             .collect();
         // todo: awful and temporary
-        let verifier_version = match self.proof.proving_execution_version() {
-            // Use default verifier for fake proofs.
-            None => 0,
-            Some(4) => 4,
-            Some(5) => 5,
-            Some(6) => 6,
-            // SYSCOIN: route V7 proofs through verifier slot 0 to match current gateway deployment.
-            Some(7) => 0,
-            Some(execution_version) => panic!(
-                "unsupported or old execution version: {execution_version}; there's no verifier defined for it"
-            ),
-        };
+        let verifier_version = Self::verifier_version_for_proving_execution_version(
+            self.proof.proving_execution_version(),
+        );
 
         // todo: remove tostring
         let public_input = Self::snark_public_input(previous_batch_info, &stored_batch_infos);
@@ -207,5 +217,27 @@ impl ProofCommand {
         let mut proof_data = vec![SUPPORTED_ENCODING_VERSION];
         proof_payload.abi_encode_raw(&mut proof_data);
         proof_data
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OHBENDER_PROOF_TYPE, ProofCommand};
+
+    #[test]
+    fn v7_proofs_use_explicit_v7_verifier_slot() {
+        let verifier_version =
+            ProofCommand::verifier_version_for_proving_execution_version(Some(7));
+
+        assert_eq!(verifier_version, 7);
+        assert_eq!(OHBENDER_PROOF_TYPE | (verifier_version << 8), 0x702);
+    }
+
+    #[test]
+    fn fake_proofs_keep_default_verifier_slot() {
+        assert_eq!(
+            ProofCommand::verifier_version_for_proving_execution_version(None),
+            0
+        );
     }
 }
