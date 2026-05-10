@@ -122,7 +122,7 @@ impl ProofStorage {
             .batches_with_proof
             .lock()
             .await
-            .store_best_effort_protected(&key, batch, &protected_keys)
+            .store_protected(&key, batch, &protected_keys)
             .await;
         latency.observe();
         let usage = result?;
@@ -556,16 +556,6 @@ impl BoundedFileStorage {
     }
 
     // SYSCOIN
-    async fn store_best_effort_protected<T: Serialize>(
-        &mut self,
-        key: &str,
-        value: &T,
-        protected_keys: &HashSet<String>,
-    ) -> anyhow::Result<u64> {
-        self.store_internal(key, value, protected_keys, false).await
-    }
-
-    // SYSCOIN
     async fn store_protected<T: Serialize>(
         &mut self,
         key: &str,
@@ -943,27 +933,6 @@ mod tests {
 
         assert_eq!(storage.load::<String>("batch").await?, Some(old_value));
         assert_eq!(storage.load::<String>("other").await?, Some(other_value));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_best_effort_store_preserves_protected_existing_entry() -> anyhow::Result<()> {
-        const LIMIT: u64 = 700;
-        let dir = TempDir::new()?;
-        let path = dir.path().to_owned();
-        let mut storage = BoundedFileStorage::new(path, LIMIT).await?;
-
-        let old_value = "old".repeat(50);
-        let replacement = "replacement".repeat(50);
-        storage.store("batch", &old_value).await?;
-
-        let protected_keys = HashSet::from(["batch".to_string()]);
-        storage
-            .store_best_effort_protected("batch", &replacement, &protected_keys)
-            .await?;
-
-        assert_eq!(storage.load::<String>("batch").await?, Some(old_value));
 
         Ok(())
     }
