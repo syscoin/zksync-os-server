@@ -24,6 +24,10 @@ pub struct RpcConfig {
     /// Number of concurrent API connections (passed to jsonrpsee, default value there is 128)
     pub max_connections: u32,
 
+    // SYSCOIN: cap resource-heavy blocking JSON-RPC handlers independently from
+    // the connection limit so public endpoints cannot fan out unlimited VM/state work.
+    pub max_concurrent_blocking_rpcs: u32,
+
     /// Maximum number of active subscriptions accepted per websocket connection.
     pub max_subscriptions_per_connection: u32,
 
