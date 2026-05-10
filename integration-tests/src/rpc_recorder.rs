@@ -685,8 +685,11 @@ impl HttpRpcSampleStatus {
 }
 
 fn short_hash(hash: &str) -> &str {
-    let len = if hash.starts_with("0x") { 7 } else { 5 };
-    &hash[..hash.len().min(len)]
+    // SYSCOIN: Keep malformed recorder data from panicking timeline formatting.
+    let max_chars = if hash.starts_with("0x") { 7 } else { 5 };
+    hash.char_indices()
+        .nth(max_chars)
+        .map_or(hash, |(idx, _)| &hash[..idx])
 }
 
 fn format_elapsed(duration: Duration) -> String {
@@ -839,10 +842,23 @@ fn decode_rpc_batch_response(body: &str) -> Result<(String, u64, String), HttpRp
             .get("hash")
             .and_then(Value::as_str)
             .context("eth_getBlockByNumber response did not contain a string hash"),
-    )?
-    .to_owned();
+    )?;
+    // SYSCOIN: Treat malformed JSON-RPC block hashes as invalid before the recorder marks RPC ready.
+    if !is_canonical_block_hash(latest_block_hash) {
+        return Err(HttpRpcSampleStatus::InvalidResponse {
+            message: format!("invalid eth_getBlockByNumber hash: {latest_block_hash}"),
+        });
+    }
 
-    Ok((chain_id, block_number, latest_block_hash))
+    Ok((chain_id, block_number, latest_block_hash.to_owned()))
+}
+
+fn is_canonical_block_hash(hash: &str) -> bool {
+    hash.len() == 66
+        && hash.starts_with("0x")
+        && hash.as_bytes()[2..]
+            .iter()
+            .all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn decode_rpc_result(responses: &[Value], id: u64) -> Result<&Value, HttpRpcSampleStatus> {
@@ -864,4 +880,56 @@ fn decode_rpc_result(responses: &[Value], id: u64) -> Result<&Value, HttpRpcSamp
             .get("result")
             .with_context(|| format!("missing JSON-RPC result for id={id}")),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rpc_batch_response_with_hash(hash: &str) -> String {
+        json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": "0x1"
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": "0x2"
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "hash": hash
+                }
+            }
+        ])
+        .to_string()
+    }
+
+    #[test]
+    fn decode_rpc_batch_response_rejects_non_ascii_hash() {
+        let err = decode_rpc_batch_response(&rpc_batch_response_with_hash("ab😀"))
+            .expect_err("non-canonical block hash should be rejected");
+
+        assert!(matches!(err, HttpRpcSampleStatus::InvalidResponse { .. }));
+    }
+
+    #[test]
+    fn decode_rpc_batch_response_accepts_canonical_hash() {
+        let hash = format!("0x{}", "a".repeat(64));
+
+        let (_, _, decoded_hash) = decode_rpc_batch_response(&rpc_batch_response_with_hash(&hash))
+            .expect("canonical block hash should be accepted");
+
+        assert_eq!(decoded_hash, hash);
+    }
+
+    #[test]
+    fn short_hash_is_utf8_boundary_safe() {
+        assert_eq!(short_hash("ab😀"), "ab😀");
+        assert_eq!(short_hash("0xabcdef"), "0xabcd");
+    }
 }
