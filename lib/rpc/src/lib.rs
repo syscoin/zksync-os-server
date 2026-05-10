@@ -4,7 +4,7 @@ mod config;
 
 pub use config::{EdgeDaAdmissionConfig, RpcConfig};
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 mod eth_call_handler;
 pub use eth_call_handler::EthCallHandler;
@@ -147,14 +147,16 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let middleware = tower::ServiceBuilder::new().layer(cors);
 
     let max_response_size_bytes = config.max_response_size_bytes();
-    // SYSCOIN: pass the heavy blocking RPC budget into middleware separately from jsonrpsee's
-    // connection limit.
-    let max_concurrent_blocking_rpcs = config.max_concurrent_blocking_rpcs;
+    // SYSCOIN: create one process-wide heavy blocking RPC budget outside
+    // `layer_fn`, which jsonrpsee runs per connection.
+    let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
+        config.max_concurrent_blocking_rpcs.max(1) as usize,
+    ));
     let rpc_middleware = RpcServiceBuilder::new().layer_fn(move |service| {
         Monitoring::new(
             service,
             max_response_size_bytes,
-            max_concurrent_blocking_rpcs,
+            blocking_rpcs_semaphore.clone(),
         )
     });
 

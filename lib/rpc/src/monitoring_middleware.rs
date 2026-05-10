@@ -138,16 +138,12 @@ impl Monitoring {
     pub fn new(
         inner: RpcService,
         max_response_size_bytes: u32,
-        max_concurrent_blocking_rpcs: u32,
+        blocking_rpcs_semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
             inner,
             max_response_size_bytes: max_response_size_bytes as usize,
-            // SYSCOIN: keep at least one permit if the value is misconfigured to 0;
-            // a zero-permit semaphore would make heavy RPCs wait forever.
-            blocking_rpcs_semaphore: Arc::new(Semaphore::new(
-                max_concurrent_blocking_rpcs.max(1) as usize
-            )),
+            blocking_rpcs_semaphore,
         }
     }
 }
