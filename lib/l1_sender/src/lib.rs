@@ -1015,7 +1015,7 @@ where
                     );
                 }
             }
-            next_liveness_poll_at = Some(liveness_poll_at + tx_liveness_poll_interval);
+            next_liveness_poll_at = Some(started_at.elapsed() + tx_liveness_poll_interval);
         }
 
         // SYSCOIN: delayed L1 inclusion is an operational condition, not a fatal sender error.
