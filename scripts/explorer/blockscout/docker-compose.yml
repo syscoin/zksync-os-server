@@ -124,7 +124,8 @@ services:
       NETWORK_ICON_FILE: ${NETWORK_ICON_FILE}
       NETWORK_ICON_DARK_FILE: ${NETWORK_ICON_DARK_FILE}
     ports:
-      - "${HOST_PORT}:80"
+      # SYSCOIN: TLS terminates at the host reverse proxy; keep Blockscout HTTP off public interfaces.
+      - "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT}:80"
     volumes:
       - ./proxy/explorer.conf.template:/etc/nginx/templates/default.conf.template:ro
       - ./proxy/assets:/usr/share/nginx/html/assets:ro
