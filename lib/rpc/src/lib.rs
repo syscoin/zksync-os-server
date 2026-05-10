@@ -125,7 +125,11 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     if config.enable_debug_namespace {
         rpc.merge(DebugNamespace::new(storage.clone(), eth_call_handler).into_rpc())?;
     }
-    rpc.merge(TxpoolNamespace::new(mempool.clone()).into_rpc())?;
+    // SYSCOIN: txpool_content and txpool_inspect enumerate all pending/queued
+    // mempool entries, so expose them only on trusted/operator RPC endpoints.
+    if config.enable_txpool_namespace {
+        rpc.merge(TxpoolNamespace::new(mempool.clone()).into_rpc())?;
+    }
     rpc.merge(NetNamespace::new(chain_id).into_rpc())?;
     rpc.merge(Web3Namespace.into_rpc())?;
     rpc.merge(UnstableNamespace::new(storage).into_rpc())?;
