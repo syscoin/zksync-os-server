@@ -748,6 +748,10 @@ pub struct RpcConfig {
     #[config(default_t = 1000)]
     pub max_connections: u32,
 
+    /// SYSCOIN: Maximum number of concurrent resource-heavy blocking RPC executions.
+    #[config(default_t = 128)]
+    pub max_concurrent_blocking_rpcs: u32,
+
     /// Maximum number of active subscriptions accepted per websocket connection.
     #[config(default_t = 32)]
     pub max_subscriptions_per_connection: u32,
@@ -1636,6 +1640,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             address: c.address,
             eth_call_gas: c.eth_call_gas,
             max_connections: c.max_connections,
+            max_concurrent_blocking_rpcs: c.max_concurrent_blocking_rpcs,
             max_subscriptions_per_connection: c.max_subscriptions_per_connection,
             max_request_size: c.max_request_size,
             max_response_size: c.max_response_size,

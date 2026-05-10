@@ -7,7 +7,9 @@ use jsonrpsee::types::Request;
 use jsonrpsee::{BatchResponseBuilder, MethodResponse};
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const UNKNOWN_METHOD_LABEL: &str = "unknown";
 
@@ -129,15 +131,52 @@ pub enum CallKind {
 pub struct Monitoring {
     inner: RpcService,
     max_response_size_bytes: usize,
+    blocking_rpcs_semaphore: Arc<Semaphore>,
 }
 
 impl Monitoring {
-    pub fn new(inner: RpcService, max_response_size_bytes: u32) -> Self {
+    pub fn new(
+        inner: RpcService,
+        max_response_size_bytes: u32,
+        max_concurrent_blocking_rpcs: u32,
+    ) -> Self {
         Self {
             inner,
             max_response_size_bytes: max_response_size_bytes as usize,
+            // SYSCOIN: keep at least one permit if the value is misconfigured to 0;
+            // a zero-permit semaphore would make heavy RPCs wait forever.
+            blocking_rpcs_semaphore: Arc::new(Semaphore::new(
+                max_concurrent_blocking_rpcs.max(1) as usize
+            )),
         }
     }
+}
+
+// SYSCOIN: jsonrpsee runs `blocking` methods on Tokio's blocking pool. Gate the
+// expensive public methods before dispatch so connection count does not become
+// an implicit heavy-work concurrency limit.
+fn is_heavy_rpc_method(method: &str) -> bool {
+    matches!(
+        method,
+        "debug_traceBlockByHash"
+            | "debug_traceBlockByNumber"
+            | "debug_traceCall"
+            | "debug_traceTransaction"
+            | "eth_call"
+            | "eth_estimateGas"
+            | "eth_feeHistory"
+            | "eth_getBlockReceipts"
+            | "eth_getFilterChanges"
+            | "eth_getFilterLogs"
+            | "eth_getLogs"
+            | "ots_getBlockDetails"
+            | "ots_getBlockDetailsByHash"
+            | "ots_getBlockTransactions"
+            | "ots_searchTransactionsAfter"
+            | "ots_searchTransactionsBefore"
+            | "unstable_getLocalRoot"
+            | "zks_getProof"
+    )
 }
 
 /// Ensures latency is recorded even if the future is dropped mid-flight (client disconnected).
@@ -277,10 +316,27 @@ impl RpcServiceT for Monitoring {
         let method = normalize_method_label(request.method_name());
         let request_size = request.params.as_ref().map_or(0, |p| p.get().len());
         let inner = self.inner.clone();
+        let blocking_rpcs_semaphore = self.blocking_rpcs_semaphore.clone();
 
         async move {
             let id = request.id.clone().into_owned();
-            let handler = RPC_TASK_MONITOR.instrument(async move { inner.call(request).await });
+            let handler_error_id = id.clone();
+            let handler = RPC_TASK_MONITOR.instrument(async move {
+                let _permit: Option<OwnedSemaphorePermit> = if is_heavy_rpc_method(method) {
+                    match blocking_rpcs_semaphore.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        Err(_) => {
+                            return MethodResponse::error(
+                                handler_error_id,
+                                internal_rpc_err("Internal error"),
+                            );
+                        }
+                    }
+                } else {
+                    None
+                };
+                inner.call(request).await
+            });
             let on_panic = || MethodResponse::error(id, internal_rpc_err("Internal error"));
             CallGuard::new(CallKind::Call, method, request_size)
                 .handle_result(handler, on_panic)
@@ -374,7 +430,7 @@ impl RpcServiceT for Monitoring {
 
 #[cfg(test)]
 mod tests {
-    use super::{UNKNOWN_METHOD_LABEL, normalize_method_label};
+    use super::{UNKNOWN_METHOD_LABEL, is_heavy_rpc_method, normalize_method_label};
 
     #[test]
     fn known_methods_keep_specific_labels() {
@@ -399,5 +455,17 @@ mod tests {
             normalize_method_label(&"attacker_unique_2".repeat(1024)),
             UNKNOWN_METHOD_LABEL
         );
+    }
+
+    #[test]
+    fn heavy_methods_are_gated() {
+        assert!(is_heavy_rpc_method("eth_call"));
+        assert!(is_heavy_rpc_method("eth_estimateGas"));
+        assert!(is_heavy_rpc_method("eth_getLogs"));
+        assert!(is_heavy_rpc_method("debug_traceTransaction"));
+        assert!(is_heavy_rpc_method("zks_getProof"));
+        assert!(is_heavy_rpc_method("unstable_getLocalRoot"));
+        assert!(!is_heavy_rpc_method("eth_blockNumber"));
+        assert!(!is_heavy_rpc_method(UNKNOWN_METHOD_LABEL));
     }
 }

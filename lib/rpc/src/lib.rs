@@ -147,8 +147,16 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let middleware = tower::ServiceBuilder::new().layer(cors);
 
     let max_response_size_bytes = config.max_response_size_bytes();
-    let rpc_middleware = RpcServiceBuilder::new()
-        .layer_fn(move |service| Monitoring::new(service, max_response_size_bytes));
+    // SYSCOIN: pass the heavy blocking RPC budget into middleware separately from jsonrpsee's
+    // connection limit.
+    let max_concurrent_blocking_rpcs = config.max_concurrent_blocking_rpcs;
+    let rpc_middleware = RpcServiceBuilder::new().layer_fn(move |service| {
+        Monitoring::new(
+            service,
+            max_response_size_bytes,
+            max_concurrent_blocking_rpcs,
+        )
+    });
 
     let server_config = ServerConfigBuilder::default()
         .max_connections(config.max_connections)
