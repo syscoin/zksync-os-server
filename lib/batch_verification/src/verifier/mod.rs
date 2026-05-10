@@ -1,8 +1,7 @@
 use crate::config::SyscoinDaVerificationConfig;
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::{VerificationRequest, normalized_commit_data};
-use alloy::eips::BlockId;
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::{Address, B256, keccak256};
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
@@ -12,7 +11,7 @@ use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::{
     BatchSignature, ExtendedCommitBatchInfo, SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
-    expected_upgrade_tx_hash_for_batch, syscoin_edge_da_refs_from_input,
+    syscoin_edge_da_refs_from_input,
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::DACommitmentScheme;
@@ -56,6 +55,12 @@ enum BatchVerificationError {
     BatchBuild(String),
     #[error("State error: {0}")]
     State(#[from] StateError),
+    // SYSCOIN
+    #[error("Conflicting canonical upgrade tx hashes in requested batch")]
+    ConflictingCanonicalUpgradeTxHashes,
+    // SYSCOIN
+    #[error("Missing canonical upgrade tx hash in requested upgrade batch")]
+    MissingCanonicalUpgradeTxHash,
     // SYSCOIN
     #[error("Missing Syscoin DA verification config")]
     MissingSyscoinDaVerificationConfig,
@@ -144,32 +149,11 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let state_view = self.read_state.state_view_at(request.last_block_number)?;
         let multichain_root = read_multichain_root(state_view);
-        let latest = BlockId::latest();
-        let upgrade_batch_number = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_batch_number(latest)
-            .await
-            .unwrap_or(0);
-        let upgrade_tx_hash = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_tx_hash(latest)
-            .await
-            .ok()
-            .filter(|hash| !hash.is_zero());
-        let last_committed_batch = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_total_batches_committed(latest)
-            .await
-            .unwrap_or(self.l1_state.last_committed_batch);
-        let expected_upgrade_tx_hash = expected_upgrade_tx_hash_for_batch(
-            request.batch_number,
-            last_committed_batch,
-            upgrade_batch_number,
-            upgrade_tx_hash,
-        );
+        // SYSCOIN: Keep verifier request handling free of settlement-layer RPCs.
+        // The canonical upgrade hash is part of the replay records that produced
+        // these cached blocks, so request handling can validate against that
+        // already-local data instead of calling the settlement layer.
+        let expected_upgrade_tx_hash = Self::expected_upgrade_tx_hash_from_replay_records(&blocks)?;
 
         let (batch_info, _) = ExtendedCommitBatchInfo::build(
             blocks
@@ -193,6 +177,9 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             Some(self.l1_state.validator_timelock_sl),
         )
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
+        if batch_info.upgrade_tx_hash.is_some() && expected_upgrade_tx_hash.is_none() {
+            return Err(BatchVerificationError::MissingCanonicalUpgradeTxHash);
+        }
 
         let expected_commit_data = normalized_commit_data(
             batch_info.commit_info.clone(),
@@ -216,6 +203,27 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         .await;
 
         Ok(signature)
+    }
+
+    // SYSCOIN
+    fn expected_upgrade_tx_hash_from_replay_records(
+        blocks: &[(&BlockOutput, &ReplayRecord, TreeBatchOutput)],
+    ) -> Result<Option<B256>, BatchVerificationError> {
+        let mut expected_upgrade_tx_hash = None;
+        for (_, replay_record, _) in blocks {
+            let canonical_upgrade_tx_hash = replay_record.canonical_upgrade_tx_hash;
+            if canonical_upgrade_tx_hash.is_zero() {
+                continue;
+            }
+            match expected_upgrade_tx_hash {
+                Some(existing) if existing != canonical_upgrade_tx_hash => {
+                    return Err(BatchVerificationError::ConflictingCanonicalUpgradeTxHashes);
+                }
+                Some(_) => {}
+                None => expected_upgrade_tx_hash = Some(canonical_upgrade_tx_hash),
+            }
+        }
+        Ok(expected_upgrade_tx_hash)
     }
 
     // SYSCOIN: batch-verifier signatures should not attest to a Syscoin DA batch
