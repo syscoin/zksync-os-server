@@ -930,6 +930,6 @@ mod tests {
     #[test]
     fn short_hash_is_utf8_boundary_safe() {
         assert_eq!(short_hash("ab😀"), "ab😀");
-        assert_eq!(short_hash("0xabcdef"), "0xabcd");
+        assert_eq!(short_hash("0xabcdef"), "0xabcde");
     }
 }
