@@ -48,6 +48,7 @@ pub struct L1UpgradeTxWatcher {
     provider_sl: DynProvider,
     zk_chain_sl: ZkChain<DynProvider>,
     bridgehub_l1: Address,
+    bridgehub_sl: Address,
     /// Address of the bytecode supplier contract on L1 (used to scan EVMBytecodePublished events)
     bytecode_supplier_address: Address,
     /// Address of the CTM contract on L1 (used to resolve the canonical bytecode supplier)
@@ -64,6 +65,7 @@ pub struct L1UpgradeTxWatcher {
 struct UpgradeCutDataLog {
     log: Log,
     provider: DynProvider,
+    bridgehub: Address,
 }
 
 impl L1UpgradeTxWatcher {
@@ -72,6 +74,7 @@ impl L1UpgradeTxWatcher {
         config: L1WatcherConfig,
         l2_chain_id: ChainId,
         bridgehub_l1: Bridgehub<DynProvider>,
+        bridgehub_sl: Bridgehub<DynProvider>,
         zk_chain_l1: ZkChain<DynProvider>,
         zk_chain_sl: ZkChain<DynProvider>,
         bytecode_supplier_address: Address,
@@ -130,6 +133,7 @@ impl L1UpgradeTxWatcher {
             provider_sl: zk_chain_sl.provider().clone(),
             zk_chain_sl,
             bridgehub_l1: *bridgehub_l1.address(),
+            bridgehub_sl: *bridgehub_sl.address(),
             bytecode_supplier_address,
             ctm_l1,
             ctm_sl,
@@ -168,11 +172,11 @@ impl L1UpgradeTxWatcher {
         } else {
             // `NewUpgradeCutData` carries a placeholder `additionalForceDeploymentsData`
             // (`""`) that `upgradeChainFromVersion` rewrites per-chain when the
-            // diamond-cut init runs on L1 — see
+            // diamond-cut init runs on the owning settlement layer — see
             // `SettlementLayerV31UpgradeBase.upgrade()` which replaces
             // `l2ProtocolUpgradeTx.data` via `getL2UpgradeTxData(bridgehub, chainId, existingTxData)`.
             // Call that same function off-chain so the tx we inject into the
-            // mempool matches what L1 actually wrote into the priority queue.
+            // mempool matches what the settlement layer actually wrote into the priority queue.
             //
             // Route through the upgrade facet's deployed address, which is
             // `diamond_cut_data.initAddress`. Only "method missing" reverts (pre-v31
@@ -183,14 +187,14 @@ impl L1UpgradeTxWatcher {
             // a tx whose hash diverges from what L1 wrote into the priority queue.
             let upgrade_init_address = diamond_cut_data.initAddress;
             let original_tx_data = proposed_upgrade.l2ProtocolUpgradeTx.data.clone();
-            // SYSCOIN: the cut data can be owned by the Gateway CTM, in which case the init
-            // contract is deployed on the settlement layer rather than L1.
+            // SYSCOIN: the cut data can be owned by the Gateway CTM, in which case both the
+            // init contract and Bridgehub address must be from the settlement layer rather than L1.
             match ISettlementLayerV31UpgradeInstance::new(
                 upgrade_init_address,
                 upgrade_cut_data.provider.clone(),
             )
             .getL2UpgradeTxData(
-                self.bridgehub_l1,
+                upgrade_cut_data.bridgehub,
                 U256::from(self.l2_chain_id),
                 true,
                 original_tx_data,
@@ -201,7 +205,7 @@ impl L1UpgradeTxWatcher {
                 Ok(rewritten) => {
                     tracing::info!(
                         init_address = ?upgrade_init_address,
-                        bridgehub = ?self.bridgehub_l1,
+                        bridgehub = ?upgrade_cut_data.bridgehub,
                         l2_chain_id = self.l2_chain_id,
                         rewritten_len = rewritten.len(),
                         "rewrote L2 upgrade tx data via getL2UpgradeTxData"
@@ -277,17 +281,18 @@ impl L1UpgradeTxWatcher {
         };
 
         let target = match (l1_block, sl_block) {
-            (Some(b), _) if b != 0 => Some((&self.provider_l1, self.ctm_l1, b)),
-            (_, Some(b)) if b != 0 => Some((&self.provider_sl, self.ctm_sl, b)),
+            (Some(b), _) if b != 0 => Some((&self.provider_l1, self.ctm_l1, self.bridgehub_l1, b)),
+            (_, Some(b)) if b != 0 => Some((&self.provider_sl, self.ctm_sl, self.bridgehub_sl, b)),
             _ => None,
         };
 
-        if let Some((provider, ctm_address, block)) = target {
+        if let Some((provider, ctm_address, bridgehub, block)) = target {
             let log = fetch_upgrade_cut_log_at(provider, ctm_address, raw_protocol_version, block)
                 .await?;
             return Ok(UpgradeCutDataLog {
                 log,
                 provider: provider.clone(),
+                bridgehub,
             });
         }
 
@@ -337,6 +342,7 @@ impl L1UpgradeTxWatcher {
         Ok(UpgradeCutDataLog {
             log: upgrade_cut_data_logs.pop().unwrap(),
             provider: self.provider_sl.clone(),
+            bridgehub: self.bridgehub_sl,
         })
     }
 
