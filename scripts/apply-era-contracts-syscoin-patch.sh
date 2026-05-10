@@ -100,10 +100,6 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 }
 
-if base_patch_core_applied && ! syscoin_verifier_version_pinned; then
-  pin_syscoin_verifier_version
-fi
-
 # Marker-based idempotency check: if these patch-introduced strings exist, skip.
 if base_patch_applied && da_limits_patch_applied; then
   echo "era-contracts syscoin patch appears already applied; skipping."
@@ -114,6 +110,15 @@ if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
   echo "error: ${CONTRACTS_PATH} has uncommitted changes; aborting patch apply" >&2
   git -C "${CONTRACTS_PATH}" status --porcelain >&2
   exit 1
+fi
+
+if base_patch_core_applied && ! syscoin_verifier_version_pinned; then
+  pin_syscoin_verifier_version
+fi
+
+if base_patch_applied && da_limits_patch_applied; then
+  echo "era-contracts syscoin patch appears already applied; skipping."
+  exit 0
 fi
 
 if base_patch_applied && ! da_limits_patch_applied; then
