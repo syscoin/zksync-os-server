@@ -28,6 +28,17 @@ pub struct L1SenderConfig<Input> {
     /// logs every time this interval elapses.
     pub transaction_timeout: Duration,
 
+    /// SYSCOIN: how often to poll the settlement-layer mempool while waiting for a receipt.
+    ///
+    /// This detects transactions accepted by the RPC and later dropped or permanently rejected
+    /// before the longer warning interval elapses.
+    pub tx_liveness_poll_interval: Duration,
+
+    /// SYSCOIN: consecutive missing mempool polls required before treating a tx as dropped.
+    ///
+    /// A value of `0` disables the dropped-tx liveness check.
+    pub tx_liveness_max_missing_polls: u32,
+
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 

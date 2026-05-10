@@ -200,6 +200,8 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                         REQUIRED_CONFIRMATIONS_L1
                     },
                     config.transaction_timeout,
+                    config.tx_liveness_poll_interval,
+                    config.tx_liveness_max_missing_polls,
                 )
                 .boxed();
                 // SYSCOIN: recovered in-flight txs have no raw signed payload; if they disappear,
@@ -438,6 +440,8 @@ where
             REQUIRED_CONFIRMATIONS_L1
         },
         config.transaction_timeout,
+        config.tx_liveness_poll_interval,
+        config.tx_liveness_max_missing_polls,
     )
     .boxed();
     tracing::info!(
@@ -629,6 +633,8 @@ where
                         tx_hash,
                         required_confirmations,
                         transaction_timeout,
+                        config.tx_liveness_poll_interval,
+                        config.tx_liveness_max_missing_polls,
                     )
                     .boxed();
                     submitted_at = Instant::now();
@@ -922,12 +928,18 @@ async fn wait_for_confirmed_receipt<P>(
     tx_hash: B256,
     required_confirmations: u64,
     timeout: std::time::Duration,
+    tx_liveness_poll_interval: std::time::Duration,
+    tx_liveness_max_missing_polls: u32,
 ) -> anyhow::Result<ReceiptWaitOutcome>
 where
     P: Provider<Ethereum>,
 {
     let started_at = Instant::now();
     let poll_interval = provider.client().poll_interval();
+    let liveness_enabled =
+        tx_liveness_max_missing_polls > 0 && !tx_liveness_poll_interval.is_zero();
+    let mut next_liveness_poll_at = liveness_enabled.then_some(tx_liveness_poll_interval);
+    let mut consecutive_missing_polls: u32 = 0;
     let mut next_warning_at = if timeout.is_zero() {
         None
     } else {
@@ -961,36 +973,57 @@ where
             if latest_block >= confirmed_at {
                 return Ok(ReceiptWaitOutcome::Confirmed(receipt.clone()));
             }
+            consecutive_missing_polls = 0;
         }
 
         let elapsed = started_at.elapsed();
         let receipt_block_number = receipt.as_ref().and_then(|receipt| receipt.block_number);
         let confirmed_at =
             receipt_block_number.map(|block| block + required_confirmations.saturating_sub(1));
+        // SYSCOIN: check dropped-tx liveness on a shorter cadence than the warning interval.
+        // Missing consecutive by-hash polls mean the tx was accepted then purged/rejected, so the
+        // caller should recover instead of stalling until `transaction_timeout`.
+        if receipt.is_none()
+            && let Some(liveness_poll_at) = next_liveness_poll_at
+            && elapsed >= liveness_poll_at
+        {
+            match provider.get_transaction_by_hash(tx_hash).await {
+                Ok(None) => {
+                    consecutive_missing_polls = consecutive_missing_polls.saturating_add(1);
+                    tracing::warn!(
+                        ?tx_hash,
+                        consecutive_missing_polls,
+                        tx_liveness_max_missing_polls,
+                        "L1 transaction is not visible by hash while waiting for confirmation"
+                    );
+                    if consecutive_missing_polls >= tx_liveness_max_missing_polls {
+                        tracing::warn!(
+                            ?tx_hash,
+                            consecutive_missing_polls,
+                            "L1 transaction stayed missing by hash; treating it as dropped"
+                        );
+                        return Ok(ReceiptWaitOutcome::Dropped);
+                    }
+                }
+                Ok(Some(_)) => {
+                    consecutive_missing_polls = 0;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to check whether L1 transaction {tx_hash} is still visible \
+                         while waiting for confirmation: {err}"
+                    );
+                }
+            }
+            next_liveness_poll_at = Some(liveness_poll_at + tx_liveness_poll_interval);
+        }
+
         // SYSCOIN: delayed L1 inclusion is an operational condition, not a fatal sender error.
         // Keep waiting for the nonce-bearing transaction so congestion/censorship cannot crash
         // the main node; use `transaction_timeout` only as the repeated warning interval.
         if let Some(warning_at) = next_warning_at
             && elapsed >= warning_at
         {
-            if receipt.is_none() {
-                match provider.get_transaction_by_hash(tx_hash).await {
-                    Ok(None) => {
-                        tracing::warn!(
-                            "L1 transaction {tx_hash} is no longer visible by hash after \
-                             waiting for confirmation; it will be rebroadcast if possible"
-                        );
-                        return Ok(ReceiptWaitOutcome::Dropped);
-                    }
-                    Ok(Some(_)) => {}
-                    Err(err) => {
-                        tracing::warn!(
-                            "Failed to check whether L1 transaction {tx_hash} is still visible \
-                             while waiting for confirmation: {err}"
-                        );
-                    }
-                }
-            }
             tracing::warn!(
                 "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
                  required_confirmations={required_confirmations}, \
