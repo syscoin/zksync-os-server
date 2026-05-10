@@ -1,7 +1,7 @@
 //! Support for representing the version of the `zks` protocol.
 
 use crate::wire::message::ZksMessageId;
-use crate::wire::replays::{WireReplayRecord, v0, v1, v2, v3};
+use crate::wire::replays::{WireReplayRecord, v0, v1, v2, v3, v4};
 use alloy::primitives::bytes::BufMut;
 use alloy::rlp::{Decodable, Encodable, Error as RlpError};
 use std::fmt::Debug;
@@ -58,12 +58,13 @@ impl ZksProtocolVersionSpec for ZksProtocolV3 {
     const VERSION: ZksVersion = ZksVersion::Zks3;
 }
 
-/// Protocol version 4 keeps the replay transport from v3 but upgrades the replay record encoding.
+/// Protocol version 4 keeps the replay transport from v3 but carries canonical upgrade hashes in
+/// replay records.
 #[derive(Debug, Clone)]
 pub struct ZksProtocolV4;
 
 impl ZksProtocolVersionSpec for ZksProtocolV4 {
-    type Record = v3::ReplayRecord;
+    type Record = v4::ReplayRecord;
 
     const VERSION: ZksVersion = ZksVersion::Zks4;
 }
