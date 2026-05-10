@@ -189,24 +189,11 @@ impl L1State {
                 );
 
                 if let Some(gateway_provider) = configured_gateway_provider {
-                    let historical_gateway_chain_id = historical_gateway_chain_ids[0];
-                    let gateway_chain_id = gateway_provider
-                        .get_chain_id()
-                        .await
-                        .context("failed to fetch configured Gateway chain ID")?;
-                    anyhow::ensure!(
-                        gateway_chain_id == historical_gateway_chain_id,
-                        "configured Gateway chain ID {gateway_chain_id} does not match historical Gateway chain ID {historical_gateway_chain_id}"
+                    settlement_layer_intervals.set_lazy_gateway_provider(
+                        historical_gateway_chain_ids[0],
+                        gateway_provider,
+                        l2_chain_id,
                     );
-                    let bridgehub_gw =
-                        Bridgehub::new(L2_BRIDGEHUB_ADDRESS, gateway_provider, l2_chain_id);
-                    let diamond_proxy_gw = bridgehub_gw.zk_chain().await.with_context(|| {
-                        format!(
-                            "failed to fetch historical Gateway diamond proxy for chain {l2_chain_id}"
-                        )
-                    })?;
-                    settlement_layer_intervals
-                        .set_gateway_proxy(Some((gateway_chain_id, diamond_proxy_gw)));
                 }
             }
         }

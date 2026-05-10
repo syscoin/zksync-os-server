@@ -998,19 +998,19 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         state.clone(),
         tree_for_rpc,
     );
-    runtime.spawn_critical_task(
-        "l1 batch persist watcher",
-        L1PersistBatchWatcher::create_watcher(
-            config.l1_watcher_config.clone().into(),
-            node_startup_state
-                .l1_state
-                .settlement_layer_intervals
-                .clone(),
-            persistent_batch_storage.clone(),
-        )
-        .expect("failed to start L1 batch persist watcher")
-        .run(),
-    );
+    // SYSCOIN: persist watcher setup may lazily resolve historical Gateway intervals that still
+    // need persistence.
+    let l1_persist_batch_watcher = L1PersistBatchWatcher::create_watcher(
+        config.l1_watcher_config.clone().into(),
+        node_startup_state
+            .l1_state
+            .settlement_layer_intervals
+            .clone(),
+        persistent_batch_storage.clone(),
+    )
+    .await
+    .expect("failed to start L1 batch persist watcher");
+    runtime.spawn_critical_task("l1 batch persist watcher", l1_persist_batch_watcher.run());
 
     // ========== Start Sequencer ===========
     let repositories_clone = repositories.clone();
