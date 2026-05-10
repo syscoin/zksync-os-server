@@ -22,10 +22,11 @@ use crate::prover_api::prover_job_map::ProverJobMap;
 use alloy::primitives::Bytes;
 use jsonrpsee::core::Serialize;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use zksync_os_batch_types::batcher_model::{
     BatchEnvelope, BatchMetadata, FriProof, ProverInput, RealFriProof, SignedBatchEnvelope,
 };
@@ -94,8 +95,8 @@ pub struct JobState {
 // SYSCOIN
 #[derive(Debug)]
 struct AcceptedProof {
+    batch_number: u64,
     proof_key: PendingBatchProofKey,
-    batch_envelope: SignedBatchEnvelope<ProverInput>,
 }
 
 #[derive(Debug)]
@@ -106,6 +107,9 @@ pub struct FriJobManager {
     batches_with_proof_sender: mpsc::Sender<ProvenBatch>,
     // SYSCOIN
     accepted_proof_sender: mpsc::Sender<AcceptedProof>,
+    // SYSCOIN
+    pending_accepted_jobs:
+        Arc<Mutex<HashMap<PendingBatchProofKey, SignedBatchEnvelope<ProverInput>>>>,
     // == storage ==
     proof_storage: ProofStorage,
 }
@@ -125,9 +129,11 @@ impl FriJobManager {
         // SYSCOIN
         let (accepted_proof_sender, mut accepted_proof_receiver) =
             mpsc::channel::<AcceptedProof>(5);
+        let pending_accepted_jobs = Arc::new(Mutex::new(HashMap::new()));
         let proof_storage_for_forwarder = proof_storage.clone();
         let downstream_sender = batches_with_proof_sender.clone();
         let jobs_for_forwarder = jobs.clone();
+        let pending_accepted_jobs_for_forwarder = pending_accepted_jobs.clone();
         tokio::spawn(async move {
             'forwarder: loop {
                 let accepted_proof = match accepted_proof_receiver.recv().await {
@@ -135,10 +141,21 @@ impl FriJobManager {
                     None => return,
                 };
                 let AcceptedProof {
+                    batch_number,
                     proof_key,
-                    batch_envelope,
                 } = accepted_proof;
-                let batch_number = batch_envelope.batch_number();
+                let Some(mut batch_envelope) = pending_accepted_jobs_for_forwarder
+                    .lock()
+                    .await
+                    .remove(&proof_key)
+                else {
+                    tracing::warn!(
+                        batch_number,
+                        ?proof_key,
+                        "accepted FRI proof job was already restored"
+                    );
+                    continue;
+                };
                 let mut load_attempts = 0;
                 let mut stored_batch = loop {
                     match proof_storage_for_forwarder
@@ -177,16 +194,30 @@ impl FriJobManager {
                     }
                     tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;
                 };
-                stored_batch.latency_tracker = batch_envelope.latency_tracker;
+                stored_batch.latency_tracker = std::mem::take(&mut batch_envelope.latency_tracker);
 
                 if downstream_sender
-                    .send(ProvenBatch::pending(stored_batch, proof_key))
+                    .send(ProvenBatch::pending(stored_batch, proof_key.clone()))
                     .await
                     .is_err()
                 {
                     accepted_proof_receiver.close();
+                    proof_storage_for_forwarder
+                        .release_pending_batch_with_proof(&proof_key)
+                        .await;
+                    jobs_for_forwarder.restore_job(batch_envelope).await;
+                    let pending_jobs = {
+                        let mut pending_jobs = pending_accepted_jobs_for_forwarder.lock().await;
+                        pending_jobs.drain().collect::<Vec<_>>()
+                    };
+                    for (pending_proof_key, pending_job) in pending_jobs {
+                        proof_storage_for_forwarder
+                            .release_pending_batch_with_proof(&pending_proof_key)
+                            .await;
+                        jobs_for_forwarder.restore_job(pending_job).await;
+                    }
                     tracing::info!(
-                        "accepted FRI proof downstream channel closed; pending proofs left on disk for recovery"
+                        "accepted FRI proof downstream channel closed; restored jobs for retry"
                     );
                     return;
                 }
@@ -197,6 +228,7 @@ impl FriJobManager {
             jobs,
             batches_with_proof_sender,
             accepted_proof_sender,
+            pending_accepted_jobs,
             proof_storage,
         }
     }
@@ -294,9 +326,9 @@ impl FriJobManager {
             .await
             .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
 
-        // SYSCOIN: Reserve bounded forwarding capacity before removing the job. Accepted proofs
-        // carry the original prover input so the forwarder can restore the job if the pending
-        // proof becomes unloadable; keeping this queue bounded prevents witness-sized OOM buildup.
+        // SYSCOIN: Reserve bounded forwarding capacity before removing the job. The channel only
+        // carries a proof key; the original prover input is kept in a bounded side table so the
+        // forwarder can restore the job if the pending proof becomes unloadable.
         let accepted_proof_permit = match self.accepted_proof_sender.reserve().await {
             Ok(permit) => permit,
             Err(_) => {
@@ -326,9 +358,27 @@ impl FriJobManager {
             return Ok(());
         };
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
+        self.pending_accepted_jobs
+            .lock()
+            .await
+            .insert(pending_proof_key.clone(), completed_job);
+        if self.accepted_proof_sender.is_closed() {
+            if let Some(accepted_job) = self
+                .pending_accepted_jobs
+                .lock()
+                .await
+                .remove(&pending_proof_key)
+            {
+                self.jobs.restore_job(accepted_job).await;
+            }
+            self.proof_storage
+                .release_pending_batch_with_proof(&pending_proof_key)
+                .await;
+            return Err(SubmitError::ShuttingDown);
+        }
         accepted_proof_permit.send(AcceptedProof {
+            batch_number,
             proof_key: pending_proof_key,
-            batch_envelope: completed_job,
         });
 
         Ok(())
@@ -576,11 +626,15 @@ mod tests {
             .expect("job should exist");
         assert!(manager.status().await.is_empty());
 
+        manager.pending_accepted_jobs.lock().await.insert(
+            pending_key.clone(),
+            completed_job.with_stage(BatchExecutionStage::FriProvedReal),
+        );
         manager
             .accepted_proof_sender
             .send(AcceptedProof {
+                batch_number: 1,
                 proof_key: pending_key,
-                batch_envelope: completed_job.with_stage(BatchExecutionStage::FriProvedReal),
             })
             .await?;
 
