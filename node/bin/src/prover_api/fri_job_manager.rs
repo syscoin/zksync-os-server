@@ -105,7 +105,7 @@ pub struct FriJobManager {
     // outbound
     batches_with_proof_sender: mpsc::Sender<ProvenBatch>,
     // SYSCOIN
-    accepted_proof_sender: mpsc::UnboundedSender<AcceptedProof>,
+    accepted_proof_sender: mpsc::Sender<AcceptedProof>,
     // == storage ==
     proof_storage: ProofStorage,
 }
@@ -124,7 +124,7 @@ impl FriJobManager {
         ));
         // SYSCOIN
         let (accepted_proof_sender, mut accepted_proof_receiver) =
-            mpsc::unbounded_channel::<AcceptedProof>();
+            mpsc::channel::<AcceptedProof>(5);
         let proof_storage_for_forwarder = proof_storage.clone();
         let downstream_sender = batches_with_proof_sender.clone();
         let jobs_for_forwarder = jobs.clone();
@@ -294,6 +294,19 @@ impl FriJobManager {
             .await
             .map_err(|err| SubmitError::Other(format!("failed to persist FRI proof: {err}")))?;
 
+        // SYSCOIN: Reserve bounded forwarding capacity before removing the job. Accepted proofs
+        // carry the original prover input so the forwarder can restore the job if the pending
+        // proof becomes unloadable; keeping this queue bounded prevents witness-sized OOM buildup.
+        let accepted_proof_permit = match self.accepted_proof_sender.reserve().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.proof_storage
+                    .release_pending_batch_with_proof(&pending_proof_key)
+                    .await;
+                return Err(SubmitError::ShuttingDown);
+            }
+        };
+
         let Some(removed_job) = self
             .jobs
             .complete_job(batch_number, ProverType::Real, prover_id)
@@ -313,21 +326,10 @@ impl FriJobManager {
             return Ok(());
         };
         let completed_job = removed_job.with_stage(BatchExecutionStage::FriProvedReal);
-        if let Err(err) = self.enqueue_accepted_proof(pending_proof_key.clone(), completed_job) {
-            // SYSCOIN
-            let accepted_proof = err.0;
-            self.jobs.restore_job(accepted_proof.batch_envelope).await;
-            self.proof_storage
-                .release_pending_batch_with_proof(&pending_proof_key)
-                .await;
-            tracing::error!(
-                batch_number,
-                "accepted FRI proof was persisted but could not be queued for forwarding"
-            );
-            return Err(SubmitError::Other(
-                "server is shutting down before accepted FRI proof could be queued".to_string(),
-            ));
-        }
+        accepted_proof_permit.send(AcceptedProof {
+            proof_key: pending_proof_key,
+            batch_envelope: completed_job,
+        });
 
         Ok(())
     }
@@ -445,18 +447,6 @@ impl FriJobManager {
 
     pub async fn status(&self) -> Vec<JobState> {
         self.jobs.status().await
-    }
-
-    // SYSCOIN
-    fn enqueue_accepted_proof(
-        &self,
-        proof_key: PendingBatchProofKey,
-        batch_envelope: SignedBatchEnvelope<ProverInput>,
-    ) -> Result<(), mpsc::error::SendError<AcceptedProof>> {
-        self.accepted_proof_sender.send(AcceptedProof {
-            proof_key,
-            batch_envelope,
-        })
     }
 
     fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
@@ -587,11 +577,12 @@ mod tests {
         assert!(manager.status().await.is_empty());
 
         manager
-            .enqueue_accepted_proof(
-                pending_key,
-                completed_job.with_stage(BatchExecutionStage::FriProvedReal),
-            )
-            .expect("forwarder should be open");
+            .accepted_proof_sender
+            .send(AcceptedProof {
+                proof_key: pending_key,
+                batch_envelope: completed_job.with_stage(BatchExecutionStage::FriProvedReal),
+            })
+            .await?;
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
