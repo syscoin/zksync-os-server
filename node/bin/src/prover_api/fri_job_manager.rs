@@ -173,6 +173,7 @@ impl FriJobManager {
                         proof_storage_for_forwarder
                             .quarantine_pending_batch_with_proof(&proof_key)
                             .await;
+                        jobs_for_forwarder.make_job_retryable(batch_number).await;
                         continue 'forwarder;
                     }
                     tokio::time::sleep(ACCEPTED_PROOF_LOAD_RETRY_DELAY).await;

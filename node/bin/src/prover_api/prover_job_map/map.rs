@@ -132,6 +132,29 @@ impl<T: Clone> ProverJobMap<T> {
         }
     }
 
+    // SYSCOIN
+    /// Makes an assigned job immediately eligible for retry without resetting attempt history.
+    pub async fn make_job_retryable(&self, batch_number: u64) {
+        let mut jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
+        let Some(entry) = jobs.get_mut(&batch_number) else {
+            tracing::warn!(
+                batch_number,
+                ?self.prover_stage,
+                "Cannot make job retryable: job missing from map"
+            );
+            return;
+        };
+
+        entry.metadata.assigned_at = None;
+        entry.metadata.assigned_to_prover_id = None;
+        tracing::warn!(
+            batch_number,
+            ?self.prover_stage,
+            current_attempt = entry.metadata.current_attempt,
+            "Marked job retryable after failed handoff"
+        );
+    }
+
     /// Picks the first job (lowest batch number) that is either:
     /// - Pending and older than min_age (fake provers use non-empty min_age)
     /// - Assigned and timed out
@@ -682,6 +705,35 @@ mod tests {
         assert!(job.is_some());
         let (fri_job, _data) = job.unwrap();
         assert_eq!(fri_job.batch_number, 1);
+    }
+
+    #[tokio::test]
+    async fn test_make_job_retryable_without_timeout() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Fri);
+
+        map.add_job(create_test_batch_envelope(1)).await;
+
+        let job = map.pick_job(Duration::ZERO, "prover-1").await;
+        assert!(job.is_some());
+        let status = map.status().await;
+        assert_eq!(status[0].current_attempt, 1);
+        assert_eq!(
+            status[0].assigned_to_prover_id,
+            Some("prover-1".to_string())
+        );
+
+        map.make_job_retryable(1).await;
+
+        let job = map.pick_job(Duration::ZERO, "prover-2").await;
+        assert!(job.is_some());
+        let (fri_job, _data) = job.unwrap();
+        assert_eq!(fri_job.batch_number, 1);
+        let status = map.status().await;
+        assert_eq!(status[0].current_attempt, 2);
+        assert_eq!(
+            status[0].assigned_to_prover_id,
+            Some("prover-2".to_string())
+        );
     }
 
     #[tokio::test]
