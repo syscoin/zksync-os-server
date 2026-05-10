@@ -95,9 +95,14 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
             )
             .await?;
 
-        if let Some(rebuild_options) = &self.rebuild_options {
-            self.send_block_rebuilds(rebuild_options, last_block_in_wal, &output)
-                .await?;
+        if let Some(rebuild_options) = self.rebuild_options.take() {
+            self.run_block_rebuilds(
+                &rebuild_options,
+                last_block_in_wal,
+                &output,
+                &state_reporter,
+            )
+            .await?;
         }
 
         tracing::info!("All WAL blocks replayed. Starting main loop.");
@@ -112,6 +117,82 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
 }
 
 impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
+    async fn run_block_rebuilds(
+        &mut self,
+        rebuild_options: &RebuildOptions,
+        last_block_in_wal: u64,
+        output: &mpsc::Sender<BlockCommand>,
+        state_reporter: &ComponentStateReporter,
+    ) -> anyhow::Result<()> {
+        let mut leadership = self.leadership.clone();
+        let mut role = leadership.current_role();
+        let mut next_rebuild_block = rebuild_options.from_block;
+
+        loop {
+            if role == ConsensusRole::Leader {
+                // SYSCOIN: Rebuilds can reset timestamps using the local wall clock. In a real
+                // consensus runtime, only the current leader may construct and propose them; all
+                // other nodes must replay the canonized records to avoid divergent block contexts.
+                // If leadership changes mid-rebuild, the new leader continues from the next block
+                // that was not already received from consensus.
+                self.send_block_rebuilds(
+                    rebuild_options,
+                    next_rebuild_block,
+                    last_block_in_wal,
+                    output,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            tokio::select! {
+                res = leadership.wait_for_change() => {
+                    if res.is_err() {
+                        anyhow::bail!("leader watch channel closed");
+                    }
+                    let new_role = leadership.current_role();
+                    if new_role != role {
+                        tracing::info!(?role, ?new_role, "Consensus role changed during block rebuild");
+                        role = new_role;
+                    }
+                }
+                maybe_record = self.replays_to_execute.recv() => {
+                    let Some(record) = maybe_record else {
+                        tracing::info!("inbound channel closed");
+                        return Ok(());
+                    };
+                    let block_number = record.block_context.block_number;
+                    let timestamp = record.block_context.timestamp;
+                    anyhow::ensure!(
+                        block_number == next_rebuild_block,
+                        "canonized rebuild block received out of order: expected {}, got {}",
+                        next_rebuild_block,
+                        block_number
+                    );
+                    tracing::info!(
+                        block_number,
+                        role = ?role,
+                        "Received canonized rebuild block from consensus",
+                    );
+                    if output
+                        .send(BlockCommand::Replay(Box::new(record)))
+                        .await
+                        .is_err()
+                    {
+                        tracing::info!("Command output channel closed, stopping source");
+                        return Ok(());
+                    }
+                    state_reporter.record_processed(block_number, Some(timestamp), None);
+
+                    if block_number == last_block_in_wal {
+                        return Ok(());
+                    }
+                    next_rebuild_block = block_number + 1;
+                }
+            }
+        }
+    }
+
     /// This method kicks in after all local canonized Replayed Records (WAL) are replayed.
     /// Produces `Produce` commands only when the node is the leader.
     async fn run_loop(
@@ -177,13 +258,14 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
     async fn send_block_rebuilds(
         &self,
         rebuild_options: &RebuildOptions,
+        from_block: u64,
         last_block_in_wal: u64,
         output: &mpsc::Sender<BlockCommand>,
     ) -> anyhow::Result<()> {
         tracing::warn!(
             "Starting block rebuilds! {rebuild_options:?}, last_block_in_wal: {last_block_in_wal}"
         );
-        for block_number in rebuild_options.from_block..=last_block_in_wal {
+        for block_number in from_block..=last_block_in_wal {
             let replay_record = self
                 .block_replay_storage
                 .get_replay_record(block_number)
