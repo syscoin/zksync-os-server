@@ -3,7 +3,7 @@ use alloy::primitives::{Address, U256, address};
 use alloy::providers::{DynProvider, Provider};
 use anyhow::Context;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const L2_BRIDGEHUB_ADDRESS: Address = address!("0x0000000000000000000000000000000000010002");
 
@@ -79,6 +79,7 @@ enum GatewayProxy {
         chain_id: u64,
         provider: DynProvider,
         l2_chain_id: u64,
+        cached_proxy: Arc<Mutex<Option<ZkChain<DynProvider>>>>,
     },
 }
 
@@ -96,7 +97,16 @@ impl GatewayProxy {
                 chain_id,
                 provider,
                 l2_chain_id,
+                cached_proxy,
             } => {
+                if let Some(proxy) = cached_proxy
+                    .lock()
+                    .expect("gateway proxy cache lock poisoned")
+                    .clone()
+                {
+                    return Ok(proxy);
+                }
+
                 let provider_chain_id = provider
                     .get_chain_id()
                     .await
@@ -105,12 +115,21 @@ impl GatewayProxy {
                     provider_chain_id == *chain_id,
                     "configured Gateway chain ID {provider_chain_id} does not match historical Gateway chain ID {chain_id}"
                 );
-                Bridgehub::new(L2_BRIDGEHUB_ADDRESS, provider.clone(), *l2_chain_id)
+                let proxy = Bridgehub::new(L2_BRIDGEHUB_ADDRESS, provider.clone(), *l2_chain_id)
                     .zk_chain()
                     .await
                     .with_context(|| {
                         format!("failed to fetch historical Gateway diamond proxy for chain {l2_chain_id}")
-                    })
+                    })?;
+                let mut cached_proxy = cached_proxy
+                    .lock()
+                    .expect("gateway proxy cache lock poisoned");
+                if let Some(cached_proxy) = cached_proxy.as_ref() {
+                    Ok(cached_proxy.clone())
+                } else {
+                    *cached_proxy = Some(proxy.clone());
+                    Ok(proxy)
+                }
             }
         }
     }
@@ -160,6 +179,7 @@ impl SettlementLayerIntervals {
             chain_id,
             provider,
             l2_chain_id,
+            cached_proxy: Arc::new(Mutex::new(None)),
         });
     }
 
