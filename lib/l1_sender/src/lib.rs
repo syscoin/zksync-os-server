@@ -1253,7 +1253,11 @@ async fn resolve_fee_params(
     };
     let eip1559_est = provider.estimate_eip1559_fees().await?;
     L1_SENDER_METRICS.report_l1_eip_1559_estimation(eip1559_est)?;
-    report_custom_priority_fee_metrics(provider).await?;
+    // SYSCOIN: custom priority-fee estimates are observability-only; do not block L1
+    // transaction submission if a provider cannot serve the extra fee-history calls.
+    if let Err(err) = report_custom_priority_fee_metrics(provider).await {
+        tracing::warn!("failed to report custom priority-fee metrics: {err:#}");
+    }
 
     tracing::debug!(
         max_priority_fee_per_gas_gwei = ?format_units(eip1559_est.max_priority_fee_per_gas, "gwei"),
