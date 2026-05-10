@@ -388,7 +388,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())
                 .collect();
             let (blob_ids_from_pubdata, blob_chunks_from_pubdata) =
-                syscoin_blob_ids_and_chunks_from_pubdata(&total_pubdata);
+                syscoin_blob_ids_and_chunks_from_pubdata(&total_pubdata)?;
             anyhow::ensure!(
                 blob_ids_from_pubdata == batch_envelope.batch.batch_info.operator_da_input,
                 "canonical blob ids mismatch committed operator DA input for batch {batch_number}",
