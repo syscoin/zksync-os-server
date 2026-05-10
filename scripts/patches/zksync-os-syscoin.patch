@@ -227,10 +227,19 @@ index 0ff5891c..7de80e91 100644
  
 -        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
 +        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
-+        let upgrade_tx_hash = if metadata.block_level.canonical_upgrade_tx_hash == Bytes32::ZERO {
++        let canonical_upgrade_tx_hash = metadata.block_level.canonical_upgrade_tx_hash;
++        // SYSCOIN: canonical metadata may only replace an empty recorder hash
++        // (patch-only upgrade) or the same hash that execution recorded.
++        assert!(
++            canonical_upgrade_tx_hash == Bytes32::ZERO
++                || recorded_upgrade_tx_hash == Bytes32::ZERO
++                || recorded_upgrade_tx_hash == canonical_upgrade_tx_hash,
++            "canonical upgrade tx hash mismatch"
++        );
++        let upgrade_tx_hash = if canonical_upgrade_tx_hash == Bytes32::ZERO {
 +            recorded_upgrade_tx_hash
 +        } else {
-+            metadata.block_level.canonical_upgrade_tx_hash
++            canonical_upgrade_tx_hash
 +        };
          let (multichain_root, settlement_layer_chain_id) = read_batch_context_inputs(&mut io);
  
@@ -245,10 +254,19 @@ index 2c21c201..8be6f90e 100644
          }
 -        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
 +        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
-+        let upgrade_tx_hash = if metadata.block_level.canonical_upgrade_tx_hash == Bytes32::ZERO {
++        let canonical_upgrade_tx_hash = metadata.block_level.canonical_upgrade_tx_hash;
++        // SYSCOIN: canonical metadata may only replace an empty recorder hash
++        // (patch-only upgrade) or the same hash that execution recorded.
++        assert!(
++            canonical_upgrade_tx_hash == Bytes32::ZERO
++                || recorded_upgrade_tx_hash == Bytes32::ZERO
++                || recorded_upgrade_tx_hash == canonical_upgrade_tx_hash,
++            "canonical upgrade tx hash mismatch"
++        );
++        let upgrade_tx_hash = if canonical_upgrade_tx_hash == Bytes32::ZERO {
 +            recorded_upgrade_tx_hash
 +        } else {
-+            metadata.block_level.canonical_upgrade_tx_hash
++            canonical_upgrade_tx_hash
 +        };
          let interop_roots_rolling_hash = calculate_interop_roots_rolling_hash(
              Bytes32::zero(),
