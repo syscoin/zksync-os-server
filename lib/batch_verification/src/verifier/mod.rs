@@ -52,6 +52,8 @@ enum BatchVerificationError {
     TreeError,
     #[error("Batch data mismatch")]
     BatchDataMismatch,
+    #[error("Batch build error: {0}")]
+    BatchBuild(String),
     #[error("State error: {0}")]
     State(#[from] StateError),
     // SYSCOIN
@@ -189,7 +191,8 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
             Some(self.l1_state.validator_timelock_sl),
-        );
+        )
+        .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
 
         let expected_commit_data = normalized_commit_data(
             batch_info.commit_info.clone(),

@@ -54,7 +54,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         &protocol_version,
         expected_upgrade_tx_hash,
         Some(compact_edge_da_commit_target),
-    );
+    )?;
 
     let mut logs = Vec::new();
     let mut messages = Vec::new();
