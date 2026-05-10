@@ -920,19 +920,6 @@ index 232920082..4c9430d3c 100644
 +        _relaySyscoinEdgeDARef(_chainId, _batchNumber, _l2DAValidatorOutputHash, _operatorDAInput);
      }
  }
-diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-index 6f0d3e2e5..b7ff75e5b 100644
---- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-+++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-@@ -56,7 +56,8 @@ import {ZKSyncOSBytecodeInfo} from "contracts/common/libraries/ZKSyncOSBytecodeI
- 
- // TODO: pass this value from zkstack_cli
--uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;
-+// SYSCOIN: fresh v31+ deployments use the patched V7 ZKsync OS verification key.
-+uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;
- 
- contract DeployCTMScript is Script, DeployL1HelperScript {
-     using stdToml for string;
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 index d8b90d436..8a6d048cd 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
