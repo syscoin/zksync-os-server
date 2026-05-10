@@ -115,7 +115,16 @@ impl FriProvingPipelineStep {
                 }
                 true
             }
-            FriProof::Fake => true,
+            FriProof::Fake => {
+                // SYSCOIN: Fake proofs are valid only for the run that explicitly enabled fake
+                // provers. Never rehydrate them from disk, since a later production run may now
+                // require real proofs for the same batch.
+                tracing::warn!(
+                    batch_number = expected_batch.batch_number(),
+                    "skipping FRI rehydration because stored proof is fake"
+                );
+                false
+            }
             FriProof::AlreadySubmittedToL1 => {
                 tracing::warn!(
                     batch_number = expected_batch.batch_number(),
@@ -315,7 +324,6 @@ mod tests {
     use crate::prover_api::proof_storage::StoredBatch;
     use alloy::primitives::{Address, B256};
     use tempfile::TempDir;
-    use tokio::time::timeout;
     use zksync_os_batch_types::ExtendedCommitBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, BatchSignatureData};
     use zksync_os_contract_interface::models::{
@@ -398,13 +406,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_reuses_stored_fri_proof_after_restart() -> anyhow::Result<()> {
+    async fn run_does_not_reuse_stored_fake_fri_proof_after_restart() -> anyhow::Result<()> {
         let proof_storage = proof_storage_for_test().await?;
         let input_batch = dummy_input_batch(1);
         let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
         proof_storage.save_batch_with_proof(&stored_batch).await?;
 
-        let (step, _job_manager) =
+        let (step, job_manager) =
             FriProvingPipelineStep::new(proof_storage, 0, Duration::from_secs(30), 16);
 
         let (input_tx, input_rx) = mpsc::channel(1);
@@ -418,15 +426,9 @@ mod tests {
         let run_handle =
             tokio::spawn(async move { step.run(peekable, output_tx, state_reporter).await });
 
-        let out = timeout(Duration::from_secs(1), output_rx.recv())
-            .await
-            .expect("timed out waiting for stored proof reuse")
-            .expect("expected reused stored proof");
-        assert_eq!(out.batch.batch_number(), 1);
-        assert!(matches!(out.batch.data, FriProof::Fake));
-
         run_handle.await.expect("run task should complete")?;
         assert!(output_rx.recv().await.is_none());
+        assert_eq!(job_manager.status().await.len(), 1);
 
         Ok(())
     }
