@@ -1,8 +1,7 @@
 use crate::config::SyscoinDaVerificationConfig;
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::{VerificationRequest, normalized_commit_data};
-use alloy::eips::BlockId;
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::{Address, B256, keccak256};
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
@@ -38,6 +37,10 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     l1_state: L1State,
     signer: PrivateKeySigner,
     syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
+    // SYSCOIN: Settlement upgrade metadata is discovered at startup. Do not
+    // refresh it from the request handler; VerifyBatch is peer-triggered.
+    upgrade_batch_number: u64,
+    upgrade_tx_hash: Option<B256>,
     block_cache: BlockCache<Finality, TreeBlock>,
     read_state: ReadState,
     verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
@@ -76,6 +79,8 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         diamond_proxy_sl: Address,
         private_key: SecretString,
         syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
+        upgrade_batch_number: u64,
+        upgrade_tx_hash: Option<B256>,
         finality: Finality,
         l1_state: L1State,
         read_state: ReadState,
@@ -99,6 +104,8 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             l1_state,
             signer,
             syscoin_da_verification,
+            upgrade_batch_number,
+            upgrade_tx_hash,
             block_cache: BlockCache::new(finality),
             read_state,
             verify_request_rx,
@@ -144,31 +151,14 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         let state_view = self.read_state.state_view_at(request.last_block_number)?;
         let multichain_root = read_multichain_root(state_view);
-        let latest = BlockId::latest();
-        let upgrade_batch_number = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_batch_number(latest)
-            .await
-            .unwrap_or(0);
-        let upgrade_tx_hash = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_upgrade_tx_hash(latest)
-            .await
-            .ok()
-            .filter(|hash| !hash.is_zero());
-        let last_committed_batch = self
-            .l1_state
-            .diamond_proxy_sl
-            .get_total_batches_committed(latest)
-            .await
-            .unwrap_or(self.l1_state.last_committed_batch);
+        // SYSCOIN: Keep verifier request handling free of settlement-layer RPCs.
+        // The same startup snapshot feeds the batcher, so this preserves the
+        // existing canonical-upgrade decision while avoiding peer-amplified reads.
         let expected_upgrade_tx_hash = expected_upgrade_tx_hash_for_batch(
             request.batch_number,
-            last_committed_batch,
-            upgrade_batch_number,
-            upgrade_tx_hash,
+            self.l1_state.last_committed_batch,
+            self.upgrade_batch_number,
+            self.upgrade_tx_hash,
         );
 
         let (batch_info, _) = ExtendedCommitBatchInfo::build(
