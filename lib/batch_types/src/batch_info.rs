@@ -160,6 +160,21 @@ pub fn expected_upgrade_tx_hash_for_batch(
     (batch_number == upgrade_batch_number).then_some(upgrade_tx_hash)
 }
 
+// SYSCOIN: Settlement-layer upgrade metadata may provide the canonical hash expected for the
+// upgrade batch. Keep the batch commitment tied to the actually executed upgrade transaction.
+fn checked_upgrade_tx_hash(
+    expected_upgrade_tx_hash: Option<B256>,
+    actual_upgrade_tx_hash: B256,
+) -> B256 {
+    if let Some(expected_upgrade_tx_hash) = expected_upgrade_tx_hash {
+        assert_eq!(
+            expected_upgrade_tx_hash, actual_upgrade_tx_hash,
+            "canonical upgrade tx hash mismatch: expected {expected_upgrade_tx_hash}, actual {actual_upgrade_tx_hash}"
+        );
+    }
+    actual_upgrade_tx_hash
+}
+
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
     keccak256(data).0
 }
@@ -288,7 +303,10 @@ impl ExtendedCommitBatchInfo {
                             "more than one upgrade tx in a batch: first {upgrade_tx_hash:?}, second {}",
                             tx.hash()
                         );
-                        upgrade_tx_hash = Some(expected_upgrade_tx_hash.unwrap_or(*tx.hash()));
+                        upgrade_tx_hash = Some(checked_upgrade_tx_hash(
+                            expected_upgrade_tx_hash,
+                            *tx.hash(),
+                        ));
                     }
                 }
             }
@@ -552,8 +570,8 @@ fn calculate_da_fields(
 mod tests {
     use super::calculate_da_fields;
     use super::{
-        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, is_compact_edge_da_commit_tx,
-        syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
+        SYSCOIN_DA_BYTES_PER_BLOB, SyscoinEdgeDaRef, blob_data_id, checked_upgrade_tx_hash,
+        is_compact_edge_da_commit_tx, syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
     };
     use alloy::primitives::{B256, U256, address, keccak256};
     use alloy::sol_types::SolCall;
@@ -622,6 +640,26 @@ mod tests {
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
         assert!(fields.blob_sidecar.is_none());
+    }
+
+    #[test]
+    fn upgrade_tx_hash_uses_actual_hash_when_expected_missing() {
+        let actual = B256::from([1; 32]);
+
+        assert_eq!(checked_upgrade_tx_hash(None, actual), actual);
+    }
+
+    #[test]
+    fn upgrade_tx_hash_accepts_matching_expected_hash() {
+        let actual = B256::from([2; 32]);
+
+        assert_eq!(checked_upgrade_tx_hash(Some(actual), actual), actual);
+    }
+
+    #[test]
+    #[should_panic(expected = "canonical upgrade tx hash mismatch")]
+    fn upgrade_tx_hash_rejects_mismatched_expected_hash() {
+        checked_upgrade_tx_hash(Some(B256::from([3; 32])), B256::from([4; 32]));
     }
 
     #[test]
