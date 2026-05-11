@@ -370,6 +370,9 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_trusted_certificate /etc/letsencrypt/live/{domain}/chain.pem;
 
+    # Airbender proof submissions can exceed nginx's 1M default.
+    client_max_body_size 0;
+
     location / {{
         proxy_pass http://127.0.0.1:{prover_api_port};
         proxy_http_version 1.1;
