@@ -129,10 +129,38 @@ PY
 
 get_chain_diamond_proxy_from_gateway() {
   local chain_name="${1:?chain name required}"
-  local chain_id call_from
+  local chain_id call_from raw_proxy chain_proxy
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   call_from="$(get_chain_governor_from_wallets "${chain_name}")"
-  gateway_cast_call_with_fallback "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${GATEWAY_RPC_URL}" "${call_from}" "${chain_id}" | awk '{print $1}'
+  if ! raw_proxy="$(gateway_cast_call_with_fallback "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${GATEWAY_RPC_URL}" "${call_from}" "${chain_id}")"; then
+    echo "gateway-launch: failed to query Gateway Bridgehub getZKChain(${chain_id}) for ${chain_name}; target=${L2_BRIDGEHUB_ADDRESS}, rpc=${GATEWAY_RPC_URL}, from=${call_from:-unset}, cast=$(command -v cast || true)" >&2
+    return 1
+  fi
+  chain_proxy="$(printf '%s\n' "${raw_proxy}" | awk '{print $1}')"
+  if [ -z "${chain_proxy}" ] || [ "${chain_proxy}" = "0x0000000000000000000000000000000000000000" ]; then
+    echo "gateway-launch: Gateway Bridgehub returned empty chain proxy for ${chain_name} chain_id=${chain_id}: ${raw_proxy}" >&2
+    return 1
+  fi
+  printf '%s\n' "${chain_proxy}"
+}
+
+wait_for_chain_diamond_proxy_from_gateway() {
+  local chain_name="${1:?chain name required}"
+  local attempts="${2:-30}"
+  local delay="${3:-2}"
+  local i chain_proxy
+
+  for i in $(seq 1 "${attempts}"); do
+    if chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"; then
+      printf '%s\n' "${chain_proxy}"
+      return 0
+    fi
+    echo "gateway-launch: Gateway chain proxy for ${chain_name} not queryable yet (${i}/${attempts}); retrying in ${delay}s" >&2
+    sleep "${delay}"
+  done
+
+  echo "gateway-launch: Gateway chain proxy for ${chain_name} did not become queryable after ${attempts} attempts" >&2
+  return 1
 }
 
 get_chain_governor_from_wallets() {
@@ -300,31 +328,27 @@ gateway_cast_call_with_fallback() {
   local call_from="${4:-}"
   shift 4
 
-  local out
+  local out last_error=""
   if [ -n "${call_from}" ]; then
+    # SYSCOIN: read-only Gateway calls must not inherit L1 broadcast fee env.
+    # Gateway can have a different base fee, and cast applies ETH_GAS_PRICE to
+    # eth_call transactions even though no transaction is broadcast.
     if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" --gas-price 0 2>/dev/null)"; then
+      -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
+      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
       printf '%s\n' "${out}"
       return 0
     fi
+    last_error="${out}"
   fi
   if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --gas-price 0 2>/dev/null)"; then
+    -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
+    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" 2>&1)"; then
     printf '%s\n' "${out}"
     return 0
   fi
-  if [ -n "${call_from}" ]; then
-    if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" 2>/dev/null)"; then
-      printf '%s\n' "${out}"
-      return 0
-    fi
-  fi
-  if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" 2>/dev/null)"; then
-    printf '%s\n' "${out}"
-    return 0
-  fi
+  last_error="${out}"
+  echo "gateway-launch: cast call failed: target=${target}, sig=${sig}, rpc=${rpc_url}, from=${call_from:-unset}, args=$*, last_error=${last_error}" >&2
   return 1
 }
 
@@ -445,11 +469,14 @@ repair_da_pair_on_gateway() {
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
   local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy
 
-  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
-  refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
-  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
-  gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
-  chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
+  echo "gateway-launch: resolving Gateway DA pair repair inputs for ${chain_name}"
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || return 1
+  refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")" || return 1
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")" || return 1
+  gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")" || return 1
+  # SYSCOIN: after zkstack finalize exits with an already-finalized deposit leg,
+  # Gateway RPC can be live before Bridgehub getZKChain is queryable.
+  chain_proxy="$(wait_for_chain_diamond_proxy_from_gateway "${chain_name}" 60 2)" || return 1
 
   echo "gateway-launch: repairing Gateway DA pair for ${chain_name}: l1_da_validator=${l1_da_validator_addr}, scheme=${GATEWAY_L2_DA_COMMITMENT_SCHEME}(${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE}), chain_proxy=${chain_proxy}, gateway_chain_id=${gateway_chain_id}"
   gl_l1_broadcast_preflight
