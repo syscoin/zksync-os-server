@@ -295,36 +295,49 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
         // SYSCOIN: submit via a helper so dropped-tx recovery can reuse the exact same path.
-        let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
-            .then(|mut cmd| async {
-                let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce, submitted_l1_block) =
-                    submit_l1_transaction(
-                        &provider,
-                        operator_address,
-                        to_address,
-                        &config,
-                        gateway,
-                        command_name,
-                        &mut cmd,
-                        &commit_submitted_tx,
-                        None,
-                        use_replacement_fee_params_for_commands,
-                    )
-                    .await?;
-                anyhow::Ok((
-                    receipt_fut,
-                    cmd,
-                    submitted_at,
-                    raw_tx,
-                    tx_hash,
-                    tx_nonce,
-                    submitted_l1_block,
-                ))
-            })
-            // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
-            // but this is not necessary for now - we wait for them to be included in parallel
-            .try_collect::<Vec<_>>()
-            .await?;
+        let pending_txs: Vec<PendingTx<Input>> =
+            futures::stream::iter(commands.drain(..).enumerate())
+                .then(|(command_index, mut cmd)| {
+                    let provider = &provider;
+                    let config = &config;
+                    let commit_submitted_tx = &commit_submitted_tx;
+                    async move {
+                        let (
+                            receipt_fut,
+                            submitted_at,
+                            raw_tx,
+                            tx_hash,
+                            tx_nonce,
+                            submitted_l1_block,
+                        ) = submit_l1_transaction(
+                            provider,
+                            operator_address,
+                            to_address,
+                            config,
+                            gateway,
+                            command_name,
+                            &mut cmd,
+                            commit_submitted_tx,
+                            None,
+                            use_replacement_fee_params_for_commands,
+                            command_index > 0,
+                        )
+                        .await?;
+                        anyhow::Ok((
+                            receipt_fut,
+                            cmd,
+                            submitted_at,
+                            raw_tx,
+                            tx_hash,
+                            tx_nonce,
+                            submitted_l1_block,
+                        ))
+                    }
+                })
+                // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
+                // but this is not necessary for now - we wait for them to be included in parallel
+                .try_collect::<Vec<_>>()
+                .await?;
         tracing::info!(command_name, range, "sent to L1, waiting for inclusion");
         wait_for_txs_and_forward(
             pending_txs,
@@ -354,6 +367,7 @@ async fn submit_l1_transaction<F, P, Input>(
     commit_submitted_tx: &Option<watch::Sender<u64>>,
     nonce_override: Option<u64>,
     use_replacement_fee_params: bool,
+    allow_gas_estimation_fallback: bool,
 ) -> anyhow::Result<(
     TransactionReceiptFuture,
     Instant,
@@ -399,7 +413,7 @@ where
         tx_request.set_blob_sidecar(blob_sidecar);
     };
 
-    apply_l1_gas_limit(provider, &mut tx_request).await?;
+    apply_l1_gas_limit(provider, &mut tx_request, allow_gas_estimation_fallback).await?;
 
     // Fill the transaction (e.g., nonce, gas, etc.) using the provider and convert it to an
     // envelope.
@@ -570,6 +584,7 @@ where
                             commit_submitted_tx,
                             Some(tx_nonce),
                             false,
+                            false,
                         )
                         .await?;
                         receipt_fut = resubmitted.0;
@@ -638,6 +653,7 @@ where
                                     &mut command,
                                     commit_submitted_tx,
                                     Some(tx_nonce),
+                                    false,
                                     false,
                                 )
                                 .await?;
@@ -1344,6 +1360,7 @@ fn tx_request_with_gas_fields(
 async fn apply_l1_gas_limit(
     provider: &dyn Provider,
     tx_request: &mut TransactionRequest,
+    allow_estimation_fallback: bool,
 ) -> anyhow::Result<()> {
     let latest_block = provider
         .get_block(BlockId::latest())
@@ -1354,6 +1371,10 @@ async fn apply_l1_gas_limit(
     let estimated_gas = match provider.estimate_gas(tx_request.clone()).await {
         Ok(estimated_gas) => estimated_gas,
         Err(err) => {
+            if !allow_estimation_fallback {
+                return Err(err.into());
+            }
+
             // SYSCOIN: latest-state RPC estimators can reject later nonce-ordered
             // commands in a batch because earlier same-sender txs are not mined yet.
             // Fall back to the chain's current block gas limit: 16m on Syscoin L1,
