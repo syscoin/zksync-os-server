@@ -361,9 +361,8 @@ def nginx_prover_api_server_block(domain: str, prover_api_port: str) -> str:
 }}
 
 server {{
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    http2 on;
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name {domain};
 
     ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
@@ -724,10 +723,21 @@ if [ -n "${{NGINX_PROVER_API_CONF:-}}" ]; then
   conf_dst="${{NGINX_PROVER_API_CONF}}"
 elif [ -d /etc/nginx/sites-available ]; then
   conf_dst="/etc/nginx/sites-available/zksync-os-prover-api.conf"
-else
+elif [ -d /etc/nginx/conf.d ]; then
+  conf_dst="/etc/nginx/conf.d/zksync-os-prover-api.conf"
+elif [ -d /etc/nginx/sites-enabled ]; then
   conf_dst="/etc/nginx/sites-enabled/zksync-os-prover-api.conf"
+else
+  echo "could not determine nginx config directory; set NGINX_PROVER_API_CONF" >&2
+  exit 1
 fi
-enabled_dst="${{NGINX_PROVER_API_ENABLED:-/etc/nginx/sites-enabled/$(basename "${{conf_dst}}")}}"
+if [ -n "${{NGINX_PROVER_API_ENABLED:-}}" ]; then
+  enabled_dst="${{NGINX_PROVER_API_ENABLED}}"
+elif [ -d /etc/nginx/sites-available ] && [ -d /etc/nginx/sites-enabled ] && [ "${{conf_dst}}" = "/etc/nginx/sites-available/zksync-os-prover-api.conf" ]; then
+  enabled_dst="/etc/nginx/sites-enabled/$(basename "${{conf_dst}}")"
+else
+  enabled_dst="${{conf_dst}}"
+fi
 
 if [ ! -f "${{conf_src}}" ]; then
   echo "missing generated nginx config: ${{conf_src}}" >&2
