@@ -1465,6 +1465,7 @@ async fn run_main_node_pipeline(
             read_state: state.clone(),
             pubdata_mode,
             runtime: runtime.clone(),
+            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
             disabled: !config.prover_input_generator_config.enable_input_generation,
         })
         .pipe(Batcher {

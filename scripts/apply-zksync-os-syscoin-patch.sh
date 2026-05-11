@@ -42,7 +42,9 @@ base_patch_applied() {
 canonical_upgrade_fix_applied() {
   has_text "canonical_upgrade_tx_hash: Bytes32::ZERO," "${ZKSYNC_OS_PATH}/zk_ee/src/system/metadata/zk_metadata.rs" \
     && has_text "recorded_upgrade_tx_hash" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs" \
-    && has_text "canonical upgrade tx hash mismatch" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs"
+    && has_text "canonical upgrade tx hash mismatch" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs" \
+    && has_text "syscoin_compact_edge_da_commit_target" "${ZKSYNC_OS_PATH}/zk_ee/src/system/metadata/zk_metadata.rs" \
+    && has_text "apply_syscoin_edge_da_refs_root_for_tx_numbers" "${ZKSYNC_OS_PATH}/zk_ee/src/common_structs/logs_storage.rs"
 }
 
 if base_patch_applied && canonical_upgrade_fix_applied; then
