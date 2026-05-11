@@ -67,7 +67,7 @@ impl ProvingVersion {
 
     /// verification key hash generated from patched zksync-os v0.3.0 multiblock proving binary.
     const V7_VK_HASH: &'static str =
-        "0xb4cdc2235d292f3ae22ee3385d82217770f4b0c4908d00ccba5ef5a8c4d69e09";
+        "0x2a04d7134e8503a441c2e8cb92979405c80cf38349f895639821046d455e5a24";
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {

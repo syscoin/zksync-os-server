@@ -921,7 +921,7 @@ index 232920082..4c9430d3c 100644
      }
  }
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
-index d8b90d436..8a6d048cd 100644
+index d8b90d436..4f5f068b2 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol
 @@ -9,7 +9,7 @@ import {IVerifier} from "../chain-interfaces/IVerifier.sol";
@@ -929,7 +929,7 @@ index d8b90d436..8a6d048cd 100644
  /// Knowledge (PLONK) verifier.
  /// Modifications have been made to optimize the proof system for ZK chain circuits.
 -/// @dev Contract was generated from a verification key with a hash of 0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337
-+/// @dev Contract was generated from a verification key with a hash of 0xb4cdc2235d292f3ae22ee3385d82217770f4b0c4908d00ccba5ef5a8c4d69e09
++/// @dev Contract was generated from a verification key with a hash of 0x2a04d7134e8503a441c2e8cb92979405c80cf38349f895639821046d455e5a24
  /// @dev It uses a custom memory layout inside the inline assembly block. Each reserved memory cell is declared in the
  /// constants below.
  /// @dev For a better understanding of the verifier algorithm please refer to the following papers:
@@ -939,8 +939,8 @@ index d8b90d436..8a6d048cd 100644
              // gate setup commitments
 -            mstore(VK_GATE_SETUP_0_X_SLOT, 0x1106b27c3561b9ffeacfd97e7c2a73e5b3830a71d9cf1e7a13e2c22619df67c6)
 -            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x1766dab5ce252fef675ee6ae5a594f2625517b04233609d7d6fa5b0d0e87bf9f)
-+            mstore(VK_GATE_SETUP_0_X_SLOT, 0x18894eb8dc74bdefa9fec2112538b9b71b82ac01b8b75edea7749d17bafcb897)
-+            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x234dd1cbd80317101f415bf994363e3345efc5d3e0a38fd68d0d66e5c351801f)
++            mstore(VK_GATE_SETUP_0_X_SLOT, 0x0cb77274a79f004d047569385525aa77cfa1a282118dddd32fc5faac5f72dc2a)
++            mstore(VK_GATE_SETUP_0_Y_SLOT, 0x0eb9f79d830858e7980894711c545d5a1310853627acde2e60a4db6adecb901b)
              mstore(VK_GATE_SETUP_1_X_SLOT, 0x0feda978f4639d0a725df74c4738bf178adca34e6a4f7cc38d6a9ae9ee49f695)
              mstore(VK_GATE_SETUP_1_Y_SLOT, 0x2f7068beedb881aea392246c33ccc026ea9c8f6ea558a055b6df00ebfdf210a3)
              mstore(VK_GATE_SETUP_2_X_SLOT, 0x06eccb685da5c8cc09a13698b2a22e383025abc75393d68c1da5a7dbacffbd9b)
@@ -950,8 +950,8 @@ index d8b90d436..8a6d048cd 100644
              mstore(VK_GATE_SETUP_5_Y_SLOT, 0x13a3819d4cb80114e51de741a5fb48ce4ba20e82c5d39d16f70ca0461f49a131)
 -            mstore(VK_GATE_SETUP_6_X_SLOT, 0x133985cd37d7e76cbe8a87b9eddbc637916035656b2cfe776a2c4a6c23ae938b)
 -            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x060b7c13eb18593c67a6cd94f24b8403dd97157a3f4096d1ce3c1e9b2fb53c12)
-+            mstore(VK_GATE_SETUP_6_X_SLOT, 0x2e8f6b4da745c577bf8db5b88e088b14138a138423c38ec19236f9de053e3127)
-+            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x16020f8578fe5e0fba65da1785cb604f74107e7ad5d0378d108bcfbdc73849f4)
++            mstore(VK_GATE_SETUP_6_X_SLOT, 0x24c659db42aba5022f824f927db4e47a63feb92a2c9e8b8d91bc73942fb49bcd)
++            mstore(VK_GATE_SETUP_6_Y_SLOT, 0x05669a9b7703259e9b1bf8d6ca127da35d9eaf4cd333a837e6f03876c4a3554a)
              mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
              mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
  
