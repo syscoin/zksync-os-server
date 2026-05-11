@@ -39,6 +39,14 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_NATIVE_PRICE_USD:=3e-11}"
 : "${NATIVE_TOKEN_PRICE_USD:=0.01}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
+L1_RPC_URL_WAS_SET=false
+GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET=false
+if [ -n "${L1_RPC_URL+x}" ]; then
+  L1_RPC_URL_WAS_SET=true
+fi
+if [ -n "${GATEWAY_ARCHIVE_L1_RPC_URL+x}" ]; then
+  GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET=true
+fi
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
 : "${BITCOIN_DA_RPC_USER:=}"
@@ -90,10 +98,12 @@ if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } &
   : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
 fi
 
-if [ "${GATEWAY_ARCHIVE_L1_RPC_URL}" = "${L1_RPC_URL:-}" ] && [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
-  # SYSCOIN: checkpoint repairs may be run with only the transactional L1 RPC in
-  # the environment. Preserve the archive runtime RPC from the materialized
-  # config instead of rewriting node configs to a pruned local Syscoin endpoint.
+if [ "${GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET}" = false ] &&
+  [ "${L1_RPC_URL_WAS_SET}" = false ] &&
+  [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
+  # SYSCOIN: checkpoint repairs may regenerate configs without RPC env. Preserve
+  # the materialized archive runtime RPC only in that case. If L1_RPC_URL or
+  # GATEWAY_ARCHIVE_L1_RPC_URL is supplied, the explicit value wins.
   existing_l1_rpc_url="$(python3 - "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" <<'PY'
 import sys
 from pathlib import Path
@@ -109,7 +119,7 @@ if isinstance(l1_provider, dict):
         print(rpc_url.strip())
 PY
 )"
-  if [ -n "${existing_l1_rpc_url}" ] && [ "${existing_l1_rpc_url}" != "${L1_RPC_URL:-}" ]; then
+  if [ -n "${existing_l1_rpc_url}" ]; then
     GATEWAY_ARCHIVE_L1_RPC_URL="${existing_l1_rpc_url}"
   fi
 fi
