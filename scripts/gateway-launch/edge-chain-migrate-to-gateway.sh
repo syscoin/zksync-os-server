@@ -37,7 +37,6 @@ gl_l1_broadcast_preflight
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
-gl_force_syscoin_os_expected_rollup_l2_da_validator
 
 ensure_gateway_rpc_url_in_chain_secrets() {
   local chain_name="${1:?chain name required}"
