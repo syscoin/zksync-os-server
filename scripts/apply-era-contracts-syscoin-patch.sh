@@ -64,8 +64,12 @@ syscoin_verifier_version_pinned() {
   grep -q "DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7" "$(deploy_ctm_path)"
 }
 
+syscoin_gateway_da_migration_patched() {
+  grep -q "Gateway supports BLOBS_ZKSYNC_OS via compact Bitcoin DA refs" "${CONTRACTS_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
+}
+
 base_patch_applied() {
-  base_patch_core_applied && syscoin_verifier_version_pinned
+  base_patch_core_applied && syscoin_verifier_version_pinned && syscoin_gateway_da_migration_patched
 }
 
 da_limits_patch_applied() {
