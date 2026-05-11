@@ -28,7 +28,9 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${PROVER_API_AUTH_PASSWORD:=}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
-: "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=1048576}"
+# SYSCOIN: Keep the generated edge limit aligned with one Syscoin DA blob and
+# the node sequencer default so valid priority operations cannot wedge the queue.
+: "${EDGE_BLOCK_PUBDATA_LIMIT_BYTES:=2097152}"
 : "${EDGE_BLOCK_TIME:=2s}"
 : "${EDGE_PUBDATA_PRICING_MULTIPLIER:=32.0}"
 : "${EDGE_NATIVE_PER_GAS:=100}"
