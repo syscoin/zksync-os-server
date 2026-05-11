@@ -1288,9 +1288,10 @@ async fn resolve_fee_params(
         "estimated priority and max fees"
     );
 
-    // SYSCOIN: Treat configured fees as caps. Replacement mode uses the multiplied caps as
-    // the required bump floor too, because startup resubmission does not persist the prior
-    // tx's exact fee fields; using a lower live estimate can be rejected as underpriced.
+    // SYSCOIN: Treat configured fees as both caps and floors. Tanenbaum's RPC
+    // can return 15 wei estimates, which enter the mempool but do not get mined.
+    // Replacement mode uses the multiplied caps as the required bump floor too,
+    // because startup resubmission does not persist the prior tx's exact fee fields.
     let max_fee_per_gas = if eip1559_est.max_fee_per_gas > cap_params.max_fee_per_gas {
         tracing::warn!(
             "L1 sender's configured maxFeePerGas ({}) \
@@ -1304,7 +1305,7 @@ async fn resolve_fee_params(
     } else if use_replacement_fee_params {
         cap_params.max_fee_per_gas
     } else {
-        eip1559_est.max_fee_per_gas
+        eip1559_est.max_fee_per_gas.max(cap_params.max_fee_per_gas)
     };
     let max_priority_fee_per_gas =
         if eip1559_est.max_priority_fee_per_gas > cap_params.max_priority_fee_per_gas {
@@ -1320,7 +1321,9 @@ async fn resolve_fee_params(
         } else if use_replacement_fee_params {
             cap_params.max_priority_fee_per_gas
         } else {
-            eip1559_est.max_priority_fee_per_gas
+            eip1559_est
+                .max_priority_fee_per_gas
+                .max(cap_params.max_priority_fee_per_gas)
         };
 
     Ok(FeeParams {
