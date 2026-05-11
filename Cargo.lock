@@ -15084,6 +15084,7 @@ dependencies = [
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "reqwest 0.12.28",
+ "sha2",
  "tempfile",
  "test-casing",
  "tracing",
