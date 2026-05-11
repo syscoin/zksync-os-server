@@ -1345,12 +1345,29 @@ async fn apply_l1_gas_limit(
     provider: &dyn Provider,
     tx_request: &mut TransactionRequest,
 ) -> anyhow::Result<()> {
-    let estimated_gas = provider.estimate_gas(tx_request.clone()).await?;
     let latest_block = provider
         .get_block(BlockId::latest())
         .await?
         .context("latest L1 block is unavailable while setting L1 gas limit")?;
     let block_gas_limit = latest_block.header.gas_limit;
+
+    let estimated_gas = match provider.estimate_gas(tx_request.clone()).await {
+        Ok(estimated_gas) => estimated_gas,
+        Err(err) => {
+            // SYSCOIN: latest-state RPC estimators can reject later nonce-ordered
+            // commands in a batch because earlier same-sender txs are not mined yet.
+            // Fall back to the chain's current block gas limit: 16m on Syscoin L1,
+            // higher on Gateway when configured that way.
+            let gas_limit = block_gas_limit;
+            tracing::warn!(
+                ?err,
+                gas_limit,
+                "failed to estimate L1 gas, falling back to latest block gas limit"
+            );
+            tx_request.set_gas_limit(gas_limit);
+            return Ok(());
+        }
+    };
 
     if estimated_gas > block_gas_limit {
         anyhow::bail!(
