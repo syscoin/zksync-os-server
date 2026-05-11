@@ -896,6 +896,57 @@ if updated:
 PY
 }
 
+gl_force_syscoin_os_expected_rollup_l2_da_validator() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name edge_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+
+  python3 - \
+    "${GATEWAY_DIR}/configs/contracts.yaml" \
+    "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml" \
+    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+expected = "0x0000000000000000000000000000000000000004"
+
+for path_str in sys.argv[1:]:
+    path = Path(path_str)
+    if not path.exists():
+        continue
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"invalid YAML object in {path}")
+
+    eco = data.setdefault("ecosystem_contracts", {})
+    if not isinstance(eco, dict):
+        raise SystemExit(f"invalid ecosystem_contracts section in {path}")
+
+    current = eco.get("expected_rollup_l2_da_validator")
+    if isinstance(current, int):
+        current_norm = "0x" + format(current & ((1 << 160) - 1), "040x")
+    elif current is None:
+        current_norm = None
+    else:
+        current_norm = str(current).strip().lower()
+
+    if current_norm != expected:
+        # SYSCOIN: zkstack uses this field to build the Gateway admin tx that
+        # calls setDAValidatorPair. ZKsync OS must use BLOBS_ZKSYNC_OS (4), not
+        # the upstream Era RollupL2DAValidator address/scheme.
+        eco["expected_rollup_l2_da_validator"] = expected
+        path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        print(
+            f"gateway-launch: patched {path} "
+            f"(set ecosystem_contracts.expected_rollup_l2_da_validator={expected})"
+        )
+PY
+}
+
 gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL

@@ -37,6 +37,7 @@ gl_l1_broadcast_preflight
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
+gl_force_syscoin_os_expected_rollup_l2_da_validator
 
 ensure_gateway_rpc_url_in_chain_secrets() {
   local chain_name="${1:?chain name required}"
@@ -451,10 +452,12 @@ repair_da_pair_on_gateway() {
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
   chain_proxy="$(get_chain_diamond_proxy_from_gateway "${chain_name}")"
 
+  echo "gateway-launch: repairing Gateway DA pair for ${chain_name}: l1_da_validator=${l1_da_validator_addr}, scheme=${GATEWAY_L2_DA_COMMITMENT_SCHEME}(${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE}), chain_proxy=${chain_proxy}, gateway_chain_id=${gateway_chain_id}"
   gl_l1_broadcast_preflight
   prepare_gateway_governor_forge_wallet_args
   (
     cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+    echo "gateway-launch: broadcasting setDAValidatorPairWithGateway repair via $(pwd)"
     forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
       --sig 'setDAValidatorPairWithGateway(address,uint256,uint256,uint256,address,uint8,address,address,bool)' \
       "${bridgehub}" \
