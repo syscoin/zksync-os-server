@@ -119,15 +119,35 @@ Then rerun the canonical launcher command.
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
 ```
 
-For internet-facing prover access, run the generated HTTPS proxy helper on the
-node host after DNS points at that host:
+For internet-facing prover access, keep the node prover APIs bound to
+`127.0.0.1` and terminate HTTPS in the host nginx that already fronts RPC and
+explorer traffic. The config generator writes nginx vhost files next to the node
+configs:
 
 ```bash
-PROVER_API_DOMAIN=prover-api.example.com "$GATEWAY_DIR/os-server-configs/gateway/start-prover-api-proxy.sh"
+"$GATEWAY_DIR/os-server-configs/gateway/prover-api.nginx.conf"
+"$GATEWAY_DIR/os-server-configs/zksys/prover-api.nginx.conf"
 ```
 
+If Gateway and zksys are on the same host, install the combined generated file:
+
+```bash
+"$GATEWAY_DIR/os-server-configs/install-prover-api-nginx.sh"
+```
+
+This uses the same host nginx TLS setup as RPC and explorer. Certificates for
+the prover hostnames must already be provisioned by the host's normal nginx /
+Let's Encrypt flow, with certs available at
+`/etc/letsencrypt/live/<hostname>/`.
+
+If they run on separate hosts, install the per-chain `prover-api.nginx.conf` on
+the corresponding host instead. Override `GATEWAY_PROVER_API_DOMAIN` and
+`EDGE_PROVER_API_DOMAIN` before generating configs if the prover hostnames are
+not `prover-gw.dev11.top` and `prover-zk.dev11.top`.
+
 Then start Airbender provers with a credentialed HTTPS sequencer URL, for
-example `https://syscoin-prover:...@prover-api.example.com`.
+example `https://syscoin-prover:...@prover-gw.dev11.top` for Gateway and
+`https://syscoin-prover:...@prover-zk.dev11.top` for zksys.
 
 Generated configs bind the prover API to `127.0.0.1` by default. If you need
 direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
@@ -153,7 +173,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
 | `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
 | `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; defaults to `127.0.0.1` so public access should go through HTTPS/VPN/reverse proxy termination |
-| `PROVER_API_DOMAIN` | Runtime domain for generated `start-prover-api-proxy.sh`; Caddy obtains/renews TLS certs and forwards to the local prover API |
+| `GATEWAY_PROVER_API_DOMAIN` / `EDGE_PROVER_API_DOMAIN` | Hostnames for generated nginx prover API vhosts; defaults are `prover-gw.dev11.top` and `prover-zk.dev11.top` |
 | `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; password is required for generated configs |
 | `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |

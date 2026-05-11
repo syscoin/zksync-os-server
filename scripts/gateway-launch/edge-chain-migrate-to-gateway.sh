@@ -408,9 +408,44 @@ wait_for_gateway_committer_role() {
   return 1
 }
 
+gateway_commit_sender_balance_wei() {
+  local committer_addr="${1:?committer address required}"
+
+  cast balance "${committer_addr}" --rpc-url "${GATEWAY_RPC_URL}"
+}
+
+gateway_commit_sender_funded() {
+  local committer_addr="${1:?committer address required}"
+  local min_balance_wei="${2:?minimum balance required}"
+  local current_balance
+
+  current_balance="$(gateway_commit_sender_balance_wei "${committer_addr}")" || return 1
+  python3 - "${current_balance}" "${min_balance_wei}" <<'PY'
+import sys
+
+raise SystemExit(0 if int(sys.argv[1], 10) >= int(sys.argv[2], 10) else 1)
+PY
+}
+
+wait_for_gateway_commit_sender_balance() {
+  local committer_addr="${1:?committer address required}"
+  local min_balance_wei="${2:?minimum balance required}"
+  local max_attempts="${3:?max attempts required}"
+  local delay_seconds="${4:?delay seconds required}"
+  local attempt
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if gateway_commit_sender_funded "${committer_addr}" "${min_balance_wei}"; then
+      return 0
+    fi
+    sleep "${delay_seconds}"
+  done
+  return 1
+}
+
 ensure_gateway_commit_sender_validator() {
   local chain_name="${1:?chain name required}"
-  local wallet_name committer_addr bridgehub validator_timelock refund_recipient chain_id gateway_chain_id
+  local wallet_name committer_addr bridgehub validator_timelock refund_recipient gateway_chain_id chain_proxy committer_role grant_calldata
 
   # zkstack migration currently enables only `operator`, while OS-server commits
   # Syscoin DA batches from `blob_operator`. Keep this in the launch layer until
@@ -423,26 +458,32 @@ ensure_gateway_commit_sender_validator() {
     return 0
   fi
 
-  echo "gateway-launch: Gateway committer role missing for ${wallet_name} (${committer_addr}); repairing via L1->Gateway admin tx"
+  echo "gateway-launch: Gateway committer role missing for ${wallet_name} (${committer_addr}); granting COMMITTER_ROLE via L1->Gateway admin tx"
 
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
   validator_timelock="$(get_gateway_validator_timelock_addr "${GATEWAY_CHAIN_NAME}")"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
-  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+  chain_proxy="$(wait_for_chain_diamond_proxy_from_gateway "${chain_name}" 60 2)"
+  committer_role="$(gateway_cast_call_with_fallback \
+    "${validator_timelock}" \
+    "COMMITTER_ROLE()(bytes32)" \
+    "${GATEWAY_RPC_URL}" \
+    "${refund_recipient}" | awk '{print $1}')"
+  grant_calldata="$(cast calldata "grantRole(address,bytes32,address)" "${chain_proxy}" "${committer_role}" "${committer_addr}")"
 
   gl_l1_broadcast_preflight
   prepare_gateway_governor_forge_wallet_args
   (
     cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
     forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
-      --sig 'enableValidatorViaGateway(address,uint256,uint256,uint256,address,address,address,bool)' \
+      --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
       "${bridgehub}" \
       "${GATEWAY_MAX_L1_GAS_PRICE}" \
-      "${chain_id}" \
       "${gateway_chain_id}" \
-      "${committer_addr}" \
       "${validator_timelock}" \
+      0 \
+      "${grant_calldata}" \
       "${refund_recipient}" \
       true \
       --rpc-url "${L1_RPC_URL}" \
@@ -460,6 +501,74 @@ ensure_gateway_commit_sender_validator() {
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS}" \
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY}"; then
     echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt" >&2
+    return 1
+  fi
+}
+
+ensure_gateway_commit_sender_balance() {
+  local chain_name="${1:?chain name required}"
+  local wallet_name committer_addr bridgehub refund_recipient gateway_chain_id min_balance_wei current_balance_wei top_up_wei
+
+  # SYSCOIN: zksys settles on Gateway, so its commit sender needs Gateway base
+  # token for L1-sender transactions. This is funding-only; role grants are
+  # handled separately above.
+  wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
+  committer_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
+  min_balance_wei="${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-1000000000000000000}"
+  current_balance_wei="$(gateway_commit_sender_balance_wei "${committer_addr}")"
+
+  if python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
+import sys
+
+raise SystemExit(0 if int(sys.argv[1], 10) >= int(sys.argv[2], 10) else 1)
+PY
+  then
+    echo "gateway-launch: Gateway committer balance already funded for ${wallet_name} (${committer_addr}): ${current_balance_wei} wei"
+    return 0
+  fi
+
+  top_up_wei="$(python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
+import sys
+
+print(int(sys.argv[2], 10) - int(sys.argv[1], 10))
+PY
+)"
+
+  echo "gateway-launch: Gateway committer balance below minimum for ${wallet_name} (${committer_addr}): current=${current_balance_wei} wei, minimum=${min_balance_wei} wei; funding ${top_up_wei} wei via L1->Gateway admin tx"
+
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
+  refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
+  gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+
+  gl_l1_broadcast_preflight
+  prepare_gateway_governor_forge_wallet_args
+  (
+    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+    forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
+      --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
+      "${bridgehub}" \
+      "${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "${gateway_chain_id}" \
+      "${committer_addr}" \
+      "${top_up_wei}" \
+      "0x" \
+      "${refund_recipient}" \
+      true \
+      --rpc-url "${L1_RPC_URL}" \
+      --broadcast \
+      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
+      --slow
+  )
+
+  : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS:=120}"
+  : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY:=5}"
+  echo "gateway-launch: waiting for Gateway committer balance repair (up to $((GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY))s)"
+  if ! wait_for_gateway_commit_sender_balance \
+    "${committer_addr}" \
+    "${min_balance_wei}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY}"; then
+    echo "gateway-launch: Gateway committer balance still below ${min_balance_wei} wei for ${wallet_name} (${committer_addr}) after repair attempt" >&2
     return 1
   fi
 }
@@ -687,7 +796,8 @@ edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${e
 if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" &&
   gateway_committer_role_set "${EDGE_CHAIN_NAME}" "${edge_committer_addr}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and committer role set; skipping migrate+finalize and ensuring deposits are unpaused"
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and committer role set; ensuring committer balance and deposits are unpaused"
+  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
@@ -785,4 +895,5 @@ if ! wait_for_da_pair_on_gateway \
 fi
 
 ensure_gateway_commit_sender_validator "${EDGE_CHAIN_NAME}"
+ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
