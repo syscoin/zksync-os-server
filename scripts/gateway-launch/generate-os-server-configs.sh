@@ -88,6 +88,34 @@ if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } &
   : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
 fi
 
+if [ -z "${PROVER_API_AUTH_PASSWORD}" ] && [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
+  # SYSCOIN: final config regeneration can run after the Gateway config has
+  # already been materialized. Reuse its prover API credentials on checkpointed
+  # reruns so operators do not need to re-export secrets just to create the edge
+  # config.
+  existing_prover_api_auth="$(python3 - "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+p = Path(sys.argv[1])
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+prover_api = data.get("prover_api") if isinstance(data, dict) else None
+if isinstance(prover_api, dict):
+    user = prover_api.get("auth_user")
+    password = prover_api.get("auth_password")
+    if isinstance(user, str) and user.strip() and isinstance(password, str) and password.strip():
+        print(user.strip())
+        print(password.strip())
+PY
+)"
+  if [ -n "${existing_prover_api_auth}" ]; then
+    PROVER_API_AUTH_USER="$(printf '%s\n' "${existing_prover_api_auth}" | sed -n '1p')"
+    PROVER_API_AUTH_PASSWORD="$(printf '%s\n' "${existing_prover_api_auth}" | sed -n '2p')"
+  fi
+fi
+
 export GATEWAY_DIR
 export ZKSYNC_OS_SERVER_PATH
 export GATEWAY_CHAIN_NAME
