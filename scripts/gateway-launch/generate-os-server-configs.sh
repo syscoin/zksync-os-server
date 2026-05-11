@@ -24,6 +24,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
 : "${PROVER_API_BIND_HOST:=127.0.0.1}"
+: "${GATEWAY_PROVER_API_DOMAIN:=prover-gw.dev11.top}"
+: "${EDGE_PROVER_API_DOMAIN:=prover-zk.dev11.top}"
 : "${PROVER_API_AUTH_USER:=syscoin-prover}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
@@ -37,6 +39,14 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_NATIVE_PRICE_USD:=3e-11}"
 : "${NATIVE_TOKEN_PRICE_USD:=0.01}"
 : "${MATERIALIZE_EDGE_CONFIG:=true}"
+L1_RPC_URL_WAS_SET=false
+GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET=false
+if [ -n "${L1_RPC_URL+x}" ]; then
+  L1_RPC_URL_WAS_SET=true
+fi
+if [ -n "${GATEWAY_ARCHIVE_L1_RPC_URL+x}" ]; then
+  GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET=true
+fi
 : "${GATEWAY_ARCHIVE_L1_RPC_URL:=${L1_RPC_URL:-}}"
 : "${BITCOIN_DA_RPC_URL:=}"
 : "${BITCOIN_DA_RPC_USER:=}"
@@ -88,6 +98,32 @@ if { [ -z "${BITCOIN_DA_RPC_USER}" ] || [ -z "${BITCOIN_DA_RPC_PASSWORD}" ]; } &
   : "${BITCOIN_DA_RPC_PASSWORD:=${COOKIE#*:}}"
 fi
 
+if [ "${GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET}" = false ] &&
+  [ "${L1_RPC_URL_WAS_SET}" = false ] &&
+  [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
+  # SYSCOIN: checkpoint repairs may regenerate configs without RPC env. Preserve
+  # the materialized archive runtime RPC only in that case. If L1_RPC_URL or
+  # GATEWAY_ARCHIVE_L1_RPC_URL is supplied, the explicit value wins.
+  existing_l1_rpc_url="$(python3 - "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+p = Path(sys.argv[1])
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+l1_provider = data.get("l1_provider") if isinstance(data, dict) else None
+if isinstance(l1_provider, dict):
+    rpc_url = l1_provider.get("rpc_url")
+    if isinstance(rpc_url, str) and rpc_url.strip():
+        print(rpc_url.strip())
+PY
+)"
+  if [ -n "${existing_l1_rpc_url}" ]; then
+    GATEWAY_ARCHIVE_L1_RPC_URL="${existing_l1_rpc_url}"
+  fi
+fi
+
 if [ -z "${PROVER_API_AUTH_PASSWORD}" ] && [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
   # SYSCOIN: final config regeneration can run after the Gateway config has
   # already been materialized. Reuse its prover API credentials on checkpointed
@@ -132,6 +168,8 @@ export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
 export PROVER_API_BIND_HOST
+export GATEWAY_PROVER_API_DOMAIN
+export EDGE_PROVER_API_DOMAIN
 export PROVER_API_AUTH_USER
 export PROVER_API_AUTH_PASSWORD
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
@@ -321,6 +359,41 @@ bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
 bytecode_supplier = eco_contracts["zksync_os_ctm"]["l1_bytecodes_supplier_addr"]
 
 
+def nginx_prover_api_server_block(domain: str, prover_api_port: str) -> str:
+    domain = domain.strip()
+    if not domain:
+        raise SystemExit("missing prover API nginx domain")
+    return f"""server {{
+    listen 80;
+    listen [::]:80;
+    server_name {domain};
+    return 301 https://$host$request_uri;
+}}
+
+server {{
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {domain};
+
+    ssl_certificate /etc/letsencrypt/live/{domain}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/{domain}/chain.pem;
+
+    # Airbender proof submissions can exceed nginx's 1M default.
+    client_max_body_size 0;
+
+    location / {{
+        proxy_pass http://127.0.0.1:{prover_api_port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }}
+}}
+"""
+
+
 def materialize_chain(
     *,
     chain_name: str,
@@ -332,6 +405,7 @@ def materialize_chain(
     prometheus_port: str,
     block_pubdata_limit_bytes: str,
     gateway_rpc_url: str | None,
+    prover_api_domain: str,
 ):
     # SYSCOIN: edge chains in RelayedL2Calldata mode publish pubdata directly to Bitcoin DA and
     # relay only compact blob hashes to Gateway, so they need the same DA plumbing as Blobs mode.
@@ -606,23 +680,13 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
 
-    prover_proxy_script = f"""#!/usr/bin/env bash
-set -euo pipefail
-# SYSCOIN: optional HTTPS terminator for internet-facing Airbender provers.
-# Keep zksync-os-server's prover API bound to localhost and expose this proxy instead.
-: "${{PROVER_API_DOMAIN:?set PROVER_API_DOMAIN, e.g. prover-api.example.com}}"
-: "${{PROVER_API_PROXY_TO:=127.0.0.1:{prover_api_port}}}"
-
-if ! command -v caddy >/dev/null 2>&1; then
-  echo "gateway-launch: caddy is required for start-prover-api-proxy.sh" >&2
-  echo "gateway-launch: install caddy, or run an equivalent HTTPS reverse proxy to http://${{PROVER_API_PROXY_TO}}" >&2
-  exit 1
-fi
-
-exec caddy reverse-proxy --from "${{PROVER_API_DOMAIN}}" --to "${{PROVER_API_PROXY_TO}}"
-"""
-    write_text(out_dir / "start-prover-api-proxy.sh", prover_proxy_script)
-    (out_dir / "start-prover-api-proxy.sh").chmod(0o755)
+    write_text(
+        out_dir / "prover-api.nginx.conf",
+        nginx_prover_api_server_block(prover_api_domain, prover_api_port),
+    )
+    stale_proxy_helper = out_dir / "start-prover-api-proxy.sh"
+    if stale_proxy_helper.exists():
+        stale_proxy_helper.unlink()
 
 materialize_chain(
     chain_name=os.environ["GATEWAY_CHAIN_NAME"],
@@ -634,6 +698,7 @@ materialize_chain(
     prometheus_port=os.environ["GATEWAY_PROMETHEUS_PORT"],
     block_pubdata_limit_bytes=os.environ["GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES"],
     gateway_rpc_url=None,
+    prover_api_domain=os.environ["GATEWAY_PROVER_API_DOMAIN"],
 )
 
 if materialize_edge_config == "true":
@@ -647,7 +712,58 @@ if materialize_edge_config == "true":
         prometheus_port=os.environ["EDGE_PROMETHEUS_PORT"],
         block_pubdata_limit_bytes=os.environ["EDGE_BLOCK_PUBDATA_LIMIT_BYTES"],
         gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
+        prover_api_domain=os.environ["EDGE_PROVER_API_DOMAIN"],
     )
+    combined_nginx = (
+        nginx_prover_api_server_block(
+            os.environ["GATEWAY_PROVER_API_DOMAIN"],
+            os.environ["GATEWAY_PROVER_API_PORT"],
+        )
+        + "\n"
+        + nginx_prover_api_server_block(
+            os.environ["EDGE_PROVER_API_DOMAIN"],
+            os.environ["EDGE_PROVER_API_PORT"],
+        )
+    )
+    write_text(output_root / "prover-api.nginx.conf", combined_nginx)
+    install_script = f"""#!/usr/bin/env bash
+set -euo pipefail
+conf_src="{output_root / 'prover-api.nginx.conf'}"
+if [ -n "${{NGINX_PROVER_API_CONF:-}}" ]; then
+  conf_dst="${{NGINX_PROVER_API_CONF}}"
+elif [ -d /etc/nginx/sites-available ]; then
+  conf_dst="/etc/nginx/sites-available/zksync-os-prover-api.conf"
+elif [ -d /etc/nginx/conf.d ]; then
+  conf_dst="/etc/nginx/conf.d/zksync-os-prover-api.conf"
+elif [ -d /etc/nginx/sites-enabled ]; then
+  conf_dst="/etc/nginx/sites-enabled/zksync-os-prover-api.conf"
+else
+  echo "could not determine nginx config directory; set NGINX_PROVER_API_CONF" >&2
+  exit 1
+fi
+if [ -n "${{NGINX_PROVER_API_ENABLED:-}}" ]; then
+  enabled_dst="${{NGINX_PROVER_API_ENABLED}}"
+elif [ -d /etc/nginx/sites-available ] && [ -d /etc/nginx/sites-enabled ] && [ "${{conf_dst}}" = "/etc/nginx/sites-available/zksync-os-prover-api.conf" ]; then
+  enabled_dst="/etc/nginx/sites-enabled/$(basename "${{conf_dst}}")"
+else
+  enabled_dst="${{conf_dst}}"
+fi
+
+if [ ! -f "${{conf_src}}" ]; then
+  echo "missing generated nginx config: ${{conf_src}}" >&2
+  exit 1
+fi
+
+echo "Installing ${{conf_src}} -> ${{conf_dst}}"
+sudo cp "${{conf_src}}" "${{conf_dst}}"
+if [ "${{conf_dst}}" != "${{enabled_dst}}" ]; then
+  sudo ln -sfn "${{conf_dst}}" "${{enabled_dst}}"
+fi
+sudo nginx -t
+sudo systemctl reload nginx
+"""
+    write_text(output_root / "install-prover-api-nginx.sh", install_script)
+    (output_root / "install-prover-api-nginx.sh").chmod(0o755)
 else:
     print("gateway-launch: skipping edge OS-server config materialization for this phase")
 
