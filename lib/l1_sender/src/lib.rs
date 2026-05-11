@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
-use zksync_os_pipeline::{PeekableReceiver, SendAndRecordExt};
+use zksync_os_pipeline::{ComponentId, PeekableReceiver, SendAndRecordExt};
 
 /// Component-specific state for the L1 sender.
 pub enum L1SenderState {
@@ -245,10 +245,13 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         state_reporter.enter_state(L1SenderState::Idle);
         // Sleeps until at least one command is available, then greedily drains up to
         // command_limit items without waiting. cmd_buffer is emptied every iteration.
-        // SYSCOIN: L1 commands are state-dependent and dynamic gas estimation runs
-        // against latest state before prior same-sender transactions are mined.
-        // Serialize submission so estimation failures still signal real invalid calls.
-        let command_limit = 1;
+        // SYSCOIN: execute appends to MessageRoot sequentially, so tx N+1
+        // cannot be prepared before tx N is mined. Keep commit/prove pipelining intact.
+        let command_limit = if Input::COMPONENT_ID == ComponentId::L1SenderExecute {
+            1
+        } else {
+            config.command_limit
+        };
         let received = inbound.recv_many(&mut cmd_buffer, command_limit).await;
         // Only returns 0 when the channel is closed and drained.
         if received == 0 {

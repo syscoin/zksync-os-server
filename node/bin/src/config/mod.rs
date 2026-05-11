@@ -874,7 +874,9 @@ pub struct L1SenderConfig {
     pub force_transaction_resubmission: ForceTransactionResubmissionConfig,
 
     /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
-    #[config(default_t = 16)]
+    /// SYSCOIN: default to serial commit/prove submission because dynamic L1 gas
+    /// estimation runs before earlier same-sender transactions are mined.
+    #[config(default_t = 1)]
     pub command_limit: usize,
 
     /// How often to poll L1 for new blocks.
@@ -2104,7 +2106,7 @@ mod tests {
                 max_priority_fee_per_gas: 1 * EtherUnit::Gwei,
                 max_fee_per_blob_gas: 2 * EtherUnit::Gwei,
                 force_transaction_resubmission: ForceTransactionResubmissionConfig::default(),
-                command_limit: 16,
+                command_limit: 1,
                 poll_interval: Duration::from_millis(100),
                 // SYSCOIN
                 transaction_timeout: Duration::from_secs(3000),
