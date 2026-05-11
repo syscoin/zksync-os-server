@@ -1,190 +1,3 @@
-diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
-index 6526d9e3..ac076382 100644
---- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
-+++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
-@@ -13,7 +13,8 @@ pub struct KZGCommitmentAndProof {
- }
- 
- impl UsizeSerializable for KZGCommitmentAndProof {
--    const USIZE_LEN: usize = 96 / size_of::<usize>();
-+    // SYSCOIN: encode only 32-byte blob id (8 words on 32-bit host, 4 on 64-bit host).
-+    const USIZE_LEN: usize = 32 / size_of::<usize>();
- 
-     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
-         cfg_if::cfg_if!(
-@@ -21,10 +22,11 @@ impl UsizeSerializable for KZGCommitmentAndProof {
-                 compile_error!("unsupported architecture: big endian arch is not supported")
-             } else {
-                 #[allow(clippy::needless_return)]
--                return ExactSizeChain::new(
--                    self.commitment.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
--                    self.proof.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
--                );
-+                return self.commitment[..32]
-+                    .as_chunks::<{ core::mem::size_of::<usize>() }>()
-+                    .0
-+                    .iter()
-+                    .map(|chunk| usize::from_le_bytes(*chunk));
-             }
-         );
-     }
-@@ -34,13 +36,13 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
-     const USIZE_LEN: usize = <Self as UsizeSerializable>::USIZE_LEN;
- 
-     fn from_iter(src: &mut impl ExactSizeIterator<Item = usize>) -> Result<Self, InternalError> {
--        const FIELD_USIZE_LEN: usize = 48 / core::mem::size_of::<usize>();
-+        const FIELD_USIZE_LEN: usize = 32 / core::mem::size_of::<usize>();
-         let mut out = Self {
-             commitment: [0u8; 48],
-             proof: [0u8; 48],
-         };
-         unsafe {
--            let commitment_usize_ptr = out.commitment.as_mut_ptr().cast::<usize>();
-+            let commitment_usize_ptr = out.commitment[..32].as_mut_ptr().cast::<usize>();
-             for i in 0..FIELD_USIZE_LEN {
-                 commitment_usize_ptr
-                     .add(i)
-@@ -48,14 +50,6 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
-                         "KZGCommitmentAndProof deserialization failed"
-                     ))?);
-             }
--            let proof_usize_ptr = out.proof.as_mut_ptr().cast::<usize>();
--            for i in 0..FIELD_USIZE_LEN {
--                proof_usize_ptr
--                    .add(i)
--                    .write(src.next().ok_or(internal_error!(
--                        "KZGCommitmentAndProof deserialization failed"
--                    ))?);
--            }
-         }
- 
-         Ok(out)
-diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
-index e36a8a8c..fdbf0c3f 100644
---- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
-+++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
-@@ -29,16 +29,17 @@ pub const BLOB_CHUNK_SIZE: usize = 31;
- ///
- /// Number of field elements per EIP-4844 blob
- ///
--pub const ELEMENTS_PER_4844_BLOB: usize = 4096;
-+pub const ELEMENTS_PER_4844_BLOB: usize = 4096;
- 
- ///
- /// Number of bytes we can encode in one blob
- ///
--pub const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
-+// SYSCOIN: Bitcoin DA accepts up to 2 MiB per blob; keep the legacy constant
-+// name because the rest of the DA commitment path is keyed off this value.
-+pub const ENCODABLE_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
- 
- ///
- /// Maximal number of blobs that we support with blobs DA mode.
- ///
--pub const MAX_NUMBER_OF_BLOBS: usize = 9;
-+pub const MAX_NUMBER_OF_BLOBS: usize = 32;
- 
- pub const BUFFER_CAPACITY: usize = ENCODABLE_BYTES_PER_BLOB * MAX_NUMBER_OF_BLOBS;
- 
-@@ -104,25 +104,22 @@ pub fn blob_versioned_hash_with_advisor(
-     // We get commitment and proof from an external source (advisor)
-     // Correctness is checked below
-     let commitment_and_proof = advisor.get_blob_commitment_and_proof_advice(data);
-+    let mut advised_blob_data_id = [0u8; 32];
-+    advised_blob_data_id.copy_from_slice(&commitment_and_proof.commitment[..32]);
-+    let local_blob_data_id = blob_data_id(data);
- 
--    let commitment = parse_g1_compressed(&commitment_and_proof.commitment)
--        .expect("Invalid blob commitment point");
--    let proof = parse_g1_compressed(&commitment_and_proof.proof).expect("Invalid blob proof point");
--    let versioned_hash = versioned_hash_for_kzg(commitment_and_proof.commitment.as_slice());
--    let evaluation_point = calculate_evaluation_point(data, &versioned_hash);
--    let opening_value = polynomial_evaluation::evaluate_blob_polynomial(data, &evaluation_point);
--
--    assert!(
--        crypto::bls12_381::verify_kzg_proof(
--            commitment,
--            proof,
--            evaluation_point.into_bigint(),
--            opening_value.into_bigint(),
--        ),
--        "Failed to verify blob proof"
-+    assert_eq!(
-+        advised_blob_data_id, local_blob_data_id,
-+        "Blob data id advice mismatch"
-     );
- 
--    versioned_hash
-+    local_blob_data_id
-+}
-+
-+fn blob_data_id(data: &[u8]) -> [u8; 32] {
-+    let mut hasher = Keccak256::new();
-+    hasher.update(data);
-+    hasher.finalize()
- }
- 
- fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
-diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
---- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
-+++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
-@@ -1,31 +1,47 @@
-+use super::blob_commitment_generator::{
-+    BLOB_CHUNK_SIZE, ENCODABLE_BYTES_PER_BLOB, MAX_NUMBER_OF_BLOBS,
-+};
- use super::DACommitmentGenerator;
-+use core::cmp;
- use crypto::sha3::Keccak256;
- use crypto::MiniDigest;
- use zk_ee::oracle::IOOracle;
- use zk_ee::utils::write_bytes::WriteBytes;
- use zk_ee::utils::Bytes32;
- 
- pub struct Keccak256CommitmentGenerator {
-     pubdata_hasher: Keccak256,
-+    pubdata_len: usize,
- }
- 
- impl Keccak256CommitmentGenerator {
-     pub fn new() -> Self {
-         Self {
-             pubdata_hasher: Keccak256::new(),
-+            pubdata_len: 0,
-         }
-     }
- }
- 
- impl WriteBytes for Keccak256CommitmentGenerator {
-     fn write(&mut self, buf: &[u8]) {
-         self.pubdata_hasher.update(buf);
-+        self.pubdata_len += buf.len();
-     }
- }
- 
- impl<O: IOOracle> DACommitmentGenerator<O> for Keccak256CommitmentGenerator {
-     fn finalize(&mut self, _oracle: &mut O) -> Bytes32 {
-+        // SYSCOIN: Gateway relayed-calldata DA can cover multiple 2 MiB Syscoin DA blobs.
-+        let blobs_provided = cmp::max(
-+            1,
-+            (self.pubdata_len + BLOB_CHUNK_SIZE).div_ceil(ENCODABLE_BYTES_PER_BLOB),
-+        );
-+        assert!(
-+            blobs_provided <= MAX_NUMBER_OF_BLOBS,
-+            "Syscoin DA pubdata exceeds supported blob count"
-+        );
-         let mut da_commitment_hasher = crypto::sha3::Keccak256::new();
-         da_commitment_hasher.update([0u8; 32]); // we don't have to validate state diffs hash
-         da_commitment_hasher.update(self.pubdata_hasher.finalize_reset()); // full pubdata keccak
--        da_commitment_hasher.update([1u8]); // with calldata we should provide 1 blob
--        da_commitment_hasher.update([0u8; 32]); // its hash will be ignored on the settlement layer
-+        da_commitment_hasher.update([blobs_provided as u8]);
-+        for _ in 0..blobs_provided {
-+            da_commitment_hasher.update([0u8; 32]); // ignored on the settlement layer
-+        }
-+        self.pubdata_len = 0;
-         da_commitment_hasher.finalize().into()
-     }
- }
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
 index 0125d676..b48e3e35 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
@@ -214,17 +27,228 @@ index 0125d676..b48e3e35 100644
          };
          let public_input = BatchPublicInput {
              state_before: self.initial_state_commitment.unwrap(),
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
+index b59ae12c..e7b9b718 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
+@@ -1,3 +1,4 @@
++use arrayvec::ArrayVec;
+ use crypto::MiniDigest;
+ use zk_ee::utils::Bytes32;
+
+@@ -21,6 +22,8 @@ pub struct ZKBasicBlockDataKeeper<EA: TxHashesAccumulator> {
+     pub block_computational_native_used: u64,
+     /// Amount of blob gas used in the block
+     pub block_blob_gas_used: u64,
++    /// SYSCOIN: accepted transaction numbers allowed to emit compact edge DA refs.
++    pub syscoin_compact_edge_da_ref_tx_numbers: ArrayVec<u32, 16384>,
+ }
+
+ impl<EA: TxHashesAccumulator> ZKBasicBlockDataKeeper<EA> {
+@@ -36,6 +39,7 @@ impl<EA: TxHashesAccumulator> ZKBasicBlockDataKeeper<EA> {
+             block_pubdata_used: 0,
+             block_computational_native_used: 0,
+             block_blob_gas_used: 0,
++            syscoin_compact_edge_da_ref_tx_numbers: ArrayVec::new(),
+         }
+     }
+ }
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
+index 6526d9e3..ac076382 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs
+@@ -13,7 +13,8 @@ pub struct KZGCommitmentAndProof {
+ }
+
+ impl UsizeSerializable for KZGCommitmentAndProof {
+-    const USIZE_LEN: usize = 96 / size_of::<usize>();
++    // SYSCOIN: encode only 32-byte blob id (8 words on 32-bit host, 4 on 64-bit host).
++    const USIZE_LEN: usize = 32 / size_of::<usize>();
+
+     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
+         cfg_if::cfg_if!(
+@@ -21,10 +22,11 @@ impl UsizeSerializable for KZGCommitmentAndProof {
+                 compile_error!("unsupported architecture: big endian arch is not supported")
+             } else {
+                 #[allow(clippy::needless_return)]
+-                return ExactSizeChain::new(
+-                    self.commitment.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
+-                    self.proof.as_chunks::<{ core::mem::size_of::<usize>() }>().0.iter().map(|chunk| usize::from_le_bytes(*chunk)),
+-                );
++                return self.commitment[..32]
++                    .as_chunks::<{ core::mem::size_of::<usize>() }>()
++                    .0
++                    .iter()
++                    .map(|chunk| usize::from_le_bytes(*chunk));
+             }
+         );
+     }
+@@ -34,13 +36,13 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
+     const USIZE_LEN: usize = <Self as UsizeSerializable>::USIZE_LEN;
+
+     fn from_iter(src: &mut impl ExactSizeIterator<Item = usize>) -> Result<Self, InternalError> {
+-        const FIELD_USIZE_LEN: usize = 48 / core::mem::size_of::<usize>();
++        const FIELD_USIZE_LEN: usize = 32 / core::mem::size_of::<usize>();
+         let mut out = Self {
+             commitment: [0u8; 48],
+             proof: [0u8; 48],
+         };
+         unsafe {
+-            let commitment_usize_ptr = out.commitment.as_mut_ptr().cast::<usize>();
++            let commitment_usize_ptr = out.commitment[..32].as_mut_ptr().cast::<usize>();
+             for i in 0..FIELD_USIZE_LEN {
+                 commitment_usize_ptr
+                     .add(i)
+@@ -48,14 +50,6 @@ impl UsizeDeserializable for KZGCommitmentAndProof {
+                         "KZGCommitmentAndProof deserialization failed"
+                     ))?);
+             }
+-            let proof_usize_ptr = out.proof.as_mut_ptr().cast::<usize>();
+-            for i in 0..FIELD_USIZE_LEN {
+-                proof_usize_ptr
+-                    .add(i)
+-                    .write(src.next().ok_or(internal_error!(
+-                        "KZGCommitmentAndProof deserialization failed"
+-                    ))?);
+-            }
+         }
+
+         Ok(out)
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
+index e36a8a8c..f33eb204 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs
+@@ -33,12 +33,14 @@ pub const ELEMENTS_PER_4844_BLOB: usize = 4096;
+ ///
+ /// Number of bytes we can encode in one blob
+ ///
+-pub const ENCODABLE_BYTES_PER_BLOB: usize = BLOB_CHUNK_SIZE * ELEMENTS_PER_4844_BLOB;
++// SYSCOIN: Bitcoin DA accepts up to 2 MiB per blob; keep the legacy constant
++// name because the rest of the DA commitment path is keyed off this value.
++pub const ENCODABLE_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
+
+ ///
+ /// Maximal number of blobs that we support with blobs DA mode.
+ ///
+-pub const MAX_NUMBER_OF_BLOBS: usize = 9;
++pub const MAX_NUMBER_OF_BLOBS: usize = 32;
+
+ pub const BUFFER_CAPACITY: usize = ENCODABLE_BYTES_PER_BLOB * MAX_NUMBER_OF_BLOBS;
+
+@@ -104,25 +106,22 @@ pub fn blob_versioned_hash_with_advisor(
+     // We get commitment and proof from an external source (advisor)
+     // Correctness is checked below
+     let commitment_and_proof = advisor.get_blob_commitment_and_proof_advice(data);
++    let mut advised_blob_data_id = [0u8; 32];
++    advised_blob_data_id.copy_from_slice(&commitment_and_proof.commitment[..32]);
++    let local_blob_data_id = blob_data_id(data);
+
+-    let commitment = parse_g1_compressed(&commitment_and_proof.commitment)
+-        .expect("Invalid blob commitment point");
+-    let proof = parse_g1_compressed(&commitment_and_proof.proof).expect("Invalid blob proof point");
+-    let versioned_hash = versioned_hash_for_kzg(commitment_and_proof.commitment.as_slice());
+-    let evaluation_point = calculate_evaluation_point(data, &versioned_hash);
+-    let opening_value = polynomial_evaluation::evaluate_blob_polynomial(data, &evaluation_point);
+-
+-    assert!(
+-        crypto::bls12_381::verify_kzg_proof(
+-            commitment,
+-            proof,
+-            evaluation_point.into_bigint(),
+-            opening_value.into_bigint(),
+-        ),
+-        "Failed to verify blob proof"
++    assert_eq!(
++        advised_blob_data_id, local_blob_data_id,
++        "Blob data id advice mismatch"
+     );
+
+-    versioned_hash
++    local_blob_data_id
++}
++
++fn blob_data_id(data: &[u8]) -> [u8; 32] {
++    let mut hasher = Keccak256::new();
++    hasher.update(data);
++    hasher.finalize()
+ }
+
+ fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
+index 75243903..e916a47b 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs
+@@ -1,4 +1,8 @@
++use super::blob_commitment_generator::{
++    BLOB_CHUNK_SIZE, ENCODABLE_BYTES_PER_BLOB, MAX_NUMBER_OF_BLOBS,
++};
+ use super::DACommitmentGenerator;
++use core::cmp;
+ use crypto::sha3::Keccak256;
+ use crypto::MiniDigest;
+ use zk_ee::oracle::IOOracle;
+@@ -7,12 +11,14 @@ use zk_ee::utils::Bytes32;
+
+ pub struct Keccak256CommitmentGenerator {
+     pubdata_hasher: Keccak256,
++    pubdata_len: usize,
+ }
+
+ impl Keccak256CommitmentGenerator {
+     pub fn new() -> Self {
+         Self {
+             pubdata_hasher: Keccak256::new(),
++            pubdata_len: 0,
+         }
+     }
+ }
+@@ -20,16 +26,29 @@ impl Keccak256CommitmentGenerator {
+ impl WriteBytes for Keccak256CommitmentGenerator {
+     fn write(&mut self, buf: &[u8]) {
+         self.pubdata_hasher.update(buf);
++        self.pubdata_len += buf.len();
+     }
+ }
+
+ impl<O: IOOracle> DACommitmentGenerator<O> for Keccak256CommitmentGenerator {
+     fn finalize(&mut self, _oracle: &mut O) -> Bytes32 {
++        // SYSCOIN: Gateway relayed-calldata DA can cover multiple 2 MiB Syscoin DA blobs.
++        let blobs_provided = cmp::max(
++            1,
++            (self.pubdata_len + BLOB_CHUNK_SIZE).div_ceil(ENCODABLE_BYTES_PER_BLOB),
++        );
++        assert!(
++            blobs_provided <= MAX_NUMBER_OF_BLOBS,
++            "Syscoin DA pubdata exceeds supported blob count"
++        );
+         let mut da_commitment_hasher = crypto::sha3::Keccak256::new();
+         da_commitment_hasher.update([0u8; 32]); // we don't have to validate state diffs hash
+         da_commitment_hasher.update(self.pubdata_hasher.finalize_reset()); // full pubdata keccak
+-        da_commitment_hasher.update([1u8]); // with calldata we should provide 1 blob
+-        da_commitment_hasher.update([0u8; 32]); // its hash will be ignored on the settlement layer
++        da_commitment_hasher.update([blobs_provided as u8]);
++        for _ in 0..blobs_provided {
++            da_commitment_hasher.update([0u8; 32]); // ignored on the settlement layer
++        }
++        self.pubdata_len = 0;
+         da_commitment_hasher.finalize().into()
+     }
+ }
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
-index 0ff5891c..7de80e91 100644
+index 0ff5891c..ddef4775 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
-@@ -109,7 +109,15 @@ where
+@@ -108,8 +108,28 @@ where
+
          io.logs_storage
              .apply_to_array_vec(&mut batch_data.logs_storage);
-+        // SYSCOIN: accumulate compact edge DA refs emitted during Gateway execution.
++        // SYSCOIN: accumulate compact edge DA refs only from the authorized Gateway commit tx.
 +        io.logs_storage
-+            .apply_syscoin_edge_da_refs_root(&mut batch_data.edge_da_refs_root);
- 
++            .apply_syscoin_edge_da_refs_root_for_tx_numbers(
++                &mut batch_data.edge_da_refs_root,
++                &block_data.syscoin_compact_edge_da_ref_tx_numbers,
++            );
+
 -        let upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
 +        let recorded_upgrade_tx_hash = block_data.upgrade_tx_recorder.finish();
 +        let canonical_upgrade_tx_hash = metadata.block_level.canonical_upgrade_tx_hash;
@@ -242,13 +266,13 @@ index 0ff5891c..7de80e91 100644
 +            canonical_upgrade_tx_hash
 +        };
          let (multichain_root, settlement_layer_chain_id) = read_batch_context_inputs(&mut io);
- 
+
          let (mut state_commitment, last_block_timestamp) = {
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
-index 2c21c201..8be6f90e 100644
+index 2c21c201..edd7fbae 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
-@@ -110,7 +110,12 @@ where
+@@ -110,7 +110,21 @@ where
          if !block_data.upgrade_tx_recorder.is_empty() {
              number_of_layer_2_txs -= 1;
          }
@@ -271,15 +295,17 @@ index 2c21c201..8be6f90e 100644
          let interop_roots_rolling_hash = calculate_interop_roots_rolling_hash(
              Bytes32::zero(),
              io.interop_root_storage.iter(),
-@@ -195,6 +200,8 @@ where
+@@ -195,6 +209,10 @@ where
              upgrade_tx_hash,
              interop_roots_rolling_hash,
              settlement_layer_chain_id,
-+            // SYSCOIN: derive compact edge DA refs from messages emitted during Gateway execution.
-+            edge_da_refs_root: io.logs_storage.syscoin_edge_da_refs_root(),
++            // SYSCOIN: derive compact edge DA refs only from the authorized Gateway commit tx.
++            edge_da_refs_root: io.logs_storage.syscoin_edge_da_refs_root_for_tx_numbers(
++                &block_data.syscoin_compact_edge_da_ref_tx_numbers,
++            ),
          };
          logger_log!(logger, "PI calculation: batch output {:?}\n", batch_output,);
- 
+
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs
 index 93780290..ee1a9f15 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs
@@ -291,7 +317,7 @@ index 93780290..ee1a9f15 100644
 +    /// SYSCOIN: root of compact edge DA refs emitted by chains settling to Gateway.
 +    pub edge_da_refs_root: Bytes32,
  }
- 
+
  impl BatchOutput {
 @@ -99,6 +101,8 @@ impl BatchOutput {
          hasher.update(self.upgrade_tx_hash.as_u8_ref());
@@ -302,6 +328,107 @@ index 93780290..ee1a9f15 100644
          hasher.finalize()
      }
  }
+diff --git a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
+index 36d4187b..34b059cc 100644
+--- a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
++++ b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
+@@ -209,6 +209,13 @@ where
+                                         .upgrade_tx_recorder
+                                         .add_upgrade_tx_hash(&tx_processing_result.tx_hash);
+                                 }
++                                if tx_processing_result.collects_syscoin_edge_da_refs {
++                                    // SYSCOIN: bind compact edge DA refs only to the accepted
++                                    // Gateway commit transaction that is authorized by metadata.
++                                    block_data
++                                        .syscoin_compact_edge_da_ref_tx_numbers
++                                        .push(block_data.current_transaction_number);
++                                }
+                                 block_data.current_transaction_number += 1;
+
+                                 result_keeper.tx_processed(Ok(TxProcessingOutput {
+diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
+index 879e9dc5..50d48c38 100644
+--- a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
++++ b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
+@@ -22,7 +22,7 @@ use errors::cascade::CascadedError;
+ use errors::root_cause::RootCause;
+ use metadata::basic_metadata::{BasicMetadata, ZkSpecificPricingMetadata};
+ use metadata::zk_metadata::TxLevelMetadata;
+-use ruint::aliases::U256;
++use ruint::aliases::{B160, U256};
+ use zk_ee::common_structs::system_hooks::HooksStorage;
+ use zk_ee::execution_environment_type::ExecutionEnvironmentType;
+ use zk_ee::system::errors::interface::InterfaceError;
+@@ -61,6 +61,8 @@ pub struct ZkTxResult<'a> {
+     pub native_used: u64,
+     pub pubdata_used: u64,
+     pub blob_gas_used: u64,
++    /// SYSCOIN: true only for the authorized Gateway child-chain commit transaction.
++    pub collects_syscoin_edge_da_refs: bool,
+ }
+
+ impl<'a> MinimalTransactionOutput<'a> for ZkTxResult<'a> {
+@@ -583,6 +585,9 @@ where
+         #[cfg(feature = "verify_intrinsic_native")]
+         Self::verify_intrinsic_native(system, &context);
+
++        let collects_syscoin_edge_da_refs =
++            is_authorized_syscoin_edge_da_ref_commit_tx(system, &transaction);
++
+         ZkTxResult {
+             result,
+             tx_hash: context.tx_hash,
+@@ -595,6 +600,7 @@ where
+             computational_native_used,
+             pubdata_used: context.total_pubdata,
+             blob_gas_used,
++            collects_syscoin_edge_da_refs,
+         }
+     }
+
+@@ -624,6 +630,30 @@ where
+     }
+ }
+
++const SYSCOIN_COMMIT_BATCHES_SHARED_BRIDGE_SELECTOR: [u8; 4] = [0x0d, 0xb9, 0xeb, 0x87];
++const SYSCOIN_COMMIT_BATCHES_MULTISIG_SELECTOR: [u8; 4] = [0x09, 0x13, 0x14, 0x8a];
++
++fn is_authorized_syscoin_edge_da_ref_commit_tx<S: EthereumLikeTypes>(
++    system: &System<S>,
++    transaction: &Transaction<S::Allocator>,
++) -> bool
++where
++    S::Metadata: ZkSpecificPricingMetadata,
++{
++    // SYSCOIN: compact edge DA refs are settlement-critical, so the proven root
++    // only follows child-chain commit transactions sent to the configured Gateway
++    // validator timelock target.
++    let target = system.metadata.syscoin_compact_edge_da_commit_target();
++    if target == B160::ZERO || transaction.to() != Some(target) {
++        return false;
++    }
++
++    let calldata = transaction.calldata();
++    calldata.len() >= 4
++        && (calldata[..4] == SYSCOIN_COMMIT_BATCHES_SHARED_BRIDGE_SELECTOR
++            || calldata[..4] == SYSCOIN_COMMIT_BATCHES_MULTISIG_SELECTOR)
++}
++
+ impl<S: EthereumLikeTypes> ZkTransactionFlowOnlyEOA<S>
+ where
+     S::IO: IOSubsystemExt,
+diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
+index b7c88baa..25a3cfb4 100644
+--- a/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
++++ b/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
+@@ -409,6 +409,7 @@ where
+         native_used,
+         pubdata_used: pubdata_used + intrinsic_pubdata,
+         blob_gas_used: 0,
++        collects_syscoin_edge_da_refs: false,
+     })
+ }
+
 diff --git a/callable_oracles/src/blob_kzg_commitment/mod.rs b/callable_oracles/src/blob_kzg_commitment/mod.rs
 index 47324a1f..6a5650c2 100644
 --- a/callable_oracles/src/blob_kzg_commitment/mod.rs
@@ -317,7 +444,7 @@ index 47324a1f..6a5650c2 100644
 @@ -63,39 +64,16 @@ impl<M: MemorySource> OracleQueryProcessor<M> for BlobCommitmentAndProofQuery<M>
      }
  }
- 
+
 -///
 -/// Calculate kzg commitment and proof at the point `blake2s(versioned_hash & data)` for blob created from passed data.
 -///
@@ -352,7 +479,7 @@ index 47324a1f..6a5650c2 100644
 -        .unwrap();
 -    let proof = p.0;
 +    let blob_data_id: [u8; 32] = hasher.finalize();
- 
+
 -    KZGCommitmentAndProof {
 -        commitment: commitment.to_bytes().into_inner(),
 -        proof: proof.to_bytes().into_inner(),
@@ -364,31 +491,33 @@ index 47324a1f..6a5650c2 100644
 +    KZGCommitmentAndProof { commitment, proof }
  }
 diff --git a/forward_system/src/run/convert.rs b/forward_system/src/run/convert.rs
-index dbab6675..4e9e7850 100644
+index 60472a37..45a485f4 100644
 --- a/forward_system/src/run/convert.rs
 +++ b/forward_system/src/run/convert.rs
-@@ -5,6 +5,7 @@ use basic_bootloader::bootloader::block_header::BlockHeader;
- use zk_ee::common_structs::GenericEventContent;
+@@ -6,6 +6,7 @@ use zk_ee::common_structs::GenericEventContent;
  use zk_ee::system::evm::EvmError as ZkEvmError;
  use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
-+use zk_ee::utils::Bytes32;
  use zk_ee::types_config::EthereumIOTypesConfig;
++use zk_ee::utils::Bytes32;
  use zksync_os_evm_errors::EvmError as InterfaceEvmError;
  use zksync_os_interface::error::InvalidTransaction;
-@@ -93,6 +94,7 @@ impl FromInterface<BlockContext> for BlockMetadataFromOracle {
+ use zksync_os_interface::types::{BlockContext, L2ToL1Log};
+@@ -93,6 +94,8 @@ impl FromInterface<BlockContext> for BlockMetadataFromOracle {
              pubdata_limit: value.pubdata_limit,
              mix_hash: value.mix_hash,
              blob_fee: value.blob_fee,
 +            canonical_upgrade_tx_hash: Bytes32::ZERO,
++            syscoin_compact_edge_da_commit_target: ruint::aliases::B160::ZERO,
          }
      }
  }
 diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
-index a6a348fd..6e98ff3d 100644
+index a6a348fd..50e6519c 100644
 --- a/forward_system/src/run/mod.rs
 +++ b/forward_system/src/run/mod.rs
-@@ -49,6 +49,14 @@ use zksync_os_interface::traits::EncodedTx;
- 
+@@ -48,6 +48,14 @@ use zk_ee::wrap_error;
+ use zksync_os_interface::traits::EncodedTx;
+
  use std::path::PathBuf;
 +// SYSCOIN: must match the patched ZKsync OS blob commitment chunk size.
 +const SYSCOIN_DA_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
@@ -401,19 +530,24 @@ index a6a348fd..6e98ff3d 100644
  pub use tx_result_callback::TxResultCallback;
  pub use tx_source::NextTxResponse;
  pub use tx_source::TxSource;
-@@ -202,14 +210,15 @@ pub fn generate_batch_proof_input(
+@@ -201,15 +209,19 @@ pub fn generate_batch_proof_input(
+             blobs_data.extend_from_slice(&[0u8; 23]); // pad to 31
              for (i, block_pubdata) in blocks_pubdata.into_iter().enumerate() {
                  blobs_data.extend_from_slice(block_pubdata);
-                 let length_without_advice = blocks_proof_inputs[i].len()
+-                let length_without_advice = blocks_proof_inputs[i].len()
 -                    - (block_pubdata.len() + 31).div_ceil(31 * 4096) * 25;
-+                    - syscoin_da_blob_count(block_pubdata.len()) * 9;
++                let length_without_advice =
++                    blocks_proof_inputs[i].len() - syscoin_da_blob_count(block_pubdata.len()) * 9;
                  blocks_proof_inputs[i] = &blocks_proof_inputs[i][..length_without_advice];
              }
 -            let mut blobs_advice = Vec::with_capacity(25 * blobs_data.len().div_ceil(31 * 4096));
 -            for blob_data in blobs_data.chunks(31 * 4096) {
 +            let blob_count = syscoin_da_blob_count(total_pubdata_length);
 +            let mut blobs_advice = Vec::with_capacity(9 * blob_count);
-+            for blob_data in blobs_data.chunks(SYSCOIN_DA_BYTES_PER_BLOB).take(blob_count) {
++            for blob_data in blobs_data
++                .chunks(SYSCOIN_DA_BYTES_PER_BLOB)
++                .take(blob_count)
++            {
                  let advice =
                      callable_oracles::blob_kzg_commitment::blob_kzg_commitment_and_proof(blob_data);
 -                blobs_advice.push(24);
@@ -422,27 +556,29 @@ index a6a348fd..6e98ff3d 100644
                      #[cfg(target_pointer_width = "32")]
                      blobs_advice.push(word as u32);
 diff --git a/tests/rig/src/chain.rs b/tests/rig/src/chain.rs
-index 28a64da4..d38de79e 100644
+index 2e5dbe05..ff0bb686 100644
 --- a/tests/rig/src/chain.rs
 +++ b/tests/rig/src/chain.rs
-@@ -425,6 +425,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
+@@ -429,6 +429,8 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
              pubdata_limit: block_context.pubdata_limit,
              mix_hash: block_context.mix_hash,
              blob_fee: block_context.blob_fee,
 +            canonical_upgrade_tx_hash: Bytes32::ZERO,
++            syscoin_compact_edge_da_commit_target: ruint::aliases::B160::ZERO,
          };
          let tx_source = TxListSource {
              transactions: transactions.into(),
-@@ -615,6 +616,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
+@@ -620,6 +622,8 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
              pubdata_limit: block_context.pubdata_limit,
              mix_hash: block_context.mix_hash,
              blob_fee: block_context.blob_fee,
 +            canonical_upgrade_tx_hash: Bytes32::ZERO,
++            syscoin_compact_edge_da_commit_target: ruint::aliases::B160::ZERO,
          };
          let state_commitment = FlatStorageCommitment::<{ TREE_HEIGHT }> {
              root: *self.state_tree.storage_tree.root(),
 diff --git a/zk_ee/src/common_structs/logs_storage.rs b/zk_ee/src/common_structs/logs_storage.rs
-index f7313c71..3d500cfb 100644
+index f7313c71..2b86b2f6 100644
 --- a/zk_ee/src/common_structs/logs_storage.rs
 +++ b/zk_ee/src/common_structs/logs_storage.rs
 @@ -23,6 +23,11 @@ use ruint::aliases::U256;
@@ -454,23 +590,34 @@ index f7313c71..3d500cfb 100644
 +const SYSCOIN_EDGE_DA_REFS_DOMAIN: &[u8] = b"SYSCOIN_EDGE_DA_REFS_V1";
 +const ABI_WORD: usize = 32;
 +const SYSCOIN_EDGE_DA_REF_HEAD_BYTES: usize = ABI_WORD * 5;
- 
+
  ///
  /// L2 to l1 log structure, used for merkle tree leaves.
-@@ -263,6 +268,29 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
+@@ -263,6 +268,40 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
          }
      }
- 
-+    pub fn syscoin_edge_da_refs_root(&self) -> Bytes32 {
-+        // SYSCOIN: ordered rolling root over compact edge DA refs emitted during Gateway execution.
+
++    pub fn syscoin_edge_da_refs_root_for_tx_numbers(
++        &self,
++        authorized_tx_numbers: &[u32],
++    ) -> Bytes32 {
++        // SYSCOIN: ordered rolling root over compact edge DA refs emitted by authorized
++        // Gateway commit transactions.
 +        let mut root = Bytes32::ZERO;
-+        self.apply_syscoin_edge_da_refs_root(&mut root);
++        self.apply_syscoin_edge_da_refs_root_for_tx_numbers(&mut root, authorized_tx_numbers);
 +        root
 +    }
 +
-+    pub fn apply_syscoin_edge_da_refs_root(&self, root: &mut Bytes32) {
-+        // SYSCOIN: extend an existing ordered root with this block's compact edge DA refs.
++    pub fn apply_syscoin_edge_da_refs_root_for_tx_numbers(
++        &self,
++        root: &mut Bytes32,
++        authorized_tx_numbers: &[u32],
++    ) {
++        // SYSCOIN: extend an existing ordered root with this block's authorized compact edge DA refs.
 +        for message in self.list.iter() {
++            if !authorized_tx_numbers.contains(&message.tx_number) {
++                continue;
++            }
 +            let GenericLogContentData::UserMsg(UserMsgData { data, .. }) = &message.data else {
 +                continue;
 +            };
@@ -486,8 +633,8 @@ index f7313c71..3d500cfb 100644
 +
      pub fn calculate_pubdata_used_by_tx(&self) -> Result<u32, InternalError> {
          let total_pubdata_used = self.list.top().map_or(0, |(_, m)| *m);
- 
-@@ -523,3 +551,45 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
+
+@@ -523,3 +562,46 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
          }
      }
  }
@@ -534,67 +681,143 @@ index f7313c71..3d500cfb 100644
 +    }
 +    usize::try_from(u64::from_be_bytes(word[24..].try_into().ok()?)).ok()
 +}
+diff --git a/zk_ee/src/system/metadata/basic_metadata.rs b/zk_ee/src/system/metadata/basic_metadata.rs
+index 04e41300..2779b3c4 100644
+--- a/zk_ee/src/system/metadata/basic_metadata.rs
++++ b/zk_ee/src/system/metadata/basic_metadata.rs
+@@ -1,5 +1,5 @@
+ use crate::{types_config::SystemIOTypesConfig, utils::Bytes32};
+-use ruint::aliases::U256;
++use ruint::aliases::{B160, U256};
+
+ /// Block-level metadata required by the bootloader to execute transactions.
+ pub trait BasicBlockMetadata<IOTypes: SystemIOTypesConfig> {
+@@ -66,6 +66,11 @@ pub trait ZkSpecificPricingMetadata {
+
+     /// Price in base token of 1 byte of pubdata.
+     fn get_pubdata_price(&self) -> U256;
++
++    /// SYSCOIN: Gateway validator timelock target authorized to carry compact edge DA refs.
++    fn syscoin_compact_edge_da_commit_target(&self) -> B160 {
++        B160::ZERO
++    }
+ }
+
+ /// Convenience super-trait for environments that expose both block- and tx-level
 diff --git a/zk_ee/src/system/metadata/zk_metadata.rs b/zk_ee/src/system/metadata/zk_metadata.rs
-index 2ebf44bf..a9af008c 100644
+index 2ebf44bf..a565e805 100644
 --- a/zk_ee/src/system/metadata/zk_metadata.rs
 +++ b/zk_ee/src/system/metadata/zk_metadata.rs
-@@ -129,6 +129,9 @@ pub struct BlockMetadataFromOracle {
+@@ -129,6 +129,12 @@ pub struct BlockMetadataFromOracle {
      /// of prevRandao.
      pub mix_hash: U256,
      pub blob_fee: U256,
 +    /// Canonical settlement-layer upgrade tx hash for this block's upgrade batch.
 +    /// Zero when the block is not the upgrade block.
 +    pub canonical_upgrade_tx_hash: Bytes32,
++    /// SYSCOIN: Gateway validator timelock target authorized to carry compact edge DA refs.
++    /// Zero disables compact edge DA ref collection.
++    pub syscoin_compact_edge_da_commit_target: B160,
  }
- 
+
  impl BasicBlockMetadata<EthereumIOTypesConfig> for BlockMetadataFromOracle {
-@@ -217,6 +220,7 @@ impl BlockMetadataFromOracle {
+@@ -200,6 +206,10 @@ impl ZkSpecificPricingMetadata for BlockMetadataFromOracle {
+     fn get_pubdata_limit(&self) -> u64 {
+         self.pubdata_limit
+     }
++
++    fn syscoin_compact_edge_da_commit_target(&self) -> B160 {
++        self.syscoin_compact_edge_da_commit_target
++    }
+ }
+
+ impl BlockMetadataFromOracle {
+@@ -217,6 +227,8 @@ impl BlockMetadataFromOracle {
              block_hashes: BlockHashes::default(),
              mix_hash: U256::ONE,
              blob_fee: U256::ZERO,
 +            canonical_upgrade_tx_hash: Bytes32::ZERO,
++            syscoin_compact_edge_da_commit_target: B160::ZERO,
          }
      }
  }
-@@ -225,11 +229,13 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+@@ -225,7 +237,9 @@ impl UsizeSerializable for BlockMetadataFromOracle {
      const USIZE_LEN: usize = <U256 as UsizeSerializable>::USIZE_LEN
          * (5 + BLOCK_HASHES_WINDOW_SIZE)
          + <u64 as UsizeSerializable>::USIZE_LEN * 5
 -        + <B160 as UsizeDeserializable>::USIZE_LEN;
 +        + <B160 as UsizeDeserializable>::USIZE_LEN
-+        + <Bytes32 as UsizeSerializable>::USIZE_LEN;
- 
++        + <Bytes32 as UsizeSerializable>::USIZE_LEN
++        + <B160 as UsizeSerializable>::USIZE_LEN;
+
      fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
          ExactSizeChain::new(
-             ExactSizeChain::new(
-+                ExactSizeChain::new(
-                 ExactSizeChain::new(
-                     ExactSizeChain::new(
-                         ExactSizeChain::new(
-@@ -260,7 +266,9 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+@@ -239,28 +253,38 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+                                         ExactSizeChain::new(
+                                             ExactSizeChain::new(
+                                                 ExactSizeChain::new(
+-                                                    UsizeSerializable::iter(&self.eip1559_basefee),
+-                                                    UsizeSerializable::iter(&self.pubdata_price),
++                                                    ExactSizeChain::new(
++                                                        UsizeSerializable::iter(
++                                                            &self.eip1559_basefee,
++                                                        ),
++                                                        UsizeSerializable::iter(
++                                                            &self.pubdata_price,
++                                                        ),
++                                                    ),
++                                                    UsizeSerializable::iter(&self.native_price),
+                                                 ),
+-                                                UsizeSerializable::iter(&self.native_price),
++                                                UsizeSerializable::iter(&self.block_number),
+                                             ),
+-                                            UsizeSerializable::iter(&self.block_number),
++                                            UsizeSerializable::iter(&self.timestamp),
+                                         ),
+-                                        UsizeSerializable::iter(&self.timestamp),
++                                        UsizeSerializable::iter(&self.chain_id),
+                                     ),
+-                                    UsizeSerializable::iter(&self.chain_id),
++                                    UsizeSerializable::iter(&self.gas_limit),
+                                 ),
+-                                UsizeSerializable::iter(&self.gas_limit),
++                                UsizeSerializable::iter(&self.pubdata_limit),
+                             ),
+-                            UsizeSerializable::iter(&self.pubdata_limit),
++                            UsizeSerializable::iter(&self.coinbase),
+                         ),
+-                        UsizeSerializable::iter(&self.coinbase),
++                        UsizeSerializable::iter(&self.block_hashes),
+                     ),
+-                    UsizeSerializable::iter(&self.block_hashes),
++                    UsizeSerializable::iter(&self.mix_hash),
                  ),
-                 UsizeSerializable::iter(&self.mix_hash),
-             ),
--            UsizeSerializable::iter(&self.blob_fee),
+-                UsizeSerializable::iter(&self.mix_hash),
 +                UsizeSerializable::iter(&self.blob_fee),
 +            ),
-+            UsizeSerializable::iter(&self.canonical_upgrade_tx_hash),
++            ExactSizeChain::new(
++                UsizeSerializable::iter(&self.canonical_upgrade_tx_hash),
++                UsizeSerializable::iter(&self.syscoin_compact_edge_da_commit_target),
+             ),
+-            UsizeSerializable::iter(&self.blob_fee),
          )
      }
  }
-@@ -281,6 +289,7 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
+@@ -281,6 +305,8 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
          let block_hashes = UsizeDeserializable::from_iter(src)?;
          let mix_hash = UsizeDeserializable::from_iter(src)?;
          let blob_fee = UsizeDeserializable::from_iter(src)?;
 +        let canonical_upgrade_tx_hash = UsizeDeserializable::from_iter(src)?;
- 
++        let syscoin_compact_edge_da_commit_target = UsizeDeserializable::from_iter(src)?;
+
          let new = Self {
              eip1559_basefee,
-@@ -295,6 +304,7 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
+@@ -295,6 +321,8 @@ impl UsizeDeserializable for BlockMetadataFromOracle {
              block_hashes,
              mix_hash,
              blob_fee,
 +            canonical_upgrade_tx_hash,
++            syscoin_compact_edge_da_commit_target,
          };
- 
+
          Ok(new)
