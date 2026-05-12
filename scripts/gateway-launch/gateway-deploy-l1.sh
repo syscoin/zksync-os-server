@@ -480,9 +480,6 @@ set_retry_gas_price() {
   bump_pct="${GATEWAY_RETRY_GAS_BUMP_PCT}"
   base_wei="$(cast gas-price --rpc-url "${L1_RPC_URL}")"
   base_wei="$(normalize_uint "cast gas-price" "${base_wei}" 1000000000000000)"
-  if [ "${base_wei}" -lt 1000000000 ]; then
-    base_wei=1000000000
-  fi
   if [ "${attempt}" -le 1 ]; then
     gas_price_wei="${base_wei}"
   else
