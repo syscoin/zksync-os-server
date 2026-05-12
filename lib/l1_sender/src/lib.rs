@@ -619,6 +619,28 @@ where
                                 submitted_at = Instant::now();
                                 continue;
                             }
+                            if let Some(transport_err) = err.downcast_ref::<TransportError>()
+                                && is_benign_rebroadcast_error(transport_err)
+                            {
+                                tracing::warn!(
+                                    command_name,
+                                    ?tx_hash,
+                                    tx_nonce,
+                                    "Timed-out L1 transaction replacement returned a benign error; \
+                                     continuing to wait: {transport_err}",
+                                );
+                                receipt_fut = wait_for_confirmed_receipt(
+                                    provider.root().clone(),
+                                    tx_hash,
+                                    required_confirmations,
+                                    transaction_timeout,
+                                    config.tx_liveness_poll_interval,
+                                    config.tx_liveness_max_missing_polls,
+                                )
+                                .boxed();
+                                submitted_at = Instant::now();
+                                continue;
+                            }
                             return Err(err);
                         }
                     }
