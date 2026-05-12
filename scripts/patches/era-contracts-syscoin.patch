@@ -955,6 +955,37 @@ index d8b90d436..4f5f068b2 100644
              mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
              mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
  
+diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
+--- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
++++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
+@@ -41,8 +41,13 @@ contract ZKsyncOSDualVerifier is Ownable2Step, IVerifier, IZKsyncOSDualVerifier
+     /// @param _initialOwner The address of the initial owner of this contract.
+     constructor(IVerifierV2 _fflonkVerifier, IVerifier _plonkVerifier, address _initialOwner) {
+         fflonkVerifiers[0] = _fflonkVerifier;
+         plonkVerifiers[0] = _plonkVerifier;
++        // SYSCOIN: the patched v31+ ZKsync OS verifier key is used by V7 proofs.
++        // Gateway CTM verifier deployments construct this contract directly, so
++        // initialize the explicit V7 slot alongside the legacy default slot.
++        fflonkVerifiers[7] = _fflonkVerifier;
++        plonkVerifiers[7] = _plonkVerifier;
+         _transferOwnership(_initialOwner);
+     }
+ 
+     /// @notice Adds new verifiers for the specified version.
+diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+--- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
++++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+@@ -55,8 +55,9 @@ import {IDeployCTM} from "contracts/script-interfaces/IDeployCTM.sol";
+ import {ZKSyncOSBytecodeInfo} from "contracts/common/libraries/ZKSyncOSBytecodeInfo.sol";
+ 
+ // TODO: pass this value from zkstack_cli
+-uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;
++// SYSCOIN: fresh v31+ deployments use the patched V7 ZKsync OS verification key.
++uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;
+ 
+ contract DeployCTMScript is Script, DeployCTMUtils, IDeployCTM {
+     using stdToml for string;
+ 
 diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/vendor/Bytes.sol
 index 38069bca9..a977766cb 100644
 --- a/l1-contracts/contracts/vendor/Bytes.sol
