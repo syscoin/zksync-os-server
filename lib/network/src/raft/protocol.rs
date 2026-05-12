@@ -8,6 +8,7 @@ use reth_network::Direction;
 use reth_network::protocol::{ConnectionHandler, OnNotSupported, ProtocolHandler};
 use reth_network::types::Capability;
 use reth_network_peers::PeerId;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -54,6 +55,9 @@ pub struct RaftRouter {
     // unregister_peer. With a single slot, one connection would be silently orphaned and the peer
     // would appear disconnected even though the kept connection is alive.
     peers: Arc<DashMap<PeerId, Vec<PeerChannel>>>,
+    // SYSCOIN: Only configured consensus members may use the Raft subprotocol. RLPx authenticates
+    // the PeerId; this allowlist authorizes that identity for consensus traffic.
+    authorized_peers: Arc<HashSet<PeerId>>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,28 +68,42 @@ struct PeerChannel {
 
 impl Default for RaftRouter {
     fn default() -> Self {
+        Self::new([])
+    }
+}
+
+impl RaftRouter {
+    pub fn new(authorized_peers: impl IntoIterator<Item = PeerId>) -> Self {
         Self {
             next_request_id: Arc::new(AtomicU64::new(1)),
             next_connection_id: Arc::new(AtomicU64::new(1)),
             pending: Arc::new(DashMap::new()),
             peers: Arc::new(DashMap::new()),
+            authorized_peers: Arc::new(authorized_peers.into_iter().collect()),
         }
     }
-}
 
-impl RaftRouter {
     pub fn register_peer(
         &self,
         peer_id: PeerId,
         sender: mpsc::UnboundedSender<RaftWireMessage>,
-    ) -> u64 {
+    ) -> Result<u64, RaftTransportError> {
+        if !self.is_authorized_peer(&peer_id) {
+            tracing::warn!(%peer_id, "rejecting unauthorized raft peer connection");
+            return Err(RaftTransportError::UnauthorizedPeer(peer_id));
+        }
+
         let connection_id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
         self.peers.entry(peer_id).or_default().push(PeerChannel {
             connection_id,
             sender,
         });
         tracing::info!(%peer_id, connection_id, "raft peer connection registered");
-        connection_id
+        Ok(connection_id)
+    }
+
+    pub fn is_authorized_peer(&self, peer_id: &PeerId) -> bool {
+        self.authorized_peers.contains(peer_id)
     }
 
     pub fn unregister_peer(&self, peer_id: &PeerId, connection_id: u64) {
@@ -254,6 +272,8 @@ pub enum RaftTransportError {
     NotConnected(PeerId),
     #[error("failed to send request to peer {0}")]
     SendFailed(PeerId),
+    #[error("peer {0} is not authorized for raft")]
+    UnauthorizedPeer(PeerId),
 }
 
 #[derive(Clone)]
@@ -280,7 +300,9 @@ impl RaftProtocolHandler {
     fn establish_connection(&self, peer_id: PeerId, conn: ProtocolConnection) -> RaftConnection {
         let (outbound_tx, outbound_rx) = mpsc::channel(RAFT_OUTBOUND_CHANNEL_CAPACITY);
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-        let connection_id = self.router.register_peer(peer_id, msg_tx);
+        let Ok(connection_id) = self.router.register_peer(peer_id, msg_tx) else {
+            return RaftConnection::closed(peer_id, self.router.clone());
+        };
         let task = tokio::spawn(
             run_raft_connection(
                 peer_id,
@@ -320,8 +342,13 @@ impl ProtocolHandler for RaftProtocolHandler {
     fn on_outgoing(
         &self,
         _socket_addr: SocketAddr,
-        _peer_id: PeerId,
+        peer_id: PeerId,
     ) -> Option<Self::ConnectionHandler> {
+        if !self.router.is_authorized_peer(&peer_id) {
+            tracing::debug!(%peer_id, "skipping outgoing raft sub-protocol for unauthorized peer");
+            return None;
+        }
+
         tracing::debug!("outgoing raft sub-protocol connection handler requested");
         Some(RaftConnectionHandler {
             handler: self.clone(),
@@ -403,6 +430,20 @@ impl Drop for RaftConnection {
     }
 }
 
+impl RaftConnection {
+    fn closed(peer_id: PeerId, router: RaftRouter) -> Self {
+        let (_outbound_tx, outbound_rx) = mpsc::channel(RAFT_OUTBOUND_CHANNEL_CAPACITY);
+        let task = tokio::spawn(async {});
+        Self {
+            peer_id,
+            connection_id: 0,
+            router,
+            outbound_rx,
+            task,
+        }
+    }
+}
+
 async fn run_raft_connection(
     peer_id: PeerId,
     connection_id: u64,
@@ -476,7 +517,9 @@ async fn run_raft_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{RaftRequest, RaftRouter, RaftWireMessage, validate_request_peer};
+    use super::{
+        RaftRequest, RaftRouter, RaftTransportError, RaftWireMessage, validate_request_peer,
+    };
     use alloy::primitives::b512;
     use openraft::raft::VoteRequest;
     use reth_network_peers::PeerId;
@@ -513,13 +556,17 @@ mod tests {
 
     #[test]
     fn raft_response_must_arrive_on_request_connection() {
-        let router = RaftRouter::default();
         let peer1 = peer_id(0x11);
         let peer2 = peer_id(0x22);
+        let router = RaftRouter::new([peer1, peer2]);
         let (peer1_tx, mut peer1_rx) = tokio::sync::mpsc::unbounded_channel();
         let (peer2_tx, _peer2_rx) = tokio::sync::mpsc::unbounded_channel();
-        let peer1_connection_id = router.register_peer(peer1, peer1_tx);
-        let peer2_connection_id = router.register_peer(peer2, peer2_tx);
+        let peer1_connection_id = router
+            .register_peer(peer1, peer1_tx)
+            .expect("peer1 is authorized");
+        let peer2_connection_id = router
+            .register_peer(peer2, peer2_tx)
+            .expect("peer2 is authorized");
 
         let mut response_rx = router
             .send_request(peer1, vote_request(peer1))
@@ -540,5 +587,27 @@ mod tests {
                 .expect_err("test sends an error response"),
             "legitimate"
         );
+    }
+
+    #[test]
+    fn raft_router_rejects_unauthorized_peers() {
+        let authorized_peer = peer_id(0x11);
+        let unauthorized_peer = peer_id(0x22);
+        let router = RaftRouter::new([authorized_peer]);
+        let (authorized_tx, _authorized_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (unauthorized_tx, _unauthorized_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        router
+            .register_peer(authorized_peer, authorized_tx)
+            .expect("authorized peer is accepted");
+        let error = router
+            .register_peer(unauthorized_peer, unauthorized_tx)
+            .expect_err("unauthorized peer is rejected");
+
+        assert!(matches!(
+            error,
+            RaftTransportError::UnauthorizedPeer(peer) if peer == unauthorized_peer
+        ));
+        assert_eq!(router.connected_peers(), vec![authorized_peer]);
     }
 }
