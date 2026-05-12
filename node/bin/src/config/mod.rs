@@ -432,6 +432,8 @@ pub struct GeneralConfig {
 
     /// **IMPORTANT: It must be set for an external node. However, setting this DOES NOT make the node into an external node.
     /// [`GeneralConfig::node_role`] is the source of truth for node type. **
+    // SYSCOIN: RPC URLs may carry provider tokens or basic-auth credentials.
+    #[config(secret)]
     #[config(default_t = None)]
     #[config_validate(required_if = NodeRole::ExternalNode)]
     pub main_node_rpc_url: Option<String>,
@@ -466,6 +468,8 @@ pub struct GeneralConfig {
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 pub struct ProviderConfig {
     /// JSON RPC API URL.
+    // SYSCOIN: Provider URLs may carry API keys or basic-auth credentials.
+    #[config(secret)]
     pub rpc_url: String,
 
     /// Poll interval used by the alloy provider when waiting for transaction receipts.
@@ -1172,6 +1176,8 @@ pub struct BatcherConfig {
     // SYSCOIN: Batcher settings for publishing and finalizing Bitcoin DA blobs.
     /// Syscoin NEVM RPC endpoint used for Bitcoin DA publication.
     /// Only required when `l1_sender.pubdata_mode` is `Bitcoin`.
+    // SYSCOIN: RPC URLs may carry provider tokens or basic-auth credentials.
+    #[config(secret)]
     pub bitcoin_da_rpc_url: Option<String>,
 
     /// Auth user for the Syscoin NEVM RPC endpoint.
@@ -1183,6 +1189,8 @@ pub struct BatcherConfig {
     pub bitcoin_da_rpc_password: Option<SecretString>,
 
     /// PoDA gateway base URL used as a fallback read path and network preset.
+    // SYSCOIN: Keep URL-like config values out of serialized metrics.
+    #[config(secret)]
     #[config(default_t = "https://poda.syscoin.org".into())]
     pub bitcoin_da_poda_url: String,
 
@@ -1435,6 +1443,8 @@ pub struct PrometheusConfig {
     pub port: u16,
 
     /// Base URL for the Prometheus Pushgateway used for push-only metrics.
+    // SYSCOIN: Pushgateway URLs may carry credentials.
+    #[config(secret)]
     #[config(default_t = None)]
     pub push_gateway_url: Option<String>,
 }
@@ -1443,6 +1453,8 @@ pub struct PrometheusConfig {
 #[config(derive(Default))]
 pub struct SentryConfig {
     /// Sentry DSN URL.
+    // SYSCOIN: DSNs may carry credential material.
+    #[config(secret)]
     #[config(default_t = None)]
     pub dsn_url: Option<String>,
 
@@ -1494,10 +1506,14 @@ pub struct OtlpConfig {
     pub level: OpenTelemetryLevel,
 
     /// Endpoint to send traces to.
+    // SYSCOIN: OTLP endpoints may carry tokens in deployment configs.
+    #[config(secret)]
     #[config(default_t = None)]
     pub tracing_endpoint: Option<String>,
 
     /// Endpoint to send logs to.
+    // SYSCOIN: OTLP endpoints may carry tokens in deployment configs.
+    #[config(secret)]
     #[config(default_t = None)]
     pub logging_endpoint: Option<String>,
 }
@@ -1548,6 +1564,8 @@ pub struct BatchVerificationConfig {
     #[config(default_t = Duration::from_secs(300))]
     pub total_timeout: Duration,
     /// [external node] Signing key.
+    // SYSCOIN: Signing keys must not be serialized into config metrics.
+    #[config(secret)]
     #[config(default_t = "".into())]
     // SYSCOIN
     #[config_validate(custom(
@@ -1637,8 +1655,12 @@ pub enum ExternalPriceApiClientConfig {
     },
     CoinGecko {
         /// Base URL of the external price API.
+        // SYSCOIN: External API URLs may include provider tokens in deployment configs.
+        #[config(secret)]
         base_url: Option<String>,
         /// API key for the external price API.
+        // SYSCOIN: API keys must not be serialized into config metrics.
+        #[config(secret)]
         coingecko_api_key: Option<SecretString>,
         /// Timeout for the external price API client.
         #[config(default_t = Duration::from_secs(10))]
@@ -1646,8 +1668,12 @@ pub enum ExternalPriceApiClientConfig {
     },
     CoinMarketCap {
         /// Base URL of the external price API.
+        // SYSCOIN: External API URLs may include provider tokens in deployment configs.
+        #[config(secret)]
         base_url: Option<String>,
         /// API key for the external price API. Required.
+        // SYSCOIN: API keys must not be serialized into config metrics.
+        #[config(secret)]
         cmc_api_key: SecretString,
         /// Timeout for the external price API client.
         #[config(default_t = Duration::from_secs(10))]
