@@ -14641,6 +14641,7 @@ dependencies = [
  "zksync_os_rpc_api",
  "zksync_os_server",
  "zksync_os_state_full_diffs",
+ "zksync_os_status_server",
  "zksync_os_types",
  "zksync_os_verify_storage_proof",
 ]
@@ -14965,10 +14966,24 @@ version = "0.20.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bincode 2.0.1",
+ "dashmap",
  "futures",
+ "openraft",
+ "reth-network-peers",
+ "reth-tasks",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
  "tokio",
+ "tracing",
+ "zksync_os_consensus_types",
+ "zksync_os_network",
+ "zksync_os_rocksdb",
  "zksync_os_sequencer",
  "zksync_os_storage_api",
+ "zksync_os_types",
 ]
 
 [[package]]
@@ -15325,6 +15340,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "zksync_os_raft",
 ]
 
 [[package]]
