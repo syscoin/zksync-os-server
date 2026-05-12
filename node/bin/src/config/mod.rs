@@ -1,4 +1,5 @@
 pub use self::cli::ConfigArgs;
+pub(crate) use self::metrics::report_static_config_metrics;
 use self::util::{SecretKeyDeserializer, SignerConfigDeserializer};
 use crate::{command_source::RebuildOptions, default_protocol_version::DEFAULT_ROCKS_DB_PATH};
 use alloy::primitives::{Address, B256, Bytes, U128};
@@ -15,7 +16,7 @@ use smart_config::{
     EtherAmount, ParseErrors, Serde, de::Delimited, metadata::EtherUnit,
 };
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 // SYSCOIN
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -25,15 +26,17 @@ use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_mempool::SubPoolLimit;
-use zksync_os_network::SecretKey;
+use zksync_os_network::{NodeRecord, PeerId, SecretKey};
 use zksync_os_observability::LogFormat;
 use zksync_os_observability::opentelemetry::OpenTelemetryLevel;
 use zksync_os_operator_signer::SignerConfig;
+use zksync_os_raft::RaftConsensusConfig;
 use zksync_os_tx_validators::deployment_filter;
 use zksync_os_types::{NodeRole, PubdataMode};
 
 mod build_external_config;
 mod cli;
+mod metrics;
 mod util;
 
 pub use build_external_config::{build_external_config, load_config_file_sources};
@@ -57,6 +60,7 @@ pub struct Config {
     pub l1_provider_config: ProviderConfig,
     pub gateway_provider_config: Option<ProviderConfig>,
     pub network_config: NetworkConfig,
+    pub consensus_config: ConsensusConfig,
     pub genesis_config: GenesisConfig,
     pub rpc_config: RpcConfig,
     pub mempool_config: MempoolConfig,
@@ -194,6 +198,9 @@ impl Config {
         schema
             .insert(&NetworkConfig::DESCRIPTION, "network")
             .expect("Failed to insert network config");
+        schema
+            .insert(&ConsensusConfig::DESCRIPTION, "consensus")
+            .expect("Failed to insert consensus config");
         schema
             .insert(&GenesisConfig::DESCRIPTION, "genesis")
             .expect("Failed to insert genesis config");
@@ -562,6 +569,104 @@ impl NetworkConfig {
             ),
         }
     }
+
+    pub fn derived_peer_id(&self) -> anyhow::Result<PeerId> {
+        let secret_key = self.secret_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("`network.secret_key` is required for running p2p networking stack")
+        })?;
+        Ok(NodeRecord::from_secret_key(
+            // PeerId depends only on pubkey(secret_key); socket address is in fact irrelevant here.
+            SocketAddrV4::new(self.address, self.port).into(),
+            secret_key,
+        )
+        .id)
+    }
+}
+
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
+#[config(derive(Default))]
+pub struct ConsensusConfig {
+    /// Whether OpenRaft-based consensus should be enabled.
+    #[config(default_t = false)]
+    #[config_validate(custom(
+        |root: &Config, value: &bool| !*value || root.general_config.node_role.is_main(),
+        "requires `general.node_role=main`"
+    ))]
+    #[config_validate(custom(
+        |root: &Config, value: &bool| !*value || root.network_config.enabled,
+        "requires `network.enabled=true`"
+    ))]
+    #[config_validate(custom(
+        |root: &Config, value: &bool| !*value || root.network_config.secret_key.is_some(),
+        "requires `network.secret_key`"
+    ))]
+    pub enabled: bool,
+    /// Delete persisted OpenRaft state before startup.
+    ///
+    /// This is intended for intentionally switching a node away from previously persisted
+    /// consensus history. Without clearing this state, starting with consensus disabled is
+    /// rejected because later re-enabling consensus could result in an invalid state.
+    #[config(default_t = false)]
+    pub force_clear_raft_history: bool,
+    /// List of consensus participant peer IDs.
+    /// Must include the own ID (derived from `NetworkConfig#secret_key`).
+    #[config(default, with = Serde![*])]
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<PeerId>| !root.consensus_config.enabled || !value.is_empty(),
+        "must not be empty when `consensus.enabled=true`"
+    ))]
+    #[config_validate(custom(
+        |root: &Config, value: &Vec<PeerId>| {
+            if !root.consensus_config.enabled {
+                return true;
+            }
+            let Some(secret_key) = root.network_config.secret_key.as_ref() else {
+                return true;
+            };
+            let local_peer_id = NodeRecord::from_secret_key(
+                SocketAddrV4::new(root.network_config.address, root.network_config.port).into(),
+                secret_key,
+            ).id;
+            value.contains(&local_peer_id)
+        },
+        "must include local peer id derived from `network.secret_key`"
+    ))]
+    pub peer_ids: Vec<PeerId>,
+    /// WARNING: Assumes all configured consensus nodes are already caught up to the same
+    /// canonical L2 state. Bootstrap does not catch up stale nodes before admitting them
+    /// to the cluster.
+    /// Attempt to initialize cluster membership on startup.
+    /// Safe to enable on every consensus node; only one initializer will win.
+    #[config(default_t = false)]
+    pub bootstrap: bool,
+    /// Raft election timeout lower bound.
+    #[config(default_t = Duration::from_millis(2000))]
+    pub election_timeout_min: Duration,
+    /// Raft election timeout upper bound.
+    #[config(default_t = Duration::from_millis(5000))]
+    pub election_timeout_max: Duration,
+    /// Raft heartbeat interval.
+    #[config(default_t = Duration::from_millis(1000))]
+    pub heartbeat_interval: Duration,
+}
+
+impl ConsensusConfig {
+    pub fn into_raft_consensus_config(
+        self,
+        network_config: &NetworkConfig,
+        storage_path: PathBuf,
+    ) -> anyhow::Result<RaftConsensusConfig> {
+        let node_id = network_config.derived_peer_id()?;
+        Ok(RaftConsensusConfig {
+            node_id,
+            peer_ids: self.peer_ids,
+            bootstrap: self.bootstrap,
+            election_timeout_min: self.election_timeout_min,
+            election_timeout_max: self.election_timeout_max,
+            heartbeat_interval: self.heartbeat_interval,
+            storage_path,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -691,6 +796,10 @@ pub struct SequencerConfig {
 
     /// Block rebuild options.
     #[config(nest)]
+    #[config_validate(custom(
+        |root: &Config, value: &Option<RebuildBlocksConfig>| !root.consensus_config.enabled || value.is_none(),
+        "requires `consensus.enabled=false`"
+    ))]
     pub block_rebuild: Option<RebuildBlocksConfig>,
 
     /// If set, external node will sync up to and including this block number and then stop processing blocks.
@@ -2086,6 +2195,7 @@ mod tests {
             l1_provider_config: ProviderConfig::default(),
             gateway_provider_config: None,
             network_config: NetworkConfig::default(),
+            consensus_config: ConsensusConfig::default(),
             genesis_config: GenesisConfig {
                 bridgehub_address: Some(Address::ZERO),
                 bytecode_supplier_address: Some(Address::with_last_byte(0x01)),
