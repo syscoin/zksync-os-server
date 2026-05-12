@@ -24,6 +24,7 @@ use crate::batcher::{Batcher, BatcherStartupConfig, util::load_genesis_stored_ba
 use crate::command_source::{ConsensusNodeCommandSource, ExternalNodeCommandSource};
 use crate::config::{
     Config, ProverApiConfig, base_token_price_updater_config, gas_adjuster_config,
+    report_static_config_metrics,
 };
 use crate::en_remote_config::load_remote_config;
 use crate::node_state_on_startup::NodeStateOnStartup;
@@ -133,6 +134,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     runtime: &Runtime,
     config: Config,
 ) {
+    report_static_config_metrics(&config);
+
     let node_role = config.general_config.node_role;
     let role: &'static str = node_role.as_str();
 
