@@ -211,6 +211,14 @@ fn event_scan_block_count(
     start_block_number: BlockNumber,
     latest_block: BlockNumber,
 ) -> anyhow::Result<u64> {
+    // SYSCOIN: PR #87 intentionally made stale RPC heights fail closed so an
+    // unscanned range is never reported as empty. Preserve that invariant, but
+    // allow the idempotent cursor state where the next block to scan is exactly
+    // one past the current provider tip.
+    if latest_block.checked_add(1) == Some(start_block_number) {
+        return Ok(0);
+    }
+
     latest_block
         .checked_sub(start_block_number)
         .and_then(|span| span.checked_add(1))
@@ -555,6 +563,11 @@ mod tests {
     fn event_scan_block_count_is_inclusive() {
         assert_eq!(event_scan_block_count(10, 10).unwrap(), 1);
         assert_eq!(event_scan_block_count(10, 12).unwrap(), 3);
+    }
+
+    #[test]
+    fn event_scan_block_count_allows_empty_next_block_range() {
+        assert_eq!(event_scan_block_count(11, 10).unwrap(), 0);
     }
 
     #[test]
