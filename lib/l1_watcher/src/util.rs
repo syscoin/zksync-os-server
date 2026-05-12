@@ -194,16 +194,58 @@ async fn latest_block_for_event_scan(
     provider: &DynProvider,
     start_block_number: BlockNumber,
 ) -> anyhow::Result<BlockNumber> {
-    (|| async {
-        let latest_block = provider.get_block_number().await?;
-        event_scan_block_count(start_block_number, latest_block).map(|_| latest_block)
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(STALE_L1_HEIGHT_RETRY_DELAY)
-            .with_max_times(STALE_L1_HEIGHT_RETRY_ATTEMPTS),
-    )
-    .await
+    let mut stale_height_attempts = 0;
+    let mut logged_next_block_wait = false;
+
+    loop {
+        let latest_block = match provider.get_block_number().await {
+            Ok(latest_block) => latest_block,
+            Err(err) if stale_height_attempts + 1 < STALE_L1_HEIGHT_RETRY_ATTEMPTS => {
+                stale_height_attempts += 1;
+                tracing::debug!(
+                    start_block_number,
+                    attempt = stale_height_attempts,
+                    error = %err,
+                    "retrying provider tip fetch before failing event scan"
+                );
+                tokio::time::sleep(STALE_L1_HEIGHT_RETRY_DELAY).await;
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        };
+        match event_scan_block_count(start_block_number, latest_block) {
+            Ok(_) => return Ok(latest_block),
+            Err(_) if latest_block.checked_add(1) == Some(start_block_number) => {
+                if !logged_next_block_wait {
+                    tracing::warn!(
+                        start_block_number,
+                        latest_block,
+                        "event scan cursor is at the next block; waiting for provider tip to advance"
+                    );
+                    logged_next_block_wait = true;
+                } else {
+                    tracing::debug!(
+                        start_block_number,
+                        latest_block,
+                        "still waiting for provider tip to advance to event scan start"
+                    );
+                }
+                tokio::time::sleep(STALE_L1_HEIGHT_RETRY_DELAY).await;
+            }
+            Err(err) if stale_height_attempts + 1 < STALE_L1_HEIGHT_RETRY_ATTEMPTS => {
+                stale_height_attempts += 1;
+                tracing::debug!(
+                    start_block_number,
+                    latest_block,
+                    attempt = stale_height_attempts,
+                    error = %err,
+                    "retrying stale provider height before failing closed"
+                );
+                tokio::time::sleep(STALE_L1_HEIGHT_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 // SYSCOIN: keep the stale-height check separate so regressions are unit-tested without a live RPC.
