@@ -31,7 +31,6 @@ pub async fn init_consensus(
     config: RaftConsensusConfig,
     block_replay_storage: Box<dyn ReadReplay>,
 ) -> anyhow::Result<ConsensusRuntimeParts> {
-    let router = RaftRouter::default();
     let node_id = config.node_id;
     let raft_config = Config {
         cluster_name: "zksync-os-server".to_owned(),
@@ -59,6 +58,8 @@ pub async fn init_consensus(
 
     let nodes = peer_list_to_nodes(&config.peer_ids);
     let peer_ids: Vec<_> = nodes.keys().copied().collect();
+    // SYSCOIN: Reuse the configured OpenRaft membership as the p2p Raft authorization set.
+    let router = RaftRouter::new(peer_ids.clone());
     let network_factory = RaftNetworkFactory::new(router.clone(), &nodes, &raft_config)
         .context("build raft network factory")?;
 
