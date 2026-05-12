@@ -65,7 +65,7 @@ fn report_flat_config_metrics<C: DescribeConfig>(config: &C, prefix: &str) {
         .serialize(config)
     {
         let name = format!("{prefix}_{key}");
-        let value = stringify_config_value(value);
+        let value = stringify_config_value(&name, value);
         let _ = CONFIG_METRICS.values[&name].set(ValueLabel { value });
     }
 }
@@ -78,12 +78,36 @@ fn report_flat_config_metrics_opt<C: DescribeConfig>(config: Option<&C>, prefix:
 
 /// Make the serialized value suitable for prometheus export
 /// Some characters can break metrics
-fn stringify_config_value(value: Value) -> String {
+fn stringify_config_value(name: &str, value: Value) -> String {
+    // SYSCOIN: Config metrics are exported on the Prometheus endpoint, so URL-like and
+    // secret-looking values must not be exposed as labels.
+    if should_redact_config_value(name, &value) {
+        return "<redacted>".to_owned();
+    }
+
     let value = match value {
         Value::String(value) => value,
         value => value.to_string(),
     };
     sanitize_label_value(value)
+}
+
+fn should_redact_config_value(name: &str, value: &Value) -> bool {
+    !value.is_null() && (is_secret_config_name(name) || is_url_config_name(name))
+}
+
+fn is_secret_config_name(name: &str) -> bool {
+    name.contains("api_key")
+        || name.contains("auth_password")
+        || name.contains("password")
+        || name.contains("private_key")
+        || name.contains("secret")
+        || name.contains("signing_key")
+        || name.ends_with("_sk")
+}
+
+fn is_url_config_name(name: &str) -> bool {
+    name.ends_with("_url") || name.ends_with(".url") || name.ends_with("_endpoint")
 }
 
 fn sanitize_label_value(value: String) -> String {
@@ -99,13 +123,57 @@ mod tests {
 
     #[test]
     fn stringify_config_value_formats_label_values() {
-        assert_eq!(super::stringify_config_value(json!("main")), "main");
-        assert_eq!(super::stringify_config_value(json!(506)), "506");
-        assert_eq!(super::stringify_config_value(json!(true)), "true");
-        assert_eq!(super::stringify_config_value(Value::Null), "null");
         assert_eq!(
-            super::stringify_config_value(json!(["0x36615Cf349d7F6344891B1e7CA7C72883F5dc049"])),
+            super::stringify_config_value("general_node_role", json!("main")),
+            "main"
+        );
+        assert_eq!(
+            super::stringify_config_value("general_gateway_chain_id", json!(506)),
+            "506"
+        );
+        assert_eq!(
+            super::stringify_config_value("network_enabled", json!(true)),
+            "true"
+        );
+        assert_eq!(
+            super::stringify_config_value("general_main_node_rpc_url", Value::Null),
+            "null"
+        );
+        assert_eq!(
+            super::stringify_config_value(
+                "batch_verification_accepted_signers",
+                json!(["0x36615Cf349d7F6344891B1e7CA7C72883F5dc049"])
+            ),
             "['0x36615Cf349d7F6344891B1e7CA7C72883F5dc049']"
+        );
+    }
+
+    #[test]
+    fn stringify_config_value_redacts_sensitive_values() {
+        assert_eq!(
+            super::stringify_config_value(
+                "l1_provider_rpc_url",
+                json!("https://user:pass@example.com/v3/provider-token?api_key=secret")
+            ),
+            "<redacted>"
+        );
+        assert_eq!(
+            super::stringify_config_value(
+                "observability_otlp.tracing_endpoint",
+                json!("https://otel.example")
+            ),
+            "<redacted>"
+        );
+        assert_eq!(
+            super::stringify_config_value(
+                "external_price_api_client_coingecko_api_key",
+                json!("secret")
+            ),
+            "<redacted>"
+        );
+        assert_eq!(
+            super::stringify_config_value("batch_verification_accepted_signers", json!(["0x1234"])),
+            "['0x1234']"
         );
     }
 }
