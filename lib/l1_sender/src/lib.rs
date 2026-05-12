@@ -78,10 +78,12 @@ type PendingTx<Input> = (
     u64,
 );
 
-// SYSCOIN: non-fatal receipt wait result used to recover from L1 mempool eviction.
+// SYSCOIN: non-fatal receipt wait result used to recover from L1 mempool eviction
+// and visible-but-stale transactions.
 enum ReceiptWaitOutcome {
     Confirmed(TransactionReceipt),
     Dropped,
+    TimedOut,
 }
 
 const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
@@ -549,6 +551,78 @@ where
                 .observe(submitted_at.elapsed().as_secs_f64());
             match receipt? {
                 ReceiptWaitOutcome::Confirmed(receipt) => break receipt,
+                ReceiptWaitOutcome::TimedOut => {
+                    tracing::warn!(
+                        command_name,
+                        ?tx_hash,
+                        tx_nonce,
+                        "L1 transaction is still pending after timeout; resubmitting at the \
+                         same nonce with replacement fee params"
+                    );
+                    match submit_l1_transaction(
+                        provider,
+                        operator_address,
+                        to_address,
+                        config,
+                        gateway,
+                        command_name,
+                        &mut command,
+                        commit_submitted_tx,
+                        Some(tx_nonce),
+                        false,
+                    )
+                    .await
+                    {
+                        Ok(resubmitted) => {
+                            receipt_fut = resubmitted.0;
+                            submitted_at = resubmitted.1;
+                            raw_tx = resubmitted.2;
+                            tx_hash = resubmitted.3;
+                            tx_nonce = resubmitted.4;
+                            submitted_l1_block = resubmitted.5;
+                            continue;
+                        }
+                        Err(err) => {
+                            if let Some(transport_err) = err.downcast_ref::<TransportError>()
+                                && is_nonce_reuse_rebroadcast_error(transport_err)
+                            {
+                                tx_hash = recover_same_nonce_tx(
+                                    provider,
+                                    operator_address,
+                                    to_address,
+                                    tx_nonce,
+                                    tx_hash,
+                                    submitted_l1_block,
+                                    gateway,
+                                    command_name,
+                                    &command,
+                                    transaction_timeout,
+                                    transport_err,
+                                )
+                                .await?;
+                                raw_tx = None;
+                                tracing::warn!(
+                                    command_name,
+                                    ?tx_hash,
+                                    tx_nonce,
+                                    "Tracking matching L1 transaction found at timed-out nonce"
+                                );
+                                receipt_fut = wait_for_confirmed_receipt(
+                                    provider.root().clone(),
+                                    tx_hash,
+                                    required_confirmations,
+                                    transaction_timeout,
+                                    config.tx_liveness_poll_interval,
+                                    config.tx_liveness_max_missing_polls,
+                                )
+                                .boxed();
+                                submitted_at = Instant::now();
+                                continue;
+                            }
+                            return Err(err);
+                        }
+                    }
+                }
                 // SYSCOIN: timeout expiry is non-fatal. A dropped tx is recovered by rebroadcasting
                 // the same raw payload when available, or by resubmitting the original command for
                 // recovered startup txs where raw bytes are unavailable.
@@ -1041,19 +1115,21 @@ where
             next_liveness_poll_at = Some(started_at.elapsed() + tx_liveness_poll_interval);
         }
 
-        // SYSCOIN: delayed L1 inclusion is an operational condition, not a fatal sender error.
-        // Keep waiting for the nonce-bearing transaction so congestion/censorship cannot crash
-        // the main node; use `transaction_timeout` only as the repeated warning interval.
+        // SYSCOIN: if the nonce-bearing transaction stays pending past the configured timeout,
+        // ask the sender loop to replace it at the same nonce using replacement fee params.
         if let Some(warning_at) = next_warning_at
             && elapsed >= warning_at
         {
             tracing::warn!(
-                "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
+                "Timed out waiting for L1 transaction confirmation for tx {tx_hash}. \
                  required_confirmations={required_confirmations}, \
                  waited_secs={}, latest_l1_block={latest_block}, \
                  receipt_block_number={receipt_block_number:?}, confirmed_at={confirmed_at:?}",
                 elapsed.as_secs_f64(),
             );
+            if receipt.is_none() {
+                return Ok(ReceiptWaitOutcome::TimedOut);
+            }
             next_warning_at = Some(warning_at + timeout);
         }
 
