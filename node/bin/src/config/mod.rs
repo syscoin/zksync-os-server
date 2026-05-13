@@ -636,6 +636,7 @@ impl NetworkConfig {
 #[config(derive(Default))]
 pub struct ConsensusConfig {
     /// Whether OpenRaft-based consensus should be enabled.
+    /// WARNING: This is an experimental feature and will change in the future.
     #[config(default_t = false)]
     #[config_validate(custom(
         |root: &Config, value: &bool| !*value || root.general_config.node_role.is_main(),
@@ -664,22 +665,6 @@ pub struct ConsensusConfig {
         |root: &Config, value: &Vec<PeerId>| !root.consensus_config.enabled || !value.is_empty(),
         "must not be empty when `consensus.enabled=true`"
     ))]
-    #[config_validate(custom(
-        |root: &Config, value: &Vec<PeerId>| {
-            if !root.consensus_config.enabled {
-                return true;
-            }
-            let Some(secret_key) = root.network_config.secret_key.as_ref() else {
-                return true;
-            };
-            let local_peer_id = NodeRecord::from_secret_key(
-                SocketAddrV4::new(root.network_config.address, root.network_config.port).into(),
-                secret_key,
-            ).id;
-            value.contains(&local_peer_id)
-        },
-        "must include local peer id derived from `network.secret_key`"
-    ))]
     pub peer_ids: Vec<PeerId>,
     /// WARNING: Assumes all configured consensus nodes are already caught up to the same
     /// canonical L2 state. Bootstrap does not catch up stale nodes before admitting them
@@ -706,6 +691,10 @@ impl ConsensusConfig {
         storage_path: PathBuf,
     ) -> anyhow::Result<RaftConsensusConfig> {
         let node_id = network_config.derived_peer_id()?;
+        anyhow::ensure!(
+            self.peer_ids.contains(&node_id),
+            "`consensus.peer_ids` must include local peer id derived from `network.secret_key`: {node_id}"
+        );
         Ok(RaftConsensusConfig {
             node_id,
             peer_ids: self.peer_ids,
