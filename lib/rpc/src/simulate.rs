@@ -187,6 +187,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 .replay_storage()
                 .get_context(parent_block)
                 .ok_or(RpcStorageError::BlockNotFound(block))?;
+            // SYSCOIN: Keep `eth_simulateV1` pending semantics aligned with `eth_call` by
+            // using the sequencer's in-flight pending context when one exists.
             let block_context = if block.is_pending() {
                 self.resolve_pending_simulation_block_context(parent_block)?
             } else {
@@ -225,6 +227,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         &self,
         latest_block_number: u64,
     ) -> Result<BlockContext, EthCallError> {
+        // SYSCOIN: Upstream constructs a fresh pending context here; prefer the already
+        // constructed pending block so simulated headers and fee fields match the sequencer.
         if let Some(pending_block_context) = self.last_constructed_block_context()
             && pending_block_context.block_number > latest_block_number
         {
