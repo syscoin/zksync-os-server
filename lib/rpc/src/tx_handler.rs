@@ -80,6 +80,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         // compact-edge-DA commit candidates. Ordinary txs keep the single validation performed by
         // insertion below.
         if self.is_compact_edge_da_admission_candidate(&l2_tx) {
+            if self.mempool.contains(&hash) {
+                return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported).into());
+            }
             self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
             self.verify_compact_edge_da_refs_available(&l2_tx).await?;
         }
@@ -466,8 +469,247 @@ impl Drop for ForwardingLatencyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RpcStorage;
+    use alloy::consensus::{Block, BlockBody, Header, Sealed};
+    use alloy::eips::Encodable2718;
+    use alloy::network::{EthereumWallet, TransactionBuilder};
+    use alloy::primitives::{BlockHash, BlockNumber, TxHash, TxNonce};
+    use alloy::rpc::types::{TransactionInput, TransactionRequest};
+    use alloy::signers::local::PrivateKeySigner;
+    use httpmock::Method::POST;
+    use httpmock::MockServer;
+    use serde_json::json;
+    use std::collections::HashSet;
+    use std::fmt;
+    use std::ops::RangeInclusive;
+    use std::sync::Arc;
+    use tokio::sync::{broadcast, watch};
     use zksync_os_contract_interface::calldata::encode_commit_batch_data;
     use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
+    use zksync_os_interface::traits::{PreimageSource, ReadStorage};
+    use zksync_os_mempool::{PoolConfig, TxValidatorConfig};
+    use zksync_os_merkle_tree_api::{
+        BatchTreeProof, MAX_TREE_DEPTH, MerkleTreeProver, TreeBatchOutput,
+    };
+    use zksync_os_reth_compat::provider::ZkProviderFactory;
+    use zksync_os_storage_api::notifications::{BlockNotification, SubscribeToBlocks};
+    use zksync_os_storage_api::{
+        FinalityStatus, LogIndex, PersistedBatch, ReadBatch, ReadFinality, ReadReplay,
+        ReadRepository, ReadStateHistory, RepositoryBlock, RepositoryResult, StateResult,
+        StoredTxData, TxMeta, ViewState,
+    };
+    use zksync_os_types::{ZkReceiptEnvelope, ZkTransaction};
+
+    #[derive(Clone, Debug)]
+    struct EmptyState;
+
+    #[derive(Clone, Debug)]
+    struct EmptyStateView;
+
+    impl ReadStorage for EmptyStateView {
+        fn read(&mut self, _key: B256) -> Option<B256> {
+            None
+        }
+    }
+
+    impl PreimageSource for EmptyStateView {
+        fn get_preimage(&mut self, _hash: B256) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    impl ReadStateHistory for EmptyState {
+        fn state_view_at(&self, _block_number: BlockNumber) -> StateResult<impl ViewState> {
+            Ok(EmptyStateView)
+        }
+
+        fn block_range_available(&self) -> RangeInclusive<u64> {
+            0..=0
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestRepository {
+        genesis: RepositoryBlock,
+        blocks: broadcast::Sender<BlockNotification>,
+    }
+
+    impl fmt::Debug for TestRepository {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("TestRepository").finish()
+        }
+    }
+
+    impl TestRepository {
+        fn new() -> Self {
+            let header = Header {
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(0),
+                ..Default::default()
+            };
+            let genesis = Sealed::new_unchecked(
+                Block::new(header, BlockBody::<TxHash>::default()),
+                B256::ZERO,
+            );
+            let (blocks, _) = broadcast::channel(1);
+            Self { genesis, blocks }
+        }
+    }
+
+    impl LogIndex for TestRepository {}
+
+    impl SubscribeToBlocks for TestRepository {
+        fn subscribe_to_blocks(&self) -> broadcast::Receiver<BlockNotification> {
+            self.blocks.subscribe()
+        }
+    }
+
+    impl ReadRepository for TestRepository {
+        fn get_block_by_number(
+            &self,
+            number: BlockNumber,
+        ) -> RepositoryResult<Option<RepositoryBlock>> {
+            Ok((number == 0).then(|| self.genesis.clone()))
+        }
+
+        fn get_block_by_hash(&self, hash: BlockHash) -> RepositoryResult<Option<RepositoryBlock>> {
+            Ok((hash == self.genesis.hash()).then(|| self.genesis.clone()))
+        }
+
+        fn get_raw_transaction(&self, _hash: TxHash) -> RepositoryResult<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn get_transaction(&self, _hash: TxHash) -> RepositoryResult<Option<ZkTransaction>> {
+            Ok(None)
+        }
+
+        fn get_transaction_receipt(
+            &self,
+            _hash: TxHash,
+        ) -> RepositoryResult<Option<ZkReceiptEnvelope>> {
+            Ok(None)
+        }
+
+        fn get_transaction_meta(&self, _hash: TxHash) -> RepositoryResult<Option<TxMeta>> {
+            Ok(None)
+        }
+
+        fn get_transaction_hash_by_sender_nonce(
+            &self,
+            _sender: Address,
+            _nonce: TxNonce,
+        ) -> RepositoryResult<Option<TxHash>> {
+            Ok(None)
+        }
+
+        fn get_stored_transaction(&self, _hash: TxHash) -> RepositoryResult<Option<StoredTxData>> {
+            Ok(None)
+        }
+
+        fn get_latest_block(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct EmptyReplay;
+
+    impl ReadReplay for EmptyReplay {
+        fn get_context(
+            &self,
+            _block_number: BlockNumber,
+        ) -> Option<zksync_os_interface::types::BlockContext> {
+            None
+        }
+
+        fn get_replay_record_by_key(
+            &self,
+            _block_number: BlockNumber,
+            _db_key: Option<Vec<u8>>,
+        ) -> Option<zksync_os_storage_api::ReplayRecord> {
+            None
+        }
+
+        fn get_canonical_block_hash(&self, _block_number: BlockNumber) -> Option<BlockHash> {
+            None
+        }
+
+        fn latest_record(&self) -> BlockNumber {
+            0
+        }
+    }
+
+    #[derive(Clone)]
+    struct EmptyFinality {
+        status: watch::Sender<FinalityStatus>,
+    }
+
+    impl EmptyFinality {
+        fn new() -> Self {
+            let status = FinalityStatus {
+                last_committed_block: 0,
+                last_committed_batch: 0,
+                last_executed_block: 0,
+                last_executed_batch: 0,
+                last_finalized_executed_block: 0,
+                last_finalized_executed_batch: 0,
+            };
+            Self {
+                status: watch::channel(status).0,
+            }
+        }
+    }
+
+    impl ReadFinality for EmptyFinality {
+        fn get_finality_status(&self) -> FinalityStatus {
+            self.status.borrow().clone()
+        }
+
+        fn subscribe(&self) -> watch::Receiver<FinalityStatus> {
+            self.status.subscribe()
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct EmptyBatch;
+
+    impl ReadBatch for EmptyBatch {
+        fn get_batch_by_block_number(
+            &self,
+            _block_number: BlockNumber,
+        ) -> anyhow::Result<Option<PersistedBatch>> {
+            Ok(None)
+        }
+
+        fn get_batch_by_number(
+            &self,
+            _batch_number: u64,
+        ) -> anyhow::Result<Option<PersistedBatch>> {
+            Ok(None)
+        }
+
+        fn latest_batch(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct EmptyTree;
+
+    impl MerkleTreeProver for EmptyTree {
+        fn tree_depth(&self) -> u8 {
+            MAX_TREE_DEPTH
+        }
+
+        fn prove(
+            &self,
+            _version: u64,
+            _keys: &[B256],
+        ) -> anyhow::Result<Option<(BatchTreeProof, TreeBatchOutput)>> {
+            Ok(None)
+        }
+    }
 
     fn dummy_stored_batch_info() -> StoredBatchInfo {
         StoredBatchInfo {
@@ -531,6 +773,148 @@ mod tests {
             signatures: Vec::new(),
         }
         .abi_encode()
+    }
+
+    fn rpc_config(commit_tx_target: Address, rpc_url: String) -> RpcConfig {
+        RpcConfig {
+            address: "127.0.0.1:0".to_string(),
+            eth_call_gas: 50_000_000,
+            eth_simulate_block_gas_limit: 50_000_000,
+            max_connections: 128,
+            max_concurrent_blocking_rpcs: 8,
+            max_subscriptions_per_connection: 1024,
+            max_request_size: 10,
+            max_response_size: 10,
+            max_blocks_per_filter: 10_000,
+            max_logs_per_response: 10_000,
+            stale_filter_ttl: Duration::from_secs(300),
+            l2_signer_blacklist: HashSet::new(),
+            l2_tx_blacklist: HashSet::new(),
+            send_raw_transaction_sync_timeout: Duration::from_secs(1),
+            gas_price_scale_factor: 1.0,
+            estimate_gas_pubdata_price_factor: 1.0,
+            enable_debug_namespace: false,
+            enable_txpool_namespace: false,
+            edge_da_admission: Some(crate::EdgeDaAdmissionConfig {
+                commit_tx_target,
+                rpc_url: rpc_url.clone(),
+                rpc_user: "user".to_string(),
+                rpc_password: "password".to_string(),
+                poda_url: rpc_url,
+                wallet_name: "zksync-os".to_string(),
+                request_timeout: Duration::from_secs(2),
+            }),
+        }
+    }
+
+    fn operator_da_input(blob_count: usize) -> Vec<u8> {
+        let mut input = Vec::with_capacity(32 * blob_count);
+        for idx in 0..blob_count {
+            input.extend([idx as u8 + 1; 32]);
+        }
+        input
+    }
+
+    fn tx_handler(
+        commit_tx_target: Address,
+        rpc_url: String,
+    ) -> TxHandler<
+        RpcStorage<TestRepository, EmptyReplay, EmptyFinality, EmptyBatch, EmptyState>,
+        impl L2Subpool,
+    > {
+        let repository = TestRepository::new();
+        let state = EmptyState;
+        let storage = RpcStorage::new(
+            repository.clone(),
+            EmptyReplay,
+            EmptyFinality::new(),
+            EmptyBatch,
+            state.clone(),
+            Arc::new(EmptyTree),
+        );
+        let mempool = zksync_os_mempool::subpools::l2::in_memory(
+            ZkProviderFactory::new(state, repository, 270),
+            PoolConfig::default().with_disabled_protocol_base_fee(),
+            TxValidatorConfig {
+                max_input_bytes: usize::MAX,
+                tx_fee_cap: 0,
+            },
+        );
+        let (_, acceptance_state) = watch::channel(TransactionAcceptanceState::Accepting);
+        TxHandler::new(
+            rpc_config(commit_tx_target, rpc_url),
+            storage,
+            mempool,
+            acceptance_state,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn duplicate_compact_edge_da_tx_is_rejected_before_da_lookup() {
+        let syscoin_da = MockServer::start_async().await;
+        let get_blob_data = syscoin_da
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/")
+                    .body_matches(r#""method"\s*:\s*"getnevmblobdata""#);
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .json_body(json!({
+                        "result": {"data": "00"},
+                        "error": null,
+                        "id": 1
+                    }));
+            })
+            .await;
+
+        let commit_tx_target = Address::repeat_byte(0x77);
+        let handler = tx_handler(commit_tx_target, syscoin_da.base_url());
+
+        let blobs = operator_da_input(SYSCOIN_DA_MAX_BLOBS_PER_BATCH);
+        let calldata = commit_call_data(dummy_commit_batch_info(
+            DACommitmentScheme::BlobsZKsyncOS,
+            keccak256(&blobs),
+            blobs,
+        ));
+        let wallet = EthereumWallet::new(PrivateKeySigner::random());
+        let tx = TransactionRequest::default()
+            .with_to(commit_tx_target)
+            .with_nonce(0)
+            .with_gas_limit(1_000_000)
+            .with_max_fee_per_gas(0)
+            .with_max_priority_fee_per_gas(0)
+            .with_chain_id(270)
+            .input(TransactionInput::new(Bytes::from(calldata)));
+        let encoded = Bytes::from(tx.build(&wallet).await.unwrap().encoded_2718());
+
+        handler
+            .send_raw_transaction_impl(encoded.clone())
+            .await
+            .expect("initial compact edge DA transaction must be accepted");
+        assert_eq!(
+            get_blob_data.calls_async().await,
+            SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+        );
+
+        let replay_rejection = handler
+            .send_raw_transaction_impl(encoded)
+            .await
+            .expect_err("duplicate transaction must be rejected");
+
+        assert!(matches!(
+            replay_rejection,
+            EthSendRawTransactionError::PoolError(_)
+        ));
+        assert!(
+            replay_rejection.to_string().contains("already imported"),
+            "unexpected replay rejection: {replay_rejection}"
+        );
+        assert_eq!(
+            get_blob_data.calls_async().await,
+            SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+            "duplicate replay must not perform additional DA lookups"
+        );
     }
 
     #[test]
