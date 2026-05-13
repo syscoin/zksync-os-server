@@ -76,7 +76,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
-        // SYSCOIN
+        // SYSCOIN: run local mempool validation before external DA admission checks, but do not
+        // insert yet so invalid compact-DA txs cannot consume Bitcoin DA RPC capacity and txs
+        // rejected by DA admission cannot race into block production.
+        self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
         self.verify_compact_edge_da_refs_available(&l2_tx).await?;
         {
             let _guard = MempoolLatencyGuard::new();

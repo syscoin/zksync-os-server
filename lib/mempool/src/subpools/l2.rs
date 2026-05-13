@@ -8,11 +8,12 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_primitives::Block as EthBlock;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::blobstore::NoopBlobStore;
-use reth_transaction_pool::error::InvalidPoolTransactionError;
+use reth_transaction_pool::error::{InvalidPoolTransactionError, PoolError};
 use reth_transaction_pool::validate::EthTransactionValidatorBuilder;
 use reth_transaction_pool::{
     AddedTransactionOutcome, CoinbaseTipOrdering, EthTransactionValidator, Pool, PoolConfig,
     PoolResult, PoolTransaction, TransactionListenerKind, TransactionOrigin, TransactionPoolExt,
+    TransactionValidationOutcome, TransactionValidator,
 };
 use reth_transaction_pool::{BestTransactions, ValidPoolTransaction};
 use std::fmt::Debug;
@@ -54,6 +55,13 @@ pub trait L2Subpool:
         )
     }
 
+    /// SYSCOIN: validate an RPC L2 transaction with the pool's cheap local checks before any
+    /// external admission hooks run, without making the transaction visible to block production.
+    fn validate_l2_transaction(
+        &self,
+        transaction: L2Transaction,
+    ) -> impl Future<Output = PoolResult<()>> + Send;
+
     // SYSCOIN: RPC forwarding rollbacks operate directly on the L2 subpool, not the aggregate
     // `Pool` wrapper, so account for the rollback at the abstraction used by `TxHandler`.
     fn remove_forwarding_rollback_transactions(&self, tx_hashes: Vec<TxHash>) {
@@ -78,6 +86,20 @@ pub trait L2Subpool:
 impl<State: ReadStateHistory + Clone, Repository: ReadRepository + Clone> L2Subpool
     for RethPool<State, Repository>
 {
+    async fn validate_l2_transaction(&self, transaction: L2Transaction) -> PoolResult<()> {
+        let transaction = L2PooledTransaction::from_pooled(transaction);
+        match self
+            .validator()
+            .validate_transaction(TransactionOrigin::Local, transaction)
+            .await
+        {
+            TransactionValidationOutcome::Valid { .. } => Ok(()),
+            TransactionValidationOutcome::Invalid(tx, err) => Err(PoolError::new(*tx.hash(), err)),
+            TransactionValidationOutcome::Error(tx_hash, err) => {
+                Err(PoolError::other(tx_hash, err))
+            }
+        }
+    }
 }
 
 pub struct L2TransactionsStream {
