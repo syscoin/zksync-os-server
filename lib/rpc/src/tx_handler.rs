@@ -76,11 +76,13 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
-        // SYSCOIN: run local mempool validation before external DA admission checks, but do not
-        // insert yet so invalid compact-DA txs cannot consume Bitcoin DA RPC capacity and txs
-        // rejected by DA admission cannot race into block production.
-        self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
-        self.verify_compact_edge_da_refs_available(&l2_tx).await?;
+        // SYSCOIN: run local mempool validation before external DA admission checks, but only for
+        // compact-edge-DA commit candidates. Ordinary txs keep the single validation performed by
+        // insertion below.
+        if self.is_compact_edge_da_admission_candidate(&l2_tx) {
+            self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
+            self.verify_compact_edge_da_refs_available(&l2_tx).await?;
+        }
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -157,6 +159,16 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         Ok(())
     }
 
+    // SYSCOIN: use only cheap structural checks here so invalid raw txs cannot force DA parsing or
+    // external Bitcoin DA calls before the mempool validator rejects them.
+    fn is_compact_edge_da_admission_candidate(&self, tx: &L2Transaction) -> bool {
+        let Some(config) = self.config.edge_da_admission.as_ref() else {
+            return false;
+        };
+        is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target)
+            && has_compact_edge_da_commit_selector(tx.input())
+    }
+
     pub async fn send_raw_transaction_sync_impl(
         &self,
         bytes: Bytes,
@@ -225,15 +237,20 @@ fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Ad
     tx_to == Some(commit_tx_target)
 }
 
+// SYSCOIN: keep this deliberately cheap; full calldata decoding happens only after mempool
+// validation for commit candidates.
+fn has_compact_edge_da_commit_selector(input: &[u8]) -> bool {
+    input.len() >= 4
+        && (input[..4] == IExecutor::commitBatchesSharedBridgeCall::SELECTOR
+            || input[..4] == IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+}
+
 // SYSCOIN: parse Gateway child-chain commit calldata and return compact Bitcoin DA refs
 // that must be finalized before admitting the tx to the Gateway mempool.
 fn compact_edge_da_refs_from_commit_calldata(
     input: &[u8],
 ) -> Result<Option<Vec<String>>, EthSendRawTransactionError> {
-    if input.len() < 4
-        || (input[..4] != IExecutor::commitBatchesSharedBridgeCall::SELECTOR
-            && input[..4] != IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
-    {
+    if !has_compact_edge_da_commit_selector(input) {
         return Ok(None);
     }
 
