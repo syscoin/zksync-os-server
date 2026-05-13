@@ -451,6 +451,8 @@ fn apply_simulate_block_overrides(
         block_hash,
         // ZKsync OS uses mix_hash for prevrandao and has no separate difficulty field; ignored.
         difficulty: _,
+        // ZKsync OS block context has no beacon root field; ignored for simulation.
+        beacon_root: _,
     } = overrides;
 
     if let Some(number) = number {
