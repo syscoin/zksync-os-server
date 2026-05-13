@@ -187,8 +187,13 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 .replay_storage()
                 .get_context(parent_block)
                 .ok_or(RpcStorageError::BlockNotFound(block))?;
+            let block_context = if block.is_pending() {
+                self.resolve_pending_simulation_block_context(parent_block)?
+            } else {
+                self.build_pending_block_context()?
+            };
             return Ok(SimulationStartContext {
-                block_context: self.build_pending_block_context()?,
+                block_context,
                 parent_block_number: parent_block,
                 parent_timestamp: parent_context.timestamp,
             });
@@ -214,6 +219,19 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             parent_block_number: parent_block,
             parent_timestamp: parent_context.timestamp,
         })
+    }
+
+    fn resolve_pending_simulation_block_context(
+        &self,
+        latest_block_number: u64,
+    ) -> Result<BlockContext, EthCallError> {
+        if let Some(pending_block_context) = self.last_constructed_block_context()
+            && pending_block_context.block_number > latest_block_number
+        {
+            Ok(pending_block_context)
+        } else {
+            self.build_pending_block_context()
+        }
     }
 
     fn create_simulation_txs<V: ViewState>(
