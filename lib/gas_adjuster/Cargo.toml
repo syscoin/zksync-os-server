@@ -20,5 +20,5 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["time"] }
 num.workspace = true
 zksync_os_rpc_api.workspace = true
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.10" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.11" }
 url.workspace = true
