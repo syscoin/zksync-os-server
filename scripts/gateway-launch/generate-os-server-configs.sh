@@ -461,7 +461,11 @@ def materialize_chain(
                 else []
             ),
             "l1_sender:",
-            f"  pubdata_mode: {pubdata_mode}",
+            *(
+                [f"  pubdata_mode: {pubdata_mode}"]
+                if gateway_rpc_url is None
+                else []
+            ),
             f"  operator_commit_sk: '{operator_commit_sk}'",
             f"  operator_prove_sk: '{operator_prove_sk}'",
             f"  operator_execute_sk: '{operator_execute_sk}'",
@@ -488,6 +492,19 @@ def materialize_chain(
                     f"  native_price_usd: {os.environ['GATEWAY_NATIVE_PRICE_USD']}",
                 ]
                 if chain_name == "gateway"
+                else []
+            ),
+            *(
+                [
+                    "gateway_sender:",
+                    f"  operator_commit_sk: '{operator_commit_sk}'",
+                    f"  operator_prove_sk: '{operator_prove_sk}'",
+                    f"  operator_execute_sk: '{operator_execute_sk}'",
+                    # SYSCOIN: Gateway-settled child chains still submit state-dependent
+                    # settlement transactions; keep the same single-flight discipline as L1.
+                    "  command_limit: 1",
+                ]
+                if gateway_rpc_url is not None
                 else []
             ),
             *(
