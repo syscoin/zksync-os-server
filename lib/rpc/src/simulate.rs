@@ -597,10 +597,7 @@ impl SimulatedTx {
                 logs: vec![],
                 gas_used: 0,
                 status: false,
-                error: Some(SimulateError {
-                    code: -32015,
-                    message: format!("vm execution error: {err}"),
-                }),
+                error: Some(simulate_error_for_invalid_transaction(err)),
             },
         }
     }
@@ -662,6 +659,40 @@ impl SimulatedTx {
             SimulatedTxResult::Executed { output, .. } => output.gas_used,
             SimulatedTxResult::Invalid(_) => 0,
         }
+    }
+}
+
+fn simulate_error_for_invalid_transaction(err: &InvalidTransaction) -> SimulateError {
+    // SYSCOIN: Preserve `eth_simulateV1` validation error codes for ZKsync OS
+    // transaction validation failures instead of flattening them into VM errors.
+    let code = match err {
+        InvalidTransaction::NonceTooLow { .. } => -38010,
+        InvalidTransaction::NonceTooHigh { .. } => -38011,
+        InvalidTransaction::BaseFeeGreaterThanMaxFee
+        | InvalidTransaction::GasPriceLessThanBasefee
+        | InvalidTransaction::BlobBaseFeeGreaterThanMaxFeePerBlobGas => -38012,
+        InvalidTransaction::CallGasCostMoreThanGasLimit
+        | InvalidTransaction::EIP7623IntrinsicGasIsTooLow => -38013,
+        InvalidTransaction::LackOfFundForMaxFee { .. }
+        | InvalidTransaction::ReceivedInsufficientFees { .. } => -38014,
+        InvalidTransaction::CallerGasLimitMoreThanBlock
+        | InvalidTransaction::BlockGasLimitReached
+        | InvalidTransaction::BlockNativeLimitReached
+        | InvalidTransaction::BlockPubdataLimitReached
+        | InvalidTransaction::BlockL2ToL1LogsLimitReached
+        | InvalidTransaction::BlockBlobGasLimitReached => -38015,
+        InvalidTransaction::RejectCallerWithCode => -38024,
+        InvalidTransaction::CreateInitCodeSizeLimit => -38025,
+        _ => -32015,
+    };
+
+    SimulateError {
+        code,
+        message: if code == -32015 {
+            format!("vm execution error: {err}")
+        } else {
+            err.to_string()
+        },
     }
 }
 
@@ -740,5 +771,41 @@ mod tests {
         assert_eq!(context.block_hashes.0[253], U256::ZERO);
         assert_eq!(context.block_hashes.0[254], U256::ZERO);
         assert_eq!(context.block_hashes.0[255], U256::ZERO);
+    }
+
+    #[test]
+    fn invalid_simulation_transactions_use_spec_error_codes() {
+        assert_eq!(
+            simulate_error_for_invalid_transaction(&InvalidTransaction::NonceTooLow {
+                tx: 1,
+                state: 2
+            })
+            .code,
+            -38010
+        );
+        assert_eq!(
+            simulate_error_for_invalid_transaction(&InvalidTransaction::NonceTooHigh {
+                tx: 3,
+                state: 2
+            })
+            .code,
+            -38011
+        );
+        assert_eq!(
+            simulate_error_for_invalid_transaction(&InvalidTransaction::BaseFeeGreaterThanMaxFee)
+                .code,
+            -38012
+        );
+        assert_eq!(
+            simulate_error_for_invalid_transaction(
+                &InvalidTransaction::CallGasCostMoreThanGasLimit
+            )
+            .code,
+            -38013
+        );
+        assert_eq!(
+            simulate_error_for_invalid_transaction(&InvalidTransaction::BlockGasLimitReached).code,
+            -38015
+        );
     }
 }
