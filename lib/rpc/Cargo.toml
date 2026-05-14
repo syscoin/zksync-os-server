@@ -58,3 +58,8 @@ bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", 
 
 boa_engine.workspace = true
 boa_gc.workspace = true
+
+[dev-dependencies]
+alloy = { workspace = true, default-features = false, features = ["signer-local"] }
+httpmock.workspace = true
+zksync_os_reth_compat.workspace = true
