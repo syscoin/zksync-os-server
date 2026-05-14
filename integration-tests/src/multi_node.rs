@@ -1,4 +1,3 @@
-use alloy::primitives::U128;
 use futures::future::try_join_all;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -258,7 +257,7 @@ impl ClusterState {
 /// Test harness for multi-node consensus testing
 pub struct MultiNodeTester {
     nodes: Vec<NodeSlot>,
-    batcher_node_index: Option<usize>,
+    batcher_node_index: usize,
 }
 
 impl MultiNodeTester {
@@ -276,7 +275,7 @@ impl MultiNodeTester {
         matches!(self.nodes[index], NodeSlot::Suspended(_))
     }
 
-    pub fn batcher_node_index(&self) -> Option<usize> {
+    pub fn batcher_node_index(&self) -> usize {
         self.batcher_node_index
     }
 
@@ -523,9 +522,8 @@ impl MultiNodeTesterBuilder {
         self
     }
 
-    /// Choose which launched consensus node runs the batcher.
-    /// SYSCOIN: by default consensus tests run without L1 settlement; set this only for tests that
-    /// explicitly need the batcher pipeline.
+    /// Choose which launched consensus node runs the batcher. Exactly one node has
+    /// `batcher_config.enabled = true`; the rest keep it disabled.
     pub fn with_batcher_node_index(mut self, index: usize) -> Self {
         self.batcher_node_index = Some(index);
         self
@@ -542,12 +540,11 @@ impl MultiNodeTesterBuilder {
             num_nodes > 0 && num_nodes <= membership_nodes,
             "spawn_consensus_nodes must be in 1..={membership_nodes}"
         );
-        if let Some(batcher_node_index) = self.batcher_node_index {
-            assert!(
-                batcher_node_index < num_nodes,
-                "batcher_node_index must be in 0..{num_nodes}"
-            );
-        }
+        let batcher_node_index = self.batcher_node_index.unwrap_or(0);
+        assert!(
+            batcher_node_index < num_nodes,
+            "batcher_node_index must be in 0..{num_nodes}"
+        );
 
         let mut locked_ports = Vec::with_capacity(membership_nodes);
         for _ in 0..membership_nodes {
@@ -588,10 +585,10 @@ impl MultiNodeTesterBuilder {
                 let l1 = l1.clone();
                 async move {
                     let network_port = locked_port.port;
-                    // SYSCOIN: production configs set this on every consensus node. The first node
-                    // to initialize the cluster wins; the rest safely observe that it is initialized.
+                    // Production configs set this on every consensus node. The first node to
+                    // initialize the cluster wins; the rest safely observe that it is initialized.
                     let bootstrap = true;
-                    let batcher_enabled = self.batcher_node_index == Some(i);
+                    let batcher_enabled = i == batcher_node_index;
                     let expected_node_id = zksync_os_network::NodeRecord::from_secret_key(
                         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), network_port),
                         &secret,
@@ -606,13 +603,6 @@ impl MultiNodeTesterBuilder {
                             config.general_config.node_role = NodeRole::MainNode;
                             config.general_config.main_node_rpc_url = None;
                             config.batcher_config.enabled = batcher_enabled;
-                            if !batcher_enabled {
-                                // SYSCOIN: non-batcher consensus nodes must still be able to
-                                // propose Raft blocks. A fixed pubdata price avoids waiting for
-                                // GasAdjuster, which only runs on the batcher/L1-settlement node.
-                                config.fee_config.pubdata_price_override =
-                                    Some(U128::from(1_000_000u64));
-                            }
                             config.network_config.enabled = true;
                             config.network_config.secret_key = Some(secret);
                             config.network_config.address = Ipv4Addr::LOCALHOST;
@@ -644,7 +634,7 @@ impl MultiNodeTesterBuilder {
 
         Ok(MultiNodeTester {
             nodes: try_join_all(launches).await?,
-            batcher_node_index: self.batcher_node_index,
+            batcher_node_index,
         })
     }
 }
