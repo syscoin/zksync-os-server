@@ -434,9 +434,10 @@ where
     let raw_tx = tx.encoded_2718();
     let tx_nonce = tx.nonce();
     let admission_retry_started = Instant::now();
-    let pending_tx = loop {
+    let (pending_tx, submitted_l1_block) = loop {
+        let submission_baseline_block = provider.get_block_number().await?;
         match provider.send_raw_transaction(&raw_tx).await {
-            Ok(pending_tx) => break pending_tx,
+            Ok(pending_tx) => break (pending_tx, submission_baseline_block),
             Err(err)
                 if gateway
                     && Input::COMPONENT_ID == ComponentId::L1SenderCommit
@@ -461,7 +462,6 @@ where
             Err(err) => return Err(err.into()),
         }
     };
-    let submitted_l1_block = provider.get_block_number().await?;
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
     let receipt_fut = wait_for_confirmed_receipt(
