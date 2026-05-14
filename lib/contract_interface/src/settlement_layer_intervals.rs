@@ -144,10 +144,15 @@ impl SettlementLayerIntervals {
         diamond_proxy_gw: Option<(u64, ZkChain<DynProvider>)>,
         chain_id: u64,
     ) -> anyhow::Result<Self> {
+        // `diamond_proxy_gw` is set only when the chain is currently settling on Gateway.
+        // A deployed-but-inactive Gateway still leaves this as `None`; fresh v31 deployments
+        // should return `migrationNumber == 0` and never use the fallback below.
+        let current_settlement_is_l1 = diamond_proxy_gw.is_none();
         let intervals = find_settlement_layer_intervals(
             chain_asset_handler,
             diamond_proxy_l1.provider().clone(),
             chain_id,
+            current_settlement_is_l1,
         )
         .await
         .context("failed to discover settlement layer intervals")?;
@@ -250,6 +255,7 @@ async fn find_settlement_layer_intervals(
     chain_asset_handler: Address,
     provider: DynProvider,
     chain_id: u64,
+    current_settlement_is_l1: bool,
 ) -> anyhow::Result<Vec<SettlementLayerInterval>> {
     let cah = IChainAssetHandler::new(chain_asset_handler, provider);
     let total_migrations: u64 = match cah.migrationNumber(U256::from(chain_id)).call().await {
@@ -258,7 +264,7 @@ async fn find_settlement_layer_intervals(
             .map_err(|e| anyhow::anyhow!("migrationNumber overflow: {e}"))?,
         // Pre-V31 `ChainAssetHandler` does not expose `migrationNumber`. In that era Gateway
         // migrations are not possible, so the chain has always committed to L1.
-        Err(e) if is_migration_number_unavailable(&e) => {
+        Err(e) if current_settlement_is_l1 && is_migration_number_unavailable(&e) => {
             tracing::debug!(
                 "ChainAssetHandler does not expose migrationNumber; assuming pre-V31 protocol \
                  with no Gateway migrations: {e}"
