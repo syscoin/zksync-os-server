@@ -433,7 +433,6 @@ where
 
     let raw_tx = tx.encoded_2718();
     let tx_nonce = tx.nonce();
-    let submitted_l1_block = provider.get_block_number().await?;
     let admission_retry_started = Instant::now();
     let pending_tx = loop {
         match provider.send_raw_transaction(&raw_tx).await {
@@ -462,6 +461,7 @@ where
             Err(err) => return Err(err.into()),
         }
     };
+    let submitted_l1_block = provider.get_block_number().await?;
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
     let receipt_fut = wait_for_confirmed_receipt(
