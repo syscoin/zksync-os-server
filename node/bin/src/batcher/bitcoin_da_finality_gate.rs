@@ -280,12 +280,20 @@ impl BitcoinDaFinalityGate {
         &self,
         command: &CommitCommand,
     ) -> anyhow::Result<()> {
-        let client = self.client()?;
+        let mut client = None;
         for batch in command.as_ref() {
             let input = &batch.batch.batch_info.commit_info.edge_da_refs_input;
             if input.is_empty() {
                 continue;
             }
+            // SYSCOIN: calldata-only batches do not require a Bitcoin DA RPC. Create the client
+            // lazily only once we see Gateway edge DA refs that must be finalized on L1.
+            if client.is_none() {
+                client = Some(self.client()?);
+            }
+            let client = client
+                .as_ref()
+                .expect("Bitcoin DA client was initialized before use");
             let edge_refs = syscoin_edge_da_refs_from_input(input).with_context(|| {
                 format!(
                     "failed to parse Gateway edge DA refs for batch {}",
