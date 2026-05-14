@@ -30,7 +30,7 @@ const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 // SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
 // repeatedly hitting the operator's Syscoin DA RPC / PoDA fallback before mempool insertion.
-const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(30);
+const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(20);
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
