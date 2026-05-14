@@ -1635,10 +1635,34 @@ pub(crate) async fn report_operator_metrics_loop<P: Provider>(
     let mut timer = tokio::time::interval(OPERATOR_METRICS_POLL_INTERVAL);
     loop {
         timer.tick().await;
-        let balance = format_ether(provider.get_balance(operator_address).await?);
-        let nonce = provider.get_transaction_count(operator_address).await?;
-        L1_SENDER_METRICS.balance[&command_name].set(balance.parse()?);
-        L1_SENDER_METRICS.nonce[&command_name].set(nonce);
+        match provider.get_balance(operator_address).await {
+            Ok(balance) => match format_ether(balance).parse() {
+                Ok(balance) => {
+                    L1_SENDER_METRICS.balance[&command_name].set(balance);
+                }
+                Err(err) => tracing::warn!(
+                    command_name,
+                    %operator_address,
+                    "Failed to parse L1 operator balance metric: {err}"
+                ),
+            },
+            Err(err) => tracing::warn!(
+                command_name,
+                %operator_address,
+                "Failed to fetch L1 operator balance metric: {err}"
+            ),
+        }
+
+        match provider.get_transaction_count(operator_address).await {
+            Ok(nonce) => {
+                L1_SENDER_METRICS.nonce[&command_name].set(nonce);
+            }
+            Err(err) => tracing::warn!(
+                command_name,
+                %operator_address,
+                "Failed to fetch L1 operator nonce metric: {err}"
+            ),
+        }
     }
 }
 
