@@ -1,7 +1,7 @@
 //! Support for representing the version of the `zks` protocol.
 
 use crate::wire::message::ZksMessageId;
-use crate::wire::replays::{WireReplayRecord, v0, v1, v2, v3, v4};
+use crate::wire::replays::{WireReplayRecord, v0, v1, v2, v4};
 use alloy::primitives::bytes::BufMut;
 use alloy::rlp::{Decodable, Encodable, Error as RlpError};
 use std::fmt::Debug;
