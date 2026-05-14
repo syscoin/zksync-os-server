@@ -10,6 +10,8 @@ use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 use alloy::transports::{RpcError, TransportErrorKind};
 use bitcoin_da_client::SyscoinClient;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use zksync_os_contract_interface::calldata::CommitCalldata;
@@ -26,6 +28,9 @@ use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, Transaction
 const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
 // SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
 const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
+// SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
+// repeatedly hitting the operator's Syscoin DA RPC / PoDA fallback before mempool insertion.
+const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
@@ -34,6 +39,7 @@ pub struct TxHandler<RpcStorage, Mempool> {
     mempool: Mempool,
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     tx_forwarder: Option<DynProvider>,
+    edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempool> {
@@ -50,6 +56,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             mempool,
             acceptance_state,
             tx_forwarder,
+            edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -129,6 +136,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
             return Ok(());
         };
+        self.reject_cached_unavailable_edge_da_refs(&version_hashes)?;
 
         let client = SyscoinClient::new(
             &config.rpc_url,
@@ -151,15 +159,55 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     "failed to check Bitcoin DA availability for compact edge refs: {err}"
                 ))
             })?;
-        for (idx, (version_hash, exists)) in version_hashes.iter().zip(existence).enumerate() {
-            if !exists {
-                return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
-                    format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
-                ));
-            }
+        let missing: Vec<_> = version_hashes
+            .iter()
+            .zip(existence)
+            .enumerate()
+            .filter_map(|(idx, (version_hash, exists))| (!exists).then_some((idx, version_hash)))
+            .collect();
+        for (_, version_hash) in &missing {
+            self.remember_unavailable_edge_da_ref(version_hash);
+        }
+        if let Some((idx, version_hash)) = missing.first() {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
+            ));
         }
 
         Ok(())
+    }
+
+    fn reject_cached_unavailable_edge_da_refs(
+        &self,
+        version_hashes: &[String],
+    ) -> Result<(), EthSendRawTransactionError> {
+        let now = Instant::now();
+        let mut cache = self
+            .edge_da_unavailable_ref_cache
+            .lock()
+            .expect("edge DA unavailable ref cache poisoned");
+        cache.retain(|_, expires_at| *expires_at > now);
+        if let Some(version_hash) = version_hashes
+            .iter()
+            .find(|version_hash| cache.contains_key(*version_hash))
+        {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!(
+                    "compact edge DA ref {version_hash} is temporarily cached as not retrievable"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn remember_unavailable_edge_da_ref(&self, version_hash: &str) {
+        self.edge_da_unavailable_ref_cache
+            .lock()
+            .expect("edge DA unavailable ref cache poisoned")
+            .insert(
+                version_hash.to_owned(),
+                Instant::now() + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL,
+            );
     }
 
     // SYSCOIN: use only cheap structural checks here so invalid raw txs cannot force DA parsing or
