@@ -147,14 +147,47 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
+// SYSCOIN: `batcher.enabled=false` only means this node does not run local L1 settlement.
+// It may produce L2 blocks in consensus HA mode only when explicitly opted in and supplied with
+// static fee inputs; otherwise disabled-batcher main nodes stay replay-only/read-only.
+fn block_production_enabled(config: &Config) -> bool {
+    config.batcher_config.enabled
+        || (config.consensus_config.enabled
+            && config.sequencer_config.allow_non_batcher_block_production
+            && config.fee_config.pubdata_price_override.is_some()
+            && config.l1_sender_config.pubdata_mode.is_some())
+}
+
+fn validate_block_production_config(config: &Config, node_role: NodeRole) -> anyhow::Result<()> {
+    if !node_role.is_main()
+        || config.batcher_config.enabled
+        || !config.sequencer_config.allow_non_batcher_block_production
+    {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        config.consensus_config.enabled,
+        "`sequencer.allow_non_batcher_block_production=true` requires `consensus.enabled=true`"
+    );
+    anyhow::ensure!(
+        config.fee_config.pubdata_price_override.is_some(),
+        "`sequencer.allow_non_batcher_block_production=true` requires `fee.pubdata_price_override`"
+    );
+    anyhow::ensure!(
+        config.l1_sender_config.pubdata_mode.is_some(),
+        "`sequencer.allow_non_batcher_block_production=true` requires `l1_sender.pubdata_mode`"
+    );
+    Ok(())
+}
+
 // SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
 // its first Produce command, which can be delayed by replay.
 fn initial_transaction_acceptance_state(
     node_role: NodeRole,
     max_blocks_to_produce: Option<u64>,
-    batcher_enabled: bool,
+    block_production_enabled: bool,
 ) -> TransactionAcceptanceState {
-    if node_role.is_main() && (!batcher_enabled || max_blocks_to_produce == Some(0)) {
+    if node_role.is_main() && (!block_production_enabled || max_blocks_to_produce == Some(0)) {
         TransactionAcceptanceState::NotAccepting(vec![NotAcceptingReason::BlockProductionDisabled])
     } else {
         TransactionAcceptanceState::Accepting
@@ -261,6 +294,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     if config.batcher_config.enabled && !config.l1_sender_config.enabled {
         unimplemented!("running without L1 Senders is temporarily not supported");
     }
+    validate_block_production_config(&config, node_role)
+        .expect("invalid block production configuration");
     tracing::info!(version = NODE_VERSION, role, "Initializing Node");
 
     let (bridgehub_address, bytecode_supplier_address, chain_id, genesis_input_source) =
@@ -888,11 +923,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // Transaction acceptance state - tracks whether we're accepting new transactions
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
     // External nodes: always accepts, but may be rejected on the main node side during forwarding
+    let block_production_enabled = block_production_enabled(&config);
     let (tx_acceptance_state_sender, tx_acceptance_state_receiver) =
         watch::channel(initial_transaction_acceptance_state(
             node_role,
             config.sequencer_config.max_blocks_to_produce,
-            config.batcher_config.enabled,
+            block_production_enabled,
         ));
 
     let (stop_sender, stop_receiver) = watch::channel(false);
@@ -1324,7 +1360,7 @@ async fn run_main_node_pipeline(
                 .map(Into::into),
             replays_to_execute,
             leadership,
-            produce_enabled: config.batcher_config.enabled,
+            produce_enabled: block_production_enabled(config),
         })
         .pipe(BlockExecutor {
             block_context_provider,
@@ -2198,11 +2234,11 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_batch_verification_mismatch, initial_transaction_acceptance_state,
-        validate_batch_verification_startup_policy,
+        block_production_enabled, check_batch_verification_mismatch,
+        initial_transaction_acceptance_state, validate_batch_verification_startup_policy,
     };
-    use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use crate::config::{BatchVerificationConfig, Config};
+    use alloy::primitives::{U128, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
@@ -2223,6 +2259,33 @@ mod tests {
             initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    #[test]
+    fn disabled_batcher_non_batcher_production_requires_explicit_opt_in() {
+        let mut config = Config::default();
+        config.batcher_config.enabled = false;
+        config.consensus_config.enabled = true;
+        config.fee_config.pubdata_price_override = Some(U128::from(1_000_000u64));
+        config.l1_sender_config.pubdata_mode = Some(zksync_os_types::PubdataMode::Blobs);
+
+        assert!(!block_production_enabled(&config));
+    }
+
+    #[test]
+    fn disabled_batcher_consensus_node_can_explicitly_produce_with_static_fee_input() {
+        let mut config = Config::default();
+        config.batcher_config.enabled = false;
+        config.consensus_config.enabled = true;
+        config.sequencer_config.allow_non_batcher_block_production = true;
+        config.fee_config.pubdata_price_override = Some(U128::from(1_000_000u64));
+        config.l1_sender_config.pubdata_mode = Some(zksync_os_types::PubdataMode::Blobs);
+
+        assert!(block_production_enabled(&config));
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, None, true),
+            TransactionAcceptanceState::Accepting
         ));
     }
 

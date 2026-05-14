@@ -1,3 +1,4 @@
+use alloy::primitives::U128;
 use futures::future::try_join_all;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -603,6 +604,15 @@ impl MultiNodeTesterBuilder {
                             config.general_config.node_role = NodeRole::MainNode;
                             config.general_config.main_node_rpc_url = None;
                             config.batcher_config.enabled = batcher_enabled;
+                            if !batcher_enabled {
+                                // SYSCOIN: non-batcher consensus nodes do not run GasAdjuster, but
+                                // may still become Raft leaders. Opt them into block production only
+                                // with a static pubdata price so leader failover cannot stall on fee
+                                // inputs that are intentionally absent from this node.
+                                config.sequencer_config.allow_non_batcher_block_production = true;
+                                config.fee_config.pubdata_price_override =
+                                    Some(U128::from(1_000_000u64));
+                            }
                             config.network_config.enabled = true;
                             config.network_config.secret_key = Some(secret);
                             config.network_config.address = Ipv4Addr::LOCALHOST;

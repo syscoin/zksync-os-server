@@ -843,6 +843,13 @@ pub struct SequencerConfig {
     #[config(default_t = None)]
     pub max_blocks_to_produce: Option<u64>,
 
+    /// SYSCOIN: allow a consensus main node with `batcher.enabled=false` to produce L2 blocks
+    /// when it becomes Raft leader. This is intended only for multi-node HA setups where L1
+    /// settlement is handled by another batcher node. Requires explicit static pubdata fee inputs;
+    /// disabled-batcher nodes remain replay-only by default.
+    #[config(default_t = false)]
+    pub allow_non_batcher_block_production: bool,
+
     /// Max number of interop roots to be included in a single transaction
     #[config(default_t = 100)]
     pub interop_roots_per_tx: usize,
