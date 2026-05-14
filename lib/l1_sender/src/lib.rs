@@ -433,8 +433,35 @@ where
 
     let raw_tx = tx.encoded_2718();
     let tx_nonce = tx.nonce();
-    let submitted_l1_block = provider.get_block_number().await?;
-    let pending_tx = provider.send_raw_transaction(&raw_tx).await?;
+    let admission_retry_started = Instant::now();
+    let (pending_tx, submitted_l1_block) = loop {
+        let submission_baseline_block = provider.get_block_number().await?;
+        match provider.send_raw_transaction(&raw_tx).await {
+            Ok(pending_tx) => break (pending_tx, submission_baseline_block),
+            Err(err)
+                if gateway
+                    && Input::COMPONENT_ID == ComponentId::L1SenderCommit
+                    && is_gateway_da_admission_error(&err) =>
+            {
+                if admission_retry_started.elapsed() >= config.gateway_da_admission_retry_timeout {
+                    return Err(anyhow::anyhow!(
+                        "{command_name}: Gateway compact Bitcoin DA admission failed for {tx_range} within {:?}: {err}",
+                        config.gateway_da_admission_retry_timeout
+                    ));
+                }
+                tracing::warn!(
+                    command_name,
+                    tx_range,
+                    error = %err,
+                    elapsed = ?admission_retry_started.elapsed(),
+                    retry_in = ?config.gateway_da_admission_retry_interval,
+                    "Gateway rejected commit because Bitcoin DA is not visible yet; retrying submission"
+                );
+                tokio::time::sleep(config.gateway_da_admission_retry_interval).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
     let receipt_fut = wait_for_confirmed_receipt(
@@ -972,6 +999,24 @@ fn is_nonce_reuse_rebroadcast_error(err: &TransportError) -> bool {
         }
         _ => false,
     }
+}
+
+// SYSCOIN: Gateway performs compact edge-DA admission before mempool insertion. A child chain can
+// publish Bitcoin DA through its local Syscoin node while the Gateway node has not observed the DA
+// yet, so this specific pre-send rejection is transient and must be retried by the child chain.
+fn is_gateway_da_admission_error(err: &TransportError) -> bool {
+    match err {
+        TransportError::ErrorResp(resp) => {
+            let message = resp.message.to_ascii_lowercase();
+            is_retryable_gateway_da_admission_message(&message)
+        }
+        _ => false,
+    }
+}
+
+fn is_retryable_gateway_da_admission_message(message: &str) -> bool {
+    message.contains("not retrievable")
+        && (message.contains("compact edge da ref") || message.contains("bitcoin da"))
 }
 
 // SYSCOIN: outcome of same-nonce discovery after a nonce-reuse rebroadcast error.
@@ -1595,7 +1640,7 @@ async fn validate_tx_receipt<Input: SendToL1>(
 
 #[cfg(test)]
 mod tests {
-    use super::notify_commit_submitted_batch;
+    use super::{is_retryable_gateway_da_admission_message, notify_commit_submitted_batch};
     use tokio::sync::watch;
 
     #[test]
@@ -1619,5 +1664,25 @@ mod tests {
     #[test]
     fn commit_submitted_marker_is_optional_for_non_commit_senders() {
         notify_commit_submitted_batch(&None, 11);
+    }
+
+    #[test]
+    fn gateway_da_retry_matcher_only_accepts_availability_lag() {
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref 0 (abc) is not retrievable",
+        ));
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref abc is temporarily cached as not retrievable",
+        ));
+
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: failed to decode compact edge da commit calldata: bad selector",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da commitment mismatch",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: unsupported child-chain da commitment scheme",
+        ));
     }
 }

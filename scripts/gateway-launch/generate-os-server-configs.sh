@@ -473,7 +473,11 @@ def materialize_chain(
             # layers, so keep L1 submissions single-flight for now.
             "  command_limit: 1",
             *(
-                ["  transaction_timeout: 3000s"]
+                [
+                    "  transaction_timeout: 3000s",
+                    "  gateway_da_admission_retry_timeout: 90m",
+                    "  gateway_da_admission_retry_interval: 30s",
+                ]
                 if pubdata_mode != "RelayedL2Calldata"
                 else []
             ),
@@ -503,6 +507,8 @@ def materialize_chain(
                     # SYSCOIN: Gateway-settled child chains still submit state-dependent
                     # settlement transactions; keep the same single-flight discipline as L1.
                     "  command_limit: 1",
+                    "  gateway_da_admission_retry_timeout: 90m",
+                    "  gateway_da_admission_retry_interval: 30s",
                 ]
                 if gateway_rpc_url is not None
                 else []

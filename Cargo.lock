@@ -2835,8 +2835,8 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
 name = "bitcoin_da_client"
-version = "0.1.10"
-source = "git+https://github.com/syscoin/bitcoin_da_client.git?tag=v0.1.10#ae62627826ff8d0c5e7ee018a141a704f41548da"
+version = "0.1.12"
+source = "git+https://github.com/syscoin/bitcoin_da_client.git?tag=v0.1.12#af8f31444305c27c5502675df58fe4e0f12819d3"
 dependencies = [
  "async-trait",
  "hex",
@@ -10717,7 +10717,7 @@ version = "13.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c281a1f11d3bcb8c0bba1199ed6bcb001d1aeb3d4fb366819e14f88723989a4e"
 dependencies = [
- "alloy-eips",
+ "alloy-eips 1.8.3",
  "revm-bytecode 10.0.0",
  "revm-database-interface 11.0.1",
  "revm-primitives 23.0.0",
@@ -10884,7 +10884,6 @@ dependencies = [
  "ark-serialize 0.5.0",
  "arrayref",
  "aurora-engine-modexp",
- "blst",
  "c-kzg",
  "cfg-if",
  "k256",

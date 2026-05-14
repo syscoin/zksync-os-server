@@ -39,6 +39,14 @@ pub struct L1SenderConfig<Input> {
     /// A value of `0` disables the dropped-tx liveness check.
     pub tx_liveness_max_missing_polls: u32,
 
+    /// SYSCOIN: max time to retry Gateway admission rejections caused by compact Bitcoin DA refs
+    /// not being visible on the Gateway node yet.
+    pub gateway_da_admission_retry_timeout: Duration,
+
+    /// SYSCOIN: how often to retry Gateway admission after a compact Bitcoin DA availability
+    /// rejection.
+    pub gateway_da_admission_retry_interval: Duration,
+
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,
 

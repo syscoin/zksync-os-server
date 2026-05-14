@@ -2,6 +2,9 @@ l1_sender:
   pubdata_mode: Blobs
   # Syscoin L1 is slow; reduce aggressive polling noise.
   poll_interval: 10s
+  # Gateway may reject compact DA commits until its own Bitcoin DA node observes the UTXO data.
+  gateway_da_admission_retry_timeout: 90m
+  gateway_da_admission_retry_interval: 30s
 
 l1_watcher:
   poll_interval: 10s
