@@ -846,7 +846,8 @@ pub struct SequencerConfig {
     /// SYSCOIN: allow a consensus main node with `batcher.enabled=false` to produce L2 blocks
     /// when it becomes Raft leader. This is intended only for multi-node HA setups where this
     /// node intentionally does not run local L1 settlement. Requires explicit static pubdata fee
-    /// inputs; disabled-batcher nodes remain replay-only by default.
+    /// inputs and Bitcoin DA RPC credentials for compact edge DA admission; disabled-batcher nodes
+    /// remain replay-only by default.
     #[config(default_t = false)]
     pub allow_non_batcher_block_production: bool,
 

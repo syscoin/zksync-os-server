@@ -69,7 +69,7 @@ pub(crate) async fn maybe_start_bitcoin_da_mock(config: &mut Config) -> Option<B
     if config.batcher_config.bitcoin_da_rpc_url.is_some()
         || !matches!(
             config.l1_sender_config.pubdata_mode,
-            Some(PubdataMode::Blobs)
+            Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
         )
     {
         return None;

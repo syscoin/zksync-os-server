@@ -149,13 +149,15 @@ pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
 // SYSCOIN: `batcher.enabled=false` only means this node does not run local L1 settlement.
 // It may produce L2 blocks in consensus HA mode only when explicitly opted in and supplied with
-// static fee inputs; otherwise disabled-batcher main nodes stay replay-only/read-only.
+// static fee inputs and compact DA admission credentials; otherwise disabled-batcher main nodes
+// stay replay-only/read-only.
 fn block_production_enabled(config: &Config) -> bool {
     config.batcher_config.enabled
         || (config.consensus_config.enabled
             && config.sequencer_config.allow_non_batcher_block_production
             && config.fee_config.pubdata_price_override.is_some()
-            && config.l1_sender_config.pubdata_mode.is_some())
+            && compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode)
+            && bitcoin_da_rpc_config_complete(config))
 }
 
 fn validate_block_production_config(config: &Config, node_role: NodeRole) -> anyhow::Result<()> {
@@ -174,10 +176,39 @@ fn validate_block_production_config(config: &Config, node_role: NodeRole) -> any
         "`sequencer.allow_non_batcher_block_production=true` requires `fee.pubdata_price_override`"
     );
     anyhow::ensure!(
-        config.l1_sender_config.pubdata_mode.is_some(),
-        "`sequencer.allow_non_batcher_block_production=true` requires `l1_sender.pubdata_mode`"
+        compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode),
+        "`sequencer.allow_non_batcher_block_production=true` requires `l1_sender.pubdata_mode` to use Syscoin blob DA"
+    );
+    anyhow::ensure!(
+        bitcoin_da_rpc_config_complete(config),
+        "`sequencer.allow_non_batcher_block_production=true` requires complete Bitcoin DA RPC credentials for compact edge DA admission"
     );
     Ok(())
+}
+
+fn compact_edge_da_admission_required(pubdata_mode: Option<PubdataMode>) -> bool {
+    matches!(
+        pubdata_mode,
+        Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
+    )
+}
+
+fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
+    let batcher = &config.batcher_config;
+    batcher
+        .bitcoin_da_rpc_url
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && batcher
+            .bitcoin_da_rpc_user
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
+        && batcher
+            .bitcoin_da_rpc_password
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
 }
 
 // SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
@@ -198,7 +229,7 @@ fn edge_da_admission_config(
     config: &Config,
     commit_tx_target: Address,
 ) -> anyhow::Result<Option<zksync_os_rpc::EdgeDaAdmissionConfig>> {
-    if config.l1_sender_config.pubdata_mode != Some(PubdataMode::Blobs) {
+    if !compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode) {
         return Ok(None);
     }
 
