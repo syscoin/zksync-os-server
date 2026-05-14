@@ -4,7 +4,6 @@ use alloy::primitives::Address;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 use zksync_os_server::config::{Config, ProviderConfig};
-use zksync_os_types::PubdataMode;
 
 pub(crate) const TEST_PROVIDER_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -25,16 +24,6 @@ pub(crate) async fn build_node_config(
         ProviderConfig::new(l1.address.clone(), TEST_PROVIDER_POLL_INTERVAL);
     if let Some(gateway_provider_config) = &mut config.gateway_provider_config {
         gateway_provider_config.rpc_poll_interval = TEST_PROVIDER_POLL_INTERVAL;
-    }
-    // SYSCOIN: generic integration tests do not provision a Syscoin DA RPC. Keep those tests on
-    // calldata DA; Bitcoin DA tests explicitly switch back to `Blobs` and provide a mock RPC.
-    if config.batcher_config.bitcoin_da_rpc_url.is_none()
-        && matches!(
-            config.l1_sender_config.pubdata_mode,
-            Some(PubdataMode::Blobs)
-        )
-    {
-        config.l1_sender_config.pubdata_mode = Some(PubdataMode::Calldata);
     }
     config.sequencer_config.fee_collector_address = Address::random();
     config.rpc_config.send_raw_transaction_sync_timeout = Duration::from_secs(10);
