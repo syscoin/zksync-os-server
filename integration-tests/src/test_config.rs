@@ -67,7 +67,10 @@ pub(crate) async fn build_node_config(
 
 pub(crate) async fn maybe_start_bitcoin_da_mock(config: &mut Config) -> Option<BitcoinDaMock> {
     if config.batcher_config.bitcoin_da_rpc_url.is_some()
-        || !matches!(config.l1_sender_config.pubdata_mode, Some(PubdataMode::Blobs))
+        || !matches!(
+            config.l1_sender_config.pubdata_mode,
+            Some(PubdataMode::Blobs)
+        )
     {
         return None;
     }
@@ -109,7 +112,10 @@ fn handle_bitcoin_da_rpc(body: &str) -> String {
 
 fn handle_bitcoin_da_call(call: &Value) -> Value {
     let id = call.get("id").cloned().unwrap_or(Value::Null);
-    let method = call.get("method").and_then(Value::as_str).unwrap_or_default();
+    let method = call
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let params = call
         .get("params")
         .and_then(Value::as_array)
