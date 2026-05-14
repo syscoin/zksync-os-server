@@ -7,6 +7,7 @@ pub mod upgrade_gatekeeper;
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderConfig, L1SenderFeeConfig};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
+use crate::pipeline_component::L1Sender;
 use alloy::consensus::BlobTransactionValidationError;
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
@@ -27,7 +28,7 @@ use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
@@ -90,6 +91,7 @@ const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
 /// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
 /// to reach 3 confirmations for such transactions
 const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
+const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
@@ -99,6 +101,37 @@ struct FeeParams {
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
     max_fee_per_blob_gas: u128,
+}
+
+impl<LF, LP, Input> L1Sender<LF, LP, Input>
+where
+    LF: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet> + 'static,
+    LP: Provider<Ethereum> + Clone + 'static,
+    Input: SendToL1 + Send + 'static,
+{
+    pub async fn operator_address(&self) -> anyhow::Result<Address> {
+        self.config.operator_signer.address().await
+    }
+
+    pub async fn run_l1_sender(
+        self,
+        inbound: PeekableReceiver<L1SenderCommand<Input>>,
+        outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+        state_reporter: ComponentStateReporter,
+    ) -> anyhow::Result<()> {
+        run_l1_sender(
+            inbound,
+            outbound,
+            self.to_address,
+            self.provider,
+            self.config,
+            self.gateway,
+            state_reporter,
+            self.commit_submitted_tx,
+            self.sl_block_number,
+        )
+        .await
+    }
 }
 
 /// Process responsible for sending transactions to L1.
@@ -1592,6 +1625,21 @@ async fn register_operator<
         "initialized L1 sender",
     );
     Ok(address)
+}
+
+pub(crate) async fn report_operator_metrics_loop<P: Provider>(
+    provider: P,
+    operator_address: Address,
+    command_name: &'static str,
+) -> anyhow::Result<()> {
+    let mut timer = tokio::time::interval(OPERATOR_METRICS_POLL_INTERVAL);
+    loop {
+        timer.tick().await;
+        let balance = format_ether(provider.get_balance(operator_address).await?);
+        let nonce = provider.get_transaction_count(operator_address).await?;
+        L1_SENDER_METRICS.balance[&command_name].set(balance.parse()?);
+        L1_SENDER_METRICS.nonce[&command_name].set(nonce);
+    }
 }
 
 async fn validate_tx_receipt<Input: SendToL1>(
