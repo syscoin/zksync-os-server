@@ -258,7 +258,7 @@ async fn find_settlement_layer_intervals(
             .map_err(|e| anyhow::anyhow!("migrationNumber overflow: {e}"))?,
         // Pre-V31 `ChainAssetHandler` does not expose `migrationNumber`. In that era Gateway
         // migrations are not possible, so the chain has always committed to L1.
-        Err(e) if is_method_missing(&e) => {
+        Err(e) if is_migration_number_unavailable(&e) => {
             tracing::debug!(
                 "ChainAssetHandler does not expose migrationNumber; assuming pre-V31 protocol \
                  with no Gateway migrations: {e}"
@@ -345,6 +345,16 @@ async fn find_settlement_layer_intervals(
         });
     }
     Ok(intervals)
+}
+
+fn is_migration_number_unavailable(err: &alloy::contract::Error) -> bool {
+    if is_method_missing(err) {
+        return true;
+    }
+    // SYSCOIN: some older local-chain fixtures use a ChainAssetHandler implementation that
+    // reverts with empty data for unknown selectors instead of returning zero data. Treat that
+    // shape as "getter unavailable" only for this discovery probe.
+    err.as_revert_data().is_some_and(|data| data.is_empty())
 }
 
 fn gateway_chain_ids(intervals: &[SettlementLayerInterval]) -> impl Iterator<Item = u64> + '_ {
