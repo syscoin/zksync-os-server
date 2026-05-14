@@ -428,8 +428,9 @@ alloy::sol! {
         }
     }
 
-    // SYSCOIN: early v31 fixtures were generated before compact edge DA fields were appended.
-    // Keep a read-only decoder for historical commit calldata; new commits use `IExecutor`.
+    // SYSCOIN: early v31 fixtures were generated before compact edge DA fields were appended,
+    // but after slChainId was added. Keep a read-only decoder for historical commit calldata;
+    // new commits use `IExecutor`.
     interface IExecutorV31Legacy {
         struct CommitBatchInfoZKsyncOS {
             uint64 batchNumber;
@@ -447,6 +448,7 @@ alloy::sol! {
             uint64 lastBlockNumber;
             uint256 chainId;
             bytes operatorDAInput;
+            uint256 slChainId;
         }
     }
 

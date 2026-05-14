@@ -354,7 +354,7 @@ impl From<IExecutorV31Legacy::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             operator_da_input: value.operatorDAInput.as_ref().to_vec(),
             edge_da_refs_input: Vec::new(),
             edge_da_refs_root: B256::ZERO,
-            sl_chain_id: 0,
+            sl_chain_id: value.slChainId.to::<u64>(),
         }
     }
 }
