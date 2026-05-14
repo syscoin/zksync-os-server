@@ -507,6 +507,8 @@ def materialize_chain(
                     # SYSCOIN: Gateway-settled child chains still submit state-dependent
                     # settlement transactions; keep the same single-flight discipline as L1.
                     "  command_limit: 1",
+                    "  gateway_da_admission_retry_timeout: 90m",
+                    "  gateway_da_admission_retry_interval: 30s",
                 ]
                 if gateway_rpc_url is not None
                 else []

@@ -1200,6 +1200,16 @@ pub struct GatewaySenderConfig {
     /// SYSCOIN: consecutive missing liveness polls before treating an in-flight Gateway tx as dropped.
     #[config(default_t = 3)]
     pub tx_liveness_max_missing_polls: u32,
+
+    /// SYSCOIN: max time to retry Gateway RPC admission rejections caused by compact Bitcoin DA
+    /// refs not being visible on the Gateway node yet.
+    #[config(default_t = 90 * TimeUnit::Minutes)]
+    pub gateway_da_admission_retry_timeout: Duration,
+
+    /// SYSCOIN: how often to retry Gateway RPC admission after a compact Bitcoin DA availability
+    /// rejection.
+    #[config(default_t = 30 * TimeUnit::Seconds)]
+    pub gateway_da_admission_retry_interval: Duration,
 }
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
@@ -2034,6 +2044,8 @@ impl GatewaySenderConfig {
             transaction_timeout: self.transaction_timeout,
             tx_liveness_poll_interval: self.tx_liveness_poll_interval,
             tx_liveness_max_missing_polls: self.tx_liveness_max_missing_polls,
+            gateway_da_admission_retry_timeout: self.gateway_da_admission_retry_timeout,
+            gateway_da_admission_retry_interval: self.gateway_da_admission_retry_interval,
             // Gateway transactions never carry blobs, so the EIP-7594 cutover does not apply.
             fusaka_upgrade_timestamp: u64::MAX,
             phantom_data: Default::default(),
