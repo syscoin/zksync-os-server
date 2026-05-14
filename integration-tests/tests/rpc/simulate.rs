@@ -1,8 +1,8 @@
-use alloy::primitives::U256;
+use alloy::primitives::{Bytes, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::simulate::{SimBlock, SimulatePayload};
-use alloy::sol_types::{SolCall, SolEvent};
+use alloy::sol_types::{SolEvent, SolValue};
 use zksync_os_integration_tests::contracts::EventEmitter::TestEvent;
 use zksync_os_integration_tests::contracts::{Counter, EventEmitter};
 use zksync_os_integration_tests::{CURRENT_TO_L1, Tester, test_multisetup};
@@ -98,7 +98,9 @@ async fn simulate_state_carries_across_blocks(tester: Tester) -> anyhow::Result<
 
     let increment_call = counter.increment(U256::from(7)).into_transaction_request();
     let increment_call_2 = counter.increment(U256::from(3)).into_transaction_request();
-    let read_call = counter.counter().into_transaction_request();
+    let read_call = TransactionRequest::default()
+        .to(*counter.address())
+        .input(Bytes::from_static(&[0x61, 0xbc, 0x22, 0x1a]));
 
     let payload = SimulatePayload {
         block_state_calls: vec![
@@ -126,7 +128,7 @@ async fn simulate_state_carries_across_blocks(tester: Tester) -> anyhow::Result<
     assert!(first_call.gas_used > 0);
     assert!(second_call.gas_used > 0);
 
-    let observed = Counter::counterCall::abi_decode_returns(&read_result.return_data)?;
+    let (observed,) = <(U256,)>::abi_decode_params(&read_result.return_data)?;
     assert_eq!(observed, U256::from(10), "counter should be 7 + 3 = 10");
 
     Ok(())
