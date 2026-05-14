@@ -1008,12 +1008,15 @@ fn is_gateway_da_admission_error(err: &TransportError) -> bool {
     match err {
         TransportError::ErrorResp(resp) => {
             let message = resp.message.to_ascii_lowercase();
-            message.contains("compact edge da admission check failed")
-                || message.contains("compact edge da ref")
-                || (message.contains("bitcoin da") && message.contains("not retrievable"))
+            is_retryable_gateway_da_admission_message(&message)
         }
         _ => false,
     }
+}
+
+fn is_retryable_gateway_da_admission_message(message: &str) -> bool {
+    message.contains("not retrievable")
+        && (message.contains("compact edge da ref") || message.contains("bitcoin da"))
 }
 
 // SYSCOIN: outcome of same-nonce discovery after a nonce-reuse rebroadcast error.
@@ -1637,7 +1640,7 @@ async fn validate_tx_receipt<Input: SendToL1>(
 
 #[cfg(test)]
 mod tests {
-    use super::notify_commit_submitted_batch;
+    use super::{is_retryable_gateway_da_admission_message, notify_commit_submitted_batch};
     use tokio::sync::watch;
 
     #[test]
@@ -1661,5 +1664,25 @@ mod tests {
     #[test]
     fn commit_submitted_marker_is_optional_for_non_commit_senders() {
         notify_commit_submitted_batch(&None, 11);
+    }
+
+    #[test]
+    fn gateway_da_retry_matcher_only_accepts_availability_lag() {
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref 0 (abc) is not retrievable",
+        ));
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref abc is temporarily cached as not retrievable",
+        ));
+
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: failed to decode compact edge da commit calldata: bad selector",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da commitment mismatch",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: unsupported child-chain da commitment scheme",
+        ));
     }
 }
