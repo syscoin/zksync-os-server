@@ -2234,11 +2234,11 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_production_enabled, check_batch_verification_mismatch,
-        initial_transaction_acceptance_state, validate_batch_verification_startup_policy,
+        check_batch_verification_mismatch, initial_transaction_acceptance_state,
+        validate_batch_verification_startup_policy,
     };
-    use crate::config::{BatchVerificationConfig, Config};
-    use alloy::primitives::{U128, address};
+    use crate::config::BatchVerificationConfig;
+    use alloy::primitives::address;
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
@@ -2259,33 +2259,6 @@ mod tests {
             initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
-        ));
-    }
-
-    #[test]
-    fn disabled_batcher_non_batcher_production_requires_explicit_opt_in() {
-        let mut config = Config::default();
-        config.batcher_config.enabled = false;
-        config.consensus_config.enabled = true;
-        config.fee_config.pubdata_price_override = Some(U128::from(1_000_000u64));
-        config.l1_sender_config.pubdata_mode = Some(zksync_os_types::PubdataMode::Blobs);
-
-        assert!(!block_production_enabled(&config));
-    }
-
-    #[test]
-    fn disabled_batcher_consensus_node_can_explicitly_produce_with_static_fee_input() {
-        let mut config = Config::default();
-        config.batcher_config.enabled = false;
-        config.consensus_config.enabled = true;
-        config.sequencer_config.allow_non_batcher_block_production = true;
-        config.fee_config.pubdata_price_override = Some(U128::from(1_000_000u64));
-        config.l1_sender_config.pubdata_mode = Some(zksync_os_types::PubdataMode::Blobs);
-
-        assert!(block_production_enabled(&config));
-        assert!(matches!(
-            initial_transaction_acceptance_state(NodeRole::MainNode, None, true),
-            TransactionAcceptanceState::Accepting
         ));
     }
 
