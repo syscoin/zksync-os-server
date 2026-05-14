@@ -10717,7 +10717,7 @@ version = "13.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c281a1f11d3bcb8c0bba1199ed6bcb001d1aeb3d4fb366819e14f88723989a4e"
 dependencies = [
- "alloy-eips 1.8.3",
+ "alloy-eips",
  "revm-bytecode 10.0.0",
  "revm-database-interface 11.0.1",
  "revm-primitives 23.0.0",
@@ -10884,6 +10884,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "arrayref",
  "aurora-engine-modexp",
+ "blst",
  "c-kzg",
  "cfg-if",
  "k256",
@@ -15505,7 +15506,6 @@ dependencies = [
  "dashmap",
  "evm_interpreter 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
  "futures",
- "httpmock",
  "hyper",
  "jsonrpsee",
  "reth-rpc-eth-types",
@@ -15535,7 +15535,6 @@ dependencies = [
  "zksync_os_metadata",
  "zksync_os_mini_merkle_tree",
  "zksync_os_multivm",
- "zksync_os_reth_compat",
  "zksync_os_rpc_api",
  "zksync_os_storage",
  "zksync_os_storage_api",
