@@ -144,10 +144,12 @@ impl SettlementLayerIntervals {
         diamond_proxy_gw: Option<(u64, ZkChain<DynProvider>)>,
         chain_id: u64,
     ) -> anyhow::Result<Self> {
+        let allow_legacy_no_migrations = diamond_proxy_gw.is_none();
         let intervals = find_settlement_layer_intervals(
             chain_asset_handler,
             diamond_proxy_l1.provider().clone(),
             chain_id,
+            allow_legacy_no_migrations,
         )
         .await
         .context("failed to discover settlement layer intervals")?;
@@ -250,6 +252,7 @@ async fn find_settlement_layer_intervals(
     chain_asset_handler: Address,
     provider: DynProvider,
     chain_id: u64,
+    allow_legacy_no_migrations: bool,
 ) -> anyhow::Result<Vec<SettlementLayerInterval>> {
     let cah = IChainAssetHandler::new(chain_asset_handler, provider);
     let total_migrations: u64 = match cah.migrationNumber(U256::from(chain_id)).call().await {
@@ -258,7 +261,7 @@ async fn find_settlement_layer_intervals(
             .map_err(|e| anyhow::anyhow!("migrationNumber overflow: {e}"))?,
         // Pre-V31 `ChainAssetHandler` does not expose `migrationNumber`. In that era Gateway
         // migrations are not possible, so the chain has always committed to L1.
-        Err(e) if is_migration_number_unavailable(&e) => {
+        Err(e) if allow_legacy_no_migrations && is_migration_number_unavailable(&e) => {
             tracing::debug!(
                 "ChainAssetHandler does not expose migrationNumber; assuming pre-V31 protocol \
                  with no Gateway migrations: {e}"
