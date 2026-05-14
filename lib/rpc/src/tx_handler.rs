@@ -159,6 +159,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     "failed to check Bitcoin DA availability for compact edge refs: {err}"
                 ))
             })?;
+        if existence.len() != version_hashes.len() {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!(
+                    "Bitcoin DA availability response length mismatch for compact edge refs: requested {}, got {}",
+                    version_hashes.len(),
+                    existence.len()
+                ),
+            ));
+        }
         let missing: Vec<_> = version_hashes
             .iter()
             .zip(existence)

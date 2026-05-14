@@ -334,6 +334,15 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
                     "failed to check Syscoin DA availability: {err}"
                 ))
             })?;
+            if existence.len() != chunk.len() {
+                return Err(BatchVerificationError::SyscoinDaVerificationFailed(
+                    format!(
+                        "Syscoin DA availability response length mismatch: requested {}, got {}",
+                        chunk.len(),
+                        existence.len()
+                    ),
+                ));
+            }
             for ((version_hash, context), exists) in chunk.iter().zip(existence) {
                 if !exists {
                     return Err(BatchVerificationError::SyscoinDaVerificationFailed(
