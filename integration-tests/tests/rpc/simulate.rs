@@ -100,7 +100,7 @@ async fn simulate_state_carries_across_blocks(tester: Tester) -> anyhow::Result<
     let increment_call_2 = counter.increment(U256::from(3)).into_transaction_request();
     let read_call = TransactionRequest::default()
         .to(*counter.address())
-        .input(Bytes::from_static(&[0x61, 0xbc, 0x22, 0x1a]));
+        .input(Bytes::from_static(&[0x61, 0xbc, 0x22, 0x1a]).into());
 
     let payload = SimulatePayload {
         block_state_calls: vec![
