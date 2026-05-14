@@ -181,7 +181,8 @@ pub trait EthApi {
 
     /// `eth_simulateV1` executes an arbitrary number of transactions on top of the requested state.
     /// The transactions are packed into individual blocks. Overrides can be provided.
-    #[method(name = "simulateV1")]
+    // SYSCOIN: VM-heavy public RPC; run on jsonrpsee's blocking pool like eth_call / estimateGas.
+    #[method(name = "simulateV1", blocking)]
     fn simulate_v1(
         &self,
         opts: SimulatePayload,
