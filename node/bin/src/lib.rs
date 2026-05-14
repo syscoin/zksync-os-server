@@ -147,14 +147,21 @@ const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
+// SYSCOIN: A disabled batcher can still produce local consensus blocks if fee inputs are
+// supplied independently. Without this override, producing would wait forever for GasAdjuster
+// pubdata prices because the batcher/L1-settlement subsystem is intentionally skipped.
+fn block_production_enabled(config: &Config) -> bool {
+    config.batcher_config.enabled || config.fee_config.pubdata_price_override.is_some()
+}
+
 // SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
 // its first Produce command, which can be delayed by replay.
 fn initial_transaction_acceptance_state(
     node_role: NodeRole,
     max_blocks_to_produce: Option<u64>,
-    batcher_enabled: bool,
+    block_production_enabled: bool,
 ) -> TransactionAcceptanceState {
-    if node_role.is_main() && (!batcher_enabled || max_blocks_to_produce == Some(0)) {
+    if node_role.is_main() && (!block_production_enabled || max_blocks_to_produce == Some(0)) {
         TransactionAcceptanceState::NotAccepting(vec![NotAcceptingReason::BlockProductionDisabled])
     } else {
         TransactionAcceptanceState::Accepting
@@ -888,11 +895,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // Transaction acceptance state - tracks whether we're accepting new transactions
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
     // External nodes: always accepts, but may be rejected on the main node side during forwarding
+    let block_production_enabled = block_production_enabled(&config);
     let (tx_acceptance_state_sender, tx_acceptance_state_receiver) =
         watch::channel(initial_transaction_acceptance_state(
             node_role,
             config.sequencer_config.max_blocks_to_produce,
-            config.batcher_config.enabled,
+            block_production_enabled,
         ));
 
     let (stop_sender, stop_receiver) = watch::channel(false);
@@ -1324,7 +1332,7 @@ async fn run_main_node_pipeline(
                 .map(Into::into),
             replays_to_execute,
             leadership,
-            produce_enabled: config.batcher_config.enabled,
+            produce_enabled: block_production_enabled(config),
         })
         .pipe(BlockExecutor {
             block_context_provider,
@@ -2198,11 +2206,11 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_batch_verification_mismatch, initial_transaction_acceptance_state,
-        validate_batch_verification_startup_policy,
+        block_production_enabled, check_batch_verification_mismatch,
+        initial_transaction_acceptance_state, validate_batch_verification_startup_policy,
     };
-    use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use crate::config::{BatchVerificationConfig, Config};
+    use alloy::primitives::{U128, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
@@ -2223,6 +2231,19 @@ mod tests {
             initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    #[test]
+    fn disabled_batcher_with_pubdata_override_can_produce_blocks() {
+        let mut config = Config::default();
+        config.batcher_config.enabled = false;
+        config.fee_config.pubdata_price_override = Some(U128::from(1_000_000u64));
+
+        assert!(block_production_enabled(&config));
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, None, true),
+            TransactionAcceptanceState::Accepting
         ));
     }
 

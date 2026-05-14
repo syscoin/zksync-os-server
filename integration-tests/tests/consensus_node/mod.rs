@@ -91,7 +91,15 @@ async fn wait_for_l1_finalization_if_batcher_active(
     cluster: &MultiNodeTester,
     block_number: u64,
 ) -> anyhow::Result<u64> {
-    let batcher_idx = cluster.batcher_node_index();
+    // SYSCOIN: default consensus-only clusters do not run the L1 settlement pipeline because the
+    // Syscoin chain config uses the Bitcoin DA validator, which requires real/mocked blob DA input.
+    let Some(batcher_idx) = cluster.batcher_node_index() else {
+        tracing::info!(
+            block_number,
+            "skipping L1 finalization check because the cluster has no batcher node"
+        );
+        return Ok(block_number);
+    };
     if cluster.is_node_suspended(batcher_idx) {
         tracing::info!(
             block_number,
