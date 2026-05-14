@@ -9,7 +9,7 @@ use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, Sy
 use secrecy::ExposeSecret;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use zksync_os_batch_types::syscoin_edge_da_refs_from_input;
+use zksync_os_batch_types::{SYSCOIN_DA_MAX_BLOBS_PER_BATCH, syscoin_edge_da_refs_from_input};
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_l1_sender::commands::{L1SenderCommand, commit::CommitCommand};
 use zksync_os_observability::ComponentStateReporter;
@@ -73,12 +73,37 @@ impl BitcoinDaFinalityGate {
         .map_err(|err| anyhow::anyhow!("failed to create Bitcoin DA client: {err}"))
     }
 
-    async fn wait_for_batch_da(&self, batch_number: u64) -> anyhow::Result<()> {
+    async fn verify_batch_da_before_commit(
+        &self,
+        batch_number: u64,
+        expected_version_hashes: &[u8],
+    ) -> anyhow::Result<()> {
+        let expected_hashes: Vec<String> = expected_version_hashes
+            .chunks_exact(32)
+            .map(hex::encode)
+            .collect();
+        anyhow::ensure!(
+            expected_hashes.len() * 32 == expected_version_hashes.len(),
+            "Bitcoin DA operator input for batch {batch_number} is not a 32-byte hash array"
+        );
+        anyhow::ensure!(
+            expected_hashes.len() <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+            "Bitcoin DA batch {batch_number} has {} blobs, max is {}",
+            expected_hashes.len(),
+            SYSCOIN_DA_MAX_BLOBS_PER_BATCH
+        );
+
         let mut status = self.storage.load(batch_number).await?.with_context(|| {
             format!("missing Bitcoin DA publication status for batch {batch_number}")
         })?;
+        anyhow::ensure!(
+            status.expected_hashes == expected_hashes,
+            "Bitcoin DA publication status mismatch for batch {batch_number}: stored expected {:?}, command expected {:?}",
+            status.expected_hashes,
+            expected_hashes
+        );
         if self.settling_on_gateway {
-            self.wait_for_published_batch_availability(batch_number, &status)
+            self.verify_published_batch_status(batch_number, &status)
                 .await?;
             return Ok(());
         }
@@ -94,6 +119,12 @@ impl BitcoinDaFinalityGate {
             "Bitcoin DA publication incomplete for batch {batch_number}: published {} of {} blobs",
             status.published_hashes.len(),
             status.expected_hashes.len(),
+        );
+        anyhow::ensure!(
+            status.published_hashes.len() <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+            "Bitcoin DA batch {batch_number} has {} blobs, max is {}",
+            status.published_hashes.len(),
+            SYSCOIN_DA_MAX_BLOBS_PER_BATCH
         );
         for (idx, (published_hash, expected_hash)) in status
             .published_hashes
@@ -147,7 +178,7 @@ impl BitcoinDaFinalityGate {
         Ok(())
     }
 
-    async fn wait_for_published_batch_availability(
+    async fn verify_published_batch_status(
         &self,
         batch_number: u64,
         status: &BitcoinDaBatchStatus,
@@ -157,6 +188,12 @@ impl BitcoinDaFinalityGate {
             "Bitcoin DA publication incomplete for batch {batch_number}: published {} of {} blobs",
             status.published_hashes.len(),
             status.expected_hashes.len(),
+        );
+        anyhow::ensure!(
+            status.published_hashes.len() <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+            "Bitcoin DA batch {batch_number} has {} blobs, max is {}",
+            status.published_hashes.len(),
+            SYSCOIN_DA_MAX_BLOBS_PER_BATCH
         );
         for (idx, (published_hash, expected_hash)) in status
             .published_hashes
@@ -171,41 +208,12 @@ impl BitcoinDaFinalityGate {
             );
         }
 
-        let client = self.client()?;
-        for version_hash in &status.published_hashes {
-            self.wait_for_blob_availability(
-                &client,
-                version_hash,
-                &format!("batch {batch_number}"),
-            )
-            .await?;
-        }
+        tracing::info!(
+            batch_number,
+            blob_count = status.published_hashes.len(),
+            "Bitcoin DA publication status verified before Gateway commit"
+        );
         Ok(())
-    }
-
-    async fn wait_for_blob_availability(
-        &self,
-        client: &SyscoinClient,
-        version_hash: &str,
-        context: &str,
-    ) -> anyhow::Result<()> {
-        let start = Instant::now();
-        loop {
-            let exists = client.blob_exists(version_hash).await.map_err(|err| {
-                anyhow::anyhow!("failed to check Bitcoin DA availability for {context}: {err}")
-            })?;
-            if exists {
-                tracing::info!(version_hash, context, "Bitcoin DA blob is retrievable");
-                return Ok(());
-            }
-            if start.elapsed() >= self.config.bitcoin_da_finality_timeout {
-                anyhow::bail!(
-                    "Bitcoin DA blob {version_hash} for {context} was not retrievable within {:?}",
-                    self.config.bitcoin_da_finality_timeout
-                );
-            }
-            tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
-        }
     }
 
     async fn wait_for_edge_ref_finality(
@@ -295,12 +303,16 @@ impl BitcoinDaFinalityGate {
         Ok(())
     }
 
-    async fn wait_for_command_da(&self, command: &CommitCommand) -> anyhow::Result<()> {
+    async fn verify_command_da_before_commit(&self, command: &CommitCommand) -> anyhow::Result<()> {
         for batch in command.as_ref() {
             if batch.batch.batch_info.commit_info.l2_da_commitment_scheme
                 == DACommitmentScheme::BlobsZKsyncOS
             {
-                self.wait_for_batch_da(batch.batch_number()).await?;
+                self.verify_batch_da_before_commit(
+                    batch.batch_number(),
+                    &batch.batch.batch_info.commit_info.operator_da_input,
+                )
+                .await?;
             }
         }
         if !self.settling_on_gateway {
@@ -327,7 +339,7 @@ impl PipelineComponent for BitcoinDaFinalityGate {
     ) -> anyhow::Result<()> {
         while let Some(command) = input.recv().await {
             if let L1SenderCommand::SendToL1(commit_command) = &command {
-                self.wait_for_command_da(commit_command).await?;
+                self.verify_command_da_before_commit(commit_command).await?;
             }
             output.send_and_record(command, &state_reporter).await?;
         }

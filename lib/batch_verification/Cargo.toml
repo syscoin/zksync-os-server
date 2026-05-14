@@ -24,7 +24,7 @@ zksync_os_interface.workspace = true
 
 alloy = { workspace = true, default-features = false, features = ["rlp"] }
 # SYSCOIN: verifier-side Bitcoin DA availability checks before signing batches.
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.10" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.12" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

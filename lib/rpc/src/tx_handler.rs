@@ -143,15 +143,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                 "failed to create Bitcoin DA client: {err}"
             ))
         })?;
-        for (idx, version_hash) in version_hashes.iter().enumerate() {
-            let exists = client
-                .blob_exists(version_hash)
-                .await
-                .map_err(|err| {
-                    EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
-                        "failed to check Bitcoin DA availability for compact edge ref {idx} ({version_hash}): {err}"
-                    ))
-                })?;
+        let existence = client
+            .blobs_exist(version_hashes.iter())
+            .await
+            .map_err(|err| {
+                EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
+                    "failed to check Bitcoin DA availability for compact edge refs: {err}"
+                ))
+            })?;
+        for (idx, (version_hash, exists)) in version_hashes.iter().zip(existence).enumerate() {
             if !exists {
                 return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                     format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
