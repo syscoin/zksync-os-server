@@ -6,7 +6,8 @@ use crate::prover_tester::ProverTester;
 use crate::provider::{ZksyncApi, ZksyncTestingProvider};
 use crate::rpc_recorder::{HttpRpcRecorder, RpcRecordConfig};
 use crate::test_config::{
-    TEST_PROVIDER_POLL_INTERVAL, build_node_config, disable_prover_input_generation,
+    BitcoinDaMock, TEST_PROVIDER_POLL_INTERVAL, build_node_config, disable_prover_input_generation,
+    maybe_start_bitcoin_da_mock,
 };
 use crate::utils::LockedPort;
 use alloy::network::EthereumWallet;
@@ -238,6 +239,7 @@ impl TestEnvironment {
         } else {
             None
         };
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config).await;
         let mut tester = Tester::launch_node_inner(
             self.l1,
             config,
@@ -246,6 +248,7 @@ impl TestEnvironment {
             None,
             true,
             Some(self.prepared_runtime.ports),
+            bitcoin_da_mock,
         )
         .await?;
         if let Some(gateway) = supporting_gateway {
@@ -286,6 +289,7 @@ pub struct Tester {
     log_state: NodeLogState,
     chain_layout: ChainLayout<'static>,
     owned_supporting_nodes: Vec<SupportingNode>,
+    bitcoin_da_mock: Option<BitcoinDaMock>,
 }
 
 /// A stopped test node that keeps its database, effective config and L1 alive so it can be
@@ -299,6 +303,7 @@ pub struct StoppedTester {
     log_state: NodeLogState,
     chain_layout: ChainLayout<'static>,
     owned_supporting_nodes: Vec<SupportingNode>,
+    bitcoin_da_mock: Option<BitcoinDaMock>,
 }
 
 #[derive(Debug)]
@@ -306,6 +311,7 @@ struct SupportingNode {
     runtime: Runtime,
     _ports: Ports,
     _tempdir: Arc<TempDir>,
+    _bitcoin_da_mock: Option<BitcoinDaMock>,
 }
 
 #[derive(Debug)]
@@ -497,6 +503,7 @@ impl Tester {
             log_state,
             chain_layout,
             owned_supporting_nodes,
+            bitcoin_da_mock,
             ..
         } = self;
         // NOTE: supporting nodes (e.g. gateway) are kept alive across stop/start so that
@@ -511,6 +518,7 @@ impl Tester {
             config,
             ports,
             owned_supporting_nodes,
+            bitcoin_da_mock,
         })
     }
 
@@ -555,7 +563,18 @@ impl Tester {
         let tempdir = Arc::new(tempfile::tempdir()?);
         let ports = Ports::acquire_unused().await?;
         Self::bind_runtime_config(&l1, tempdir.as_ref(), &mut config, &ports);
-        Self::launch_node_inner(l1, config, tempdir, chain_layout, None, true, Some(ports)).await
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config).await;
+        Self::launch_node_inner(
+            l1,
+            config,
+            tempdir,
+            chain_layout,
+            None,
+            true,
+            Some(ports),
+            bitcoin_da_mock,
+        )
+        .await
     }
 
     pub(crate) async fn launch_node_with_network_port(
@@ -580,6 +599,7 @@ impl Tester {
         if let Some(config_overrides) = config_overrides {
             config_overrides(&mut config);
         }
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config).await;
         Self::launch_node_inner(
             l1,
             config,
@@ -588,6 +608,7 @@ impl Tester {
             None,
             wait_for_initial_deposit,
             Some(ports),
+            bitcoin_da_mock,
         )
         .await
     }
@@ -613,6 +634,7 @@ impl Tester {
         log_state: Option<NodeLogState>,
         wait_for_initial_deposit: bool,
         held_ports: Option<Ports>,
+        bitcoin_da_mock: Option<BitcoinDaMock>,
     ) -> anyhow::Result<Self> {
         let ports = match held_ports {
             Some(ports) => ports,
@@ -797,6 +819,7 @@ impl Tester {
             tempdir: tempdir.clone(),
             chain_layout,
             owned_supporting_nodes: Vec::new(),
+            bitcoin_da_mock,
         };
         if wait_for_initial_deposit {
             tester.wait_for_initial_deposit().await?;
@@ -828,16 +851,21 @@ impl StoppedTester {
         self.start_with_config(config).await
     }
 
-    pub async fn start_with_config(self, config: Config) -> anyhow::Result<Tester> {
+    pub async fn start_with_config(self, mut config: Config) -> anyhow::Result<Tester> {
         let Self {
             l1,
             tempdir,
             chain_layout,
             log_state,
             owned_supporting_nodes,
+            bitcoin_da_mock,
             ports,
             ..
         } = self;
+        let bitcoin_da_mock = match bitcoin_da_mock {
+            Some(mock) => Some(mock),
+            None => maybe_start_bitcoin_da_mock(&mut config).await,
+        };
         let ports = if ports.matches_config(&config)? {
             ports.wait_until_unused().await?;
             ports
@@ -853,6 +881,7 @@ impl StoppedTester {
             Some(log_state.restarted()),
             false,
             Some(ports),
+            bitcoin_da_mock,
         )
         .await?;
         tester.owned_supporting_nodes = owned_supporting_nodes;
@@ -876,6 +905,7 @@ impl SupportingNode {
             ports,
             tempdir,
             owned_supporting_nodes,
+            bitcoin_da_mock,
             ..
         } = tester;
         drop(owned_supporting_nodes);
@@ -883,6 +913,7 @@ impl SupportingNode {
             runtime,
             _ports: ports,
             _tempdir: tempdir,
+            _bitcoin_da_mock: bitcoin_da_mock,
         }
     }
 }

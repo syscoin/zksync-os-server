@@ -37,6 +37,7 @@ tempfile.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+httpmock.workspace = true
 backon.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -56,8 +57,6 @@ sha2 = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true, default-features = false, features = ["trace", "color"] }
 regex.workspace = true
-# SYSCOIN: mock the Bitcoin DA RPC surface in integration tests.
-httpmock.workspace = true
 
 [features]
 prover-tests = []
