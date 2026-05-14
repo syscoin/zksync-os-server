@@ -31,6 +31,9 @@ const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
 // SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
 // repeatedly hitting the operator's Syscoin DA RPC / PoDA fallback before mempool insertion.
 const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(20);
+// SYSCOIN: bound attacker-influenced unavailable-ref caching. This cache is an optimization only;
+// if it is full, skipping a new entry is safer than allowing unbounded memory or mutex work.
+const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
@@ -174,9 +177,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             .enumerate()
             .filter_map(|(idx, (version_hash, exists))| (!exists).then_some((idx, version_hash)))
             .collect();
-        for (_, version_hash) in &missing {
-            self.remember_unavailable_edge_da_ref(version_hash);
-        }
+        self.remember_unavailable_edge_da_refs(
+            missing
+                .iter()
+                .map(|(_, version_hash)| version_hash.as_str()),
+        );
         if let Some((idx, version_hash)) = missing.first() {
             return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                 format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
@@ -195,10 +200,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             .edge_da_unavailable_ref_cache
             .lock()
             .expect("edge DA unavailable ref cache poisoned");
-        cache.retain(|_, expires_at| *expires_at > now);
-        if let Some(version_hash) = version_hashes
-            .iter()
-            .find(|version_hash| cache.contains_key(*version_hash))
+        if let Some(version_hash) = cached_unavailable_edge_da_ref(&mut cache, version_hashes, now)
         {
             return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                 format!(
@@ -209,14 +211,17 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         Ok(())
     }
 
-    fn remember_unavailable_edge_da_ref(&self, version_hash: &str) {
-        self.edge_da_unavailable_ref_cache
+    fn remember_unavailable_edge_da_refs<'a>(
+        &self,
+        version_hashes: impl IntoIterator<Item = &'a str>,
+    ) {
+        let now = Instant::now();
+        let expires_at = now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL;
+        let mut cache = self
+            .edge_da_unavailable_ref_cache
             .lock()
-            .expect("edge DA unavailable ref cache poisoned")
-            .insert(
-                version_hash.to_owned(),
-                Instant::now() + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL,
-            );
+            .expect("edge DA unavailable ref cache poisoned");
+        remember_unavailable_edge_da_refs_in_cache(&mut cache, version_hashes, now, expires_at);
     }
 
     // SYSCOIN: use only cheap structural checks here so invalid raw txs cannot force DA parsing or
@@ -359,6 +364,51 @@ fn compact_edge_da_refs_from_commit_calldata(
             .map(hex::encode)
             .collect(),
     ))
+}
+
+fn cached_unavailable_edge_da_ref(
+    cache: &mut HashMap<String, Instant>,
+    version_hashes: &[String],
+    now: Instant,
+) -> Option<String> {
+    for version_hash in version_hashes {
+        let Some(expires_at) = cache.get(version_hash).copied() else {
+            continue;
+        };
+        if expires_at > now {
+            return Some(version_hash.clone());
+        }
+        cache.remove(version_hash);
+    }
+    None
+}
+
+fn remember_unavailable_edge_da_refs_in_cache<'a>(
+    cache: &mut HashMap<String, Instant>,
+    version_hashes: impl IntoIterator<Item = &'a str>,
+    now: Instant,
+    expires_at: Instant,
+) {
+    let mut pruned_expired_entries = false;
+    for version_hash in version_hashes {
+        if !cache.contains_key(version_hash)
+            && cache.len() >= SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES
+        {
+            if !pruned_expired_entries {
+                cache.retain(|_, expires_at| *expires_at > now);
+                pruned_expired_entries = true;
+            }
+            if cache.len() >= SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES {
+                tracing::debug!(
+                    version_hash,
+                    cache_len = cache.len(),
+                    "edge DA unavailable ref cache is full; skipping new entry"
+                );
+                continue;
+            }
+        }
+        cache.insert(version_hash.to_owned(), expires_at);
+    }
 }
 
 // SYSCOIN: forwarding can fail after local mempool insertion. Only roll back errors that are
@@ -716,6 +766,52 @@ mod tests {
         let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
 
         assert!(err.to_string().contains("at most 32 32-byte hashes"));
+    }
+
+    #[test]
+    fn edge_da_unavailable_cache_is_capacity_bounded() {
+        let now = Instant::now();
+        let expires_at = now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL;
+        let mut cache = HashMap::new();
+        let hashes: Vec<_> = (0..(SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES + 32))
+            .map(|idx| format!("{idx:064x}"))
+            .collect();
+
+        remember_unavailable_edge_da_refs_in_cache(
+            &mut cache,
+            hashes.iter().map(String::as_str),
+            now,
+            expires_at,
+        );
+
+        assert_eq!(
+            cache.len(),
+            SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES
+        );
+    }
+
+    #[test]
+    fn edge_da_unavailable_cache_removes_expired_queried_refs() {
+        let now = Instant::now();
+        let expired_hash = hex::encode([0x11; 32]);
+        let live_hash = hex::encode([0x22; 32]);
+        let mut cache = HashMap::from([
+            (expired_hash.clone(), now - Duration::from_secs(1)),
+            (
+                live_hash.clone(),
+                now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL,
+            ),
+        ]);
+
+        assert_eq!(
+            cached_unavailable_edge_da_ref(&mut cache, std::slice::from_ref(&expired_hash), now),
+            None
+        );
+        assert!(!cache.contains_key(&expired_hash));
+        assert_eq!(
+            cached_unavailable_edge_da_ref(&mut cache, std::slice::from_ref(&live_hash), now),
+            Some(live_hash)
+        );
     }
 
     #[test]
