@@ -428,6 +428,28 @@ alloy::sol! {
         }
     }
 
+    // SYSCOIN: early v31 fixtures were generated before compact edge DA fields were appended.
+    // Keep a read-only decoder for historical commit calldata; new commits use `IExecutor`.
+    interface IExecutorV31Legacy {
+        struct CommitBatchInfoZKsyncOS {
+            uint64 batchNumber;
+            bytes32 newStateCommitment;
+            uint256 numberOfLayer1Txs;
+            uint256 numberOfLayer2Txs;
+            bytes32 priorityOperationsHash;
+            bytes32 dependencyRootsRollingHash;
+            bytes32 l2LogsTreeRoot;
+            L2DACommitmentScheme daCommitmentScheme;
+            bytes32 daCommitment;
+            uint64 firstBlockTimestamp;
+            uint64 firstBlockNumber;
+            uint64 lastBlockTimestamp;
+            uint64 lastBlockNumber;
+            uint256 chainId;
+            bytes operatorDAInput;
+        }
+    }
+
     // `IL1GenesisUpgrade.sol`
     interface IL1GenesisUpgrade {
         event GenesisUpgrade(

@@ -1,5 +1,5 @@
 use crate::models::{CommitBatchInfo, StoredBatchInfo};
-use crate::{IExecutor, IExecutorV29, IExecutorV30, IMultisigCommitter};
+use crate::{IExecutor, IExecutorV29, IExecutorV30, IExecutorV31Legacy, IMultisigCommitter};
 use alloy::primitives::Address;
 use alloy::sol_types::{SolCall, SolValue};
 
@@ -81,21 +81,50 @@ impl CommitCalldata {
                 )
             }
             V31_ENCODING_VERSION => {
-                let (stored_batch_info, mut commit_batch_infos) =
-                    <(
-                        IExecutor::StoredBatchInfo,
-                        Vec<IExecutor::CommitBatchInfoZKsyncOS>,
-                    )>::abi_decode_params(&commit_data[1..])?;
-                if commit_batch_infos.len() != 1 {
-                    anyhow::bail!(
-                        "unexpected number of committed batch infos: {}",
-                        commit_batch_infos.len()
-                    );
-                }
-                (
-                    StoredBatchInfo::from(stored_batch_info),
-                    CommitBatchInfo::from(commit_batch_infos.remove(0)),
-                )
+                // SYSCOIN: current v31 payloads contain compact edge DA fields. Historical v31
+                // fixtures do not, so fall back to the legacy v31 layout when the full decode
+                // cannot consume the payload.
+                let decoded_current = <(
+                    IExecutor::StoredBatchInfo,
+                    Vec<IExecutor::CommitBatchInfoZKsyncOS>,
+                )>::abi_decode_params(&commit_data[1..]);
+                let (stored_batch_info, commit_batch_info) = match decoded_current {
+                    Ok((stored_batch_info, mut commit_batch_infos)) => {
+                        if commit_batch_infos.len() != 1 {
+                            anyhow::bail!(
+                                "unexpected number of committed batch infos: {}",
+                                commit_batch_infos.len()
+                            );
+                        }
+                        (
+                            StoredBatchInfo::from(stored_batch_info),
+                            CommitBatchInfo::from(commit_batch_infos.remove(0)),
+                        )
+                    }
+                    Err(current_err) => {
+                        let (stored_batch_info, mut commit_batch_infos) =
+                            <(
+                                IExecutor::StoredBatchInfo,
+                                Vec<IExecutorV31Legacy::CommitBatchInfoZKsyncOS>,
+                            )>::abi_decode_params(&commit_data[1..])
+                            .map_err(|legacy_err| {
+                                anyhow::anyhow!(
+                                    "failed to decode v31 commit data with current layout ({current_err}) or legacy layout ({legacy_err})"
+                                )
+                            })?;
+                        if commit_batch_infos.len() != 1 {
+                            anyhow::bail!(
+                                "unexpected number of committed batch infos: {}",
+                                commit_batch_infos.len()
+                            );
+                        }
+                        (
+                            StoredBatchInfo::from(stored_batch_info),
+                            CommitBatchInfo::from(commit_batch_infos.remove(0)),
+                        )
+                    }
+                };
+                (stored_batch_info, commit_batch_info)
             }
             _ => unreachable!("encoding version pre-validated"),
         };

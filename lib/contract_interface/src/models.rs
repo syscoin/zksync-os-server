@@ -1,4 +1,4 @@
-use crate::{IExecutor, IExecutorV29, IExecutorV30};
+use crate::{IExecutor, IExecutorV29, IExecutorV30, IExecutorV31Legacy};
 use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolValue;
 use serde::{Deserialize, Serialize};
@@ -316,6 +316,31 @@ impl From<IExecutorV30::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             new_state_commitment: value.newStateCommitment,
             number_of_layer1_txs: value.numberOfLayer1Txs.to::<u64>(),
             number_of_layer2_txs: 0,
+            priority_operations_hash: value.priorityOperationsHash,
+            dependency_roots_rolling_hash: value.dependencyRootsRollingHash,
+            l2_to_l1_logs_root_hash: value.l2LogsTreeRoot,
+            l2_da_commitment_scheme: value.daCommitmentScheme.into(),
+            da_commitment: value.daCommitment,
+            first_block_timestamp: value.firstBlockTimestamp,
+            first_block_number: Some(value.firstBlockNumber),
+            last_block_timestamp: value.lastBlockTimestamp,
+            last_block_number: Some(value.lastBlockNumber),
+            chain_id: value.chainId.to::<u64>(),
+            operator_da_input: value.operatorDAInput.as_ref().to_vec(),
+            edge_da_refs_input: Vec::new(),
+            edge_da_refs_root: B256::ZERO,
+            sl_chain_id: 0,
+        }
+    }
+}
+
+impl From<IExecutorV31Legacy::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
+    fn from(value: IExecutorV31Legacy::CommitBatchInfoZKsyncOS) -> Self {
+        Self {
+            batch_number: value.batchNumber,
+            new_state_commitment: value.newStateCommitment,
+            number_of_layer1_txs: value.numberOfLayer1Txs.to::<u64>(),
+            number_of_layer2_txs: value.numberOfLayer2Txs.to::<u64>(),
             priority_operations_hash: value.priorityOperationsHash,
             dependency_roots_rolling_hash: value.dependencyRootsRollingHash,
             l2_to_l1_logs_root_hash: value.l2LogsTreeRoot,
