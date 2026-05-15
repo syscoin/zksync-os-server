@@ -1,4 +1,4 @@
-use crate::eth_call_handler::{EthCallError, EthCallHandler, build_pending_block_context};
+use crate::eth_call_handler::{EthCallError, EthCallHandler};
 use crate::eth_impl::{build_api_log, build_api_tx};
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
