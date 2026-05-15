@@ -930,20 +930,24 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .run(),
         );
 
-        if let Some(interop_watcher) = InteropWatcher::create_watcher(
-            node_startup_state
-                .l1_state
-                .settlement_layer_intervals
-                .clone(),
-            config.l1_watcher_config.clone().into(),
-            chain_id,
-            next_cursors.interop_root_id,
-            interop_roots_subpool.clone(),
-        )
-        .await
-        .expect("failed to start L1 interop roots watcher")
-        {
-            runtime.spawn_critical_task("interop roots watcher", interop_watcher.run());
+        // SYSCOIN: produced L1-settled blocks do not include interop-root system txs, so avoid
+        // importing historical Gateway roots that cannot be drained until the node restarts.
+        if settles_on_gateway {
+            if let Some(interop_watcher) = InteropWatcher::create_watcher(
+                node_startup_state
+                    .l1_state
+                    .settlement_layer_intervals
+                    .clone(),
+                config.l1_watcher_config.clone().into(),
+                chain_id,
+                next_cursors.interop_root_id,
+                interop_roots_subpool.clone(),
+            )
+            .await
+            .expect("failed to start L1 interop roots watcher")
+            {
+                runtime.spawn_critical_task("interop roots watcher", interop_watcher.run());
+            }
         }
     }
 
