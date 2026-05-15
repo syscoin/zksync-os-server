@@ -371,6 +371,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<GethTrace, EthCallError> {
         let execution_env = self.prepare_execution_env(request, block, block_overrides)?;
+        self.ensure_unvalidated_policy_path_allowed(&execution_env.transaction)?;
         let storage_view = self
             .storage
             .state_at_block_number_or_latest(execution_env.block_context.block_number)?;
@@ -402,6 +403,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<JsonValue, EthCallError> {
         let execution_env = self.prepare_execution_env(request, block, block_overrides)?;
+        self.ensure_unvalidated_policy_path_allowed(&execution_env.transaction)?;
         let storage_view = self
             .storage
             .state_at_block_number_or_latest(execution_env.block_context.block_number)?;
@@ -726,6 +728,22 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
     pub fn last_constructed_block_context(&self) -> Option<BlockContext> {
         *self.last_constructed_block_context.borrow()
     }
+
+    pub(crate) fn policy_client_configured(&self) -> bool {
+        self.policy_client.is_some()
+    }
+
+    pub(crate) fn ensure_unvalidated_policy_path_allowed(
+        &self,
+        tx: &ZkTransaction,
+    ) -> Result<(), EthCallError> {
+        // SYSCOIN: debug/simulate paths below still execute with `NopValidator`; when a policy
+        // service is configured, do not expose equivalent read/write observations without it.
+        if self.policy_client_configured() && tx_type_runs_policy(tx.tx_type()) {
+            return Err(EthCallError::PolicyDenied);
+        }
+        Ok(())
+    }
 }
 
 /// Simulate `tx`, optionally wiring `policy` as the validator. With a
@@ -757,7 +775,7 @@ fn map_simulate_invalid_to_call_error(err: InvalidTransaction) -> EthCallError {
 /// L1 priority and upgrade txs bypass the validator end-to-end (block-build
 /// doesn't fire it on them either). Exhaustive match (no `_` arm) so a
 /// future `ZkTxType` variant can't silently bypass the policy.
-fn tx_type_runs_policy(tx_type: ZkTxType) -> bool {
+pub(crate) fn tx_type_runs_policy(tx_type: ZkTxType) -> bool {
     match tx_type {
         ZkTxType::L2(_) => true,
         ZkTxType::L1 | ZkTxType::Upgrade | ZkTxType::System => false,
