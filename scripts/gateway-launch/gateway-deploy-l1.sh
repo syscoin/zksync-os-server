@@ -23,9 +23,6 @@ gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 gl_l1_broadcast_preflight
 
-cd "${GATEWAY_DIR}"
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
-
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 forge build --skip test
 

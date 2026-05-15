@@ -488,8 +488,13 @@ echo "gateway-launch: initializing checkpoint state"
 gl_checkpoint_state_init
 wait_for_rpc
 gl_ensure_zksync_era_workspace
-if [ ! -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ]; then
-  echo "gateway-launch: building zkstack CLI (first use for this pin)"
+# The era-contracts Syscoin patch also touches zkstack_cli migration code.
+# Apply it before building zkstack so the release binary cannot be stale.
+bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
+ZKSTACK_BIN="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
+ZKSTACK_GATEWAY_MIGRATION_RS="${ZKSYNC_ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
+if [ ! -x "${ZKSTACK_BIN}" ] || [ "${ZKSTACK_GATEWAY_MIGRATION_RS}" -nt "${ZKSTACK_BIN}" ]; then
+  echo "gateway-launch: building zkstack CLI"
   gl_build_zkstack_cli_release
 fi
 gl_path_for_zkstack
