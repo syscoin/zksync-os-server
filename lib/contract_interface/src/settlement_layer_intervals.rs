@@ -1,4 +1,3 @@
-use crate::{Bridgehub, IChainAssetHandler, ZkChain, is_method_missing};
 use alloy::primitives::{Address, U256, address};
 use alloy::providers::{DynProvider, Provider};
 use anyhow::Context;
@@ -231,7 +230,8 @@ impl SettlementLayerIntervals {
         }
     }
 
-    fn find_interval(&self, batch_number: u64) -> Option<&SettlementLayerInterval> {
+    /// Returns the settlement layer interval containing `batch_number`.
+    pub fn find_interval(&self, batch_number: u64) -> Option<&SettlementLayerInterval> {
         self.intervals.iter().find(|i| {
             batch_number >= i.first_batch && i.last_batch.is_none_or(|last| batch_number <= last)
         })

@@ -819,6 +819,22 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
+    if config
+        .sequencer_config
+        .tx_validator
+        .policy_service
+        .url
+        .is_some()
+    {
+        let exec_version = ExecutionVersion::try_from(current_protocol_version)
+            .expect("Cannot determine execution version");
+        assert!(
+            exec_version >= ExecutionVersion::V6,
+            "Policy service requires execution version V6 or later (protocol >= v31.0), \
+             but current protocol version {current_protocol_version} uses {exec_version:?}"
+        );
+    }
+
     let upgrade_subpool = UpgradeSubpool::new(current_protocol_version.clone());
     let sl_chain_id_subpool = SlChainIdSubpool::default();
     let interop_fee_subpool = InteropFeeSubpool::new(next_cursors.interop_fee_number);
@@ -914,25 +930,20 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .run(),
         );
 
-        // SYSCOIN: A Gateway RPC can be configured before/after migrations even while the chain
-        // currently settles on L1. Only ingest interop roots when the active settlement layer is
-        // Gateway; otherwise produced blocks intentionally exclude interop-root system txs and the
-        // subpool would retain watched roots indefinitely.
-        if settles_on_gateway {
-            runtime.spawn_critical_task(
-                "interop roots watcher",
-                InteropWatcher::create_watcher(
-                    node_startup_state.l1_state.bridgehub_sl.clone(),
-                    config.l1_watcher_config.clone().into(),
-                    next_cursors.interop_root_id,
-                    interop_roots_subpool.clone(),
-                    // SYSCOIN: interop roots are emitted on the active settlement layer.
-                    node_startup_state.l1_state.sl_chain_id,
-                )
-                .await
-                .expect("failed to start L1 interop roots watcher")
-                .run(),
-            );
+        if let Some(interop_watcher) = InteropWatcher::create_watcher(
+            node_startup_state
+                .l1_state
+                .settlement_layer_intervals
+                .clone(),
+            config.l1_watcher_config.clone().into(),
+            chain_id,
+            next_cursors.interop_root_id,
+            interop_roots_subpool.clone(),
+        )
+        .await
+        .expect("failed to start L1 interop roots watcher")
+        {
+            runtime.spawn_critical_task("interop roots watcher", interop_watcher.run());
         }
     }
 
@@ -1188,6 +1199,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             rpc_storage.clone(),
             chain_id,
             last_constructed_block_ctx_receiver.clone(),
+            // Interop fee updater runs inside the node and is not a user-facing
+            // RPC surface, so the admit boundary doesn't apply.
+            None,
         );
         let interop_fee_updater = InteropFeeUpdater::new(
             eth_call_handler,
@@ -1310,6 +1324,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     rpc_config.edge_da_admission =
         edge_da_admission_config(&config, l1_state.validator_timelock_sl)
             .expect("failed to build edge DA admission config");
+    let rpc_policy_client = config
+        .sequencer_config
+        .tx_validator
+        .policy_service
+        .build_client(zksync_os_tx_validators::policy_client::Component::Rpc);
     zksync_os_rpc::spawn(
         rpc_config,
         chain_id,
@@ -1322,6 +1341,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         last_constructed_block_ctx_receiver,
         main_node_provider,
         gateway_provider.map(|p| p.erased()),
+        rpc_policy_client,
         runtime,
         wait_for_db,
     )

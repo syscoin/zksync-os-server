@@ -1,3 +1,4 @@
+use crate::eth_call_handler::build_pending_block_context;
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
 use crate::{ReadRpcStorage, RpcConfig};
@@ -17,11 +18,16 @@ use tokio::sync::watch;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
+use zksync_os_interface::error::InvalidTransaction;
+use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
-use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState};
+use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient};
+use zksync_os_types::{
+    L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState, ZkTransaction,
+};
 
 /// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
 /// inexpensive.
@@ -39,27 +45,44 @@ const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
 pub struct TxHandler<RpcStorage, Mempool> {
     config: RpcConfig,
     storage: RpcStorage,
+    chain_id: u64,
     mempool: Mempool,
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     tx_forwarder: Option<DynProvider>,
     edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Optional policy client. When set, each incoming tx is simulated
+    /// once with the validator wired in (admit + judge inline). Spares
+    /// clients a `pending → no receipt` poll loop on a stable deny.
+    /// Block-build remains authoritative.
+    policy_client: Option<PolicyClient>,
+    /// Latest block context constructed by the sequencer. `None` until
+    /// the sequencer has built at least one block; in that startup
+    /// window we synthesize a pending block context from current state.
+    last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
 }
 
 impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempool> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: RpcConfig,
         storage: RpcStorage,
+        chain_id: u64,
         mempool: Mempool,
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<DynProvider>,
+        policy_client: Option<PolicyClient>,
+        last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
         Self {
             config,
             storage,
+            chain_id,
             mempool,
             acceptance_state,
             tx_forwarder,
             edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
+            policy_client,
+            last_constructed_block_context,
         }
     }
 
@@ -95,6 +118,53 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             }
             self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
             self.verify_compact_edge_da_refs_available(&l2_tx).await?;
+        }
+
+        if let Some(policy_client) = &self.policy_client {
+            // `last_constructed_block_context` is None until the sequencer has
+            // prepared its first block. In that startup window, fall back to a
+            // synthesized pending block context derived from current state so
+            // the policy is still consulted (block-build remains authoritative).
+            // Copy the watch ref before the move so the future stays `Send`.
+            let last_block_ctx = *self.last_constructed_block_context.borrow();
+            let storage = self.storage.clone();
+            let chain_id = self.chain_id;
+            let zk_tx: ZkTransaction = l2_tx.clone().into();
+            let policy_client = policy_client.clone();
+            // `spawn_blocking`: the body has blocking I/O and VM execution.
+            //
+            // TODO: dropping the outer future (RPC client disconnect) does not cancel
+            // this task; admit and judge fire to completion. Era stops VM execution on
+            // disconnect via a stop token embedded in the tracer and checked during
+            // storage operations:
+            // https://github.com/matter-labs/zksync-era/blob/main/core/lib/vm_executor/src/oneshot/mod.rs
+            // To be worth implementing it would also need to cover `eth_call` and
+            // `eth_estimateGas`, which currently run under `#[method(blocking)]`.
+            let sim = tokio::task::spawn_blocking(move || {
+                let block_context = match last_block_ctx {
+                    Some(block_context) => block_context,
+                    None => build_pending_block_context(&storage, chain_id)?,
+                };
+                let storage_view =
+                    storage.state_at_block_number_or_latest(block_context.block_number)?;
+                let mut policy_session = policy_client.session(AccessType::Write);
+                let mut tracer = policy_session.paired_tracer();
+                crate::sandbox::execute_with(
+                    zk_tx,
+                    block_context,
+                    storage_view,
+                    &mut tracer,
+                    &mut policy_session,
+                )
+            })
+            .await
+            .map_err(|err| EthSendRawTransactionError::JudgeSimFailed(err.into()))?
+            .map_err(EthSendRawTransactionError::JudgeSimFailed)?;
+            if matches!(sim, Err(InvalidTransaction::FilteredByValidator)) {
+                return Err(EthSendRawTransactionError::PolicyDenied);
+            }
+            // Other sim errors (nonce, gas, etc.) are handled by the
+            // mempool / block-build rejection paths.
         }
         {
             let _guard = MempoolLatencyGuard::new();
@@ -470,6 +540,14 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    /// Policy service rejected the transaction.
+    #[error("transaction denied by policy service")]
+    PolicyDenied,
+    /// Local simulation for the RPC-side judge call failed for an internal
+    /// reason (storage error, etc.). Clean tx rejections fall through and
+    /// surface via the mempool / block-build paths instead.
+    #[error("failed to simulate transaction: {0}")]
+    JudgeSimFailed(#[source] anyhow::Error),
 }
 
 impl From<&EthSendRawTransactionError> for TxRejectionReason {
@@ -486,6 +564,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
                 _ => Self::ForwardTransportError,
             },
             EthSendRawTransactionError::PoolError(pool_err) => Self::from(&pool_err.kind),
+            EthSendRawTransactionError::PolicyDenied => Self::PolicyDenied,
+            EthSendRawTransactionError::JudgeSimFailed(_) => Self::JudgeSimFailed,
         }
     }
 }
