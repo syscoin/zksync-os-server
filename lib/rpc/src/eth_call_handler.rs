@@ -371,6 +371,8 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<GethTrace, EthCallError> {
         let execution_env = self.prepare_execution_env(request, block, block_overrides)?;
+        // SYSCOIN: `debug_traceCall` still executes with `NopValidator`; do not let it bypass
+        // the configured policy service for policy-covered transaction types.
         self.ensure_unvalidated_policy_path_allowed(&execution_env.transaction)?;
         let storage_view = self
             .storage
@@ -403,6 +405,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         block_overrides: Option<Box<BlockOverrides>>,
     ) -> Result<JsonValue, EthCallError> {
         let execution_env = self.prepare_execution_env(request, block, block_overrides)?;
+        // SYSCOIN: JS tracing also uses `NopValidator`, so apply the same policy-bypass guard.
         self.ensure_unvalidated_policy_path_allowed(&execution_env.transaction)?;
         let storage_view = self
             .storage
