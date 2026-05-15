@@ -491,12 +491,7 @@ gl_ensure_zksync_era_workspace
 # The era-contracts Syscoin patch also touches zkstack_cli migration code.
 # Apply it before building zkstack so the release binary cannot be stale.
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
-ZKSTACK_BIN="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
-ZKSTACK_GATEWAY_MIGRATION_RS="${ZKSYNC_ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
-if [ ! -x "${ZKSTACK_BIN}" ] || [ "${ZKSTACK_GATEWAY_MIGRATION_RS}" -nt "${ZKSTACK_BIN}" ]; then
-  echo "gateway-launch: building zkstack CLI"
-  gl_build_zkstack_cli_release
-fi
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 gl_checkpoint_set_fingerprint_if_empty
 gl_checkpoint_assert_fingerprint_matches
