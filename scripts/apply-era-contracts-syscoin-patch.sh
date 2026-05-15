@@ -7,6 +7,8 @@ if [[ $# -ne 1 ]]; then
 fi
 
 CONTRACTS_PATH="$1"
+SUPERPROJECT_PATH="$(git -C "${CONTRACTS_PATH}" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+ERA_ROOT="${SUPERPROJECT_PATH:-${CONTRACTS_PATH}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin.patch"
 DA_LIMITS_PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin-da-limits.patch"
@@ -65,7 +67,7 @@ syscoin_verifier_version_pinned() {
 }
 
 syscoin_gateway_da_migration_patched() {
-  grep -q "Gateway supports BLOBS_ZKSYNC_OS via compact Bitcoin DA refs" "${CONTRACTS_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
+  grep -q "Gateway supports BLOBS_ZKSYNC_OS via compact Bitcoin DA refs" "${ERA_ROOT}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
 }
 
 base_patch_applied() {
@@ -116,8 +118,46 @@ if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
   exit 1
 fi
 
+check_base_contracts_patch() {
+  git -C "${CONTRACTS_PATH}" apply --check --recount --exclude='zkstack_cli/**' "${PATCH_FILE}"
+}
+
+apply_base_contracts_patch() {
+  git -C "${CONTRACTS_PATH}" apply --recount --exclude='zkstack_cli/**' "${PATCH_FILE}"
+}
+
+check_base_zkstack_patch() {
+  if [[ ! -d "${ERA_ROOT}/zkstack_cli" ]]; then
+    echo "error: ${ERA_ROOT}/zkstack_cli not found; cannot apply zkstack_cli patch hunks" >&2
+    exit 1
+  fi
+  git -C "${ERA_ROOT}" apply --check --recount --include='zkstack_cli/**' "${PATCH_FILE}"
+}
+
+apply_base_zkstack_patch() {
+  git -C "${ERA_ROOT}" apply --recount --include='zkstack_cli/**' "${PATCH_FILE}"
+}
+
+check_base_patch() {
+  check_base_contracts_patch
+  check_base_zkstack_patch
+}
+
+apply_base_patch() {
+  apply_base_contracts_patch
+  apply_base_zkstack_patch
+}
+
 if base_patch_core_applied && ! syscoin_verifier_version_pinned; then
   pin_syscoin_verifier_version
+fi
+
+if base_patch_core_applied && syscoin_verifier_version_pinned && ! syscoin_gateway_da_migration_patched; then
+  echo "Checking zkstack Gateway migration patch applicability..."
+  check_base_zkstack_patch
+
+  echo "Applying zkstack Gateway migration patch..."
+  apply_base_zkstack_patch
 fi
 
 if base_patch_applied && da_limits_patch_applied; then
@@ -137,21 +177,21 @@ fi
 
 if ! base_patch_applied && da_limits_patch_applied; then
   echo "Checking base era-contracts Syscoin patch applicability..."
-  git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
+  check_base_patch
 
   echo "Applying base era-contracts Syscoin patch..."
-  git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
+  apply_base_patch
   pin_syscoin_verifier_version
   echo "Patch applied successfully."
   exit 0
 fi
 
 echo "Checking patch applicability..."
-git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
+check_base_patch
 git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
 
 echo "Applying era-contracts syscoin patch..."
-git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
+apply_base_patch
 pin_syscoin_verifier_version
 git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
 
