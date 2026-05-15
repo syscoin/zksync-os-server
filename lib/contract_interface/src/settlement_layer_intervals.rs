@@ -27,13 +27,26 @@ impl fmt::Display for IntervalSettlementLayer {
 /// paired with the diamond proxy for that settlement layer.
 ///
 /// `last_batch` is `None` for the currently-active (open-ended) interval.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SettlementLayerInterval {
     pub settlement_layer: IntervalSettlementLayer,
     pub first_batch: u64,
     pub last_batch: Option<u64>,
     /// Diamond proxy on `settlement_layer`.
     pub proxy: ZkChain<DynProvider>,
+}
+
+impl fmt::Debug for SettlementLayerInterval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SYSCOIN: do not print the provider-backed proxy Debug output; RPC URLs may contain
+        // credentials. The proxy address is enough to diagnose interval routing.
+        f.debug_struct("SettlementLayerInterval")
+            .field("settlement_layer", &self.settlement_layer)
+            .field("first_batch", &self.first_batch)
+            .field("last_batch", &self.last_batch)
+            .field("proxy_address", self.proxy.address())
+            .finish()
+    }
 }
 
 impl fmt::Display for SettlementLayerInterval {
