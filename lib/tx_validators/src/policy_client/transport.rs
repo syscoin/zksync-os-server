@@ -20,6 +20,7 @@ use super::wire::{AdmitRequest, JudgeRequest, PolicyResponse};
 pub enum TransportError {
     #[error("request error: {0}")]
     Request(#[from] reqwest::Error),
+    // SYSCOIN: surface malformed secrets as config errors instead of panicking at startup.
     #[error("auth token is not a valid HTTP header value: {0}")]
     InvalidAuthHeader(#[from] reqwest::header::InvalidHeaderValue),
     #[error("timed out after {0:?}")]
@@ -55,6 +56,8 @@ impl Transport {
         match config {
             TransportConfig::Http { url, auth_token } => {
                 let base_url = url.to_string().trim_end_matches('/').to_owned();
+                // SYSCOIN: auth tokens can come from env / secret stores and may contain
+                // invalid header bytes (e.g. a trailing newline); return a startup error.
                 let mut auth_value =
                     HeaderValue::from_str(&format!("Bearer {}", auth_token.expose_secret()))?;
                 auth_value.set_sensitive(true);

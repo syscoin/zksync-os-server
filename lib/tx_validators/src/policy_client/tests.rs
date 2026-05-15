@@ -304,6 +304,7 @@ fn http_url_accepted_at_construction() {
 
 #[test]
 fn invalid_http_auth_token_rejected_at_construction() {
+    // SYSCOIN: malformed operator-provided secrets must not panic node startup.
     let err = PolicyClient::new(Config {
         url: "http://policy.local:9000".into(),
         component: Component::Rpc,
