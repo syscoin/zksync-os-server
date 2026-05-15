@@ -304,6 +304,7 @@ fn classify_error(err: &TransportError) -> ErrorKind {
     match err {
         TransportError::Timeout(_) => ErrorKind::Timeout,
         TransportError::ProtocolVersionMismatch => ErrorKind::ProtocolVersionMismatch,
+        TransportError::InvalidAuthHeader(_) => ErrorKind::Http,
         TransportError::Request(e) => {
             if e.is_timeout() {
                 ErrorKind::Timeout

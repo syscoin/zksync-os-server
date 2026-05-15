@@ -20,6 +20,8 @@ use super::wire::{AdmitRequest, JudgeRequest, PolicyResponse};
 pub enum TransportError {
     #[error("request error: {0}")]
     Request(#[from] reqwest::Error),
+    #[error("auth token is not a valid HTTP header value: {0}")]
+    InvalidAuthHeader(#[from] reqwest::header::InvalidHeaderValue),
     #[error("timed out after {0:?}")]
     Timeout(Duration),
     #[error("response protocolVersion does not match expected")]
@@ -54,8 +56,7 @@ impl Transport {
             TransportConfig::Http { url, auth_token } => {
                 let base_url = url.to_string().trim_end_matches('/').to_owned();
                 let mut auth_value =
-                    HeaderValue::from_str(&format!("Bearer {}", auth_token.expose_secret()))
-                        .expect("auth token must be a valid HTTP header value");
+                    HeaderValue::from_str(&format!("Bearer {}", auth_token.expose_secret()))?;
                 auth_value.set_sensitive(true);
                 let mut headers = Self::base_headers();
                 headers.insert(AUTHORIZATION, auth_value);

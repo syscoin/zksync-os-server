@@ -303,6 +303,26 @@ fn http_url_accepted_at_construction() {
 }
 
 #[test]
+fn invalid_http_auth_token_rejected_at_construction() {
+    let err = PolicyClient::new(Config {
+        url: "http://policy.local:9000".into(),
+        component: Component::Rpc,
+        auth_token: Some("token\n".into()),
+        request_timeout: Duration::from_millis(500),
+        protocol_version: "1".into(),
+        expected_protocol_version: None,
+        bypass_from: Default::default(),
+    })
+    .unwrap_err()
+    .to_string();
+
+    assert!(
+        err.contains("failed to build transport"),
+        "expected transport construction error, got: {err}"
+    );
+}
+
+#[test]
 fn https_url_rejected_at_construction() {
     assert!(
         PolicyClient::new(Config {
