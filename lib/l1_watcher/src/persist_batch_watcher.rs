@@ -77,9 +77,7 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
                 continue;
             }
 
-            // SYSCOIN: resolving a historical Gateway segment may lazily initialize the
-            // configured Gateway proxy, and only for segments still pending persistence.
-            let zk_chain = intervals.resolve_proxy(interval.first_batch).await?;
+            let zk_chain = &interval.proxy;
             let first_batch = if is_first {
                 anyhow::ensure!(
                     interval.first_batch <= last_persisted_batch + 1,
