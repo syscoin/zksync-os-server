@@ -624,6 +624,22 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
+    if config
+        .sequencer_config
+        .tx_validator
+        .policy_service
+        .url
+        .is_some()
+    {
+        let exec_version = ExecutionVersion::try_from(current_protocol_version)
+            .expect("Cannot determine execution version");
+        assert!(
+            exec_version >= ExecutionVersion::V6,
+            "Policy service requires execution version V6 or later (protocol >= v31.0), \
+             but current protocol version {current_protocol_version} uses {exec_version:?}"
+        );
+    }
+
     let upgrade_subpool = UpgradeSubpool::new(current_protocol_version.clone());
     let sl_chain_id_subpool = SlChainIdSubpool::default();
     let interop_fee_subpool = InteropFeeSubpool::new(next_cursors.interop_fee_number);
@@ -962,6 +978,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             rpc_storage.clone(),
             chain_id,
             last_constructed_block_ctx_receiver.clone(),
+            // Interop fee updater runs inside the node and is not a user-facing
+            // RPC surface, so the admit boundary doesn't apply.
+            None,
         );
         let interop_fee_updater = InteropFeeUpdater::new(
             eth_call_handler,
@@ -1075,6 +1094,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .wait_for_db_ready_to_process_blocks()
             .await;
     };
+    let rpc_policy_client = config
+        .sequencer_config
+        .tx_validator
+        .policy_service
+        .build_client(zksync_os_tx_validators::policy_client::Component::Rpc);
     zksync_os_rpc::spawn(
         config.rpc_config.into(),
         chain_id,
@@ -1087,6 +1111,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         last_constructed_block_ctx_receiver,
         main_node_provider,
         gateway_provider.map(|p| p.erased()),
+        rpc_policy_client,
         runtime,
         wait_for_db,
     )
