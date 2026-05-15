@@ -45,13 +45,13 @@ fn expected_syscoin_app_sha256(tag: &str, variant: &str) -> anyhow::Result<&'sta
             Ok("055ed473eb0af6797c9dda7ef7551aa7bb8907761be9c8726046c1959eeb6e4d")
         }
         ("v0.3.0", "multiblock_batch") => {
-            Ok("d92df65bf54b6db4a5180e5183bdc8d7b24da5f21dd4cf33dd2b812d1f11a286")
+            Ok("4d3bf79f18421b07f762a0d14636c61551aa15445385a1e212dcd7751eeb814a")
         }
         ("v0.3.0", "singleblock_batch") => {
-            Ok("d4bcee059607e39b5f01c43afe3baf1c6fe2bdb523803ee7b3eb4359deb1bd47")
+            Ok("a7ecfa323fbc82a3f8b0134f04694cc6c0e4a7e148a22347992ef215949a490a")
         }
         ("v0.3.0", "singleblock_batch_logging_enabled") => {
-            Ok("f9804fb730113660fc2e0e4332103a6151b5453e4ea68c8ca7a83c955b4fe7ca")
+            Ok("a1a13e2e47631b90bff11dfffcdc742ef9a417a9b94466dc6874ee485434af3b")
         }
         _ => anyhow::bail!("missing expected SHA-256 for Syscoin zksync-os app {tag}/{variant}"),
     }
