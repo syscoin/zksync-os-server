@@ -14,6 +14,7 @@ build = "build.rs"
 [dependencies]
 zksync_os_server.workspace = true
 zksync_os_contract_interface.workspace = true
+zksync_os_tx_validators.workspace = true
 zksync_os_types.workspace = true
 zksync_os_rpc_api.workspace = true
 zksync_os_merkle_tree_api.workspace = true
@@ -37,6 +38,7 @@ tempfile.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+httpmock.workspace = true
 backon.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -56,7 +58,6 @@ sha2 = { workspace = true }
 [dev-dependencies]
 test-log = { workspace = true, default-features = false, features = ["trace", "color"] }
 regex.workspace = true
-# SYSCOIN: mock the Bitcoin DA RPC surface in integration tests.
 httpmock.workspace = true
 
 [features]

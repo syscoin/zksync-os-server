@@ -1,3 +1,4 @@
+use crate::eth_call_handler::build_pending_block_context;
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
 use crate::{ReadRpcStorage, RpcConfig};
@@ -10,46 +11,78 @@ use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 use alloy::transports::{RpcError, TransportErrorKind};
 use bitcoin_da_client::SyscoinClient;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
+use zksync_os_interface::error::InvalidTransaction;
+use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
-use zksync_os_types::{L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState};
+use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient};
+use zksync_os_types::{
+    L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState, ZkTransaction,
+};
 
 /// Maximum user provided timeout for `eth_sendRawTransactionSync`. Chosen liberally as waiting is
 /// inexpensive.
 const SEND_RAW_TRANSACTION_SYNC_MAX_TIMEOUT: Duration = Duration::from_secs(30);
 // SYSCOIN: Bitcoin DA supports up to 32 compact blob hashes per edge batch.
 const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
+// SYSCOIN: missing compact DA refs are cheap to cache and prevent no-fee exact replay loops from
+// repeatedly hitting the operator's Syscoin DA RPC / PoDA fallback before mempool insertion.
+const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(20);
+// SYSCOIN: bound attacker-influenced unavailable-ref caching. This cache is an optimization only;
+// if it is full, skipping a new entry is safer than allowing unbounded memory or mutex work.
+const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
     config: RpcConfig,
     storage: RpcStorage,
+    chain_id: u64,
     mempool: Mempool,
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     tx_forwarder: Option<DynProvider>,
+    edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Optional policy client. When set, each incoming tx is simulated
+    /// once with the validator wired in (admit + judge inline). Spares
+    /// clients a `pending → no receipt` poll loop on a stable deny.
+    /// Block-build remains authoritative.
+    policy_client: Option<PolicyClient>,
+    /// Latest block context constructed by the sequencer. `None` until
+    /// the sequencer has built at least one block; in that startup
+    /// window we synthesize a pending block context from current state.
+    last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
 }
 
 impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempool> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: RpcConfig,
         storage: RpcStorage,
+        chain_id: u64,
         mempool: Mempool,
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<DynProvider>,
+        policy_client: Option<PolicyClient>,
+        last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
         Self {
             config,
             storage,
+            chain_id,
             mempool,
             acceptance_state,
             tx_forwarder,
+            edge_da_unavailable_ref_cache: Arc::new(Mutex::new(HashMap::new())),
+            policy_client,
+            last_constructed_block_context,
         }
     }
 
@@ -76,8 +109,63 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
-        // SYSCOIN
-        self.verify_compact_edge_da_refs_available(&l2_tx).await?;
+        // SYSCOIN: run local mempool validation before external DA admission checks, but only for
+        // compact-edge-DA commit candidates. Ordinary txs keep the single validation performed by
+        // insertion below.
+        if self.is_compact_edge_da_admission_candidate(&l2_tx) {
+            if self.mempool.contains(&hash) {
+                return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported).into());
+            }
+            self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
+            self.verify_compact_edge_da_refs_available(&l2_tx).await?;
+        }
+
+        if let Some(policy_client) = &self.policy_client {
+            // `last_constructed_block_context` is None until the sequencer has
+            // prepared its first block. In that startup window, fall back to a
+            // synthesized pending block context derived from current state so
+            // the policy is still consulted (block-build remains authoritative).
+            // Copy the watch ref before the move so the future stays `Send`.
+            let last_block_ctx = *self.last_constructed_block_context.borrow();
+            let storage = self.storage.clone();
+            let chain_id = self.chain_id;
+            let zk_tx: ZkTransaction = l2_tx.clone().into();
+            let policy_client = policy_client.clone();
+            // `spawn_blocking`: the body has blocking I/O and VM execution.
+            //
+            // TODO: dropping the outer future (RPC client disconnect) does not cancel
+            // this task; admit and judge fire to completion. Era stops VM execution on
+            // disconnect via a stop token embedded in the tracer and checked during
+            // storage operations:
+            // https://github.com/matter-labs/zksync-era/blob/main/core/lib/vm_executor/src/oneshot/mod.rs
+            // To be worth implementing it would also need to cover `eth_call` and
+            // `eth_estimateGas`, which currently run under `#[method(blocking)]`.
+            let sim = tokio::task::spawn_blocking(move || {
+                let block_context = match last_block_ctx {
+                    Some(block_context) => block_context,
+                    None => build_pending_block_context(&storage, chain_id)?,
+                };
+                let storage_view =
+                    storage.state_at_block_number_or_latest(block_context.block_number)?;
+                let mut policy_session = policy_client.session(AccessType::Write);
+                let mut tracer = policy_session.paired_tracer();
+                crate::sandbox::execute_with(
+                    zk_tx,
+                    block_context,
+                    storage_view,
+                    &mut tracer,
+                    &mut policy_session,
+                )
+            })
+            .await
+            .map_err(|err| EthSendRawTransactionError::JudgeSimFailed(err.into()))?
+            .map_err(EthSendRawTransactionError::JudgeSimFailed)?;
+            if matches!(sim, Err(InvalidTransaction::FilteredByValidator)) {
+                return Err(EthSendRawTransactionError::PolicyDenied);
+            }
+            // Other sim errors (nonce, gas, etc.) are handled by the
+            // mempool / block-build rejection paths.
+        }
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -121,6 +209,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
             return Ok(());
         };
+        self.reject_cached_unavailable_edge_da_refs(&version_hashes)?;
 
         let client = SyscoinClient::new(
             &config.rpc_url,
@@ -135,23 +224,84 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                 "failed to create Bitcoin DA client: {err}"
             ))
         })?;
-        for (idx, version_hash) in version_hashes.iter().enumerate() {
-            let exists = client
-                .blob_exists(version_hash)
-                .await
-                .map_err(|err| {
-                    EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
-                        "failed to check Bitcoin DA availability for compact edge ref {idx} ({version_hash}): {err}"
-                    ))
-                })?;
-            if !exists {
-                return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
-                    format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
-                ));
-            }
+        let existence = client
+            .blobs_exist(version_hashes.iter())
+            .await
+            .map_err(|err| {
+                EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(format!(
+                    "failed to check Bitcoin DA availability for compact edge refs: {err}"
+                ))
+            })?;
+        if existence.len() != version_hashes.len() {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!(
+                    "Bitcoin DA availability response length mismatch for compact edge refs: requested {}, got {}",
+                    version_hashes.len(),
+                    existence.len()
+                ),
+            ));
+        }
+        let missing: Vec<_> = version_hashes
+            .iter()
+            .zip(existence)
+            .enumerate()
+            .filter_map(|(idx, (version_hash, exists))| (!exists).then_some((idx, version_hash)))
+            .collect();
+        self.remember_unavailable_edge_da_refs(
+            missing
+                .iter()
+                .map(|(_, version_hash)| version_hash.as_str()),
+        );
+        if let Some((idx, version_hash)) = missing.first() {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!("compact edge DA ref {idx} ({version_hash}) is not retrievable"),
+            ));
         }
 
         Ok(())
+    }
+
+    fn reject_cached_unavailable_edge_da_refs(
+        &self,
+        version_hashes: &[String],
+    ) -> Result<(), EthSendRawTransactionError> {
+        let now = Instant::now();
+        let mut cache = self
+            .edge_da_unavailable_ref_cache
+            .lock()
+            .expect("edge DA unavailable ref cache poisoned");
+        if let Some(version_hash) = cached_unavailable_edge_da_ref(&mut cache, version_hashes, now)
+        {
+            return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
+                format!(
+                    "compact edge DA ref {version_hash} is temporarily cached as not retrievable"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn remember_unavailable_edge_da_refs<'a>(
+        &self,
+        version_hashes: impl IntoIterator<Item = &'a str>,
+    ) {
+        let now = Instant::now();
+        let expires_at = now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL;
+        let mut cache = self
+            .edge_da_unavailable_ref_cache
+            .lock()
+            .expect("edge DA unavailable ref cache poisoned");
+        remember_unavailable_edge_da_refs_in_cache(&mut cache, version_hashes, now, expires_at);
+    }
+
+    // SYSCOIN: use only cheap structural checks here so invalid raw txs cannot force DA parsing or
+    // external Bitcoin DA calls before the mempool validator rejects them.
+    fn is_compact_edge_da_admission_candidate(&self, tx: &L2Transaction) -> bool {
+        let Some(config) = self.config.edge_da_admission.as_ref() else {
+            return false;
+        };
+        is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target)
+            && has_compact_edge_da_commit_selector(tx.input())
     }
 
     pub async fn send_raw_transaction_sync_impl(
@@ -222,15 +372,20 @@ fn is_compact_edge_da_commit_target(tx_to: Option<Address>, commit_tx_target: Ad
     tx_to == Some(commit_tx_target)
 }
 
+// SYSCOIN: keep this deliberately cheap; full calldata decoding happens only after mempool
+// validation for commit candidates.
+fn has_compact_edge_da_commit_selector(input: &[u8]) -> bool {
+    input.len() >= 4
+        && (input[..4] == IExecutor::commitBatchesSharedBridgeCall::SELECTOR
+            || input[..4] == IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+}
+
 // SYSCOIN: parse Gateway child-chain commit calldata and return compact Bitcoin DA refs
 // that must be finalized before admitting the tx to the Gateway mempool.
 fn compact_edge_da_refs_from_commit_calldata(
     input: &[u8],
 ) -> Result<Option<Vec<String>>, EthSendRawTransactionError> {
-    if input.len() < 4
-        || (input[..4] != IExecutor::commitBatchesSharedBridgeCall::SELECTOR
-            && input[..4] != IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
-    {
+    if !has_compact_edge_da_commit_selector(input) {
         return Ok(None);
     }
 
@@ -279,6 +434,51 @@ fn compact_edge_da_refs_from_commit_calldata(
             .map(hex::encode)
             .collect(),
     ))
+}
+
+fn cached_unavailable_edge_da_ref(
+    cache: &mut HashMap<String, Instant>,
+    version_hashes: &[String],
+    now: Instant,
+) -> Option<String> {
+    for version_hash in version_hashes {
+        let Some(expires_at) = cache.get(version_hash).copied() else {
+            continue;
+        };
+        if expires_at > now {
+            return Some(version_hash.clone());
+        }
+        cache.remove(version_hash);
+    }
+    None
+}
+
+fn remember_unavailable_edge_da_refs_in_cache<'a>(
+    cache: &mut HashMap<String, Instant>,
+    version_hashes: impl IntoIterator<Item = &'a str>,
+    now: Instant,
+    expires_at: Instant,
+) {
+    let mut pruned_expired_entries = false;
+    for version_hash in version_hashes {
+        if !cache.contains_key(version_hash)
+            && cache.len() >= SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES
+        {
+            if !pruned_expired_entries {
+                cache.retain(|_, expires_at| *expires_at > now);
+                pruned_expired_entries = true;
+            }
+            if cache.len() >= SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES {
+                tracing::debug!(
+                    version_hash,
+                    cache_len = cache.len(),
+                    "edge DA unavailable ref cache is full; skipping new entry"
+                );
+                continue;
+            }
+        }
+        cache.insert(version_hash.to_owned(), expires_at);
+    }
 }
 
 // SYSCOIN: forwarding can fail after local mempool insertion. Only roll back errors that are
@@ -340,6 +540,14 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    /// Policy service rejected the transaction.
+    #[error("transaction denied by policy service")]
+    PolicyDenied,
+    /// Local simulation for the RPC-side judge call failed for an internal
+    /// reason (storage error, etc.). Clean tx rejections fall through and
+    /// surface via the mempool / block-build paths instead.
+    #[error("failed to simulate transaction: {0}")]
+    JudgeSimFailed(#[source] anyhow::Error),
 }
 
 impl From<&EthSendRawTransactionError> for TxRejectionReason {
@@ -356,6 +564,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
                 _ => Self::ForwardTransportError,
             },
             EthSendRawTransactionError::PoolError(pool_err) => Self::from(&pool_err.kind),
+            EthSendRawTransactionError::PolicyDenied => Self::PolicyDenied,
+            EthSendRawTransactionError::JudgeSimFailed(_) => Self::JudgeSimFailed,
         }
     }
 }
@@ -636,6 +846,52 @@ mod tests {
         let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
 
         assert!(err.to_string().contains("at most 32 32-byte hashes"));
+    }
+
+    #[test]
+    fn edge_da_unavailable_cache_is_capacity_bounded() {
+        let now = Instant::now();
+        let expires_at = now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL;
+        let mut cache = HashMap::new();
+        let hashes: Vec<_> = (0..(SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES + 32))
+            .map(|idx| format!("{idx:064x}"))
+            .collect();
+
+        remember_unavailable_edge_da_refs_in_cache(
+            &mut cache,
+            hashes.iter().map(String::as_str),
+            now,
+            expires_at,
+        );
+
+        assert_eq!(
+            cache.len(),
+            SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES
+        );
+    }
+
+    #[test]
+    fn edge_da_unavailable_cache_removes_expired_queried_refs() {
+        let now = Instant::now();
+        let expired_hash = hex::encode([0x11; 32]);
+        let live_hash = hex::encode([0x22; 32]);
+        let mut cache = HashMap::from([
+            (expired_hash.clone(), now - Duration::from_secs(1)),
+            (
+                live_hash.clone(),
+                now + SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL,
+            ),
+        ]);
+
+        assert_eq!(
+            cached_unavailable_edge_da_ref(&mut cache, std::slice::from_ref(&expired_hash), now),
+            None
+        );
+        assert!(!cache.contains_key(&expired_hash));
+        assert_eq!(
+            cached_unavailable_edge_da_ref(&mut cache, std::slice::from_ref(&live_hash), now),
+            Some(live_hash)
+        );
     }
 
     #[test]

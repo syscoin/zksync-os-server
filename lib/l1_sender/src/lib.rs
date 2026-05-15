@@ -7,6 +7,7 @@ pub mod upgrade_gatekeeper;
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderConfig, L1SenderFeeConfig};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
+use crate::pipeline_component::L1Sender;
 use alloy::consensus::BlobTransactionValidationError;
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
@@ -27,7 +28,7 @@ use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
@@ -90,6 +91,7 @@ const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
 /// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
 /// to reach 3 confirmations for such transactions
 const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
+const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
@@ -99,6 +101,37 @@ struct FeeParams {
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
     max_fee_per_blob_gas: u128,
+}
+
+impl<LF, LP, Input> L1Sender<LF, LP, Input>
+where
+    LF: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet> + 'static,
+    LP: Provider<Ethereum> + Clone + 'static,
+    Input: SendToL1 + Send + 'static,
+{
+    pub async fn operator_address(&self) -> anyhow::Result<Address> {
+        self.config.operator_signer.address().await
+    }
+
+    pub async fn run_l1_sender(
+        self,
+        inbound: PeekableReceiver<L1SenderCommand<Input>>,
+        outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+        state_reporter: ComponentStateReporter,
+    ) -> anyhow::Result<()> {
+        run_l1_sender(
+            inbound,
+            outbound,
+            self.to_address,
+            self.provider,
+            self.config,
+            self.gateway,
+            state_reporter,
+            self.commit_submitted_tx,
+            self.sl_block_number,
+        )
+        .await
+    }
 }
 
 /// Process responsible for sending transactions to L1.
@@ -433,8 +466,35 @@ where
 
     let raw_tx = tx.encoded_2718();
     let tx_nonce = tx.nonce();
-    let submitted_l1_block = provider.get_block_number().await?;
-    let pending_tx = provider.send_raw_transaction(&raw_tx).await?;
+    let admission_retry_started = Instant::now();
+    let (pending_tx, submitted_l1_block) = loop {
+        let submission_baseline_block = provider.get_block_number().await?;
+        match provider.send_raw_transaction(&raw_tx).await {
+            Ok(pending_tx) => break (pending_tx, submission_baseline_block),
+            Err(err)
+                if gateway
+                    && Input::COMPONENT_ID == ComponentId::L1SenderCommit
+                    && is_gateway_da_admission_error(&err) =>
+            {
+                if admission_retry_started.elapsed() >= config.gateway_da_admission_retry_timeout {
+                    return Err(anyhow::anyhow!(
+                        "{command_name}: Gateway compact Bitcoin DA admission failed for {tx_range} within {:?}: {err}",
+                        config.gateway_da_admission_retry_timeout
+                    ));
+                }
+                tracing::warn!(
+                    command_name,
+                    tx_range,
+                    error = %err,
+                    elapsed = ?admission_retry_started.elapsed(),
+                    retry_in = ?config.gateway_da_admission_retry_interval,
+                    "Gateway rejected commit because Bitcoin DA is not visible yet; retrying submission"
+                );
+                tokio::time::sleep(config.gateway_da_admission_retry_interval).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
     let submitted_at = Instant::now();
     let tx_hash = *pending_tx.tx_hash();
     let receipt_fut = wait_for_confirmed_receipt(
@@ -972,6 +1032,24 @@ fn is_nonce_reuse_rebroadcast_error(err: &TransportError) -> bool {
         }
         _ => false,
     }
+}
+
+// SYSCOIN: Gateway performs compact edge-DA admission before mempool insertion. A child chain can
+// publish Bitcoin DA through its local Syscoin node while the Gateway node has not observed the DA
+// yet, so this specific pre-send rejection is transient and must be retried by the child chain.
+fn is_gateway_da_admission_error(err: &TransportError) -> bool {
+    match err {
+        TransportError::ErrorResp(resp) => {
+            let message = resp.message.to_ascii_lowercase();
+            is_retryable_gateway_da_admission_message(&message)
+        }
+        _ => false,
+    }
+}
+
+fn is_retryable_gateway_da_admission_message(message: &str) -> bool {
+    message.contains("not retrievable")
+        && (message.contains("compact edge da ref") || message.contains("bitcoin da"))
 }
 
 // SYSCOIN: outcome of same-nonce discovery after a nonce-reuse rebroadcast error.
@@ -1549,6 +1627,45 @@ async fn register_operator<
     Ok(address)
 }
 
+pub(crate) async fn report_operator_metrics_loop<P: Provider>(
+    provider: P,
+    operator_address: Address,
+    command_name: &'static str,
+) -> anyhow::Result<()> {
+    let mut timer = tokio::time::interval(OPERATOR_METRICS_POLL_INTERVAL);
+    loop {
+        timer.tick().await;
+        match provider.get_balance(operator_address).await {
+            Ok(balance) => match format_ether(balance).parse() {
+                Ok(balance) => {
+                    L1_SENDER_METRICS.balance[&command_name].set(balance);
+                }
+                Err(err) => tracing::warn!(
+                    command_name,
+                    %operator_address,
+                    "Failed to parse L1 operator balance metric: {err}"
+                ),
+            },
+            Err(err) => tracing::warn!(
+                command_name,
+                %operator_address,
+                "Failed to fetch L1 operator balance metric: {err}"
+            ),
+        }
+
+        match provider.get_transaction_count(operator_address).await {
+            Ok(nonce) => {
+                L1_SENDER_METRICS.nonce[&command_name].set(nonce);
+            }
+            Err(err) => tracing::warn!(
+                command_name,
+                %operator_address,
+                "Failed to fetch L1 operator nonce metric: {err}"
+            ),
+        }
+    }
+}
+
 async fn validate_tx_receipt<Input: SendToL1>(
     provider: &impl Provider,
     command: &Input,
@@ -1595,7 +1712,7 @@ async fn validate_tx_receipt<Input: SendToL1>(
 
 #[cfg(test)]
 mod tests {
-    use super::notify_commit_submitted_batch;
+    use super::{is_retryable_gateway_da_admission_message, notify_commit_submitted_batch};
     use tokio::sync::watch;
 
     #[test]
@@ -1619,5 +1736,25 @@ mod tests {
     #[test]
     fn commit_submitted_marker_is_optional_for_non_commit_senders() {
         notify_commit_submitted_batch(&None, 11);
+    }
+
+    #[test]
+    fn gateway_da_retry_matcher_only_accepts_availability_lag() {
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref 0 (abc) is not retrievable",
+        ));
+        assert!(is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da ref abc is temporarily cached as not retrievable",
+        ));
+
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: failed to decode compact edge da commit calldata: bad selector",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: compact edge da commitment mismatch",
+        ));
+        assert!(!is_retryable_gateway_da_admission_message(
+            "compact edge da admission check failed: unsupported child-chain da commitment scheme",
+        ));
     }
 }

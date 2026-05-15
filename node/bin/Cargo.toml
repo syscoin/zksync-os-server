@@ -15,7 +15,11 @@ path = "src/main.rs"
 
 [features]
 default = ["jemalloc"]
-jemalloc = ["dep:tikv-jemallocator"]
+jemalloc = [
+    "dep:tikv-jemallocator",
+    "zksync_os_observability/jemalloc",
+    "tikv-jemallocator/stats",
+]
 
 [dependencies]
 zksync_os_l1_sender.workspace = true
@@ -115,7 +119,8 @@ tar.workspace = true
 tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd"] }
 # SYSCOIN: batcher-side Bitcoin DA RPC client and secret handling.
 secrecy.workspace = true
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.11" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.12" }
+url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }

@@ -70,7 +70,7 @@ async fn send_transfer(
 }
 
 /// Sends a transfer to `leader_index`, waits for all running nodes to expose the resulting
-/// L2 block, then waits for L1 finalization if the batcher node is active.
+/// L2 block, then waits for L1 finalization if the producing leader runs the batcher.
 /// Returns the L2 block number that included the transfer.
 async fn send_transfer_and_wait_for_active_replication(
     cluster: &mut MultiNodeTester,
@@ -83,15 +83,26 @@ async fn send_transfer_and_wait_for_active_replication(
     cluster
         .wait_for_active_l2_block(block_number, REPLICATION_TIMEOUT)
         .await?;
-    wait_for_l1_finalization_if_batcher_active(cluster, block_number).await?;
+    wait_for_l1_finalization_if_leader_batches(cluster, leader_index, block_number).await?;
     Ok(block_number)
 }
 
-async fn wait_for_l1_finalization_if_batcher_active(
+async fn wait_for_l1_finalization_if_leader_batches(
     cluster: &MultiNodeTester,
+    leader_index: usize,
     block_number: u64,
 ) -> anyhow::Result<u64> {
     let batcher_idx = cluster.batcher_node_index();
+    if leader_index != batcher_idx {
+        tracing::info!(
+            block_number,
+            leader_index,
+            batcher_idx,
+            "skipping L1 finalization check because the producing leader is not the batcher node"
+        );
+        return Ok(block_number);
+    }
+
     if cluster.is_node_suspended(batcher_idx) {
         tracing::info!(
             block_number,
@@ -129,7 +140,7 @@ async fn consensus_cluster_includes_simple_transaction_with_wait() -> anyhow::Re
         let block_number = receipt
             .block_number
             .context("transfer receipt did not include a block number")?;
-        wait_for_l1_finalization_if_batcher_active(&cluster, block_number).await?;
+        wait_for_l1_finalization_if_leader_batches(&cluster, leader_index, block_number).await?;
 
         Ok(())
     }

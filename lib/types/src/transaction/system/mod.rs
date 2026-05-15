@@ -539,7 +539,7 @@ mod tests {
 
         assert_eq!(
             deserialized.system_subtype(),
-            &SystemTxType::SetSLChainId(u64::MAX)
+            &SystemTxType::SetSLChainId(5700, u64::MAX)
         );
     }
 

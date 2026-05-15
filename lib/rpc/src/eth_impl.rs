@@ -27,6 +27,7 @@ use tokio::sync::watch;
 use zk_ee::common_structs::derive_flat_storage_key;
 use zk_os_api::helpers::{get_balance, get_code};
 use zksync_os_interface::traits::ReadStorage;
+use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::eth::EthApiServer;
 use zksync_os_rpc_api::types::{
@@ -34,6 +35,7 @@ use zksync_os_rpc_api::types::{
     block_rlp_length_with_full_transactions, raw_transaction_rlp_item_length,
 };
 use zksync_os_storage_api::{RepositoryBlock, RepositoryError, StateError, TxMeta, ViewState};
+use zksync_os_tx_validators::policy_client::PolicyClient;
 use zksync_os_types::{L2Envelope, TransactionAcceptanceState, ZkReceiptEnvelope};
 
 pub struct EthNamespace<RpcStorage, Mempool> {
@@ -50,6 +52,7 @@ pub struct EthNamespace<RpcStorage, Mempool> {
 }
 
 impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Mempool> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: RpcConfig,
         storage: RpcStorage,
@@ -58,13 +61,18 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         chain_id: u64,
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
         tx_forwarder: Option<DynProvider>,
+        policy_client: Option<PolicyClient>,
+        last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
         let tx_handler = TxHandler::new(
             config.clone(),
             storage.clone(),
+            chain_id,
             mempool.clone(),
             acceptance_state,
             tx_forwarder,
+            policy_client,
+            last_constructed_block_context,
         );
 
         Self {
@@ -780,11 +788,12 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthApiServer
 
     fn simulate_v1(
         &self,
-        _opts: SimulatePayload,
-        _block_number: Option<BlockId>,
-    ) -> RpcResult<Vec<SimulatedBlock>> {
-        // todo(#51): implement
-        Err(unimplemented_rpc_err())
+        opts: SimulatePayload,
+        block_number: Option<BlockId>,
+    ) -> RpcResult<Vec<SimulatedBlock<ZkApiBlock>>> {
+        self.eth_call_handler
+            .simulate_v1_impl(opts, block_number)
+            .to_rpc_result()
     }
 
     fn call(

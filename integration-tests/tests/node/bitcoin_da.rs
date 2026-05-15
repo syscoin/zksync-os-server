@@ -8,8 +8,8 @@ use httpmock::MockServer;
 use serde_json::json;
 use smart_config::value::SecretString;
 use std::time::Duration;
+use zksync_os_integration_tests::NEXT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
-use zksync_os_integration_tests::{SettlementLayer, TesterBuilder};
 use zksync_os_server::config::BitcoinDaFinalityMode;
 use zksync_os_types::PubdataMode;
 
@@ -93,25 +93,21 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         .await;
 
     let server_url = server.base_url();
-    let tester = TesterBuilder::default()
-        .settlement_layer(SettlementLayer::Gateway)
-        .block_time(Duration::from_millis(50))
-        .config_overrides(move |config| {
-            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
-            config.batcher_config.batch_timeout = Duration::from_millis(100);
-            config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
-            config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
-            config.batcher_config.bitcoin_da_rpc_password =
-                Some(SecretString::new("password".into()));
-            config.batcher_config.bitcoin_da_poda_url = server_url.clone();
-            config.batcher_config.bitcoin_da_wallet_name = "zksync-os".into();
-            config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
-            config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
-            config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
-            config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
-        })
-        .build()
-        .await?;
+    let env = NEXT_TO_GATEWAY.environment().await?;
+    let mut config = env.default_config().await?;
+    config.sequencer_config.block_time = Duration::from_millis(50);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.batcher_config.batch_timeout = Duration::from_millis(100);
+    config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
+    config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
+    config.batcher_config.bitcoin_da_rpc_password = Some(SecretString::new("password".into()));
+    config.batcher_config.bitcoin_da_poda_url = server_url;
+    config.batcher_config.bitcoin_da_wallet_name = "zksync-os".into();
+    config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
+    config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
+    config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
+    config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
+    let tester = env.launch(config).await?;
 
     let from = tester.l2_wallet.default_signer().address();
     tester
@@ -128,7 +124,7 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if create_blob.hits_async().await > 0 && check_finality.hits_async().await > 0 {
+        if create_blob.calls_async().await > 0 && check_finality.calls_async().await > 0 {
             break;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -137,13 +133,13 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert!(loadwallet.hits_async().await > 0);
-    assert!(getaddressesbylabel.hits_async().await > 0);
-    assert!(getnewaddress.hits_async().await > 0);
-    assert!(estimate_smart_fee.hits_async().await > 0);
-    assert!(get_mempool_info.hits_async().await > 0);
-    assert!(create_blob.hits_async().await > 0);
-    assert!(check_finality.hits_async().await > 0);
+    assert!(loadwallet.calls_async().await > 0);
+    assert!(getaddressesbylabel.calls_async().await > 0);
+    assert!(getnewaddress.calls_async().await > 0);
+    assert!(estimate_smart_fee.calls_async().await > 0);
+    assert!(get_mempool_info.calls_async().await > 0);
+    assert!(create_blob.calls_async().await > 0);
+    assert!(check_finality.calls_async().await > 0);
 
     Ok(())
 }
@@ -248,27 +244,23 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
         .await;
 
     let server_url = server.base_url();
-    let tester = TesterBuilder::default()
-        .settlement_layer(SettlementLayer::Gateway)
-        .block_time(Duration::from_millis(50))
-        .config_overrides(move |config| {
-            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
-            config.batcher_config.batch_timeout = Duration::from_millis(100);
-            config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
-            config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
-            config.batcher_config.bitcoin_da_rpc_password =
-                Some(SecretString::new("password".into()));
-            config.batcher_config.bitcoin_da_poda_url = server_url.clone();
-            config.batcher_config.bitcoin_da_wallet_name = "zksync-os".into();
-            config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
-            config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
-            config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
-            config.batcher_config.bitcoin_da_finality_mode = BitcoinDaFinalityMode::Confirmations;
-            config.batcher_config.bitcoin_da_finality_confirmations = 5;
-            config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
-        })
-        .build()
-        .await?;
+    let env = NEXT_TO_GATEWAY.environment().await?;
+    let mut config = env.default_config().await?;
+    config.sequencer_config.block_time = Duration::from_millis(50);
+    config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+    config.batcher_config.batch_timeout = Duration::from_millis(100);
+    config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
+    config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
+    config.batcher_config.bitcoin_da_rpc_password = Some(SecretString::new("password".into()));
+    config.batcher_config.bitcoin_da_poda_url = server_url;
+    config.batcher_config.bitcoin_da_wallet_name = "zksync-os".into();
+    config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
+    config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
+    config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
+    config.batcher_config.bitcoin_da_finality_mode = BitcoinDaFinalityMode::Confirmations;
+    config.batcher_config.bitcoin_da_finality_confirmations = 5;
+    config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
+    let tester = env.launch(config).await?;
 
     let from = tester.l2_wallet.default_signer().address();
     tester
@@ -285,9 +277,9 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if create_blob.hits_async().await > 0
-            && get_blob_data.hits_async().await > 0
-            && get_block_count.hits_async().await > 0
+        if create_blob.calls_async().await > 0
+            && get_blob_data.calls_async().await > 0
+            && get_block_count.calls_async().await > 0
         {
             break;
         }
@@ -297,14 +289,14 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert!(loadwallet.hits_async().await > 0);
-    assert!(getaddressesbylabel.hits_async().await > 0);
-    assert!(getnewaddress.hits_async().await > 0);
-    assert!(estimate_smart_fee.hits_async().await > 0);
-    assert!(get_mempool_info.hits_async().await > 0);
-    assert!(create_blob.hits_async().await > 0);
-    assert!(get_blob_data.hits_async().await > 0);
-    assert!(get_block_count.hits_async().await > 0);
+    assert!(loadwallet.calls_async().await > 0);
+    assert!(getaddressesbylabel.calls_async().await > 0);
+    assert!(getnewaddress.calls_async().await > 0);
+    assert!(estimate_smart_fee.calls_async().await > 0);
+    assert!(get_mempool_info.calls_async().await > 0);
+    assert!(create_blob.calls_async().await > 0);
+    assert!(get_blob_data.calls_async().await > 0);
+    assert!(get_block_count.calls_async().await > 0);
 
     Ok(())
 }

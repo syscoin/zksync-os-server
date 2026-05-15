@@ -2835,8 +2835,8 @@ checksum = "2dee39a0ee5b4095224a0cfc6bf4cc1baf0f9624b96b367e53b66d974e51d953"
 
 [[package]]
 name = "bitcoin_da_client"
-version = "0.1.11"
-source = "git+https://github.com/syscoin/bitcoin_da_client.git?tag=v0.1.11#45a23c6b93f3db3557d8b0e8eca434c7dbf281d9"
+version = "0.1.12"
+source = "git+https://github.com/syscoin/bitcoin_da_client.git?tag=v0.1.12#af8f31444305c27c5502675df58fe4e0f12819d3"
 dependencies = [
  "async-trait",
  "hex",
@@ -10717,7 +10717,7 @@ version = "13.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c281a1f11d3bcb8c0bba1199ed6bcb001d1aeb3d4fb366819e14f88723989a4e"
 dependencies = [
- "alloy-eips",
+ "alloy-eips 1.8.3",
  "revm-bytecode 10.0.0",
  "revm-database-interface 11.0.1",
  "revm-primitives 23.0.0",
@@ -10884,7 +10884,6 @@ dependencies = [
  "ark-serialize 0.5.0",
  "arrayref",
  "aurora-engine-modexp",
- "blst",
  "c-kzg",
  "cfg-if",
  "k256",
@@ -12722,6 +12721,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d050e60b33d41c19108b32cea32164033a9013fe3b46cbd4457559bfbf77afaa"
 dependencies = [
  "num_cpus",
+]
+
+[[package]]
+name = "tikv-jemalloc-ctl"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "661f1f6a57b3a36dc9174a2c10f19513b4866816e13425d3e418b11cc37bc24c"
+dependencies = [
+ "libc",
+ "paste",
+ "tikv-jemalloc-sys",
 ]
 
 [[package]]
@@ -15080,6 +15090,7 @@ dependencies = [
  "zksync_os_server",
  "zksync_os_state_full_diffs",
  "zksync_os_status_server",
+ "zksync_os_tx_validators",
  "zksync_os_types",
  "zksync_os_verify_storage_proof",
 ]
@@ -15342,6 +15353,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tikv-jemalloc-ctl",
  "tokio",
  "tokio-metrics",
  "tracing",
@@ -15538,6 +15550,7 @@ dependencies = [
  "zksync_os_rpc_api",
  "zksync_os_storage",
  "zksync_os_storage_api",
+ "zksync_os_tx_validators",
  "zksync_os_types",
 ]
 
@@ -15693,6 +15706,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "vise",
  "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
  "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
@@ -15842,7 +15856,17 @@ name = "zksync_os_tx_validators"
 version = "0.20.2"
 dependencies = [
  "alloy 1.8.3",
+ "anyhow",
+ "httpmock",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
+ "url",
+ "vise",
  "zksync_os_evm_errors",
  "zksync_os_interface",
 ]

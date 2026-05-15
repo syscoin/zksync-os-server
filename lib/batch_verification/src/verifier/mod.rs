@@ -281,16 +281,20 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             ))
         })?;
 
+        let mut availability_checks = Vec::new();
         if has_batch_da {
-            for (idx, version_hash) in commit_data.operator_da_input.chunks_exact(32).enumerate() {
-                let version_hash = alloy::hex::encode(version_hash);
-                Self::verify_syscoin_blob_available(
-                    &client,
-                    &version_hash,
-                    &format!("batch DA blob {idx}"),
-                )
-                .await?;
-            }
+            availability_checks.extend(
+                commit_data
+                    .operator_da_input
+                    .chunks_exact(32)
+                    .enumerate()
+                    .map(|(idx, version_hash)| {
+                        (
+                            alloy::hex::encode(version_hash),
+                            format!("batch DA blob {idx}"),
+                        )
+                    }),
+            );
         }
 
         if has_edge_da_refs {
@@ -303,44 +307,55 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             for edge_ref in edge_refs {
                 for (idx, version_hash) in edge_ref.blob_version_hashes.chunks_exact(32).enumerate()
                 {
-                    let version_hash = alloy::hex::encode(version_hash);
-                    Self::verify_syscoin_blob_available(
-                        &client,
-                        &version_hash,
-                        &format!(
+                    availability_checks.push((
+                        alloy::hex::encode(version_hash),
+                        format!(
                             "edge DA ref chain {}, batch {}, blob {}",
                             edge_ref.edge_chain_id, edge_ref.edge_batch_number, idx
                         ),
-                    )
-                    .await?;
+                    ));
                 }
             }
         }
+        Self::verify_syscoin_blobs_available(&client, &availability_checks).await?;
 
         Ok(())
     }
 
     // SYSCOIN
-    async fn verify_syscoin_blob_available(
+    async fn verify_syscoin_blobs_available(
         client: &SyscoinClient,
-        version_hash: &str,
-        context: &str,
+        availability_checks: &[(String, String)],
     ) -> Result<(), BatchVerificationError> {
-        let exists = client.blob_exists(version_hash).await.map_err(|err| {
-            BatchVerificationError::SyscoinDaVerificationFailed(format!(
-                "failed to check {context} ({version_hash}) availability: {err}"
-            ))
-        })?;
-        if !exists {
-            return Err(BatchVerificationError::SyscoinDaVerificationFailed(
-                format!("{context} ({version_hash}) is not retrievable"),
-            ));
+        for chunk in availability_checks.chunks(SYSCOIN_DA_MAX_BLOBS_PER_BATCH) {
+            let version_hashes = chunk.iter().map(|(version_hash, _)| version_hash);
+            let existence = client.blobs_exist(version_hashes).await.map_err(|err| {
+                BatchVerificationError::SyscoinDaVerificationFailed(format!(
+                    "failed to check Syscoin DA availability: {err}"
+                ))
+            })?;
+            if existence.len() != chunk.len() {
+                return Err(BatchVerificationError::SyscoinDaVerificationFailed(
+                    format!(
+                        "Syscoin DA availability response length mismatch: requested {}, got {}",
+                        chunk.len(),
+                        existence.len()
+                    ),
+                ));
+            }
+            for ((version_hash, context), exists) in chunk.iter().zip(existence) {
+                if !exists {
+                    return Err(BatchVerificationError::SyscoinDaVerificationFailed(
+                        format!("{context} ({version_hash}) is not retrievable"),
+                    ));
+                }
+                tracing::info!(
+                    version_hash,
+                    context,
+                    "Syscoin DA blob retrievable before batch signing"
+                );
+            }
         }
-        tracing::info!(
-            version_hash,
-            context,
-            "Syscoin DA blob retrievable before batch signing"
-        );
         Ok(())
     }
 

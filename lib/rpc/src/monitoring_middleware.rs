@@ -162,6 +162,8 @@ fn is_heavy_rpc_method(method: &str) -> bool {
             | "eth_estimateGas"
             | "eth_feeHistory"
             | "eth_getBlockReceipts"
+            // SYSCOIN: eth_simulateV1 can execute many VM blocks, so gate it with other heavy RPCs.
+            | "eth_simulateV1"
             | "eth_getFilterChanges"
             | "eth_getFilterLogs"
             | "eth_getLogs"
