@@ -168,9 +168,7 @@ index e36a8a8c..f33eb204 100644
 +}
 +
 +fn blob_data_id(data: &[u8]) -> [u8; 32] {
-+    let mut hasher = Keccak256::new();
-+    hasher.update(data);
-+    hasher.finalize()
++    crypto::blake2s::Blake2s256::digest(data)
  }
 
  fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
@@ -437,7 +435,6 @@ index 47324a1f..6a5650c2 100644
  use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::KZGCommitmentAndProof;
  use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::BLOB_COMMITMENT_AND_PROOF_QUERY_ID;
  use basic_system::system_functions::point_evaluation::versioned_hash_for_kzg;
-+use crypto::sha3::Keccak256;
  use crypto::MiniDigest;
  use oracle_provider::OracleQueryProcessor;
  use risc_v_simulator::abstractions::memory::MemorySource;
@@ -466,8 +463,7 @@ index 47324a1f..6a5650c2 100644
 -
 -    let mut hasher = crypto::blake2s::Blake2s256::new();
 -    hasher.update(versioned_hash_for_kzg(commitment.as_slice()).as_slice());
-+    let mut hasher = Keccak256::new();
-     hasher.update(data);
+-    hasher.update(data);
 -    let mut challenge_point = hasher.finalize();
 -    // truncate hash to 128 bits
 -    // NOTE: it is safe to draw a random scalar at max 128 bits because of the schwartz zippel lemma
@@ -478,7 +474,7 @@ index 47324a1f..6a5650c2 100644
 -        .compute_kzg_proof(&blob, &c_kzg::Bytes32::new(challenge_point))
 -        .unwrap();
 -    let proof = p.0;
-+    let blob_data_id: [u8; 32] = hasher.finalize();
++    let blob_data_id = crypto::blake2s::Blake2s256::digest(data);
 
 -    KZGCommitmentAndProof {
 -        commitment: commitment.to_bytes().into_inner(),
