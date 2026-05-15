@@ -10,7 +10,8 @@ use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
 use std::time::Duration;
 
-const L2_BRIDGEHUB_ADDRESS: Address = address!("0x0000000000000000000000000000000000010002");
+/// Standard L2 bridgehub address — present at the same well-known address on every Gateway.
+pub const L2_BRIDGEHUB_ADDRESS: Address = address!("0x0000000000000000000000000000000000010002");
 
 #[derive(Clone, Debug)]
 pub struct BatchVerificationSLConfig {
@@ -61,9 +62,11 @@ struct BatchFinality {
 impl L1State {
     /// Fetches L1 ecosystem contracts along with batch finality status as of latest block.
     ///
-    /// `gateway_provider` must be `Some` when the chain is settling on the Gateway and `None`
-    /// when settling on L1. An error is returned if the chain is found to be on the Gateway but
-    /// no provider was supplied.
+    /// `gateway_provider` must be `Some` when the chain is currently settling on the Gateway
+    /// (an error is returned if missing). It may also be passed when the chain is currently
+    /// settling on L1 but has historical Gateway intervals — in that case the Gateway diamond
+    /// proxy is resolved from it so historical batches committed on the Gateway can still be
+    /// looked up through [`SettlementLayerIntervals`].
     pub async fn fetch(
         l1_provider: DynProvider,
         gateway_provider: Option<DynProvider>,
@@ -81,17 +84,12 @@ impl L1State {
         let settlement_layer_address = diamond_proxy_l1
             .get_settlement_layer(BlockId::latest())
             .await?;
-        // SYSCOIN: keep the optional Gateway RPC available after settlement mode detection. Even
-        // when the chain currently settles on L1, historical Gateway intervals may need it for
-        // startup catch-up after an L1 -> Gateway -> L1 cycle.
-        let configured_gateway_provider = gateway_provider.clone();
-
         let (sl_chain_id, bridgehub_sl) = if settlement_layer_address.is_zero() {
             // Settling on L1: the settlement layer is L1 itself.
             (l1_chain_id, bridgehub_l1.clone())
         } else {
             // Settling on Gateway: require a dedicated Gateway RPC provider.
-            let gateway_provider = gateway_provider.with_context(|| {
+            let gateway_provider = gateway_provider.as_ref().with_context(|| {
                 format!(
                     "chain is settling on Gateway (settlement layer: {settlement_layer_address}) \
                      but no gateway RPC URL is configured"
@@ -102,7 +100,8 @@ impl L1State {
                 sl_chain_id != l1_chain_id,
                 "settling on Gateway but SL chain ID is identical to L1 chain ID"
             );
-            let bridgehub_sl = Bridgehub::new(L2_BRIDGEHUB_ADDRESS, gateway_provider, l2_chain_id);
+            let bridgehub_sl =
+                Bridgehub::new(L2_BRIDGEHUB_ADDRESS, gateway_provider.clone(), l2_chain_id);
             (sl_chain_id, bridgehub_sl)
         };
 
@@ -157,49 +156,17 @@ impl L1State {
         };
 
         let chain_asset_handler = bridgehub_l1.chain_asset_handler_address().await?;
-        let diamond_proxy_gw = if sl_chain_id == l1_chain_id {
-            None
-        } else {
-            Some((sl_chain_id, diamond_proxy_sl.clone()))
-        };
-        let mut settlement_layer_intervals = SettlementLayerIntervals::discover(
+        let settlement_layer_intervals = SettlementLayerIntervals::discover(
             chain_asset_handler,
             diamond_proxy_l1.clone(),
-            diamond_proxy_gw,
+            gateway_provider,
             l2_chain_id,
         )
         .await?;
-        // SYSCOIN: if current settlement is back on L1, do not discard a configured Gateway RPC
-        // when discovered history still contains Gateway-settled batches. Keep this lazy so a
-        // pre-migration L1 node with an optional Gateway URL does not have to query Gateway at all.
-        if sl_chain_id == l1_chain_id {
-            let historical_gateway_chain_ids = settlement_layer_intervals.gateway_chain_ids().fold(
-                Vec::<u64>::new(),
-                |mut chain_ids, chain_id| {
-                    if !chain_ids.contains(&chain_id) {
-                        chain_ids.push(chain_id);
-                    }
-                    chain_ids
-                },
-            );
-            if !historical_gateway_chain_ids.is_empty() {
-                anyhow::ensure!(
-                    historical_gateway_chain_ids.len() == 1,
-                    "historical Gateway intervals reference multiple chain IDs: {historical_gateway_chain_ids:?}"
-                );
-
-                if let Some(gateway_provider) = configured_gateway_provider {
-                    settlement_layer_intervals.set_lazy_gateway_provider(
-                        historical_gateway_chain_ids[0],
-                        gateway_provider,
-                        l2_chain_id,
-                    );
-                }
-            }
-        }
         tracing::info!(
-            "discovered {} settlement layer intervals",
-            settlement_layer_intervals.intervals().len()
+            "discovered {} settlement layer intervals: {:?}",
+            settlement_layer_intervals.intervals().len(),
+            settlement_layer_intervals.intervals(),
         );
 
         Ok(Self {
