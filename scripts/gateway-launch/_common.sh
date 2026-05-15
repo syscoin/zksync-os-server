@@ -288,6 +288,17 @@ gl_build_zkstack_cli_release() {
   (cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && cargo +"${toolchain}" build --release --locked -Znext-lockfile-bump -p zkstack)
 }
 
+gl_ensure_zkstack_cli_release_current() {
+  gl_require ZKSYNC_ERA_PATH
+  local zkstack_bin zkstack_gateway_migration_rs
+  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
+  zkstack_gateway_migration_rs="${ZKSYNC_ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
+  if [ ! -x "${zkstack_bin}" ] || [ "${zkstack_gateway_migration_rs}" -nt "${zkstack_bin}" ]; then
+    echo "gateway-launch: building zkstack CLI"
+    gl_build_zkstack_cli_release
+  fi
+}
+
 gl_prepare_zksync_era_repo() {
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_ZKSTACK_CLI_SHA
