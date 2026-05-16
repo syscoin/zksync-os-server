@@ -152,14 +152,86 @@ implementation = "TestnetERC20Token.sol"
 mint = 1000000000000000000
 EOF
 
-export DEPLOYER_PRIVATE_KEY="$(python3 - <<'PY'
+read_deployer_private_key() {
+  python3 - <<'PY'
 import os, yaml
 from pathlib import Path
 pk = yaml.safe_load((Path(os.environ["GATEWAY_DIR"]) / "configs" / "wallets.yaml").read_text())["deployer"]["private_key"]
 print(format(pk, "x").zfill(64) if isinstance(pk, int) else str(pk).lower().removeprefix("0x").zfill(64))
 PY
-)"
-export DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
+}
+
+DEPLOYER_FORGE_WALLET_ARGS=()
+DEPLOYER_CAST_WALLET_ARGS=()
+
+prepare_deployer_wallet_args() {
+  local deployer_signer password_file deployer_private_key
+  if [ -z "${DEPLOYER_SIGNER:-}" ]; then
+    if gl_l1_network_requires_external_signer; then
+      DEPLOYER_SIGNER="${FUNDER_SIGNER:-account}"
+    else
+      DEPLOYER_SIGNER="private-key"
+    fi
+  fi
+  deployer_signer="$(gl_to_lower "${DEPLOYER_SIGNER}")"
+
+  DEPLOYER_FORGE_WALLET_ARGS=()
+  DEPLOYER_CAST_WALLET_ARGS=()
+
+  case "${deployer_signer}" in
+  private-key)
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      gl_die "DEPLOYER_SIGNER=private-key is not allowed on ${L1_NETWORK}; import the deployer into a Foundry account/keystore, use hardware/KMS signing, or set GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true for an explicit unsafe override"
+    fi
+    deployer_private_key="$(read_deployer_private_key)"
+    DEPLOYER_FORGE_WALLET_ARGS+=(--private-key "${deployer_private_key}")
+    DEPLOYER_CAST_WALLET_ARGS+=(--private-key "${deployer_private_key}")
+    ;;
+  account)
+    local account_name="${DEPLOYER_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
+    [ -n "${account_name}" ] || gl_die "DEPLOYER_ACCOUNT_NAME must not be empty"
+    DEPLOYER_FORGE_WALLET_ARGS+=(--account "${account_name}")
+    DEPLOYER_CAST_WALLET_ARGS+=(--account "${account_name}")
+    ;;
+  keystore)
+    local keystore_path="${DEPLOYER_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
+    [ -n "${keystore_path}" ] || gl_die "DEPLOYER_KEYSTORE is required when DEPLOYER_SIGNER=keystore"
+    [ -f "${keystore_path}" ] || gl_die "deployer keystore does not exist: ${keystore_path}"
+    DEPLOYER_FORGE_WALLET_ARGS+=(--keystore "${keystore_path}")
+    DEPLOYER_CAST_WALLET_ARGS+=(--keystore "${keystore_path}")
+    ;;
+  ledger)
+    DEPLOYER_FORGE_WALLET_ARGS+=(--ledger)
+    DEPLOYER_CAST_WALLET_ARGS+=(--ledger)
+    ;;
+  trezor)
+    DEPLOYER_FORGE_WALLET_ARGS+=(--trezor)
+    DEPLOYER_CAST_WALLET_ARGS+=(--trezor)
+    ;;
+  aws)
+    DEPLOYER_FORGE_WALLET_ARGS+=(--aws)
+    DEPLOYER_CAST_WALLET_ARGS+=(--aws)
+    ;;
+  gcp)
+    DEPLOYER_FORGE_WALLET_ARGS+=(--gcp)
+    DEPLOYER_CAST_WALLET_ARGS+=(--gcp)
+    ;;
+  *)
+    gl_die "unsupported DEPLOYER_SIGNER=${DEPLOYER_SIGNER}; expected account, keystore, ledger, trezor, aws, gcp, or private-key"
+    ;;
+  esac
+
+  password_file="${DEPLOYER_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+  if [ -n "${password_file}" ]; then
+    [ -f "${password_file}" ] || gl_die "deployer password file does not exist: ${password_file}"
+    DEPLOYER_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
+    DEPLOYER_CAST_WALLET_ARGS+=(--password-file "${password_file}")
+  fi
+}
+
+unset DEPLOYER_PRIVATE_KEY
+prepare_deployer_wallet_args
+export DEPLOYER_ADDRESS="$(cast wallet address "${DEPLOYER_CAST_WALLET_ARGS[@]}")"
 
 wait_for_deployer_nonce_sync() {
   local timeout_s poll_s start now latest pending
@@ -241,7 +313,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
-          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast \
           --slow 2>&1 | tee "${tmp_erc20_log}"
       else
@@ -250,7 +322,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
-          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast 2>&1 | tee "${tmp_erc20_log}"
       fi
       erc20_ec="${PIPESTATUS[0]}"
@@ -260,7 +332,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
-          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast \
           --slow 2>&1 | tee "${tmp_erc20_log}"
       else
@@ -268,7 +340,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
-          --private-key "${DEPLOYER_PRIVATE_KEY}" \
+          "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast 2>&1 | tee "${tmp_erc20_log}"
       fi
       erc20_ec="${PIPESTATUS[0]}"
@@ -408,7 +480,7 @@ PY
       --legacy \
       --ffi \
       --rpc-url "${L1_RPC_URL}" \
-      --private-key "${DEPLOYER_PRIVATE_KEY}" \
+      "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
       --broadcast \
       --resume
   )
