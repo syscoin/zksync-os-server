@@ -235,6 +235,14 @@ cargo_toml.write_text(text, encoding="utf-8")
 PY
 }
 
+clear_multivm_build_script_cache() {
+  local target_dir="$1"
+  # SYSCOIN: prepare_run_workspace recreates lib/multivm/apps, but Cargo may
+  # reuse an old build-script output that points include_bytes! at deleted files.
+  rm -rf "${target_dir}"/debug/build/zksync_os_multivm-* \
+    "${target_dir}"/release/build/zksync_os_multivm-*
+}
+
 
 if protocol_uses_dev_patch; then
   DEV_TAG="$(extract_dev_tag)"
@@ -242,6 +250,7 @@ if protocol_uses_dev_patch; then
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"
   TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
   prepare_run_workspace "${RUN_PATH}" "${DEV_PATH}" "${DEV_TAG}"
+  clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
 else
