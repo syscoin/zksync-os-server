@@ -312,14 +312,72 @@ gl_build_zkstack_cli_release() {
   toolchain="${GATEWAY_ZKSTACK_CARGO_TOOLCHAIN:-$(gl_detect_gateway_zkstack_nightly)}"
   [ -n "${toolchain}" ] || gl_die "no nightly Rust toolchain found; install one with rustup"
   (cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && cargo +"${toolchain}" build --release --locked -Znext-lockfile-bump -p zkstack)
+  gl_write_zkstack_cli_release_stamp
+}
+
+gl_zkstack_cli_release_stamp_file() {
+  gl_require ZKSYNC_ERA_PATH
+  printf '%s\n' "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/.zkstack-syscoin-build-stamp"
+}
+
+gl_zkstack_cli_release_fingerprint() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require ZKSYNC_OS_SERVER_PATH
+  python3 - "${ZKSYNC_ERA_PATH}" "${ZKSYNC_OS_SERVER_PATH}" "${REQUIRED_ZKSTACK_CLI_SHA:-}" <<'PY'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+era = Path(sys.argv[1])
+server = Path(sys.argv[2])
+required_sha = sys.argv[3]
+
+def git(args, cwd=era):
+    return subprocess.check_output(["git", "-C", str(cwd), *args])
+
+payload = {
+    "required_zkstack_cli_sha": required_sha,
+    "era_head": git(["rev-parse", "HEAD"]).decode().strip(),
+    # Include patched tracked changes because the Syscoin patch is applied on top
+    # of the pinned zkstack revision before building the release binary.
+    "zkstack_cli_head_diff_sha256": hashlib.sha256(
+        git(["diff", "HEAD", "--binary", "--", "zkstack_cli"])
+    ).hexdigest(),
+}
+
+for rel in (
+    "scripts/apply-zksync-era-syscoin-patch.sh",
+    "scripts/patches/zksync-era-syscoin.patch",
+    "scripts/patches/era-contracts-syscoin.patch",
+):
+    path = server / rel
+    payload[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+
+print(hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest())
+PY
+}
+
+gl_write_zkstack_cli_release_stamp() {
+  local stamp_file fingerprint
+  stamp_file="$(gl_zkstack_cli_release_stamp_file)"
+  fingerprint="$(gl_zkstack_cli_release_fingerprint)"
+  mkdir -p "$(dirname "${stamp_file}")"
+  printf '%s\n' "${fingerprint}" >"${stamp_file}"
 }
 
 gl_ensure_zkstack_cli_release_current() {
   gl_require ZKSYNC_ERA_PATH
-  local zkstack_bin zkstack_gateway_migration_rs
+  local zkstack_bin stamp_file expected_fingerprint actual_fingerprint
   zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
-  zkstack_gateway_migration_rs="${ZKSYNC_ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway_calldata.rs"
-  if [ ! -x "${zkstack_bin}" ] || [ "${zkstack_gateway_migration_rs}" -nt "${zkstack_bin}" ]; then
+  stamp_file="$(gl_zkstack_cli_release_stamp_file)"
+  expected_fingerprint="$(gl_zkstack_cli_release_fingerprint)"
+  actual_fingerprint=""
+  if [ -f "${stamp_file}" ]; then
+    actual_fingerprint="$(tr -d '[:space:]' <"${stamp_file}")"
+  fi
+  if [ ! -x "${zkstack_bin}" ] || [ "${actual_fingerprint}" != "${expected_fingerprint}" ]; then
     echo "gateway-launch: building zkstack CLI"
     gl_build_zkstack_cli_release
   fi
@@ -1543,6 +1601,8 @@ state["current_checkpoint"] = checkpoint_id
 state["updated_at"] = now
 if status in {"failed", "blocked"}:
     state["last_error"] = {"checkpoint": checkpoint_id, "at": now, "message": detail}
+elif (state.get("last_error") or {}).get("checkpoint") == checkpoint_id:
+    state["last_error"] = None
 state_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
 PY
 }
@@ -1581,10 +1641,11 @@ gl_checkpoint_run() {
   if "$@"; then
     gl_checkpoint_mark_passed "${checkpoint_id}"
     return 0
+  else
+    local rc=$?
+    gl_checkpoint_mark_blocked "${checkpoint_id}" "command failed with exit code ${rc}"
+    return "${rc}"
   fi
-  local rc=$?
-  gl_checkpoint_mark_blocked "${checkpoint_id}" "command failed with exit code ${rc}"
-  return "${rc}"
 }
 
 gl_checkpoint_mark_repaired() {
@@ -1654,7 +1715,7 @@ gl_probe_gateway_settlement_ready() {
   gl_require GATEWAY_DIR
   local gateway_chain_name
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
-  [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/general.yaml" ]
+  [ -f "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" ]
 }
 
 gl_probe_os_configs_gateway_ready() {
