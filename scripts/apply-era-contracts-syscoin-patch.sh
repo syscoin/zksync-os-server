@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 /absolute/path/to/era-contracts" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: $0 /absolute/path/to/era-contracts [--zkstack-only]" >&2
   exit 1
 fi
 
 CONTRACTS_PATH="$1"
+MODE="${2:-all}"
+if [[ "${MODE}" != "all" && "${MODE}" != "--zkstack-only" ]]; then
+  echo "Usage: $0 /absolute/path/to/era-contracts [--zkstack-only]" >&2
+  exit 1
+fi
 SUPERPROJECT_PATH="$(git -C "${CONTRACTS_PATH}" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
 ERA_ROOT="${SUPERPROJECT_PATH:-${CONTRACTS_PATH}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,24 +29,6 @@ if [[ ! -f "${PATCH_FILE}" ]]; then
 fi
 if [[ ! -f "${DA_LIMITS_PATCH_FILE}" ]]; then
   echo "error: patch file not found: ${DA_LIMITS_PATCH_FILE}" >&2
-  exit 1
-fi
-
-# Refresh nested submodule URLs from .gitmodules and update recursively
-# after checking out the target era-contracts commit.
-NESTED_PATH="lib/@matterlabs/zksync-contracts"
-git -C "${CONTRACTS_PATH}" submodule sync --recursive
-git -C "${CONTRACTS_PATH}" submodule update --init --recursive
-
-# Enforce exact nested SHA pinned by the checked-out era-contracts commit.
-EXPECTED_NESTED_SHA="$(git -C "${CONTRACTS_PATH}" ls-tree HEAD "${NESTED_PATH}" | awk '{print $3}')"
-if [[ -z "${EXPECTED_NESTED_SHA}" ]]; then
-  echo "error: could not resolve expected nested submodule sha for ${NESTED_PATH}" >&2
-  exit 1
-fi
-ACTUAL_NESTED_SHA="$(git -C "${CONTRACTS_PATH}/${NESTED_PATH}" rev-parse HEAD)"
-if [[ "${ACTUAL_NESTED_SHA}" != "${EXPECTED_NESTED_SHA}" ]]; then
-  echo "error: nested submodule sha mismatch expected=${EXPECTED_NESTED_SHA} actual=${ACTUAL_NESTED_SHA}" >&2
   exit 1
 fi
 
@@ -106,6 +93,26 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 }
 
+check_syscoin_verifier_version_pin() {
+  if syscoin_verifier_version_pinned; then
+    return 0
+  fi
+
+  python3 - "$(deploy_ctm_path)" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = "uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 6;"
+new = "uint32 constant DEFAULT_ZKSYNC_OS_VERIFIER_VERSION = 7;"
+if new in text:
+    raise SystemExit(0)
+if old not in text:
+    raise SystemExit("unable to update DEFAULT_ZKSYNC_OS_VERIFIER_VERSION to 7")
+PY
+}
+
 check_base_contracts_patch() {
   git -C "${CONTRACTS_PATH}" apply --check --recount --exclude='zkstack_cli/**' "${PATCH_FILE}"
 }
@@ -150,43 +157,104 @@ ensure_contracts_were_clean_for_partial_patch() {
   fi
 }
 
-initial_contracts_status="$(git -C "${CONTRACTS_PATH}" status --porcelain)"
-changed=false
-contracts_changed=false
+if [[ "${MODE}" == "--zkstack-only" ]]; then
+  if syscoin_gateway_da_migration_patched; then
+    echo "zkstack Gateway migration patch appears already applied; skipping."
+    exit 0
+  fi
 
-if ! base_patch_core_applied; then
-  ensure_contracts_clean_for_base_patch
-  echo "Checking base era-contracts Syscoin patch applicability..."
-  check_base_contracts_patch
-
-  echo "Applying base era-contracts Syscoin patch..."
-  apply_base_contracts_patch
-  changed=true
-  contracts_changed=true
-fi
-
-if ! syscoin_verifier_version_pinned; then
-  ensure_contracts_were_clean_for_partial_patch
-  pin_syscoin_verifier_version
-  changed=true
-  contracts_changed=true
-fi
-
-if ! syscoin_gateway_da_migration_patched; then
   ensure_zkstack_clean_for_patch
   echo "Checking zkstack Gateway migration patch applicability..."
   check_base_zkstack_patch
 
   echo "Applying zkstack Gateway migration patch..."
   apply_base_zkstack_patch
-  changed=true
+  echo "Patch applied successfully."
+  exit 0
 fi
 
+# Refresh nested submodule URLs from .gitmodules and update recursively
+# after checking out the target era-contracts commit.
+NESTED_PATH="lib/@matterlabs/zksync-contracts"
+git -C "${CONTRACTS_PATH}" submodule sync --recursive
+git -C "${CONTRACTS_PATH}" submodule update --init --recursive
+
+# Enforce exact nested SHA pinned by the checked-out era-contracts commit.
+EXPECTED_NESTED_SHA="$(git -C "${CONTRACTS_PATH}" ls-tree HEAD "${NESTED_PATH}" | awk '{print $3}')"
+if [[ -z "${EXPECTED_NESTED_SHA}" ]]; then
+  echo "error: could not resolve expected nested submodule sha for ${NESTED_PATH}" >&2
+  exit 1
+fi
+ACTUAL_NESTED_SHA="$(git -C "${CONTRACTS_PATH}/${NESTED_PATH}" rev-parse HEAD)"
+if [[ "${ACTUAL_NESTED_SHA}" != "${EXPECTED_NESTED_SHA}" ]]; then
+  echo "error: nested submodule sha mismatch expected=${EXPECTED_NESTED_SHA} actual=${ACTUAL_NESTED_SHA}" >&2
+  exit 1
+fi
+
+initial_contracts_status="$(git -C "${CONTRACTS_PATH}" status --porcelain)"
+changed=false
+contracts_changed=false
+need_base_contracts_patch=false
+need_verifier_pin=false
+need_zkstack_patch=false
+need_da_limits_patch=false
+
+if ! base_patch_core_applied; then
+  need_base_contracts_patch=true
+fi
+if ! syscoin_verifier_version_pinned; then
+  need_verifier_pin=true
+fi
+if ! syscoin_gateway_da_migration_patched; then
+  need_zkstack_patch=true
+fi
 if ! da_limits_patch_applied; then
+  need_da_limits_patch=true
+fi
+
+if [[ "${need_base_contracts_patch}" == true ]]; then
+  ensure_contracts_clean_for_base_patch
+  echo "Checking base era-contracts Syscoin patch applicability..."
+  check_base_contracts_patch
+fi
+
+if [[ "${need_verifier_pin}" == true ]]; then
+  ensure_contracts_were_clean_for_partial_patch
+  check_syscoin_verifier_version_pin
+fi
+
+if [[ "${need_zkstack_patch}" == true ]]; then
+  ensure_zkstack_clean_for_patch
+  echo "Checking zkstack Gateway migration patch applicability..."
+  check_base_zkstack_patch
+fi
+
+if [[ "${need_da_limits_patch}" == true ]]; then
   ensure_contracts_were_clean_for_partial_patch
   echo "Checking Syscoin DA limits patch applicability..."
   git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
+fi
 
+if [[ "${need_base_contracts_patch}" == true ]]; then
+  echo "Applying base era-contracts Syscoin patch..."
+  apply_base_contracts_patch
+  changed=true
+  contracts_changed=true
+fi
+
+if [[ "${need_verifier_pin}" == true ]]; then
+  pin_syscoin_verifier_version
+  changed=true
+  contracts_changed=true
+fi
+
+if [[ "${need_zkstack_patch}" == true ]]; then
+  echo "Applying zkstack Gateway migration patch..."
+  apply_base_zkstack_patch
+  changed=true
+fi
+
+if [[ "${need_da_limits_patch}" == true ]]; then
   echo "Applying era-contracts Syscoin DA limits patch..."
   git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
   changed=true
