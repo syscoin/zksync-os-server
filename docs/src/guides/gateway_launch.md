@@ -26,9 +26,8 @@ cd /path/to/zksync-os-server
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.tanenbaum.io
 export PROVER_API_AUTH_PASSWORD=...
-export FUNDER_PRIVATE_KEY=0x...
-export EDGE_GATEWAY_GOVERNOR_SIGNER=account
-export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
+export FUNDER_SIGNER=account
+export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 tanenbaum --migrate-edge
 ```
 
@@ -38,13 +37,20 @@ Mainnet:
 export L1_RPC_URL=http://127.0.0.1:8545
 export GATEWAY_ARCHIVE_L1_RPC_URL=https://rpc.syscoin.org
 export PROVER_API_AUTH_PASSWORD=...
-export FUNDER_PRIVATE_KEY=0x...
-export EDGE_GATEWAY_GOVERNOR_SIGNER=account
-export EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor
+export FUNDER_SIGNER=account
+export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet --migrate-edge
 ```
 
-The governor signer is used only for Gateway migration repair transactions. Do not pass this key as a raw command-line argument. Import it into Foundry's keystore first with `cast wallet import governor --interactive`, or use `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore`, `ledger`, `trezor`, `aws`, or `gcp`.
+Do not pass production private keys as raw command-line arguments. Import the
+launch signer into Foundry's keystore first with
+`cast wallet import funder --interactive`, or use the `keystore`, `ledger`,
+`trezor`, `aws`, or `gcp` backend. On Tanenbaum/Mainnet, deployer and governor
+signing default to the same funder signer/account unless `DEPLOYER_*` or
+`EDGE_GATEWAY_GOVERNOR_*` overrides are set. `FUNDER_PRIVATE_KEY` and
+`DEPLOYER_SIGNER=private-key` are local/disposable-network fallbacks only; on
+Tanenbaum/Mainnet they are rejected unless
+`GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true` is set explicitly.
 The `--migrate-edge` flag is required for the normal full launch because it pauses deposits and finalizes the edge-chain migration to Gateway settlement. If omitted, the launcher stops after edge-chain initialization and can be resumed later with the same command plus `--migrate-edge`.
 
 Optional log override:
@@ -175,7 +181,11 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; defaults to `127.0.0.1` so public access should go through HTTPS/VPN/reverse proxy termination |
 | `GATEWAY_PROVER_API_DOMAIN` / `EDGE_PROVER_API_DOMAIN` | Hostnames for generated nginx prover API vhosts; defaults are `prover-gw.dev11.top` and `prover-zk.dev11.top` |
 | `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; password is required for generated configs |
-| `FUNDER_PRIVATE_KEY` | Required when wallets need top-ups |
+| `FUNDER_SIGNER` | Funder signer backend: `account` (default on Tanenbaum/Mainnet), `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
+| `FUNDER_ACCOUNT_NAME` | Foundry keystore account name when `FUNDER_SIGNER=account` (default `funder`) |
+| `FUNDER_KEYSTORE` | Keystore file path when `FUNDER_SIGNER=keystore` |
+| `FUNDER_PASSWORD_FILE` | Optional keystore password file passed to Cast without exposing the password in argv |
+| `FUNDER_PRIVATE_KEY` | Local/disposable-network fallback for `FUNDER_SIGNER=private-key`; rejected on Tanenbaum/Mainnet by default |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
@@ -187,10 +197,14 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
 | `EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR` | Optional override for DA validator used by edge migration repair on Gateway |
-| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Governor signer backend for Gateway migration repairs: `account` (default), `keystore`, `ledger`, `trezor`, `aws`, or `gcp` |
-| `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default `governor`) |
-| `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` |
-| `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv |
+| `DEPLOYER_SIGNER` | Optional L1 deployer signer override for direct Forge deployment/retry broadcasts; defaults to `FUNDER_SIGNER` on Tanenbaum/Mainnet and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
+| `DEPLOYER_ACCOUNT_NAME` | Foundry keystore account name when `DEPLOYER_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
+| `DEPLOYER_KEYSTORE` | Keystore file path when `DEPLOYER_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
+| `DEPLOYER_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |
+| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Optional governor signer override for Gateway migration repairs; defaults to `FUNDER_SIGNER` and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, or `gcp` |
+| `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
+| `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
+| `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |
 | `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
 
 ## Notes

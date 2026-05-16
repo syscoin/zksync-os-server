@@ -23,6 +23,17 @@ gl_to_lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
+gl_l1_network_requires_external_signer() {
+  case "$(gl_to_lower "${L1_NETWORK:-}")" in
+  tanenbaum | mainnet) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+gl_allow_insecure_private_key_argv() {
+  [ "$(gl_to_lower "${GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV:-false}")" = "true" ]
+}
+
 gl_validate_prover_mode() {
   local prover_mode_lc
   prover_mode_lc="$(gl_to_lower "${PROVER_MODE}")"
@@ -998,7 +1009,22 @@ gl_fund_wallets_yaml() {
     gl_require WALLETS_YAML_PATH
     WALLETS_YAML_PATHS="${WALLETS_YAML_PATH}"
   fi
-  export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+  if [ -z "${FUNDER_SIGNER:-}" ]; then
+    if gl_l1_network_requires_external_signer; then
+      FUNDER_SIGNER="account"
+    else
+      FUNDER_SIGNER="private-key"
+    fi
+  fi
+  if [ "$(gl_to_lower "${FUNDER_SIGNER}")" = "private-key" ]; then
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; import the funder into a Foundry account/keystore, use hardware/KMS signing, or set GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true for an explicit unsafe override"
+    fi
+    export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+  elif [ -n "${FUNDER_PRIVATE_KEY:-}" ] && gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+    gl_die "FUNDER_PRIVATE_KEY is not accepted on ${L1_NETWORK}; use FUNDER_SIGNER with account, keystore, hardware wallet, or KMS signing"
+  fi
+  export FUNDER_SIGNER
   export WALLETS_YAML_PATHS
   python3 - <<'PY'
 import os
@@ -1016,8 +1042,56 @@ for path in wallet_paths:
         raise SystemExit(f"missing wallets file {path}")
 
 rpc = os.environ["L1_RPC_URL"]
-pk = os.environ["FUNDER_PRIVATE_KEY"]
 l1_network = os.environ.get("L1_NETWORK", "").lower()
+funder_signer = os.environ.get("FUNDER_SIGNER", "private-key").lower()
+cast_env = os.environ.copy()
+cast_env.pop("FUNDER_PRIVATE_KEY", None)
+
+
+def env_nonempty(name, default=None):
+    value = os.environ.get(name, default)
+    if value is None or str(value).strip() == "":
+        raise SystemExit(f"{name} must not be empty")
+    return str(value)
+
+
+def funder_wallet_args():
+    if funder_signer == "private-key":
+        pk = env_nonempty("FUNDER_PRIVATE_KEY")
+        return ["--private-key", pk]
+    if funder_signer == "account":
+        args = ["--account", env_nonempty("FUNDER_ACCOUNT_NAME", "funder")]
+    elif funder_signer == "keystore":
+        keystore = env_nonempty("FUNDER_KEYSTORE")
+        if not Path(keystore).is_file():
+            raise SystemExit(f"FUNDER_KEYSTORE does not exist: {keystore}")
+        args = ["--keystore", keystore]
+    elif funder_signer == "ledger":
+        args = ["--ledger"]
+    elif funder_signer == "trezor":
+        args = ["--trezor"]
+    elif funder_signer == "aws":
+        args = ["--aws"]
+    elif funder_signer == "gcp":
+        args = ["--gcp"]
+    else:
+        raise SystemExit(
+            f"unsupported FUNDER_SIGNER={funder_signer}; expected account, keystore, ledger, trezor, aws, gcp, or private-key"
+        )
+
+    password_file = os.environ.get("FUNDER_PASSWORD_FILE", "")
+    if password_file:
+        if not Path(password_file).is_file():
+            raise SystemExit(f"FUNDER_PASSWORD_FILE does not exist: {password_file}")
+        args.extend(["--password-file", password_file])
+    return args
+
+
+funder_wallet_args = funder_wallet_args()
+
+
+def cast_check_output(args):
+    return subprocess.check_output(args, text=True, env=cast_env)
 
 
 def addr_hex(a):
@@ -1029,18 +1103,16 @@ def addr_hex(a):
 
 def wei_balance(address):
     return int(
-        subprocess.check_output(
+        cast_check_output(
             ["cast", "balance", address, "--block", "pending", "--rpc-url", rpc],
-            text=True,
         ).strip()
     )
 
 
 def wei_balance_latest(address):
     return int(
-        subprocess.check_output(
+        cast_check_output(
             ["cast", "balance", address, "--rpc-url", rpc],
-            text=True,
         ).strip()
     )
 
@@ -1098,15 +1170,11 @@ for wallet_path in wallet_paths:
 if not recipients:
     raise SystemExit("no fundable wallet entries found in selected wallet files")
 
-funder = subprocess.check_output(
-    ["cast", "wallet", "address", "--private-key", pk],
-    text=True,
-).strip()
+funder = cast_check_output(["cast", "wallet", "address", *funder_wallet_args]).strip()
 funder_balance = wei_balance(funder)
 starting_nonce = int(
-    subprocess.check_output(
+    cast_check_output(
         ["cast", "nonce", funder, "--block", "pending", "--rpc-url", rpc],
-        text=True,
     ).strip()
 )
 
@@ -1155,7 +1223,7 @@ if funder_balance < total_deficit:
 
 for index, (role, address, current, target, deficit) in enumerate(transfers):
     nonce = starting_nonce + index
-    result = subprocess.check_output(
+    result = cast_check_output(
         [
             "cast",
             "send",
@@ -1168,13 +1236,11 @@ for index, (role, address, current, target, deficit) in enumerate(transfers):
             rpc_timeout,
             "--timeout",
             send_timeout,
-            "--private-key",
-            pk,
+            *funder_wallet_args,
             "--nonce",
             str(nonce),
             "--async",
-        ],
-        text=True,
+        ]
     ).strip()
     print(
         f"funding wallet {role}: current={current} target={target} deficit={deficit} "

@@ -230,15 +230,24 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
 
 prepare_gateway_governor_forge_wallet_args() {
   GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
+  local governor_signer
 
   if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
     echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
     return 1
   fi
 
-  case "${EDGE_GATEWAY_GOVERNOR_SIGNER:-account}" in
+  if [ -n "${EDGE_GATEWAY_GOVERNOR_SIGNER:-}" ]; then
+    governor_signer="${EDGE_GATEWAY_GOVERNOR_SIGNER}"
+  elif gl_l1_network_requires_external_signer; then
+    governor_signer="${FUNDER_SIGNER:-account}"
+  else
+    governor_signer="account"
+  fi
+
+  case "${governor_signer}" in
   account)
-    local account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-governor}"
+    local account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
     [ -n "${account_name}" ] || {
       echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME must not be empty" >&2
       return 1
@@ -246,7 +255,11 @@ prepare_gateway_governor_forge_wallet_args() {
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--account "${account_name}")
     ;;
   keystore)
-    local keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:?EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore}"
+    local keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
+    [ -n "${keystore_path}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore" >&2
+      return 1
+    }
     [ -f "${keystore_path}" ] || {
       echo "gateway-launch: governor keystore does not exist: ${keystore_path}" >&2
       return 1
@@ -266,17 +279,18 @@ prepare_gateway_governor_forge_wallet_args() {
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--gcp)
     ;;
   *)
-    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${EDGE_GATEWAY_GOVERNOR_SIGNER}; expected account, keystore, ledger, trezor, aws, or gcp" >&2
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected account, keystore, ledger, trezor, aws, or gcp" >&2
     return 1
     ;;
   esac
 
-  if [ -n "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-}" ]; then
-    [ -f "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}" ] || {
-      echo "gateway-launch: governor password file does not exist: ${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}" >&2
+  local password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+  if [ -n "${password_file}" ]; then
+    [ -f "${password_file}" ] || {
+      echo "gateway-launch: governor password file does not exist: ${password_file}" >&2
       return 1
     }
-    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE}")
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
   fi
 }
 

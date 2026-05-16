@@ -42,6 +42,9 @@ Optional env:
   GATEWAY_LAUNCH_LOG           default ~/gateway-launch.log
   BITCOIN_DA_RPC_URL / BITCOIN_DA_RPC_USER / BITCOIN_DA_RPC_PASSWORD
   GATEWAY_FUND_WALLETS_PATHS   optional extra wallets.yaml list (colon-separated)
+  FUNDER_SIGNER                account|keystore|ledger|trezor|aws|gcp (default account)
+  DEPLOYER_SIGNER              optional override; defaults to FUNDER_SIGNER
+  EDGE_GATEWAY_GOVERNOR_SIGNER optional override; defaults to FUNDER_SIGNER
 
 Options:
   --l1 tanenbaum|mainnet
