@@ -244,6 +244,7 @@ prepare_gateway_governor_forge_wallet_args() {
   else
     governor_signer="account"
   fi
+  governor_signer="$(gl_to_lower "${governor_signer}")"
 
   case "${governor_signer}" in
   account)
