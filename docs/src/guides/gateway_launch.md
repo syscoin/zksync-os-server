@@ -201,7 +201,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `DEPLOYER_ACCOUNT_NAME` | Foundry keystore account name when `DEPLOYER_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `DEPLOYER_KEYSTORE` | Keystore file path when `DEPLOYER_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
 | `DEPLOYER_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |
-| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Optional governor signer override for Gateway migration repairs; defaults to `FUNDER_SIGNER` and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, or `gcp` |
+| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Optional governor signer override for Gateway migration repairs; defaults to `FUNDER_SIGNER` and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
 | `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
 | `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |

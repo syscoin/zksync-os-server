@@ -278,8 +278,23 @@ prepare_gateway_governor_forge_wallet_args() {
   gcp)
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--gcp)
     ;;
+  private-key)
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_SIGNER=private-key is not allowed on ${L1_NETWORK}; use a Foundry account/keystore, hardware wallet, or KMS signer" >&2
+      return 1
+    fi
+    local governor_private_key="${FUNDER_PRIVATE_KEY:-}"
+    if [ -z "${governor_private_key}" ]; then
+      if gl_l1_network_requires_external_signer; then
+        echo "gateway-launch: FUNDER_PRIVATE_KEY is required when inheriting EDGE_GATEWAY_GOVERNOR_SIGNER=private-key from FUNDER_SIGNER=private-key" >&2
+        return 1
+      fi
+      governor_private_key="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+    fi
+    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--private-key "${governor_private_key}")
+    ;;
   *)
-    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected account, keystore, ledger, trezor, aws, or gcp" >&2
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected account, keystore, ledger, trezor, aws, gcp, or private-key" >&2
     return 1
     ;;
   esac
