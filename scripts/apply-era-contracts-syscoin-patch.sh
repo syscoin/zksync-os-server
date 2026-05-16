@@ -106,18 +106,6 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 PY
 }
 
-# Marker-based idempotency check: if these patch-introduced strings exist, skip.
-if base_patch_applied && da_limits_patch_applied; then
-  echo "era-contracts syscoin patch appears already applied; skipping."
-  exit 0
-fi
-
-if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
-  echo "error: ${CONTRACTS_PATH} has uncommitted changes; aborting patch apply" >&2
-  git -C "${CONTRACTS_PATH}" status --porcelain >&2
-  exit 1
-fi
-
 check_base_contracts_patch() {
   git -C "${CONTRACTS_PATH}" apply --check --recount --exclude='zkstack_cli/**' "${PATCH_FILE}"
 }
@@ -138,61 +126,61 @@ apply_base_zkstack_patch() {
   git -C "${ERA_ROOT}" apply --recount --include='zkstack_cli/**' "${PATCH_FILE}"
 }
 
-check_base_patch() {
+ensure_contracts_clean_for_base_patch() {
+  if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
+    echo "error: ${CONTRACTS_PATH} has uncommitted changes and the base contracts patch is not applied" >&2
+    git -C "${CONTRACTS_PATH}" status --porcelain >&2
+    exit 1
+  fi
+}
+
+ensure_zkstack_clean_for_patch() {
+  if [[ -n "$(git -C "${ERA_ROOT}" status --porcelain -- zkstack_cli)" ]]; then
+    echo "error: ${ERA_ROOT}/zkstack_cli has uncommitted changes and the Gateway migration patch is not applied" >&2
+    git -C "${ERA_ROOT}" status --porcelain -- zkstack_cli >&2
+    exit 1
+  fi
+}
+
+changed=false
+
+if ! base_patch_core_applied; then
+  ensure_contracts_clean_for_base_patch
+  echo "Checking base era-contracts Syscoin patch applicability..."
   check_base_contracts_patch
-  check_base_zkstack_patch
-}
 
-apply_base_patch() {
+  echo "Applying base era-contracts Syscoin patch..."
   apply_base_contracts_patch
-  apply_base_zkstack_patch
-}
-
-if base_patch_core_applied && ! syscoin_verifier_version_pinned; then
-  pin_syscoin_verifier_version
+  changed=true
 fi
 
-if base_patch_core_applied && syscoin_verifier_version_pinned && ! syscoin_gateway_da_migration_patched; then
+if ! syscoin_verifier_version_pinned; then
+  pin_syscoin_verifier_version
+  changed=true
+fi
+
+if ! syscoin_gateway_da_migration_patched; then
+  ensure_zkstack_clean_for_patch
   echo "Checking zkstack Gateway migration patch applicability..."
   check_base_zkstack_patch
 
   echo "Applying zkstack Gateway migration patch..."
   apply_base_zkstack_patch
+  changed=true
 fi
 
-if base_patch_applied && da_limits_patch_applied; then
-  echo "era-contracts syscoin patch appears already applied; skipping."
-  exit 0
-fi
-
-if base_patch_applied && ! da_limits_patch_applied; then
+if ! da_limits_patch_applied; then
   echo "Checking Syscoin DA limits patch applicability..."
   git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
 
   echo "Applying era-contracts Syscoin DA limits patch..."
   git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
-  echo "Patch applied successfully."
-  exit 0
+  changed=true
 fi
 
-if ! base_patch_applied && da_limits_patch_applied; then
-  echo "Checking base era-contracts Syscoin patch applicability..."
-  check_base_patch
-
-  echo "Applying base era-contracts Syscoin patch..."
-  apply_base_patch
-  pin_syscoin_verifier_version
-  echo "Patch applied successfully."
+if [[ "${changed}" == false ]]; then
+  echo "era-contracts syscoin patch appears already applied; skipping."
   exit 0
 fi
-
-echo "Checking patch applicability..."
-check_base_patch
-git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
-
-echo "Applying era-contracts syscoin patch..."
-apply_base_patch
-pin_syscoin_verifier_version
-git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
 
 echo "Patch applied successfully."
