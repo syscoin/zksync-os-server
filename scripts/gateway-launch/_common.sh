@@ -349,6 +349,7 @@ payload = {
 
 for rel in (
     "scripts/apply-zksync-era-syscoin-patch.sh",
+    "scripts/patches/zksync-era-syscoin.patch",
     "scripts/patches/era-contracts-syscoin.patch",
 ):
     path = server / rel
