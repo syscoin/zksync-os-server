@@ -59,6 +59,8 @@ zkstack ecosystem create \
   --start-containers false \
   --zksync-os
 
+gl_secure_generated_wallet_file "${GATEWAY_DIR}/configs/wallets.yaml"
+
 # `zkstack ecosystem create --link-to-code` runs a recursive submodule update on the linked
 # checkout, which resets `contracts/` to the top-level repo's recorded submodule revision.
 # Restore the versions.yaml-pinned contracts SHA before subsequent gateway-launch steps.

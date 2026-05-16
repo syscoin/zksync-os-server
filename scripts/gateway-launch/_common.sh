@@ -86,6 +86,32 @@ if mode & 0o077:
 PY
 }
 
+gl_secure_generated_wallet_file() {
+  local wallet_path="$1"
+
+  # SYSCOIN: zkstack creates generated wallets.yaml files using the process
+  # umask. Harden those generated private-key files before later validation.
+  python3 - "${wallet_path}" <<'PY' || gl_die "failed to secure generated wallet file: ${wallet_path}"
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    st = os.lstat(path)
+except FileNotFoundError:
+    raise SystemExit(f"generated wallet file does not exist: {path}")
+
+if stat.S_ISLNK(st.st_mode):
+    raise SystemExit(f"generated wallet file must not be a symlink: {path}")
+if not stat.S_ISREG(st.st_mode):
+    raise SystemExit(f"generated wallet file must be a regular file: {path}")
+if st.st_uid != os.geteuid():
+    raise SystemExit(f"generated wallet file must be owned by the launching user: {path}")
+os.chmod(path, 0o600)
+PY
+}
+
 gl_wallet_creation_for_path() {
   local wallet_path="$1"
   if [ -e "${wallet_path}" ] || [ -L "${wallet_path}" ]; then
