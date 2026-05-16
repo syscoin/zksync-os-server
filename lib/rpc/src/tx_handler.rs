@@ -109,16 +109,18 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         if self.config.l2_signer_blacklist.contains(&l2_tx.signer()) {
             return Err(EthSendRawTransactionError::BlacklistedSigner);
         }
-        // SYSCOIN: run local mempool validation before external DA admission checks, but only for
+        // SYSCOIN: run local mempool validation before non-local admission checks, but only for
         // compact-edge-DA commit candidates. Ordinary txs keep the single validation performed by
         // insertion below.
-        if self.is_compact_edge_da_admission_candidate(&l2_tx) {
+        let compact_edge_da_refs = if self.is_compact_edge_da_admission_candidate(&l2_tx) {
             if self.mempool.contains(&hash) {
                 return Err(PoolError::new(hash, PoolErrorKind::AlreadyImported).into());
             }
             self.mempool.validate_l2_transaction(l2_tx.clone()).await?;
-            self.verify_compact_edge_da_refs_available(&l2_tx).await?;
-        }
+            self.compact_edge_da_refs_after_cache_check(&l2_tx)?
+        } else {
+            None
+        };
 
         if let Some(policy_client) = &self.policy_client {
             // `last_constructed_block_context` is None until the sequencer has
@@ -166,6 +168,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // Other sim errors (nonce, gas, etc.) are handled by the
             // mempool / block-build rejection paths.
         }
+        if let Some(compact_edge_da_refs) = compact_edge_da_refs.as_ref() {
+            self.verify_compact_edge_da_refs_available(compact_edge_da_refs)
+                .await?;
+        }
         {
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
@@ -195,21 +201,33 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
 
         Ok(hash)
     }
+    // SYSCOIN: parse compact edge DA refs and reject cached misses before any non-local checks.
+    fn compact_edge_da_refs_after_cache_check(
+        &self,
+        tx: &L2Transaction,
+    ) -> Result<Option<Vec<String>>, EthSendRawTransactionError> {
+        let Some(config) = self.config.edge_da_admission.as_ref() else {
+            return Ok(None);
+        };
+        if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
+            return Ok(None);
+        }
+        let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
+            return Ok(None);
+        };
+        self.reject_cached_unavailable_edge_da_refs(&version_hashes)?;
+
+        Ok(Some(version_hashes))
+    }
+
     // SYSCOIN: verify compact edge DA refs emitted by chains settling to Gateway.
     async fn verify_compact_edge_da_refs_available(
         &self,
-        tx: &L2Transaction,
+        version_hashes: &[String],
     ) -> Result<(), EthSendRawTransactionError> {
         let Some(config) = self.config.edge_da_admission.as_ref() else {
             return Ok(());
         };
-        if !is_compact_edge_da_commit_target(tx.to(), config.commit_tx_target) {
-            return Ok(());
-        }
-        let Some(version_hashes) = compact_edge_da_refs_from_commit_calldata(tx.input())? else {
-            return Ok(());
-        };
-        self.reject_cached_unavailable_edge_da_refs(&version_hashes)?;
 
         let client = SyscoinClient::new(
             &config.rpc_url,
