@@ -32,29 +32,55 @@ has_text() {
   fi
 }
 
-if has_text "Tanenbaum" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
-  && has_text "Self::Mainnet => SLChainId(57)" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
-  && has_text "Self::Tanenbaum => SLChainId(5700)" "${ERA_PATH}/core/lib/basic_types/src/network.rs" \
-  && has_text "Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && has_text "L1Network::Mainnet => 57" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && has_text "L1Network::Tanenbaum => None" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && has_text "L1Network::Tanenbaum | L1Network::Holesky => H256::zero()" "${ERA_PATH}/zkstack_cli/crates/types/src/l1_network.rs" \
-  && has_text "std::env::var(\"ZK_TOKEN_ASSET_ID\")" "${ERA_PATH}/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs" \
-  && has_text "L1Network::Tanenbaum" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs" \
-  && has_text "if config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs" \
-  && has_text "forge = forge.with_slow();" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs" \
-  && has_text "if config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs" \
-  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs" \
-  && has_text "if chain_config.l1_network == L1Network::Localhost" "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs" \
-  && has_text "min_validator_balance: U256::from(10).pow(18.into())," "${ERA_PATH}/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs"; then
+missing_patch_paths=()
+add_missing_patch_path() {
+  local path="$1"
+  local existing
+  for existing in "${missing_patch_paths[@]}"; do
+    if [[ "${existing}" == "${path}" ]]; then
+      return 0
+    fi
+  done
+  missing_patch_paths+=("${path}")
+}
+
+require_marker() {
+  local needle="$1"
+  local path="$2"
+  if ! has_text "${needle}" "${ERA_PATH}/${path}"; then
+    add_missing_patch_path "${path}"
+  fi
+}
+
+require_marker "Tanenbaum" "core/lib/basic_types/src/network.rs"
+require_marker "Self::Mainnet => SLChainId(57)" "core/lib/basic_types/src/network.rs"
+require_marker "Self::Tanenbaum => SLChainId(5700)" "core/lib/basic_types/src/network.rs"
+require_marker "Tanenbaum" "zkstack_cli/crates/types/src/l1_network.rs"
+require_marker "L1Network::Mainnet => 57" "zkstack_cli/crates/types/src/l1_network.rs"
+require_marker "L1Network::Tanenbaum => None" "zkstack_cli/crates/types/src/l1_network.rs"
+require_marker "L1Network::Tanenbaum | L1Network::Holesky => H256::zero()" "zkstack_cli/crates/types/src/l1_network.rs"
+require_marker "std::env::var(\"ZK_TOKEN_ASSET_ID\")" "zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs"
+require_marker "L1Network::Tanenbaum" "zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs"
+require_marker "if config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs"
+require_marker "forge = forge.with_slow();" "zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs"
+require_marker "if config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs"
+require_marker "if chain_config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs"
+require_marker "if chain_config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs"
+require_marker "min_validator_balance: U256::from(10).pow(18.into())," "zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs"
+
+if [[ "${#missing_patch_paths[@]}" -eq 0 ]]; then
   echo "zksync-era Syscoin patch appears already applied; skipping."
   exit 0
 fi
 
 echo "Checking patch applicability..."
-git -C "${ERA_PATH}" apply --check --recount "${PATCH_FILE}"
+for path in "${missing_patch_paths[@]}"; do
+  git -C "${ERA_PATH}" apply --check --recount --include="${path}" "${PATCH_FILE}"
+done
 
 echo "Applying Syscoin/Tanenbaum compatibility patch..."
-git -C "${ERA_PATH}" apply --recount "${PATCH_FILE}"
+for path in "${missing_patch_paths[@]}"; do
+  git -C "${ERA_PATH}" apply --recount --include="${path}" "${PATCH_FILE}"
+done
 
 echo "Patch applied successfully."

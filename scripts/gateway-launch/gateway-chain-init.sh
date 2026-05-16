@@ -20,4 +20,8 @@ gl_zkstack_pty zkstack chain init \
   --deploy-paymaster false \
   --l1-rpc-url "${L1_RPC_URL}"
 
+if [ -f "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml" ]; then
+  gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
+fi
+
 gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
