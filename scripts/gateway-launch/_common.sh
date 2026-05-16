@@ -1203,8 +1203,6 @@ gl_prepare_bitcoin_da_wallet() {
   gl_require BITCOIN_DA_RPC_PASSWORD
   export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
   export BITCOIN_DA_WALLET_NAME BITCOIN_DA_ADDRESS_LABEL BITCOIN_DA_MIN_BALANCE_SYS
-  export BITCOIN_DA_FUNDER_WALLET_NAME="${BITCOIN_DA_FUNDER_WALLET_NAME:-}"
-  export BITCOIN_DA_FUNDER_WALLET_PASSPHRASE="${BITCOIN_DA_FUNDER_WALLET_PASSPHRASE:-}"
 
   python3 - <<'PY'
 import base64
@@ -1229,8 +1227,6 @@ rpc_user = os.environ["BITCOIN_DA_RPC_USER"]
 rpc_password = os.environ["BITCOIN_DA_RPC_PASSWORD"]
 wallet_name = os.environ["BITCOIN_DA_WALLET_NAME"]
 address_label = os.environ["BITCOIN_DA_ADDRESS_LABEL"]
-funder_wallet = os.environ.get("BITCOIN_DA_FUNDER_WALLET_NAME", "").strip()
-funder_passphrase = os.environ.get("BITCOIN_DA_FUNDER_WALLET_PASSPHRASE", "")
 
 try:
     min_balance = Decimal(os.environ["BITCOIN_DA_MIN_BALANCE_SYS"])
@@ -1338,30 +1334,9 @@ if min_balance == 0:
         "gateway-launch: BITCOIN_DA_MIN_BALANCE_SYS=0; wallet/address ensured but funding is disabled"
     )
     raise SystemExit(0)
-if not funder_wallet:
-    raise SystemExit(
-        f"Syscoin DA wallet {wallet_name} is below target ({balance} < {min_balance}) at {address}; "
-        "set BITCOIN_DA_FUNDER_WALLET_NAME to fund it automatically"
-    )
-if funder_wallet == wallet_name:
-    raise SystemExit("BITCOIN_DA_FUNDER_WALLET_NAME must differ from BITCOIN_DA_WALLET_NAME")
-
-load_or_create_wallet(funder_wallet, create=False)
-if funder_passphrase:
-    rpc("walletpassphrase", [funder_passphrase, 120], wallet=funder_wallet)
-
-deficit = min_balance - balance
-funder_balance = wallet_balance(funder_wallet)
-if funder_balance < deficit:
-    raise SystemExit(
-        f"Syscoin DA funder wallet {funder_wallet} has insufficient balance: "
-        f"balance={funder_balance} required={deficit}"
-    )
-
-txid = rpc("sendtoaddress", [address, format(deficit, "f")], wallet=funder_wallet)
-print(
-    f"gateway-launch: funded Syscoin DA wallet {wallet_name} address={address} "
-    f"amount={deficit} SYS txid={txid}"
+raise SystemExit(
+    f"Syscoin DA wallet {wallet_name} is below target ({balance} < {min_balance}). "
+    f"Fund this DA wallet address directly: {address}"
 )
 PY
 }

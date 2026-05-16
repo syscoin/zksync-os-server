@@ -32,7 +32,6 @@ Required env:
 
 Optional env:
   GATEWAY_ARCHIVE_L1_RPC_URL   runtime L1 RPC for os-server/migration startup (defaults to L1_RPC_URL)
-  BITCOIN_DA_FUNDER_WALLET_NAME Syscoin Core wallet used to top up the DA wallet
   BITCOIN_DA_MIN_BALANCE_SYS    target DA wallet balance, default 10 on Tanenbaum, 0 on mainnet
   PROTOCOL_VERSION             default v31.0
   GATEWAY_DIR                  default ~/gateway
