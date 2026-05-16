@@ -313,6 +313,48 @@ def patch_zkstack_gateway_chain_rpc_files(
             )
 
 
+def materialize_zkstack_gateway_config(gateway_dir: Path, gateway_chain_name: str) -> None:
+    """Create the zkstack Gateway-only config file expected by migration commands.
+
+    ZKsync OS `zkstack chain init` may produce only the shared chain config files,
+    but `zkstack chain gateway migrate-to-gateway` still requires
+    chains/<gateway>/configs/gateway.yaml.
+    """
+    cfg_dir = gateway_dir / "chains" / gateway_chain_name / "configs"
+    contracts_path = cfg_dir / "contracts.yaml"
+    if not contracts_path.exists():
+        return
+
+    contracts = load_yaml(contracts_path)
+    if not isinstance(contracts, dict):
+        raise ValueError(f"invalid contracts config in {contracts_path}")
+    ecosystem = contracts.get("ecosystem_contracts")
+    l1 = contracts.get("l1")
+    if not isinstance(ecosystem, dict) or not isinstance(l1, dict):
+        raise ValueError(f"missing ecosystem_contracts/l1 sections in {contracts_path}")
+
+    def required(section: dict, key: str):
+        value = section.get(key)
+        if value is None or value == "":
+            raise ValueError(f"missing {key} in {contracts_path}")
+        return value
+
+    gateway_config = {
+        "state_transition_proxy_addr": required(ecosystem, "state_transition_proxy_addr"),
+        "validator_timelock_addr": required(ecosystem, "validator_timelock_addr"),
+        "multicall3_addr": required(l1, "multicall3_addr"),
+        # SYSCOIN: Gateway-settled rollup chains publish compact Bitcoin DA refs.
+        "relayed_sl_da_validator": required(l1, "blobs_zksync_os_l1_da_validator_addr"),
+        "rollup_da_manager": required(ecosystem, "l1_rollup_da_manager"),
+        "validium_da_validator": required(l1, "no_da_validium_l1_validator_addr"),
+        "diamond_cut_data": required(ecosystem, "diamond_cut_data"),
+    }
+    write_text(
+        cfg_dir / "gateway.yaml",
+        yaml.safe_dump(gateway_config, sort_keys=False, allow_unicode=True),
+    )
+
+
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
 server_root = Path(os.environ["ZKSYNC_OS_SERVER_PATH"])
 output_root = gateway_dir / "os-server-configs"
@@ -776,6 +818,7 @@ patch_zkstack_gateway_chain_rpc_files(
     os.environ["GATEWAY_CHAIN_NAME"],
     int(os.environ["GATEWAY_OS_RPC_PORT"]),
 )
+materialize_zkstack_gateway_config(gateway_dir, os.environ["GATEWAY_CHAIN_NAME"])
 
 print(output_root)
 PY
