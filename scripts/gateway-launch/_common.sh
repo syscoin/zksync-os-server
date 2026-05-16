@@ -1152,6 +1152,220 @@ while pending_targets:
 PY
 }
 
+gl_resolve_syscoin_cookie_file() {
+  local cookie_file datadir network candidate
+  cookie_file="${BITCOIN_DA_COOKIE_FILE:-}"
+  if [ -n "${cookie_file}" ] && [ -f "${cookie_file}" ]; then
+    printf '%s\n' "${cookie_file}"
+    return 0
+  fi
+
+  datadir="${SYSCOIN_DATADIR:-${HOME}/.syscoin}"
+  network="${SYSCOIN_NETWORK:-}"
+  if [ -n "${network}" ]; then
+    candidate="${datadir}/${network}/.cookie"
+    if [ -f "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
+  candidate="${datadir}/testnet3/.cookie"
+  if [ -f "${candidate}" ]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+
+  return 1
+}
+
+gl_load_bitcoin_da_cookie_credentials() {
+  local cookie_file cookie
+  if [ -n "${BITCOIN_DA_RPC_USER:-}" ] && [ -n "${BITCOIN_DA_RPC_PASSWORD:-}" ]; then
+    return 0
+  fi
+
+  cookie_file="$(gl_resolve_syscoin_cookie_file || true)"
+  [ -n "${cookie_file}" ] || return 0
+  cookie="$(< "${cookie_file}")"
+  : "${BITCOIN_DA_RPC_USER:=${cookie%%:*}}"
+  : "${BITCOIN_DA_RPC_PASSWORD:=${cookie#*:}}"
+  export BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
+}
+
+gl_prepare_bitcoin_da_wallet() {
+  : "${BITCOIN_DA_WALLET_NAME:=zksync-os}"
+  : "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"
+  : "${BITCOIN_DA_MIN_BALANCE_SYS:=0}"
+  gl_require BITCOIN_DA_RPC_URL
+  gl_load_bitcoin_da_cookie_credentials
+  gl_require BITCOIN_DA_RPC_USER
+  gl_require BITCOIN_DA_RPC_PASSWORD
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
+  export BITCOIN_DA_WALLET_NAME BITCOIN_DA_ADDRESS_LABEL BITCOIN_DA_MIN_BALANCE_SYS
+  export BITCOIN_DA_FUNDER_WALLET_NAME="${BITCOIN_DA_FUNDER_WALLET_NAME:-}"
+  export BITCOIN_DA_FUNDER_WALLET_PASSPHRASE="${BITCOIN_DA_FUNDER_WALLET_PASSPHRASE:-}"
+
+  python3 - <<'PY'
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from decimal import Decimal, InvalidOperation
+
+
+class RpcError(Exception):
+    def __init__(self, code, message):
+        super().__init__(f"RPC error {code}: {message}")
+        self.code = code
+        self.message = str(message)
+
+
+rpc_url = os.environ["BITCOIN_DA_RPC_URL"].rstrip("/")
+rpc_user = os.environ["BITCOIN_DA_RPC_USER"]
+rpc_password = os.environ["BITCOIN_DA_RPC_PASSWORD"]
+wallet_name = os.environ["BITCOIN_DA_WALLET_NAME"]
+address_label = os.environ["BITCOIN_DA_ADDRESS_LABEL"]
+funder_wallet = os.environ.get("BITCOIN_DA_FUNDER_WALLET_NAME", "").strip()
+funder_passphrase = os.environ.get("BITCOIN_DA_FUNDER_WALLET_PASSPHRASE", "")
+
+try:
+    min_balance = Decimal(os.environ["BITCOIN_DA_MIN_BALANCE_SYS"])
+except (InvalidOperation, KeyError) as exc:
+    raise SystemExit(f"invalid BITCOIN_DA_MIN_BALANCE_SYS: {exc}")
+if min_balance < 0:
+    raise SystemExit("BITCOIN_DA_MIN_BALANCE_SYS must be >= 0")
+
+
+def rpc(method, params=None, wallet=None):
+    url = rpc_url
+    if wallet is not None:
+        url = f"{url}/wallet/{urllib.parse.quote(wallet, safe='')}"
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "method": method, "params": params or [], "id": 1}
+    ).encode("utf-8")
+    auth = base64.b64encode(f"{rpc_user}:{rpc_password}".encode("utf-8")).decode("ascii")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json",
+            "User-Agent": "gateway-launch/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as err:
+        body = err.read().decode("utf-8", errors="replace")
+        try:
+            obj = json.loads(body)
+            if isinstance(obj, dict) and obj.get("error"):
+                rpc_err = obj["error"]
+                raise RpcError(rpc_err.get("code"), rpc_err.get("message")) from err
+        except json.JSONDecodeError:
+            pass
+        raise SystemExit(f"Syscoin RPC {method} HTTP {err.code}: {body}") from err
+
+    obj = json.loads(body)
+    if obj.get("error"):
+        rpc_err = obj["error"]
+        raise RpcError(rpc_err.get("code"), rpc_err.get("message"))
+    return obj.get("result")
+
+
+def load_or_create_wallet(name, *, create):
+    try:
+        rpc("loadwallet", [name])
+        print(f"gateway-launch: loaded Syscoin wallet {name}")
+        return
+    except RpcError as err:
+        msg = err.message.lower()
+        if err.code == -4 or "already loaded" in msg:
+            print(f"gateway-launch: Syscoin wallet {name} already loaded")
+            return
+        if err.code != -18 and "not found" not in msg and "does not exist" not in msg:
+            raise
+        if not create:
+            raise SystemExit(f"required Syscoin wallet {name} does not exist")
+
+    try:
+        rpc("createwallet", [name])
+        print(f"gateway-launch: created Syscoin wallet {name}")
+    except RpcError as err:
+        if err.code == -4 or "already loaded" in err.message.lower():
+            print(f"gateway-launch: Syscoin wallet {name} already loaded")
+            return
+        raise
+
+
+def labelled_address(name, label):
+    try:
+        addresses = rpc("getaddressesbylabel", [label], wallet=name)
+    except RpcError as err:
+        if err.code != -11:
+            raise
+        address = rpc("getnewaddress", [label], wallet=name)
+        print(f"gateway-launch: created Syscoin DA address {address} label={label}")
+        return address
+    if not isinstance(addresses, dict) or not addresses:
+        address = rpc("getnewaddress", [label], wallet=name)
+        print(f"gateway-launch: created Syscoin DA address {address} label={label}")
+        return address
+    address = next(iter(addresses.keys()))
+    print(f"gateway-launch: reusing Syscoin DA address {address} label={label}")
+    return address
+
+
+def wallet_balance(name):
+    return Decimal(str(rpc("getbalance", [], wallet=name)))
+
+
+load_or_create_wallet(wallet_name, create=True)
+address = labelled_address(wallet_name, address_label)
+balance = wallet_balance(wallet_name)
+print(f"gateway-launch: Syscoin DA wallet {wallet_name} balance={balance} SYS target={min_balance} SYS")
+
+if balance >= min_balance:
+    raise SystemExit(0)
+if min_balance == 0:
+    print(
+        "gateway-launch: BITCOIN_DA_MIN_BALANCE_SYS=0; wallet/address ensured but funding is disabled"
+    )
+    raise SystemExit(0)
+if not funder_wallet:
+    raise SystemExit(
+        f"Syscoin DA wallet {wallet_name} is below target ({balance} < {min_balance}) at {address}; "
+        "set BITCOIN_DA_FUNDER_WALLET_NAME to fund it automatically"
+    )
+if funder_wallet == wallet_name:
+    raise SystemExit("BITCOIN_DA_FUNDER_WALLET_NAME must differ from BITCOIN_DA_WALLET_NAME")
+
+load_or_create_wallet(funder_wallet, create=False)
+if funder_passphrase:
+    rpc("walletpassphrase", [funder_passphrase, 120], wallet=funder_wallet)
+
+deficit = min_balance - balance
+funder_balance = wallet_balance(funder_wallet)
+if funder_balance < deficit:
+    raise SystemExit(
+        f"Syscoin DA funder wallet {funder_wallet} has insufficient balance: "
+        f"balance={funder_balance} required={deficit}"
+    )
+
+txid = rpc("sendtoaddress", [address, format(deficit, "f")], wallet=funder_wallet)
+print(
+    f"gateway-launch: funded Syscoin DA wallet {wallet_name} address={address} "
+    f"amount={deficit} SYS txid={txid}"
+)
+PY
+}
+
 # -----------------------------
 # Checkpoint state management
 # -----------------------------
