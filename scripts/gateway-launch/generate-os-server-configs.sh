@@ -779,3 +779,7 @@ patch_zkstack_gateway_chain_rpc_files(
 
 print(output_root)
 PY
+
+if [ -n "${BITCOIN_DA_RPC_URL}" ]; then
+  gl_prepare_bitcoin_da_wallet
+fi

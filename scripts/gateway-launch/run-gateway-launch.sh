@@ -32,6 +32,7 @@ Required env:
 
 Optional env:
   GATEWAY_ARCHIVE_L1_RPC_URL   runtime L1 RPC for os-server/migration startup (defaults to L1_RPC_URL)
+  BITCOIN_DA_MIN_BALANCE_SYS    target DA wallet balance, default 10 on Tanenbaum, 0 on mainnet
   PROTOCOL_VERSION             default v31.0
   GATEWAY_DIR                  default ~/gateway
   REUSE_ECOSYSTEM              true|false, default false
@@ -104,7 +105,8 @@ tanenbaum)
   : "${BITCOIN_DA_FINALITY_MODE:=Confirmations}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
   : "${BITCOIN_DA_PODA_URL:=https://poda.tanenbaum.io}"
-  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
+  : "${BITCOIN_DA_MIN_BALANCE_SYS:=10}"
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL BITCOIN_DA_MIN_BALANCE_SYS ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
   ;;
 mainnet)
   export L1_CHAIN_ID=57
@@ -114,7 +116,8 @@ mainnet)
   : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
   : "${BITCOIN_DA_PODA_URL:=https://poda.syscoin.org}"
-  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
+  : "${BITCOIN_DA_MIN_BALANCE_SYS:=0}"
+  export BITCOIN_DA_RPC_URL BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD BITCOIN_DA_FINALITY_MODE BITCOIN_DA_FINALITY_CONFIRMATIONS BITCOIN_DA_PODA_URL BITCOIN_DA_MIN_BALANCE_SYS ETH_GAS_PRICE ETH_PRIORITY_GAS_PRICE
   ;;
 *)
   gl_die "invalid --l1: ${L1_PROFILE} (supported: tanenbaum|mainnet)"
@@ -488,9 +491,10 @@ echo "gateway-launch: initializing checkpoint state"
 gl_checkpoint_state_init
 wait_for_rpc
 gl_ensure_zksync_era_workspace
-# The era-contracts Syscoin patch also touches zkstack_cli migration code.
-# Apply it before building zkstack so the release binary cannot be stale.
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
+# Apply only the zkstack_cli migration hunk before building zkstack. The
+# contracts hunks are applied later, after ecosystem creation finishes resetting
+# the linked contracts submodule.
+bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts" --zkstack-only
 gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 gl_checkpoint_set_fingerprint_if_empty

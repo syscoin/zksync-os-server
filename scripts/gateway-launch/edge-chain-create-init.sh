@@ -68,6 +68,10 @@ else
   fi
 fi
 
+if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" ]; then
+  gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml"
+fi
+
 if [ "${SKIP_FUND}" != "true" ]; then
   GATEWAY_CHAIN_NAME="${EDGE_CHAIN_NAME}" "${SCRIPT_DIR}/fund-wallets.sh"
 else
