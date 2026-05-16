@@ -772,6 +772,7 @@ ensure_deposits_unpaused() {
   local unpause_output_lc=""
 
   gl_l1_broadcast_preflight
+  refresh_l1_admin_wallet_funding "${chain_name}"
   if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits --chain "${chain_name}" -v 2>&1)"; then
     echo "${unpause_output}"
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
@@ -787,6 +788,16 @@ ensure_deposits_unpaused() {
   else
     echo "${unpause_output}"
   fi
+}
+
+refresh_l1_admin_wallet_funding() {
+  local chain_name="${1:?chain name required}"
+
+  # SYSCOIN: zkstack prompts interactively if the governor has less than 5 ETH,
+  # even when the transaction would succeed. Migration can spend down wallets
+  # after the earlier funding checkpoint, so refresh the chain wallet targets
+  # immediately before zkstack admin broadcasts.
+  GATEWAY_CHAIN_NAME="${chain_name}" "${SCRIPT_DIR}/fund-wallets.sh"
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
@@ -805,6 +816,8 @@ fi
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""
   pause_output_lc=""
+  gl_l1_broadcast_preflight
+  refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
   if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
     echo "${pause_output}"
     pause_output_lc="$(gl_to_lower "${pause_output}")"
@@ -822,6 +835,8 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
 
   migrate_output=""
   migrate_output_lc=""
+  gl_l1_broadcast_preflight
+  refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
   if ! migrate_output="$(gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
@@ -846,6 +861,7 @@ fi
 finalize_output=""
 finalize_output_lc=""
 gl_l1_broadcast_preflight
+refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
 if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
