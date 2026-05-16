@@ -142,7 +142,17 @@ ensure_zkstack_clean_for_patch() {
   fi
 }
 
+ensure_contracts_were_clean_for_partial_patch() {
+  if [[ -n "${initial_contracts_status}" && "${contracts_changed}" == false ]]; then
+    echo "error: ${CONTRACTS_PATH} has uncommitted changes and a contracts patch component is not applied" >&2
+    printf '%s\n' "${initial_contracts_status}" >&2
+    exit 1
+  fi
+}
+
+initial_contracts_status="$(git -C "${CONTRACTS_PATH}" status --porcelain)"
 changed=false
+contracts_changed=false
 
 if ! base_patch_core_applied; then
   ensure_contracts_clean_for_base_patch
@@ -152,11 +162,14 @@ if ! base_patch_core_applied; then
   echo "Applying base era-contracts Syscoin patch..."
   apply_base_contracts_patch
   changed=true
+  contracts_changed=true
 fi
 
 if ! syscoin_verifier_version_pinned; then
+  ensure_contracts_were_clean_for_partial_patch
   pin_syscoin_verifier_version
   changed=true
+  contracts_changed=true
 fi
 
 if ! syscoin_gateway_da_migration_patched; then
@@ -170,12 +183,14 @@ if ! syscoin_gateway_da_migration_patched; then
 fi
 
 if ! da_limits_patch_applied; then
+  ensure_contracts_were_clean_for_partial_patch
   echo "Checking Syscoin DA limits patch applicability..."
   git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
 
   echo "Applying era-contracts Syscoin DA limits patch..."
   git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
   changed=true
+  contracts_changed=true
 fi
 
 if [[ "${changed}" == false ]]; then
