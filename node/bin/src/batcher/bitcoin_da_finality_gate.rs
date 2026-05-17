@@ -5,7 +5,9 @@ use crate::config::{BatcherConfig, BitcoinDaFinalityMode};
 use alloy::hex;
 use anyhow::Context;
 use async_trait::async_trait;
-use bitcoin_da_client::{BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, SyscoinClient};
+use bitcoin_da_client::{
+    BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, BlobFinalityState, SyscoinClient,
+};
 use secrecy::ExposeSecret;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -19,6 +21,12 @@ pub struct BitcoinDaFinalityGate {
     config: BatcherConfig,
     storage: BitcoinDaStatusStorage,
     settling_on_gateway: bool,
+}
+
+#[derive(Clone, Copy)]
+enum BlobFinalityWaitContext {
+    OwnBatch { batch_number: u64 },
+    GatewayEdgeRef,
 }
 
 impl BitcoinDaFinalityGate {
@@ -140,36 +148,13 @@ impl BitcoinDaFinalityGate {
         }
 
         let client = self.client()?;
-        let finality_mode = self.finality_mode();
         for version_hash in &status.published_hashes {
-            let start = Instant::now();
-            loop {
-                let is_final = client
-                    .check_blob_finality_with_mode(
-                        version_hash,
-                        finality_mode,
-                        self.config.bitcoin_da_finality_confirmations,
-                    )
-                    .await
-                    .map_err(|err| {
-                        anyhow::anyhow!(
-                            "failed to check Bitcoin DA finality for batch {batch_number}: {err}"
-                        )
-                    })?;
-                if is_final {
-                    tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
-                    break;
-                }
-
-                if start.elapsed() >= self.config.bitcoin_da_finality_timeout {
-                    anyhow::bail!(
-                        "Bitcoin DA blob for batch {batch_number} did not finalize within {:?}",
-                        self.config.bitcoin_da_finality_timeout
-                    );
-                }
-
-                tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
-            }
+            self.wait_for_blob_finality(
+                &client,
+                version_hash,
+                BlobFinalityWaitContext::OwnBatch { batch_number },
+            )
+            .await?;
         }
 
         status.finalized = true;
@@ -221,27 +206,60 @@ impl BitcoinDaFinalityGate {
         client: &SyscoinClient,
         version_hash: &str,
     ) -> anyhow::Result<()> {
-        let finality_mode = self.finality_mode();
+        self.wait_for_blob_finality(client, version_hash, BlobFinalityWaitContext::GatewayEdgeRef)
+            .await
+    }
+
+    async fn wait_for_blob_finality(
+        &self,
+        client: &SyscoinClient,
+        version_hash: &str,
+        context: BlobFinalityWaitContext,
+    ) -> anyhow::Result<()> {
         let mut start = Instant::now();
         loop {
-            let is_final = client
-                .check_blob_finality_with_mode(
-                    version_hash,
-                    finality_mode,
-                    self.config.bitcoin_da_finality_confirmations,
-                )
-                .await
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to check Bitcoin DA finality for Gateway edge ref {version_hash}: {err}"
-                    )
-                })?;
-            if is_final {
-                tracing::info!(version_hash, "Gateway edge DA ref finalized");
+            let finality_state = self.blob_finality_state(client, version_hash).await?;
+            if finality_state.is_final() {
+                match context {
+                    BlobFinalityWaitContext::OwnBatch { batch_number } => {
+                        tracing::info!(batch_number, version_hash, "Bitcoin DA blob finalized");
+                    }
+                    BlobFinalityWaitContext::GatewayEdgeRef => {
+                        tracing::info!(version_hash, "Gateway edge DA ref finalized");
+                    }
+                }
                 return Ok(());
+            }
+            if matches!(finality_state, BlobFinalityState::Confirmed { .. }) {
+                tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
+                continue;
             }
 
             if start.elapsed() >= self.config.bitcoin_da_finality_timeout {
+                self.republish_blob_after_timeout(client, version_hash, context)
+                    .await?;
+                start = Instant::now();
+            }
+
+            tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
+        }
+    }
+
+    async fn republish_blob_after_timeout(
+        &self,
+        client: &SyscoinClient,
+        version_hash: &str,
+        context: BlobFinalityWaitContext,
+    ) -> anyhow::Result<()> {
+        match context {
+            BlobFinalityWaitContext::OwnBatch { batch_number } => {
+                tracing::warn!(
+                    batch_number,
+                    version_hash,
+                    "Bitcoin DA blob did not make confirmation progress before timeout; fetching and republishing"
+                );
+            }
+            BlobFinalityWaitContext::GatewayEdgeRef => {
                 anyhow::ensure!(
                     self.config.bitcoin_da_gateway_l1_republish_enabled,
                     "Gateway edge DA ref {version_hash} did not finalize within {:?} and republish is disabled",
@@ -251,29 +269,64 @@ impl BitcoinDaFinalityGate {
                     version_hash,
                     "Gateway edge DA ref did not finalize before timeout; fetching and republishing"
                 );
-                let blob = client.get_blob(version_hash).await.map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to fetch Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
-                    )
-                })?;
-                let republished_hash = client.create_blob(&blob).await.map_err(|err| {
-                    anyhow::anyhow!(
-                        "failed to republish Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
-                    )
-                })?;
-                let normalized_republished = republished_hash
-                    .strip_prefix("0x")
-                    .unwrap_or(&republished_hash);
-                let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
-                anyhow::ensure!(
-                    normalized_republished.eq_ignore_ascii_case(normalized_expected),
-                    "republished Bitcoin DA hash mismatch for Gateway edge ref: expected {normalized_expected}, got {normalized_republished}"
-                );
-                start = Instant::now();
             }
-
-            tokio::time::sleep(self.config.bitcoin_da_finality_poll_interval).await;
         }
+
+        let blob = client
+            .get_blob(version_hash)
+            .await
+            .map_err(|err| match context {
+                BlobFinalityWaitContext::OwnBatch { batch_number } => anyhow::anyhow!(
+                    "failed to fetch Bitcoin DA blob for batch {batch_number}, ref {version_hash}: {err}"
+                ),
+                BlobFinalityWaitContext::GatewayEdgeRef => anyhow::anyhow!(
+                    "failed to fetch Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
+                ),
+            })?;
+        let republished_hash = client.force_create_blob(&blob).await.map_err(|err| {
+            match context {
+                BlobFinalityWaitContext::OwnBatch { batch_number } => anyhow::anyhow!(
+                    "failed to republish Bitcoin DA blob for batch {batch_number}, ref {version_hash}: {err}"
+                ),
+                BlobFinalityWaitContext::GatewayEdgeRef => anyhow::anyhow!(
+                    "failed to republish Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
+                ),
+            }
+        })?;
+        let normalized_republished = republished_hash
+            .strip_prefix("0x")
+            .unwrap_or(&republished_hash);
+        let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
+        anyhow::ensure!(
+            normalized_republished.eq_ignore_ascii_case(normalized_expected),
+            "{}",
+            match context {
+                BlobFinalityWaitContext::OwnBatch { batch_number } => format!(
+                    "republished Bitcoin DA hash mismatch for batch {batch_number}: expected {normalized_expected}, got {normalized_republished}"
+                ),
+                BlobFinalityWaitContext::GatewayEdgeRef => format!(
+                    "republished Bitcoin DA hash mismatch for Gateway edge ref: expected {normalized_expected}, got {normalized_republished}"
+                ),
+            }
+        );
+        Ok(())
+    }
+
+    async fn blob_finality_state(
+        &self,
+        client: &SyscoinClient,
+        version_hash: &str,
+    ) -> anyhow::Result<BlobFinalityState> {
+        client
+            .blob_finality_state_with_mode(
+                version_hash,
+                self.finality_mode(),
+                self.config.bitcoin_da_finality_confirmations,
+            )
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("failed to check Bitcoin DA finality for {version_hash}: {err}")
+            })
     }
 
     async fn wait_for_gateway_edge_refs_finality(
