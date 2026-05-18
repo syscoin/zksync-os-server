@@ -29,7 +29,7 @@ base_patch_core_applied() {
   grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
-  && grep -q "0xdf7da82999fa7201551447c726fe17d75ce2354a55b971c2bdffcc164d878e5e" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
+  && grep -q "0xa560fbdd4a57c655949e7e34768579184ed026d0676f33e891a025a3f85d4c5c" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
   && grep -q "L2DACommitmentScheme.BLOBS_ZKSYNC_OS" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol"
 }
 
