@@ -2,7 +2,7 @@ use crate::eth_call_handler::{EthCallError, EthCallHandler, tx_type_runs_policy}
 use crate::eth_impl::{build_api_log, build_api_tx};
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
-use alloy::consensus::Transaction as _;
+use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_root};
 use alloy::eips::BlockId;
 use alloy::network::primitives::BlockTransactions;
@@ -360,7 +360,6 @@ fn build_simulated_block_response(
         simulated_txs.push(simulated_tx);
     }
 
-    let block_hash = sealed_header.hash();
     let mut header = sealed_header.unseal();
     header.base_fee_per_gas = Some(block_context.eip1559_basefee.saturating_to());
     header.logs_bloom = block_bloom;
@@ -373,33 +372,37 @@ fn build_simulated_block_response(
     header.transactions_root = calculate_transaction_root(&executed_envelopes);
     header.receipts_root = calculate_receipt_root(&receipts);
 
+    // SYSCOIN: this is a synthetic simulated block. Recompute the sealed hash after
+    // mutating hash-bearing header fields instead of reusing the template block hash.
+    let sealed_header = ConsensusHeader {
+        parent_hash: header.parent_hash,
+        ommers_hash: header.ommers_hash,
+        beneficiary: header.beneficiary,
+        state_root: header.state_root,
+        transactions_root: header.transactions_root,
+        receipts_root: header.receipts_root,
+        logs_bloom: header.logs_bloom,
+        difficulty: header.difficulty,
+        number: header.number,
+        gas_limit: header.gas_limit,
+        gas_used: header.gas_used,
+        timestamp: header.timestamp,
+        extra_data: header.extra_data,
+        mix_hash: header.mix_hash,
+        nonce: header.nonce,
+        base_fee_per_gas: header.base_fee_per_gas,
+        withdrawals_root: header.withdrawals_root,
+        blob_gas_used: header.blob_gas_used,
+        excess_blob_gas: header.excess_blob_gas,
+        parent_beacon_block_root: header.parent_beacon_block_root,
+        requests_hash: header.requests_hash,
+        block_access_list_hash: None,
+        slot_number: None,
+    }
+    .seal_slow();
+    let block_hash = sealed_header.hash();
     let header = ZkHeader::from_consensus(
-        alloy::consensus::Header {
-            parent_hash: header.parent_hash,
-            ommers_hash: header.ommers_hash,
-            beneficiary: header.beneficiary,
-            state_root: header.state_root,
-            transactions_root: header.transactions_root,
-            receipts_root: header.receipts_root,
-            logs_bloom: header.logs_bloom,
-            difficulty: header.difficulty,
-            number: header.number,
-            gas_limit: header.gas_limit,
-            gas_used: header.gas_used,
-            timestamp: header.timestamp,
-            extra_data: header.extra_data,
-            mix_hash: header.mix_hash,
-            nonce: header.nonce,
-            base_fee_per_gas: header.base_fee_per_gas,
-            withdrawals_root: header.withdrawals_root,
-            blob_gas_used: header.blob_gas_used,
-            excess_blob_gas: header.excess_blob_gas,
-            parent_beacon_block_root: header.parent_beacon_block_root,
-            requests_hash: header.requests_hash,
-            block_access_list_hash: None,
-            slot_number: None,
-        }
-        .seal(block_hash),
+        sealed_header,
         Some(U256::ZERO),
         None,
     );
