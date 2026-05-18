@@ -431,7 +431,7 @@ where
             );
         }
         tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
-        tx_request.set_blob_sidecar(blob_sidecar);
+        tx_request.set_blob_sidecar(BlobTransactionSidecarVariant::Eip4844(blob_sidecar));
     };
 
     apply_l1_gas_limit(provider, &mut tx_request).await?;
