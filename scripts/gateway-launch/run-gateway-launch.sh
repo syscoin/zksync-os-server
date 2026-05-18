@@ -494,10 +494,6 @@ echo "gateway-launch: initializing checkpoint state"
 gl_checkpoint_state_init
 wait_for_rpc
 gl_ensure_zksync_era_workspace
-# Apply only the zkstack_cli migration hunk before building zkstack. The
-# contracts hunks are applied later, after ecosystem creation finishes resetting
-# the linked contracts submodule.
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts" --zkstack-only
 gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 gl_checkpoint_set_fingerprint_if_empty

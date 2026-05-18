@@ -206,8 +206,12 @@ impl BitcoinDaFinalityGate {
         client: &SyscoinClient,
         version_hash: &str,
     ) -> anyhow::Result<()> {
-        self.wait_for_blob_finality(client, version_hash, BlobFinalityWaitContext::GatewayEdgeRef)
-            .await
+        self.wait_for_blob_finality(
+            client,
+            version_hash,
+            BlobFinalityWaitContext::GatewayEdgeRef,
+        )
+        .await
     }
 
     async fn wait_for_blob_finality(

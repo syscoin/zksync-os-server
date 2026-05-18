@@ -88,10 +88,7 @@ impl ProofCommand {
             Some(4) => 4,
             Some(5) => 5,
             Some(6) => 6,
-            // SYSCOIN: the fork starts v31+ on the V7 proving key, so route real
-            // V7 proofs through the explicit V7 verifier slot instead of relying
-            // on mutable default slot 0.
-            Some(7) => 7,
+            Some(7) => 0,
             Some(execution_version) => panic!(
                 "unsupported or old execution version: {execution_version}; there's no verifier defined for it"
             ),
@@ -225,12 +222,12 @@ mod tests {
     use super::{OHBENDER_PROOF_TYPE, ProofCommand};
 
     #[test]
-    fn v7_proofs_use_explicit_v7_verifier_slot() {
+    fn v7_proofs_use_default_verifier_slot() {
         let verifier_version =
             ProofCommand::verifier_version_for_proving_execution_version(Some(7));
 
-        assert_eq!(verifier_version, 7);
-        assert_eq!(OHBENDER_PROOF_TYPE | (verifier_version << 8), 0x702);
+        assert_eq!(verifier_version, 0);
+        assert_eq!(OHBENDER_PROOF_TYPE | (verifier_version << 8), 0x02);
     }
 
     #[test]
