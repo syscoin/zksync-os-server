@@ -5,9 +5,8 @@ use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_root};
 use alloy::eips::BlockId;
-use alloy::alloy_primitives::Sealable;
 use alloy::network::primitives::BlockTransactions;
-use alloy::primitives::{B256, Bloom, Bytes, U256};
+use alloy::primitives::{B256, Bloom, Bytes, Sealable, U256};
 use alloy::rpc::types::simulate::{
     MAX_SIMULATE_BLOCKS, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
 };
