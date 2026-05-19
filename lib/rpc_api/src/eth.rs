@@ -201,7 +201,8 @@ pub trait EthApi {
     ) -> RpcResult<Bytes>;
 
     /// Fills defaults on a given unsigned transaction.
-    #[method(name = "fillTransaction")]
+    // SYSCOIN: may estimate gas when `gas` is omitted, so keep it off async RPC workers.
+    #[method(name = "fillTransaction", blocking)]
     fn fill_transaction(
         &self,
         request: TransactionRequest,
