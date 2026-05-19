@@ -244,7 +244,8 @@ clear_multivm_build_script_cache() {
 }
 
 refresh_os_server_config_credentials() {
-  local seen_bin_args=false expect_config=false config_path="" arg
+  local seen_bin_args=false expect_config=false arg config_entry config_path
+  local config_paths=()
 
   for arg in "$@"; do
     if [ "${arg}" = "--" ]; then
@@ -255,14 +256,14 @@ refresh_os_server_config_credentials() {
     [ "${seen_bin_args}" = true ] || continue
 
     if [ "${expect_config}" = true ]; then
-      config_path="${arg}"
-      break
+      config_paths+=("${arg}")
+      expect_config=false
+      continue
     fi
 
     case "${arg}" in
     --config=*)
-      config_path="${arg#--config=}"
-      break
+      config_paths+=("${arg#--config=}")
       ;;
     --config)
       expect_config=true
@@ -270,10 +271,17 @@ refresh_os_server_config_credentials() {
     esac
   done
 
-  [ -n "${config_path}" ] || return 0
+  [ "${#config_paths[@]}" -gt 0 ] || return 0
   # SYSCOIN: syscoind rotates cookie credentials on restart. Keep generated
-  # os-server configs aligned immediately before launching the node.
-  gl_refresh_bitcoin_da_config_from_cookie "${config_path}"
+  # os-server configs aligned immediately before launching the node. Mirror the
+  # Rust CLI's config parsing: repeated --config flags are allowed and each value
+  # may contain ':'-delimited config files loaded in order.
+  for config_entry in "${config_paths[@]}"; do
+    while IFS= read -r config_path; do
+      [ -n "${config_path}" ] || continue
+      gl_refresh_bitcoin_da_config_from_cookie "${config_path}"
+    done < <(printf '%s\n' "${config_entry}" | tr ':' '\n')
+  done
 }
 
 refresh_os_server_config_credentials "$@"
