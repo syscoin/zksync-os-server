@@ -1,5 +1,8 @@
-use alloy::consensus::{Header, Sealed};
 use alloy::primitives::{Address, B256};
+// SYSCOIN: `BatchWorkBlockOutput` reconstructs `zksync_os_interface::types::BlockOutput`,
+// whose public header type is still backed by alloy-consensus 1.x. Keep this alias
+// explicit so it is not confused with the workspace `alloy` 2.x dependency.
+use alloy_consensus_v1::{Header, Sealed};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

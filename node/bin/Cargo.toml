@@ -83,6 +83,9 @@ alloy = { workspace = true, default-features = false, features = [
     "k256",
     "rand",
 ] }
+# SYSCOIN: zksync_os_interface 0.0.15 exposes BlockOutput::header using
+# alloy-consensus 1.x, while the server workspace otherwise uses alloy 2.x.
+alloy-consensus-v1 = { package = "alloy-consensus", version = "1.8.3" }
 blake2.workspace = true
 clap = { workspace = true, features = ["derive", "wrap_help"] }
 ruint.workspace = true
