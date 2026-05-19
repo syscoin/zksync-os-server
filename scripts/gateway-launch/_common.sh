@@ -1344,6 +1344,55 @@ gl_load_bitcoin_da_cookie_credentials() {
   export BITCOIN_DA_RPC_USER BITCOIN_DA_RPC_PASSWORD
 }
 
+gl_refresh_bitcoin_da_config_from_cookie() {
+  local config_path="${1:?config path required}"
+  local cookie_file
+  [ -f "${config_path}" ] || gl_die "missing os-server config: ${config_path}"
+
+  cookie_file="$(gl_resolve_syscoin_cookie_file || true)"
+  if [ -z "${cookie_file}" ]; then
+    echo "gateway-launch: Syscoin cookie not found; using existing Bitcoin DA RPC credentials in ${config_path}" >&2
+    return 0
+  fi
+
+  python3 - "${config_path}" "${cookie_file}" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+cookie_path = Path(sys.argv[2])
+cookie = cookie_path.read_text(encoding="utf-8").rstrip("\r\n")
+rpc_user, separator, rpc_password = cookie.partition(":")
+if separator != ":" or not rpc_user or not rpc_password:
+    raise SystemExit(f"invalid Syscoin RPC cookie format in {cookie_path}")
+
+text = config_path.read_text(encoding="utf-8")
+text, user_count = re.subn(
+    r"^(\s*bitcoin_da_rpc_user:\s*).*$",
+    lambda m: f"{m.group(1)}{json.dumps(rpc_user)}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+text, password_count = re.subn(
+    r"^(\s*bitcoin_da_rpc_password:\s*).*$",
+    lambda m: f"{m.group(1)}{json.dumps(rpc_password)}",
+    text,
+    count=1,
+    flags=re.MULTILINE,
+)
+if user_count == 0 and password_count == 0:
+    raise SystemExit(0)
+if user_count != 1 or password_count != 1:
+    raise SystemExit(f"failed to patch Syscoin RPC credentials in {config_path}")
+
+config_path.write_text(text, encoding="utf-8")
+print(f"gateway-launch: refreshed Syscoin RPC credentials in {config_path}")
+PY
+}
+
 gl_prepare_bitcoin_da_wallet() {
   : "${BITCOIN_DA_WALLET_NAME:=zksync-os}"
   : "${BITCOIN_DA_ADDRESS_LABEL:=zksync-os-batcher}"

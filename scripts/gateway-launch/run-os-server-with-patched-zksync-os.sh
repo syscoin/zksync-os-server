@@ -243,6 +243,40 @@ clear_multivm_build_script_cache() {
     "${target_dir}"/release/build/zksync_os_multivm-*
 }
 
+refresh_os_server_config_credentials() {
+  local seen_bin_args=false expect_config=false config_path="" arg
+
+  for arg in "$@"; do
+    if [ "${arg}" = "--" ]; then
+      seen_bin_args=true
+      expect_config=false
+      continue
+    fi
+    [ "${seen_bin_args}" = true ] || continue
+
+    if [ "${expect_config}" = true ]; then
+      config_path="${arg}"
+      break
+    fi
+
+    case "${arg}" in
+    --config=*)
+      config_path="${arg#--config=}"
+      break
+      ;;
+    --config)
+      expect_config=true
+      ;;
+    esac
+  done
+
+  [ -n "${config_path}" ] || return 0
+  # SYSCOIN: syscoind rotates cookie credentials on restart. Keep generated
+  # os-server configs aligned immediately before launching the node.
+  gl_refresh_bitcoin_da_config_from_cookie "${config_path}"
+}
+
+refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
   DEV_TAG="$(extract_dev_tag)"
