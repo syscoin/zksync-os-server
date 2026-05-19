@@ -5,6 +5,7 @@ use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_root};
 use alloy::eips::BlockId;
+use alloy::alloy_primitives::Sealable;
 use alloy::network::primitives::BlockTransactions;
 use alloy::primitives::{B256, Bloom, Bytes, U256};
 use alloy::rpc::types::simulate::{
@@ -489,7 +490,6 @@ fn apply_simulate_block_overrides(
         base_fee,
         blob_base_fee,
         block_hash,
-        beacon_root: _,
         // ZKsync OS uses mix_hash for prevrandao and has no separate difficulty field; ignored.
         difficulty: _,
         // ZKsync OS block context has no beacon root field; ignored for simulation.
@@ -739,6 +739,7 @@ fn simulate_error_for_invalid_transaction(err: &InvalidTransaction) -> SimulateE
         } else {
             err.to_string()
         },
+        data: None,
     }
 }
 
