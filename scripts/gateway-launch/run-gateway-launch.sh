@@ -127,6 +127,7 @@ mainnet)
   ;;
 esac
 gl_reject_no_proofs_on_mainnet
+gl_validate_l1_signer_policy
 
 case "${L1_RPC_URL}" in
 http://* | https://*) ;;

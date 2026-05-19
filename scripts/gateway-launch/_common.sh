@@ -34,6 +34,33 @@ gl_allow_insecure_private_key_argv() {
   [ "$(gl_to_lower "${GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV:-false}")" = "true" ]
 }
 
+gl_validate_l1_signer_policy() {
+  if ! gl_l1_network_requires_external_signer || gl_allow_insecure_private_key_argv; then
+    return 0
+  fi
+
+  local funder_signer deployer_signer governor_signer
+  funder_signer="$(gl_to_lower "${FUNDER_SIGNER:-account}")"
+  deployer_signer="$(gl_to_lower "${DEPLOYER_SIGNER:-${FUNDER_SIGNER:-account}}")"
+  governor_signer="$(gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-${FUNDER_SIGNER:-account}}")"
+
+  if [ "${funder_signer}" = "private-key" ]; then
+    gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; use account, keystore, hardware wallet, or KMS signing"
+  fi
+  if [ "${deployer_signer}" = "private-key" ]; then
+    gl_die "DEPLOYER_SIGNER=private-key is not allowed on ${L1_NETWORK}; use account, keystore, hardware wallet, or KMS signing"
+  fi
+  if [ "${governor_signer}" = "private-key" ]; then
+    gl_die "EDGE_GATEWAY_GOVERNOR_SIGNER=private-key is not allowed on ${L1_NETWORK}; use account, keystore, hardware wallet, or KMS signing"
+  fi
+  if [ -n "${FUNDER_PRIVATE_KEY:-}" ]; then
+    gl_die "FUNDER_PRIVATE_KEY is not accepted on ${L1_NETWORK}; use FUNDER_SIGNER with account, keystore, hardware wallet, or KMS signing"
+  fi
+  if [ -n "${DEPLOYER_PRIVATE_KEY:-}" ]; then
+    gl_die "DEPLOYER_PRIVATE_KEY is not accepted on ${L1_NETWORK}; use DEPLOYER_SIGNER with account, keystore, hardware wallet, or KMS signing"
+  fi
+}
+
 gl_validate_prover_mode() {
   local prover_mode_lc
   prover_mode_lc="$(gl_to_lower "${PROVER_MODE}")"
