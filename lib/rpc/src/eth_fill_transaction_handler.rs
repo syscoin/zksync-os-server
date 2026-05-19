@@ -59,7 +59,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         }
 
         let max_fee_per_gas = request.max_fee_per_gas;
-        let block_context = build_pending_block_context(&self.storage, self.chain_id);
+        let block_context = build_pending_block_context(&self.storage, self.chain_id)?;
         let mut tx = self
             .create_tx_from_request(request, &block_context, false)?
             .into_envelope();
