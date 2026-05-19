@@ -313,6 +313,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
+          --sender "${DEPLOYER_ADDRESS}" \
           "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast \
           --slow 2>&1 | tee "${tmp_erc20_log}"
@@ -322,6 +323,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
+          --sender "${DEPLOYER_ADDRESS}" \
           "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast 2>&1 | tee "${tmp_erc20_log}"
       fi
@@ -332,6 +334,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
+          --sender "${DEPLOYER_ADDRESS}" \
           "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast \
           --slow 2>&1 | tee "${tmp_erc20_log}"
@@ -340,6 +343,7 @@ else
           --legacy \
           --ffi \
           --rpc-url "${L1_RPC_URL}" \
+          --sender "${DEPLOYER_ADDRESS}" \
           "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
           --broadcast 2>&1 | tee "${tmp_erc20_log}"
       fi
