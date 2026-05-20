@@ -687,6 +687,9 @@ impl GasRange {
     }
 
     fn is_narrow_enough(&self) -> bool {
+        if self.lowest.saturating_add(1) >= self.highest {
+            return true;
+        }
         (self.highest - self.lowest) as f64 / (self.highest as f64) < ESTIMATE_GAS_ERROR_RATIO
     }
 
@@ -695,7 +698,7 @@ impl GasRange {
     }
 
     fn biased_midpoint(&self) -> u64 {
-        (self.lowest * 3).min(self.midpoint())
+        self.lowest.saturating_mul(3).min(self.midpoint())
     }
 
     fn apply_floor(&mut self, floor: u64) {
@@ -845,5 +848,20 @@ mod tests {
         assert!(!tx_type_runs_policy(ZkTxType::L1));
         assert!(!tx_type_runs_policy(ZkTxType::Upgrade));
         assert!(!tx_type_runs_policy(ZkTxType::System));
+    }
+
+    #[test]
+    fn gas_range_is_complete_for_zero_and_adjacent_bounds() {
+        assert!(GasRange::new(0, 0).is_narrow_enough());
+        assert!(GasRange::new(0, 1).is_narrow_enough());
+        assert!(GasRange::new(1, 2).is_narrow_enough());
+        assert!(!GasRange::new(0, 2).is_narrow_enough());
+    }
+
+    #[test]
+    fn gas_range_biased_midpoint_does_not_overflow() {
+        let range = GasRange::new(u64::MAX / 2 + 1, u64::MAX);
+
+        assert_eq!(range.biased_midpoint(), range.midpoint());
     }
 }
