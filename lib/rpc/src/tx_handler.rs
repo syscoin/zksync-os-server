@@ -374,9 +374,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // EN path. Main is the source of truth: forward the sync call and
             // return main's verdict (receipt, rejection, or timeout) directly.
             //
-            // No client-side timeout wraps this call so the EN cannot disagree
-            // with main on the outcome. The trade-off is that main's config
-            // default bounds the wait, not the caller's max_wait_ms.
+            // SYSCOIN: forward the caller's EIP-7966 timeout so EN callers see the same
+            // bounded wait semantics as callers connected to the main node.
             //
             // If the future is dropped before we learn main's verdict (e.g.,
             // client disconnect), `local_cleanup` removes the orphaned local
@@ -387,7 +386,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let forwarding_result: Result<ZkTransactionReceipt, _> = {
                 let _guard = ForwardingLatencyGuard::new();
                 forwarder
-                    .raw_request("eth_sendRawTransactionSync".into(), (bytes,))
+                    .raw_request("eth_sendRawTransactionSync".into(), (bytes, max_wait_ms))
                     .await
             };
             return match forwarding_result {
