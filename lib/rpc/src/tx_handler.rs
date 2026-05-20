@@ -380,8 +380,9 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // If the future is dropped before we learn main's verdict (e.g.,
             // client disconnect), `local_cleanup` removes the orphaned local
             // mempool entry on drop. Disarm only when we explicitly want to
-            // keep the local mirror: forward succeeded, or main reported an
-            // EIP-7966 timeout (tx still pending on main).
+            // keep the local mirror: forward succeeded, main reported the tx
+            // as already known, or main reported an EIP-7966 timeout (tx still
+            // pending on main).
             let mut local_cleanup = RemoveOnDrop::new(&self.mempool, tx_hash);
             let forwarding_result: Result<ZkTransactionReceipt, _> = {
                 let _guard = ForwardingLatencyGuard::new();
@@ -389,10 +390,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                     .raw_request("eth_sendRawTransactionSync".into(), (bytes, max_wait_ms))
                     .await
             };
-            return match forwarding_result {
+            match forwarding_result {
                 Ok(receipt) => {
                     local_cleanup.disarm();
-                    Ok(receipt)
+                    return Ok(receipt);
                 }
                 Err(err) => {
                     tracing::debug!(%err, "sync forwarding error from main node back to user");
@@ -402,11 +403,22 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                         local_cleanup.disarm();
                         return Err(EthSendRawTransactionSyncError::Timeout(timeout_duration));
                     }
-                    // Real rejection or transport failure. Let `local_cleanup`
-                    // remove the local mirror as it drops.
-                    Err(EthSendRawTransactionError::ForwardError(err).into())
+                    // SYSCOIN: if main already knows the tx, keep the local mirror and wait
+                    // for the synced block/receipt just like a fresh forwarded sync send.
+                    if forwarding_error_indicates_main_node_already_knows_tx(&err) {
+                        tracing::debug!(
+                            %err,
+                            %tx_hash,
+                            "main node already knows sync-forwarded transaction; waiting locally"
+                        );
+                        local_cleanup.disarm();
+                    } else {
+                        // Real rejection or transport failure. Let `local_cleanup`
+                        // remove the local mirror as it drops.
+                        return Err(EthSendRawTransactionError::ForwardError(err).into());
+                    }
                 }
-            };
+            }
         }
 
         // Main node: wait for the tx to land in a locally-applied block.
