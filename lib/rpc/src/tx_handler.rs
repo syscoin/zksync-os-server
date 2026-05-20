@@ -413,8 +413,12 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                         );
                         local_cleanup.disarm();
                     } else {
-                        // Real rejection or transport failure. Let `local_cleanup`
-                        // remove the local mirror as it drops.
+                        // SYSCOIN: mirror async forwarding semantics. Ambiguous transport/response
+                        // failures may occur after main accepted the tx, so keep the local mirror;
+                        // explicit main-node rejections still roll back on drop.
+                        if !forwarding_error_should_rollback_local_tx(&err) {
+                            local_cleanup.disarm();
+                        }
                         return Err(EthSendRawTransactionError::ForwardError(err).into());
                     }
                 }
