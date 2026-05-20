@@ -35,7 +35,6 @@ base_patch_applied() {
     && has_text "const USIZE_LEN: usize = 32 / size_of::<usize>();" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/commitment_and_proof_advice.rs" \
     && has_text "SYSCOIN: Keep the legacy function name/interface, but return blob data id" "${ZKSYNC_OS_PATH}/callable_oracles/src/blob_kzg_commitment/mod.rs" \
     && has_text "pub const ENCODABLE_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs" \
-    && has_text "Gateway relayed-calldata DA can cover multiple 2 MiB Syscoin DA blobs" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/keccak256_commitment_generator.rs" \
     && has_text "blobs_advice.push(8);" "${ZKSYNC_OS_PATH}/forward_system/src/run/mod.rs"
 }
 

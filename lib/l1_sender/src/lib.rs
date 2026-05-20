@@ -1445,11 +1445,11 @@ async fn resolve_fee_params(
     fee_config: L1SenderFeeConfig,
     use_replacement_fee_params: bool,
 ) -> anyhow::Result<FeeParams> {
-    let cap_params = if use_replacement_fee_params {
-        fee_config.replacement_fee_params()
-    } else {
-        fee_config.configured_fee_params()
-    };
+    if use_replacement_fee_params {
+        return Ok(fee_config.replacement_fee_params());
+    }
+
+    let configured_params = fee_config.configured_fee_params();
     let eip1559_est = provider.estimate_eip1559_fees().await?;
     L1_SENDER_METRICS.report_l1_eip_1559_estimation(eip1559_est)?;
     // SYSCOIN: custom priority-fee estimates are observability-only; do not block L1
@@ -1464,46 +1464,47 @@ async fn resolve_fee_params(
         "estimated priority and max fees"
     );
 
-    // SYSCOIN: Treat configured fees as caps. Replacement mode uses the multiplied caps as
-    // the required bump floor too, because startup resubmission does not persist the prior
-    // tx's exact fee fields; using a lower live estimate can be rejected as underpriced.
-    let max_fee_per_gas = if eip1559_est.max_fee_per_gas > cap_params.max_fee_per_gas {
+    Ok(apply_fee_caps(configured_params, eip1559_est))
+}
+
+/// Combines operator-configured fee caps with the network's EIP-1559 estimate.
+///
+/// `max_fee_per_gas` and `max_fee_per_blob_gas` are taken verbatim from
+/// `configured` - they are static caps set by the operator and never adjusted
+/// up from network estimates. Only `max_priority_fee_per_gas` follows the
+/// estimate, capped from above by the configured value.
+fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeeParams {
+    if estimated.max_fee_per_gas > configured.max_fee_per_gas {
         tracing::warn!(
             "L1 sender's configured maxFeePerGas ({}) \
              is lower than the one estimated from network  ({}), \
              using the configured base fee value ({}) - this may result in inclusion delay.",
-            cap_params.max_fee_per_gas,
-            eip1559_est.max_fee_per_gas,
-            cap_params.max_fee_per_gas,
+            configured.max_fee_per_gas,
+            estimated.max_fee_per_gas,
+            configured.max_fee_per_gas,
         );
-        cap_params.max_fee_per_gas
-    } else if use_replacement_fee_params {
-        cap_params.max_fee_per_gas
-    } else {
-        eip1559_est.max_fee_per_gas
-    };
+    }
+
     let max_priority_fee_per_gas =
-        if eip1559_est.max_priority_fee_per_gas > cap_params.max_priority_fee_per_gas {
+        if estimated.max_priority_fee_per_gas > configured.max_priority_fee_per_gas {
             tracing::warn!(
                 "L1 sender's configured max_priority_fee_per_gas ({}) \
              is lower than the one estimated from network  ({}), \
              using the configured priority fee value ({}) - this may result in inclusion delay.",
-                cap_params.max_priority_fee_per_gas,
-                eip1559_est.max_priority_fee_per_gas,
-                cap_params.max_priority_fee_per_gas,
+                configured.max_priority_fee_per_gas,
+                estimated.max_priority_fee_per_gas,
+                configured.max_priority_fee_per_gas,
             );
-            cap_params.max_priority_fee_per_gas
-        } else if use_replacement_fee_params {
-            cap_params.max_priority_fee_per_gas
+            configured.max_priority_fee_per_gas
         } else {
-            eip1559_est.max_priority_fee_per_gas
+            estimated.max_priority_fee_per_gas
         };
 
-    Ok(FeeParams {
-        max_fee_per_gas,
+    FeeParams {
+        max_fee_per_gas: configured.max_fee_per_gas,
         max_priority_fee_per_gas,
-        max_fee_per_blob_gas: cap_params.max_fee_per_blob_gas,
-    })
+        max_fee_per_blob_gas: configured.max_fee_per_blob_gas,
+    }
 }
 
 fn tx_request_with_gas_fields(
@@ -1712,7 +1713,11 @@ async fn validate_tx_receipt<Input: SendToL1>(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_retryable_gateway_da_admission_message, notify_commit_submitted_batch};
+    use super::{
+        FeeParams, apply_fee_caps, is_retryable_gateway_da_admission_message,
+        notify_commit_submitted_batch,
+    };
+    use alloy::providers::utils::Eip1559Estimation;
     use tokio::sync::watch;
 
     #[test]
@@ -1756,5 +1761,34 @@ mod tests {
         assert!(!is_retryable_gateway_da_admission_message(
             "compact edge da admission check failed: unsupported child-chain da commitment scheme",
         ));
+    }
+
+    #[test]
+    fn apply_fee_caps_keeps_max_fee_and_blob_fee_static() {
+        let configured = FeeParams {
+            max_fee_per_gas: 100_000_000_000,
+            max_priority_fee_per_gas: 2_000_000_000,
+            max_fee_per_blob_gas: 50_000_000_000,
+        };
+
+        for estimated in [
+            Eip1559Estimation {
+                max_fee_per_gas: 1,
+                max_priority_fee_per_gas: 1,
+            },
+            Eip1559Estimation {
+                max_fee_per_gas: configured.max_fee_per_gas,
+                max_priority_fee_per_gas: configured.max_priority_fee_per_gas,
+            },
+            Eip1559Estimation {
+                max_fee_per_gas: configured.max_fee_per_gas * 10,
+                max_priority_fee_per_gas: configured.max_priority_fee_per_gas * 10,
+            },
+        ] {
+            let capped = apply_fee_caps(configured, estimated);
+            assert_eq!(capped.max_fee_per_gas, configured.max_fee_per_gas);
+            assert_eq!(capped.max_fee_per_blob_gas, configured.max_fee_per_blob_gas);
+            assert!(capped.max_priority_fee_per_gas <= configured.max_priority_fee_per_gas);
+        }
     }
 }
