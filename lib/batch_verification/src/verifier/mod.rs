@@ -154,17 +154,13 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         // these cached blocks, so request handling can validate against that
         // already-local data instead of calling the settlement layer.
         let expected_upgrade_tx_hash = Self::expected_upgrade_tx_hash_from_replay_records(&blocks)?;
+        let (_, last_replay_record, _) = blocks.last().unwrap();
 
         let (batch_info, _) = ExtendedCommitBatchInfo::build(
             blocks
                 .iter()
                 .map(|(block_output, replay_record, tree)| {
-                    (
-                        *block_output,
-                        &replay_record.block_context,
-                        replay_record.transactions.as_slice(),
-                        tree,
-                    )
+                    (*block_output, replay_record.transactions.as_slice(), tree)
                 })
                 .collect(),
             self.chain_id,
@@ -175,6 +171,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
             Some(self.l1_state.validator_timelock_sl),
+            &last_replay_record.block_context.block_hashes,
         )
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
         if batch_info.upgrade_tx_hash.is_some() && expected_upgrade_tx_hash.is_none() {

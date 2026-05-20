@@ -19,11 +19,11 @@ use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_interface::error::InvalidTransaction;
-use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
+use zksync_os_storage_api::BlockContext;
 use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient};
 use zksync_os_types::{
     L2Envelope, L2Transaction, NotAcceptingReason, TransactionAcceptanceState, ZkTransaction,
@@ -40,6 +40,9 @@ const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_TTL: Duration = Duration::from_secs(
 // SYSCOIN: bound attacker-influenced unavailable-ref caching. This cache is an optimization only;
 // if it is full, skipping a new entry is safer than allowing unbounded memory or mutex work.
 const SYSCOIN_EDGE_DA_UNAVAILABLE_REF_CACHE_MAX_ENTRIES: usize = 8192;
+
+/// JSON-RPC error code used by EIP-7966 to signal a sync-send timeout.
+const EIP_7966_TIMEOUT_CODE: i64 = 4;
 
 /// Handles transactions received in API
 pub struct TxHandler<RpcStorage, Mempool> {
@@ -86,9 +89,10 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         }
     }
 
-    pub async fn send_raw_transaction_impl(
+    /// Shared prelude of both sync and async send: decode, validate, insert into mempool.
+    async fn admit_to_local_mempool(
         &self,
-        tx_bytes: Bytes,
+        tx_bytes: &Bytes,
     ) -> Result<B256, EthSendRawTransactionError> {
         if let TransactionAcceptanceState::NotAccepting(reasons) = &*self.acceptance_state.borrow()
         {
@@ -176,8 +180,20 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let _guard = MempoolLatencyGuard::new();
             self.mempool.add_l2_transaction(l2_tx).await?;
         }
+        Ok(hash)
+    }
+
+    pub async fn send_raw_transaction_impl(
+        &self,
+        tx_bytes: Bytes,
+    ) -> Result<B256, EthSendRawTransactionError> {
+        let hash = self.admit_to_local_mempool(&tx_bytes).await?;
 
         if let Some(tx_forwarder) = self.tx_forwarder.as_ref() {
+            // If the handler future is dropped before the forward returns
+            // (e.g. client disconnect), `local_cleanup` removes the orphaned
+            // local mempool entry on drop. Disarm only on a successful forward.
+            let mut local_cleanup = RemoveOnDrop::new(&self.mempool, hash);
             let forwarding_result = {
                 let _guard = ForwardingLatencyGuard::new();
                 tx_forwarder.send_raw_transaction(&tx_bytes).await
@@ -189,14 +205,15 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                 // transaction or when the forwarding result is ambiguous after local acceptance.
                 if forwarding_error_indicates_main_node_already_knows_tx(&err) {
                     tracing::debug!(%err, %hash, "main node already knows forwarded transaction");
+                    local_cleanup.disarm();
                     return Ok(hash);
                 }
-                if forwarding_error_should_rollback_local_tx(&err) {
-                    self.mempool
-                        .remove_forwarding_rollback_transactions(vec![hash]);
+                if !forwarding_error_should_rollback_local_tx(&err) {
+                    local_cleanup.disarm();
                 }
                 return Err(err.into());
             }
+            local_cleanup.disarm();
         }
 
         Ok(hash)
@@ -347,15 +364,70 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             self.config.send_raw_transaction_sync_timeout
         };
 
-        // Create block subscription
+        // Subscribe before submission so the main-node wait below never misses the block.
         let mut block_rx = self.storage.block_subscriptions().subscribe_to_blocks();
 
-        let tx_hash = self.send_raw_transaction_impl(bytes).await?;
+        // Admit outside any deadline so a tight user budget can't leave half-admitted state.
+        let tx_hash = self.admit_to_local_mempool(&bytes).await?;
 
-        // Wait for the transaction to appear in a block or timeout
+        if let Some(forwarder) = self.tx_forwarder.as_ref() {
+            // EN path. Main is the source of truth: forward the sync call and
+            // return main's verdict (receipt, rejection, or timeout) directly.
+            //
+            // SYSCOIN: forward the caller's EIP-7966 timeout so EN callers see the same
+            // bounded wait semantics as callers connected to the main node.
+            //
+            // If the future is dropped before we learn main's verdict (e.g.,
+            // client disconnect), `local_cleanup` removes the orphaned local
+            // mempool entry on drop. Disarm only when we explicitly want to
+            // keep the local mirror: forward succeeded, main reported the tx
+            // as already known, or main reported an EIP-7966 timeout (tx still
+            // pending on main).
+            let mut local_cleanup = RemoveOnDrop::new(&self.mempool, tx_hash);
+            let forwarding_result: Result<ZkTransactionReceipt, _> = {
+                let _guard = ForwardingLatencyGuard::new();
+                forwarder
+                    .raw_request("eth_sendRawTransactionSync".into(), (bytes, max_wait_ms))
+                    .await
+            };
+            match forwarding_result {
+                Ok(receipt) => {
+                    local_cleanup.disarm();
+                    return Ok(receipt);
+                }
+                Err(err) => {
+                    tracing::debug!(%err, "sync forwarding error from main node back to user");
+                    if let RpcError::ErrorResp(payload) = &err
+                        && payload.code == EIP_7966_TIMEOUT_CODE
+                    {
+                        local_cleanup.disarm();
+                        return Err(EthSendRawTransactionSyncError::Timeout(timeout_duration));
+                    }
+                    // SYSCOIN: if main already knows the tx, keep the local mirror and wait
+                    // for the synced block/receipt just like a fresh forwarded sync send.
+                    if forwarding_error_indicates_main_node_already_knows_tx(&err) {
+                        tracing::debug!(
+                            %err,
+                            %tx_hash,
+                            "main node already knows sync-forwarded transaction; waiting locally"
+                        );
+                        local_cleanup.disarm();
+                    } else {
+                        // SYSCOIN: mirror async forwarding semantics. Ambiguous transport/response
+                        // failures may occur after main accepted the tx, so keep the local mirror;
+                        // explicit main-node rejections still roll back on drop.
+                        if !forwarding_error_should_rollback_local_tx(&err) {
+                            local_cleanup.disarm();
+                        }
+                        return Err(EthSendRawTransactionError::ForwardError(err).into());
+                    }
+                }
+            }
+        }
+
+        // Main node: wait for the tx to land in a locally-applied block.
         tokio::time::timeout(timeout_duration, async {
             loop {
-                // Wait for the next block notification
                 let Ok(block) = block_rx.recv().await else {
                     // Channel closed or is lagging, this shouldn't happen in normal operation
                     tracing::warn!("block subscription closed while waiting for tx receipt");
@@ -377,6 +449,12 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                         ));
                     }
                     l2_to_l1_logs_before_this_tx += stored_tx.receipt.l2_to_l1_logs().len() as u64;
+                }
+
+                if let Some(reason) = block.failed_transactions.get(&tx_hash) {
+                    return Err(EthSendRawTransactionSyncError::RejectedDuringExecution(
+                        reason.clone(),
+                    ));
                 }
             }
         })
@@ -639,6 +717,9 @@ pub enum EthSendRawTransactionSyncError {
     /// Timeout while waiting for transaction receipt.
     #[error("The transaction was added to the mempool but wasn't processed within {0:?}.")]
     Timeout(Duration),
+    /// VM rejected the tx during block building. It will not be mined.
+    #[error("transaction rejected during execution: {0}")]
+    RejectedDuringExecution(InvalidTransaction),
 }
 
 /// Records mempool insertion latency on drop, capturing errors and async cancellations.
@@ -668,6 +749,40 @@ impl ForwardingLatencyGuard {
 impl Drop for ForwardingLatencyGuard {
     fn drop(&mut self) {
         TX_SUBMISSION.forwarding_latency.observe(self.0.elapsed());
+    }
+}
+
+/// Removes a tx from the local mempool on drop, unless explicitly disarmed.
+/// Lets callers reconcile a half-finished forward with the local mirror:
+/// if the handler future is dropped before the forward returns a verdict,
+/// the orphan entry is cleaned up.
+struct RemoveOnDrop<'a, Mempool: L2Subpool> {
+    mempool: &'a Mempool,
+    tx_hash: B256,
+    armed: bool,
+}
+
+impl<'a, Mempool: L2Subpool> RemoveOnDrop<'a, Mempool> {
+    fn new(mempool: &'a Mempool, tx_hash: B256) -> Self {
+        Self {
+            mempool,
+            tx_hash,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl<Mempool: L2Subpool> Drop for RemoveOnDrop<'_, Mempool> {
+    fn drop(&mut self) {
+        if self.armed {
+            // SYSCOIN: preserve the forwarding rollback metric when cleanup happens on drop.
+            self.mempool
+                .remove_forwarding_rollback_transactions(vec![self.tx_hash]);
+        }
     }
 }
 

@@ -25,16 +25,17 @@ use jsonrpsee::core::RpcResult;
 use ruint::aliases::B160;
 use tokio::sync::watch;
 use zk_ee::common_structs::derive_flat_storage_key;
-use zk_os_api::helpers::{get_balance, get_code};
+use zk_os_api::helpers::get_code;
 use zksync_os_interface::traits::ReadStorage;
-use zksync_os_interface::types::BlockContext;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::eth::EthApiServer;
 use zksync_os_rpc_api::types::{
     L2FeeHistory, RpcBlockConvert, ZkApiBlock, ZkApiTransaction, ZkHeader, ZkTransactionReceipt,
     block_rlp_length_with_full_transactions, raw_transaction_rlp_item_length,
 };
-use zksync_os_storage_api::{RepositoryBlock, RepositoryError, StateError, TxMeta, ViewState};
+use zksync_os_storage_api::{
+    BlockContext, RepositoryBlock, RepositoryError, StateError, TxMeta, ViewState,
+};
 use zksync_os_tx_validators::policy_client::PolicyClient;
 use zksync_os_types::{L2Envelope, TransactionAcceptanceState, ZkEnvelope, ZkReceiptEnvelope};
 
@@ -335,13 +336,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let Some(block_number) = self.storage.resolve_block_number(block_id)? else {
             return Err(EthError::BlockNotFound(block_id));
         };
-        Ok(self
-            .storage
-            .state_view_at(block_number)?
-            .get_account(address)
-            .as_ref()
-            .map(get_balance)
-            .unwrap_or(U256::ZERO))
+        Ok(self.storage.state_view_at(block_number)?.balance(address))
     }
 
     fn storage_at_impl(
@@ -374,7 +369,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthNamespace<RpcStorage, Me
         let on_chain_account_nonce = self
             .storage
             .state_at_block_id_or_latest(block_id)?
-            .account_nonce(address)
+            .nonce(address)
             .unwrap_or(0);
 
         if block_id == Some(BlockId::pending())
@@ -912,10 +907,14 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> EthApiServer
         self.tx_handler
             .send_raw_transaction_sync_impl(bytes, max_wait_ms)
             .await
-            .inspect_err(|err| {
-                if let EthSendRawTransactionSyncError::Regular(inner) = err {
+            .inspect_err(|err| match err {
+                EthSendRawTransactionSyncError::Regular(inner) => {
                     TX_SUBMISSION.rejections[&TxRejectionReason::from(inner)].inc();
                 }
+                EthSendRawTransactionSyncError::RejectedDuringExecution(_) => {
+                    TX_SUBMISSION.rejections[&TxRejectionReason::RejectedDuringExecution].inc();
+                }
+                EthSendRawTransactionSyncError::Timeout(_) => {}
             })
             .to_rpc_result()
     }

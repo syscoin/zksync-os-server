@@ -1195,6 +1195,8 @@ pub struct ForceTransactionResubmissionConfig {
     pub max_fee_per_blob_gas_replacement_multiplier: f64,
 }
 
+// SYSCOIN: forced resubmissions must strictly increase fee caps to satisfy L1/Gateway
+// replacement rules; merely positive values can still be underpriced replacements.
 fn is_greater_than_one_f64(&val: &f64) -> bool {
     val > 1.0
 }
@@ -2647,15 +2649,15 @@ mod tests {
             [
                 (
                     "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_GAS_REPLACEMENT_MULTIPLIER",
-                    "-1.0",
+                    "1.0",
                 ),
                 (
                     "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_PRIORITY_FEE_PER_GAS_REPLACEMENT_MULTIPLIER",
-                    "-1.25",
+                    "0.75",
                 ),
                 (
                     "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_BLOB_GAS_REPLACEMENT_MULTIPLIER",
-                    "-1.5",
+                    "0.5",
                 ),
             ],
         ));

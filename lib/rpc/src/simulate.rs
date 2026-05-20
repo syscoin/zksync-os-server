@@ -2,8 +2,8 @@ use crate::eth_call_handler::{EthCallError, EthCallHandler, tx_type_runs_policy}
 use crate::eth_impl::{build_api_log, build_api_tx};
 use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
-use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_root};
+use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::eips::BlockId;
 use alloy::network::primitives::BlockTransactions;
 use alloy::primitives::{B256, Bloom, Bytes, Sealable, U256};
@@ -17,11 +17,10 @@ use zk_os_api::helpers::get_nonce;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{NopTracer, NopValidator};
 use zksync_os_interface::traits::{NoopTxCallback, TxListSource};
-use zksync_os_interface::types::{
-    BlockContext, BlockOutput, ExecutionOutput, ExecutionResult, TxOutput,
-};
+use zksync_os_interface::types::{BlockOutput, ExecutionOutput, ExecutionResult, TxOutput};
 use zksync_os_multivm::run_block;
 use zksync_os_rpc_api::types::{ZkApiBlock, ZkHeader};
+use zksync_os_storage_api::BlockContext;
 use zksync_os_storage_api::ViewState;
 use zksync_os_storage_api::state_override_view::{
     OverriddenStateView, OwnedOverrides, build_state_override_maps,
@@ -401,11 +400,7 @@ fn build_simulated_block_response(
     }
     .seal_slow();
     let block_hash = sealed_header.hash();
-    let header = ZkHeader::from_consensus(
-        sealed_header,
-        Some(U256::ZERO),
-        None,
-    );
+    let header = ZkHeader::from_consensus(sealed_header, Some(U256::ZERO), None);
     let calls = simulated_txs
         .iter()
         .map(|tx| tx.to_call_result(block_hash, block_context))
