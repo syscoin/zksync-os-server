@@ -64,7 +64,12 @@ impl PipelineComponent for TreeManager {
             state_reporter.enter_state(GenericComponentState::Active);
             let started_at = Instant::now();
 
-            let first_block_number = blocks[0].output.header.number;
+            // SYSCOIN: batched tree writes are only safe for a contiguous logical range.
+            // `MerkleTree::extend` advances by one version without seeing the block number, so
+            // reject duplicate/non-monotonic batches before any truncate or RocksDB flush.
+            let (first_block_number, last_block_number) = validate_contiguous_block_numbers(
+                blocks.iter().map(|block| block.output.header.number),
+            )?;
             if first_block_number <= last_processed_block {
                 let mut tree_clone = self.tree.clone();
                 tokio::task::spawn_blocking(move || {
@@ -73,7 +78,6 @@ impl PipelineComponent for TreeManager {
                 .await??;
             }
 
-            let last_block_number = blocks.last().unwrap().output.header.number;
             let block_count = blocks.len();
             tracing::debug!(
                 "Processing {block_count} tree blocks {first_block_number}..{last_block_number}"
@@ -163,6 +167,28 @@ impl PipelineComponent for TreeManager {
     }
 }
 
+fn validate_contiguous_block_numbers(
+    mut block_numbers: impl Iterator<Item = BlockNumber>,
+) -> anyhow::Result<(BlockNumber, BlockNumber)> {
+    let first_block_number = block_numbers
+        .next()
+        .expect("tree manager received non-empty block batch");
+    let mut previous_block_number = first_block_number;
+
+    for block_number in block_numbers {
+        let expected_block_number = previous_block_number.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!("tree manager block number overflow after {previous_block_number}")
+        })?;
+        anyhow::ensure!(
+            block_number == expected_block_number,
+            "tree manager received non-contiguous block batch: expected block {expected_block_number}, got {block_number}",
+        );
+        previous_block_number = block_number;
+    }
+
+    Ok((first_block_number, previous_block_number))
+}
+
 impl TreeManager {
     pub async fn load_or_initialize_tree(
         path: &Path,
@@ -202,6 +228,41 @@ impl TreeManager {
 
         tracing::info!("Loaded tree with last processed block at {:?}", version);
         tree
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_contiguous_block_numbers;
+
+    #[test]
+    fn validates_contiguous_tree_block_batches() {
+        assert_eq!(
+            validate_contiguous_block_numbers([7, 8, 9].into_iter()).unwrap(),
+            (7, 9)
+        );
+        assert_eq!(
+            validate_contiguous_block_numbers([7].into_iter()).unwrap(),
+            (7, 7)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_tree_block_batches() {
+        let err = validate_contiguous_block_numbers([7, 7].into_iter()).unwrap_err();
+        assert!(err.to_string().contains("expected block 8, got 7"), "{err}");
+    }
+
+    #[test]
+    fn rejects_non_monotonic_tree_block_batches() {
+        let err = validate_contiguous_block_numbers([7, 8, 6].into_iter()).unwrap_err();
+        assert!(err.to_string().contains("expected block 9, got 6"), "{err}");
+    }
+
+    #[test]
+    fn rejects_gapped_tree_block_batches() {
+        let err = validate_contiguous_block_numbers([7, 9].into_iter()).unwrap_err();
+        assert!(err.to_string().contains("expected block 8, got 9"), "{err}");
     }
 }
 
