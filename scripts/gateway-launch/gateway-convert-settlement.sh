@@ -13,5 +13,5 @@ gl_path_for_zkstack
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 cd "${GATEWAY_DIR}"
 
-zkstack chain gateway create-tx-filterer --chain "${GATEWAY_CHAIN_NAME}"
-zkstack chain gateway convert-to-gateway --chain "${GATEWAY_CHAIN_NAME}"
+gl_zkstack_pty zkstack chain gateway create-tx-filterer --chain "${GATEWAY_CHAIN_NAME}"
+gl_zkstack_pty zkstack chain gateway convert-to-gateway --chain "${GATEWAY_CHAIN_NAME}"

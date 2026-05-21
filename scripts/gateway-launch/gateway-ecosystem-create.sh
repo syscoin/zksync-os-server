@@ -42,7 +42,7 @@ if [ "${GATEWAY_WALLET_CREATION}" = "in-file" ]; then
   wallet_args+=(--wallet-path "${GATEWAY_WALLET_PATH}")
 fi
 
-zkstack ecosystem create \
+gl_zkstack_pty zkstack ecosystem create \
   --ecosystem-name "${GATEWAY_ECOSYSTEM_NAME}" \
   --l1-network "${L1_NETWORK}" \
   --link-to-code "${ZKSYNC_ERA_PATH}" \

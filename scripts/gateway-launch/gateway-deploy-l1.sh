@@ -35,7 +35,7 @@ cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
 cargo run --release -- --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
 
 cd "${GATEWAY_DIR}"
-zkstack dev contracts
+gl_zkstack_pty zkstack dev contracts
 
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 export PERMANENT_VALUES_INPUT="/script-config/permanent-values.toml"
@@ -424,7 +424,7 @@ PY
 cd "${GATEWAY_DIR}"
 
 run_ecosystem_init_once() {
-  zkstack ecosystem init \
+  gl_zkstack_pty zkstack ecosystem init \
     --zksync-os \
     --update-submodules false \
     --l1-rpc-url "${L1_RPC_URL}" \

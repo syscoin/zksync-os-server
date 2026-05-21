@@ -49,7 +49,7 @@ fi
 if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
   echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} already exists; skipping chain create"
 else
-  zkstack chain create \
+  gl_zkstack_pty zkstack chain create \
     --chain-name "${EDGE_CHAIN_NAME}" \
     --chain-id "${EDGE_CHAIN_ID}" \
     --prover-mode "${EDGE_PROVER_MODE}" \
@@ -79,7 +79,7 @@ else
 fi
 
 init_output=""
-if ! init_output="$(zkstack chain init \
+if ! init_output="$(gl_zkstack_pty zkstack chain init \
   --chain "${EDGE_CHAIN_NAME}" \
   --no-genesis \
   --deploy-paymaster false \
