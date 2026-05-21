@@ -95,6 +95,9 @@ const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
+/// SYSCOIN: current Syscoin mainnet RPCs can return near-zero `eth_feeHistory` rewards even
+/// though miners enforce a higher tip floor. Keep L1 settlement txs above that policy.
+const SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI: u128 = 20_000;
 
 #[derive(Debug, Clone, Copy)]
 struct FeeParams {
@@ -1437,6 +1440,7 @@ impl L1SenderFeeConfig {
                 * self.max_fee_per_blob_gas_replacement_multiplier)
                 .ceil() as u128,
         }
+        .with_syscoin_priority_fee_floor()
     }
 }
 
@@ -1500,10 +1504,25 @@ fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeePar
             estimated.max_priority_fee_per_gas
         };
 
-    FeeParams {
+    let fee_params = FeeParams {
         max_fee_per_gas: configured.max_fee_per_gas,
         max_priority_fee_per_gas,
         max_fee_per_blob_gas: configured.max_fee_per_blob_gas,
+    };
+    fee_params.with_syscoin_priority_fee_floor()
+}
+
+impl FeeParams {
+    fn with_syscoin_priority_fee_floor(mut self) -> Self {
+        if self.max_priority_fee_per_gas < SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI {
+            tracing::warn!(
+                max_priority_fee_per_gas = self.max_priority_fee_per_gas,
+                floor = SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
+                "Applying Syscoin L1 priority fee floor"
+            );
+            self.max_priority_fee_per_gas = SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
+        }
+        self
     }
 }
 
@@ -1714,8 +1733,8 @@ async fn validate_tx_receipt<Input: SendToL1>(
 #[cfg(test)]
 mod tests {
     use super::{
-        FeeParams, apply_fee_caps, is_retryable_gateway_da_admission_message,
-        notify_commit_submitted_batch,
+        FeeParams, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI, apply_fee_caps,
+        is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use alloy::providers::utils::Eip1559Estimation;
     use tokio::sync::watch;
@@ -1790,5 +1809,25 @@ mod tests {
             assert_eq!(capped.max_fee_per_blob_gas, configured.max_fee_per_blob_gas);
             assert!(capped.max_priority_fee_per_gas <= configured.max_priority_fee_per_gas);
         }
+    }
+
+    #[test]
+    fn apply_fee_caps_enforces_syscoin_priority_fee_floor() {
+        let configured = FeeParams {
+            max_fee_per_gas: 100_000_000_000,
+            max_priority_fee_per_gas: 2_000_000_000,
+            max_fee_per_blob_gas: 50_000_000_000,
+        };
+        let estimated = Eip1559Estimation {
+            max_fee_per_gas: 15,
+            max_priority_fee_per_gas: 1,
+        };
+
+        let capped = apply_fee_caps(configured, estimated);
+
+        assert_eq!(
+            capped.max_priority_fee_per_gas,
+            SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI
+        );
     }
 }
