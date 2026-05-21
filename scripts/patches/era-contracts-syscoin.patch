@@ -430,6 +430,203 @@ index 2fc7fee09..2d886aba6 100644
              decimals = abi.encode(uint8(18));
          } else {
              bool success;
+diff --git a/l1-contracts/contracts/bridge/L1Nullifier.sol b/l1-contracts/contracts/bridge/L1Nullifier.sol
+index 535fd4ffe..3d7b33c2f 100644
+--- a/l1-contracts/contracts/bridge/L1Nullifier.sol
++++ b/l1-contracts/contracts/bridge/L1Nullifier.sol
+@@ -299,6 +299,7 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+             _assetId: _confirmTransferResultData._assetId,
+             _assetData: _confirmTransferResultData._assetData
+         });
++        _clearTransientSettlementLayer();
+     }
+ 
+     /// @inheritdoc IL1Nullifier
+@@ -336,6 +337,7 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+             _assetId: _assetId,
+             _assetData: _assetData
+         });
++        _clearTransientSettlementLayer();
+     }
+ 
+     /// @dev Withdraw funds from the initiated deposit, that failed when finalizing on L2.
+@@ -451,6 +453,7 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+         }
+ 
+         AssetRouterBase(address(l1AssetRouter)).finalizeDeposit(chainId, assetId, transferData);
++        _clearTransientSettlementLayer();
+     }
+ 
+     /// @dev Determines if an eth withdrawal was initiated on ZKsync Era before the upgrade to the Shared Bridge.
+@@ -572,6 +575,12 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+         emit TransientSettlementLayerSet(proofData.settlementLayerChainId);
+     }
+ 
++    function _clearTransientSettlementLayer() internal {
++        // SYSCOIN: `TransientPrimitivesLib` uses persistent storage on NEVM, so emulate EIP-1153 end-of-tx clearing.
++        TransientPrimitivesLib.set(TRANSIENT_SETTLEMENT_LAYER_SLOT, 0);
++        TransientPrimitivesLib.set(TRANSIENT_SETTLEMENT_LAYER_SLOT + 1, 0);
++    }
++
+     /// @inheritdoc IL1Nullifier
+     function getTransientSettlementLayer() external view returns (uint256, uint256) {
+         return (
+@@ -696,6 +705,7 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+             _assetId: assetId,
+             _assetData: assetData
+         });
++        _clearTransientSettlementLayer();
+     }
+ 
+     /*//////////////////////////////////////////////////////////////
+@@ -754,6 +764,7 @@ contract L1Nullifier is IL1Nullifier, ReentrancyGuard, Ownable2StepUpgradeable,
+             _assetId: assetId,
+             _assetData: assetData
+         });
++        _clearTransientSettlementLayer();
+     }
+ 
+     /*//////////////////////////////////////////////////////////////
+diff --git a/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol b/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
+index d468a4ab6..bf50c622d 100644
+--- a/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
++++ b/l1-contracts/contracts/common/libraries/TransientPrimitives/TransientPrimitives.sol
+@@ -4,17 +4,18 @@ pragma solidity ^0.8.24;
+ /// @author philogy <https://github.com/philogy>
+ /// @notice TransientPrimitivesLib is a library for storing and retrieving transient values in the EVM.
+ library TransientPrimitivesLib {
++    // SYSCOIN: NEVM does not support EIP-1153; callers must explicitly clear slots after same-tx consumption.
+     function getUint256(uint256 slot) internal view returns (uint256 value) {
+         /// @solidity memory-safe-assembly
+         assembly {
+-            value := tload(slot)
++            value := sload(slot)
+         }
+     }
+ 
+     function set(uint256 slot, uint256 value) internal {
+         /// @solidity memory-safe-assembly
+         assembly {
+-            tstore(slot, value)
++            sstore(slot, value)
+         }
+     }
+ }
+diff --git a/l1-contracts/contracts/common/libraries/UnsafeBytes.sol b/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
+index e2680d9e0..0c291f271 100644
+--- a/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
++++ b/l1-contracts/contracts/common/libraries/UnsafeBytes.sol
+@@ -16,6 +16,42 @@ pragma solidity ^0.8.21;
+  * Using data in inline assembly can lead to unexpected behavior!
+  */
+ library UnsafeBytes {
++    /// @dev Byte copy without `mcopy` (chains without Shanghai `0x5e` still compile/run this path).
++    function copy(
++        bytes memory dest,
++        uint256 destOffset,
++        bytes memory src,
++        uint256 srcOffset,
++        uint256 len
++    ) internal pure {
++        if (len == 0) return;
++        assembly {
++            let dstPtr := add(add(dest, 0x20), destOffset)
++            let srcPtr := add(add(src, 0x20), srcOffset)
++
++            let chunks := and(len, not(31))
++            for {
++                let i := 0
++            } lt(i, chunks) {
++                i := add(i, 0x20)
++            } {
++                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
++            }
++
++            let rem := and(len, 31)
++            if rem {
++                let tailDst := add(dstPtr, chunks)
++                let tailSrc := add(srcPtr, chunks)
++
++                let remBits := shl(3, rem)
++                let keepMask := shr(remBits, not(0))
++                let keep := and(mload(tailDst), keepMask)
++                let put := and(mload(tailSrc), not(keepMask))
++                mstore(tailDst, or(put, keep))
++            }
++        }
++    }
++
+     function readUint32(bytes memory _bytes, uint256 _start) internal pure returns (uint32 result, uint256 offset) {
+         assembly {
+             offset := add(_start, 4)
+@@ -47,9 +83,6 @@ library UnsafeBytes {
+     function readRemainingBytes(bytes memory _bytes, uint256 _start) internal pure returns (bytes memory result) {
+         uint256 arrayLen = _bytes.length - _start;
+         result = new bytes(arrayLen);
+-
+-        assembly {
+-            mcopy(add(result, 0x20), add(_bytes, add(0x20, _start)), arrayLen)
+-        }
++        copy({dest: result, destOffset: 0, src: _bytes, srcOffset: _start, len: arrayLen});
+     }
+ }
+diff --git a/l1-contracts/contracts/governance/PermanentRestriction.sol b/l1-contracts/contracts/governance/PermanentRestriction.sol
+index 084148311..613742967 100644
+--- a/l1-contracts/contracts/governance/PermanentRestriction.sol
++++ b/l1-contracts/contracts/governance/PermanentRestriction.sol
+@@ -40,6 +40,41 @@ uint256 constant MAX_ALLOWED_NONCE = (1 << 48);
+ /// @dev To be deployed as a transparent upgradable proxy, owned by a trusted decentralized governance.
+ /// @dev Once of the instances of such contract is to ensure that a ZkSyncHyperchain is a rollup forever.
+ contract PermanentRestriction is Restriction, IPermanentRestriction, Ownable2StepUpgradeable {
++    /// @dev Byte copy without `mcopy` (NEVM / pre-Shanghai `0x5e`).
++    function _copyBytes(
++        bytes memory dest,
++        uint256 destOffset,
++        bytes memory src,
++        uint256 srcOffset,
++        uint256 len
++    ) internal pure {
++        if (len == 0) return;
++        assembly {
++            let dstPtr := add(add(dest, 0x20), destOffset)
++            let srcPtr := add(add(src, 0x20), srcOffset)
++
++            let chunks := and(len, not(31))
++            for {
++                let i := 0
++            } lt(i, chunks) {
++                i := add(i, 0x20)
++            } {
++                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
++            }
++
++            let rem := and(len, 31)
++            if rem {
++                let tailDst := add(dstPtr, chunks)
++                let tailSrc := add(srcPtr, chunks)
++                let remBits := shl(3, rem)
++                let keepMask := shr(remBits, not(0))
++                let keep := and(mload(tailDst), keepMask)
++                let put := and(mload(tailSrc), not(keepMask))
++                mstore(tailDst, or(put, keep))
++            }
++        }
++    }
++
+     /// @notice The address of the Bridgehub contract.
+     IL1Bridgehub public immutable BRIDGE_HUB;
+ 
+@@ -322,9 +357,7 @@ contract PermanentRestriction is Restriction, IPermanentRestriction, Ownable2Ste
+             return (address(0), false);
+         }
+         bytes memory encodedData = new bytes(secondBridgeData.length - 1);
+-        assembly {
+-            mcopy(add(encodedData, 0x20), add(secondBridgeData, 0x21), mload(encodedData))
+-        }
++        _copyBytes({dest: encodedData, destOffset: 0, src: secondBridgeData, srcOffset: 1, len: encodedData.length});
+ 
+         // From now on, we know that the used encoding version is `NEW_ENCODING_VERSION` that is
+         // supported only in the new protocol version with Gateway support, so we can assume
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 index f5406260e..7ec8f1a92 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
@@ -454,7 +651,7 @@ index f5406260e..7ec8f1a92 100644
 
  /// @title ZK chain Committer contract responsible for batch commitment operations.
  /// @author Matter Labs
-@@ -405,6 +418,112 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -405,6 +418,99 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          }
      }
 
@@ -483,36 +680,23 @@ index f5406260e..7ec8f1a92 100644
 +        uint256 _blobHashesStart,
 +        uint256 _blobHashesLength
 +    ) internal pure returns (bytes32) {
-+        bytes memory domain = SYSCOIN_EDGE_DA_REFS_DOMAIN;
-+        bytes memory edgeRefPreimage = new bytes(domain.length + 32 * 4 + _blobHashesLength);
++        bytes memory edgeRefPreimage = new bytes(SYSCOIN_EDGE_DA_REFS_DOMAIN.length + 32 * 4 + _blobHashesLength);
 +        uint256 preimageOffset;
-+        assembly ("memory-safe") {
-+            mcopy(
-+                add(add(edgeRefPreimage, 0x20), preimageOffset),
-+                add(domain, 0x20),
-+                mload(domain)
-+            )
-+        }
-+        preimageOffset += domain.length;
-+        assembly ("memory-safe") {
-+            mcopy(
-+                add(add(edgeRefPreimage, 0x20), preimageOffset),
-+                add(add(_edgeDARefsInput, 0x20), add(_offset, 32)),
-+                96
-+            )
-+        }
++        UnsafeBytes.copy(
++            edgeRefPreimage,
++            preimageOffset,
++            SYSCOIN_EDGE_DA_REFS_DOMAIN,
++            0,
++            SYSCOIN_EDGE_DA_REFS_DOMAIN.length
++        );
++        preimageOffset += SYSCOIN_EDGE_DA_REFS_DOMAIN.length;
++        UnsafeBytes.copy(edgeRefPreimage, preimageOffset, _edgeDARefsInput, _offset + 32, 32 * 3);
 +        preimageOffset += 32 * 3;
 +        assembly {
 +            mstore(add(add(edgeRefPreimage, 0x20), preimageOffset), div(_blobHashesLength, 32))
 +        }
 +        preimageOffset += 32;
-+        assembly ("memory-safe") {
-+            mcopy(
-+                add(add(edgeRefPreimage, 0x20), preimageOffset),
-+                add(add(_edgeDARefsInput, 0x20), _blobHashesStart),
-+                _blobHashesLength
-+            )
-+        }
++        UnsafeBytes.copy(edgeRefPreimage, preimageOffset, _edgeDARefsInput, _blobHashesStart, _blobHashesLength);
 +        return keccak256(edgeRefPreimage);
 +    }
 +
@@ -567,7 +751,7 @@ index f5406260e..7ec8f1a92 100644
      function _commitOneBatchZKsyncOS(
          IExecutor.StoredBatchInfo memory _previousBatch,
          CommitBatchInfoZKsyncOS memory _newBatch,
-@@ -477,6 +596,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -477,6 +583,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          if (_newBatch.slChainId != block.chainid) {
              revert SettlementLayerChainIdMismatch();
          }
@@ -577,7 +761,7 @@ index f5406260e..7ec8f1a92 100644
 
          // The batch proof public input can be calculated as keccak256(state_commitment_before & state_commitment_after & batch_output_hash)
          // batch output hash commits to information about batch that needs to be opened on l1.
-@@ -494,7 +616,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -494,7 +603,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
                  _newBatch.l2LogsTreeRoot,
                  _expectedSystemContractUpgradeTxHash,
                  _newBatch.dependencyRootsRollingHash,
@@ -795,6 +979,39 @@ index 199e366fd..92b64fbf7 100644
              mstore(VK_GATE_SETUP_7_X_SLOT, 0x1affeacdceb1b6f018bbb6762bb5aebcd54c3e24801ce01d06146d1bf0938b2c)
              mstore(VK_GATE_SETUP_7_Y_SLOT, 0x19a277dd9eaac40538f3177e3390ec21d097f88afb04158dd59e963a327fe9da)
 
+diff --git a/l1-contracts/contracts/vendor/Bytes.sol b/l1-contracts/contracts/vendor/Bytes.sol
+index 38069bca9..a977766cb 100644
+--- a/l1-contracts/contracts/vendor/Bytes.sol
++++ b/l1-contracts/contracts/vendor/Bytes.sol
+@@ -91,9 +91,10 @@ library Bytes {
+         start = Math.min(start, end);
+ 
+         // allocate and copy
+-        bytes memory result = new bytes(end - start);
+-        assembly ("memory-safe") {
+-            mcopy(add(result, 0x20), add(add(buffer, 0x20), start), sub(end, start))
++        uint256 newLength = end - start;
++        bytes memory result = new bytes(newLength);
++        for (uint256 i = 0; i < newLength; ++i) {
++            result[i] = buffer[start + i];
+         }
+ 
+         return result;
+@@ -121,9 +122,12 @@ library Bytes {
+         start = Math.min(start, end);
+ 
+         // allocate and copy
++        uint256 newLength = end - start;
++        for (uint256 i = 0; i < newLength; ++i) {
++            buffer[i] = buffer[start + i];
++        }
+         assembly ("memory-safe") {
+-            mcopy(add(buffer, 0x20), add(add(buffer, 0x20), start), sub(end, start))
+-            mstore(buffer, sub(end, start))
++            mstore(buffer, newLength)
+         }
+ 
+         return buffer;
 diff --git a/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol b/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol
 index 0228d5bd8..3ac41c6a9 100644
 --- a/l1-contracts/test/foundry/l1/da-contracts-imports/BlobsL1DAValidatorZKsyncOS.sol

@@ -168,7 +168,9 @@ index e36a8a8c..f33eb204 100644
 +}
 +
 +fn blob_data_id(data: &[u8]) -> [u8; 32] {
-+    crypto::blake2s::Blake2s256::digest(data)
++    let mut hasher = Keccak256::new();
++    hasher.update(data);
++    hasher.finalize()
  }
 
  fn calculate_evaluation_point(data: &[u8], versioned_hash: &[u8]) -> crypto::bls12_381::Fr {
@@ -371,10 +373,11 @@ diff --git a/callable_oracles/src/blob_kzg_commitment/mod.rs b/callable_oracles/
 index 47324a1f..6a5650c2 100644
 --- a/callable_oracles/src/blob_kzg_commitment/mod.rs
 +++ b/callable_oracles/src/blob_kzg_commitment/mod.rs
-@@ -3,6 +3,7 @@ use crate::utils::usize_slice_iterator::UsizeSliceIteratorOwned;
+@@ -3,6 +3,6 @@ use crate::utils::usize_slice_iterator::UsizeSliceIteratorOwned;
  use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::KZGCommitmentAndProof;
  use basic_bootloader::bootloader::block_flow::zk::da_commitment_generator::BLOB_COMMITMENT_AND_PROOF_QUERY_ID;
- use basic_system::system_functions::point_evaluation::versioned_hash_for_kzg;
+-use basic_system::system_functions::point_evaluation::versioned_hash_for_kzg;
++use crypto::sha3::Keccak256;
  use crypto::MiniDigest;
  use oracle_provider::OracleQueryProcessor;
  use risc_v_simulator::abstractions::memory::MemorySource;
@@ -403,7 +406,8 @@ index 47324a1f..6a5650c2 100644
 -
 -    let mut hasher = crypto::blake2s::Blake2s256::new();
 -    hasher.update(versioned_hash_for_kzg(commitment.as_slice()).as_slice());
--    hasher.update(data);
++    let mut hasher = Keccak256::new();
+     hasher.update(data);
 -    let mut challenge_point = hasher.finalize();
 -    // truncate hash to 128 bits
 -    // NOTE: it is safe to draw a random scalar at max 128 bits because of the schwartz zippel lemma
@@ -414,7 +418,7 @@ index 47324a1f..6a5650c2 100644
 -        .compute_kzg_proof(&blob, &c_kzg::Bytes32::new(challenge_point))
 -        .unwrap();
 -    let proof = p.0;
-+    let blob_data_id = crypto::blake2s::Blake2s256::digest(data);
++    let blob_data_id: [u8; 32] = hasher.finalize();
 
 -    KZGCommitmentAndProof {
 -        commitment: commitment.to_bytes().into_inner(),
