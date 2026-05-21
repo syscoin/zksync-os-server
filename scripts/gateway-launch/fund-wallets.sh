@@ -48,6 +48,7 @@ add_wallet_file() {
   local p="$1" norm existing
   [ -f "${p}" ] || return 0
   validate_wallet_path_in_gateway_dir "${p}"
+  gl_secure_generated_wallet_file "${p}"
   gl_prepare_wallet_file_for_in_file "${p}"
   norm="$(normalize_path "${p}")"
   if [ "${#wallet_files_norm[@]}" -gt 0 ]; then
