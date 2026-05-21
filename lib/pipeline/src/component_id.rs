@@ -33,6 +33,7 @@ pub enum ComponentId {
     BitcoinDaFinalityGate,
     BitcoinDaStatusCleanup,
     EnMigrationTrigger,
+    ReplayArchiveGate,
 }
 
 impl ComponentId {
@@ -67,6 +68,7 @@ impl ComponentId {
             Self::BitcoinDaFinalityGate => "bitcoin_da_finality_gate",
             Self::BitcoinDaStatusCleanup => "bitcoin_da_status_cleanup",
             Self::EnMigrationTrigger => "en_migration_trigger",
+            Self::ReplayArchiveGate => "replay_archive_gate",
         }
     }
 }

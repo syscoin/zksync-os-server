@@ -56,6 +56,7 @@ impl BackpressureConfig {
             | ComponentId::GaplessCommitter
             | ComponentId::UpgradeGatekeeper
             | ComponentId::MigrationGate
+            | ComponentId::ReplayArchiveGate
             | ComponentId::L1SenderCommit
             | ComponentId::L1SenderProve
             | ComponentId::L1SenderExecute

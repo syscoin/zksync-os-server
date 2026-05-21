@@ -8,6 +8,7 @@ use crate::debug_impl::DebugError;
 use crate::eth_call_handler::EthCallError;
 use crate::eth_filter::EthFilterError;
 use crate::eth_impl::EthError;
+use crate::rpc_storage::RpcStorageError;
 use crate::tx_handler::{EthSendRawTransactionError, EthSendRawTransactionSyncError};
 use crate::unstable_impl::UnstableError;
 use crate::zks_impl::ZksError;
@@ -48,9 +49,12 @@ impl<Ok> ToRpcResult<Ok, EthError> for Result<Ok, EthError> {
         self.map_err(|err| match err {
             EthError::BlockNotFound(_)
             | EthError::NonceMaxValue
-            // SYSCOIN
             | EthError::InvalidRewardPercentiles
+            // SYSCOIN
             | EthError::PageSizeTooLarge { .. } => invalid_params_rpc_err(err.to_string()),
+            EthError::RpcStorage(RpcStorageError::BlockNotFound(_)) => {
+                invalid_params_rpc_err(err.to_string())
+            }
             EthError::ReceiptMetadataUnavailable(_)
             | EthError::RpcStorage(_)
             | EthError::Repository(_)
@@ -147,6 +151,9 @@ impl<Ok> ToRpcResult<Ok, EthCallError> for Result<Ok, EthCallError> {
                 None,
             ),
             EthCallError::CallFees(_) => invalid_params_rpc_err(err.to_string()),
+            EthCallError::Storage(RpcStorageError::BlockNotFound(_)) => {
+                invalid_params_rpc_err(err.to_string())
+            }
             err => internal_rpc_err(err.to_string()),
         })
     }
