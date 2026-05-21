@@ -33,7 +33,7 @@ protocol_uses_dev_patch() {
   esac
 }
 
-extract_dev_tag() {
+extract_zksync_os_tag() {
   python3 - "${ZKSYNC_OS_SERVER_PATH}/Cargo.toml" <<'PY'
 import re
 import sys
@@ -41,17 +41,17 @@ from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 m = re.search(
-    r'zk_os_forward_system_dev\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"[^"]+",\s*tag\s*=\s*"([^"]+)"',
+    r'^zk_os_forward_system\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"[^"]+",\s*tag\s*=\s*"([^"]+)"',
     text,
     re.MULTILINE,
 )
 if not m:
-    raise SystemExit("failed to locate zk_os_forward_system_dev tag in Cargo.toml")
+    raise SystemExit("failed to locate zk_os_forward_system tag in Cargo.toml")
 print(m.group(1))
 PY
 }
 
-extract_dev_git_url() {
+extract_zksync_os_git_url() {
   python3 - "${ZKSYNC_OS_SERVER_PATH}/Cargo.toml" <<'PY'
 import re
 import sys
@@ -59,12 +59,12 @@ from pathlib import Path
 
 text = Path(sys.argv[1]).read_text(encoding="utf-8")
 m = re.search(
-    r'zk_os_forward_system_dev\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"([^"]+)"',
+    r'^zk_os_forward_system\s*=\s*\{\s*package\s*=\s*"forward_system",\s*git\s*=\s*"([^"]+)"',
     text,
     re.MULTILINE,
 )
 if not m:
-    raise SystemExit("failed to locate zk_os_forward_system_dev git URL in Cargo.toml")
+    raise SystemExit("failed to locate zk_os_forward_system git URL in Cargo.toml")
 print(m.group(1))
 PY
 }
@@ -119,55 +119,55 @@ checkout_locked_base() {
     gl_die "zksync-os checkout ${checked_out_rev} != locked revision ${locked_rev}"
 }
 
-prepare_dev_checkout() {
-  local dev_tag dev_git_url locked_rev dev_root dev_path
-  dev_tag="${1:?dev tag required}"
-  dev_git_url="$(extract_dev_git_url)"
-  locked_rev="$(extract_locked_rev "${dev_git_url}" "${dev_tag}")"
+prepare_zksync_os_checkout() {
+  local os_tag os_git_url locked_rev os_root os_path
+  os_tag="${1:?zksync-os tag required}"
+  os_git_url="$(extract_zksync_os_git_url)"
+  locked_rev="$(extract_locked_rev "${os_git_url}" "${os_tag}")"
 
   if [ -n "${ZKSYNC_OS_DEV_PATH:-}" ]; then
-    dev_path="${ZKSYNC_OS_DEV_PATH}"
-    git -C "${dev_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
-      gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${dev_path}"
+    os_path="${ZKSYNC_OS_DEV_PATH}"
+    git -C "${os_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
+      gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${os_path}"
     # SYSCOIN: the launcher rewrites dependencies to a patched local zksync-os
     # checkout, so re-anchor that checkout to Cargo.lock before applying the patch.
-    checkout_locked_base "${dev_path}" "${locked_rev}"
-    bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
-    git -C "${dev_path}" add -A
-    if ! git -C "${dev_path}" diff --cached --quiet; then
-      git -C "${dev_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
+    checkout_locked_base "${os_path}" "${locked_rev}"
+    bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${os_path}"
+    git -C "${os_path}" add -A
+    if ! git -C "${os_path}" diff --cached --quiet; then
+      git -C "${os_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
         commit -m "gateway-launch local syscoin patch" >/dev/null
     fi
-    git -C "${dev_path}" tag -f "${dev_tag}" >/dev/null
-    printf '%s\n' "${dev_path}"
+    git -C "${os_path}" tag -f "${os_tag}" >/dev/null
+    printf '%s\n' "${os_path}"
     return 0
   fi
 
-  dev_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
-  dev_path="${dev_root}/${dev_tag}"
+  os_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
+  os_path="${os_root}/${os_tag}"
 
-  if [ ! -d "${dev_path}/.git" ]; then
-    mkdir -p "${dev_root}"
-    git clone "${ZKSYNC_OS_GIT_URL}" "${dev_path}"
+  if [ ! -d "${os_path}/.git" ]; then
+    mkdir -p "${os_root}"
+    git clone "${ZKSYNC_OS_GIT_URL}" "${os_path}"
   fi
 
   # SYSCOIN: use Cargo.lock's immutable git revision, not the mutable upstream tag.
-  checkout_locked_base "${dev_path}" "${locked_rev}"
-  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${dev_path}"
-  git -C "${dev_path}" add -A
-  if ! git -C "${dev_path}" diff --cached --quiet; then
-    git -C "${dev_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
+  checkout_locked_base "${os_path}" "${locked_rev}"
+  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-os-syscoin-patch.sh" "${os_path}"
+  git -C "${os_path}" add -A
+  if ! git -C "${os_path}" diff --cached --quiet; then
+    git -C "${os_path}" -c user.name="gateway-launch" -c user.email="gateway-launch@local" \
       commit -m "gateway-launch local syscoin patch" >/dev/null
   fi
-  git -C "${dev_path}" tag -f "${dev_tag}" >/dev/null
-  printf '%s\n' "${dev_path}"
+  git -C "${os_path}" tag -f "${os_tag}" >/dev/null
+  printf '%s\n' "${os_path}"
 }
 
 prepare_run_workspace() {
   local run_path="$1"
-  local dev_path="$2"
-  local dev_tag="$3"
-  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${dev_path}" "${dev_tag}" <<'PY'
+  local os_path="$2"
+  local os_tag="$3"
+  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${os_path}" "${os_tag}" <<'PY'
 import re
 import shutil
 import sys
@@ -175,9 +175,9 @@ from pathlib import Path
 
 source = Path(sys.argv[1]).resolve()
 target = Path(sys.argv[2]).resolve()
-dev_path = Path(sys.argv[3]).resolve()
-dev_tag = sys.argv[4]
-dev_git_url = dev_path.as_uri()
+os_path = Path(sys.argv[3]).resolve()
+os_tag = sys.argv[4]
+os_git_url = os_path.as_uri()
 
 if target.exists():
     shutil.rmtree(target)
@@ -197,39 +197,54 @@ cargo_toml = target / "Cargo.toml"
 text = cargo_toml.read_text(encoding="utf-8")
 
 forward_re = re.compile(
-    r'zk_os_forward_system_dev\s*=\s*\{.*?default-features\s*=\s*false\s*\}',
+    r'(?m)^zk_os_forward_system\s*=\s*\{.*?default-features\s*=\s*false\s*\}',
     re.MULTILINE | re.DOTALL,
 )
 zk_ee_re = re.compile(
-    r'zk_ee_dev\s*=\s*\{.*?\}',
+    r'(?m)^zk_ee\s*=\s*\{.*?\}',
     re.MULTILINE,
 )
 basic_re = re.compile(
-    r'zk_os_basic_system_dev\s*=\s*\{.*?\}',
+    r'(?m)^zk_os_basic_system\s*=\s*\{.*?\}',
+    re.MULTILINE,
+)
+api_re = re.compile(
+    r'(?m)^zk_os_api\s*=\s*\{.*?\}',
+    re.MULTILINE,
+)
+evm_interpreter_re = re.compile(
+    r'(?m)^zk_os_evm_interpreter\s*=\s*\{.*?\}',
     re.MULTILINE,
 )
 
 text, count_forward = forward_re.subn(
-    f'zk_os_forward_system_dev = {{ package = "forward_system", git = "{dev_git_url}", tag = "{dev_tag}", features = [\n'
-    '    "production",\n'
-    '    "no_print",\n'
-    '], default-features = false }',
+    f'zk_os_forward_system = {{ package = "forward_system", git = "{os_git_url}", tag = "{os_tag}", features = ["production", "no_print"], default-features = false }}',
     text,
     count=1,
 )
 text, count_ee = zk_ee_re.subn(
-    f'zk_ee_dev = {{ package = "zk_ee", git = "{dev_git_url}", tag = "{dev_tag}" }}',
+    f'zk_ee = {{ package = "zk_ee", git = "{os_git_url}", tag = "{os_tag}" }}',
     text,
     count=1,
 )
 text, count_basic = basic_re.subn(
-    f'zk_os_basic_system_dev = {{ package = "basic_system", git = "{dev_git_url}", tag = "{dev_tag}" }}',
+    f'zk_os_basic_system = {{ package = "basic_system", git = "{os_git_url}", tag = "{os_tag}" }}',
+    text,
+    count=1,
+)
+text, count_api = api_re.subn(
+    f'zk_os_api = {{ package = "zksync_os_api", git = "{os_git_url}", tag = "{os_tag}" }}',
+    text,
+    count=1,
+)
+text, count_evm_interpreter = evm_interpreter_re.subn(
+    f'zk_os_evm_interpreter = {{ package = "evm_interpreter", git = "{os_git_url}", tag = "{os_tag}" }}',
     text,
     count=1,
 )
 
-if count_forward != 1 or count_ee != 1 or count_basic != 1:
-    raise SystemExit("failed to rewrite dev zksync-os dependencies in Cargo.toml")
+if (count_forward, count_ee, count_basic, count_api, count_evm_interpreter) != (1, 1, 1, 1, 1):
+    raise SystemExit("failed to rewrite current zksync-os dependencies in Cargo.toml")
 
 cargo_toml.write_text(text, encoding="utf-8")
 PY
@@ -287,11 +302,11 @@ refresh_os_server_config_credentials() {
 refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
-  DEV_TAG="$(extract_dev_tag)"
-  DEV_PATH="$(prepare_dev_checkout "${DEV_TAG}")"
+  ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
+  ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"
   TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
-  prepare_run_workspace "${RUN_PATH}" "${DEV_PATH}" "${DEV_TAG}"
+  prepare_run_workspace "${RUN_PATH}" "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}"
   clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
