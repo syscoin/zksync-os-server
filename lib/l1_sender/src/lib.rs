@@ -1429,11 +1429,16 @@ impl L1SenderFeeConfig {
     }
 
     fn replacement_fee_params(self) -> FeeParams {
+        // SYSCOIN: bump from the effective floored fee so replacement txs remain
+        // strictly above the first submission even when the configured tip cap is lower.
+        let base = self
+            .configured_fee_params()
+            .with_syscoin_priority_fee_floor();
         FeeParams {
-            max_fee_per_gas: ((self.max_fee_per_gas_wei as f64)
+            max_fee_per_gas: ((base.max_fee_per_gas as f64)
                 * self.max_fee_per_gas_replacement_multiplier)
                 .ceil() as u128,
-            max_priority_fee_per_gas: ((self.max_priority_fee_per_gas_wei as f64)
+            max_priority_fee_per_gas: ((base.max_priority_fee_per_gas as f64)
                 * self.max_priority_fee_per_gas_replacement_multiplier)
                 .ceil() as u128,
             max_fee_per_blob_gas: ((self.max_fee_per_blob_gas_wei as f64)
@@ -1522,6 +1527,7 @@ impl FeeParams {
             );
             self.max_priority_fee_per_gas = SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
         }
+        // SYSCOIN: the floor must not produce an invalid EIP-1559 tuple.
         if self.max_fee_per_gas < self.max_priority_fee_per_gas {
             tracing::warn!(
                 max_fee_per_gas = self.max_fee_per_gas,
@@ -1741,7 +1747,7 @@ async fn validate_tx_receipt<Input: SendToL1>(
 #[cfg(test)]
 mod tests {
     use super::{
-        FeeParams, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI, apply_fee_caps,
+        FeeParams, L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI, apply_fee_caps,
         is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use alloy::providers::utils::Eip1559Estimation;
@@ -1858,5 +1864,25 @@ mod tests {
             SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI
         );
         assert_eq!(capped.max_fee_per_gas, capped.max_priority_fee_per_gas);
+    }
+
+    #[test]
+    fn replacement_fee_params_bump_from_syscoin_priority_fee_floor() {
+        let fee_config = L1SenderFeeConfig {
+            max_fee_per_gas_wei: 100_000,
+            max_priority_fee_per_gas_wei: 10_000,
+            max_fee_per_blob_gas_wei: 50_000,
+            max_fee_per_gas_replacement_multiplier: 1.1,
+            max_priority_fee_per_gas_replacement_multiplier: 1.1,
+            max_fee_per_blob_gas_replacement_multiplier: 2.0,
+        };
+
+        let replacement = fee_config.replacement_fee_params();
+
+        assert_eq!(
+            replacement.max_priority_fee_per_gas,
+            (SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI as f64 * 1.1).ceil() as u128
+        );
+        assert!(replacement.max_fee_per_gas >= replacement.max_priority_fee_per_gas);
     }
 }
