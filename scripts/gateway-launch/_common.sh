@@ -389,6 +389,7 @@ for rel in (
     "scripts/apply-zksync-era-syscoin-patch.sh",
     "scripts/patches/zksync-era-syscoin.patch",
     "scripts/patches/era-contracts-syscoin.patch",
+    "scripts/patches/era-contracts-syscoin-deploy-idempotency.patch",
 ):
     path = server / rel
     payload[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None

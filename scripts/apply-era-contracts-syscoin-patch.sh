@@ -10,6 +10,7 @@ CONTRACTS_PATH="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin.patch"
 DA_LIMITS_PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin-da-limits.patch"
+DEPLOY_IDEMPOTENCY_PATCH_FILE="${SCRIPT_DIR}/patches/era-contracts-syscoin-deploy-idempotency.patch"
 
 if [[ ! -e "${CONTRACTS_PATH}/.git" ]]; then
   echo "error: ${CONTRACTS_PATH} is not a git repository root" >&2
@@ -22,6 +23,10 @@ if [[ ! -f "${PATCH_FILE}" ]]; then
 fi
 if [[ ! -f "${DA_LIMITS_PATCH_FILE}" ]]; then
   echo "error: patch file not found: ${DA_LIMITS_PATCH_FILE}" >&2
+  exit 1
+fi
+if [[ ! -f "${DEPLOY_IDEMPOTENCY_PATCH_FILE}" ]]; then
+  echo "error: patch file not found: ${DEPLOY_IDEMPOTENCY_PATCH_FILE}" >&2
   exit 1
 fi
 
@@ -42,6 +47,11 @@ da_limits_patch_applied() {
   && grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/DAUtils.sol" \
   && grep -q "uint256 constant MAX_NUMBER_OF_BLOBS = 32;" "${CONTRACTS_PATH}/system-contracts/contracts/Constants.sol" \
   && grep -q "uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 32;" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol"
+}
+
+deploy_idempotency_patch_applied() {
+  grep -q "unexpected L1AssetRouter native token vault" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol" \
+  && grep -q "unexpected L1Nullifier asset router" "${CONTRACTS_PATH}/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol"
 }
 
 check_base_contracts_patch() {
@@ -91,12 +101,16 @@ changed=false
 contracts_changed=false
 need_base_contracts_patch=false
 need_da_limits_patch=false
+need_deploy_idempotency_patch=false
 
 if ! base_patch_core_applied; then
   need_base_contracts_patch=true
 fi
 if ! da_limits_patch_applied; then
   need_da_limits_patch=true
+fi
+if ! deploy_idempotency_patch_applied; then
+  need_deploy_idempotency_patch=true
 fi
 
 if [[ "${need_base_contracts_patch}" == true ]]; then
@@ -111,6 +125,16 @@ if [[ "${need_da_limits_patch}" == true ]]; then
   git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
 fi
 
+if [[ "${need_deploy_idempotency_patch}" == true ]]; then
+  if [[ -n "${initial_contracts_status}" && "${contracts_changed}" == false ]] && ! base_patch_core_applied; then
+    echo "error: ${CONTRACTS_PATH} has uncommitted changes and deploy idempotency patch is not applied" >&2
+    printf '%s\n' "${initial_contracts_status}" >&2
+    exit 1
+  fi
+  echo "Checking Syscoin deploy idempotency patch applicability..."
+  git -C "${CONTRACTS_PATH}" apply --check --recount "${DEPLOY_IDEMPOTENCY_PATCH_FILE}"
+fi
+
 if [[ "${need_base_contracts_patch}" == true ]]; then
   echo "Applying base era-contracts Syscoin patch..."
   apply_base_contracts_patch
@@ -121,6 +145,13 @@ fi
 if [[ "${need_da_limits_patch}" == true ]]; then
   echo "Applying era-contracts Syscoin DA limits patch..."
   git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
+  changed=true
+  contracts_changed=true
+fi
+
+if [[ "${need_deploy_idempotency_patch}" == true ]]; then
+  echo "Applying era-contracts Syscoin deploy idempotency patch..."
+  git -C "${CONTRACTS_PATH}" apply --recount "${DEPLOY_IDEMPOTENCY_PATCH_FILE}"
   changed=true
   contracts_changed=true
 fi
