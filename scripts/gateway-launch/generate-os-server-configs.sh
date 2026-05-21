@@ -333,10 +333,23 @@ prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip(
 prover_api_bind_host = os.environ.get("PROVER_API_BIND_HOST", "").strip()
 if not prover_api_bind_host:
     raise SystemExit("missing prover API bind host: set PROVER_API_BIND_HOST")
-if not prover_api_auth_user or not prover_api_auth_password:
+prover_api_bind_is_loopback = prover_api_bind_host in {"127.0.0.1", "localhost", "::1"}
+if (not prover_api_auth_user or not prover_api_auth_password) and (
+    not use_mock_prover or not prover_api_bind_is_loopback
+):
     raise SystemExit(
         "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
     )
+prover_api_auth_config_lines = []
+if prover_api_auth_user or prover_api_auth_password:
+    if not prover_api_auth_user or not prover_api_auth_password:
+        raise SystemExit(
+            "incomplete prover API credentials: set both PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
+        )
+    prover_api_auth_config_lines = [
+        f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
+        f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
+    ]
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
@@ -534,8 +547,7 @@ def materialize_chain(
             ),
             "prover_api:",
             f"  address: {prover_api_bind_host}:{prover_api_port}",
-            f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
-            f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
+            *prover_api_auth_config_lines,
             "  fake_fri_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
