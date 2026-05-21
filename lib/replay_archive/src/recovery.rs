@@ -608,7 +608,6 @@ mod tests {
         block_number: BlockNumber,
         previous_block_hash: BlockHash,
     ) -> ReplayRecord {
-        // SYSCOIN: ReplayRecord uses the local storage API context plus canonical upgrade hash.
         let mut block_context = zksync_os_storage_api::BlockContext {
             block_number,
             ..Default::default()
