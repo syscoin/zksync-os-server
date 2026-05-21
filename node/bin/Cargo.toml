@@ -122,7 +122,7 @@ tar.workspace = true
 tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd"] }
 # SYSCOIN: batcher-side Bitcoin DA RPC client and secret handling.
 secrecy.workspace = true
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.13" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.14" }
 url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
