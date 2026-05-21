@@ -219,6 +219,10 @@ def write_text(path: Path, text: str):
     path.write_text(text, encoding="utf-8")
 
 
+def remove_if_exists(path: Path):
+    path.unlink(missing_ok=True)
+
+
 def write_secret_text(path: Path, text: str, mode: int = 0o600):
     # SYSCOIN: generated OS server configs contain operator private keys; create
     # them independent of the caller's umask so staging artifacts are not world-readable.
@@ -346,6 +350,7 @@ if prover_api_auth_user and prover_api_auth_password:
         f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
         f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
     ]
+prover_api_nginx_enabled = bool(prover_api_auth_config_lines)
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
@@ -700,10 +705,13 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
     write_text(out_dir / "start-node.sh", start_script)
     (out_dir / "start-node.sh").chmod(0o755)
 
-    write_text(
-        out_dir / "prover-api.nginx.conf",
-        nginx_prover_api_server_block(prover_api_domain, prover_api_port),
-    )
+    if prover_api_nginx_enabled:
+        write_text(
+            out_dir / "prover-api.nginx.conf",
+            nginx_prover_api_server_block(prover_api_domain, prover_api_port),
+        )
+    else:
+        remove_if_exists(out_dir / "prover-api.nginx.conf")
     stale_proxy_helper = out_dir / "start-prover-api-proxy.sh"
     if stale_proxy_helper.exists():
         stale_proxy_helper.unlink()
@@ -734,19 +742,20 @@ if materialize_edge_config == "true":
         gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
         prover_api_domain=os.environ["EDGE_PROVER_API_DOMAIN"],
     )
-    combined_nginx = (
-        nginx_prover_api_server_block(
-            os.environ["GATEWAY_PROVER_API_DOMAIN"],
-            os.environ["GATEWAY_PROVER_API_PORT"],
+    if prover_api_nginx_enabled:
+        combined_nginx = (
+            nginx_prover_api_server_block(
+                os.environ["GATEWAY_PROVER_API_DOMAIN"],
+                os.environ["GATEWAY_PROVER_API_PORT"],
+            )
+            + "\n"
+            + nginx_prover_api_server_block(
+                os.environ["EDGE_PROVER_API_DOMAIN"],
+                os.environ["EDGE_PROVER_API_PORT"],
+            )
         )
-        + "\n"
-        + nginx_prover_api_server_block(
-            os.environ["EDGE_PROVER_API_DOMAIN"],
-            os.environ["EDGE_PROVER_API_PORT"],
-        )
-    )
-    write_text(output_root / "prover-api.nginx.conf", combined_nginx)
-    install_script = f"""#!/usr/bin/env bash
+        write_text(output_root / "prover-api.nginx.conf", combined_nginx)
+        install_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 conf_src="{output_root / 'prover-api.nginx.conf'}"
 if [ -n "${{NGINX_PROVER_API_CONF:-}}" ]; then
@@ -782,8 +791,11 @@ fi
 sudo nginx -t
 sudo systemctl reload nginx
 """
-    write_text(output_root / "install-prover-api-nginx.sh", install_script)
-    (output_root / "install-prover-api-nginx.sh").chmod(0o755)
+        write_text(output_root / "install-prover-api-nginx.sh", install_script)
+        (output_root / "install-prover-api-nginx.sh").chmod(0o755)
+    else:
+        remove_if_exists(output_root / "prover-api.nginx.conf")
+        remove_if_exists(output_root / "install-prover-api-nginx.sh")
 else:
     print("gateway-launch: skipping edge OS-server config materialization for this phase")
 
