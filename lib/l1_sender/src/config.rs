@@ -2,6 +2,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use zksync_os_operator_signer::SignerConfig;
 
+/// SYSCOIN: current Syscoin mainnet RPCs can return near-zero `eth_feeHistory` rewards even
+/// though miners enforce a higher tip floor. Keep L1 settlement txs above that policy.
+pub const SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI: u128 = 20_000;
+
 /// Configuration of L1 sender.
 #[derive(Clone, Debug)]
 pub struct L1SenderConfig<Input> {
