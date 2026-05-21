@@ -26,8 +26,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${PROVER_API_BIND_HOST:=127.0.0.1}"
 : "${GATEWAY_PROVER_API_DOMAIN:=prover-gw.dev11.top}"
 : "${EDGE_PROVER_API_DOMAIN:=prover-zk.dev11.top}"
-: "${PROVER_API_AUTH_USER:=syscoin-prover}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
+: "${PROVER_API_AUTH_USER:=${PROVER_API_AUTH_PASSWORD:+syscoin-prover}}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 # SYSCOIN: Keep the generated edge limit aligned with one Syscoin DA blob and
@@ -341,11 +341,7 @@ if (not prover_api_auth_user or not prover_api_auth_password) and (
         "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
     )
 prover_api_auth_config_lines = []
-if prover_api_auth_user or prover_api_auth_password:
-    if not prover_api_auth_user or not prover_api_auth_password:
-        raise SystemExit(
-            "incomplete prover API credentials: set both PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
-        )
+if prover_api_auth_user and prover_api_auth_password:
     prover_api_auth_config_lines = [
         f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
         f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
