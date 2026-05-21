@@ -331,6 +331,7 @@ mod tests {
 
     fn test_replay_record(block_number: u64) -> ReplayRecord {
         ReplayRecord {
+            // SYSCOIN: ReplayRecord uses the local storage API context plus canonical upgrade hash.
             block_context: zksync_os_storage_api::BlockContext {
                 block_number,
                 ..Default::default()
