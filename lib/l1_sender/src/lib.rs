@@ -1522,6 +1522,14 @@ impl FeeParams {
             );
             self.max_priority_fee_per_gas = SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
         }
+        if self.max_fee_per_gas < self.max_priority_fee_per_gas {
+            tracing::warn!(
+                max_fee_per_gas = self.max_fee_per_gas,
+                max_priority_fee_per_gas = self.max_priority_fee_per_gas,
+                "Raising L1 max fee to preserve EIP-1559 fee invariant"
+            );
+            self.max_fee_per_gas = self.max_priority_fee_per_gas;
+        }
         self
     }
 }
@@ -1829,5 +1837,26 @@ mod tests {
             capped.max_priority_fee_per_gas,
             SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI
         );
+    }
+
+    #[test]
+    fn apply_fee_caps_preserves_eip1559_fee_invariant_after_floor() {
+        let configured = FeeParams {
+            max_fee_per_gas: 10_000,
+            max_priority_fee_per_gas: 2_000_000_000,
+            max_fee_per_blob_gas: 50_000_000_000,
+        };
+        let estimated = Eip1559Estimation {
+            max_fee_per_gas: 15,
+            max_priority_fee_per_gas: 1,
+        };
+
+        let capped = apply_fee_caps(configured, estimated);
+
+        assert_eq!(
+            capped.max_priority_fee_per_gas,
+            SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI
+        );
+        assert_eq!(capped.max_fee_per_gas, capped.max_priority_fee_per_gas);
     }
 }
