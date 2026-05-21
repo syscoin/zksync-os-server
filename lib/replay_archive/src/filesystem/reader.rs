@@ -117,6 +117,10 @@ async fn list_objects(
                 if !object_metadata.is_file() {
                     continue;
                 }
+                // SYSCOIN: atomic archive publication uses hidden temp files before final publish.
+                if is_temporary_archive_object(&object_entry) {
+                    continue;
+                }
 
                 let block_hash = parse_block_hash_entry(&object_entry)?;
                 let key = ReplayArchiveKey::new(session.clone(), block_number, block_hash);
@@ -182,4 +186,53 @@ fn parse_block_hash_entry(entry: &tokio::fs::DirEntry) -> anyhow::Result<BlockHa
             entry.path().display()
         )
     })
+}
+
+fn is_temporary_archive_object(entry: &tokio::fs::DirEntry) -> bool {
+    let file_name = entry.file_name();
+    let file_name = file_name.to_string_lossy();
+    file_name.starts_with('.') && file_name.ends_with(".tmp")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ReplayArchiveKey, format_block_hash};
+
+    #[tokio::test]
+    async fn list_objects_ignores_temporary_archive_files() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let block_number = 7;
+        let block_hash = BlockHash::with_last_byte(1);
+        let session_path = tempdir.path().join(session.folder_name());
+        let block_path = session_path.join(block_number.to_string());
+        tokio::fs::create_dir_all(&block_path).await.unwrap();
+        tokio::fs::write(
+            block_path.join(format!(".{}.999.1.tmp", format_block_hash(block_hash))),
+            b"partial",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(block_path.join(format_block_hash(block_hash)), b"complete")
+            .await
+            .unwrap();
+
+        let reader = FileSystemReplayArchiveReader::new(tempdir.path().to_path_buf());
+        let objects = reader
+            .list_objects()
+            .await
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(objects.len(), 1);
+        assert_eq!(
+            objects[0].key,
+            ReplayArchiveKey::new(session, block_number, block_hash)
+        );
+        assert_eq!(objects[0].bytes, b"complete");
+    }
 }

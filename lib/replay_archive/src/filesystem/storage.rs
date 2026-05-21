@@ -6,7 +6,10 @@ use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt as _;
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// File-system implementation of [`ReplayArchiveStorage`].
 ///
@@ -39,6 +42,25 @@ impl FileSystemReplayArchiveStorage {
         self.block_dir_path(block_number)
             .join(format_block_hash(block_hash))
     }
+
+    fn temporary_object_path(&self, block_number: BlockNumber, block_hash: BlockHash) -> PathBuf {
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.block_dir_path(block_number).join(format!(
+            ".{}.{}.{}.tmp",
+            format_block_hash(block_hash),
+            std::process::id(),
+            counter
+        ))
+    }
+}
+
+async fn sync_directory(path: &Path) -> anyhow::Result<()> {
+    let dir = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("failed to open directory {} for sync", path.display()))?;
+    dir.sync_all()
+        .await
+        .with_context(|| format!("failed to sync directory {}", path.display()))
 }
 
 #[async_trait]
@@ -83,31 +105,74 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
                     block_dir_path.display()
                 )
             })?;
+        sync_directory(&self.session_path()).await?;
 
+        // SYSCOIN: avoid letting the commit gate observe a final archive path until
+        // the object is fully written, synced, and published without overwriting.
         let object_path = self.object_path(block_number, block_hash);
+        let temporary_object_path = self.temporary_object_path(block_number, block_hash);
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&object_path)
+            .open(&temporary_object_path)
             .await
             .with_context(|| {
                 format!(
-                    "failed to create append-only replay archive object {}",
-                    object_path.display()
+                    "failed to create temporary replay archive object {}",
+                    temporary_object_path.display()
                 )
             })?;
-        file.write_all(&object).await.with_context(|| {
-            format!(
-                "failed to write replay archive object {}",
-                object_path.display()
-            )
-        })?;
-        file.flush().await.with_context(|| {
-            format!(
-                "failed to flush replay archive object {}",
-                object_path.display()
-            )
-        })?;
+
+        let publish_result: anyhow::Result<()> = async {
+            file.write_all(&object).await.with_context(|| {
+                format!(
+                    "failed to write replay archive object {}",
+                    temporary_object_path.display()
+                )
+            })?;
+            file.flush().await.with_context(|| {
+                format!(
+                    "failed to flush replay archive object {}",
+                    temporary_object_path.display()
+                )
+            })?;
+            file.sync_all().await.with_context(|| {
+                format!(
+                    "failed to sync replay archive object {}",
+                    temporary_object_path.display()
+                )
+            })?;
+            drop(file);
+
+            tokio::fs::hard_link(&temporary_object_path, &object_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to publish append-only replay archive object {}",
+                        object_path.display()
+                    )
+                })?;
+            sync_directory(&block_dir_path).await?;
+
+            if let Err(err) = tokio::fs::remove_file(&temporary_object_path).await {
+                tracing::warn!(
+                    temporary_object_path = %temporary_object_path.display(),
+                    "failed to remove temporary replay archive object after publish: {err}"
+                );
+            } else if let Err(err) = sync_directory(&block_dir_path).await {
+                tracing::warn!(
+                    block_dir_path = %block_dir_path.display(),
+                    "failed to sync replay archive directory after temporary object cleanup: {err}"
+                );
+            }
+            Ok(())
+        }
+        .await;
+
+        if publish_result.is_err() {
+            let _ = tokio::fs::remove_file(&temporary_object_path).await;
+        }
+        publish_result?;
         Ok(())
     }
 
@@ -169,5 +234,76 @@ impl ReplayArchiver for FileSystemReplayArchiver {
         self.inner
             .contains_replay_record(block_number, block_hash)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn contains_object_ignores_temporary_archive_files() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let storage = FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session)
+            .await
+            .unwrap();
+        let block_number = 7;
+        let block_hash = BlockHash::with_last_byte(1);
+        let block_dir_path = storage.block_dir_path(block_number);
+        tokio::fs::create_dir_all(&block_dir_path).await.unwrap();
+
+        let temporary_object_path = storage.temporary_object_path(block_number, block_hash);
+        tokio::fs::write(&temporary_object_path, b"partial")
+            .await
+            .unwrap();
+
+        assert!(
+            !storage
+                .contains_object(block_number, block_hash)
+                .await
+                .unwrap()
+        );
+        assert!(!storage.object_path(block_number, block_hash).exists());
+    }
+
+    #[tokio::test]
+    async fn append_object_publishes_complete_final_path() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let storage = FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session)
+            .await
+            .unwrap();
+        let block_number = 7;
+        let block_hash = BlockHash::with_last_byte(1);
+        let object = b"complete replay object".to_vec();
+
+        storage
+            .append_object(block_number, block_hash, object.clone())
+            .await
+            .unwrap();
+
+        assert!(
+            storage
+                .contains_object(block_number, block_hash)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            tokio::fs::read(storage.object_path(block_number, block_hash))
+                .await
+                .unwrap(),
+            object
+        );
+        let mut entries = tokio::fs::read_dir(storage.block_dir_path(block_number))
+            .await
+            .unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            assert!(
+                !entry.file_name().to_string_lossy().ends_with(".tmp"),
+                "temporary archive file was left behind: {:?}",
+                entry.path()
+            );
+        }
     }
 }
