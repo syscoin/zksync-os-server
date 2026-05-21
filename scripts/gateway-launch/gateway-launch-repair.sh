@@ -3,6 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPAIR_PROVER_MODE_WAS_SET="${PROVER_MODE+x}"
+REPAIR_GATEWAY_PROVER_MODE_WAS_SET="${GATEWAY_PROVER_MODE+x}"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_validate_prover_mode
@@ -109,6 +111,35 @@ export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 : "${PROTOCOL_VERSION:=v31.0}"
+
+if [ -z "${REPAIR_PROVER_MODE_WAS_SET}" ] || [ -z "${REPAIR_GATEWAY_PROVER_MODE_WAS_SET}" ]; then
+  checkpoint_state_file="${GATEWAY_DIR}/.gateway-launch/state.json"
+  if [ -f "${checkpoint_state_file}" ]; then
+    checkpoint_prover_modes="$(python3 - "${checkpoint_state_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+fingerprint = state.get("fingerprint") or {}
+print(fingerprint.get("prover_mode") or "")
+print(fingerprint.get("gateway_prover_mode") or "")
+PY
+)"
+    checkpoint_prover_mode="$(printf '%s\n' "${checkpoint_prover_modes}" | sed -n '1p')"
+    checkpoint_gateway_prover_mode="$(printf '%s\n' "${checkpoint_prover_modes}" | sed -n '2p')"
+    if [ -z "${REPAIR_PROVER_MODE_WAS_SET}" ] && [ -n "${checkpoint_prover_mode}" ]; then
+      PROVER_MODE="${checkpoint_prover_mode}"
+      export PROVER_MODE
+      gl_validate_prover_mode
+    fi
+    if [ -z "${REPAIR_GATEWAY_PROVER_MODE_WAS_SET}" ] && [ -n "${checkpoint_gateway_prover_mode}" ]; then
+      GATEWAY_PROVER_MODE="${checkpoint_gateway_prover_mode}"
+      export GATEWAY_PROVER_MODE
+    fi
+  fi
+fi
+
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 
