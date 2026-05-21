@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt as _;
 
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+const TEMP_FILE_CREATE_ATTEMPTS: usize = 1024;
 
 /// File-system implementation of [`ReplayArchiveStorage`].
 ///
@@ -52,6 +53,47 @@ impl FileSystemReplayArchiveStorage {
             counter
         ))
     }
+
+    async fn create_temporary_object(
+        &self,
+        block_number: BlockNumber,
+        block_hash: BlockHash,
+    ) -> anyhow::Result<(PathBuf, tokio::fs::File)> {
+        let candidate_paths = (0..TEMP_FILE_CREATE_ATTEMPTS)
+            .map(|_| self.temporary_object_path(block_number, block_hash));
+        create_temporary_object_from_candidates(candidate_paths).await
+    }
+}
+
+async fn create_temporary_object_from_candidates<I>(
+    candidate_paths: I,
+) -> anyhow::Result<(PathBuf, tokio::fs::File)>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut attempts = 0;
+    for temporary_object_path in candidate_paths {
+        attempts += 1;
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_object_path)
+            .await
+        {
+            Ok(file) => return Ok((temporary_object_path, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to create temporary replay archive object {}",
+                        temporary_object_path.display()
+                    )
+                });
+            }
+        }
+    }
+
+    anyhow::bail!("failed to create temporary replay archive object after {attempts} attempts");
 }
 
 async fn sync_directory(path: &Path) -> anyhow::Result<()> {
@@ -110,18 +152,9 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
         // SYSCOIN: avoid letting the commit gate observe a final archive path until
         // the object is fully written, synced, and published without overwriting.
         let object_path = self.object_path(block_number, block_hash);
-        let temporary_object_path = self.temporary_object_path(block_number, block_hash);
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary_object_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to create temporary replay archive object {}",
-                    temporary_object_path.display()
-                )
-            })?;
+        let (temporary_object_path, mut file) = self
+            .create_temporary_object(block_number, block_hash)
+            .await?;
 
         let publish_result: anyhow::Result<()> = async {
             file.write_all(&object).await.with_context(|| {
@@ -265,6 +298,24 @@ mod tests {
                 .unwrap()
         );
         assert!(!storage.object_path(block_number, block_hash).exists());
+    }
+
+    #[tokio::test]
+    async fn create_temporary_object_retries_stale_temporary_file_collision() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let stale_path = tempdir.path().join(".stale.tmp");
+        let fresh_path = tempdir.path().join(".fresh.tmp");
+        tokio::fs::write(&stale_path, b"stale").await.unwrap();
+
+        let (created_path, file) =
+            create_temporary_object_from_candidates([stale_path.clone(), fresh_path.clone()])
+                .await
+                .unwrap();
+        drop(file);
+
+        assert_eq!(created_path, fresh_path);
+        assert_eq!(tokio::fs::read(stale_path).await.unwrap(), b"stale");
+        assert!(created_path.exists());
     }
 
     #[tokio::test]
