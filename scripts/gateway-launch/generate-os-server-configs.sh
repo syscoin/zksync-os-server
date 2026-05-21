@@ -524,6 +524,14 @@ def materialize_chain(
             ),
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
+            *(
+                [
+                    "prover_input_generator:",
+                    "  enable_input_generation: false",
+                ]
+                if use_mock_prover
+                else []
+            ),
             "prover_api:",
             f"  address: {prover_api_bind_host}:{prover_api_port}",
             f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
