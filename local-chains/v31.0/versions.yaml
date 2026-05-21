@@ -1,6 +1,6 @@
 general:
   protocol_version: "v31.0"
-  verification_key: "0xa560fbdd4a57c655949e7e34768579184ed026d0676f33e891a025a3f85d4c5c"
+  verification_key: "0x6f837bbef255ebde36677f3accb456e16253fe43f4091b0e820bff0cf95a32a0"
 
 era-contracts:
   # TODO: remove branch and put tag and sha when the release is done
