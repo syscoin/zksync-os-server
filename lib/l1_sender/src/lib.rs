@@ -841,9 +841,7 @@ where
     for command in completed_commands {
         for mut output_envelope in command.into() {
             output_envelope.set_stage(Input::MINED_STAGE);
-            outbound
-                .send_and_record(output_envelope, state_reporter)
-                .await?;
+            outbound.send_and_record(output_envelope, state_reporter)?;
         }
     }
     Ok(())

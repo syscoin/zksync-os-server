@@ -128,15 +128,15 @@ pub enum CallKind {
 }
 
 #[derive(Clone)]
-pub struct Monitoring {
-    inner: RpcService,
+pub struct Monitoring<S = RpcService> {
+    inner: S,
     max_response_size_bytes: usize,
     blocking_rpcs_semaphore: Arc<Semaphore>,
 }
 
-impl Monitoring {
+impl<S> Monitoring<S> {
     pub fn new(
-        inner: RpcService,
+        inner: S,
         max_response_size_bytes: u32,
         blocking_rpcs_semaphore: Arc<Semaphore>,
     ) -> Self {
@@ -302,10 +302,19 @@ impl Drop for CallGuard {
     }
 }
 
-impl RpcServiceT for Monitoring {
-    type MethodResponse = <RpcService as RpcServiceT>::MethodResponse;
-    type NotificationResponse = <RpcService as RpcServiceT>::NotificationResponse;
-    type BatchResponse = <RpcService as RpcServiceT>::BatchResponse;
+impl<S> RpcServiceT for Monitoring<S>
+where
+    S: RpcServiceT<
+            MethodResponse = MethodResponse,
+            NotificationResponse = MethodResponse,
+            BatchResponse = MethodResponse,
+        > + Clone
+        + Send
+        + 'static,
+{
+    type MethodResponse = MethodResponse;
+    type NotificationResponse = MethodResponse;
+    type BatchResponse = MethodResponse;
 
     fn call<'a>(
         &self,

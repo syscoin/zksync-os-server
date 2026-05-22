@@ -5,6 +5,7 @@ use std::{
 
 use alloy::primitives::B256;
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     hasher::HashTree,
@@ -12,7 +13,9 @@ use crate::{
 };
 
 /// Operation on a Merkle tree entry used in [`BatchTreeProof`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+// SYSCOIN: batch-work spillover persists upstream Merkle proofs between
+// execution and prover-input generation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TreeOperation {
     /// Operation hitting an existing entry (i.e., an update or read).
     Hit { index: u64 },
@@ -23,7 +26,9 @@ pub enum TreeOperation {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+// SYSCOIN: batch-work spillover persists upstream Merkle proofs between
+// execution and prover-input generation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct IntermediateHash<Loc = ()> {
     pub value: B256,
     /// Level + index on level. Redundant and is only checked in tests.
@@ -59,7 +64,9 @@ pub struct MerkleTreeView {
 /// 2. Previous root hash of the tree is recreated using `sorted_leaves` and `hashes`.
 /// 3. `sorted_leaves` are updated / extended as per inserted / updated entries.
 /// 4. New root hash of the tree is recreated using updated `sorted_leaves` and (the same) `hashes`.
-#[derive(Debug)]
+// SYSCOIN: batch-work spillover persists upstream Merkle proofs between
+// execution and prover-input generation.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct BatchTreeProof {
     /// Performed tree operations. Correspond 1-to-1 to [`TreeEntry`]s.
     pub operations: Vec<TreeOperation>,

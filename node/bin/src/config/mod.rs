@@ -13,10 +13,13 @@ use smart_config::metadata::{SizeUnit, TimeUnit};
 use smart_config::value::SecretString;
 use smart_config::{
     ByteSize, ConfigRepository, ConfigSchema, ConfigSources, DescribeConfig, DeserializeConfig,
-    ErrorWithOrigin, EtherAmount, ParseErrors, Serde, de::Delimited, metadata::EtherUnit,
+    ErrorWithOrigin, EtherAmount, ParseErrors, Serde,
+    de::{Delimited, Entries},
+    metadata::EtherUnit,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::num::NonZeroU32;
 // SYSCOIN
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -1057,6 +1060,18 @@ pub struct RpcConfig {
     /// Keep disabled on public RPC endpoints unless access is separately restricted.
     #[config(default_t = false)]
     pub enable_txpool_namespace: bool,
+
+    /// Per-method rate limits: map from RPC method name to max requests per second (across all
+    /// callers).  Use `"*"` for a global limit applied before per-method limits.  Methods absent
+    /// from the map are unrestricted.
+    ///
+    /// Accepts a JSON object or a comma-separated `method=rps` string, e.g.
+    /// `*=500,eth_call=100,debug_traceTransaction=5`.
+    #[config(default, with = Entries::WELL_KNOWN.delimited(",", "="), validate(
+        rate_limits_within_global,
+        "each per-method limit must not exceed the global `*` limit"
+    ))]
+    pub rate_limits: HashMap<String, NonZeroU32>,
 }
 
 /// L1 sender configuration. The signing key fields are only required on the Main Node
@@ -1203,6 +1218,20 @@ pub struct ForceTransactionResubmissionConfig {
 // replacement rules; merely positive values can still be underpriced replacements.
 fn is_greater_than_one_f64(&val: &f64) -> bool {
     val > 1.0
+}
+
+fn rate_limits_within_global(limits: &HashMap<String, NonZeroU32>) -> bool {
+    let Some(&global) = limits.get("*") else {
+        return true;
+    };
+    limits
+        .iter()
+        .filter(|(k, _)| k.as_str() != "*")
+        .all(|(_, &v)| v <= global)
+}
+
+fn is_positive_f64(&val: &f64) -> bool {
+    val > 0.0
 }
 
 /// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
@@ -2048,6 +2077,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             enable_debug_namespace: c.enable_debug_namespace,
             enable_txpool_namespace: c.enable_txpool_namespace,
             edge_da_admission: None,
+            rate_limits: c.rate_limits.into_iter().map(Into::into).collect(),
         }
     }
 }

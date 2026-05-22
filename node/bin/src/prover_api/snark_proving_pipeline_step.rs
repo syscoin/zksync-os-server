@@ -186,8 +186,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
                     .send_and_record(
                         L1SenderCommand::SendToL1(proof_command),
                         &proof_state_reporter,
-                    )
-                    .await?;
+                    )?;
             }
             Ok::<(), anyhow::Error>(())
         });
@@ -216,7 +215,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
                         snark_job_manager.add_job(batch).await;
                     } else {
                         let passthrough = L1SenderCommand::Passthrough(Box::new(batch));
-                        output.send_and_record(passthrough, &state_reporter).await?;
+                        output.send_and_record(passthrough, &state_reporter)?;
                     }
                 }
                 Ok::<(), anyhow::Error>(())

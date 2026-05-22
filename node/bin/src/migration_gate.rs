@@ -92,7 +92,7 @@ impl PipelineComponent for MigrationGate {
                 );
             }
 
-            output.send_and_record(item, &state_reporter).await?;
+            output.send_and_record(item, &state_reporter)?;
         }
     }
 }

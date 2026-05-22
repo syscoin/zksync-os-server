@@ -114,7 +114,7 @@ where
                     .into();
             }
 
-            output.send_and_record(item, &state_reporter).await?;
+            output.send_and_record(item, &state_reporter)?;
         }
     }
 }

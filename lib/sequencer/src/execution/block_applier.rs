@@ -46,7 +46,7 @@ where
         loop {
             state_reporter.enter_state(BlockApplierState::Idle);
             let Some(BlockPayload {
-                output: block_output,
+                output: block_output_with_reads,
                 record: executed_replay,
                 command_type: cmd_type,
                 failed_transactions,
@@ -55,6 +55,7 @@ where
                 tracing::info!("inbound channel closed");
                 return Ok(());
             };
+            let block_output = block_output_with_reads.as_ref();
 
             let block_number = executed_replay.block_context.block_number;
             let block_hash = block_output.header.hash();
@@ -99,15 +100,13 @@ where
 
             self.applied_block_number_sender.send_replace(block_number);
 
-            output
-                .send_and_record(
-                    AppliedBlock {
-                        output: block_output,
-                        record: executed_replay,
-                    },
-                    &state_reporter,
-                )
-                .await?;
+            output.send_and_record(
+                AppliedBlock {
+                    output: block_output_with_reads,
+                    record: executed_replay,
+                },
+                &state_reporter,
+            )?;
         }
     }
 }
