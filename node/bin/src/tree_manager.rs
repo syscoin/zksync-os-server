@@ -67,7 +67,7 @@ impl PipelineComponent for TreeManager {
             // `MerkleTree::extend` advances by one version without seeing the block number, so
             // reject duplicate/non-monotonic batches before any truncate or RocksDB flush.
             let (first_block_number, last_block_number) = validate_contiguous_block_numbers(
-                blocks.iter().map(|block| block.output.header.number),
+                blocks.iter().map(|block| block.block_number()),
             )?;
             if first_block_number <= last_processed_block {
                 let mut tree_clone = self.tree.clone();
