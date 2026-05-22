@@ -1641,10 +1641,7 @@ async fn run_main_node_pipeline(
     ));
 
     let batch_pipeline = Pipeline::new(runtime.clone())
-        .pipe(BatchWorkSource::new(
-            batch_work_storage,
-            batch_work_rx,
-        ))
+        .pipe(BatchWorkSource::new(batch_work_storage, batch_work_rx))
         .pipe(ProverInputGenerator {
             enable_logging: config.prover_input_generator_config.logging_enabled,
             maximum_in_flight_blocks: config

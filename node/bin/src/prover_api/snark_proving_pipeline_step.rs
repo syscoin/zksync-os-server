@@ -182,11 +182,10 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         // SYSCOIN Keep completed SNARK proofs draining while startup rehydration may wait for job-map space.
         let mut proof_forwarder = tokio::spawn(async move {
             while let Some(proof_command) = proof_commands_receiver.recv().await {
-                proof_output
-                    .send_and_record(
-                        L1SenderCommand::SendToL1(proof_command),
-                        &proof_state_reporter,
-                    )?;
+                proof_output.send_and_record(
+                    L1SenderCommand::SendToL1(proof_command),
+                    &proof_state_reporter,
+                )?;
             }
             Ok::<(), anyhow::Error>(())
         });

@@ -175,11 +175,10 @@ impl<ReplayStorage: ReadReplay + Clone, Finality: ReadFinality + Clone>
                             "Passing through batch that was already executed"
                         );
                         if let Some(sender) = &execute_batches_sender {
-                            sender
-                                .send_and_record(
-                                    L1SenderCommand::Passthrough(Box::new(envelope)),
-                                    &state_reporter,
-                                )?;
+                            sender.send_and_record(
+                                L1SenderCommand::Passthrough(Box::new(envelope)),
+                                &state_reporter,
+                            )?;
                         }
 
                         continue;

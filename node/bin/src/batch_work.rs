@@ -150,7 +150,10 @@ impl PipelineComponent for BatchWorkDispatcher {
         }) = input.recv().await
         {
             let block_number = replay_record.block_context.block_number;
-            let handle = self.storage.store(block_output, replay_record, tree).await?;
+            let handle = self
+                .storage
+                .store(block_output, replay_record, tree)
+                .await?;
             anyhow::ensure!(
                 handle.block_number == block_number,
                 "batch work block number mismatch: replay {block_number}, output {}",
@@ -172,14 +175,8 @@ pub struct BatchWorkSource {
 }
 
 impl BatchWorkSource {
-    pub fn new(
-        storage: BatchWorkStorage,
-        receiver: mpsc::Receiver<BatchWorkHandle>,
-    ) -> Self {
-        Self {
-            storage,
-            receiver,
-        }
+    pub fn new(storage: BatchWorkStorage, receiver: mpsc::Receiver<BatchWorkHandle>) -> Self {
+        Self { storage, receiver }
     }
 }
 
