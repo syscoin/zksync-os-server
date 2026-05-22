@@ -127,11 +127,13 @@ impl VmWrapper {
 }
 
 /// A `TxSource` that drives `run_block` from a `tokio::sync::mpsc::Receiver`.
+// SYSCOIN: opens a read-set delta for each VM transaction attempt.
 struct ChannelTxSource {
     receiver: Receiver<NextTxResponse>,
     read_recorder: ReadRecordingHandle,
 }
 
+// SYSCOIN: pairs the VM transaction source with read-set boundary tracking.
 impl ChannelTxSource {
     fn new(receiver: Receiver<NextTxResponse>, read_recorder: ReadRecordingHandle) -> Self {
         Self {
@@ -149,6 +151,7 @@ impl TxSource for ChannelTxSource {
             .receiver
             .blocking_recv()
             .unwrap_or(NextTxResponse::SealBlock);
+        // SYSCOIN: start tracking reads for the tx that the VM is about to process.
         if matches!(response, NextTxResponse::Tx(_)) {
             self.read_recorder.begin_tx();
         }
@@ -157,11 +160,13 @@ impl TxSource for ChannelTxSource {
 }
 
 /// A `TxResultCallback` that forwards each result into a `tokio::sync::mpsc::Sender`.
+// SYSCOIN: commits accepted tx read deltas and discards rejected tx read deltas.
 struct ChannelTxResultCallback {
     sender: Sender<Result<TxProcessingOutputOwned, InvalidTransaction>>,
     read_recorder: ReadRecordingHandle,
 }
 
+// SYSCOIN: pairs VM result callbacks with read-set commit/discard decisions.
 impl ChannelTxResultCallback {
     fn new(
         sender: Sender<Result<TxProcessingOutputOwned, InvalidTransaction>>,

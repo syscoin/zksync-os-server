@@ -15,6 +15,7 @@ use zksync_os_types::ZkTransaction;
 #[derive(Debug)]
 pub(super) struct ReadRecordingState<S> {
     inner: S,
+    // SYSCOIN: shared recorder tracks accepted tx reads separately from rejected tx attempts.
     read_keys_handle: ReadRecordingHandle,
 }
 
@@ -80,6 +81,7 @@ impl ReadRecorder {
 }
 
 /// Handle for [`ReadRecordingState`] that allows to extract read storage slots after the state is dropped.
+// SYSCOIN: exposes transaction read-set boundaries to VM source/callback glue.
 #[derive(Clone, Debug)]
 pub(super) struct ReadRecordingHandle(Rc<RefCell<ReadRecorder>>);
 
@@ -97,6 +99,7 @@ impl ReadRecordingHandle {
     }
 
     pub(super) fn into_read_keys(self) -> HashSet<B256> {
+        // SYSCOIN: returns only committed read sets plus conservative fallback reads.
         Rc::try_unwrap(self.0)
             .expect("`into_read_keys()` called while read recorder is still shared")
             .into_inner()
