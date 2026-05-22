@@ -1454,6 +1454,10 @@ pub struct BatcherConfig {
     pub bitcoin_da_gateway_l1_republish_enabled: bool,
 }
 
+// SYSCOIN: pipeline sends are nonblocking, so this capacity is also the supported
+// upper bound for concurrent prover-input computations that may complete together.
+pub const PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY: usize = 16;
+
 /// Only used on the Main Node.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
@@ -1465,7 +1469,13 @@ pub struct ProverInputGeneratorConfig {
 
     /// How many blocks should be worked on at once.
     /// The batcher will wait for block N to finish before starting block N + maximum_in_flight_blocks.
-    #[config(default_t = 16)]
+    #[config(
+        default_t = PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY,
+        validate(
+            maximum_in_flight_blocks_within_output_capacity,
+            "must not exceed prover input generator output channel capacity"
+        )
+    )]
     pub maximum_in_flight_blocks: usize,
 
     /// When false, skip prover input generation and emit `ProverInput::Fake` instead.
@@ -1473,6 +1483,10 @@ pub struct ProverInputGeneratorConfig {
     /// is unnecessary.
     #[config(default_t = true)]
     pub enable_input_generation: bool,
+}
+
+fn maximum_in_flight_blocks_within_output_capacity(&val: &usize) -> bool {
+    val <= PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY
 }
 
 /// Only used on the Main Node.
