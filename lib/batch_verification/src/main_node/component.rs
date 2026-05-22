@@ -207,8 +207,7 @@ impl BatchVerificationRunner {
                             .with_stage(BatchExecutionStage::BatchSigned)
                             .with_signatures(BatchSignatureData::AlreadyCommitted),
                         &self.state_reporter,
-                    )
-                    .await?;
+                    )?;
                 continue;
             }
 
@@ -264,8 +263,7 @@ impl BatchVerificationRunner {
                         .with_signatures(BatchSignatureData::Signed { signatures })
                         .with_stage(BatchExecutionStage::BatchSigned),
                     &self.state_reporter,
-                )
-                .await?;
+                )?;
         }
     }
 
