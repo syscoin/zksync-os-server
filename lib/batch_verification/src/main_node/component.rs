@@ -106,11 +106,10 @@ impl<E: Send + Sync + 'static> PipelineComponent for BatchVerificationPipelineSt
                     return Ok(());
                 };
                 state_reporter.enter_state(GenericComponentState::Active);
-                output
-                    .send_and_record(
-                        batch.with_signatures(BatchSignatureData::NotNeeded),
-                        &state_reporter,
-                    )?;
+                output.send_and_record(
+                    batch.with_signatures(BatchSignatureData::NotNeeded),
+                    &state_reporter,
+                )?;
             }
         }
 

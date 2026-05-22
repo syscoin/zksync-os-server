@@ -1402,11 +1402,10 @@ async fn process_prepending_passthrough_commands<Input: SendToL1 + Send + 'stati
                             batch_number = batch.batch_number(),
                             "Not actually sending to L1, just passing through"
                         );
-                        outbound
-                            .send_and_record(
-                                (*batch).with_stage(Input::PASSTHROUGH_STAGE),
-                                state_reporter,
-                            )?;
+                        outbound.send_and_record(
+                            (*batch).with_stage(Input::PASSTHROUGH_STAGE),
+                            state_reporter,
+                        )?;
                     }
                 }
             }
