@@ -1230,10 +1230,6 @@ fn rate_limits_within_global(limits: &HashMap<String, NonZeroU32>) -> bool {
         .all(|(_, &v)| v <= global)
 }
 
-fn is_positive_f64(&val: &f64) -> bool {
-    val > 0.0
-}
-
 /// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
 /// currently settling on a Gateway (as discovered from the L1 settlement layer interval at
 /// startup). When the chain is settling on L1 directly, this config is ignored and
