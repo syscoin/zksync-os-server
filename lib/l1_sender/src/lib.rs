@@ -1406,8 +1406,7 @@ async fn process_prepending_passthrough_commands<Input: SendToL1 + Send + 'stati
                             .send_and_record(
                                 (*batch).with_stage(Input::PASSTHROUGH_STAGE),
                                 state_reporter,
-                            )
-                            .await?;
+                            )?;
                     }
                 }
             }

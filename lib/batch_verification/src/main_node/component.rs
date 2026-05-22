@@ -110,8 +110,7 @@ impl<E: Send + Sync + 'static> PipelineComponent for BatchVerificationPipelineSt
                     .send_and_record(
                         batch.with_signatures(BatchSignatureData::NotNeeded),
                         &state_reporter,
-                    )
-                    .await?;
+                    )?;
             }
         }
 
