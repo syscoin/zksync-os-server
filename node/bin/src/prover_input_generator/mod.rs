@@ -52,8 +52,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::ProverInputGenerator;
     // SYSCOIN: upstream switched pipeline sends to `try_send`. Keep enough
-    // capacity for the supported concurrent prover-input result burst so normal
-    // completion skew does not look like downstream batcher failure.
+    // capacity for the warm-up result plus the supported concurrent result
+    // burst so normal completion skew does not look like downstream failure.
     const OUTPUT_CHANNEL_CAPACITY: usize = PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY;
 
     /// Works on multiple blocks in parallel, up to [Self::maximum_in_flight_blocks].
