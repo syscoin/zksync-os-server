@@ -18,7 +18,7 @@ use zksync_os_interface::types::{
     StorageWrite, TxOutput,
 };
 use zksync_os_observability::ComponentStateReporter;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReplayRecord, TreeBlock};
 
 #[derive(Clone, Debug)]
@@ -199,14 +199,21 @@ impl PipelineComponent for BatchWorkSource {
             // SYSCOIN
             let item = self.storage.load(&handle).await?;
             let (block_output, replay_record, tree) = item.into_parts();
-            output.send_and_record(
-                TreeBlock {
-                    output: block_output,
-                    record: replay_record,
-                    tree,
-                },
-                &state_reporter,
-            )?;
+            let block_number = replay_record.block_context.block_number;
+            let block_timestamp = replay_record.block_context.timestamp;
+            let tree_block = TreeBlock {
+                output: block_output,
+                record: replay_record,
+                tree,
+            };
+            // SYSCOIN: persisted catch-up work can be longer than any fixed channel
+            // capacity. Await downstream capacity here instead of treating normal
+            // recovery backpressure as catastrophic pipeline failure.
+            output
+                .send(tree_block)
+                .await
+                .map_err(|_| anyhow::anyhow!("batch work consumer dropped"))?;
+            state_reporter.record_processed(block_number, Some(block_timestamp), None);
             self.storage.delete(&handle).await?;
         }
         tracing::info!("batch work channel closed");
