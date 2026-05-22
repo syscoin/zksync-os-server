@@ -29,7 +29,10 @@ impl PipelineComponent for TreeManager {
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::TreeManager;
-    const OUTPUT_CHANNEL_CAPACITY: usize = 10;
+    // SYSCOIN: upstream switched pipeline sends to `try_send`. Keep enough
+    // capacity for one full tree batch so normal burst forwarding does not
+    // look like downstream failure.
+    const OUTPUT_CHANNEL_CAPACITY: usize = MAX_BLOCKS_PER_ITERATION;
 
     async fn run(
         self,
