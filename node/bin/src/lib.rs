@@ -87,7 +87,7 @@ use zksync_os_mempool::subpools::l1::L1Subpool;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::subpools::sl_chain_id::SlChainIdSubpool;
 use zksync_os_mempool::subpools::upgrade::UpgradeSubpool;
-use zksync_os_merkle_tree::{MerkleTree, MerkleTreeVersion, RocksDBWrapper};
+use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_metadata::NODE_VERSION;
 use zksync_os_network::RecordOverride;
 use zksync_os_network::VerifyBatch;
@@ -315,14 +315,10 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     )
     .await;
 
-    let tree_at_genesis = MerkleTreeVersion {
-        tree: tree_db,
-        block: 0,
-    };
-    let (genesis_root_hash, genesis_root_leaves) = tree_at_genesis
-        .root_info()
-        .expect("Failed to get genesis root info");
-    let tree_db = tree_at_genesis.tree;
+    let (genesis_root_hash, genesis_root_leaves) = tree_db
+        .root_info(0)
+        .expect("Failed to get genesis root info")
+        .expect("tree is not initialized");
     let tree_for_rpc = Arc::new(tree_db.clone());
 
     let committed_batch_provider = CommittedBatchProvider::new(
@@ -1333,6 +1329,7 @@ async fn run_main_node_pipeline(
                 .maximum_in_flight_blocks,
             read_state: state.clone(),
             pubdata_mode,
+            merkle_tree: tree,
             runtime: runtime.clone(),
             disabled: !config.prover_input_generator_config.enable_input_generation,
         })
