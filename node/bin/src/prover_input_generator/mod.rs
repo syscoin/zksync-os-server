@@ -23,6 +23,8 @@ use zksync_os_types::{ProvingVersion, PubdataMode, ZksyncOsEncode};
 
 mod tree_adapter;
 
+const DEFAULT_MAXIMUM_IN_FLIGHT_BLOCKS: usize = 16;
+
 /// This component generates prover input from batch replay data.
 ///
 /// When `disabled` is `true` the component acts as a passthrough: it forwards each block
@@ -50,7 +52,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::ProverInputGenerator;
-    const OUTPUT_CHANNEL_CAPACITY: usize = 5;
+    // SYSCOIN: upstream switched pipeline sends to `try_send`. Keep enough
+    // capacity for the default concurrent prover-input result burst so normal
+    // completion skew does not look like downstream batcher failure.
+    const OUTPUT_CHANNEL_CAPACITY: usize = DEFAULT_MAXIMUM_IN_FLIGHT_BLOCKS;
 
     /// Works on multiple blocks in parallel, up to [Self::maximum_in_flight_blocks].
     /// Each computation runs on the blocking pool and is tracked as a graceful task so

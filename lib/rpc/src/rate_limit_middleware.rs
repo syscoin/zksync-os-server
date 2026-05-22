@@ -59,6 +59,25 @@ impl<S> RateLimiting<S> {
     pub(crate) fn new(inner: S, limiters: Arc<HashMap<String, DefaultDirectRateLimiter>>) -> Self {
         Self { inner, limiters }
     }
+
+    fn retry_after_ms(&self, method_name: &str) -> Option<u64> {
+        // Global limit ("*") is checked first; if it fires the per-method limiter is not touched.
+        let now = DefaultClock::default().now();
+        let not_until_global = self.limiters.get("*").and_then(|l| l.check().err());
+        let not_until_method = if not_until_global.is_none() {
+            self.limiters.get(method_name).and_then(|l| l.check().err())
+        } else {
+            None
+        };
+
+        not_until_global.or(not_until_method).map(|not_until| {
+            not_until
+                .wait_time_from(now)
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX)
+        })
+    }
 }
 
 impl<S> RpcServiceT for RateLimiting<S>
@@ -80,23 +99,7 @@ where
         request: Request<'a>,
     ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
         // Check synchronously before the async block to avoid holding a borrow across an await.
-        // Global limit ("*") is checked first; if it fires the per-method limiter is not touched.
-        let now = DefaultClock::default().now();
-        let not_until_global = self.limiters.get("*").and_then(|l| l.check().err());
-        let not_until_method = if not_until_global.is_none() {
-            self.limiters
-                .get(request.method_name())
-                .and_then(|l| l.check().err())
-        } else {
-            None
-        };
-        let retry_after_ms = not_until_global.or(not_until_method).map(|not_until| {
-            not_until
-                .wait_time_from(now)
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX)
-        });
+        let retry_after_ms = self.retry_after_ms(request.method_name());
         let inner = self.inner.clone();
         async move {
             if let Some(ms) = retry_after_ms {
@@ -118,7 +121,15 @@ where
         &self,
         n: Notification<'a>,
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
+        let rate_limited = self.retry_after_ms(n.method_name()).is_some();
         let inner = self.inner.clone();
-        async move { inner.notification(n).await }
+        async move {
+            // JSON-RPC notifications have no id, so the server must not emit an error response.
+            // Dropping before inner execution still enforces the configured ingress budget.
+            if rate_limited {
+                return MethodResponse::notification();
+            }
+            inner.notification(n).await
+        }
     }
 }
