@@ -103,6 +103,18 @@ print("0x" + format(v, "040x"))
 PY
 )"
 
+case "${L1_CHAIN_ID}" in
+5700)
+  : "${L1_WETH_TOKEN_ADDRESS:=0xa66b2E50c2b805F31712beA422D0D9e7D0Fd0F35}"
+  ;;
+57)
+  : "${L1_WETH_TOKEN_ADDRESS:=0xd3e822f3ef011Ca5f17D82C956D952D8d7C3A1BB}"
+  ;;
+*)
+  : "${L1_WETH_TOKEN_ADDRESS:=}"
+  ;;
+esac
+
 cast_code_or_die() {
   local addr="${1:?address required}"
   local code
@@ -132,6 +144,28 @@ require_code_at() {
     exit 1
   fi
 }
+
+if [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
+  require_code_at "${L1_WETH_TOKEN_ADDRESS}" "L1 wrapped native token"
+  export L1_WETH_TOKEN_ADDRESS
+  python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+addr = os.environ["L1_WETH_TOKEN_ADDRESS"].strip()
+if not addr.startswith(("0x", "0X")) or len(addr) != 42:
+    raise SystemExit("L1_WETH_TOKEN_ADDRESS must be a 20-byte hex address")
+int(addr[2:], 16)
+
+path = Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"
+config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+config["token_weth_address"] = addr
+path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+print(f"gateway-launch: wrote {path} token_weth_address={addr}")
+PY
+fi
 
 require_code_at "${CREATE2_FACTORY_ADDR}" "create2 factory"
 
