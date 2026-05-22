@@ -547,6 +547,11 @@ def materialize_chain(
                 else []
             ),
             "prover_api:",
+            *(
+                ["  enabled: false"]
+                if use_mock_prover
+                else []
+            ),
             f"  address: {prover_api_bind_host}:{prover_api_port}",
             *prover_api_auth_config_lines,
             "  fake_fri_provers:",
