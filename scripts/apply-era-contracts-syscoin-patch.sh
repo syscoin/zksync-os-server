@@ -28,6 +28,8 @@ fi
 base_patch_core_applied() {
   grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
   && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
+  && grep -q 'name = abi.encode("Syscoin");' "${CONTRACTS_PATH}/l1-contracts/contracts/bridge/BridgeHelper.sol" \
+  && grep -q 'TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18})' "${CONTRACTS_PATH}/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol" \
   && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
   && grep -q "0x6f837bbef255ebde36677f3accb456e16253fe43f4091b0e820bff0cf95a32a0" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
   && grep -q "L2DACommitmentScheme.BLOBS_ZKSYNC_OS" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol"

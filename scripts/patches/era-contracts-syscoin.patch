@@ -430,6 +430,20 @@ index 2fc7fee09..2d886aba6 100644
              decimals = abi.encode(uint8(18));
          } else {
              bool success;
+diff --git a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
+index cf757a7d2..0ba52b79a 100644
+--- a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
++++ b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
+@@ -45,8 +45,8 @@ abstract contract L1FixedForceDeploymentsHelper {
+         // It is required for a base token to implement the following methods
+         TokenMetadata memory tokenData;
+         if (_baseTokenAddress == ETH_TOKEN_ADDRESS) {
+-            tokenData = TokenMetadata({name: string("Ether"), symbol: string("ETH"), decimals: 18});
++            // SYSCOIN: address(1) is the native SYS sentinel in this deployment.
++            tokenData = TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18});
+         } else {
+             (string memory stringResult, bool success) = _safeCallTokenMetadataString(
+                 _baseTokenAddress,
 diff --git a/l1-contracts/contracts/bridge/L1Nullifier.sol b/l1-contracts/contracts/bridge/L1Nullifier.sol
 index 535fd4ffe..3d7b33c2f 100644
 --- a/l1-contracts/contracts/bridge/L1Nullifier.sol

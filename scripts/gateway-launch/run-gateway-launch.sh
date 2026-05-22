@@ -40,6 +40,10 @@ Optional env:
   PROVER_MODE                  gpu|no-proofs (default gpu)
   GATEWAY_PROVER_MODE          ecosystem prover mode, defaults from PROVER_MODE
   GATEWAY_LAUNCH_LOG           default ~/gateway-launch.log
+  GATEWAY_INTEROP_FEE_USD      Gateway interop fee target per call, default 0.15
+  NATIVE_TOKEN_PRICE_USD       native SYS price used for forced prices and fee target, default 0.01
+  GATEWAY_SETTLEMENT_FEE       optional explicit fee in base units; overrides USD calculation
+  L1_WETH_TOKEN_ADDRESS        optional L1 wrapped native token override; defaults to WSYS on Syscoin L1
   BITCOIN_DA_RPC_URL / BITCOIN_DA_RPC_USER / BITCOIN_DA_RPC_PASSWORD
   GATEWAY_FUND_WALLETS_PATHS   optional extra wallets.yaml list (colon-separated)
   FUNDER_SIGNER                account|keystore|ledger|trezor|aws|gcp (default account)
