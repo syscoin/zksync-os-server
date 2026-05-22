@@ -1,5 +1,5 @@
 use crate::execution::metrics::EXECUTION_METRICS;
-use crate::execution::utils::ReadRecordingState;
+use crate::execution::utils::{ReadRecordingHandle, ReadRecordingState};
 use crate::model::blocks::BlockOutputWithReads;
 use anyhow::Context;
 use std::time::Duration;
@@ -35,13 +35,13 @@ impl VmWrapper {
         // Channel for receiving per‐tx execution results.
         let (res_sender, res_receiver) = channel(1);
 
-        // Wrap the channels in the traits run_block expects:
-        let tx_source = ChannelTxSource::new(tx_receiver);
-        let tx_callback = ChannelTxResultCallback::new(res_sender);
-
         // Spawn the blocking run_block(...) call.
         let join_handle = spawn_blocking(move || {
             let (recording_state, recording_handle) = ReadRecordingState::new(state_view.clone());
+            // SYSCOIN: source and callback share the recorder on the VM thread so only
+            // accepted transaction read sets are committed to downstream Merkle proofs.
+            let tx_source = ChannelTxSource::new(tx_receiver, recording_handle.clone());
+            let tx_callback = ChannelTxResultCallback::new(res_sender, recording_handle.clone());
             let block_output = zksync_os_multivm::run_block(
                 context,
                 recording_state,
@@ -127,13 +127,19 @@ impl VmWrapper {
 }
 
 /// A `TxSource` that drives `run_block` from a `tokio::sync::mpsc::Receiver`.
+// SYSCOIN: opens a read-set delta for each VM transaction attempt.
 struct ChannelTxSource {
     receiver: Receiver<NextTxResponse>,
+    read_recorder: ReadRecordingHandle,
 }
 
+// SYSCOIN: pairs the VM transaction source with read-set boundary tracking.
 impl ChannelTxSource {
-    fn new(receiver: Receiver<NextTxResponse>) -> Self {
-        Self { receiver }
+    fn new(receiver: Receiver<NextTxResponse>, read_recorder: ReadRecordingHandle) -> Self {
+        Self {
+            receiver,
+            read_recorder,
+        }
     }
 }
 
@@ -141,20 +147,35 @@ impl TxSource for ChannelTxSource {
     fn get_next_tx(&mut self) -> NextTxResponse {
         // Block until we get a request.
         // If the sender is dropped, default to sealing.
-        self.receiver
+        let response = self
+            .receiver
             .blocking_recv()
-            .unwrap_or(NextTxResponse::SealBlock)
+            .unwrap_or(NextTxResponse::SealBlock);
+        // SYSCOIN: start tracking reads for the tx that the VM is about to process.
+        if matches!(response, NextTxResponse::Tx(_)) {
+            self.read_recorder.begin_tx();
+        }
+        response
     }
 }
 
 /// A `TxResultCallback` that forwards each result into a `tokio::sync::mpsc::Sender`.
+// SYSCOIN: commits accepted tx read deltas and discards rejected tx read deltas.
 struct ChannelTxResultCallback {
     sender: Sender<Result<TxProcessingOutputOwned, InvalidTransaction>>,
+    read_recorder: ReadRecordingHandle,
 }
 
+// SYSCOIN: pairs VM result callbacks with read-set commit/discard decisions.
 impl ChannelTxResultCallback {
-    fn new(sender: Sender<Result<TxProcessingOutputOwned, InvalidTransaction>>) -> Self {
-        Self { sender }
+    fn new(
+        sender: Sender<Result<TxProcessingOutputOwned, InvalidTransaction>>,
+        read_recorder: ReadRecordingHandle,
+    ) -> Self {
+        Self {
+            sender,
+            read_recorder,
+        }
     }
 }
 
@@ -163,6 +184,7 @@ impl TxResultCallback for ChannelTxResultCallback {
         &mut self,
         tx_execution_result: Result<TxProcessingOutputOwned, InvalidTransaction>,
     ) {
+        self.read_recorder.finish_tx(tx_execution_result.is_ok());
         // Fire-and-forget the result into the channel.
         // We're on the blocking thread, so use blocking_send.
         let _ = self.sender.blocking_send(tx_execution_result);
