@@ -406,7 +406,7 @@ impl PipelineComponent for BitcoinDaFinalityGate {
             if let L1SenderCommand::SendToL1(commit_command) = &command {
                 self.verify_command_da_before_commit(commit_command).await?;
             }
-            output.send_and_record(command, &state_reporter).await?;
+            output.send_and_record(command, &state_reporter)?;
         }
         tracing::info!("inbound channel closed");
         Ok(())

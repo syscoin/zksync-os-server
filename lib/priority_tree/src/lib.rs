@@ -175,12 +175,10 @@ impl<ReplayStorage: ReadReplay + Clone, Finality: ReadFinality + Clone>
                             "Passing through batch that was already executed"
                         );
                         if let Some(sender) = &execute_batches_sender {
-                            sender
-                                .send_and_record(
-                                    L1SenderCommand::Passthrough(Box::new(envelope)),
-                                    &state_reporter,
-                                )
-                                .await?;
+                            sender.send_and_record(
+                                L1SenderCommand::Passthrough(Box::new(envelope)),
+                                &state_reporter,
+                            )?;
                         }
 
                         continue;
@@ -351,7 +349,7 @@ impl<ReplayStorage: ReadReplay + Clone, Finality: ReadFinality + Clone>
                     priority_ops,
                     interop_roots,
                 ));
-                s.send_and_record(cmd, &state_reporter).await?;
+                s.send_and_record(cmd, &state_reporter)?;
             } else {
                 state_reporter.record_processed(
                     last_block,

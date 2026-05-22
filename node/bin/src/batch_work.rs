@@ -17,9 +17,8 @@ use zksync_os_interface::types::{
     AccountDiff, BlockOutput, ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage,
     StorageWrite, TxOutput,
 };
-use zksync_os_merkle_tree::{MerkleTree, MerkleTreeVersion, RocksDBWrapper};
 use zksync_os_observability::ComponentStateReporter;
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReplayRecord, TreeBlock};
 
 #[derive(Clone, Debug)]
@@ -69,12 +68,17 @@ impl BatchWorkStorage {
         &self,
         block_output: BlockOutput,
         replay_record: ReplayRecord,
+        tree: BlockMerkleTreeData,
     ) -> anyhow::Result<BatchWorkHandle> {
         let handle = BatchWorkHandle {
             block_number: block_output.header.number,
             work_id: self.next_work_id.fetch_add(1, Ordering::Relaxed),
         };
-        let data = serde_json::to_vec(&BatchWorkItem::from_parts(block_output, replay_record))?;
+        let data = serde_json::to_vec(&BatchWorkItem::from_parts(
+            block_output,
+            replay_record,
+            tree,
+        ))?;
         let tmp_path = self.tmp_path_for(&handle);
         let path = self.path_for(&handle);
         fs::write(&tmp_path, data).await?;
@@ -142,11 +146,14 @@ impl PipelineComponent for BatchWorkDispatcher {
         while let Some(TreeBlock {
             output: block_output,
             record: replay_record,
-            tree: _,
+            tree,
         }) = input.recv().await
         {
             let block_number = replay_record.block_context.block_number;
-            let handle = self.storage.store(block_output, replay_record).await?;
+            let handle = self
+                .storage
+                .store(block_output, replay_record, tree)
+                .await?;
             anyhow::ensure!(
                 handle.block_number == block_number,
                 "batch work block number mismatch: replay {block_number}, output {}",
@@ -164,21 +171,12 @@ impl PipelineComponent for BatchWorkDispatcher {
 
 pub struct BatchWorkSource {
     storage: BatchWorkStorage,
-    tree: MerkleTree<RocksDBWrapper>,
     receiver: mpsc::Receiver<BatchWorkHandle>,
 }
 
 impl BatchWorkSource {
-    pub fn new(
-        storage: BatchWorkStorage,
-        tree: MerkleTree<RocksDBWrapper>,
-        receiver: mpsc::Receiver<BatchWorkHandle>,
-    ) -> Self {
-        Self {
-            storage,
-            tree,
-            receiver,
-        }
+    pub fn new(storage: BatchWorkStorage, receiver: mpsc::Receiver<BatchWorkHandle>) -> Self {
+        Self { storage, receiver }
     }
 }
 
@@ -198,30 +196,24 @@ impl PipelineComponent for BatchWorkSource {
         state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
-            let block_number = handle.block_number;
             // SYSCOIN
             let item = self.storage.load(&handle).await?;
-            let (block_output, replay_record) = item.into_parts();
-            let tree = BlockMerkleTreeData {
-                block_start: MerkleTreeVersion {
-                    tree: self.tree.clone(),
-                    block: block_number - 1,
-                },
-                block_end: MerkleTreeVersion {
-                    tree: self.tree.clone(),
-                    block: block_number,
-                },
+            let (block_output, replay_record, tree) = item.into_parts();
+            let block_number = replay_record.block_context.block_number;
+            let block_timestamp = replay_record.block_context.timestamp;
+            let tree_block = TreeBlock {
+                output: block_output,
+                record: replay_record,
+                tree,
             };
+            // SYSCOIN: persisted catch-up work can be longer than any fixed channel
+            // capacity. Await downstream capacity here instead of treating normal
+            // recovery backpressure as catastrophic pipeline failure.
             output
-                .send_and_record(
-                    TreeBlock {
-                        output: block_output,
-                        record: replay_record,
-                        tree,
-                    },
-                    &state_reporter,
-                )
-                .await?;
+                .send(tree_block)
+                .await
+                .map_err(|_| anyhow::anyhow!("batch work consumer dropped"))?;
+            state_reporter.record_processed(block_number, Some(block_timestamp), None);
             self.storage.delete(&handle).await?;
         }
         tracing::info!("batch work channel closed");
@@ -229,22 +221,32 @@ impl PipelineComponent for BatchWorkSource {
     }
 }
 // SYSCOIN
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct BatchWorkItem {
     block_output: BatchWorkBlockOutput,
     replay_record: ReplayRecord,
+    tree: BlockMerkleTreeData,
 }
 
 impl BatchWorkItem {
-    fn from_parts(block_output: BlockOutput, replay_record: ReplayRecord) -> Self {
+    fn from_parts(
+        block_output: BlockOutput,
+        replay_record: ReplayRecord,
+        tree: BlockMerkleTreeData,
+    ) -> Self {
         Self {
             block_output: BatchWorkBlockOutput::from(block_output),
             replay_record,
+            tree,
         }
     }
 
-    fn into_parts(self) -> (BlockOutput, ReplayRecord) {
-        (self.block_output.into_block_output(), self.replay_record)
+    fn into_parts(self) -> (BlockOutput, ReplayRecord, BlockMerkleTreeData) {
+        (
+            self.block_output.into_block_output(),
+            self.replay_record,
+            self.tree,
+        )
     }
 }
 

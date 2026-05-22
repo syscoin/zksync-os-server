@@ -1,6 +1,7 @@
 //! Basic types used by the Merkle tree.
 
 use alloy::primitives::B256;
+use serde::{Deserialize, Serialize};
 
 /// Maximum supported tree depth (to fit indexes into `u64`).
 pub const MAX_TREE_DEPTH: u8 = 64;
@@ -27,7 +28,9 @@ impl TreeEntry {
 }
 
 /// Tree leaf.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+// SYSCOIN: batch-work spillover persists upstream Merkle proofs between
+// execution and prover-input generation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Leaf {
     pub key: B256,
     pub value: B256,
@@ -53,7 +56,9 @@ impl Leaf {
 }
 
 /// Output of updating / inserting data in a Merkle tree.
-#[derive(Debug, Clone, Copy)]
+// SYSCOIN: batch-work spillover persists upstream Merkle proofs between
+// execution and prover-input generation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TreeBatchOutput {
     /// New root hash of the tree.
     pub root_hash: B256,

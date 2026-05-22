@@ -49,9 +49,7 @@ impl PipelineComponent for GaplessL1ProofSender {
 
                     while let Some(next_command) = buffer.remove(&next_expected_batch_number) {
                         next_expected_batch_number += next_command.batch_count() as u64;
-                        output
-                            .send_and_record(next_command, &state_reporter)
-                            .await?;
+                        output.send_and_record(next_command, &state_reporter)?;
                     }
                 }
                 None => {

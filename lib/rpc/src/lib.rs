@@ -2,7 +2,7 @@ mod call_fees;
 
 mod config;
 
-pub use config::{EdgeDaAdmissionConfig, RpcConfig};
+pub use config::{EdgeDaAdmissionConfig, RpcConfig, RpcRateLimit};
 use std::sync::Arc;
 use tokio::sync::{Semaphore, watch};
 
@@ -23,6 +23,7 @@ pub mod js_tracer;
 mod log_proof_utils;
 mod monitoring_middleware;
 mod net_impl;
+mod rate_limit_middleware;
 mod sandbox;
 mod tx_handler;
 mod txpool_impl;
@@ -38,6 +39,7 @@ use crate::eth_pubsub_impl::EthPubsubNamespace;
 use crate::monitoring_middleware::Monitoring;
 use crate::net_impl::NetNamespace;
 use crate::ots_impl::OtsNamespace;
+use crate::rate_limit_middleware::{RateLimiting, build_limiters};
 use crate::txpool_impl::TxpoolNamespace;
 use crate::unstable_impl::UnstableNamespace;
 use crate::web3_impl::Web3Namespace;
@@ -159,13 +161,18 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
         config.max_concurrent_blocking_rpcs.max(1) as usize,
     ));
-    let rpc_middleware = RpcServiceBuilder::new().layer_fn(move |service| {
-        Monitoring::new(
-            service,
-            max_response_size_bytes,
-            blocking_rpcs_semaphore.clone(),
-        )
-    });
+    // Build once so all connections share the same token-bucket state.
+    let limiters = build_limiters(&config.rate_limits);
+    let rpc_middleware = RpcServiceBuilder::new()
+        // Monitoring is outermost so rate-limited responses still appear in error metrics.
+        .layer_fn(move |service| {
+            Monitoring::new(
+                service,
+                max_response_size_bytes,
+                blocking_rpcs_semaphore.clone(),
+            )
+        })
+        .layer_fn(move |service| RateLimiting::new(service, limiters.clone()));
 
     let server_config = ServerConfigBuilder::default()
         .max_connections(config.max_connections)

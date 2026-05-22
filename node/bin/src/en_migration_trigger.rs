@@ -135,7 +135,7 @@ where
                         }
                     }
 
-                    output.send_and_record(applied_block, &state_reporter).await?;
+                    output.send_and_record(applied_block, &state_reporter)?;
                 }
 
                 // SYSCOIN: L1 commit indexing can lag EN replay; notify asynchronously so replay

@@ -821,7 +821,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "auto_impl",
- "dashmap",
+ "dashmap 6.1.0",
  "either",
  "futures",
  "futures-utils-wasm",
@@ -2911,7 +2911,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "cow-utils",
- "dashmap",
+ "dashmap 6.1.0",
  "dynify",
  "fast-float2",
  "float16",
@@ -3538,6 +3538,30 @@ name = "cmov"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+
+[[package]]
+name = "cmark-writer"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2163439d96aabd9cfd1d1b2719197faa6c594b90496bf8e91cfadf60a151115"
+dependencies = [
+ "cmark-writer-macros",
+ "ecow",
+ "env_logger",
+ "html-escape",
+ "log",
+]
+
+[[package]]
+name = "cmark-writer-macros"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c54786f507e396485ea597ffe8b1753100971c6a61052e05c4e64015f43fedee"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "coins-ledger"
@@ -4241,9 +4265,22 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "6.2.1"
+version = "5.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
+checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
+dependencies = [
+ "cfg-if",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
 dependencies = [
  "arbitrary",
  "cfg-if",
@@ -4566,6 +4603,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ecow"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78e4f79b296fbaab6ce2e22d52cb4c7f010fe0ebe7a32e34fa25885fd797bd02"
+
+[[package]]
 name = "ed25519"
 version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4715,6 +4758,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
 dependencies = [
  "log",
+ "regex",
 ]
 
 [[package]]
@@ -4726,6 +4770,7 @@ dependencies = [
  "anstream 1.0.0",
  "anstyle",
  "env_filter",
+ "jiff",
  "log",
 ]
 
@@ -5701,6 +5746,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "governor"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68a7f542ee6b35af73b06abc0dad1c1bae89964e4e253bc4b587b91c9637867b"
+dependencies = [
+ "cfg-if",
+ "dashmap 5.5.3",
+ "futures",
+ "futures-timer",
+ "no-std-compat",
+ "nonzero_ext",
+ "parking_lot",
+ "portable-atomic",
+ "quanta",
+ "rand 0.8.5",
+ "smallvec",
+ "spinning_top",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5954,6 +6019,15 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "html-escape"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d1ad449764d627e22bfd7cd5e8868264fc9236e07c752972b4080cd351cb476"
+dependencies = [
+ "utf8-width",
 ]
 
 [[package]]
@@ -6516,7 +6590,7 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "crossbeam-utils",
- "dashmap",
+ "dashmap 6.1.0",
  "env_logger",
  "indexmap 2.14.0",
  "itoa",
@@ -6671,6 +6745,30 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
+dependencies = [
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "jni"
@@ -7584,6 +7682,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "no-std-compat"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b93853da6d84c2e3c7d730d6473e8817692dd89be387eb01b94d7f108ecb5b8c"
+
+[[package]]
 name = "nom"
 version = "7.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7602,6 +7706,12 @@ source = "git+https://github.com/matter-labs/zksync-airbender?tag=v0.4.3#c23fd00
 name = "non_determinism_source"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-airbender.git?tag=v0.5.2#b93c285d292891f3c27a3cf0110be09cde30ac4f"
+
+[[package]]
+name = "nonzero_ext"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38bf9645c8b145698bb0b18a4637dcacbc421ea49bef2317e4fd8065a387cf21"
 
 [[package]]
 name = "notify"
@@ -8587,6 +8697,15 @@ name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+dependencies = [
+ "portable-atomic",
+]
 
 [[package]]
 name = "poseidon2"
@@ -9667,7 +9786,7 @@ version = "2.2.0"
 source = "git+https://github.com/itegulov/reth.git?rev=ff8afdc5dbc253019df5b68f4b231f55daeb2e00#ff8afdc5dbc253019df5b68f4b231f55daeb2e00"
 dependencies = [
  "alloy-primitives",
- "dashmap",
+ "dashmap 6.1.0",
  "data-encoding",
  "enr",
  "hickory-resolver",
@@ -9931,7 +10050,7 @@ dependencies = [
  "bitflags 2.11.1",
  "byteorder",
  "crossbeam-queue",
- "dashmap",
+ "dashmap 6.1.0",
  "derive_more 2.1.1",
  "parking_lot",
  "reth-mdbx-sys",
@@ -10199,7 +10318,7 @@ dependencies = [
  "arbitrary",
  "byteorder",
  "bytes",
- "dashmap",
+ "dashmap 6.1.0",
  "derive_more 2.1.1",
  "modular-bitfield",
  "once_cell",
@@ -10466,7 +10585,7 @@ version = "2.2.0"
 source = "git+https://github.com/itegulov/reth.git?rev=ff8afdc5dbc253019df5b68f4b231f55daeb2e00#ff8afdc5dbc253019df5b68f4b231f55daeb2e00"
 dependencies = [
  "crossbeam-utils",
- "dashmap",
+ "dashmap 6.1.0",
  "futures-util",
  "libc",
  "metrics",
@@ -12174,14 +12293,15 @@ dependencies = [
 
 [[package]]
 name = "smart-config"
-version = "0.4.0-pre.2"
+version = "0.4.0-pre.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "570c50fee3c860c15fdfeb3b6171041ea83e40e731b25a18f97f2cd00ecbc961"
+checksum = "577867735f5417dfcce4c94dee45c8d5e94047a7e728816d2b20322e15c5de61"
 dependencies = [
  "alloy 1.8.3",
  "anyhow",
  "compile-fmt",
  "primitive-types",
+ "regex",
  "secrecy",
  "serde",
  "serde_json",
@@ -12192,12 +12312,13 @@ dependencies = [
 
 [[package]]
 name = "smart-config-commands"
-version = "0.4.0-pre.2"
+version = "0.4.0-pre.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22793fb71a9f2751308846d09f70dee804e70d4f686620e31ae8d47c82718b24"
+checksum = "4cd5efe69c80e9f079b41af31fbff3d4466c04e211c62f5d62bf0417e93a7698"
 dependencies = [
- "anstream 0.6.21",
+ "anstream 1.0.0",
  "anstyle",
+ "cmark-writer",
  "serde_json",
  "serde_yaml",
  "smart-config",
@@ -12205,9 +12326,9 @@ dependencies = [
 
 [[package]]
 name = "smart-config-derive"
-version = "0.4.0-pre.2"
+version = "0.4.0-pre.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42ca44e2f43adc461f96da7cf5ffdb1ab5c1439bb2d86aaf05fbc0b98b56c48d"
+checksum = "ab6afb95867f82dda0bfb6a11000ec9fe297c76c37a2f74cd2c825a261f85a63"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -12265,6 +12386,21 @@ dependencies = [
  "log",
  "rand 0.8.6",
  "sha1",
+]
+
+[[package]]
+name = "spin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+
+[[package]]
+name = "spinning_top"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d96d2d1d716fb500937168cc09353ffdc7a012be8475ac7308e1bdf0e3923300"
+dependencies = [
+ "lock_api",
 ]
 
 [[package]]
@@ -15085,7 +15221,7 @@ dependencies = [
  "zksync_os_batcher_metrics",
  "zksync_os_contract_interface",
  "zksync_os_interface",
- "zksync_os_merkle_tree",
+ "zksync_os_merkle_tree_api",
  "zksync_os_mini_merkle_tree",
  "zksync_os_observability",
  "zksync_os_pipeline",
@@ -15109,7 +15245,6 @@ dependencies = [
  "zksync_os_batcher_metrics",
  "zksync_os_contract_interface",
  "zksync_os_interface",
- "zksync_os_merkle_tree",
  "zksync_os_network",
  "zksync_os_observability",
  "zksync_os_pipeline",
@@ -15411,11 +15546,7 @@ version = "0.20.3"
 dependencies = [
  "alloy 2.0.5",
  "anyhow",
- "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
- "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "clap",
- "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
- "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "insta",
  "leb128",
  "once_cell",
@@ -15429,8 +15560,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber 0.3.23",
  "vise",
- "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
- "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "zksync_os_merkle_tree_api",
  "zksync_os_rocksdb",
 ]
@@ -15498,7 +15627,7 @@ dependencies = [
  "assert_matches",
  "async-trait",
  "backon",
- "dashmap",
+ "dashmap 6.1.0",
  "futures",
  "metrics",
  "openraft",
@@ -15610,7 +15739,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bincode 2.0.1",
- "dashmap",
+ "dashmap 6.1.0",
  "futures",
  "openraft",
  "reth-network-peers",
@@ -15699,7 +15828,6 @@ dependencies = [
  "zksync_os_interface",
  "zksync_os_internal_config",
  "zksync_os_mempool",
- "zksync_os_merkle_tree",
  "zksync_os_multivm",
  "zksync_os_observability",
  "zksync_os_pipeline",
@@ -15733,10 +15861,11 @@ dependencies = [
  "blake2",
  "boa_engine",
  "boa_gc",
- "dashmap",
+ "dashmap 6.1.0",
  "derive_more 2.1.1",
  "evm_interpreter 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "futures",
+ "governor",
  "hyper",
  "jsonrpsee",
  "reth-rpc-eth-types",
@@ -15887,6 +16016,8 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
+ "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.9-interface-v0.0.15)",
+ "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "bincode 2.0.1",
  "bitcoin_da_client",
  "blake2",
@@ -15976,7 +16107,7 @@ version = "0.20.3"
 dependencies = [
  "alloy 2.0.5",
  "anyhow",
- "dashmap",
+ "dashmap 6.1.0",
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.0)",
  "ruint",
  "tokio",
@@ -16027,7 +16158,7 @@ dependencies = [
  "alloy 2.0.5",
  "anyhow",
  "bincode 2.0.1",
- "dashmap",
+ "dashmap 6.1.0",
  "roaring",
  "serde_json",
  "tempfile",

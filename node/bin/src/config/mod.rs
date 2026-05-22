@@ -13,10 +13,13 @@ use smart_config::metadata::{SizeUnit, TimeUnit};
 use smart_config::value::SecretString;
 use smart_config::{
     ByteSize, ConfigRepository, ConfigSchema, ConfigSources, DescribeConfig, DeserializeConfig,
-    ErrorWithOrigin, EtherAmount, ParseErrors, Serde, de::Delimited, metadata::EtherUnit,
+    ErrorWithOrigin, EtherAmount, ParseErrors, Serde,
+    de::{Delimited, Entries},
+    metadata::EtherUnit,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::num::NonZeroU32;
 // SYSCOIN
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
@@ -1057,6 +1060,18 @@ pub struct RpcConfig {
     /// Keep disabled on public RPC endpoints unless access is separately restricted.
     #[config(default_t = false)]
     pub enable_txpool_namespace: bool,
+
+    /// Per-method rate limits: map from RPC method name to max requests per second (across all
+    /// callers).  Use `"*"` for a global limit applied before per-method limits.  Methods absent
+    /// from the map are unrestricted.
+    ///
+    /// Accepts a JSON object or a comma-separated `method=rps` string, e.g.
+    /// `*=500,eth_call=100,debug_traceTransaction=5`.
+    #[config(default, with = Entries::WELL_KNOWN.delimited(",", "="), validate(
+        rate_limits_within_global,
+        "each per-method limit must not exceed the global `*` limit"
+    ))]
+    pub rate_limits: HashMap<String, NonZeroU32>,
 }
 
 /// L1 sender configuration. The signing key fields are only required on the Main Node
@@ -1203,6 +1218,16 @@ pub struct ForceTransactionResubmissionConfig {
 // replacement rules; merely positive values can still be underpriced replacements.
 fn is_greater_than_one_f64(&val: &f64) -> bool {
     val > 1.0
+}
+
+fn rate_limits_within_global(limits: &HashMap<String, NonZeroU32>) -> bool {
+    let Some(&global) = limits.get("*") else {
+        return true;
+    };
+    limits
+        .iter()
+        .filter(|(k, _)| k.as_str() != "*")
+        .all(|(_, &v)| v <= global)
 }
 
 /// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
@@ -1429,6 +1454,13 @@ pub struct BatcherConfig {
     pub bitcoin_da_gateway_l1_republish_enabled: bool,
 }
 
+// SYSCOIN: pipeline sends are nonblocking. The prover input generator processes
+// one warm-up block before opening the concurrent window, so the output channel
+// reserves one slot beyond the supported in-flight result burst.
+pub const PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS: usize = 16;
+pub const PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY: usize =
+    PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS + 1;
+
 /// Only used on the Main Node.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
 #[config(derive(Default))]
@@ -1440,7 +1472,13 @@ pub struct ProverInputGeneratorConfig {
 
     /// How many blocks should be worked on at once.
     /// The batcher will wait for block N to finish before starting block N + maximum_in_flight_blocks.
-    #[config(default_t = 16)]
+    #[config(
+        default_t = PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS,
+        validate(
+            maximum_in_flight_blocks_within_output_capacity,
+            "must not exceed supported prover input generator in-flight capacity"
+        )
+    )]
     pub maximum_in_flight_blocks: usize,
 
     /// When false, skip prover input generation and emit `ProverInput::Fake` instead.
@@ -1448,6 +1486,10 @@ pub struct ProverInputGeneratorConfig {
     /// is unnecessary.
     #[config(default_t = true)]
     pub enable_input_generation: bool,
+}
+
+fn maximum_in_flight_blocks_within_output_capacity(&val: &usize) -> bool {
+    val <= PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS
 }
 
 /// Only used on the Main Node.
@@ -2048,6 +2090,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             enable_debug_namespace: c.enable_debug_namespace,
             enable_txpool_namespace: c.enable_txpool_namespace,
             edge_da_admission: None,
+            rate_limits: c.rate_limits.into_iter().map(Into::into).collect(),
         }
     }
 }

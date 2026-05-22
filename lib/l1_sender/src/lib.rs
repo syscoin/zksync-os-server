@@ -841,9 +841,7 @@ where
     for command in completed_commands {
         for mut output_envelope in command.into() {
             output_envelope.set_stage(Input::MINED_STAGE);
-            outbound
-                .send_and_record(output_envelope, state_reporter)
-                .await?;
+            outbound.send_and_record(output_envelope, state_reporter)?;
         }
     }
     Ok(())
@@ -1404,12 +1402,10 @@ async fn process_prepending_passthrough_commands<Input: SendToL1 + Send + 'stati
                             batch_number = batch.batch_number(),
                             "Not actually sending to L1, just passing through"
                         );
-                        outbound
-                            .send_and_record(
-                                (*batch).with_stage(Input::PASSTHROUGH_STAGE),
-                                state_reporter,
-                            )
-                            .await?;
+                        outbound.send_and_record(
+                            (*batch).with_stage(Input::PASSTHROUGH_STAGE),
+                            state_reporter,
+                        )?;
                     }
                 }
             }

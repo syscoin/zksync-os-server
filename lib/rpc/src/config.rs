@@ -1,6 +1,25 @@
 use alloy::primitives::{Address, B256};
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 use std::time::Duration;
+
+/// A per-method rate limit entry.
+#[derive(Clone, Debug)]
+pub struct RpcRateLimit {
+    /// Exact RPC method name, e.g. `"eth_call"`.
+    pub method: String,
+    /// Maximum number of requests per second across all callers combined.
+    pub requests_per_second: NonZeroU32,
+}
+
+impl From<(String, NonZeroU32)> for RpcRateLimit {
+    fn from((method, requests_per_second): (String, NonZeroU32)) -> Self {
+        Self {
+            method,
+            requests_per_second,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct EdgeDaAdmissionConfig {
@@ -80,6 +99,10 @@ pub struct RpcConfig {
     // SYSCOIN: when this node is a Gateway sequencer, reject compact edge DA commit txs
     // before mempool admission unless every referenced Bitcoin DA blob is retrievable.
     pub edge_da_admission: Option<EdgeDaAdmissionConfig>,
+
+    /// Per-method rate limits.  Use `"*"` as the method name for a global limit applied before
+    /// per-method limits.  Empty means no rate limiting.
+    pub rate_limits: Vec<RpcRateLimit>,
 }
 
 impl RpcConfig {
