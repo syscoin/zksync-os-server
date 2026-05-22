@@ -201,13 +201,12 @@ impl BatchVerificationRunner {
                     "Skipping signing of already committed batch {}",
                     batch_envelope.batch_number()
                 );
-                signed_batch_sender
-                    .send_and_record(
-                        batch_envelope
-                            .with_stage(BatchExecutionStage::BatchSigned)
-                            .with_signatures(BatchSignatureData::AlreadyCommitted),
-                        &self.state_reporter,
-                    )?;
+                signed_batch_sender.send_and_record(
+                    batch_envelope
+                        .with_stage(BatchExecutionStage::BatchSigned)
+                        .with_signatures(BatchSignatureData::AlreadyCommitted),
+                    &self.state_reporter,
+                )?;
                 continue;
             }
 
@@ -257,13 +256,12 @@ impl BatchVerificationRunner {
             metrics.attempts_to_success.observe(retry_count + 1);
             metrics.total_latency.observe(start_time.elapsed());
 
-            signed_batch_sender
-                .send_and_record(
-                    batch_envelope
-                        .with_signatures(BatchSignatureData::Signed { signatures })
-                        .with_stage(BatchExecutionStage::BatchSigned),
-                    &self.state_reporter,
-                )?;
+            signed_batch_sender.send_and_record(
+                batch_envelope
+                    .with_signatures(BatchSignatureData::Signed { signatures })
+                    .with_stage(BatchExecutionStage::BatchSigned),
+                &self.state_reporter,
+            )?;
         }
     }
 
