@@ -91,12 +91,39 @@ import yaml
 gateway_wallet_paths = [Path(sys.argv[1]), Path(sys.argv[2])]
 edge_wallet_paths = [Path(sys.argv[3]), Path(sys.argv[4])]
 
+
+def hex_string(value, bytes_len):
+    if isinstance(value, int):
+        return "0x" + format(value & ((1 << (8 * bytes_len)) - 1), f"0{bytes_len * 2}x")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("0x", "0X")):
+            return "0x" + stripped[2:].zfill(bytes_len * 2).lower()
+        if stripped.isdecimal():
+            return "0x" + format(int(stripped, 10), f"0{bytes_len * 2}x")
+        return stripped
+    return value
+
+
+def normalize_wallet_hex_fields(data):
+    if not isinstance(data, dict):
+        return data
+    for wallet in data.values():
+        if not isinstance(wallet, dict):
+            continue
+        if "address" in wallet:
+            wallet["address"] = hex_string(wallet["address"], 20)
+        if "private_key" in wallet:
+            wallet["private_key"] = hex_string(wallet["private_key"], 32)
+    return data
+
+
 gateway_governor = None
 gateway_source = None
 for path in gateway_wallet_paths:
     if not path.exists():
         continue
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = normalize_wallet_hex_fields(yaml.safe_load(path.read_text(encoding="utf-8")))
     if not isinstance(data, dict):
         continue
     governor = data.get("governor")
@@ -115,7 +142,7 @@ updated = []
 for path in edge_wallet_paths:
     if not path.exists():
         continue
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data = normalize_wallet_hex_fields(yaml.safe_load(path.read_text(encoding="utf-8")))
     if not isinstance(data, dict) or not isinstance(data.get("governor"), dict):
         raise SystemExit(f"invalid edge governor wallet entry in {path}")
     data["governor"] = dict(gateway_governor)
