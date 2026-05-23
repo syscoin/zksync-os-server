@@ -384,10 +384,73 @@ PY
 }
 
 stop_gateway_for_migration() {
+  local chain_name config_path
+  chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
+
   if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]; then
     echo "migrate-edge: stopping Gateway node (pid ${GATEWAY_NODE_PID})"
     kill "${GATEWAY_NODE_PID}" 2>/dev/null || true
     wait "${GATEWAY_NODE_PID}" 2>/dev/null || true
+  fi
+  if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ]; then
+    python3 - "${config_path}" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+config_path = sys.argv[1]
+needle = f"zksync-os-server --config {config_path}"
+current = {os.getpid(), os.getppid()}
+
+try:
+    output = subprocess.check_output(["pgrep", "-af", "zksync-os-server"], text=True)
+except subprocess.CalledProcessError:
+    raise SystemExit(0)
+
+pids = []
+for line in output.splitlines():
+    parts = line.split(maxsplit=1)
+    if len(parts) != 2:
+        continue
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        continue
+    if pid in current:
+        continue
+    if needle in parts[1]:
+        pids.append(pid)
+
+if not pids:
+    raise SystemExit(0)
+
+print(f"migrate-edge: stopping Gateway node child processes {pids}")
+for pid in pids:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+deadline = time.monotonic() + 10
+remaining = set(pids)
+while remaining and time.monotonic() < deadline:
+    for pid in list(remaining):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            remaining.remove(pid)
+    if remaining:
+        time.sleep(0.2)
+
+for pid in remaining:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+PY
   fi
   GATEWAY_NODE_PID=""
   GATEWAY_STARTED_FOR_MIGRATION=false
