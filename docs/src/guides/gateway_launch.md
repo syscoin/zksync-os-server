@@ -281,10 +281,17 @@ trap 'rm -f "$secret_list"' EXIT
 
 shopt -s nullglob
 secret_paths=(
+  "$GATEWAY_DIR".wallets.yaml
   "$GATEWAY_DIR"/*.wallets.yaml
+  "$GATEWAY_DIR"/.*wallets.yaml
+  "$GATEWAY_DIR"/*wallets.yaml.*
+  "$GATEWAY_DIR"/.*wallets.yaml.*
   "$GATEWAY_DIR"/configs/wallets.yaml
+  "$GATEWAY_DIR"/configs/wallets.yaml.*
   "$GATEWAY_DIR"/chains/*/configs/wallets.yaml
+  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml.*
   "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml
+  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml.*
   "$HOME"/.foundry/*.password
 )
 
@@ -322,9 +329,16 @@ Foundry signer material:
 
 ```bash
 rm -f "$GATEWAY_DIR"/*.wallets.yaml
+rm -f "$GATEWAY_DIR".wallets.yaml
+rm -f "$GATEWAY_DIR"/.*wallets.yaml
+rm -f "$GATEWAY_DIR"/*wallets.yaml.*
+rm -f "$GATEWAY_DIR"/.*wallets.yaml.*
 rm -f "$GATEWAY_DIR"/configs/wallets.yaml
+rm -f "$GATEWAY_DIR"/configs/wallets.yaml.*
 rm -f "$GATEWAY_DIR"/chains/*/configs/wallets.yaml
+rm -f "$GATEWAY_DIR"/chains/*/configs/wallets.yaml.*
 rm -f "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml
+rm -f "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml.*
 
 rm -f "$HOME"/.foundry/*.password
 rm -rf "$HOME"/.foundry/keystores
