@@ -2,6 +2,121 @@
 
 Gateway + edge launch is now a **single canonical command** with checkpointed resume and explicit repair.
 
+## Host prerequisites
+
+Install the host toolchain before starting the launcher. The launcher can
+materialize the pinned `zksync-era` workspace and apply Syscoin patches itself,
+but it expects the base build and signing tools to already be available.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential pkg-config libssl-dev clang lld cmake protobuf-compiler \
+  libclang-dev git curl jq unzip zip ca-certificates python3 python3-pip \
+  python3-venv tmux screen expect moreutils
+```
+
+If you are building the local Syscoin Core node on the same host, also install
+the Unix build dependencies from Syscoin's `doc/build-unix.md`. Boost, libevent,
+SQLite, and ZMQ are needed for the command-line node / wallet / DA RPC path used
+by launch:
+
+```bash
+sudo apt-get install -y \
+  libtool autotools-dev automake bsdmainutils libgmp-dev \
+  libevent-dev libboost-dev libsqlite3-dev libzmq3-dev \
+  libminiupnpc-dev libnatpmp-dev
+```
+
+Then build Syscoin Core:
+
+```bash
+cd /path/to/syscoin
+./autogen.sh
+./configure --without-gui
+make -j"$(nproc)"
+```
+
+The launch flow assumes descriptor wallets backed by SQLite. Berkeley DB is only
+needed if you intentionally enable legacy wallets; do not add it for the normal
+Gateway launch path.
+
+Install Rust and the RISC-V support used by the `v31` OS-server line:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup toolchain install nightly-2026-01-22
+rustup default nightly-2026-01-22
+rustup target add riscv32i-unknown-none-elf
+rustup component add llvm-tools-preview rust-src
+cargo install cargo-binutils
+```
+
+Install Node/Yarn:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo corepack enable
+corepack prepare yarn@stable --activate
+```
+
+Install **foundry-zksync**, not vanilla Foundry. `zkstack` checks that
+`forge build --help` contains `ZKSync configuration`; a regular Foundry
+installation does not satisfy this prerequisite.
+
+```bash
+curl -L https://raw.githubusercontent.com/matter-labs/foundry-zksync/main/install-foundry-zksync | bash
+export PATH="$HOME/.foundry/bin:$PATH"
+foundryup-zksync
+```
+
+Cache the Solidity compiler used by the v31 contracts before the first offline
+launch. `run-gateway-launch.sh` defaults `FOUNDRY_OFFLINE=true`, so an empty
+compiler cache will otherwise fail with `can't install missing solc 0.8.28 in
+offline mode`.
+
+```bash
+tmp="$(mktemp -d)"
+cd "$tmp"
+cat > foundry.toml <<'EOF'
+[profile.default]
+src = "src"
+out = "out"
+libs = []
+solc_version = "0.8.28"
+EOF
+mkdir -p src
+cat > src/CacheSolc.sol <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+contract CacheSolc {}
+EOF
+FOUNDRY_OFFLINE=false forge build
+cd -
+rm -rf "$tmp"
+```
+
+Import the L1 funding/deployment signer into Foundry's encrypted account store:
+
+```bash
+cast wallet import funder --interactive
+cast wallet address --account funder
+```
+
+For unattended launches, create a `0600` password file and pass it via env:
+
+```bash
+umask 077
+printf '%s' '<keystore-password>' > "$HOME/.foundry/funder.password"
+export FUNDER_PASSWORD_FILE="$HOME/.foundry/funder.password"
+```
+
+If using a separate Gateway governor signer for migration repairs, import it as
+another Foundry account (for example `governor`) and set
+`EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME=governor`.
+
 ## Canonical command
 
 Start local Syscoin RPC bridge first (Tanenbaum/Mainnet launcher expects local `L1_RPC_URL`):
@@ -125,6 +240,61 @@ Then rerun the canonical launcher command.
 "$GATEWAY_DIR/os-server-configs/zksys/start-node.sh"
 ```
 
+## Post-deploy opsec
+
+After `gl.os_configs_final` passes and both final node config directories exist,
+the hot runtime only needs the operational node configs and chain artifacts:
+
+```text
+$GATEWAY_DIR/os-server-configs/*/config.yaml
+$GATEWAY_DIR/os-server-configs/*/start-node.sh
+$GATEWAY_DIR/os-server-configs/*/contracts.yaml
+$GATEWAY_DIR/os-server-configs/*/genesis.json
+```
+
+The `config.yaml` files contain the runtime operator keys:
+
+```text
+operator_commit_sk
+operator_prove_sk
+operator_execute_sk
+```
+
+Do not delete those final `config.yaml` files unless you are intentionally
+rotating/rebuilding runtime operator keys. Keep the Syscoin DA wallet material
+needed by the local Syscoin node if the node will publish blobs.
+
+Before removing launch-time keys, make an encrypted/off-host backup of the
+generated zkstack wallets and Foundry signing material:
+
+```bash
+tar -czf /tmp/gateway-launch-secrets.tar.gz \
+  "$GATEWAY_DIR"/*.wallets.yaml \
+  "$GATEWAY_DIR"/configs/wallets.yaml \
+  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml \
+  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml \
+  "$HOME"/.foundry/keystores \
+  "$HOME"/.foundry/*.password 2>/dev/null || true
+```
+
+After copying that backup off the hot host, remove launch-time wallet files and
+Foundry signer material:
+
+```bash
+rm -f "$GATEWAY_DIR"/*.wallets.yaml
+rm -f "$GATEWAY_DIR"/configs/wallets.yaml
+rm -f "$GATEWAY_DIR"/chains/*/configs/wallets.yaml
+rm -f "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml
+
+rm -f "$HOME"/.foundry/*.password
+rm -rf "$HOME"/.foundry/keystores
+```
+
+This is safe for normal node restarts, but it intentionally removes hot
+repair/upgrade/admin capability. Restore the backup or re-import the relevant
+signers before running checkpoint repair, governance, migration, or upgrade
+commands.
+
 For internet-facing prover access, keep the node prover APIs bound to
 `127.0.0.1` and terminate HTTPS in the host nginx that already fronts RPC and
 explorer traffic. The config generator writes nginx vhost files next to the node
@@ -160,6 +330,12 @@ direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
 when generating configs and give provers a URL such as
 `http://syscoin-prover:...@node-host:3124`. This is not recommended over the
 public internet because Basic Auth is not encrypted without HTTPS.
+
+If the explorer runs on a separate host, keep sequencer/node RPC bound locally
+or behind the host reverse proxy and allowlist only the explorer server's public
+IP at nginx/firewall level. Do not expose unrestricted node RPC directly to the
+internet; proxy the explorer to the required Gateway/zksys RPC endpoint(s) and
+keep any extra namespaces limited to what the explorer actually needs.
 
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
