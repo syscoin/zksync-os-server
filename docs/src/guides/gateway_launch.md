@@ -264,9 +264,29 @@ Do not delete those final `config.yaml` files unless you are intentionally
 rotating/rebuilding runtime operator keys. Keep the Syscoin DA wallet material
 needed by the local Syscoin node if the node will publish blobs.
 
-Before removing launch-time keys, make an encrypted backup of the generated
-zkstack wallets and Foundry signing material on an operator-controlled encrypted
-or off-host backup path. Do not create plaintext secret archives under `/tmp`.
+Before removing launch-time keys, make an encrypted operational backup on an
+operator-controlled encrypted or off-host backup path. Do not create plaintext
+secret archives under `/tmp`.
+
+The operational backup should contain the chain-scoped Gateway and zksys wallet
+files plus the final OS-server runtime configs. These are the management and
+runtime keys that matter after launch:
+
+```text
+$GATEWAY_DIR/chains/gateway/configs/wallets.yaml
+$GATEWAY_DIR/chains/zksys/configs/wallets.yaml
+$GATEWAY_DIR/os-server-configs/gateway/config.yaml
+$GATEWAY_DIR/os-server-configs/zksys/config.yaml
+```
+
+The final `config.yaml` files contain the operator private keys used by the
+running nodes. The chain-scoped `wallets.yaml` files contain the deployer,
+governor, fee, and operator wallet keys needed for repair/governance/migration
+work. Avoid backing up root or duplicate wallet files such as
+`$GATEWAY_DIR/configs/wallets.yaml`, `$GATEWAY_DIR.wallets.yaml`, hidden
+`.*wallets.yaml` copies, or `*.backup` files unless you are intentionally making
+a broader forensic archive; exporting extra unrelated keys increases confusion
+and recovery risk.
 
 ```bash
 (
@@ -281,17 +301,10 @@ trap 'rm -f "$secret_list"' EXIT
 
 shopt -s nullglob
 secret_paths=(
-  "$GATEWAY_DIR".wallets.yaml
-  "$GATEWAY_DIR"/*.wallets.yaml
-  "$GATEWAY_DIR"/.*wallets.yaml
-  "$GATEWAY_DIR"/*wallets.yaml.*
-  "$GATEWAY_DIR"/.*wallets.yaml.*
-  "$GATEWAY_DIR"/configs/wallets.yaml
-  "$GATEWAY_DIR"/configs/wallets.yaml.*
-  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml
-  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml.*
-  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml
-  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml.*
+  "$GATEWAY_DIR"/chains/gateway/configs/wallets.yaml
+  "$GATEWAY_DIR"/chains/zksys/configs/wallets.yaml
+  "$GATEWAY_DIR"/os-server-configs/gateway/config.yaml
+  "$GATEWAY_DIR"/os-server-configs/zksys/config.yaml
   "$HOME"/.foundry/*.password
 )
 
@@ -324,12 +337,14 @@ Keep the encrypted archive and its passphrase separated. The command exits on
 backup or verification failure; do not delete source keys unless it completes
 successfully and the encrypted backup has been copied to durable storage.
 
-After copying that backup off the hot host, remove launch-time wallet files and
-Foundry signer material:
+After copying that backup off the hot host, remove launch-time wallet files,
+duplicate wallet copies, and Foundry signer material. Do not remove final
+`config.yaml` files unless you are intentionally rotating/rebuilding runtime
+operator keys.
 
 ```bash
-rm -f "$GATEWAY_DIR"/*.wallets.yaml
 rm -f "$GATEWAY_DIR".wallets.yaml
+rm -f "$GATEWAY_DIR"/*.wallets.yaml
 rm -f "$GATEWAY_DIR"/.*wallets.yaml
 rm -f "$GATEWAY_DIR"/*wallets.yaml.*
 rm -f "$GATEWAY_DIR"/.*wallets.yaml.*
