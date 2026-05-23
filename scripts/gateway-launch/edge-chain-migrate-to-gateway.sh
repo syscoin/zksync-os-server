@@ -193,6 +193,39 @@ raise SystemExit(0)
 PY
 }
 
+get_chain_governor_private_key_from_wallets() {
+  local chain_name="${1:?chain name required}"
+  python3 - \
+    "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
+    "${GATEWAY_DIR}/configs/wallets.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+for path_str in sys.argv[1:]:
+    p = Path(path_str)
+    if not p.exists():
+        continue
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    gov = data.get("governor")
+    if not isinstance(gov, dict):
+        continue
+    private_key = gov.get("private_key")
+    if isinstance(private_key, int):
+        private_key = "0x" + format(private_key & ((1 << 256) - 1), "064x")
+    if isinstance(private_key, str) and private_key.strip() != "":
+        private_key = private_key.strip()
+        if private_key.startswith(("0x", "0X")):
+            private_key = "0x" + private_key[2:].zfill(64)
+        print(private_key)
+        raise SystemExit(0)
+raise SystemExit("missing governor private_key in chain wallets")
+PY
+}
+
 get_wallet_address_from_wallets() {
   local chain_name="${1:?chain name required}"
   local wallet_name="${2:?wallet name required}"
@@ -227,6 +260,109 @@ PY
 }
 
 GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
+GATEWAY_GOVERNOR_TEMP_DIR=""
+
+cleanup_generated_gateway_governor_keystore() {
+  if [ -n "${GATEWAY_GOVERNOR_TEMP_DIR:-}" ]; then
+    rm -rf "${GATEWAY_GOVERNOR_TEMP_DIR}"
+    GATEWAY_GOVERNOR_TEMP_DIR=""
+  fi
+}
+trap cleanup_generated_gateway_governor_keystore EXIT
+
+prepare_generated_gateway_governor_keystore() {
+  local chain_name="${1:?chain name required}"
+  local password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+  local account_name="gateway-launch-generated-governor"
+  local expected_addr imported_addr
+
+  [ -n "${password_file}" ] || {
+    echo "gateway-launch: FUNDER_PASSWORD_FILE is required to encrypt the temporary generated-governor keystore" >&2
+    return 1
+  }
+  [ -f "${password_file}" ] || {
+    echo "gateway-launch: generated-governor password file does not exist: ${password_file}" >&2
+    return 1
+  }
+  command -v expect >/dev/null 2>&1 || {
+    echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
+    return 1
+  }
+
+  if [ -z "${GATEWAY_GOVERNOR_TEMP_DIR}" ]; then
+    GATEWAY_GOVERNOR_TEMP_DIR="$(mktemp -d)"
+    chmod 700 "${GATEWAY_GOVERNOR_TEMP_DIR}"
+    install -m 600 "${password_file}" "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+
+    GATEWAY_DIR="${GATEWAY_DIR}" \
+      CHAIN_NAME="${chain_name}" \
+      KEYSTORE_DIR="${GATEWAY_GOVERNOR_TEMP_DIR}" \
+      KEYSTORE_PASSWORD_FILE="${GATEWAY_GOVERNOR_TEMP_DIR}/password" \
+      CAST_BIN="$(command -v cast)" \
+      ACCOUNT_NAME="${account_name}" \
+      expect <<'EXPECT'
+set timeout 60
+log_user 0
+set pk [exec bash -c {python3 - "$GATEWAY_DIR" "$CHAIN_NAME" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+
+gateway_dir = Path(sys.argv[1])
+chain_name = sys.argv[2]
+for p in [
+    gateway_dir / "chains" / chain_name / "configs" / "wallets.yaml",
+    gateway_dir / "chains" / chain_name / "wallets.yaml",
+    gateway_dir / "configs" / "wallets.yaml",
+]:
+    if not p.exists():
+        continue
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    gov = data.get("governor")
+    if not isinstance(gov, dict):
+        continue
+    pk = gov.get("private_key")
+    if isinstance(pk, int):
+        print("0x" + format(pk & ((1 << 256) - 1), "064x"))
+        raise SystemExit(0)
+    if isinstance(pk, str) and pk.strip():
+        s = pk.strip()
+        print("0x" + s[2:].zfill(64) if s.startswith(("0x", "0X")) else s)
+        raise SystemExit(0)
+raise SystemExit("missing governor private_key")
+PY
+}]
+set pw [exec sh -c {tr -d '\n' < "$KEYSTORE_PASSWORD_FILE"}]
+spawn $env(CAST_BIN) wallet import $env(ACCOUNT_NAME) --keystore-dir $env(KEYSTORE_DIR) --interactive
+expect -re "(?i).*private key.*"
+send -- "$pk\r"
+expect {
+  -re "(?i).*password.*" {
+    send -- "$pw\r"
+    expect {
+      -re "(?i).*(confirm|repeat|re-enter).*password.*" {
+        send -- "$pw\r"
+        expect eof
+      }
+      eof {}
+    }
+  }
+  eof {}
+}
+EXPECT
+  fi
+
+  expected_addr="$(get_chain_governor_from_wallets "${chain_name}" | tr '[:upper:]' '[:lower:]')"
+  imported_addr="$(cast wallet address --keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password" | tr '[:upper:]' '[:lower:]')"
+  if [ "${expected_addr}" != "${imported_addr}" ]; then
+    echo "gateway-launch: generated-governor keystore mismatch: expected ${expected_addr}, got ${imported_addr}" >&2
+    return 1
+  fi
+
+  GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password")
+}
 
 prepare_gateway_governor_forge_wallet_args() {
   GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
@@ -239,14 +375,16 @@ prepare_gateway_governor_forge_wallet_args() {
 
   if [ -n "${EDGE_GATEWAY_GOVERNOR_SIGNER:-}" ]; then
     governor_signer="${EDGE_GATEWAY_GOVERNOR_SIGNER}"
-  elif gl_l1_network_requires_external_signer; then
-    governor_signer="${FUNDER_SIGNER:-account}"
   else
-    governor_signer="account"
+    governor_signer="generated"
   fi
   governor_signer="$(gl_to_lower "${governor_signer}")"
 
   case "${governor_signer}" in
+  generated | generated-wallet | wallet)
+    prepare_generated_gateway_governor_keystore "${EDGE_CHAIN_NAME}"
+    return
+    ;;
   account)
     local account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
     [ -n "${account_name}" ] || {
@@ -295,7 +433,7 @@ prepare_gateway_governor_forge_wallet_args() {
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--private-key "${governor_private_key}")
     ;;
   *)
-    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected account, keystore, ledger, trezor, aws, gcp, or private-key" >&2
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected generated, account, keystore, ledger, trezor, aws, gcp, or private-key" >&2
     return 1
     ;;
   esac
