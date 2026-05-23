@@ -13,7 +13,7 @@ sudo apt-get update
 sudo apt-get install -y \
   build-essential pkg-config libssl-dev clang lld cmake protobuf-compiler \
   libclang-dev git curl jq unzip zip ca-certificates python3 python3-pip \
-  python3-venv tmux screen expect moreutils
+  python3-venv tmux screen expect moreutils gnupg
 ```
 
 If you are building the local Syscoin Core node on the same host, also install
@@ -264,18 +264,58 @@ Do not delete those final `config.yaml` files unless you are intentionally
 rotating/rebuilding runtime operator keys. Keep the Syscoin DA wallet material
 needed by the local Syscoin node if the node will publish blobs.
 
-Before removing launch-time keys, make an encrypted/off-host backup of the
-generated zkstack wallets and Foundry signing material:
+Before removing launch-time keys, make an encrypted backup of the generated
+zkstack wallets and Foundry signing material on an operator-controlled encrypted
+or off-host backup path. Do not create plaintext secret archives under `/tmp`.
 
 ```bash
-tar -czf /tmp/gateway-launch-secrets.tar.gz \
-  "$GATEWAY_DIR"/*.wallets.yaml \
-  "$GATEWAY_DIR"/configs/wallets.yaml \
-  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml \
-  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml \
-  "$HOME"/.foundry/keystores \
-  "$HOME"/.foundry/*.password 2>/dev/null || true
+(
+set -euo pipefail
+umask 077
+BACKUP_DIR="${BACKUP_DIR:?set BACKUP_DIR to an encrypted/off-host backup directory}"
+install -d -m 700 "$BACKUP_DIR"
+backup_archive="$BACKUP_DIR/gateway-launch-secrets-$(date -u +%Y%m%dT%H%M%SZ).tar.gz.gpg"
+
+secret_list="$(mktemp "$BACKUP_DIR/gateway-launch-secrets.XXXXXX.list")"
+trap 'rm -f "$secret_list"' EXIT
+
+shopt -s nullglob
+secret_paths=(
+  "$GATEWAY_DIR"/*.wallets.yaml
+  "$GATEWAY_DIR"/configs/wallets.yaml
+  "$GATEWAY_DIR"/chains/*/configs/wallets.yaml
+  "$GATEWAY_DIR"/os-server-configs/*/wallets.yaml
+  "$HOME"/.foundry/*.password
+)
+
+for path in "${secret_paths[@]}"; do
+  printf '%s\n' "$path" >> "$secret_list"
+done
+
+if [ -d "$HOME/.foundry/keystores" ]; then
+  printf '%s\n' "$HOME/.foundry/keystores" >> "$secret_list"
+fi
+
+sort -u -o "$secret_list" "$secret_list"
+[ -s "$secret_list" ] || {
+  echo "no launch-time secret files found; refusing to create an empty backup" >&2
+  exit 1
+}
+
+tar -czf - -T "$secret_list" \
+  | gpg --symmetric --cipher-algo AES256 \
+      --output "$backup_archive"
+chmod 600 "$backup_archive"
+
+gpg --decrypt "$backup_archive" \
+  | tar -tzf - >/dev/null
+printf 'encrypted backup created: %s\n' "$backup_archive"
+)
 ```
+
+Keep the encrypted archive and its passphrase separated. The command exits on
+backup or verification failure; do not delete source keys unless it completes
+successfully and the encrypted backup has been copied to durable storage.
 
 After copying that backup off the hot host, remove launch-time wallet files and
 Foundry signer material:
