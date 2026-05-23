@@ -19,6 +19,7 @@ cd "${GATEWAY_DIR}"
 : "${EDGE_PROVER_MODE:=}"
 : "${EDGE_WALLET_CREATION:=}"
 : "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
+: "${EDGE_REUSE_GATEWAY_GOVERNOR:=true}"
 if [ -z "${SKIP_FUND:-}" ]; then
   SKIP_FUND=false
 fi
@@ -46,6 +47,7 @@ if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   wallet_args+=(--wallet-path "${EDGE_WALLET_PATH}")
 fi
 
+edge_chain_created=false
 if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
   echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} already exists; skipping chain create"
 else
@@ -61,6 +63,7 @@ else
     --set-as-default false \
     --evm-emulator false \
     --zksync-os
+  edge_chain_created=true
 
   if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -e "${EDGE_WALLET_PATH}" ] && [ ! -L "${EDGE_WALLET_PATH}" ]; then
     gl_persist_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
@@ -70,6 +73,70 @@ fi
 
 if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" ]; then
   gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml"
+fi
+
+if [ "${edge_chain_created}" = true ] && [ "$(gl_to_lower "${EDGE_REUSE_GATEWAY_GOVERNOR}")" = "true" ]; then
+  python3 - \
+    "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME:-gateway}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/configs/wallets.yaml" \
+    "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" \
+    "${EDGE_WALLET_PATH}" <<'PY'
+import os
+import shutil
+import sys
+from pathlib import Path
+
+import yaml
+
+gateway_wallet_paths = [Path(sys.argv[1]), Path(sys.argv[2])]
+edge_wallet_paths = [Path(sys.argv[3]), Path(sys.argv[4])]
+
+gateway_governor = None
+gateway_source = None
+for path in gateway_wallet_paths:
+    if not path.exists():
+        continue
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        continue
+    governor = data.get("governor")
+    if isinstance(governor, dict) and governor.get("address") is not None and governor.get("private_key") is not None:
+        gateway_governor = dict(governor)
+        gateway_source = path
+        break
+
+if gateway_governor is None:
+    raise SystemExit(
+        "missing Gateway governor wallet entry with address/private_key; "
+        "set EDGE_REUSE_GATEWAY_GOVERNOR=false to keep a separately generated edge governor"
+    )
+
+updated = []
+for path in edge_wallet_paths:
+    if not path.exists():
+        continue
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("governor"), dict):
+        raise SystemExit(f"invalid edge governor wallet entry in {path}")
+    data["governor"] = dict(gateway_governor)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    shutil.move(tmp, path)
+    os.chmod(path, 0o600)
+    updated.append(path)
+
+if not updated:
+    raise SystemExit("no edge wallet files found to update with Gateway governor")
+
+address = gateway_governor["address"]
+if isinstance(address, int):
+    address = "0x" + format(address & ((1 << 160) - 1), "040x")
+print(
+    f"gateway-launch: reused Gateway governor {address} from {gateway_source} "
+    f"for edge wallets: {', '.join(str(p) for p in updated)}"
+)
+PY
 fi
 
 if [ "${SKIP_FUND}" != "true" ]; then
