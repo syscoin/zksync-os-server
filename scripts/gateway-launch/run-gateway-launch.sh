@@ -298,6 +298,11 @@ start_gateway_for_migration() {
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
   set_gateway_runtime_l1_rpc_url
+  if [ -n "${BITCOIN_DA_RPC_URL:-}" ]; then
+    # SYSCOIN: checkpointed migration reruns may skip config materialization,
+    # so re-check the DA wallet before Gateway tries to publish its first blob.
+    gl_prepare_bitcoin_da_wallet
+  fi
 
   if gateway_rpc_ready; then
     echo "migrate-edge: Gateway RPC already reachable; reusing running node"
