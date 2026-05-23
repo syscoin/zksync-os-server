@@ -962,12 +962,22 @@ ensure_deposits_unpaused() {
 
 refresh_l1_admin_wallet_funding() {
   local chain_name="${1:?chain name required}"
+  local min_sender_balance_wei extra_governor_balance_wei
 
   # SYSCOIN: zkstack prompts interactively if the governor has less than 5 ETH,
   # even when the transaction would succeed. Migration can spend down wallets
   # after the earlier funding checkpoint, so refresh the chain wallet targets
   # immediately before zkstack admin broadcasts.
-  GATEWAY_CHAIN_NAME="${chain_name}" "${SCRIPT_DIR}/fund-wallets.sh"
+  min_sender_balance_wei="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
+  extra_governor_balance_wei="$(python3 - "${min_sender_balance_wei}" <<'PY'
+import sys
+
+print(int(sys.argv[1], 10) * 3)
+PY
+)"
+  GATEWAY_FUND_EXTRA_GOVERNOR_BALANCE_WEI="${GATEWAY_FUND_EXTRA_GOVERNOR_BALANCE_WEI:-${extra_governor_balance_wei}}" \
+    GATEWAY_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/fund-wallets.sh"
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"

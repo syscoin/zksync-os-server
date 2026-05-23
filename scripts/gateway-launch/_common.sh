@@ -1148,7 +1148,8 @@ def required_balance(role):
     if role == "deployer":
         return int(6 * 10**18)
     if role == "governor":
-        return int(11 * 10**18)
+        base = int(os.environ.get("GATEWAY_FUND_GOVERNOR_BALANCE_WEI", str(11 * 10**18)))
+        return base + int(os.environ.get("GATEWAY_FUND_EXTRA_GOVERNOR_BALANCE_WEI", "0"))
     return int(10**18)
 
 
