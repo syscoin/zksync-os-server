@@ -82,8 +82,8 @@ if [ "${edge_chain_created}" = true ] && [ "$(gl_to_lower "${EDGE_REUSE_GATEWAY_
     "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" \
     "${EDGE_WALLET_PATH}" <<'PY'
 import os
-import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -118,6 +118,57 @@ def normalize_wallet_hex_fields(data):
     return data
 
 
+def validate_wallet_target(path):
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise SystemExit(f"edge wallet file disappeared before rewrite: {path}") from exc
+    if not os.path.isfile(path) or os.path.islink(path):
+        raise SystemExit(f"edge wallet file must be a regular non-symlink file: {path}")
+    if st.st_uid != os.geteuid():
+        raise SystemExit(f"edge wallet file must be owned by the launching user: {path}")
+    if st.st_mode & 0o022:
+        raise SystemExit(f"edge wallet file must not be writable by group/other users: {path}")
+
+    parent = path.parent
+    parent_st = os.lstat(parent)
+    if not os.path.isdir(parent) or os.path.islink(parent):
+        raise SystemExit(f"edge wallet parent must be a regular directory: {parent}")
+    if parent_st.st_uid != os.geteuid():
+        raise SystemExit(f"edge wallet parent must be owned by the launching user: {parent}")
+
+
+def write_wallet_file_securely(path, data):
+    validate_wallet_target(path)
+    text = yaml.safe_dump(data, sort_keys=False)
+    fd = None
+    tmp_name = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            text=True,
+        )
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            fd = None
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
+        raise
+
+
 gateway_governor = None
 gateway_source = None
 for path in gateway_wallet_paths:
@@ -146,11 +197,7 @@ for path in edge_wallet_paths:
     if not isinstance(data, dict) or not isinstance(data.get("governor"), dict):
         raise SystemExit(f"invalid edge governor wallet entry in {path}")
     data["governor"] = dict(gateway_governor)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    shutil.move(tmp, path)
-    os.chmod(path, 0o600)
+    write_wallet_file_securely(path, data)
     updated.append(path)
 
 if not updated:
