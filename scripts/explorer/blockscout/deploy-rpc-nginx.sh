@@ -27,28 +27,36 @@ if [[ -z "${GATEWAY_RPC_ALLOWLIST}" ]]; then
   exit 1
 fi
 
-nginx_allow_lines() {
+nginx_gateway_geo_lines() {
   local list="$1"
   local entry
-
-  printf '        allow 127.0.0.1;\n'
-  printf '        allow ::1;\n'
 
   IFS=',' read -r -a entries <<<"${list}"
   for entry in "${entries[@]}"; do
     entry="$(printf '%s' "${entry}" | xargs)"
     [[ -z "${entry}" ]] && continue
-    printf '        allow %s;\n' "${entry}"
+    if [[ ! "${entry}" =~ ^[0-9A-Fa-f:./]+$ ]]; then
+      echo "invalid GATEWAY_RPC_ALLOWLIST entry: ${entry}" >&2
+      exit 1
+    fi
+    printf '    %s 1;\n' "${entry}"
   done
 }
 
-gateway_allow_lines="$(nginx_allow_lines "${GATEWAY_RPC_ALLOWLIST}")"
+gateway_geo_lines="$(nginx_gateway_geo_lines "${GATEWAY_RPC_ALLOWLIST}")"
 
 nginx_config="$(
   cat <<EOF
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     '' close;
+}
+
+geo \$gateway_rpc_allowed {
+    default 0;
+    127.0.0.1 1;
+    ::1 1;
+${gateway_geo_lines}
 }
 
 server {
@@ -97,8 +105,9 @@ server {
     }
 
     location / {
-${gateway_allow_lines}
-        deny all;
+        if (\$gateway_rpc_allowed = 0) {
+            return 403;
+        }
 
         if (\$request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin "*" always;
