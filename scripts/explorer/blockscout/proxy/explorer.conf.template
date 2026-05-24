@@ -3,15 +3,14 @@ map $http_upgrade $connection_upgrade {
  '' close;
 }
 
-map "${DISABLE_RPC_PROXY_API}:$arg_module" $blockscout_rpc_proxy_blocked {
+map "${DISABLE_RPC_PROXY_API}" $blockscout_rpc_proxy_blocked {
  default 0;
- ~*^true:proxy$ 1;
+ true 1;
 }
 
-map "${DISABLE_RPC_PROXY_API}:$uri" $blockscout_json_rpc_blocked {
+map "${DISABLE_RPC_PROXY_API}" $blockscout_json_rpc_blocked {
  default 0;
- ~^true:/json-rpc$ 1;
- ~^true:/api/eth-rpc$ 1;
+ true 1;
 }
 
 server {
@@ -83,11 +82,23 @@ if ($blockscout_json_rpc_blocked) {
  proxy_cache_bypass $http_upgrade;
  }
 
- location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
+ location ~ ^/api/?$ {
 if ($blockscout_rpc_proxy_blocked) {
  return 404;
 }
 
+ proxy_pass ${BACK_PROXY_PASS};
+ proxy_http_version 1.1;
+ proxy_set_header Host "$host";
+ proxy_set_header X-Real-IP "$remote_addr";
+ proxy_set_header X-Forwarded-For "$proxy_add_x_forwarded_for";
+ proxy_set_header X-Forwarded-Proto "$scheme";
+ proxy_set_header Upgrade "$http_upgrade";
+ proxy_set_header Connection $connection_upgrade;
+ proxy_cache_bypass $http_upgrade;
+ }
+
+ location ~ ^/(api(?!-docs$)|socket|sitemap.xml|auth/auth0|auth/auth0/callback|auth/logout) {
  proxy_pass ${BACK_PROXY_PASS};
  proxy_http_version 1.1;
  proxy_set_header Host "$host";
