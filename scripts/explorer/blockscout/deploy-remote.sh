@@ -41,8 +41,10 @@ tar -C \"\${tmp_dir}\" -xf -
 
 mkdir -p \"\${remote_dir}/envs\"
 cp \"\${tmp_dir}/docker-compose.yml\" \"\${remote_dir}/docker-compose.yml\"
-rm -rf \"\${remote_dir}/proxy\"
-cp -R \"\${tmp_dir}/proxy\" \"\${remote_dir}/proxy\"
+mkdir -p \"\${remote_dir}/proxy/assets\"
+cp \"\${tmp_dir}/proxy/explorer.conf.template\" \"\${remote_dir}/proxy/explorer.conf.template\"
+find \"\${remote_dir}/proxy/assets\" -maxdepth 1 -type f -delete
+cp \"\${tmp_dir}\"/proxy/assets/* \"\${remote_dir}/proxy/assets/\"
 cp \"\${tmp_dir}/envs/\${instance}.env\" \"\${remote_dir}/envs/\${instance}.env\"
 '"
 
