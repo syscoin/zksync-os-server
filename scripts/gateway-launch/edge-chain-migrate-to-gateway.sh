@@ -611,6 +611,49 @@ wait_for_gateway_commit_sender_balance() {
   return 1
 }
 
+fund_l1_governor_for_gateway_sender_deposits() {
+  local chain_name="${1:?chain name required}"
+  local min_balance_wei="${2:?minimum Gateway sender balance required}"
+  local wallet_name sender_addr current_balance_wei total_top_up_wei
+  local chain_wallet governor_base_wei governor_target_wei
+
+  total_top_up_wei=0
+  for wallet_name in "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" prove_operator execute_operator; do
+    sender_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
+    current_balance_wei="$(gateway_commit_sender_balance_wei "${sender_addr}")"
+    total_top_up_wei="$(python3 - "${total_top_up_wei}" "${current_balance_wei}" "${min_balance_wei}" <<'PY'
+import sys
+
+total = int(sys.argv[1], 10)
+current = int(sys.argv[2], 10)
+target = int(sys.argv[3], 10)
+print(total + max(0, target - current))
+PY
+)"
+  done
+
+  [ "${total_top_up_wei}" != "0" ] || return 0
+
+  chain_wallet="${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml"
+  [ -f "${chain_wallet}" ] || {
+    echo "gateway-launch: missing chain wallet file for governor funding: ${chain_wallet}" >&2
+    return 1
+  }
+
+  governor_base_wei="${GATEWAY_FUND_GOVERNOR_BALANCE_WEI:-11000000000000000000}"
+  governor_target_wei="$(python3 - "${governor_base_wei}" "${total_top_up_wei}" <<'PY'
+import sys
+
+print(int(sys.argv[1], 10) + int(sys.argv[2], 10))
+PY
+)"
+
+  echo "gateway-launch: funding ${chain_name} governor on L1 to ${governor_target_wei} wei before Gateway sender deposits (required outgoing deposit value=${total_top_up_wei} wei)"
+  WALLETS_YAML_PATHS="${chain_wallet}" \
+    GATEWAY_FUND_GOVERNOR_BALANCE_WEI="${governor_target_wei}" \
+    gl_fund_wallets_yaml
+}
+
 ensure_gateway_commit_sender_validator() {
   local chain_name="${1:?chain name required}"
   local wallet_name committer_addr bridgehub validator_timelock refund_recipient gateway_chain_id chain_proxy committer_role grant_calldata
@@ -685,6 +728,8 @@ ensure_gateway_commit_sender_balance() {
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+
+  fund_l1_governor_for_gateway_sender_deposits "${chain_name}" "${min_balance_wei}"
 
   for wallet_name in "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" prove_operator execute_operator; do
     sender_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
@@ -962,22 +1007,12 @@ ensure_deposits_unpaused() {
 
 refresh_l1_admin_wallet_funding() {
   local chain_name="${1:?chain name required}"
-  local min_sender_balance_wei extra_governor_balance_wei
 
   # SYSCOIN: zkstack prompts interactively if the governor has less than 5 ETH,
   # even when the transaction would succeed. Migration can spend down wallets
   # after the earlier funding checkpoint, so refresh the chain wallet targets
   # immediately before zkstack admin broadcasts.
-  min_sender_balance_wei="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
-  extra_governor_balance_wei="$(python3 - "${min_sender_balance_wei}" <<'PY'
-import sys
-
-print(int(sys.argv[1], 10) * 3)
-PY
-)"
-  GATEWAY_FUND_EXTRA_GOVERNOR_BALANCE_WEI="${GATEWAY_FUND_EXTRA_GOVERNOR_BALANCE_WEI:-${extra_governor_balance_wei}}" \
-    GATEWAY_CHAIN_NAME="${chain_name}" \
-    "${SCRIPT_DIR}/fund-wallets.sh"
+  GATEWAY_CHAIN_NAME="${chain_name}" "${SCRIPT_DIR}/fund-wallets.sh"
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
