@@ -69,6 +69,7 @@ services:
       FIRST_BLOCK: "${FIRST_BLOCK:-0}"
       TRACE_FIRST_BLOCK: "${TRACE_FIRST_BLOCK:-${FIRST_BLOCK:-0}}"
       INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
+      INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
     volumes:
       - backend-logs:/app/logs
       - backend-dets:/app/dets
