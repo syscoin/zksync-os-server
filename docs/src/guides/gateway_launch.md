@@ -402,9 +402,33 @@ public internet because Basic Auth is not encrypted without HTTPS.
 
 If the explorer runs on a separate host, keep sequencer/node RPC bound locally
 or behind the host reverse proxy and allowlist only the explorer server's public
-IP at nginx/firewall level. Do not expose unrestricted node RPC directly to the
-internet; proxy the explorer to the required Gateway/zksys RPC endpoint(s) and
-keep any extra namespaces limited to what the explorer actually needs.
+IP at nginx/firewall level. Do not expose unrestricted Gateway node RPC directly
+to the internet.
+
+The Blockscout deployment helper includes a host nginx installer for the normal
+Tanenbaum topology:
+
+```bash
+cd scripts/explorer/blockscout
+
+# Deploy or refresh the explorer containers.
+REMOTE_HOST="<ssh-user>@<explorer-host>" ./deploy-remote.sh zksys
+REMOTE_HOST="<ssh-user>@<explorer-host>" ./deploy-remote.sh gateway
+
+# Install RPC vhosts on the node host after rpc-zk/rpc-gw DNS points there.
+RPC_NGINX_REMOTE_HOST="<ssh-user>@<node-host>" \
+GATEWAY_RPC_ALLOWLIST="<blockscout-ip-or-cidr>,<admin-ip-or-cidr>" \
+LETSENCRYPT_EMAIL="<ops email>" \
+RPC_NGINX_ENABLE_TLS=1 \
+./deploy-rpc-nginx.sh
+```
+
+`rpc-zk.tanenbaum.io` is installed as the public zksys RPC. `rpc-gw.tanenbaum.io`
+is installed as a private Gateway RPC that only allows localhost plus
+`GATEWAY_RPC_ALLOWLIST` entries, typically the Blockscout host and operator
+admin IPs. The Gateway Blockscout env hides RPC docs/links and disables the
+Next.js proxy so the public explorer API remains available without turning the
+explorer into a public Gateway RPC passthrough.
 
 The generated `start-node.sh` now preflights the open-file limit before starting the node:
 
