@@ -180,6 +180,7 @@ if [[ "${RPC_NGINX_ENABLE_TLS}" == "1" ]]; then
   sudo certbot --nginx \
     --non-interactive \
     --agree-tos \
+    --expand \
     --redirect \
     --email "${LETSENCRYPT_EMAIL}" \
     -d "${RPC_ZKSYS_DOMAIN}" \
