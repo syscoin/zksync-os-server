@@ -66,6 +66,8 @@ services:
       COIN_NAME: ${COIN_NAME}
       COIN: ${COIN_SYMBOL}
       DISABLE_EXCHANGE_RATES: "true"
+      FIRST_BLOCK: "${FIRST_BLOCK:-0}"
+      TRACE_FIRST_BLOCK: "${TRACE_FIRST_BLOCK:-${FIRST_BLOCK:-0}}"
       INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
     volumes:
       - backend-logs:/app/logs
