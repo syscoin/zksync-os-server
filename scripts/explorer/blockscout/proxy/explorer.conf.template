@@ -43,6 +43,30 @@ server {
  alias /usr/share/nginx/html/assets/;
  }
 
+ location = /favicon.ico {
+ proxy_pass ${FRONT_PROXY_PASS}/assets/favicon/favicon.ico;
+ proxy_http_version 1.1;
+ proxy_set_header Host "$host";
+ }
+
+ location = /favicon-32x32.png {
+ proxy_pass ${FRONT_PROXY_PASS}/assets/favicon/favicon-32x32.png;
+ proxy_http_version 1.1;
+ proxy_set_header Host "$host";
+ }
+
+ location = /favicon-16x16.png {
+ proxy_pass ${FRONT_PROXY_PASS}/assets/favicon/favicon-16x16.png;
+ proxy_http_version 1.1;
+ proxy_set_header Host "$host";
+ }
+
+ location = /apple-touch-icon.png {
+ proxy_pass ${FRONT_PROXY_PASS}/assets/favicon/apple-touch-icon-180x180.png;
+ proxy_http_version 1.1;
+ proxy_set_header Host "$host";
+ }
+
  location ~ ^/(json-rpc|api/eth-rpc)$ {
 if ($blockscout_json_rpc_blocked) {
  return 404;
