@@ -8,14 +8,24 @@ if [[ -z "${INSTANCE}" || ( "${INSTANCE}" != "gateway" && "${INSTANCE}" != "zksy
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REMOTE_HOST="${REMOTE_HOST:-ubuntu@88.198.25.188}"
-SSH_KEY_PATH="${SSH_KEY_PATH:-/Users/jagsidhu/work/Documents/GitHub/PVUGC.prv}"
+REMOTE_HOST="${REMOTE_HOST:-}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/gateway/ui/blockscout}"
 PROJECT_NAME="blockscout-${INSTANCE}"
 REMOTE_DIR_B64="$(printf '%s' "${REMOTE_DIR}" | base64 | tr -d '\n')"
 
+if [[ -z "${REMOTE_HOST}" ]]; then
+  echo "REMOTE_HOST is required, for example ubuntu@explorer-host" >&2
+  exit 1
+fi
+
+ssh_opts=(-o StrictHostKeyChecking=accept-new)
+if [[ -n "${SSH_KEY_PATH}" ]]; then
+  ssh_opts+=(-i "${SSH_KEY_PATH}")
+fi
+
 tar -C "${SCRIPT_DIR}" -cf - docker-compose.yml proxy "envs/${INSTANCE}.env" | \
-  ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" \
+  ssh "${ssh_opts[@]}" "${REMOTE_HOST}" \
     "REMOTE_DIR_B64=${REMOTE_DIR_B64} INSTANCE=${INSTANCE} bash -c '
 set -euo pipefail
 
@@ -36,7 +46,7 @@ cp -R \"\${tmp_dir}/proxy\" \"\${remote_dir}/proxy\"
 cp \"\${tmp_dir}/envs/\${instance}.env\" \"\${remote_dir}/envs/\${instance}.env\"
 '"
 
-ssh -o StrictHostKeyChecking=accept-new -i "${SSH_KEY_PATH}" "${REMOTE_HOST}" bash -s -- \
+ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
   "${REMOTE_DIR}" "${INSTANCE}" "${PROJECT_NAME}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
