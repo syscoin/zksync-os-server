@@ -459,6 +459,8 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
 | `GATEWAY_REUSE_ZKSYS_TOKEN` | Set to `true` only for explicit recovery reuse of an already deployed ZKSYS token; normal launches deploy ZKSYS and derive the asset id |
+| `ZKSYS_TOKEN_ADMIN_ADDRESS` | Required on `--l1 mainnet` unless reusing an existing ZKSYS token; admin/minter for the canonical access-controlled ZKSYS L1 token |
+| `ZKSYS_TOKEN_INITIAL_MINT_WEI` | Optional mainnet-only initial mint amount for canonical ZKSYS, default `0`; requires the admin to be the deployer |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
 | `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |

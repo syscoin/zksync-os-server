@@ -25,6 +25,140 @@ gl_l1_broadcast_preflight
 
 cd "${GATEWAY_DIR}"
 bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
+
+validate_zksys_mainnet_token_env() {
+  gl_require ZKSYS_TOKEN_ADMIN_ADDRESS
+  ZKSYS_TOKEN_ADMIN_ADDRESS="$(python3 - <<'PY'
+import os
+
+addr = os.environ["ZKSYS_TOKEN_ADMIN_ADDRESS"].strip()
+if not addr.startswith(("0x", "0X")) or len(addr) != 42:
+    raise SystemExit("ZKSYS_TOKEN_ADMIN_ADDRESS must be a 20-byte hex address")
+value = int(addr[2:], 16)
+if value == 0:
+    raise SystemExit("ZKSYS_TOKEN_ADMIN_ADDRESS must not be zero")
+print("0x" + format(value, "040x"))
+PY
+)"
+  export ZKSYS_TOKEN_ADMIN_ADDRESS
+
+  : "${ZKSYS_TOKEN_INITIAL_MINT_WEI:=0}"
+  ZKSYS_TOKEN_INITIAL_MINT_WEI="$(python3 - <<'PY'
+import os
+
+raw = os.environ["ZKSYS_TOKEN_INITIAL_MINT_WEI"].strip()
+if not raw.isdecimal():
+    raise SystemExit("ZKSYS_TOKEN_INITIAL_MINT_WEI must be a base-10 uint256")
+value = int(raw, 10)
+if value < 0 or value >= 1 << 256:
+    raise SystemExit("ZKSYS_TOKEN_INITIAL_MINT_WEI must fit uint256")
+print(value)
+PY
+)"
+  export ZKSYS_TOKEN_INITIAL_MINT_WEI
+}
+
+install_syscoin_zksys_token_support() {
+  local l1_contracts_dir deploy_script token_contract
+  l1_contracts_dir="${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+  deploy_script="${l1_contracts_dir}/deploy-scripts/tokens/DeployErc20.s.sol"
+  token_contract="${l1_contracts_dir}/contracts/dev-contracts/SyscoinZKSYSToken.sol"
+
+  cp "${SCRIPT_DIR}/contracts/SyscoinZKSYSToken.sol" "${token_contract}"
+
+  python3 - "${deploy_script}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+if "SyscoinZKSYSToken" in text:
+    raise SystemExit(0)
+
+replacements = [
+    (
+        'import {WETH9} from "contracts/dev-contracts/WETH9.sol";\n',
+        'import {WETH9} from "contracts/dev-contracts/WETH9.sol";\n'
+        'import {SyscoinZKSYSToken} from "contracts/dev-contracts/SyscoinZKSYSToken.sol";\n',
+    ),
+    (
+        "        uint256 mint;\n"
+        "    }\n",
+        "        uint256 mint;\n"
+        "        address admin;\n"
+        "    }\n",
+    ),
+    (
+        '            token.mint = toml.readUint(string.concat(key, ".mint"));\n'
+        "            config.tokens.push(token);\n",
+        '            token.mint = toml.readUint(string.concat(key, ".mint"));\n'
+        '            if (vm.keyExistsToml(toml, string.concat(key, ".admin"))) {\n'
+        '                token.admin = toml.readAddress(string.concat(key, ".admin"));\n'
+        "            }\n"
+        "            config.tokens.push(token);\n",
+    ),
+    (
+        "                implementation: token.implementation,\n"
+        "                mint: token.mint,\n"
+        "                additionalAddressesForMinting: config.additionalAddressesForMinting\n",
+        "                implementation: token.implementation,\n"
+        "                mint: token.mint,\n"
+        "                admin: token.admin,\n"
+        "                additionalAddressesForMinting: config.additionalAddressesForMinting\n",
+    ),
+    (
+        "        string memory implementation,\n"
+        "        uint256 mint,\n"
+        "        address[] storage additionalAddressesForMinting\n",
+        "        string memory implementation,\n"
+        "        uint256 mint,\n"
+        "        address admin,\n"
+        "        address[] storage additionalAddressesForMinting\n",
+    ),
+    (
+        '        // WETH9 constructor has no arguments\n'
+        '        if (keccak256(bytes(implementation)) != keccak256(bytes("WETH9.sol"))) {\n'
+        "            args = abi.encode(name, symbol, decimals);\n"
+        "        }\n",
+        '        // WETH9 constructor has no arguments\n'
+        '        if (keccak256(bytes(implementation)) == keccak256(bytes("WETH9.sol"))) {\n'
+        "            args = \"\";\n"
+        '        } else if (keccak256(bytes(implementation)) == keccak256(bytes("SyscoinZKSYSToken.sol"))) {\n'
+        "            args = abi.encode(name, symbol, uint8(decimals), admin);\n"
+        "        } else {\n"
+        "            args = abi.encode(name, symbol, decimals);\n"
+        "        }\n",
+    ),
+    (
+        "            vm.serializeUintToHex(token.symbol, \"mint\", token.mint);\n"
+        "            string memory tokenInfo = vm.serializeAddress(token.symbol, \"address\", token.addr);\n",
+        "            vm.serializeUintToHex(token.symbol, \"mint\", token.mint);\n"
+        "            vm.serializeAddress(token.symbol, \"admin\", token.admin);\n"
+        "            string memory tokenInfo = vm.serializeAddress(token.symbol, \"address\", token.addr);\n",
+    ),
+]
+
+for old, new in replacements:
+    if old not in text:
+        raise SystemExit(f"DeployErc20 patch anchor not found:\n{old}")
+    text = text.replace(old, new, 1)
+
+path.write_text(text, encoding="utf-8")
+PY
+}
+
+GATEWAY_REUSE_ZKSYS_TOKEN="$(gl_to_lower "${GATEWAY_REUSE_ZKSYS_TOKEN:-false}")"
+case "${GATEWAY_REUSE_ZKSYS_TOKEN}" in
+true | false) ;;
+*) gl_die "invalid GATEWAY_REUSE_ZKSYS_TOKEN='${GATEWAY_REUSE_ZKSYS_TOKEN}' (expected: true | false)" ;;
+esac
+
+if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] && [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" != true ]; then
+  validate_zksys_mainnet_token_env
+  install_syscoin_zksys_token_support
+fi
+
 gl_ensure_zkstack_cli_release_current
 
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
@@ -175,7 +309,24 @@ create2_factory_salt = "${CREATE2_FACTORY_SALT}"
 create2_factory_addr = "${CREATE2_FACTORY_ADDR}"
 EOF
 
-cat > script-config/config-deploy-erc20.toml <<'EOF'
+if [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" = true ]; then
+  cat > script-config/config-deploy-erc20.toml <<'EOF'
+# ZKSYS token deployment is skipped because GATEWAY_REUSE_ZKSYS_TOKEN=true.
+EOF
+elif [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ]; then
+  cat > script-config/config-deploy-erc20.toml <<EOF
+additional_addresses_for_minting = []
+
+[tokens.ZKSYS]
+name = "ZKSYS"
+symbol = "ZKSYS"
+decimals = 18
+implementation = "SyscoinZKSYSToken.sol"
+admin = "${ZKSYS_TOKEN_ADMIN_ADDRESS}"
+mint = ${ZKSYS_TOKEN_INITIAL_MINT_WEI}
+EOF
+else
+  cat > script-config/config-deploy-erc20.toml <<'EOF'
 additional_addresses_for_minting = []
 
 [tokens.ZKSYS]
@@ -185,6 +336,7 @@ decimals = 18
 implementation = "TestnetERC20Token.sol"
 mint = 1000000000000000000
 EOF
+fi
 
 read_deployer_private_key() {
   python3 - <<'PY'
@@ -266,6 +418,12 @@ prepare_deployer_wallet_args() {
 unset DEPLOYER_PRIVATE_KEY
 prepare_deployer_wallet_args
 export DEPLOYER_ADDRESS="$(cast wallet address "${DEPLOYER_CAST_WALLET_ARGS[@]}")"
+if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] \
+  && [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" != true ] \
+  && [ "${ZKSYS_TOKEN_INITIAL_MINT_WEI:-0}" != "0" ] \
+  && [ "$(gl_to_lower "${ZKSYS_TOKEN_ADMIN_ADDRESS}")" != "$(gl_to_lower "${DEPLOYER_ADDRESS}")" ]; then
+  gl_die "ZKSYS_TOKEN_INITIAL_MINT_WEI requires ZKSYS_TOKEN_ADMIN_ADDRESS to match DEPLOYER_ADDRESS; otherwise mint from the admin after deployment"
+fi
 
 wait_for_deployer_nonce_sync() {
   local timeout_s poll_s start now latest pending
@@ -305,12 +463,6 @@ if not m:
 print(m.group(1))
 PY
 }
-
-GATEWAY_REUSE_ZKSYS_TOKEN="$(gl_to_lower "${GATEWAY_REUSE_ZKSYS_TOKEN:-false}")"
-case "${GATEWAY_REUSE_ZKSYS_TOKEN}" in
-true | false) ;;
-*) gl_die "invalid GATEWAY_REUSE_ZKSYS_TOKEN='${GATEWAY_REUSE_ZKSYS_TOKEN}' (expected: true | false)" ;;
-esac
 
 KNOWN_ZKSYS_ADDRESS=""
 if [ "${GATEWAY_REUSE_ZKSYS_TOKEN}" = true ]; then
