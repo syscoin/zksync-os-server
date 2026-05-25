@@ -81,6 +81,9 @@ server {
             deny all;
         }
 
+        # SYSCOIN: OS RPC already emits CORS headers; hide upstream value so
+        # browsers do not reject duplicated Access-Control-Allow-Origin values.
+        proxy_hide_header Access-Control-Allow-Origin;
         add_header Access-Control-Allow-Origin "*" always;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -121,6 +124,9 @@ server {
             deny all;
         }
 
+        # SYSCOIN: OS RPC already emits CORS headers; hide upstream value so
+        # browsers do not reject duplicated Access-Control-Allow-Origin values.
+        proxy_hide_header Access-Control-Allow-Origin;
         add_header Access-Control-Allow-Origin "*" always;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
