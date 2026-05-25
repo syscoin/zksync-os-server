@@ -158,7 +158,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
             Some(self.l1_state.validator_timelock_sl),
-            &last_replay_record.block_context.block_hashes,
+            &last_replay_record.block_context.block_hashes.0,
         )
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
         if batch_info.upgrade_tx_hash.is_some() && expected_upgrade_tx_hash.is_none() {

@@ -1,13 +1,13 @@
 use crate::eth_call_handler::build_pending_block_context;
 use crate::eth_impl::build_api_receipt;
 use crate::metrics::{TX_SUBMISSION, TxRejectionReason};
+use crate::tx_forwarder::{TxForwardError, TxForwarder};
 use crate::{ReadRpcStorage, RpcConfig};
 use alloy::consensus::Transaction;
 use alloy::consensus::transaction::SignerRecoverable;
 use alloy::eips::Decodable2718;
 use alloy::hex;
 use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
-use alloy::providers::{DynProvider, Provider};
 use alloy::sol_types::SolCall;
 use alloy::transports::{RpcError, TransportErrorKind};
 use bitcoin_da_client::SyscoinClient;
@@ -51,7 +51,7 @@ pub struct TxHandler<RpcStorage, Mempool> {
     chain_id: u64,
     mempool: Mempool,
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
-    tx_forwarder: Option<DynProvider>,
+    tx_forwarder: Option<TxForwarder>,
     edge_da_unavailable_ref_cache: Arc<Mutex<HashMap<String, Instant>>>,
     /// Optional policy client. When set, each incoming tx is simulated
     /// once with the validator wired in (admit + judge inline). Spares
@@ -72,7 +72,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         chain_id: u64,
         mempool: Mempool,
         acceptance_state: watch::Receiver<TransactionAcceptanceState>,
-        tx_forwarder: Option<DynProvider>,
+        tx_forwarder: Option<TxForwarder>,
         policy_client: Option<PolicyClient>,
         last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     ) -> Self {
@@ -196,7 +196,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let mut local_cleanup = RemoveOnDrop::new(&self.mempool, hash);
             let forwarding_result = {
                 let _guard = ForwardingLatencyGuard::new();
-                tx_forwarder.send_raw_transaction(&tx_bytes).await
+                tx_forwarder.forward_raw_transaction(hash, &tx_bytes).await
             };
             // We do not need to wait for pending transaction here, so it's safe to forget about it
             if let Err(err) = forwarding_result {
@@ -384,20 +384,23 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // as already known, or main reported an EIP-7966 timeout (tx still
             // pending on main).
             let mut local_cleanup = RemoveOnDrop::new(&self.mempool, tx_hash);
-            let forwarding_result: Result<ZkTransactionReceipt, _> = {
+            let forwarding_result = {
                 let _guard = ForwardingLatencyGuard::new();
                 forwarder
-                    .raw_request("eth_sendRawTransactionSync".into(), (bytes, max_wait_ms))
+                    .forward_raw_transaction_sync(tx_hash, &bytes, max_wait_ms)
                     .await
             };
             match forwarding_result {
-                Ok(receipt) => {
+                Ok(Some(receipt)) => {
                     local_cleanup.disarm();
                     return Ok(receipt);
                 }
+                Ok(None) => {
+                    local_cleanup.disarm();
+                }
                 Err(err) => {
-                    tracing::debug!(%err, "sync forwarding error from main node back to user");
-                    if let RpcError::ErrorResp(payload) = &err
+                    tracing::debug!(%err, "sync transaction forwarding error back to user");
+                    if let Some(RpcError::ErrorResp(payload)) = err.as_rpc_error()
                         && payload.code == EIP_7966_TIMEOUT_CODE
                     {
                         local_cleanup.disarm();
@@ -580,20 +583,27 @@ fn remember_unavailable_edge_da_refs_in_cache<'a>(
 // SYSCOIN: forwarding can fail after local mempool insertion. Only roll back errors that are
 // definitely local/pre-send failures or explicit main-node rejections; keep the tx for ambiguous
 // transport/response failures so pending RPC state does not drop a tx the main node may include.
-fn forwarding_error_should_rollback_local_tx(err: &RpcError<TransportErrorKind>) -> bool {
+fn forwarding_error_should_rollback_local_tx(err: &TxForwardError) -> bool {
     match err {
-        RpcError::ErrorResp(_) => !forwarding_error_indicates_main_node_already_knows_tx(err),
-        RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_) => {
-            true
+        TxForwardError::Rpc(RpcError::ErrorResp(_)) => {
+            !forwarding_error_indicates_main_node_already_knows_tx(err)
         }
-        RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. } => false,
+        TxForwardError::Rpc(
+            RpcError::SerError(_) | RpcError::UnsupportedFeature(_) | RpcError::LocalUsageError(_),
+        )
+        | TxForwardError::NoKnownLeader
+        | TxForwardError::NoProvider(_) => true,
+        TxForwardError::Rpc(
+            RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. },
+        ) => false,
     }
 }
 
-fn forwarding_error_indicates_main_node_already_knows_tx(
-    err: &RpcError<TransportErrorKind>,
-) -> bool {
-    let Some(payload) = err.as_error_resp() else {
+fn forwarding_error_indicates_main_node_already_knows_tx(err: &TxForwardError) -> bool {
+    let Some(payload) = err
+        .as_rpc_error()
+        .and_then(|rpc_err| rpc_err.as_error_resp())
+    else {
         return false;
     };
     contains_known_transaction_error(payload.message.as_ref())
@@ -627,9 +637,9 @@ pub enum EthSendRawTransactionError {
     /// Errors related to the transaction pool
     #[error(transparent)]
     PoolError(#[from] PoolError),
-    /// Error forwarded from main node
+    /// Error while forwarding transaction
     #[error(transparent)]
-    ForwardError(#[from] RpcError<TransportErrorKind>),
+    ForwardError(#[from] TxForwardError),
     #[error("Signer is blacklisted")]
     BlacklistedSigner,
     #[error("Transaction is blacklisted")]
@@ -655,8 +665,8 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
             EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
             EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
-            EthSendRawTransactionError::ForwardError(rpc_err) => match rpc_err {
-                RpcError::ErrorResp(_) => Self::ForwardRejected,
+            EthSendRawTransactionError::ForwardError(err) => match err {
+                TxForwardError::Rpc(RpcError::ErrorResp(_)) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,
             },
             EthSendRawTransactionError::PoolError(pool_err) => Self::from(&pool_err.kind),
