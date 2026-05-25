@@ -28,7 +28,7 @@ bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${
 
 validate_zksys_mainnet_token_env() {
   gl_require ZKSYS_TOKEN_ADMIN_ADDRESS
-  python3 - <<'PY'
+  ZKSYS_TOKEN_ADMIN_ADDRESS="$(python3 - <<'PY'
 import os
 
 addr = os.environ["ZKSYS_TOKEN_ADMIN_ADDRESS"].strip()
@@ -37,7 +37,11 @@ if not addr.startswith(("0x", "0X")) or len(addr) != 42:
 value = int(addr[2:], 16)
 if value == 0:
     raise SystemExit("ZKSYS_TOKEN_ADMIN_ADDRESS must not be zero")
+print("0x" + format(value, "040x"))
 PY
+)"
+  export ZKSYS_TOKEN_ADMIN_ADDRESS
+
   : "${ZKSYS_TOKEN_INITIAL_MINT_WEI:=0}"
   ZKSYS_TOKEN_INITIAL_MINT_WEI="$(python3 - <<'PY'
 import os
