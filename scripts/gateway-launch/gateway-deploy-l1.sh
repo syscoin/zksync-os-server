@@ -39,7 +39,7 @@ if value == 0:
     raise SystemExit("ZKSYS_TOKEN_ADMIN_ADDRESS must not be zero")
 PY
   : "${ZKSYS_TOKEN_INITIAL_MINT_WEI:=0}"
-  python3 - <<'PY'
+  ZKSYS_TOKEN_INITIAL_MINT_WEI="$(python3 - <<'PY'
 import os
 
 raw = os.environ["ZKSYS_TOKEN_INITIAL_MINT_WEI"].strip()
@@ -48,7 +48,10 @@ if not raw.isdecimal():
 value = int(raw, 10)
 if value < 0 or value >= 1 << 256:
     raise SystemExit("ZKSYS_TOKEN_INITIAL_MINT_WEI must fit uint256")
+print(value)
 PY
+)"
+  export ZKSYS_TOKEN_INITIAL_MINT_WEI
 }
 
 install_syscoin_zksys_token_support() {
