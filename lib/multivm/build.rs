@@ -44,13 +44,13 @@ fn expected_syscoin_app_sha256(tag: &str, variant: &str) -> anyhow::Result<&'sta
         ("v0.2.5", "singleblock_batch_logging_enabled") => {
             Ok("055ed473eb0af6797c9dda7ef7551aa7bb8907761be9c8726046c1959eeb6e4d")
         }
-        ("v0.3.0", "multiblock_batch") => {
+        ("v0.3.1-interface-v0.1.3", "multiblock_batch") => {
             Ok("b1a8483b67690f7675b337451f46836c402214b5e812d852b27c78bfa418d894")
         }
-        ("v0.3.0", "singleblock_batch") => {
+        ("v0.3.1-interface-v0.1.3", "singleblock_batch") => {
             Ok("8767628393eb03b22b36a8304f8e205b52ae011f2a36d1aae53880b2f95fcf67")
         }
-        ("v0.3.0", "singleblock_batch_logging_enabled") => {
+        ("v0.3.1-interface-v0.1.3", "singleblock_batch_logging_enabled") => {
             Ok("5e19a2f43cf14178804ed3142f51d180eaaf8555d8a0272b53e5bbf0f46cac49")
         }
         _ => anyhow::bail!("missing expected SHA-256 for Syscoin zksync-os app {tag}/{variant}"),
