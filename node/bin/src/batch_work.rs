@@ -1,8 +1,5 @@
+use alloy::consensus::{Header, Sealed};
 use alloy::primitives::{Address, B256};
-// SYSCOIN: `BatchWorkBlockOutput` reconstructs `zksync_os_interface::types::BlockOutput`,
-// whose public header type is still backed by alloy-consensus 1.x. Keep this alias
-// explicit so it is not confused with the workspace `alloy` 2.x dependency.
-use alloy_consensus_v1::{Header, Sealed};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -14,12 +11,13 @@ use tokio::sync::mpsc;
 use zksync_os_batch_types::BlockMerkleTreeData;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::types::{
-    AccountDiff, BlockOutput, ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage,
-    StorageWrite, TxOutput,
+    AccountDiff, ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage, StorageWrite,
+    TxOutput,
 };
 use zksync_os_observability::ComponentStateReporter;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReplayRecord, TreeBlock};
+use zksync_os_types::BlockOutput;
 
 #[derive(Clone, Debug)]
 pub struct BatchWorkStorage {

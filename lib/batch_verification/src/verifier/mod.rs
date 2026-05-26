@@ -15,7 +15,6 @@ use zksync_os_batch_types::{
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::DACommitmentScheme;
-use zksync_os_interface::types::BlockOutput;
 use zksync_os_merkle_tree_api::TreeBatchOutput;
 use zksync_os_network::{
     PeerVerifyBatch, PeerVerifyBatchResult, VerifyBatch, VerifyBatchOutcome, VerifyBatchResult,
@@ -24,6 +23,7 @@ use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReadFinality, ReadStateHistory, ReplayRecord};
 use zksync_os_storage_api::{StateError, TreeBlock, read_multichain_root};
+use zksync_os_types::BlockOutput;
 
 mod block_cache;
 mod metrics;
