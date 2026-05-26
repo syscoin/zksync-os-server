@@ -799,6 +799,7 @@ impl<Mempool: L2Subpool> Drop for RemoveOnDrop<'_, Mempool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::transports::TransportErrorKind;
     use zksync_os_contract_interface::calldata::encode_commit_batch_data;
     use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
 
