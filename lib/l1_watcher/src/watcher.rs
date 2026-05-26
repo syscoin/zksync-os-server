@@ -3,6 +3,7 @@ use crate::{BlockBoundary, BlockUpdates, L1WatcherConfig, ProcessRawEvents};
 use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::{Filter, Log, ValueOrArray};
+use std::time::Duration;
 use tokio::sync::watch;
 
 /// An abstract watcher for events.
@@ -19,6 +20,7 @@ pub struct L1Watcher {
     end_block: Option<BlockNumber>,
     max_blocks_to_process: u64,
     block_boundary: BlockBoundary,
+    poll_interval: Duration,
     block_updates: watch::Receiver<BlockUpdates>,
     pub(crate) processor: Box<dyn ProcessRawEvents>,
 }
@@ -53,6 +55,7 @@ impl L1Watcher {
             block_boundary: BlockBoundary::Confirmed {
                 confirmations: config.confirmations,
             },
+            poll_interval: config.poll_interval,
             block_updates,
             processor,
         })
@@ -74,6 +77,7 @@ impl L1Watcher {
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
             block_boundary: BlockBoundary::Finalized,
+            poll_interval: config.poll_interval,
             block_updates,
             processor,
         }
@@ -97,6 +101,10 @@ impl L1Watcher {
                 // SYSCOIN
                 Err(L1WatcherError::Transport(err)) => {
                     tracing::warn!(?err, "watcher transport error; retrying on next poll");
+                    // SYSCOIN: retry the same block range even if the chain is idle and the
+                    // shared block update channel does not publish a new head.
+                    tokio::time::sleep(self.poll_interval).await;
+                    continue;
                 }
                 Err(err) => panic!("watcher failed: {err}"),
             }

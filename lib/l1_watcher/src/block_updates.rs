@@ -50,9 +50,18 @@ async fn poll(
     l1_head: &watch::Sender<BlockUpdates>,
 ) -> alloy::transports::TransportResult<()> {
     let latest_block = provider.get_block_number().await?;
-    let finalized_block = provider
-        .get_block_number_by_id(BlockId::finalized())
-        .await?;
+    let finalized_block = match provider.get_block_number_by_id(BlockId::finalized()).await {
+        Ok(finalized_block) => finalized_block,
+        Err(err) => {
+            // SYSCOIN: confirmed watchers only need latest-block updates. Keep publishing
+            // those even if the finalized tag is temporarily unavailable or unsupported.
+            tracing::warn!(
+                ?err,
+                "failed to fetch finalized L1 block; keeping previous finalized block"
+            );
+            l1_head.borrow().finalized_block
+        }
+    };
     if finalized_block.is_none() {
         // SYSCOIN: preserve the previous finalized-watcher behavior of waiting
         // until finality is available.
