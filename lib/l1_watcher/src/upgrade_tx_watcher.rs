@@ -622,6 +622,14 @@ impl ProcessL1Event for L1UpgradeTxWatcher {
         request: L1UpgradeRequest,
         _log: Log,
     ) -> Result<(), L1WatcherError> {
+        // Since we don't have the old events, current_version might be wrong
+        // Update it here to pass related sanity checks
+        if self.current_protocol_version
+            < ProtocolSemanticVersion::MIN_VERSION_WITH_RELIABLE_UPGRADE_LOGS
+        {
+            self.current_protocol_version = request.old_protocol_version.clone();
+        }
+
         if request.old_protocol_version < self.current_protocol_version {
             tracing::info!(
                 ?request.old_protocol_version,
