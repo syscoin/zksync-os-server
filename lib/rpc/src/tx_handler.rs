@@ -9,7 +9,7 @@ use alloy::eips::Decodable2718;
 use alloy::hex;
 use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolCall;
-use alloy::transports::{RpcError, TransportErrorKind};
+use alloy::transports::RpcError;
 use bitcoin_da_client::SyscoinClient;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
