@@ -307,7 +307,7 @@ fn compute_prover_input(
             // SYSCOIN
             let mut block_metadata: BlockMetadataFromOracle =
                 <BlockMetadataFromOracle as FromInterface<_>>::from_interface(
-                    replay_record.block_context.to_interface(),
+                    replay_record.block_context,
                 );
             block_metadata.canonical_upgrade_tx_hash =
                 Bytes32::from_array(replay_record.canonical_upgrade_tx_hash.0);

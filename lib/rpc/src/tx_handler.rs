@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn forwarding_ambiguous_errors_do_not_rollback_local_tx() {
-        let null_response = RpcError::<TransportErrorKind>::NullResp;
+        let null_response = TxForwardError::Rpc(RpcError::<TransportErrorKind>::NullResp);
 
         assert!(!forwarding_error_should_rollback_local_tx(&null_response));
     }

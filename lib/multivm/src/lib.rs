@@ -64,7 +64,6 @@ pub fn run_block<
     validator: &mut Validator,
 ) -> Result<BlockOutput, anyhow::Error> {
     let execution_version = execution_version_from_context(&block_context)?;
-    let block_context = block_context.to_interface();
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -157,7 +156,6 @@ pub fn simulate_tx<
     validator: &mut Validator,
 ) -> Result<Result<TxOutput, InvalidTransaction>, anyhow::Error> {
     let execution_version = execution_version_from_context(&block_context)?;
-    let block_context = block_context.to_interface();
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -227,7 +225,7 @@ pub fn simulate_tx<
 #[cfg(test)]
 mod tests {
     use super::execution_version_from_context;
-    use zksync_os_interface::types::BlockContext;
+    use zksync_os_storage_api::BlockContext;
     use zksync_os_types::ExecutionVersion;
 
     #[test]

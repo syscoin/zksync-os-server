@@ -161,31 +161,57 @@ impl TxForwarder {
         leader: Option<&str>,
         endpoint: &TxForwardEndpoint,
     ) {
+        // SYSCOIN: avoid leaking RPC credentials or signed query params into logs.
+        let rpc_url = redacted_rpc_url(&endpoint.rpc_url);
         match (call, leader) {
             (TxForwardCall::SendRawTransaction, Some(leader)) => {
                 tracing::debug!(
                     %tx_hash,
                     leader = %leader,
-                    rpc_url = %endpoint.rpc_url,
+                    rpc_url = %rpc_url,
                     "forwarding transaction to consensus leader"
                 );
             }
             (TxForwardCall::SendRawTransaction, None) => {
-                tracing::debug!(%tx_hash, rpc_url = %endpoint.rpc_url, "forwarding transaction");
+                tracing::debug!(%tx_hash, rpc_url = %rpc_url, "forwarding transaction");
             }
             (TxForwardCall::SendRawTransactionSync { .. }, Some(leader)) => {
                 tracing::debug!(
                     %tx_hash,
                     leader = %leader,
-                    rpc_url = %endpoint.rpc_url,
+                    rpc_url = %rpc_url,
                     "forwarding sync transaction to consensus leader"
                 );
             }
             (TxForwardCall::SendRawTransactionSync { .. }, None) => {
-                tracing::debug!(%tx_hash, rpc_url = %endpoint.rpc_url, "forwarding sync transaction");
+                tracing::debug!(%tx_hash, rpc_url = %rpc_url, "forwarding sync transaction");
             }
         }
     }
+}
+
+// SYSCOIN: keep endpoint logs useful without exposing credentials or request tokens.
+fn redacted_rpc_url(rpc_url: &str) -> String {
+    let mut end = rpc_url.len();
+    for delimiter in ['?', '#'] {
+        if let Some(index) = rpc_url.find(delimiter) {
+            end = end.min(index);
+        }
+    }
+    let rpc_url = &rpc_url[..end];
+
+    let Some((scheme, rest)) = rpc_url.split_once("://") else {
+        return rpc_url.to_owned();
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, ""),
+    };
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+
+    format!("{scheme}://{authority}{path}")
 }
 
 #[derive(Clone, Copy)]
@@ -210,5 +236,26 @@ impl TxForwardError {
             Self::Rpc(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted_rpc_url;
+
+    #[test]
+    fn redacted_rpc_url_removes_credentials_query_and_fragment() {
+        assert_eq!(
+            redacted_rpc_url("https://user:pass@example.com:8545/rpc?token=secret#frag"),
+            "https://example.com:8545/rpc"
+        );
+    }
+
+    #[test]
+    fn redacted_rpc_url_preserves_plain_endpoint() {
+        assert_eq!(
+            redacted_rpc_url("http://127.0.0.1:3050"),
+            "http://127.0.0.1:3050"
+        );
     }
 }

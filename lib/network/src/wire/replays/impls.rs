@@ -424,7 +424,7 @@ impl From<v4::BlockContext> for StorageBlockContext {
         Self {
             chain_id: value.chain_id,
             block_number: value.block_number,
-            block_hashes: InterfaceBlockHashes(value.block_hashes.0),
+            block_hashes: StorageBlockHashes(value.block_hashes.0),
             timestamp: value.timestamp,
             eip1559_basefee: value.eip1559_basefee,
             pubdata_price: value.pubdata_price,
