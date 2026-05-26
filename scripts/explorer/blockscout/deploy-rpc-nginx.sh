@@ -113,10 +113,6 @@ server {
         }
 
         if (\$request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin "*" always;
-            add_header Access-Control-Allow-Methods "POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "content-type" always;
-            add_header Access-Control-Max-Age 86400 always;
             return 204;
         }
 
@@ -124,10 +120,10 @@ server {
             deny all;
         }
 
-        # SYSCOIN: OS RPC already emits CORS headers; hide upstream value so
-        # browsers do not reject duplicated Access-Control-Allow-Origin values.
+        # SYSCOIN: keep the Gateway RPC private to the IP allowlist. The OS RPC
+        # emits wildcard CORS itself, so hide it instead of making this private
+        # vhost readable from arbitrary browser origins.
         proxy_hide_header Access-Control-Allow-Origin;
-        add_header Access-Control-Allow-Origin "*" always;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
