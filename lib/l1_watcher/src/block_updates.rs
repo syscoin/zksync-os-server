@@ -15,6 +15,8 @@ pub enum BlockBoundary {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BlockUpdates {
     pub latest_block: BlockNumber,
+    // SYSCOIN: some Syscoin/Gateway startup windows may not expose a finalized
+    // block yet; finalized watchers should wait instead of crashing the poller.
     pub finalized_block: Option<BlockNumber>,
 }
 
@@ -52,6 +54,8 @@ async fn poll(
         .get_block_number_by_id(BlockId::finalized())
         .await?;
     if finalized_block.is_none() {
+        // SYSCOIN: preserve the previous finalized-watcher behavior of waiting
+        // until finality is available.
         tracing::debug!("no finalized L1 block available yet");
     }
     let next = BlockUpdates {

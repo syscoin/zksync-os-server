@@ -123,6 +123,8 @@ impl L1Watcher {
                 .borrow()
                 .get_block_number(self.block_boundary),
         }) else {
+            // SYSCOIN: finalized watchers can start before the provider exposes
+            // a finalized block. Keep them idle until shared block polling sees one.
             tracing::debug!(
                 event_name = &self.processor.name(),
                 "no finalized L1 block available yet"
