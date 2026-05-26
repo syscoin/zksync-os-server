@@ -705,6 +705,15 @@ pub struct ConsensusConfig {
         "must not be empty when `consensus.enabled=true`"
     ))]
     pub peer_ids: Vec<PeerId>,
+    /// TEMPORARY WORKAROUND - forward txs via RPC until network-based propagation is added.
+    /// Entries use `<peer_id>@<host>:<rpc_port>`; every peer must have a record.
+    #[config(default, with = Serde![*])]
+    // SYSCOIN: fail consensus configs early instead of panicking while building RPC forwarders.
+    #[config_validate(custom(
+        consensus_tx_forwarding_rpc_urls_cover_peers,
+        "must contain one `<peer_id>@<host>:<rpc_port>` entry for every `consensus.peer_ids` entry when `consensus.enabled=true`"
+    ))]
+    pub tx_forwarding_rpc_urls: Vec<String>,
     /// WARNING: Assumes all configured consensus nodes are already caught up to the same
     /// canonical L2 state. Bootstrap does not catch up stale nodes before admitting them
     /// to the cluster.
@@ -744,6 +753,32 @@ impl ConsensusConfig {
             storage_path,
         })
     }
+}
+
+// SYSCOIN: validate the temporary RPC forwarding map introduced by upstream consensus forwarding.
+fn consensus_tx_forwarding_rpc_urls_cover_peers(root: &Config, value: &Vec<String>) -> bool {
+    if !root.consensus_config.enabled {
+        return true;
+    }
+
+    let mut configured_peer_ids = HashSet::with_capacity(value.len());
+    for endpoint in value {
+        let endpoint = endpoint.trim();
+        let endpoint = if endpoint.contains("://") {
+            endpoint.to_owned()
+        } else {
+            format!("enode://{endpoint}")
+        };
+        let Ok(peer) = endpoint.parse::<zksync_os_network::TrustedPeer>() else {
+            return false;
+        };
+        configured_peer_ids.insert(peer.id);
+    }
+
+    root.consensus_config
+        .peer_ids
+        .iter()
+        .all(|peer_id| configured_peer_ids.contains(peer_id))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -2884,6 +2919,28 @@ mod tests {
         config.l1_sender_config.operator_execute_sk = None;
         config.l1_sender_config.pubdata_mode = None;
 
+        config.validate().await.unwrap();
+    }
+
+    // SYSCOIN: cover consensus forwarding config validation required by Syscoin v31 deployment.
+    #[tokio::test]
+    async fn consensus_requires_tx_forwarding_rpc_urls_for_all_peers() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.network_config.enabled = true;
+        config.network_config.secret_key = Some(SecretKey::from_slice(&[0x44; 32]).unwrap());
+        config.consensus_config.enabled = true;
+        let local_peer_id = config.network_config.derived_peer_id().unwrap();
+        config.consensus_config.peer_ids = vec![local_peer_id];
+
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(err.contains("consensus.tx_forwarding_rpc_urls"), "{err}");
+        assert!(
+            err.contains("must contain one `<peer_id>@<host>:<rpc_port>` entry"),
+            "{err}"
+        );
+
+        config.consensus_config.tx_forwarding_rpc_urls =
+            vec![format!("{local_peer_id}@127.0.0.1:3050")];
         config.validate().await.unwrap();
     }
 

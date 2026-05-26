@@ -10,16 +10,30 @@ use zk_os_forward_system_prev::run::RunBlockForward as RunBlockForwardV5Running;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{AnyTracer, AnyTxValidator};
 use zksync_os_interface::traits::{
-    EncodedTx, PreimageSource, ReadStorage, RunBlock, SimulateTx, TxResultCallback, TxSource,
+    EncodedTx, NoFriProofSidecar, PreimageSource, ReadStorage, RunBlock, SimulateTx,
+    TxResultCallback, TxSource,
 };
-use zksync_os_interface::types::{BlockOutput, TxOutput};
+use zksync_os_interface::types::TxOutput;
 use zksync_os_storage_api::BlockContext;
 
 mod adapter;
 pub mod apps;
 
 pub use adapter::AbiTxSource;
-use zksync_os_types::ExecutionVersion;
+use zksync_os_types::{BlockOutput, ExecutionVersion};
+macro_rules! into_block_output {
+    ($o:expr) => {
+        BlockOutput {
+            header: $o.header,
+            tx_results: $o.tx_results,
+            storage_writes: $o.storage_writes,
+            account_diffs: $o.account_diffs,
+            published_preimages: $o.published_preimages,
+            pubdata: $o.pubdata,
+            computational_native_used: $o.computational_native_used,
+        }
+    };
+}
 
 // SYSCOIN: Treat unsupported execution versions from replay/RPC data as recoverable errors.
 fn execution_version_from_context(
@@ -50,7 +64,6 @@ pub fn run_block<
     validator: &mut Validator,
 ) -> Result<BlockOutput, anyhow::Error> {
     let execution_version = execution_version_from_context(&block_context)?;
-    let block_context = block_context.to_interface();
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -61,11 +74,13 @@ pub fn run_block<
                     storage,
                     preimage_source,
                     AbiTxSource::new(tx_source),
+                    NoFriProofSidecar,
                     tx_result_callback,
                     tracer,
                     validator,
                 )
                 .map_err(|err| anyhow::anyhow!(err))
+                .map(|o| into_block_output!(o))
         }
         ExecutionVersion::V4 => {
             let object = RunBlockForwardV4 {};
@@ -76,11 +91,13 @@ pub fn run_block<
                     storage,
                     preimage_source,
                     tx_source,
+                    NoFriProofSidecar,
                     tx_result_callback,
                     tracer,
                     validator,
                 )
                 .map_err(|err| anyhow::anyhow!(err))
+                .map(|o| into_block_output!(o))
         }
         ExecutionVersion::V5 => {
             // We use two different versions of zksync-os for execution and simulation:
@@ -97,11 +114,13 @@ pub fn run_block<
                     storage,
                     preimage_source,
                     tx_source,
+                    NoFriProofSidecar,
                     tx_result_callback,
                     tracer,
                     validator,
                 )
                 .map_err(|err| anyhow::anyhow!(err))
+                .map(|o| into_block_output!(o))
         }
         ExecutionVersion::V6 => {
             let object = RunBlockForwardV6 {};
@@ -112,11 +131,13 @@ pub fn run_block<
                     storage,
                     preimage_source,
                     tx_source,
+                    NoFriProofSidecar,
                     tx_result_callback,
                     tracer,
                     validator,
                 )
                 .map_err(|err| anyhow::anyhow!(err))
+                .map(|o| into_block_output!(o))
         }
     }
 }
@@ -135,7 +156,6 @@ pub fn simulate_tx<
     validator: &mut Validator,
 ) -> Result<Result<TxOutput, InvalidTransaction>, anyhow::Error> {
     let execution_version = execution_version_from_context(&block_context)?;
-    let block_context = block_context.to_interface();
     match execution_version {
         ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
             let object = RunBlockForwardV3 {};
@@ -205,7 +225,7 @@ pub fn simulate_tx<
 #[cfg(test)]
 mod tests {
     use super::execution_version_from_context;
-    use zksync_os_interface::types::BlockContext;
+    use zksync_os_storage_api::BlockContext;
     use zksync_os_types::ExecutionVersion;
 
     #[test]
