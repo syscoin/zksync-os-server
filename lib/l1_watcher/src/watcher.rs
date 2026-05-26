@@ -113,15 +113,21 @@ impl L1Watcher {
     }
 
     async fn poll(&mut self) -> Result<(), L1WatcherError> {
-        let cap = match self.end_block {
+        let Some(cap) = (match self.end_block {
             // Closed segment: `end_block` was already resolved against a finalized/executed batch,
             // so the confirmation/finalization window doesn't apply and we don't need an
             // additional RPC.
-            Some(eb) => eb,
+            Some(eb) => Some(eb),
             None => self
                 .block_updates
                 .borrow()
                 .get_block_number(self.block_boundary),
+        }) else {
+            tracing::debug!(
+                event_name = &self.processor.name(),
+                "no finalized L1 block available yet"
+            );
+            return Ok(());
         };
 
         while self.next_block <= cap {

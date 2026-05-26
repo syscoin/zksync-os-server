@@ -15,7 +15,7 @@ pub enum BlockBoundary {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BlockUpdates {
     pub latest_block: BlockNumber,
-    pub finalized_block: BlockNumber,
+    pub finalized_block: Option<BlockNumber>,
 }
 
 pub fn run(
@@ -33,9 +33,10 @@ pub fn run(
                 tracing::info!("block updates have no subscribers; stopping");
                 return;
             }
-            if let Err(e) = poll(&provider, &l1_head).await {
-                tracing::error!("block updates fatal error: {e}");
-                panic!("block updates failed: {e}");
+            if let Err(err) = poll(&provider, &l1_head).await {
+                // SYSCOIN: Preserve the old watcher behavior where transient provider
+                // transport errors were retried instead of taking down all L1 watchers.
+                tracing::warn!(?err, "block updates transport error; retrying on next poll");
             }
         }
     });
@@ -49,8 +50,10 @@ async fn poll(
     let latest_block = provider.get_block_number().await?;
     let finalized_block = provider
         .get_block_number_by_id(BlockId::finalized())
-        .await?
-        .expect("The chain does not have any finalized blocks yet.");
+        .await?;
+    if finalized_block.is_none() {
+        tracing::debug!("no finalized L1 block available yet");
+    }
     let next = BlockUpdates {
         latest_block,
         finalized_block,
@@ -67,10 +70,10 @@ async fn poll(
 }
 
 impl BlockUpdates {
-    pub(crate) fn get_block_number(&self, boundary: BlockBoundary) -> BlockNumber {
+    pub(crate) fn get_block_number(&self, boundary: BlockBoundary) -> Option<BlockNumber> {
         match boundary {
             BlockBoundary::Confirmed { confirmations } => {
-                self.latest_block.saturating_sub(confirmations)
+                Some(self.latest_block.saturating_sub(confirmations))
             }
             BlockBoundary::Finalized => self.finalized_block,
         }
