@@ -4,9 +4,12 @@ use vise::{EncodeLabelSet, Info, LabeledFamily, Metrics};
 
 use super::Config;
 
-#[derive(Debug, EncodeLabelSet)]
+const SECRET_PLACEHOLDER: &str = "<secret>";
+
+#[derive(Debug, PartialEq, Eq, EncodeLabelSet)]
 struct ValueLabel {
     value: String,
+    is_default: bool,
 }
 
 #[derive(Debug, Metrics)]
@@ -61,14 +64,9 @@ pub(crate) fn report_static_config_metrics(config: &Config) {
 }
 
 fn report_flat_config_metrics<C: DescribeConfig>(config: &C, prefix: &str) {
-    for (key, value) in SerializerOptions::default()
-        .with_secret_placeholder("<secret>")
-        .flat(true)
-        .serialize(config)
-    {
+    for (key, value) in flat_config_labels(config) {
         let name = format!("{prefix}_{key}");
-        let value = stringify_config_value(&name, value);
-        let _ = CONFIG_METRICS.values[&name].set(ValueLabel { value });
+        let _ = CONFIG_METRICS.values[&name].set(value);
     }
 }
 
@@ -92,6 +90,25 @@ fn stringify_config_value(name: &str, value: Value) -> String {
         value => value.to_string(),
     };
     sanitize_label_value(value)
+}
+
+fn flat_config_labels<C: DescribeConfig>(config: &C) -> Vec<(String, ValueLabel)> {
+    let non_default_values = SerializerOptions::diff_with_default()
+        .with_secret_placeholder(SECRET_PLACEHOLDER)
+        .flat(true)
+        .serialize(config);
+
+    SerializerOptions::default()
+        .with_secret_placeholder(SECRET_PLACEHOLDER)
+        .flat(true)
+        .serialize(config)
+        .into_iter()
+        .map(|(key, value)| {
+            let value = stringify_config_value(&key, value);
+            let is_default = !non_default_values.contains_key(&key);
+            (key, ValueLabel { value, is_default })
+        })
+        .collect()
 }
 
 fn should_redact_config_value(name: &str, value: &Value) -> bool {
@@ -121,7 +138,20 @@ fn sanitize_label_value(value: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde_json::{Value, json};
+    use smart_config::{DescribeConfig, DeserializeConfig, testing};
+
+    #[derive(Debug, DescribeConfig, DeserializeConfig)]
+    struct TestConfig {
+        #[config(default_t = 10)]
+        defaulted: u64,
+        #[config(default_t = 20)]
+        overridden: u64,
+        #[config(default_t = 30)]
+        overridden_to_default: u64,
+    }
 
     #[test]
     fn stringify_config_value_formats_label_values() {
@@ -176,6 +206,39 @@ mod tests {
         assert_eq!(
             super::stringify_config_value("batch_verification_accepted_signers", json!(["0x1234"])),
             "['0x1234']"
+        );
+    }
+
+    #[test]
+    fn flat_config_labels_mark_default_values() {
+        let config = testing::test::<TestConfig>(smart_config::config! {
+            "overridden": 25,
+            "overridden_to_default": 30,
+        })
+        .unwrap();
+
+        let labels: HashMap<_, _> = super::flat_config_labels(&config).into_iter().collect();
+
+        assert_eq!(
+            labels.get("defaulted").unwrap(),
+            &super::ValueLabel {
+                value: "10".to_owned(),
+                is_default: true,
+            }
+        );
+        assert_eq!(
+            labels.get("overridden").unwrap(),
+            &super::ValueLabel {
+                value: "25".to_owned(),
+                is_default: false,
+            }
+        );
+        assert_eq!(
+            labels.get("overridden_to_default").unwrap(),
+            &super::ValueLabel {
+                value: "30".to_owned(),
+                is_default: true,
+            }
         );
     }
 }

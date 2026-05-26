@@ -1,5 +1,5 @@
 use crate::watcher::{L1Watcher, L1WatcherError};
-use crate::{L1WatcherConfig, ProcessRawEvents, util};
+use crate::{BlockUpdates, L1WatcherConfig, ProcessRawEvents, util};
 use alloy::primitives::{B256, U256};
 use alloy::providers::DynProvider;
 use alloy::rpc::types::{Log, Topic};
@@ -29,6 +29,7 @@ impl MigrationFinalizedWatcher {
     /// Initializes `last_finalized_migration` from the current SL's
     /// `IChainAssetHandler.migrationNumber(l2_chain_id)` (which by construction tracks the
     /// destination's view of finalized migrations) and decides whether to spawn the watcher.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_watcher(
         zk_chain: ZkChain<DynProvider>,
         bridgehub_sl: Bridgehub<DynProvider>,
@@ -38,6 +39,7 @@ impl MigrationFinalizedWatcher {
         current_sl_chain_id: u64,
         config: L1WatcherConfig,
         last_finalized_migration: watch::Sender<u64>,
+        block_updates: watch::Receiver<BlockUpdates>,
     ) -> anyhow::Result<Option<L1Watcher>> {
         let active_migration_number = (intervals.intervals().len() - 1) as u64;
         let active_interval = intervals
@@ -110,6 +112,7 @@ impl MigrationFinalizedWatcher {
         let watcher = L1Watcher::new(
             config,
             zk_chain.provider().clone(),
+            block_updates,
             chain_asset_handler.into(),
             starting_block,
             None,

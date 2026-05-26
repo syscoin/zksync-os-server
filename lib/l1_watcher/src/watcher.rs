@@ -1,10 +1,10 @@
 use crate::metrics::METRICS;
-use crate::{L1WatcherConfig, ProcessRawEvents};
-use alloy::eips::BlockId;
+use crate::{BlockBoundary, BlockUpdates, L1WatcherConfig, ProcessRawEvents};
 use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::{Filter, Log, ValueOrArray};
 use std::time::Duration;
+use tokio::sync::watch;
 
 /// An abstract watcher for events.
 /// Handles polling for new blocks and extracting logs,
@@ -21,18 +21,16 @@ pub struct L1Watcher {
     max_blocks_to_process: u64,
     block_boundary: BlockBoundary,
     poll_interval: Duration,
+    block_updates: watch::Receiver<BlockUpdates>,
     pub(crate) processor: Box<dyn ProcessRawEvents>,
 }
 
-enum BlockBoundary {
-    Confirmed { confirmations: BlockNumber },
-    Finalized,
-}
-
 impl L1Watcher {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new(
         config: L1WatcherConfig,
         provider: DynProvider,
+        block_updates: watch::Receiver<BlockUpdates>,
         address: ValueOrArray<Address>,
         next_block: BlockNumber,
         end_block: Option<BlockNumber>,
@@ -58,6 +56,7 @@ impl L1Watcher {
                 confirmations: config.confirmations,
             },
             poll_interval: config.poll_interval,
+            block_updates,
             processor,
         })
     }
@@ -65,6 +64,7 @@ impl L1Watcher {
     pub(crate) fn new_finalized(
         config: L1WatcherConfig,
         provider: DynProvider,
+        block_updates: watch::Receiver<BlockUpdates>,
         address: ValueOrArray<Address>,
         next_block: BlockNumber,
         end_block: Option<BlockNumber>,
@@ -78,37 +78,13 @@ impl L1Watcher {
             max_blocks_to_process: config.max_blocks_to_process,
             block_boundary: BlockBoundary::Finalized,
             poll_interval: config.poll_interval,
+            block_updates,
             processor,
         }
     }
 }
 
 impl L1Watcher {
-    // SYSCOIN: return the finalized block number if the boundary is finalized, otherwise return the confirmed block number
-    async fn block_boundary_cap(&self) -> Result<Option<BlockNumber>, L1WatcherError> {
-        match self.block_boundary {
-            BlockBoundary::Confirmed { confirmations } => Ok(Some(
-                self.provider
-                    .get_block_number()
-                    .await?
-                    .saturating_sub(confirmations),
-            )),
-            BlockBoundary::Finalized => {
-                let finalized_block = self
-                    .provider
-                    .get_block_number_by_id(BlockId::finalized())
-                    .await?;
-                if finalized_block.is_none() {
-                    tracing::debug!(
-                        event_name = &self.processor.name(),
-                        "no finalized L1 block available yet"
-                    );
-                }
-                Ok(finalized_block)
-            }
-        }
-    }
-
     /// Polls for new events.
     ///
     /// For unbounded watchers (`end_block = None`) this never returns; for bounded watchers
@@ -119,14 +95,16 @@ impl L1Watcher {
 
     /// Non-consuming version of `run`, intended for internal usage in this crate.
     pub(crate) async fn run_inner(&mut self) {
-        let mut timer = tokio::time::interval(self.poll_interval);
         loop {
-            timer.tick().await;
             match self.poll().await {
                 Ok(()) => {}
                 // SYSCOIN
                 Err(L1WatcherError::Transport(err)) => {
                     tracing::warn!(?err, "watcher transport error; retrying on next poll");
+                    // SYSCOIN: retry the same block range even if the chain is idle and the
+                    // shared block update channel does not publish a new head.
+                    tokio::time::sleep(self.poll_interval).await;
+                    continue;
                 }
                 Err(err) => panic!("watcher failed: {err}"),
             }
@@ -135,17 +113,32 @@ impl L1Watcher {
             {
                 return;
             }
+            if let Err(e) = self.block_updates.changed().await {
+                tracing::error!("l1 watcher block update channel closed: {e}");
+                panic!("l1 watcher block update channel closed: {e}");
+            }
         }
     }
 
     async fn poll(&mut self) -> Result<(), L1WatcherError> {
-        // SYSCOIN
-        let Some(boundary_cap) = self.block_boundary_cap().await? else {
+        let Some(cap) = (match self.end_block {
+            // Closed segment: `end_block` was already resolved against a finalized/executed batch,
+            // so the confirmation/finalization window doesn't apply and we don't need an
+            // additional RPC.
+            Some(eb) => Some(eb),
+            None => self
+                .block_updates
+                .borrow()
+                .get_block_number(self.block_boundary),
+        }) else {
+            // SYSCOIN: finalized watchers can start before the provider exposes
+            // a finalized block. Keep them idle until shared block polling sees one.
+            tracing::debug!(
+                event_name = &self.processor.name(),
+                "no finalized L1 block available yet"
+            );
             return Ok(());
         };
-        let cap = self
-            .end_block
-            .map_or(boundary_cap, |eb| eb.min(boundary_cap));
 
         while self.next_block <= cap {
             let from_block = self.next_block;
