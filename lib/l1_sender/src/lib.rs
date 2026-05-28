@@ -8,20 +8,19 @@ use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderConfig, L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use crate::pipeline_component::L1Sender;
-use alloy::consensus::BlobTransactionValidationError;
-use alloy::consensus::Transaction as ConsensusTransaction;
+use alloy::consensus::{Transaction as ConsensusTransaction, TxEnvelope};
+use alloy::eips::eip2718::Decodable2718;
+use alloy::eips::eip4844::env_settings::EnvKzgSettings;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
-use alloy::eips::{BlockId, BlockNumberOrTag, Encodable2718};
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{
-    BlockResponse, Ethereum, EthereumWallet, TransactionBuilder, TransactionBuilder4844,
-    TransactionResponse,
+    BlockResponse, TransactionBuilder, TransactionBuilder4844, TransactionResponse,
 };
 use alloy::primitives::utils::{format_ether, format_units};
 use alloy::primitives::{Address, B256};
+use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
-use alloy::providers::fillers::{FillProvider, TxFiller};
 use alloy::providers::utils::Eip1559Estimation;
-use alloy::providers::{Provider, WalletProvider};
 use alloy::rpc::types::trace::geth::{CallConfig, GethDebugTracingOptions};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::transports::TransportError;
@@ -30,6 +29,7 @@ use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
+use zksync_os_alloy_ext::dyn_wallet_provider::{EthDynProvider, EthWalletProvider};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
@@ -103,10 +103,8 @@ struct FeeParams {
     max_fee_per_blob_gas: u128,
 }
 
-impl<LF, LP, Input> L1Sender<LF, LP, Input>
+impl<Input> L1Sender<Input>
 where
-    LF: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet> + 'static,
-    LP: Provider<Ethereum> + Clone + 'static,
     Input: SendToL1 + Send + 'static,
 {
     pub async fn operator_address(&self) -> anyhow::Result<Address> {
@@ -159,10 +157,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
     to_address: Address,
 
     // == config ==
-    mut provider: FillProvider<
-        impl TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-        impl Provider<Ethereum>,
-    >,
+    mut provider: EthDynProvider,
     config: L1SenderConfig<Input>,
     gateway: bool,
     state_reporter: ComponentStateReporter,
@@ -180,7 +175,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
     // SYSCOIN: keep `config` available after operator registration because dropped-tx recovery
     // can resubmit commands through the same config.
     let operator_address =
-        register_operator::<_, Input>(&mut provider, config.operator_signer.clone()).await?;
+        register_operator::<Input>(&mut provider, config.operator_signer.clone()).await?;
     let mut cmd_buffer = Vec::with_capacity(config.command_limit);
     // Process all potential passthrough commands first
     if process_prepending_passthrough_commands(
@@ -379,8 +374,8 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
 }
 
 // SYSCOIN: common L1 tx submission path used by the normal loop and by dropped-tx recovery.
-async fn submit_l1_transaction<F, P, Input>(
-    provider: &FillProvider<F, P>,
+async fn submit_l1_transaction<Input>(
+    provider: &EthDynProvider,
     operator_address: Address,
     to_address: Address,
     config: &L1SenderConfig<Input>,
@@ -399,8 +394,6 @@ async fn submit_l1_transaction<F, P, Input>(
     u64,
 )>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1,
 {
     let tx_range = Input::display_range(std::slice::from_ref(cmd));
@@ -432,40 +425,28 @@ where
             );
         }
         tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
-        tx_request.set_blob_sidecar(BlobTransactionSidecarVariant::Eip4844(blob_sidecar));
+
+        let pending_block = provider
+            .get_block(BlockId::pending())
+            .await?
+            .expect("no pending block");
+        // todo: make conversion unconditional (and remove respective config) once anvil
+        //       supports EIP-7594 blobs (see https://github.com/foundry-rs/foundry/issues/12222)
+        let blob_sidecar = if config.fusaka_upgrade_timestamp <= pending_block.header.timestamp {
+            BlobTransactionSidecarVariant::Eip7594(
+                blob_sidecar.try_into_7594(EnvKzgSettings::Default.get())?,
+            )
+        } else {
+            BlobTransactionSidecarVariant::Eip4844(blob_sidecar)
+        };
+        tx_request.set_blob_sidecar(blob_sidecar);
     };
 
     apply_l1_gas_limit(provider, &mut tx_request).await?;
 
-    // Fill the transaction (e.g., nonce, gas, etc.) using the provider and convert it to an
-    // envelope.
-    let envelope = provider
-        .fill(tx_request)
-        .await?
-        .try_into_envelope()?
-        .try_into_pooled()?;
-
-    let pending_block = provider
-        .get_block(BlockId::pending())
-        .await?
-        .expect("no pending block");
-    // todo: make conversion unconditional (and remove respective config) once anvil
-    //       supports EIP-7594 blobs (see https://github.com/foundry-rs/foundry/issues/12222)
-    let tx = if config.fusaka_upgrade_timestamp <= pending_block.header.timestamp {
-        // Convert the envelope into an EIP-7594 transaction by converting the sidecar
-        envelope.try_map_eip4844(|tx| {
-            tx.try_map_sidecar(|sidecar| {
-                Ok::<_, BlobTransactionValidationError>(BlobTransactionSidecarVariant::Eip7594(
-                    sidecar.try_into_eip7594()?,
-                ))
-            })
-        })?
-    } else {
-        // Keep the regular EIP-4844 sidecar
-        envelope
-    };
-
-    let raw_tx = tx.encoded_2718();
+    // SYSCOIN: sign explicitly so dropped-tx recovery can rebroadcast the exact same bytes.
+    let raw_tx = provider.sign_transaction(tx_request).await?;
+    let tx = TxEnvelope::decode_2718(&mut raw_tx.as_ref())?;
     let tx_nonce = tx.nonce();
     let admission_retry_started = Instant::now();
     let (pending_tx, submitted_l1_block) = loop {
@@ -527,7 +508,7 @@ where
     Ok((
         receipt_fut,
         submitted_at,
-        Some(raw_tx),
+        Some(raw_tx.to_vec()),
         tx_hash,
         tx_nonce,
         submitted_l1_block,
@@ -569,9 +550,9 @@ fn notify_commit_submitted_batch(
 
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
 /// metrics, and forwards the completed commands downstream.
-async fn wait_for_txs_and_forward<F, P, Input>(
+async fn wait_for_txs_and_forward<Input>(
     pending_txs: Vec<PendingTx<Input>>,
-    provider: &FillProvider<F, P>,
+    provider: &EthDynProvider,
     operator_address: Address,
     to_address: Address,
     config: &L1SenderConfig<Input>,
@@ -582,8 +563,6 @@ async fn wait_for_txs_and_forward<F, P, Input>(
     outbound: &mpsc::Sender<SignedBatchEnvelope<FriProof>>,
 ) -> anyhow::Result<()>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1,
 {
     state_reporter.enter_state(L1SenderState::WaitingL1Inclusion);
@@ -850,8 +829,8 @@ where
 // SYSCOIN: nonce-reuse rebroadcast errors mean the original nonce may already be occupied.
 // Keep looking for the same-nonce tx instead of resubmitting the command at a later nonce or
 // re-arming a waiter for the dropped hash.
-async fn recover_same_nonce_tx<F, P, Input>(
-    provider: &FillProvider<F, P>,
+async fn recover_same_nonce_tx<Input>(
+    provider: &EthDynProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -864,8 +843,6 @@ async fn recover_same_nonce_tx<F, P, Input>(
     rebroadcast_err: &TransportError,
 ) -> anyhow::Result<B256>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1,
 {
     let started_at = Instant::now();
@@ -956,8 +933,8 @@ where
 
 // SYSCOIN: standard-RPC fallback for providers that do not implement sender+nonce lookup.
 // Scan recent mined blocks and accept only a transaction with the same sender, nonce, and calldata.
-async fn find_matching_mined_sender_nonce_tx<F, P, Input>(
-    provider: &FillProvider<F, P>,
+async fn find_matching_mined_sender_nonce_tx<Input>(
+    provider: &EthDynProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -967,8 +944,6 @@ async fn find_matching_mined_sender_nonce_tx<F, P, Input>(
     command: &Input,
 ) -> anyhow::Result<Option<B256>>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1,
 {
     let latest_block = provider.get_block_number().await?;
@@ -1060,8 +1035,8 @@ enum SameNonceTx {
 
 // SYSCOIN: if a rebroadcast reports nonce reuse, try to discover the tx currently occupying the
 // original sender nonce and track it only if it carries the same command calldata.
-async fn find_matching_sender_nonce_tx<F, P, Input>(
-    provider: &FillProvider<F, P>,
+async fn find_matching_sender_nonce_tx<Input>(
+    provider: &EthDynProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -1071,8 +1046,6 @@ async fn find_matching_sender_nonce_tx<F, P, Input>(
     command: &Input,
 ) -> anyhow::Result<SameNonceTx>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1,
 {
     let tx = match provider
@@ -1128,7 +1101,7 @@ async fn wait_for_confirmed_receipt<P>(
     tx_liveness_max_missing_polls: u32,
 ) -> anyhow::Result<ReceiptWaitOutcome>
 where
-    P: Provider<Ethereum>,
+    P: Provider,
 {
     let started_at = Instant::now();
     let poll_interval = provider.client().poll_interval();
@@ -1248,8 +1221,8 @@ where
 /// constructing the inbound command queue. Pinning the confirmed-nonce baseline to that block
 /// prevents the race where txs mined between the `getTotalBatches` call and this nonce check
 /// cause us to mis-count in-flight txs and crash on calldata mismatch.
-async fn recover_in_flight_txs<F, P, Input>(
-    provider: &FillProvider<F, P>,
+async fn recover_in_flight_txs<Input>(
+    provider: &EthDynProvider,
     operator_address: Address,
     gateway: bool,
     inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
@@ -1258,8 +1231,6 @@ async fn recover_in_flight_txs<F, P, Input>(
     state_reporter: &ComponentStateReporter,
 ) -> anyhow::Result<Vec<(alloy::primitives::B256, Input, u64)>>
 where
-    F: TxFiller<Ethereum> + WalletProvider<Wallet = EthereumWallet>,
-    P: Provider<Ethereum>,
     Input: SendToL1 + Send + 'static,
 {
     let latest_nonce = provider
@@ -1647,11 +1618,8 @@ async fn estimate_eip1559_fees(
     ))
 }
 
-async fn register_operator<
-    P: Provider + WalletProvider<Wallet = EthereumWallet>,
-    Input: SendToL1,
->(
-    provider: &mut P,
+async fn register_operator<Input: SendToL1>(
+    provider: &mut EthDynProvider,
     signer_config: SignerConfig,
 ) -> anyhow::Result<Address> {
     let address = signer_config
