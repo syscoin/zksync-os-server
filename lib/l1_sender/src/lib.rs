@@ -27,7 +27,7 @@ use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::FutureExt;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use zksync_os_alloy_ext::dyn_wallet_provider::{EthDynProvider, EthWalletProvider};
@@ -326,37 +326,44 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
         // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
-        // SYSCOIN: submit via a helper so dropped-tx recovery can reuse the exact same path.
-        let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(commands.drain(..))
-            .then(|mut cmd| async {
-                let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce, submitted_l1_block) =
-                    submit_l1_transaction(
-                        &provider,
-                        operator_address,
-                        to_address,
-                        &config,
-                        gateway,
-                        command_name,
-                        &mut cmd,
-                        &commit_submitted_tx,
-                        None,
-                        use_replacement_fee_params_for_commands,
-                    )
-                    .await?;
-                anyhow::Ok((
-                    receipt_fut,
-                    cmd,
-                    submitted_at,
-                    raw_tx,
-                    tx_hash,
-                    tx_nonce,
-                    submitted_l1_block,
-                ))
-            })
-            // We could buffer the stream here to enable sending multiple batches of transactions in parallel,
-            // but this is not necessary for now - we wait for them to be included in parallel
-            .try_collect::<Vec<_>>()
-            .await?;
+        // SYSCOIN: sign locally while preserving Alloy's nonce-reservation invariant for the
+        // drained batch. A single pending nonce read seeds a local cursor, then each command gets
+        // the next nonce before any receipt is awaited.
+        let mut next_tx_nonce = provider
+            .get_transaction_count(operator_address)
+            .pending()
+            .await
+            .context("get pending operator nonce before signing L1 transaction batch")?;
+        let mut pending_txs = Vec::with_capacity(commands.len());
+        for mut cmd in commands.drain(..) {
+            let tx_nonce = next_tx_nonce;
+            next_tx_nonce = next_tx_nonce
+                .checked_add(1)
+                .context("operator L1 nonce overflow while signing transaction batch")?;
+            let (receipt_fut, submitted_at, raw_tx, tx_hash, tx_nonce, submitted_l1_block) =
+                submit_l1_transaction(
+                    &provider,
+                    operator_address,
+                    to_address,
+                    &config,
+                    gateway,
+                    command_name,
+                    &mut cmd,
+                    &commit_submitted_tx,
+                    Some(tx_nonce),
+                    use_replacement_fee_params_for_commands,
+                )
+                .await?;
+            pending_txs.push((
+                receipt_fut,
+                cmd,
+                submitted_at,
+                raw_tx,
+                tx_hash,
+                tx_nonce,
+                submitted_l1_block,
+            ));
+        }
         tracing::info!(command_name, range, "sent to L1, waiting for inclusion");
         wait_for_txs_and_forward(
             pending_txs,
@@ -398,17 +405,13 @@ where
     Input: SendToL1,
 {
     let tx_range = Input::display_range(std::slice::from_ref(cmd));
-    let fee_params = resolve_fee_params(
-        provider,
-        config.fee_config,
-        use_replacement_fee_params || nonce_override.is_some(),
-    )
-    .await?;
+    let fee_params = resolve_fee_params(provider, config.fee_config, use_replacement_fee_params)
+        .await?;
     let mut tx_request = tx_request_with_gas_fields(operator_address, fee_params)
         .with_to(to_address)
         .with_input(cmd.solidity_call(gateway, &operator_address));
-    // SYSCOIN: dropped-tx recovery must not advance to a fresh nonce. For normal sends the
-    // provider fills the nonce; for recovery resubmissions we pin the original nonce.
+    // SYSCOIN: callers pin the nonce for local signing. Normal batches allocate a monotonic
+    // cursor; recovery resubmissions reuse the original nonce.
     if let Some(nonce) = nonce_override {
         tx_request.set_nonce(nonce);
     }
@@ -631,7 +634,7 @@ where
                         &mut command,
                         commit_submitted_tx,
                         Some(tx_nonce),
-                        false,
+                        true,
                     )
                     .await
                     {
@@ -727,7 +730,7 @@ where
                             &mut command,
                             commit_submitted_tx,
                             Some(tx_nonce),
-                            false,
+                            true,
                         )
                         .await?;
                         receipt_fut = resubmitted.0;
@@ -796,7 +799,7 @@ where
                                     &mut command,
                                     commit_submitted_tx,
                                     Some(tx_nonce),
-                                    false,
+                                    true,
                                 )
                                 .await?;
                                 receipt_fut = resubmitted.0;
