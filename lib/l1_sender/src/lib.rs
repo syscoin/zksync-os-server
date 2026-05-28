@@ -8,13 +8,14 @@ use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::{L1SenderConfig, L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use crate::pipeline_component::L1Sender;
-use alloy::consensus::{Transaction as ConsensusTransaction, TxEnvelope};
-use alloy::eips::eip2718::Decodable2718;
+use alloy::consensus::Transaction as ConsensusTransaction;
+use alloy::eips::eip2718::Encodable2718;
 use alloy::eips::eip4844::env_settings::EnvKzgSettings;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{
-    BlockResponse, TransactionBuilder, TransactionBuilder4844, TransactionResponse,
+    BlockResponse, NetworkTransactionBuilder, TransactionBuilder, TransactionBuilder4844,
+    TransactionResponse,
 };
 use alloy::primitives::utils::{format_ether, format_units};
 use alloy::primitives::{Address, B256};
@@ -445,9 +446,7 @@ where
     apply_l1_gas_limit(provider, &mut tx_request).await?;
 
     // SYSCOIN: sign explicitly so dropped-tx recovery can rebroadcast the exact same bytes.
-    let raw_tx = provider.sign_transaction(tx_request).await?;
-    let tx = TxEnvelope::decode_2718(&mut raw_tx.as_ref())?;
-    let tx_nonce = tx.nonce();
+    let (raw_tx, tx_nonce) = sign_l1_transaction(provider, operator_address, tx_request).await?;
     let admission_retry_started = Instant::now();
     let (pending_tx, submitted_l1_block) = loop {
         let submission_baseline_block = provider.get_block_number().await?;
@@ -508,11 +507,34 @@ where
     Ok((
         receipt_fut,
         submitted_at,
-        Some(raw_tx.to_vec()),
+        Some(raw_tx),
         tx_hash,
         tx_nonce,
         submitted_l1_block,
     ))
+}
+
+// SYSCOIN: Alloy's wallet filler signs requests into envelopes before
+// `Provider::sign_transaction()` reaches the RPC-signing layer. Build and sign with the
+// local wallet directly after filling the request fields required for the selected tx type.
+async fn sign_l1_transaction(
+    provider: &EthDynProvider,
+    operator_address: Address,
+    mut tx_request: TransactionRequest,
+) -> anyhow::Result<(Vec<u8>, u64)> {
+    if tx_request.chain_id().is_none() {
+        tx_request.set_chain_id(provider.get_chain_id().await?);
+    }
+    if tx_request.nonce.is_none() {
+        tx_request.set_nonce(provider.get_transaction_count(operator_address).pending().await?);
+    }
+
+    let tx = tx_request
+        .build(provider.wallet())
+        .await
+        .context("failed to sign L1 transaction with local wallet")?;
+    let tx_nonce = tx.nonce();
+    Ok((tx.encoded_2718(), tx_nonce))
 }
 
 // SYSCOIN: keep the commit watcher marker update identical for freshly submitted, resubmitted,
