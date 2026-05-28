@@ -13,7 +13,9 @@ use alloy::eips::eip2718::Decodable2718;
 use alloy::eips::eip4844::env_settings::EnvKzgSettings;
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
 use alloy::eips::{BlockId, BlockNumberOrTag};
-use alloy::network::{TransactionBuilder, TransactionBuilder4844, TransactionResponse};
+use alloy::network::{
+    BlockResponse, TransactionBuilder, TransactionBuilder4844, TransactionResponse,
+};
 use alloy::primitives::utils::{format_ether, format_units};
 use alloy::primitives::{Address, B256};
 use alloy::providers::Provider;

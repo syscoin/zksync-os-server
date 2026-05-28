@@ -40,7 +40,7 @@ where
         state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         let operator_address = self.operator_address().await?;
-        let metrics_provider = self.provider.root().clone();
+        let metrics_provider = self.provider.clone();
         tokio::select! {
             result = self.run_l1_sender(input, output, state_reporter) => result,
             result = report_operator_metrics_loop(
