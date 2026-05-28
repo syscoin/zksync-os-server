@@ -328,19 +328,6 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alloy"
-version = "1.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4973038846323e4e69a433916522195dce2947770076c03078fc21c80ea0f1c4"
-dependencies = [
- "alloy-consensus 1.8.3",
- "alloy-core",
- "alloy-eips 1.8.3",
- "alloy-serde 1.8.3",
- "alloy-trie",
-]
-
-[[package]]
-name = "alloy"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8010fc7e9e8643ef4e758cdccf3eef26734594aedf88a9d5ed35e51837d42ef"
@@ -402,7 +389,6 @@ dependencies = [
  "either",
  "k256",
  "once_cell",
- "rand 0.8.5",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
@@ -4217,6 +4203,20 @@ dependencies = [
 
 [[package]]
 name = "darling_core"
+version = "0.21.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "darling_core"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
@@ -5253,7 +5253,7 @@ name = "forward_system"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.0.29-interface-v0.1.3#2f65982d788f651c8504c7805eab6b17813226c6"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "arrayvec",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.0.29-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.0.29-interface-v0.1.3)",
@@ -5277,7 +5277,7 @@ name = "forward_system"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.1.2-interface-v0.1.3#bb085de0891157b2295ffbd1329ebf5cc2944c0e"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "arrayvec",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.1.2-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.1.2-interface-v0.1.3)",
@@ -5302,7 +5302,7 @@ name = "forward_system"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-interface-v0.1.3#9d82156e85c6430ba53d1a186c23828c1dff05fd"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "arrayvec",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-interface-v0.1.3)",
@@ -5327,7 +5327,7 @@ name = "forward_system"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-simulation-only-interface-v0.1.3#d5492542870c39b4c262f613d76ae9ddf5036900"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "arrayvec",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-simulation-only-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-simulation-only-interface-v0.1.3)",
@@ -5352,7 +5352,7 @@ name = "forward_system"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3#b4193659af83b6c71419ddda3f57e0302c61eb8d"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
  "bincode 1.3.3",
@@ -12196,11 +12196,11 @@ dependencies = [
 
 [[package]]
 name = "smart-config"
-version = "0.4.0-pre.3"
+version = "0.4.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "577867735f5417dfcce4c94dee45c8d5e94047a7e728816d2b20322e15c5de61"
+checksum = "fb95162a1c608d4e018e81a46ed73ec5e105fb9b8a36bda8bd175ac7b56e3530"
 dependencies = [
- "alloy 1.7.3",
+ "alloy",
  "anyhow",
  "compile-fmt",
  "primitive-types",
@@ -12215,9 +12215,9 @@ dependencies = [
 
 [[package]]
 name = "smart-config-commands"
-version = "0.4.0-pre.3"
+version = "0.4.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cd5efe69c80e9f079b41af31fbff3d4466c04e211c62f5d62bf0417e93a7698"
+checksum = "ef0cf44074059cb1ee1b0dd0e21c5def38ea1931789f52fa72e0da51beb615b2"
 dependencies = [
  "anstream 1.0.0",
  "anstyle",
@@ -12229,9 +12229,9 @@ dependencies = [
 
 [[package]]
 name = "smart-config-derive"
-version = "0.4.0-pre.3"
+version = "0.4.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab6afb95867f82dda0bfb6a11000ec9fe297c76c37a2f74cd2c825a261f85a63"
+checksum = "1e2230c0218f635bd82ba8e418b8d5ab7291a7854900198c1723e287832ffb71"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -15088,11 +15088,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zksync_os_alloy_ext"
+version = "0.20.4"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "zksync_os_contract_interface",
+ "zksync_os_rpc_api",
+ "zksync_os_types",
+]
+
+[[package]]
 name = "zksync_os_api"
 version = "0.1.0"
 source = "git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3#b4193659af83b6c71419ddda3f57e0302c61eb8d"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "alloy-sol-types",
  "basic_bootloader 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -15125,13 +15141,14 @@ dependencies = [
 name = "zksync_os_base_token_adjuster"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "num",
  "secrecy",
  "tokio",
  "tracing",
  "vise",
+ "zksync_os_alloy_ext",
  "zksync_os_contract_interface",
  "zksync_os_external_price_api",
  "zksync_os_operator_signer",
@@ -15142,7 +15159,7 @@ dependencies = [
 name = "zksync_os_batch_types"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "blake2",
  "serde",
@@ -15163,7 +15180,7 @@ dependencies = [
 name = "zksync_os_batch_verification"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "bitcoin_da_client",
@@ -15213,7 +15230,7 @@ dependencies = [
 name = "zksync_os_contract_interface"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "backon",
  "futures",
@@ -15228,7 +15245,7 @@ dependencies = [
 name = "zksync_os_crypto"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "blake2",
  "sha2",
 ]
@@ -15243,7 +15260,7 @@ checksum = "d9dfbba34ae7617db056b0e3a74a67c9cab1c93457f6b1cfbf7cee3ff34db01e"
 name = "zksync_os_external_price_api"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "assert_matches",
  "async-trait",
@@ -15265,7 +15282,7 @@ dependencies = [
 name = "zksync_os_gas_adjuster"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "bitcoin_da_client",
@@ -15282,7 +15299,7 @@ dependencies = [
 name = "zksync_os_generate_deposit"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "clap",
  "tokio",
@@ -15294,7 +15311,7 @@ dependencies = [
 name = "zksync_os_genesis"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -15314,7 +15331,7 @@ dependencies = [
 name = "zksync_os_integration_tests"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "backon",
@@ -15337,6 +15354,7 @@ dependencies = [
  "test-log",
  "tokio",
  "tracing",
+ "zksync_os_alloy_ext",
  "zksync_os_api",
  "zksync_os_contract_interface",
  "zksync_os_integration_tests_macros",
@@ -15377,7 +15395,7 @@ dependencies = [
 name = "zksync_os_internal_config"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "serde",
  "serde_json",
@@ -15388,7 +15406,7 @@ dependencies = [
 name = "zksync_os_interop_fee_updater"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "num",
  "tokio",
@@ -15403,7 +15421,7 @@ dependencies = [
 name = "zksync_os_l1_sender"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "futures",
@@ -15412,6 +15430,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vise",
+ "zksync_os_alloy_ext",
  "zksync_os_batch_types",
  "zksync_os_batcher_metrics",
  "zksync_os_contract_interface",
@@ -15425,7 +15444,7 @@ dependencies = [
 name = "zksync_os_l1_watcher"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "backon",
@@ -15450,7 +15469,7 @@ dependencies = [
 name = "zksync_os_mempool"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "auto_impl",
  "futures",
  "metrics",
@@ -15475,7 +15494,7 @@ dependencies = [
 name = "zksync_os_merkle_tree"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "clap",
  "insta",
@@ -15499,7 +15518,7 @@ dependencies = [
 name = "zksync_os_merkle_tree_api"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "assert_matches",
  "insta",
@@ -15519,7 +15538,7 @@ dependencies = [
 name = "zksync_os_mini_merkle_tree"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "criterion",
  "once_cell",
  "zksync_os_crypto",
@@ -15530,7 +15549,7 @@ dependencies = [
 name = "zksync_os_multivm"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "cargo_metadata",
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.0.29-interface-v0.1.3)",
@@ -15553,7 +15572,7 @@ dependencies = [
 name = "zksync_os_network"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "alloy-rlp",
  "assert_matches",
  "async-trait",
@@ -15621,7 +15640,7 @@ dependencies = [
 name = "zksync_os_operator_signer"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "tokio",
  "tracing",
@@ -15645,7 +15664,7 @@ dependencies = [
 name = "zksync_os_priority_tree"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "bincode 2.0.1",
  "tokio",
@@ -15694,7 +15713,7 @@ name = "zksync_os_replay_archive"
 version = "0.20.4"
 dependencies = [
  "age",
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "clap",
@@ -15719,7 +15738,7 @@ dependencies = [
 name = "zksync_os_reth_compat"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "reth-chainspec",
  "reth-db-models",
  "reth-ethereum-primitives",
@@ -15735,7 +15754,7 @@ dependencies = [
 name = "zksync_os_revm_consistency_checker"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -15784,7 +15803,7 @@ dependencies = [
 name = "zksync_os_rpc"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -15838,7 +15857,7 @@ dependencies = [
 name = "zksync_os_rpc_api"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "alloy-rlp",
  "anyhow",
  "blake2",
@@ -15909,7 +15928,7 @@ dependencies = [
 name = "zksync_os_sequencer"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "async-trait",
  "basic_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -15942,8 +15961,7 @@ dependencies = [
 name = "zksync_os_server"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
- "alloy-consensus 1.8.3",
+ "alloy",
  "anyhow",
  "async-trait",
  "axum",
@@ -15992,6 +16010,7 @@ dependencies = [
  "vise",
  "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.2.10-interface-v0.1.3)",
  "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
+ "zksync_os_alloy_ext",
  "zksync_os_backpressure",
  "zksync_os_base_token_adjuster",
  "zksync_os_batch_types",
@@ -16037,7 +16056,7 @@ dependencies = [
 name = "zksync_os_state"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "dashmap 6.1.0",
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
@@ -16056,7 +16075,7 @@ dependencies = [
 name = "zksync_os_state_full_diffs"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.1-interface-v0.1.3)",
  "ruint",
@@ -16087,7 +16106,7 @@ dependencies = [
 name = "zksync_os_storage"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "bincode 2.0.1",
  "dashmap 6.1.0",
@@ -16110,7 +16129,7 @@ dependencies = [
 name = "zksync_os_storage_api"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "alloy-rlp",
  "anyhow",
  "auto_impl",
@@ -16138,7 +16157,7 @@ dependencies = [
 name = "zksync_os_tx_validators"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "httpmock",
  "reqwest 0.12.28",
@@ -16158,7 +16177,7 @@ dependencies = [
 name = "zksync_os_types"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "alloy-rlp",
  "bincode 2.0.1",
  "chrono",
@@ -16177,7 +16196,7 @@ dependencies = [
 name = "zksync_os_verify_storage_proof"
 version = "0.20.4"
 dependencies = [
- "alloy 2.0.4",
+ "alloy",
  "anyhow",
  "clap",
  "tokio",
