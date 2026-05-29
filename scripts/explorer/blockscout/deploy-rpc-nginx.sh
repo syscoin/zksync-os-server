@@ -50,7 +50,10 @@ nginx_gateway_geo_lines() {
   done
 }
 
-gateway_geo_lines="$(nginx_gateway_geo_lines "${GATEWAY_RPC_ALLOWLIST}")"
+gateway_geo_lines=""
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+  gateway_geo_lines="$(nginx_gateway_geo_lines "${GATEWAY_RPC_ALLOWLIST}")"
+fi
 
 nginx_config="$(
   cat <<EOF
