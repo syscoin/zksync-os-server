@@ -461,6 +461,8 @@ public EN and leaving the existing Gateway RPC vhost alone:
 RPC_NGINX_REMOTE_HOST="ubuntu@<explorer-host>" \
 SSH_KEY_PATH="/path/to/ssh-key" \
 ZKSYS_RPC_UPSTREAM="http://127.0.0.1:3050" \
+RPC_NGINX_INCLUDE_ZKSYS=1 \
+RPC_NGINX_INCLUDE_GATEWAY=0 \
 LETSENCRYPT_EMAIL="<ops email>" \
 RPC_NGINX_ENABLE_TLS=1 \
 ./deploy-rpc-nginx.sh
