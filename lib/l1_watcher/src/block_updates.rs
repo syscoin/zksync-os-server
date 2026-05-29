@@ -81,10 +81,10 @@ async fn poll_finalized(
         return Ok(());
     };
     l1_head.send_if_modified(|current| {
-        if current.finalized_block == finalized_block {
+        if current.finalized_block == Some(finalized_block) {
             false
         } else {
-            current.finalized_block = finalized_block;
+            current.finalized_block = Some(finalized_block);
             true
         }
     });
