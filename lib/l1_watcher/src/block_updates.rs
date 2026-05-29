@@ -25,17 +25,23 @@ pub fn run(
     runtime: &Runtime,
     task_name: &'static str,
     poll_interval: Duration,
+    finalized_poll_interval: Duration,
 ) -> watch::Receiver<BlockUpdates> {
     let (l1_head, receiver) = watch::channel(BlockUpdates::default());
     runtime.spawn_critical_task(task_name, async move {
-        let mut timer = tokio::time::interval(poll_interval);
+        let mut latest_timer = tokio::time::interval(poll_interval);
+        let mut finalized_timer = tokio::time::interval(finalized_poll_interval);
         loop {
-            timer.tick().await;
             if l1_head.receiver_count() == 0 {
                 tracing::info!("block updates have no subscribers; stopping");
                 return;
             }
-            if let Err(err) = poll(&provider, &l1_head).await {
+
+            let result = tokio::select! {
+                _ = latest_timer.tick() => poll_latest(&provider, &l1_head).await,
+                _ = finalized_timer.tick() => poll_finalized(&provider, &l1_head).await,
+            };
+            if let Err(err) = result {
                 // SYSCOIN: Preserve the old watcher behavior where transient provider
                 // transport errors were retried instead of taking down all L1 watchers.
                 tracing::warn!(?err, "block updates transport error; retrying on next poll");
@@ -45,37 +51,37 @@ pub fn run(
     receiver
 }
 
-async fn poll(
+async fn poll_latest(
     provider: &DynProvider,
     l1_head: &watch::Sender<BlockUpdates>,
 ) -> alloy::transports::TransportResult<()> {
     let latest_block = provider.get_block_number().await?;
-    let finalized_block = match provider.get_block_number_by_id(BlockId::finalized()).await {
-        Ok(finalized_block) => finalized_block,
-        Err(err) => {
-            // SYSCOIN: confirmed watchers only need latest-block updates. Keep publishing
-            // those even if the finalized tag is temporarily unavailable or unsupported.
-            tracing::warn!(
-                ?err,
-                "failed to fetch finalized L1 block; keeping previous finalized block"
-            );
-            l1_head.borrow().finalized_block
-        }
-    };
-    if finalized_block.is_none() {
-        // SYSCOIN: preserve the previous finalized-watcher behavior of waiting
-        // until finality is available.
-        tracing::debug!("no finalized L1 block available yet");
-    }
-    let next = BlockUpdates {
-        latest_block,
-        finalized_block,
-    };
     l1_head.send_if_modified(|current| {
-        if *current == next {
+        if current.latest_block == latest_block {
             false
         } else {
-            *current = next;
+            current.latest_block = latest_block;
+            true
+        }
+    });
+    Ok(())
+}
+
+async fn poll_finalized(
+    provider: &DynProvider,
+    l1_head: &watch::Sender<BlockUpdates>,
+) -> alloy::transports::TransportResult<()> {
+    let Some(finalized_block) = provider.get_block_number_by_id(BlockId::finalized()).await? else {
+        // SYSCOIN: some Syscoin/Gateway startup windows may not expose a finalized
+        // block yet; finalized watchers should wait instead of crashing the poller.
+        tracing::debug!("no finalized L1 block available yet");
+        return Ok(());
+    };
+    l1_head.send_if_modified(|current| {
+        if current.finalized_block == finalized_block {
+            false
+        } else {
+            current.finalized_block = finalized_block;
             true
         }
     });
