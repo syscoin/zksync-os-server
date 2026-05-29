@@ -19,7 +19,8 @@ DEFAULT_GATEWAY_RPC_URL="${DEFAULT_GATEWAY_RPC_URL:-https://rpc-gw.tanenbaum.io}
 
 SOURCE_ZKSYS_CONFIG="${SOURCE_ZKSYS_CONFIG:-/home/ubuntu/gateway/os-server-configs/zksys/config.yaml}"
 MAIN_NODE_ENODE="${MAIN_NODE_ENODE:-}"
-MAIN_NODE_RPC_URL="${MAIN_NODE_RPC_URL:-https://rpc-zk.tanenbaum.io/}"
+MAIN_NODE_RPC_URL="${MAIN_NODE_RPC_URL:-}"
+MAIN_NODE_RPC_PORT="${MAIN_NODE_RPC_PORT:-3050}"
 CHAIN_ID="${CHAIN_ID:-57057}"
 PROTOCOL_VERSION="${PROTOCOL_VERSION:-v31.0}"
 
@@ -54,6 +55,18 @@ Enable p2p on the zksys sequencer first, then pass its enode, e.g.
 MAIN_NODE_ENODE='enode://<main-node-peer-id>@148.251.44.149:3060'
 EOF
   exit 1
+fi
+
+if [[ -z "${MAIN_NODE_RPC_URL}" ]]; then
+  if [[ -z "${SEQUENCER_REMOTE_HOST}" ]]; then
+    cat >&2 <<'EOF'
+MAIN_NODE_RPC_URL or SEQUENCER_REMOTE_HOST is required.
+After the public RPC DNS points at the EN, this must be a direct sequencer RPC
+URL reachable from the EN host, usually allowlisted to the explorer host only.
+EOF
+    exit 1
+  fi
+  MAIN_NODE_RPC_URL="http://${SEQUENCER_REMOTE_HOST#*@}:${MAIN_NODE_RPC_PORT}"
 fi
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
