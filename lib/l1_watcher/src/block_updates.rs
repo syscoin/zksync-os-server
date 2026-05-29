@@ -71,7 +71,10 @@ async fn poll_finalized(
     provider: &DynProvider,
     l1_head: &watch::Sender<BlockUpdates>,
 ) -> alloy::transports::TransportResult<()> {
-    let Some(finalized_block) = provider.get_block_number_by_id(BlockId::finalized()).await? else {
+    let Some(finalized_block) = provider
+        .get_block_number_by_id(BlockId::finalized())
+        .await?
+    else {
         // SYSCOIN: some Syscoin/Gateway startup windows may not expose a finalized
         // block yet; finalized watchers should wait instead of crashing the poller.
         tracing::debug!("no finalized L1 block available yet");

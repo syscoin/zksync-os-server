@@ -26,8 +26,8 @@ use alloy::rpc::types::trace::geth::{CallConfig, GethDebugTracingOptions};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::transports::TransportError;
 use anyhow::Context as _;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use zksync_os_alloy_ext::dyn_wallet_provider::{EthDynProvider, EthWalletProvider};
@@ -405,8 +405,8 @@ where
     Input: SendToL1,
 {
     let tx_range = Input::display_range(std::slice::from_ref(cmd));
-    let fee_params = resolve_fee_params(provider, config.fee_config, use_replacement_fee_params)
-        .await?;
+    let fee_params =
+        resolve_fee_params(provider, config.fee_config, use_replacement_fee_params).await?;
     let mut tx_request = tx_request_with_gas_fields(operator_address, fee_params)
         .with_to(to_address)
         .with_input(cmd.solidity_call(gateway, &operator_address));
@@ -529,7 +529,12 @@ async fn sign_l1_transaction(
         tx_request.set_chain_id(provider.get_chain_id().await?);
     }
     if tx_request.nonce.is_none() {
-        tx_request.set_nonce(provider.get_transaction_count(operator_address).pending().await?);
+        tx_request.set_nonce(
+            provider
+                .get_transaction_count(operator_address)
+                .pending()
+                .await?,
+        );
     }
 
     let tx = tx_request
