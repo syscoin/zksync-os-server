@@ -21,7 +21,27 @@ if [[ -z "${ZKSYS_P2P_HOST}" ]]; then
   ZKSYS_P2P_HOST="${SEQUENCER_REMOTE_HOST#*@}"
 fi
 if [[ -z "${ZKSYS_P2P_ADDRESS}" ]]; then
-  ZKSYS_P2P_ADDRESS="${ZKSYS_P2P_HOST}"
+  ZKSYS_P2P_ADDRESS="$(
+    python3 - "${ZKSYS_P2P_HOST}" <<'PY'
+import ipaddress
+import socket
+import sys
+
+host = sys.argv[1]
+try:
+    print(ipaddress.IPv4Address(host))
+    raise SystemExit(0)
+except ipaddress.AddressValueError:
+    pass
+
+for family, _, _, _, sockaddr in socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM):
+    if family == socket.AF_INET:
+        print(sockaddr[0])
+        raise SystemExit(0)
+
+raise SystemExit(f"could not resolve {host!r} to an IPv4 address; set ZKSYS_P2P_ADDRESS explicitly")
+PY
+  )"
 fi
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new)

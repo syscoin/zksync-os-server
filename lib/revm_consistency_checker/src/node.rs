@@ -25,6 +25,7 @@ const BLOB_BASE_FEE_UPDATE_FRACTION: u128 = alloy::eips::eip4844::BLOB_GASPRICE_
 const MIN_BASE_FEE_PER_BLOB_GAS: u128 = alloy::eips::eip4844::BLOB_TX_MIN_BLOB_GASPRICE;
 // SYSCOIN: early launch/bootstrap replay contains system transactions with legacy nonce semantics
 // that REVM's diagnostic checker rejects although ZKsync OS accepted them on the canonical path.
+const SYSCOIN_ZKSYS_CHAIN_ID: u64 = 57057;
 const BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS: u64 = 10;
 
 pub struct RevmConsistencyChecker<State>
@@ -254,7 +255,8 @@ where
                         }
 
                         if let Some((tx_index, err)) = execution_error {
-                            if replay_record.block_context.block_number
+                            if replay_record.block_context.chain_id == SYSCOIN_ZKSYS_CHAIN_ID
+                                && replay_record.block_context.block_number
                                 <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
                             {
                                 PUSH_METRICS.revm_blocks_skipped.inc();
