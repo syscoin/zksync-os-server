@@ -8,6 +8,8 @@ RPC_ZKSYS_DOMAIN="${RPC_ZKSYS_DOMAIN:-rpc-zk.tanenbaum.io}"
 RPC_GATEWAY_DOMAIN="${RPC_GATEWAY_DOMAIN:-rpc-gw.tanenbaum.io}"
 ZKSYS_RPC_UPSTREAM="${ZKSYS_RPC_UPSTREAM:-http://127.0.0.1:3050}"
 GATEWAY_RPC_UPSTREAM="${GATEWAY_RPC_UPSTREAM:-http://127.0.0.1:3052}"
+RPC_NGINX_INCLUDE_ZKSYS="${RPC_NGINX_INCLUDE_ZKSYS:-1}"
+RPC_NGINX_INCLUDE_GATEWAY="${RPC_NGINX_INCLUDE_GATEWAY:-0}"
 
 # Comma-separated IPs/CIDRs allowed to use the private Gateway RPC.
 # Set this to the Blockscout host IP/CIDR plus any operator admin IP/CIDRs.
@@ -22,7 +24,12 @@ if [[ -z "${RPC_NGINX_REMOTE_HOST}" ]]; then
   exit 1
 fi
 
-if [[ -z "${GATEWAY_RPC_ALLOWLIST}" ]]; then
+if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" != "1" && "${RPC_NGINX_INCLUDE_GATEWAY}" != "1" ]]; then
+  echo "at least one of RPC_NGINX_INCLUDE_ZKSYS or RPC_NGINX_INCLUDE_GATEWAY must be 1" >&2
+  exit 1
+fi
+
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" && -z "${GATEWAY_RPC_ALLOWLIST}" ]]; then
   echo "GATEWAY_RPC_ALLOWLIST is required, for example '<blockscout-ip>,<admin-ip-or-cidr>'" >&2
   exit 1
 fi
@@ -52,6 +59,12 @@ map \$http_upgrade \$connection_upgrade {
     '' close;
 }
 
+EOF
+)"
+
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+  nginx_config+="$(
+    cat <<EOF
 geo \$gateway_rpc_allowed {
     default 0;
     127.0.0.1 1;
@@ -59,6 +72,13 @@ geo \$gateway_rpc_allowed {
 ${gateway_geo_lines}
 }
 
+EOF
+  )"
+fi
+
+if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
+  nginx_config+="$(
+    cat <<EOF
 server {
     listen 80;
     server_name ${RPC_ZKSYS_DOMAIN};
@@ -98,6 +118,13 @@ server {
     }
 }
 
+EOF
+  )"
+fi
+
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+  nginx_config+="$(
+    cat <<EOF
 server {
     listen 80;
     server_name ${RPC_GATEWAY_DOMAIN};
@@ -137,7 +164,8 @@ server {
     }
 }
 EOF
-)"
+  )"
+fi
 
 config_b64="$(printf '%s' "${nginx_config}" | base64 | tr -d '\n')"
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
@@ -151,7 +179,9 @@ ssh "${ssh_opts[@]}" "${RPC_NGINX_REMOTE_HOST}" \
   "${RPC_NGINX_ENABLE_TLS}" \
   "${LETSENCRYPT_EMAIL}" \
   "${RPC_ZKSYS_DOMAIN}" \
-  "${RPC_GATEWAY_DOMAIN}" <<'REMOTE_SCRIPT'
+  "${RPC_GATEWAY_DOMAIN}" \
+  "${RPC_NGINX_INCLUDE_ZKSYS}" \
+  "${RPC_NGINX_INCLUDE_GATEWAY}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 CONFIG_B64="$1"
@@ -159,6 +189,8 @@ RPC_NGINX_ENABLE_TLS="$2"
 LETSENCRYPT_EMAIL="$3"
 RPC_ZKSYS_DOMAIN="$4"
 RPC_GATEWAY_DOMAIN="$5"
+RPC_NGINX_INCLUDE_ZKSYS="$6"
+RPC_NGINX_INCLUDE_GATEWAY="$7"
 
 if ! command -v nginx >/dev/null 2>&1; then
   sudo apt-get update
@@ -179,17 +211,27 @@ if [[ "${RPC_NGINX_ENABLE_TLS}" == "1" ]]; then
 
   sudo apt-get update
   sudo apt-get install -y certbot python3-certbot-nginx
+  domains=()
+  if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
+    domains+=(-d "${RPC_ZKSYS_DOMAIN}")
+  fi
+  if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+    domains+=(-d "${RPC_GATEWAY_DOMAIN}")
+  fi
   sudo certbot --nginx \
     --non-interactive \
     --agree-tos \
     --expand \
     --redirect \
     --email "${LETSENCRYPT_EMAIL}" \
-    -d "${RPC_ZKSYS_DOMAIN}" \
-    -d "${RPC_GATEWAY_DOMAIN}"
+    "${domains[@]}"
 fi
 
 echo "installed /etc/nginx/conf.d/zksync-rpc.conf"
-echo "public zksys RPC: https://${RPC_ZKSYS_DOMAIN}/"
-echo "allowlisted gateway RPC: https://${RPC_GATEWAY_DOMAIN}/"
+if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
+  echo "public zksys RPC: https://${RPC_ZKSYS_DOMAIN}/"
+fi
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+  echo "allowlisted gateway RPC: https://${RPC_GATEWAY_DOMAIN}/"
+fi
 REMOTE_SCRIPT

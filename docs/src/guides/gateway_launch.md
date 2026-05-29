@@ -405,6 +405,61 @@ or behind the host reverse proxy and allowlist only the explorer server's public
 IP at nginx/firewall level. Do not expose unrestricted Gateway node RPC directly
 to the internet.
 
+For zksys public RPC, prefer running external nodes on the explorer host instead
+of exposing the sequencer RPC directly. The normal topology is two zksys EN
+processes on the explorer host:
+
+- public EN: `rpc.enable_debug_namespace=false`, local nginx upstream for
+  `rpc-zk.tanenbaum.io`
+- internal/debug EN: `rpc.enable_debug_namespace=true`, used by Blockscout only
+
+Each node process needs its own `network.secret_key`, `network.port`,
+`general.rocks_db_path`, and `rpc.address`. Both ENs use the same trusted
+sequencer boot node:
+
+```text
+network.boot_nodes = "enode://<zksys-main-peer-id>@<sequencer-host>:3060"
+```
+
+The sequencer zksys node must have p2p enabled first. Its private
+`network.secret_key` stays on the sequencer; ENs only receive the public enode.
+Use the sequencer helper to create/reuse that key and patch the zksys config:
+
+```bash
+cd scripts/explorer/blockscout
+
+SEQUENCER_REMOTE_HOST="ubuntu@<sequencer-host>" \
+SSH_KEY_PATH="/path/to/ssh-key" \
+./enable-zksys-sequencer-p2p.sh
+```
+
+The helper prints `MAIN_NODE_ENODE=...`. By default it does not restart the
+sequencer; set `RESTART_ZKSYS=1` after confirming the maintenance window.
+
+The Blockscout helper can install the two zksys ENs after launch:
+
+```bash
+cd scripts/explorer/blockscout
+
+REMOTE_HOST="ubuntu@<explorer-host>" \
+SEQUENCER_REMOTE_HOST="ubuntu@<sequencer-host>" \
+SSH_KEY_PATH="/path/to/ssh-key" \
+MAIN_NODE_ENODE="enode://<zksys-main-peer-id>@<sequencer-host>:3060" \
+./deploy-zksys-en-rpc.sh
+```
+
+Then install the public zksys RPC vhost on the explorer host, pointing at the
+public EN and leaving the existing Gateway RPC vhost alone:
+
+```bash
+RPC_NGINX_REMOTE_HOST="ubuntu@<explorer-host>" \
+SSH_KEY_PATH="/path/to/ssh-key" \
+ZKSYS_RPC_UPSTREAM="http://127.0.0.1:3050" \
+LETSENCRYPT_EMAIL="<ops email>" \
+RPC_NGINX_ENABLE_TLS=1 \
+./deploy-rpc-nginx.sh
+```
+
 The Blockscout deployment helper includes a host nginx installer for the normal
 Tanenbaum topology:
 

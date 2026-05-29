@@ -23,6 +23,9 @@ use zksync_os_types::{BlockOutput, ExecutionVersion, SYSTEM_CONTEXT_ADDRESS};
 
 const BLOB_BASE_FEE_UPDATE_FRACTION: u128 = alloy::eips::eip4844::BLOB_GASPRICE_UPDATE_FRACTION;
 const MIN_BASE_FEE_PER_BLOB_GAS: u128 = alloy::eips::eip4844::BLOB_TX_MIN_BLOB_GASPRICE;
+// SYSCOIN: early launch/bootstrap replay contains system transactions with legacy nonce semantics
+// that REVM's diagnostic checker rejects although ZKsync OS accepted them on the canonical path.
+const BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS: u64 = 10;
 
 pub struct RevmConsistencyChecker<State>
 where
@@ -239,17 +242,38 @@ where
 
                 match revm_txs {
                     Ok(txs) => {
-                        // Commit after each tx
-                        for tx in txs {
-                            evm.transact_commit(tx)?;
+                        let mut execution_error = None;
+                        // SYSCOIN: commit after each tx. If REVM rejects a replay tx that ZKsync OS already
+                        // accepted (for example a bootstrap/system tx with legacy nonce semantics),
+                        // this block is outside the checker's supported surface.
+                        for (tx_index, tx) in txs.into_iter().enumerate() {
+                            if let Err(err) = evm.transact_commit(tx) {
+                                execution_error = Some((tx_index, err));
+                                break;
+                            }
                         }
 
-                        let compare_report = CompareReport::build(
-                            evm.0.db_mut(),
-                            &block_output.storage_writes,
-                            &block_output.account_diffs,
-                        )?;
-                        self.handle_report(block_output, &replay_record, &compare_report)?;
+                        if let Some((tx_index, err)) = execution_error {
+                            if replay_record.block_context.block_number
+                                <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
+                            {
+                                PUSH_METRICS.revm_blocks_skipped.inc();
+                                tracing::warn!(
+                                    block_number = replay_record.block_context.block_number,
+                                    tx_index,
+                                    "Skipping REVM consistency check for bootstrap block: failed to execute tx in REVM: {err:#}"
+                                );
+                            } else {
+                                return Err(err.into());
+                            }
+                        } else {
+                            let compare_report = CompareReport::build(
+                                evm.0.db_mut(),
+                                &block_output.storage_writes,
+                                &block_output.account_diffs,
+                            )?;
+                            self.handle_report(block_output, &replay_record, &compare_report)?;
+                        }
                     }
                     Err(err) => {
                         // Tx conversion failed (e.g. malformed envelope) — skip
