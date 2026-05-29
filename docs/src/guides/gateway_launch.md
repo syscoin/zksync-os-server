@@ -448,6 +448,12 @@ MAIN_NODE_ENODE="enode://<zksys-main-peer-id>@<sequencer-host>:3060" \
 ./deploy-zksys-en-rpc.sh
 ```
 
+The generated EN configs set `general.main_node_rpc_url` to the direct
+sequencer RPC (`http://<sequencer-host>:3050` by default). After
+`rpc-zk.tanenbaum.io` points at the public EN, do not use that DNS name for
+`main_node_rpc_url`; otherwise EN transaction forwarding loops back into the EN
+instead of reaching the sequencer.
+
 Then install the public zksys RPC vhost on the explorer host, pointing at the
 public EN and leaving the existing Gateway RPC vhost alone:
 
@@ -458,6 +464,37 @@ ZKSYS_RPC_UPSTREAM="http://127.0.0.1:3050" \
 LETSENCRYPT_EMAIL="<ops email>" \
 RPC_NGINX_ENABLE_TLS=1 \
 ./deploy-rpc-nginx.sh
+```
+
+After the public zksys RPC has moved to the explorer host, remove the old zksys
+RPC vhost from the sequencer while keeping Gateway RPC private/allowlisted:
+
+```bash
+RPC_NGINX_REMOTE_HOST="ubuntu@<sequencer-host>" \
+SSH_KEY_PATH="/path/to/ssh-key" \
+RPC_NGINX_INCLUDE_ZKSYS=0 \
+RPC_NGINX_INCLUDE_GATEWAY=1 \
+GATEWAY_RPC_ALLOWLIST="<explorer-host-ip-or-cidr>,<admin-ip-or-cidr>" \
+LETSENCRYPT_EMAIL="<ops email>" \
+RPC_NGINX_ENABLE_TLS=1 \
+./deploy-rpc-nginx.sh
+```
+
+Also restrict the sequencer's raw zksys RPC port to the explorer host only; ENs
+need this path for transaction forwarding, but it should not be publicly
+reachable:
+
+```bash
+# Run on the sequencer host.
+sudo iptables -I INPUT 1 -p tcp -s <explorer-host-ip> --dport 3050 -j ACCEPT
+sudo iptables -I INPUT 2 -p tcp --dport 3050 -j DROP
+
+# Persist the rules using your host firewall manager. On Ubuntu without another
+# firewall manager, netfilter-persistent can save them:
+sudo apt-get update
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent netfilter-persistent
+sudo netfilter-persistent save
+sudo systemctl enable netfilter-persistent
 ```
 
 The Blockscout deployment helper includes a host nginx installer for the normal
