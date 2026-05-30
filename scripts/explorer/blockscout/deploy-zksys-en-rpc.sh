@@ -256,12 +256,15 @@ if [[ "${INSTALL_BUILD_DEPS}" == "true" ]]; then
   export PATH="${HOME}/.cargo/bin:${PATH}"
   rust_toolchain="$(
     python3 - "${REMOTE_OS_SERVER_PATH}/rust-toolchain.toml" <<'PY'
+import re
 import sys
-import tomllib
 from pathlib import Path
 
-data = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(data["toolchain"]["channel"])
+toolchain_toml = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r'(?m)^\s*channel\s*=\s*["\']([^"\']+)["\']\s*$', toolchain_toml)
+if match is None:
+    raise SystemExit(f"missing toolchain.channel in {sys.argv[1]}")
+print(match.group(1))
 PY
   )"
   rustup toolchain install "${rust_toolchain}" --profile minimal
