@@ -118,6 +118,14 @@ gateway_rpc_url = providers["gateway_provider"]["rpc_url"]
 gateway_rpc_host = urlparse(gateway_rpc_url).hostname
 if gateway_rpc_host in {"127.0.0.1", "localhost", "::1"}:
     providers["gateway_provider"]["rpc_url"] = default_gateway_rpc_url
+
+l1_rpc_url = providers["l1_provider"]["rpc_url"]
+l1_rpc_host = urlparse(l1_rpc_url).hostname
+if l1_rpc_host in {"127.0.0.1", "localhost", "::1"}:
+    raise SystemExit(
+        "l1_provider.rpc_url is loopback in the sequencer config; "
+        "set ZKSYS_EN_L1_RPC_URL to an L1 RPC URL reachable from the EN host"
+    )
 print(json.dumps(providers, separators=(",", ":")))
 PY
   )"

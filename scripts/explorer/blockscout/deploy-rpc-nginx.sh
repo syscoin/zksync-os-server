@@ -10,6 +10,8 @@ ZKSYS_RPC_UPSTREAM="${ZKSYS_RPC_UPSTREAM:-http://127.0.0.1:3050}"
 GATEWAY_RPC_UPSTREAM="${GATEWAY_RPC_UPSTREAM:-http://127.0.0.1:3052}"
 RPC_NGINX_INCLUDE_ZKSYS="${RPC_NGINX_INCLUDE_ZKSYS:-1}"
 RPC_NGINX_INCLUDE_GATEWAY="${RPC_NGINX_INCLUDE_GATEWAY:-1}"
+RPC_NGINX_REMOVE_ZKSYS="${RPC_NGINX_REMOVE_ZKSYS:-0}"
+RPC_NGINX_REMOVE_GATEWAY="${RPC_NGINX_REMOVE_GATEWAY:-0}"
 
 # Comma-separated IPs/CIDRs allowed to use the private Gateway RPC.
 # Set this to the Blockscout host IP/CIDR plus any operator admin IP/CIDRs.
@@ -55,7 +57,7 @@ if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
   gateway_geo_lines="$(nginx_gateway_geo_lines "${GATEWAY_RPC_ALLOWLIST}")"
 fi
 
-nginx_config="$(
+nginx_common_config="$(
   cat <<EOF
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
@@ -65,8 +67,9 @@ map \$http_upgrade \$connection_upgrade {
 EOF
 )"
 
+nginx_gateway_config=""
 if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
-  nginx_config+="$(
+  nginx_gateway_config="$(
     cat <<EOF
 geo \$gateway_rpc_allowed {
     default 0;
@@ -79,8 +82,9 @@ EOF
   )"
 fi
 
+nginx_zksys_config=""
 if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
-  nginx_config+="$(
+  nginx_zksys_config="$(
     cat <<EOF
 server {
     listen 80;
@@ -126,7 +130,7 @@ EOF
 fi
 
 if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
-  nginx_config+="$(
+  nginx_gateway_config+="$(
     cat <<EOF
 server {
     listen 80;
@@ -170,7 +174,9 @@ EOF
   )"
 fi
 
-config_b64="$(printf '%s' "${nginx_config}" | base64 | tr -d '\n')"
+common_config_b64="$(printf '%s' "${nginx_common_config}" | base64 | tr -d '\n')"
+zksys_config_b64="$(printf '%s' "${nginx_zksys_config}" | base64 | tr -d '\n')"
+gateway_config_b64="$(printf '%s' "${nginx_gateway_config}" | base64 | tr -d '\n')"
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
 if [[ -n "${SSH_KEY_PATH}" ]]; then
   ssh_opts+=(-i "${SSH_KEY_PATH}")
@@ -178,22 +184,30 @@ fi
 
 ssh "${ssh_opts[@]}" "${RPC_NGINX_REMOTE_HOST}" \
   bash -s -- \
-  "${config_b64}" \
+  "${common_config_b64}" \
+  "${zksys_config_b64}" \
+  "${gateway_config_b64}" \
   "${RPC_NGINX_ENABLE_TLS}" \
   "${LETSENCRYPT_EMAIL}" \
   "${RPC_ZKSYS_DOMAIN}" \
   "${RPC_GATEWAY_DOMAIN}" \
   "${RPC_NGINX_INCLUDE_ZKSYS}" \
-  "${RPC_NGINX_INCLUDE_GATEWAY}" <<'REMOTE_SCRIPT'
+  "${RPC_NGINX_INCLUDE_GATEWAY}" \
+  "${RPC_NGINX_REMOVE_ZKSYS}" \
+  "${RPC_NGINX_REMOVE_GATEWAY}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
-CONFIG_B64="$1"
-RPC_NGINX_ENABLE_TLS="$2"
-LETSENCRYPT_EMAIL="$3"
-RPC_ZKSYS_DOMAIN="$4"
-RPC_GATEWAY_DOMAIN="$5"
-RPC_NGINX_INCLUDE_ZKSYS="$6"
-RPC_NGINX_INCLUDE_GATEWAY="$7"
+COMMON_CONFIG_B64="$1"
+ZKSYS_CONFIG_B64="$2"
+GATEWAY_CONFIG_B64="$3"
+RPC_NGINX_ENABLE_TLS="$4"
+LETSENCRYPT_EMAIL="$5"
+RPC_ZKSYS_DOMAIN="$6"
+RPC_GATEWAY_DOMAIN="$7"
+RPC_NGINX_INCLUDE_ZKSYS="$8"
+RPC_NGINX_INCLUDE_GATEWAY="$9"
+RPC_NGINX_REMOVE_ZKSYS="${10}"
+RPC_NGINX_REMOVE_GATEWAY="${11}"
 
 if ! command -v nginx >/dev/null 2>&1; then
   sudo apt-get update
@@ -201,7 +215,40 @@ if ! command -v nginx >/dev/null 2>&1; then
 fi
 
 sudo install -d -m 0755 /etc/nginx/conf.d /var/www/html
-printf '%s' "${CONFIG_B64}" | base64 -d | sudo tee /etc/nginx/conf.d/zksync-rpc.conf >/dev/null
+legacy_config=/etc/nginx/conf.d/zksync-rpc.conf
+common_config=/etc/nginx/conf.d/zksync-rpc-common.conf
+zksys_config=/etc/nginx/conf.d/zksync-rpc-zksys.conf
+gateway_config=/etc/nginx/conf.d/zksync-rpc-gateway.conf
+
+if [[ -f "${legacy_config}" ]]; then
+  if grep -q "server_name[[:space:]]\\+${RPC_ZKSYS_DOMAIN}" "${legacy_config}" \
+    && [[ "${RPC_NGINX_INCLUDE_ZKSYS}" != "1" && "${RPC_NGINX_REMOVE_ZKSYS}" != "1" ]]; then
+    echo "refusing to drop existing ${RPC_ZKSYS_DOMAIN} vhost from ${legacy_config}; set RPC_NGINX_INCLUDE_ZKSYS=1 or RPC_NGINX_REMOVE_ZKSYS=1" >&2
+    exit 1
+  fi
+  if grep -q "server_name[[:space:]]\\+${RPC_GATEWAY_DOMAIN}" "${legacy_config}" \
+    && [[ "${RPC_NGINX_INCLUDE_GATEWAY}" != "1" && "${RPC_NGINX_REMOVE_GATEWAY}" != "1" ]]; then
+    echo "refusing to drop existing ${RPC_GATEWAY_DOMAIN} vhost from ${legacy_config}; set RPC_NGINX_INCLUDE_GATEWAY=1 or RPC_NGINX_REMOVE_GATEWAY=1" >&2
+    exit 1
+  fi
+fi
+
+printf '%s' "${COMMON_CONFIG_B64}" | base64 -d | sudo tee "${common_config}" >/dev/null
+if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
+  printf '%s' "${ZKSYS_CONFIG_B64}" | base64 -d | sudo tee "${zksys_config}" >/dev/null
+elif [[ "${RPC_NGINX_REMOVE_ZKSYS}" == "1" ]]; then
+  sudo rm -f "${zksys_config}"
+fi
+
+if [[ "${RPC_NGINX_INCLUDE_GATEWAY}" == "1" ]]; then
+  printf '%s' "${GATEWAY_CONFIG_B64}" | base64 -d | sudo tee "${gateway_config}" >/dev/null
+elif [[ "${RPC_NGINX_REMOVE_GATEWAY}" == "1" ]]; then
+  sudo rm -f "${gateway_config}"
+fi
+
+if [[ -f "${legacy_config}" ]]; then
+  sudo mv "${legacy_config}" "${legacy_config}.bak.$(date +%Y%m%d%H%M%S)"
+fi
 
 sudo nginx -t
 sudo systemctl reload nginx
@@ -230,7 +277,7 @@ if [[ "${RPC_NGINX_ENABLE_TLS}" == "1" ]]; then
     "${domains[@]}"
 fi
 
-echo "installed /etc/nginx/conf.d/zksync-rpc.conf"
+echo "installed /etc/nginx/conf.d/zksync-rpc-*.conf"
 if [[ "${RPC_NGINX_INCLUDE_ZKSYS}" == "1" ]]; then
   echo "public zksys RPC: https://${RPC_ZKSYS_DOMAIN}/"
 fi

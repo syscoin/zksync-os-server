@@ -476,6 +476,7 @@ RPC_NGINX_REMOTE_HOST="ubuntu@<sequencer-host>" \
 SSH_KEY_PATH="/path/to/ssh-key" \
 RPC_NGINX_INCLUDE_ZKSYS=0 \
 RPC_NGINX_INCLUDE_GATEWAY=1 \
+RPC_NGINX_REMOVE_ZKSYS=1 \
 GATEWAY_RPC_ALLOWLIST="<explorer-host-ip-or-cidr>,<admin-ip-or-cidr>" \
 LETSENCRYPT_EMAIL="<ops email>" \
 RPC_NGINX_ENABLE_TLS=1 \
