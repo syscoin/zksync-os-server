@@ -34,6 +34,7 @@ where
     state: State,
     internal_config_manager: InternalConfigManager,
     revert_enabled: bool,
+    allow_bootstrap_skip: bool,
 }
 
 impl<State> RevmConsistencyChecker<State>
@@ -44,11 +45,13 @@ where
         state: State,
         internal_config_manager: InternalConfigManager,
         revert_enabled: bool,
+        allow_bootstrap_skip: bool,
     ) -> Self {
         Self {
             state,
             internal_config_manager,
             revert_enabled,
+            allow_bootstrap_skip,
         }
     }
 
@@ -254,7 +257,8 @@ where
                         }
 
                         if let Some((tx_index, err)) = execution_error {
-                            if replay_record.block_context.block_number
+                            if self.allow_bootstrap_skip
+                                && replay_record.block_context.block_number
                                 <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
                             {
                                 PUSH_METRICS.revm_blocks_skipped.inc();

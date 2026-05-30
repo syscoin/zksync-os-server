@@ -445,6 +445,8 @@ for instance in (public, debug):
         f"  boot_nodes: {q(main_node_enode)}",
         "consensus:",
         "  enabled: false",
+        "sequencer:",
+        "  revm_consistency_checker_allow_bootstrap_skip: true",
         "batcher:",
         "  enabled: false",
         "prover_input_generator:",

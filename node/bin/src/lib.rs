@@ -1489,6 +1489,9 @@ async fn run_main_node_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
+                        config
+                            .sequencer_config
+                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -1857,6 +1860,9 @@ async fn run_en_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
+                        config
+                            .sequencer_config
+                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )

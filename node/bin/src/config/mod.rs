@@ -913,6 +913,10 @@ pub struct SequencerConfig {
     /// If enabled, node will revert block with divergence detected by REVM consistency checker.
     #[config(default_t = false)]
     pub revm_consistency_checker_revert_on_divergence: bool,
+    /// SYSCOIN: allow REVM execution failures only during explicitly configured bootstrap replay.
+    /// This is disabled by default so other deployments keep strict early-chain checking.
+    #[config(default_t = false)]
+    pub revm_consistency_checker_allow_bootstrap_skip: bool,
 
     /// Block rebuild options.
     #[config(nest)]
