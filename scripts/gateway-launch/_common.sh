@@ -1353,7 +1353,9 @@ gl_refresh_bitcoin_da_config_from_cookie() {
 
   cookie_file="$(gl_resolve_syscoin_cookie_file || true)"
   if [ -z "${cookie_file}" ]; then
-    echo "gateway-launch: Syscoin cookie not found; using existing Bitcoin DA RPC credentials in ${config_path}" >&2
+    if grep -Eq '^[[:space:]]*bitcoin_da_rpc_(user|password):' "${config_path}"; then
+      echo "gateway-launch: Syscoin cookie not found; using existing Bitcoin DA RPC credentials in ${config_path}" >&2
+    fi
     return 0
   fi
 

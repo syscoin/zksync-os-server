@@ -1489,6 +1489,9 @@ async fn run_main_node_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
+                        config
+                            .sequencer_config
+                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -1857,25 +1860,32 @@ async fn run_en_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
+                        config
+                            .sequencer_config
+                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() })
-        .pipe_if(
-            config.batch_verification_config.client_enabled,
-            BatchVerificationResponder::new(
-                chain_id,
-                node_state_on_startup.l1_state.diamond_proxy_address_sl(),
-                config.batch_verification_config.signing_key.clone(),
-                syscoin_da_verification_config(config),
-                finality.clone(),
-                node_state_on_startup.l1_state.clone(),
-                state.clone(),
-                verify_batch_rx,
-                outgoing_verify_results,
-            ),
-            NoOpSink::new(),
-        );
+        .pipe(TreeManager { tree: tree.clone() });
+
+    // SYSCOIN: construct the batch-verification responder only when this EN is
+    // explicitly configured to sign batches. Our default signing key is empty
+    // unless `client_enabled=true`, and `pipe_if` evaluates both branch values.
+    let pipeline = if config.batch_verification_config.client_enabled {
+        pipeline.pipe(BatchVerificationResponder::new(
+            chain_id,
+            node_state_on_startup.l1_state.diamond_proxy_address_sl(),
+            config.batch_verification_config.signing_key.clone(),
+            syscoin_da_verification_config(config),
+            finality.clone(),
+            node_state_on_startup.l1_state.clone(),
+            state.clone(),
+            verify_batch_rx,
+            outgoing_verify_results,
+        ))
+    } else {
+        pipeline.pipe(NoOpSink::new())
+    };
 
     let components = pipeline.components();
     pipeline.spawn();
