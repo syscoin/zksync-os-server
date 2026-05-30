@@ -33,7 +33,8 @@ PUBLIC_PROMETHEUS_PORT="${PUBLIC_PROMETHEUS_PORT:-3314}"
 
 # Blockscout containers reach the host through `host.docker.internal`. On Linux this maps to the
 # Docker host gateway, so the debug RPC must bind to a host address reachable from Docker, not
-# only to 127.0.0.1. If unset, the remote installer resolves docker0 and falls back to 0.0.0.0.
+# only to 127.0.0.1. If unset, the remote installer resolves docker0 and fails closed if it
+# cannot determine a Docker-reachable bind address.
 DEBUG_RPC_BIND_HOST="${DEBUG_RPC_BIND_HOST:-}"
 DEBUG_RPC_PORT="${DEBUG_RPC_PORT:-3051}"
 DEBUG_P2P_ADDRESS="${DEBUG_P2P_ADDRESS:-0.0.0.0}"
@@ -275,7 +276,15 @@ fi
 
 if [[ "${DEBUG_RPC_BIND_HOST}" == "__AUTO__" || -z "${DEBUG_RPC_BIND_HOST}" ]]; then
   DEBUG_RPC_BIND_HOST="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / { sub(/\/.*/, "", $2); print $2; exit }' || true)"
-  DEBUG_RPC_BIND_HOST="${DEBUG_RPC_BIND_HOST:-0.0.0.0}"
+  if [[ -z "${DEBUG_RPC_BIND_HOST}" ]]; then
+    cat >&2 <<'EOF'
+Could not auto-detect a Docker-reachable debug RPC bind address from docker0.
+Set DEBUG_RPC_BIND_HOST explicitly to the host address that Blockscout containers
+can reach through host.docker.internal. Do not use 0.0.0.0 unless the host firewall
+or cloud security group restricts DEBUG_RPC_PORT to trusted clients.
+EOF
+    exit 1
+  fi
 fi
 
 install -d -m 0755 "${REMOTE_BASE_DIR}"
