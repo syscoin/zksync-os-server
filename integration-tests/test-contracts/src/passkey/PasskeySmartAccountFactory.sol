@@ -11,6 +11,8 @@ contract PasskeySmartAccountFactory {
         bytes32 passkeyY,
         bytes32 credentialIdHash,
         bytes32 rpIdHash,
+        bytes32 originHash,
+        uint256 originLength,
         PasskeySmartAccount.SponsorMode sponsorMode,
         address sponsorSigner,
         bytes32 sponsorUrlHash,
@@ -19,7 +21,17 @@ contract PasskeySmartAccountFactory {
         bytes32 derivedSalt = keccak256(abi.encode(msg.sender, credentialIdHash, salt));
         bytes memory bytecode = abi.encodePacked(
             type(PasskeySmartAccount).creationCode,
-            abi.encode(passkeyX, passkeyY, credentialIdHash, rpIdHash, sponsorMode, sponsorSigner, sponsorUrlHash)
+            abi.encode(
+                passkeyX,
+                passkeyY,
+                credentialIdHash,
+                rpIdHash,
+                originHash,
+                originLength,
+                sponsorMode,
+                sponsorSigner,
+                sponsorUrlHash
+            )
         );
 
         assembly {
@@ -36,6 +48,8 @@ contract PasskeySmartAccountFactory {
         bytes32 passkeyY,
         bytes32 credentialIdHash,
         bytes32 rpIdHash,
+        bytes32 originHash,
+        uint256 originLength,
         PasskeySmartAccount.SponsorMode sponsorMode,
         address sponsorSigner,
         bytes32 sponsorUrlHash,
@@ -45,7 +59,17 @@ contract PasskeySmartAccountFactory {
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
                 type(PasskeySmartAccount).creationCode,
-                abi.encode(passkeyX, passkeyY, credentialIdHash, rpIdHash, sponsorMode, sponsorSigner, sponsorUrlHash)
+                abi.encode(
+                    passkeyX,
+                    passkeyY,
+                    credentialIdHash,
+                    rpIdHash,
+                    originHash,
+                    originLength,
+                    sponsorMode,
+                    sponsorSigner,
+                    sponsorUrlHash
+                )
             )
         );
 

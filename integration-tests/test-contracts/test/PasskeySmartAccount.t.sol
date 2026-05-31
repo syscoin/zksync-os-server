@@ -46,6 +46,9 @@ contract PasskeySmartAccountTest {
     bytes32 internal constant PASSKEY_Y = bytes32(uint256(2));
     bytes32 internal constant CREDENTIAL_ID_HASH = keccak256("credential");
     bytes32 internal constant RP_ID_HASH = bytes32(0);
+    string internal constant ORIGIN = "chrome-extension://pali";
+    bytes32 internal constant ORIGIN_HASH = keccak256(bytes(ORIGIN));
+    uint256 internal constant ORIGIN_LENGTH = 23;
     bytes32 internal constant URL_HASH = keccak256("https://sponsor.example/user/123");
     bytes32 internal constant HIGH_S =
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
@@ -64,6 +67,8 @@ contract PasskeySmartAccountTest {
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
             RP_ID_HASH,
+            ORIGIN_HASH,
+            ORIGIN_LENGTH,
             PasskeySmartAccount.SponsorMode.None,
             address(0),
             bytes32(0)
@@ -107,6 +112,34 @@ contract PasskeySmartAccountTest {
         bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
         proof.clientDataJSON = bytes.concat(prefix, expectedChallenge, suffix);
         proof.challengeOffset = prefix.length - 4;
+
+        vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
+        account.execute(execution, proof, _emptySponsorProof());
+    }
+
+    function testWrongOriginFails() public {
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        bytes memory challenge = Base64Url.encode32(account.getActionHash(execution));
+        bytes memory prefix = bytes('{"type":"webauthn.get","challenge":"');
+        bytes memory between = bytes('","origin":"https://evil.example"}');
+        proof.clientDataJSON = bytes.concat(prefix, challenge, between);
+        proof.originOffset = prefix.length + challenge.length + bytes('","origin":"').length;
+
+        vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
+        account.execute(execution, proof, _emptySponsorProof());
+    }
+
+    function testWrongTypeFails() public {
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        bytes memory challenge = Base64Url.encode32(account.getActionHash(execution));
+        bytes memory prefix = bytes('{"type":"webauthn.create","challenge":"');
+        bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
+        proof.clientDataJSON = bytes.concat(prefix, challenge, suffix);
+        proof.typeOffset = bytes('{"type":"').length;
+        proof.challengeOffset = prefix.length;
+        proof.originOffset = prefix.length + challenge.length + bytes('","origin":"').length;
 
         vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
         account.execute(execution, proof, _emptySponsorProof());
@@ -193,6 +226,8 @@ contract PasskeySmartAccountTest {
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
             RP_ID_HASH,
+            ORIGIN_HASH,
+            ORIGIN_LENGTH,
             PasskeySmartAccount.SponsorMode.Required,
             sponsor,
             URL_HASH
@@ -214,6 +249,8 @@ contract PasskeySmartAccountTest {
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
             RP_ID_HASH,
+            ORIGIN_HASH,
+            ORIGIN_LENGTH,
             PasskeySmartAccount.SponsorMode.Required,
             sponsor,
             URL_HASH
@@ -236,6 +273,8 @@ contract PasskeySmartAccountTest {
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
             RP_ID_HASH,
+            ORIGIN_HASH,
+            ORIGIN_LENGTH,
             PasskeySmartAccount.SponsorMode.GasOnly,
             sponsor,
             URL_HASH,
@@ -247,6 +286,8 @@ contract PasskeySmartAccountTest {
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
             RP_ID_HASH,
+            ORIGIN_HASH,
+            ORIGIN_LENGTH,
             PasskeySmartAccount.SponsorMode.GasOnly,
             sponsor,
             URL_HASH,
@@ -279,7 +320,9 @@ contract PasskeySmartAccountTest {
         return PasskeySmartAccount.WebAuthnProof({
             authenticatorData: authenticatorData,
             clientDataJSON: bytes.concat(prefix, challenge, suffix),
+            typeOffset: bytes('{"type":"').length,
             challengeOffset: prefix.length,
+            originOffset: prefix.length + challenge.length + bytes('","origin":"').length,
             r: bytes32(uint256(3)),
             s: bytes32(uint256(4))
         });

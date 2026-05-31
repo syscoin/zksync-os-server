@@ -11,6 +11,9 @@ contract PasskeySmartAccount {
     bytes1 internal constant WEBAUTHN_FLAG_USER_PRESENT = 0x01;
     bytes1 internal constant WEBAUTHN_FLAG_USER_VERIFIED = 0x04;
     bytes13 internal constant WEBAUTHN_CHALLENGE_PREFIX = '"challenge":"';
+    bytes8 internal constant WEBAUTHN_TYPE_PREFIX = '"type":"';
+    bytes12 internal constant WEBAUTHN_TYPE_VALUE = "webauthn.get";
+    bytes10 internal constant WEBAUTHN_ORIGIN_PREFIX = '"origin":"';
 
     enum SponsorMode {
         None,
@@ -21,7 +24,9 @@ contract PasskeySmartAccount {
     struct WebAuthnProof {
         bytes authenticatorData;
         bytes clientDataJSON;
+        uint256 typeOffset;
         uint256 challengeOffset;
+        uint256 originOffset;
         bytes32 r;
         bytes32 s;
     }
@@ -57,6 +62,8 @@ contract PasskeySmartAccount {
     bytes32 public immutable passkeyY;
     bytes32 public immutable credentialIdHash;
     bytes32 public immutable rpIdHash;
+    bytes32 public immutable originHash;
+    uint256 public immutable originLength;
 
     uint256 public nonce;
     SponsorMode public sponsorMode;
@@ -68,6 +75,8 @@ contract PasskeySmartAccount {
         bytes32 passkeyY_,
         bytes32 credentialIdHash_,
         bytes32 rpIdHash_,
+        bytes32 originHash_,
+        uint256 originLength_,
         SponsorMode sponsorMode_,
         address sponsorSigner_,
         bytes32 sponsorUrlHash_
@@ -76,6 +85,8 @@ contract PasskeySmartAccount {
         passkeyY = passkeyY_;
         credentialIdHash = credentialIdHash_;
         rpIdHash = rpIdHash_;
+        originHash = originHash_;
+        originLength = originLength_;
         _setSponsor(sponsorMode_, sponsorSigner_, sponsorUrlHash_);
     }
 
@@ -151,7 +162,11 @@ contract PasskeySmartAccount {
         bytes memory expectedChallenge = Base64Url.encode32(actionHash);
         bytes calldata clientData = proof.clientDataJSON;
 
-        if (!_hasExpectedChallengeCalldata(clientData, proof.challengeOffset, expectedChallenge)) {
+        if (
+            !_hasExpectedTypeCalldata(clientData, proof.typeOffset)
+                || !_hasExpectedChallengeCalldata(clientData, proof.challengeOffset, expectedChallenge)
+                || !_hasExpectedOriginCalldata(clientData, proof.originOffset)
+        ) {
             revert BadChallenge();
         }
 
@@ -172,7 +187,9 @@ contract PasskeySmartAccount {
         bytes memory clientData = proof.clientDataJSON;
 
         if (
-            !_hasExpectedChallengeMemory(clientData, proof.challengeOffset, expectedChallenge)
+            !_hasExpectedTypeMemory(clientData, proof.typeOffset)
+                || !_hasExpectedChallengeMemory(clientData, proof.challengeOffset, expectedChallenge)
+                || !_hasExpectedOriginMemory(clientData, proof.originOffset)
                 || !_hasRequiredWebAuthnFlags(proof.authenticatorData)
         ) {
             return false;
@@ -184,6 +201,52 @@ contract PasskeySmartAccount {
         bytes32 clientDataHash = sha256(clientData);
         bytes32 digest = sha256(bytes.concat(proof.authenticatorData, clientDataHash));
         return P256Verifier.isValid(digest, proof.r, proof.s, passkeyX, passkeyY);
+    }
+
+    function _hasExpectedTypeCalldata(bytes calldata clientData, uint256 typeOffset) internal pure returns (bool) {
+        if (
+            typeOffset < WEBAUTHN_TYPE_PREFIX.length || typeOffset + WEBAUTHN_TYPE_VALUE.length >= clientData.length
+                || clientData[typeOffset + WEBAUTHN_TYPE_VALUE.length] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_TYPE_PREFIX.length; ++i) {
+            if (clientData[typeOffset - WEBAUTHN_TYPE_PREFIX.length + i] != WEBAUTHN_TYPE_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_TYPE_VALUE.length; ++i) {
+            if (clientData[typeOffset + i] != WEBAUTHN_TYPE_VALUE[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function _hasExpectedTypeMemory(bytes memory clientData, uint256 typeOffset) internal pure returns (bool) {
+        if (
+            typeOffset < WEBAUTHN_TYPE_PREFIX.length || typeOffset + WEBAUTHN_TYPE_VALUE.length >= clientData.length
+                || clientData[typeOffset + WEBAUTHN_TYPE_VALUE.length] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_TYPE_PREFIX.length; ++i) {
+            if (clientData[typeOffset - WEBAUTHN_TYPE_PREFIX.length + i] != WEBAUTHN_TYPE_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_TYPE_VALUE.length; ++i) {
+            if (clientData[typeOffset + i] != WEBAUTHN_TYPE_VALUE[i]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     function _hasExpectedChallengeCalldata(
@@ -240,6 +303,55 @@ contract PasskeySmartAccount {
         }
 
         return true;
+    }
+
+    function _hasExpectedOriginCalldata(bytes calldata clientData, uint256 expectedOriginOffset)
+        internal
+        view
+        returns (bool)
+    {
+        if (
+            expectedOriginOffset < WEBAUTHN_ORIGIN_PREFIX.length
+                || expectedOriginOffset + originLength >= clientData.length
+                || clientData[expectedOriginOffset + originLength] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_ORIGIN_PREFIX.length; ++i) {
+            if (clientData[expectedOriginOffset - WEBAUTHN_ORIGIN_PREFIX.length + i] != WEBAUTHN_ORIGIN_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        return keccak256(clientData[expectedOriginOffset:expectedOriginOffset + originLength]) == originHash;
+    }
+
+    function _hasExpectedOriginMemory(bytes memory clientData, uint256 expectedOriginOffset)
+        internal
+        view
+        returns (bool)
+    {
+        uint256 expectedOriginLength = originLength;
+        if (
+            expectedOriginOffset < WEBAUTHN_ORIGIN_PREFIX.length
+                || expectedOriginOffset + expectedOriginLength >= clientData.length
+                || clientData[expectedOriginOffset + expectedOriginLength] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_ORIGIN_PREFIX.length; ++i) {
+            if (clientData[expectedOriginOffset - WEBAUTHN_ORIGIN_PREFIX.length + i] != WEBAUTHN_ORIGIN_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        bytes32 actualOriginHash;
+        assembly {
+            actualOriginHash := keccak256(add(add(clientData, 0x20), expectedOriginOffset), expectedOriginLength)
+        }
+        return actualOriginHash == originHash;
     }
 
     function _hasRequiredWebAuthnFlags(bytes memory authenticatorData) internal pure returns (bool) {
