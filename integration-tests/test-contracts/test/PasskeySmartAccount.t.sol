@@ -99,6 +99,19 @@ contract PasskeySmartAccountTest {
         account.execute(execution, proof, _emptySponsorProof());
     }
 
+    function testChallengeSubstringFails() public {
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        bytes memory expectedChallenge = Base64Url.encode32(account.getActionHash(execution));
+        bytes memory prefix = bytes('{"type":"webauthn.get","challenge":"AAAA');
+        bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
+        proof.clientDataJSON = bytes.concat(prefix, expectedChallenge, suffix);
+        proof.challengeOffset = prefix.length - 4;
+
+        vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
+        account.execute(execution, proof, _emptySponsorProof());
+    }
+
     function testInvalidP256ProofFails() public {
         vm.etch(address(uint160(0x100)), address(new P256MockInvalid()).code);
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
@@ -148,6 +161,20 @@ contract PasskeySmartAccountTest {
         bytes4 magic = account.isValidSignature(keccak256("login to dapp"), hex"1234");
 
         require(magic == 0xffffffff, "1271 invalid");
+    }
+
+    function testEip1271ChallengeSubstringReturnsInvalidMagic() public {
+        bytes32 messageHash = keccak256("login to dapp");
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(messageHash);
+        bytes memory expectedChallenge = Base64Url.encode32(messageHash);
+        bytes memory prefix = bytes('{"type":"webauthn.get","challenge":"AAAA');
+        bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
+        proof.clientDataJSON = bytes.concat(prefix, expectedChallenge, suffix);
+        proof.challengeOffset = prefix.length - 4;
+
+        bytes4 magic = account.isValidSignature(messageHash, abi.encode(proof));
+
+        require(magic == 0xffffffff, "1271 substring invalid");
     }
 
     function testEip1271HighSReturnsInvalidMagic() public {

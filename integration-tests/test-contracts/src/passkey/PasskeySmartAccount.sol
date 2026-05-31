@@ -10,6 +10,7 @@ contract PasskeySmartAccount {
     uint256 internal constant WEBAUTHN_AUTH_DATA_MIN_LENGTH = 37;
     bytes1 internal constant WEBAUTHN_FLAG_USER_PRESENT = 0x01;
     bytes1 internal constant WEBAUTHN_FLAG_USER_VERIFIED = 0x04;
+    bytes13 internal constant WEBAUTHN_CHALLENGE_PREFIX = '"challenge":"';
 
     enum SponsorMode {
         None,
@@ -150,14 +151,8 @@ contract PasskeySmartAccount {
         bytes memory expectedChallenge = Base64Url.encode32(actionHash);
         bytes calldata clientData = proof.clientDataJSON;
 
-        if (proof.challengeOffset + expectedChallenge.length > clientData.length) {
+        if (!_hasExpectedChallengeCalldata(clientData, proof.challengeOffset, expectedChallenge)) {
             revert BadChallenge();
-        }
-
-        for (uint256 i = 0; i < expectedChallenge.length; ++i) {
-            if (clientData[proof.challengeOffset + i] != expectedChallenge[i]) {
-                revert BadChallenge();
-            }
         }
 
         if (!_hasRequiredWebAuthnFlags(proof.authenticatorData)) {
@@ -176,17 +171,10 @@ contract PasskeySmartAccount {
         bytes memory expectedChallenge = Base64Url.encode32(actionHash);
         bytes memory clientData = proof.clientDataJSON;
 
-        if (proof.challengeOffset + expectedChallenge.length > clientData.length) {
-            return false;
-        }
-
-        for (uint256 i = 0; i < expectedChallenge.length; ++i) {
-            if (clientData[proof.challengeOffset + i] != expectedChallenge[i]) {
-                return false;
-            }
-        }
-
-        if (!_hasRequiredWebAuthnFlags(proof.authenticatorData)) {
+        if (
+            !_hasExpectedChallengeMemory(clientData, proof.challengeOffset, expectedChallenge)
+                || !_hasRequiredWebAuthnFlags(proof.authenticatorData)
+        ) {
             return false;
         }
         if (!_hasExpectedRpIdHash(proof.authenticatorData)) {
@@ -196,6 +184,62 @@ contract PasskeySmartAccount {
         bytes32 clientDataHash = sha256(clientData);
         bytes32 digest = sha256(bytes.concat(proof.authenticatorData, clientDataHash));
         return P256Verifier.isValid(digest, proof.r, proof.s, passkeyX, passkeyY);
+    }
+
+    function _hasExpectedChallengeCalldata(
+        bytes calldata clientData,
+        uint256 challengeOffset,
+        bytes memory expectedChallenge
+    ) internal pure returns (bool) {
+        if (
+            challengeOffset < WEBAUTHN_CHALLENGE_PREFIX.length
+                || challengeOffset + expectedChallenge.length >= clientData.length
+                || clientData[challengeOffset + expectedChallenge.length] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_CHALLENGE_PREFIX.length; ++i) {
+            if (clientData[challengeOffset - WEBAUTHN_CHALLENGE_PREFIX.length + i] != WEBAUTHN_CHALLENGE_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        for (uint256 i = 0; i < expectedChallenge.length; ++i) {
+            if (clientData[challengeOffset + i] != expectedChallenge[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    function _hasExpectedChallengeMemory(
+        bytes memory clientData,
+        uint256 challengeOffset,
+        bytes memory expectedChallenge
+    ) internal pure returns (bool) {
+        if (
+            challengeOffset < WEBAUTHN_CHALLENGE_PREFIX.length
+                || challengeOffset + expectedChallenge.length >= clientData.length
+                || clientData[challengeOffset + expectedChallenge.length] != '"'
+        ) {
+            return false;
+        }
+
+        for (uint256 i = 0; i < WEBAUTHN_CHALLENGE_PREFIX.length; ++i) {
+            if (clientData[challengeOffset - WEBAUTHN_CHALLENGE_PREFIX.length + i] != WEBAUTHN_CHALLENGE_PREFIX[i]) {
+                return false;
+            }
+        }
+
+        for (uint256 i = 0; i < expectedChallenge.length; ++i) {
+            if (clientData[challengeOffset + i] != expectedChallenge[i]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     function _hasRequiredWebAuthnFlags(bytes memory authenticatorData) internal pure returns (bool) {
