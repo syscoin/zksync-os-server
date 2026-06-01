@@ -4,77 +4,180 @@ pragma solidity ^0.8.13;
 import {PasskeySmartAccount} from "./PasskeySmartAccount.sol";
 
 contract PasskeySmartAccountFactory {
-    event AccountCreated(address indexed account, bytes32 indexed credentialIdHash, bytes32 salt);
+    bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
 
-    function createAccount(
-        bytes32 passkeyX,
-        bytes32 passkeyY,
-        bytes32 credentialIdHash,
-        bytes32 rpIdHash,
-        bytes32 originHash,
-        uint256 originLength,
-        PasskeySmartAccount.SponsorMode sponsorMode,
-        address sponsorSigner,
-        bytes32 sponsorUrlHash,
-        bytes32 salt
-    ) external payable returns (address account) {
-        bytes32 derivedSalt = keccak256(abi.encode(msg.sender, credentialIdHash, salt));
-        bytes memory bytecode = abi.encodePacked(
-            type(PasskeySmartAccount).creationCode,
+    address public immutable implementation;
+
+    struct AccountParams {
+        bytes32 recoveryId;
+        bytes32 passkeyX;
+        bytes32 passkeyY;
+        bytes32 credentialIdHash;
+        bytes32 rpIdHash;
+        bytes32 originHash;
+        uint256 originLength;
+        bytes32 salt;
+    }
+
+    event AccountCreated(
+        address indexed account, bytes32 indexed recoveryId, bytes32 indexed credentialIdHash, bytes32 salt
+    );
+
+    constructor() {
+        implementation = address(new PasskeySmartAccount());
+    }
+
+    function createAccount(AccountParams calldata params) external payable returns (address account) {
+        account = _createAccount(params);
+    }
+
+    function createAccountAndExecute(
+        AccountParams calldata params,
+        PasskeySmartAccount.Execution[] calldata executions,
+        PasskeySmartAccount.WebAuthnProof calldata proof,
+        PasskeySmartAccount.SponsorProof calldata sponsorProof
+    ) external payable returns (address account, bytes[] memory returndata) {
+        account = _createAccount(params);
+        returndata = PasskeySmartAccount(payable(account)).execute(executions, proof, sponsorProof);
+    }
+
+    mapping(bytes32 => address[]) internal accountsByRecoveryId;
+    mapping(bytes32 => mapping(bytes32 => address[])) internal accountsByCredential;
+
+    function getAccountActionHash(AccountParams calldata params, PasskeySmartAccount.Execution[] calldata executions)
+        external
+        view
+        returns (bytes32)
+    {
+        address account = getAccountAddress(params);
+        bytes32[] memory executionHashes = new bytes32[](executions.length);
+        for (uint256 i = 0; i < executions.length; ++i) {
+            executionHashes[i] = keccak256(
+                abi.encode(
+                    executions[i].target,
+                    executions[i].value,
+                    keccak256(executions[i].data),
+                    executions[i].nonce,
+                    executions[i].deadline
+                )
+            );
+        }
+
+        return keccak256(
             abi.encode(
-                passkeyX,
-                passkeyY,
-                credentialIdHash,
-                rpIdHash,
-                originHash,
-                originLength,
-                sponsorMode,
-                sponsorSigner,
-                sponsorUrlHash
+                PASSKEY_EXECUTE_TYPEHASH,
+                block.chainid,
+                account,
+                keccak256(abi.encodePacked(executionHashes)),
+                PasskeySmartAccount.SponsorMode.None,
+                address(0)
             )
         );
+    }
+
+    function _createAccount(AccountParams calldata params) internal returns (address account) {
+        require(params.recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
+        bytes32 derivedSalt = _deriveSalt(params);
+        bytes memory bytecode = _cloneCreationCode();
 
         assembly {
             account := create2(callvalue(), add(bytecode, 0x20), mload(bytecode), derivedSalt)
         }
 
         require(account != address(0), "ACCOUNT_DEPLOY_FAILED");
-        emit AccountCreated(account, credentialIdHash, derivedSalt);
+        PasskeySmartAccount(payable(account)).initialize(
+            PasskeySmartAccount.AccountParams({
+                recoveryId: params.recoveryId,
+                passkeyX: params.passkeyX,
+                passkeyY: params.passkeyY,
+                credentialIdHash: params.credentialIdHash,
+                rpIdHash: params.rpIdHash,
+                originHash: params.originHash,
+                originLength: params.originLength,
+                salt: params.salt
+            })
+        );
+        accountsByRecoveryId[params.recoveryId].push(account);
+        accountsByCredential[params.recoveryId][params.credentialIdHash].push(account);
+        emit AccountCreated(account, params.recoveryId, params.credentialIdHash, params.salt);
     }
 
-    function getAccountAddress(
-        address creator,
-        bytes32 passkeyX,
-        bytes32 passkeyY,
-        bytes32 credentialIdHash,
-        bytes32 rpIdHash,
-        bytes32 originHash,
-        uint256 originLength,
-        PasskeySmartAccount.SponsorMode sponsorMode,
-        address sponsorSigner,
-        bytes32 sponsorUrlHash,
-        bytes32 salt
-    ) external view returns (address) {
-        bytes32 derivedSalt = keccak256(abi.encode(creator, credentialIdHash, salt));
-        bytes32 bytecodeHash = keccak256(
-            abi.encodePacked(
-                type(PasskeySmartAccount).creationCode,
-                abi.encode(
-                    passkeyX,
-                    passkeyY,
-                    credentialIdHash,
-                    rpIdHash,
-                    originHash,
-                    originLength,
-                    sponsorMode,
-                    sponsorSigner,
-                    sponsorUrlHash
-                )
-            )
-        );
+    function getAccountAddress(AccountParams calldata params) public view returns (address) {
+        require(params.recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
+        bytes32 derivedSalt = _deriveSalt(params);
+        bytes32 bytecodeHash = keccak256(_cloneCreationCode());
 
         return address(
             uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), derivedSalt, bytecodeHash))))
         );
+    }
+
+    function getAccountCountByRecoveryId(bytes32 recoveryId) external view returns (uint256) {
+        return accountsByRecoveryId[recoveryId].length;
+    }
+
+    function getAccountCountByCredential(bytes32 recoveryId, bytes32 credentialIdHash) external view returns (uint256) {
+        return accountsByCredential[recoveryId][credentialIdHash].length;
+    }
+
+    function getAccountsByRecoveryId(bytes32 recoveryId, uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory accounts)
+    {
+        return _slice(accountsByRecoveryId[recoveryId], offset, limit);
+    }
+
+    function getAccountsByCredential(bytes32 recoveryId, bytes32 credentialIdHash, uint256 offset, uint256 limit)
+        external
+        view
+        returns (address[] memory accounts)
+    {
+        return _slice(accountsByCredential[recoveryId][credentialIdHash], offset, limit);
+    }
+
+    function _deriveSalt(AccountParams calldata params) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                params.recoveryId,
+                params.credentialIdHash,
+                params.passkeyX,
+                params.passkeyY,
+                params.rpIdHash,
+                params.originHash,
+                params.originLength,
+                params.salt
+            )
+        );
+    }
+
+    function _cloneCreationCode() internal view returns (bytes memory) {
+        return abi.encodePacked(
+            hex"3d602d80600a3d3981f3",
+            hex"363d3d373d3d3d363d73",
+            implementation,
+            hex"5af43d82803e903d91602b57fd5bf3"
+        );
+    }
+
+    function _slice(address[] storage source, uint256 offset, uint256 limit)
+        internal
+        view
+        returns (address[] memory result)
+    {
+        uint256 length = source.length;
+        if (offset >= length || limit == 0) {
+            return new address[](0);
+        }
+
+        uint256 end = offset + limit;
+        if (end > length) {
+            end = length;
+        }
+
+        result = new address[](end - offset);
+        for (uint256 i = 0; i < result.length; ++i) {
+            result[i] = source[offset + i];
+        }
     }
 }
