@@ -7,6 +7,8 @@ import {P256Verifier} from "./P256Verifier.sol";
 contract PasskeySmartAccount {
     bytes4 internal constant EIP1271_MAGIC_VALUE = 0x1626ba7e;
     bytes4 internal constant EIP1271_INVALID_VALUE = 0xffffffff;
+    bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
+    bytes4 internal constant SET_SPONSOR_SELECTOR = PasskeySmartAccount.setSponsor.selector;
     uint256 internal constant WEBAUTHN_AUTH_DATA_MIN_LENGTH = 37;
     bytes1 internal constant WEBAUTHN_FLAG_USER_PRESENT = 0x01;
     bytes1 internal constant WEBAUTHN_FLAG_USER_VERIFIED = 0x04;
@@ -45,6 +47,17 @@ contract PasskeySmartAccount {
         uint256 deadline;
     }
 
+    struct AccountParams {
+        bytes32 recoveryId;
+        bytes32 passkeyX;
+        bytes32 passkeyY;
+        bytes32 credentialIdHash;
+        bytes32 rpIdHash;
+        bytes32 originHash;
+        uint256 originLength;
+        bytes32 salt;
+    }
+
     event Executed(bytes32 indexed actionHash, address indexed target, uint256 value, address indexed submitter);
     event SponsorUpdated(SponsorMode mode, address indexed signer, bytes32 urlHash);
 
@@ -54,77 +67,123 @@ contract PasskeySmartAccount {
     error BadNonce(uint256 expected, uint256 provided);
     error CallFailed(bytes returndata);
     error Expired();
+    error AlreadyInitialized();
     error InvalidSponsor();
     error OnlySelf();
     error SponsorRequired();
 
-    bytes32 public immutable passkeyX;
-    bytes32 public immutable passkeyY;
-    bytes32 public immutable credentialIdHash;
-    bytes32 public immutable rpIdHash;
-    bytes32 public immutable originHash;
-    uint256 public immutable originLength;
+    bytes32 public passkeyX;
+    bytes32 public passkeyY;
+    bytes32 public credentialIdHash;
+    bytes32 public rpIdHash;
+    bytes32 public originHash;
+    uint256 public originLength;
 
+    bool public initialized;
     uint256 public nonce;
     SponsorMode public sponsorMode;
     address public sponsorSigner;
     bytes32 public sponsorUrlHash;
 
-    constructor(
-        bytes32 passkeyX_,
-        bytes32 passkeyY_,
-        bytes32 credentialIdHash_,
-        bytes32 rpIdHash_,
-        bytes32 originHash_,
-        uint256 originLength_,
-        SponsorMode sponsorMode_,
-        address sponsorSigner_,
-        bytes32 sponsorUrlHash_
-    ) payable {
-        passkeyX = passkeyX_;
-        passkeyY = passkeyY_;
-        credentialIdHash = credentialIdHash_;
-        rpIdHash = rpIdHash_;
-        originHash = originHash_;
-        originLength = originLength_;
-        _setSponsor(sponsorMode_, sponsorSigner_, sponsorUrlHash_);
+    modifier onlySelf() {
+        if (msg.sender != address(this)) {
+            revert OnlySelf();
+        }
+        _;
+    }
+
+    constructor() payable {
+        initialized = true;
     }
 
     receive() external payable {}
 
-    function execute(Execution calldata execution, WebAuthnProof calldata proof, SponsorProof calldata sponsorProof)
+    function initialize(AccountParams calldata params) external {
+        if (initialized) {
+            revert AlreadyInitialized();
+        }
+
+        initialized = true;
+        passkeyX = params.passkeyX;
+        passkeyY = params.passkeyY;
+        credentialIdHash = params.credentialIdHash;
+        rpIdHash = params.rpIdHash;
+        originHash = params.originHash;
+        originLength = params.originLength;
+    }
+
+    function execute(Execution[] calldata executions, WebAuthnProof calldata proof, SponsorProof calldata sponsorProof)
         external
         payable
-        returns (bytes memory returndata)
+        returns (bytes[] memory returndata)
     {
+        if (executions.length == 0) {
+            return new bytes[](0);
+        }
+        if (executions.length == 1) {
+            return _executeSingle(executions[0], proof, sponsorProof);
+        }
+
+        uint256 expectedNonce = nonce;
+        for (uint256 i = 0; i < executions.length; ++i) {
+            if (executions[i].deadline < block.timestamp) {
+                revert Expired();
+            }
+            if (executions[i].nonce != expectedNonce + i) {
+                revert BadNonce(expectedNonce + i, executions[i].nonce);
+            }
+        }
+
+        bytes32 actionHash = getActionHash(executions);
+        _verifyWebAuthnProof(actionHash, proof);
+        _verifyBatchSponsor(actionHash, sponsorProof, executions);
+
+        nonce = expectedNonce + executions.length;
+        returndata = new bytes[](executions.length);
+        for (uint256 i = 0; i < executions.length; ++i) {
+            (bool success, bytes memory result) =
+                executions[i].target.call{value: executions[i].value}(executions[i].data);
+            if (!success) {
+                revert CallFailed(result);
+            }
+
+            returndata[i] = result;
+            emit Executed(actionHash, executions[i].target, executions[i].value, msg.sender);
+        }
+    }
+
+    function _executeSingle(
+        Execution calldata execution,
+        WebAuthnProof calldata proof,
+        SponsorProof calldata sponsorProof
+    ) internal returns (bytes[] memory returndata) {
         if (execution.deadline < block.timestamp) {
             revert Expired();
         }
-        if (execution.nonce != nonce) {
-            revert BadNonce(nonce, execution.nonce);
+
+        uint256 expectedNonce = nonce;
+        if (execution.nonce != expectedNonce) {
+            revert BadNonce(expectedNonce, execution.nonce);
         }
 
-        bytes32 actionHash = getActionHash(execution);
+        SponsorMode currentSponsorMode = sponsorMode;
+        address currentSponsorSigner = sponsorSigner;
+        bytes32 actionHash = _getSingleActionHash(execution, currentSponsorMode, currentSponsorSigner);
         _verifyWebAuthnProof(actionHash, proof);
-        _verifySponsor(actionHash, sponsorProof);
+        _verifySingleSponsor(actionHash, sponsorProof, execution, currentSponsorMode, currentSponsorSigner);
 
-        unchecked {
-            nonce = execution.nonce + 1;
-        }
-
+        nonce = expectedNonce + 1;
+        returndata = new bytes[](1);
         (bool success, bytes memory result) = execution.target.call{value: execution.value}(execution.data);
         if (!success) {
             revert CallFailed(result);
         }
 
+        returndata[0] = result;
         emit Executed(actionHash, execution.target, execution.value, msg.sender);
-        return result;
     }
 
-    function setSponsor(SponsorMode mode, address signer, bytes32 urlHash) external {
-        if (msg.sender != address(this)) {
-            revert OnlySelf();
-        }
+    function setSponsor(SponsorMode mode, address signer, bytes32 urlHash) external onlySelf {
         _setSponsor(mode, signer, urlHash);
     }
 
@@ -141,19 +200,56 @@ contract PasskeySmartAccount {
         return _isValidWebAuthnProof(hash, proof);
     }
 
-    function getActionHash(Execution calldata execution) public view returns (bytes32) {
+    function getActionHash(Execution[] calldata executions) public view returns (bytes32) {
+        if (executions.length == 1) {
+            return _getSingleActionHash(executions[0], sponsorMode, sponsorSigner);
+        }
+
+        bytes32[] memory executionHashes = new bytes32[](executions.length);
+        for (uint256 i = 0; i < executions.length; ++i) {
+            executionHashes[i] = _getExecutionHash(executions[i]);
+        }
+
+        return _getActionHashFromExecutionRoot(keccak256(abi.encodePacked(executionHashes)), sponsorMode, sponsorSigner);
+    }
+
+    function _getSingleActionHash(
+        Execution calldata execution,
+        SponsorMode currentSponsorMode,
+        address currentSponsorSigner
+    ) internal view returns (bytes32) {
+        return _getActionHashFromExecutionRoot(
+            _getSingleExecutionRoot(_getExecutionHash(execution)), currentSponsorMode, currentSponsorSigner
+        );
+    }
+
+    function _getExecutionHash(Execution calldata execution) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(execution.target, execution.value, keccak256(execution.data), execution.nonce, execution.deadline)
+        );
+    }
+
+    function _getSingleExecutionRoot(bytes32 executionHash) internal pure returns (bytes32 executionRoot) {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, executionHash)
+            executionRoot := keccak256(ptr, 0x20)
+        }
+    }
+
+    function _getActionHashFromExecutionRoot(
+        bytes32 executionRoot,
+        SponsorMode currentSponsorMode,
+        address currentSponsorSigner
+    ) internal view returns (bytes32) {
         return keccak256(
             abi.encode(
-                keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1"),
+                PASSKEY_EXECUTE_TYPEHASH,
                 block.chainid,
                 address(this),
-                execution.target,
-                execution.value,
-                keccak256(execution.data),
-                execution.nonce,
-                execution.deadline,
-                sponsorMode,
-                sponsorSigner
+                executionRoot,
+                currentSponsorMode,
+                currentSponsorSigner
             )
         );
     }
@@ -376,19 +472,108 @@ contract PasskeySmartAccount {
         return actualRpIdHash == rpIdHash;
     }
 
-    function _verifySponsor(bytes32 actionHash, SponsorProof calldata proof) internal view {
-        if (sponsorMode != SponsorMode.Required) {
+    function _verifyBatchSponsor(bytes32 actionHash, SponsorProof calldata proof, Execution[] calldata executions)
+        internal
+        view
+    {
+        if (_verifyRequiredSponsorMode(actionHash, proof, sponsorMode, sponsorSigner)) {
             return;
         }
-        if (sponsorSigner == address(0)) {
+
+        address requiredSigner = _requiredSponsorSignerFromBatch(executions);
+        if (requiredSigner != address(0)) {
+            _verifySponsorSigner(actionHash, proof, requiredSigner);
+        }
+    }
+
+    function _verifyRequiredSponsorMode(
+        bytes32 actionHash,
+        SponsorProof calldata proof,
+        SponsorMode currentSponsorMode,
+        address currentSponsorSigner
+    ) internal pure returns (bool) {
+        if (currentSponsorMode != SponsorMode.Required) {
+            return false;
+        }
+        if (currentSponsorSigner == address(0)) {
             revert SponsorRequired();
         }
 
+        _verifySponsorSigner(actionHash, proof, currentSponsorSigner);
+        return true;
+    }
+
+    function _verifySponsorSigner(bytes32 actionHash, SponsorProof calldata proof, address signer) internal pure {
         bytes32 sponsorDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", actionHash));
         address recovered = ecrecover(sponsorDigest, proof.v, proof.r, proof.s);
-        if (recovered == address(0) || recovered != sponsorSigner) {
+        if (recovered == address(0) || recovered != signer) {
             revert InvalidSponsor();
         }
+    }
+
+    function _requiredSponsorSignerFromBatch(Execution[] calldata executions) internal view returns (address) {
+        for (uint256 i = 0; i < executions.length; ++i) {
+            if (executions[i].target != address(this)) {
+                continue;
+            }
+
+            (bool isSetSponsor, SponsorMode mode, address signer) = _decodeSetSponsor(executions[i].data);
+            if (isSetSponsor && mode == SponsorMode.Required) {
+                if (signer == address(0)) {
+                    revert SponsorRequired();
+                }
+                return signer;
+            }
+        }
+
+        return address(0);
+    }
+
+    function _verifySingleSponsor(
+        bytes32 actionHash,
+        SponsorProof calldata proof,
+        Execution calldata execution,
+        SponsorMode currentSponsorMode,
+        address currentSponsorSigner
+    ) internal view {
+        if (_verifyRequiredSponsorMode(actionHash, proof, currentSponsorMode, currentSponsorSigner)) {
+            return;
+        }
+
+        if (execution.target != address(this)) {
+            return;
+        }
+
+        (bool isSetSponsor, SponsorMode mode, address signer) = _decodeSetSponsor(execution.data);
+        if (isSetSponsor && mode == SponsorMode.Required) {
+            if (signer == address(0)) {
+                revert SponsorRequired();
+            }
+            _verifySponsorSigner(actionHash, proof, signer);
+        }
+    }
+
+    function _decodeSetSponsor(bytes calldata data)
+        internal
+        pure
+        returns (bool isSetSponsor, SponsorMode mode, address signer)
+    {
+        if (data.length != 4 + 32 * 3) {
+            return (false, SponsorMode.None, address(0));
+        }
+
+        bytes4 selector;
+        assembly {
+            selector := calldataload(data.offset)
+        }
+        if (selector != SET_SPONSOR_SELECTOR) {
+            return (false, SponsorMode.None, address(0));
+        }
+
+        bytes32 urlHash;
+        (mode, signer, urlHash) = abi.decode(data[4:], (SponsorMode, address, bytes32));
+        urlHash;
+        return (true, mode, signer);
     }
 
     function _setSponsor(SponsorMode mode, address signer, bytes32 urlHash) internal {

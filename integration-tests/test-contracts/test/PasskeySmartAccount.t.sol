@@ -63,26 +63,16 @@ contract PasskeySmartAccountTest {
         vm.etch(address(uint160(0x100)), address(new P256MockOk()).code);
         sponsorKey = 0xA11CE;
         sponsor = vm.addr(sponsorKey);
-        account = new PasskeySmartAccount(
-            PASSKEY_X,
-            PASSKEY_Y,
-            CREDENTIAL_ID_HASH,
-            RP_ID_HASH,
-            ORIGIN_HASH,
-            ORIGIN_LENGTH,
-            PasskeySmartAccount.SponsorMode.None,
-            address(0),
-            bytes32(0)
-        );
+        account = _newAccount(keccak256("default account"));
         receiver = new Receiver();
         vm.deal(address(account), 10 ether);
     }
 
     function testExecuteWithValidWebAuthnProof() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
 
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
 
         require(receiver.received() == 1 ether, "receiver value");
         require(account.nonce() == 1, "nonce");
@@ -90,11 +80,11 @@ contract PasskeySmartAccountTest {
 
     function testReplayFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
-        account.execute(execution, proof, _emptySponsorProof());
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
+        account.execute(_single(execution), proof, _emptySponsorProof());
 
         vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadNonce.selector, 1, 0));
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testWrongChallengeFails() public {
@@ -102,39 +92,39 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccount.WebAuthnProof memory proof = _proof(keccak256("wrong action"));
 
         vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testChallengeSubstringFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
-        bytes memory expectedChallenge = Base64Url.encode32(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
+        bytes memory expectedChallenge = Base64Url.encode32(account.getActionHash(_single(execution)));
         bytes memory prefix = bytes('{"type":"webauthn.get","challenge":"AAAA');
         bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
         proof.clientDataJSON = bytes.concat(prefix, expectedChallenge, suffix);
         proof.challengeOffset = prefix.length - 4;
 
         vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testWrongOriginFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
-        bytes memory challenge = Base64Url.encode32(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
+        bytes memory challenge = Base64Url.encode32(account.getActionHash(_single(execution)));
         bytes memory prefix = bytes('{"type":"webauthn.get","challenge":"');
         bytes memory between = bytes('","origin":"https://evil.example"}');
         proof.clientDataJSON = bytes.concat(prefix, challenge, between);
         proof.originOffset = prefix.length + challenge.length + bytes('","origin":"').length;
 
         vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testWrongTypeFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
-        bytes memory challenge = Base64Url.encode32(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
+        bytes memory challenge = Base64Url.encode32(account.getActionHash(_single(execution)));
         bytes memory prefix = bytes('{"type":"webauthn.create","challenge":"');
         bytes memory suffix = bytes('","origin":"chrome-extension://pali"}');
         proof.clientDataJSON = bytes.concat(prefix, challenge, suffix);
@@ -143,43 +133,43 @@ contract PasskeySmartAccountTest {
         proof.originOffset = prefix.length + challenge.length + bytes('","origin":"').length;
 
         vm.expectRevert(PasskeySmartAccount.BadChallenge.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testInvalidP256ProofFails() public {
         vm.etch(address(uint160(0x100)), address(new P256MockInvalid()).code);
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
 
         vm.expectRevert(P256InvalidSignatureSelector());
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testHighSP256ProofFailsBeforePrecompile() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
         proof.s = HIGH_S;
 
         vm.expectRevert(P256InvalidSignatureSelector());
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testMissingUserVerificationFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
         proof.authenticatorData[32] = 0x01;
 
         vm.expectRevert(PasskeySmartAccount.BadWebAuthnAuthenticatorData.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testWrongRpIdHashFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
         proof.authenticatorData[31] = 0x01;
 
         vm.expectRevert(PasskeySmartAccount.BadWebAuthnRpIdHash.selector);
-        account.execute(execution, proof, _emptySponsorProof());
+        account.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testEip1271ValidSignature() public {
@@ -222,81 +212,274 @@ contract PasskeySmartAccountTest {
     }
 
     function testRequiredSponsorMustSignSameAction() public {
-        PasskeySmartAccount sponsored = new PasskeySmartAccount(
-            PASSKEY_X,
-            PASSKEY_Y,
-            CREDENTIAL_ID_HASH,
-            RP_ID_HASH,
-            ORIGIN_HASH,
-            ORIGIN_LENGTH,
-            PasskeySmartAccount.SponsorMode.Required,
-            sponsor,
-            URL_HASH
-        );
+        PasskeySmartAccount sponsored = _newAccount(keccak256("sponsored account"));
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
         vm.deal(address(sponsored), 10 ether);
 
-        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(sponsored.getActionHash(execution));
-        PasskeySmartAccount.SponsorProof memory sponsorProof = _sponsorProof(sponsored.getActionHash(execution));
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(sponsored.getActionHash(_single(execution)));
+        PasskeySmartAccount.SponsorProof memory sponsorProof =
+            _sponsorProof(sponsored.getActionHash(_single(execution)));
 
-        sponsored.execute(execution, proof, sponsorProof);
+        sponsored.execute(_single(execution), proof, sponsorProof);
 
         require(receiver.received() == 1 ether, "sponsored value");
     }
 
     function testRequiredSponsorMissingFails() public {
-        PasskeySmartAccount sponsored = new PasskeySmartAccount(
-            PASSKEY_X,
-            PASSKEY_Y,
-            CREDENTIAL_ID_HASH,
-            RP_ID_HASH,
-            ORIGIN_HASH,
-            ORIGIN_LENGTH,
-            PasskeySmartAccount.SponsorMode.Required,
-            sponsor,
-            URL_HASH
-        );
+        PasskeySmartAccount sponsored = _newAccount(keccak256("sponsor missing account"));
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
         vm.deal(address(sponsored), 10 ether);
 
-        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
-        PasskeySmartAccount.WebAuthnProof memory proof = _proof(sponsored.getActionHash(execution));
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(sponsored.getActionHash(_single(execution)));
 
         vm.expectRevert(PasskeySmartAccount.InvalidSponsor.selector);
-        sponsored.execute(execution, proof, _emptySponsorProof());
+        sponsored.execute(_single(execution), proof, _emptySponsorProof());
     }
 
     function testFactoryPredictsAndDeploysAccount() public {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         bytes32 salt = keccak256("device one");
-        address predicted = factory.getAccountAddress(
-            RECOVERY_ID,
-            PASSKEY_X,
-            PASSKEY_Y,
-            CREDENTIAL_ID_HASH,
-            RP_ID_HASH,
-            ORIGIN_HASH,
-            ORIGIN_LENGTH,
-            PasskeySmartAccount.SponsorMode.GasOnly,
-            sponsor,
-            URL_HASH,
-            salt
-        );
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
+        address predicted = factory.getAccountAddress(params);
 
-        address deployed = factory.createAccount(
-            RECOVERY_ID,
-            PASSKEY_X,
-            PASSKEY_Y,
-            CREDENTIAL_ID_HASH,
-            RP_ID_HASH,
-            ORIGIN_HASH,
-            ORIGIN_LENGTH,
-            PasskeySmartAccount.SponsorMode.GasOnly,
-            sponsor,
-            URL_HASH,
-            salt
-        );
+        address deployed = factory.createAccount(params);
 
         require(deployed == predicted, "predicted address");
+        require(PasskeySmartAccount(payable(deployed)).initialized(), "initialized");
+        require(PasskeySmartAccount(payable(deployed)).passkeyX() == PASSKEY_X, "passkey x");
+        require(PasskeySmartAccount(payable(deployed)).passkeyY() == PASSKEY_Y, "passkey y");
+        require(PasskeySmartAccount(payable(deployed)).credentialIdHash() == CREDENTIAL_ID_HASH, "credential hash");
+        require(PasskeySmartAccount(payable(deployed)).rpIdHash() == RP_ID_HASH, "rp id hash");
+        require(PasskeySmartAccount(payable(deployed)).originHash() == ORIGIN_HASH, "origin hash");
+        require(PasskeySmartAccount(payable(deployed)).originLength() == ORIGIN_LENGTH, "origin length");
+        require(
+            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.None, "sponsor mode"
+        );
+        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == address(0), "sponsor signer");
+        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == bytes32(0), "sponsor url hash");
+    }
+
+    function testImplementationIsLocked() public {
+        PasskeySmartAccount implementation = new PasskeySmartAccount();
+
+        require(implementation.initialized(), "implementation initialized");
+        vm.expectRevert(PasskeySmartAccount.AlreadyInitialized.selector);
+        implementation.initialize(_accountInitParams(keccak256("implementation")));
+    }
+
+    function testCloneInitializesOnlyOnce() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("device one"));
+        address deployed = factory.createAccount(params);
+
+        vm.expectRevert(PasskeySmartAccount.AlreadyInitialized.selector);
+        PasskeySmartAccount(payable(deployed)).initialize(_accountInitParams(params.salt));
+    }
+
+    function testFactoryForwardsValueToClone() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("funded device"));
+
+        address deployed = factory.createAccount{value: 2 ether}(params);
+
+        require(deployed.balance == 2 ether, "clone balance");
+    }
+
+    function testFactoryAddressCommitsToPasskeyIdentity() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        bytes32 salt = keccak256("same device");
+        PasskeySmartAccountFactory.AccountParams memory userParams = _accountParams(salt);
+        PasskeySmartAccountFactory.AccountParams memory attackerParams = _accountParams(salt);
+        attackerParams.passkeyX = bytes32(uint256(999));
+
+        address userPredicted = factory.getAccountAddress(userParams);
+        address attackerPredicted = factory.getAccountAddress(attackerParams);
+
+        require(userPredicted != attackerPredicted, "identity must affect address");
+        address attackerDeployed = factory.createAccount(attackerParams);
+        address userDeployed = factory.createAccount(userParams);
+        require(attackerDeployed == attackerPredicted, "attacker predicted");
+        require(userDeployed == userPredicted, "user predicted");
+        require(PasskeySmartAccount(payable(userDeployed)).passkeyX() == PASSKEY_X, "user passkey");
+        require(PasskeySmartAccount(payable(attackerDeployed)).passkeyX() == attackerParams.passkeyX, "attacker passkey");
+    }
+
+    function testFactoryAddressExcludesSponsorPolicy() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("policy device"));
+        address predicted = factory.getAccountAddress(params);
+        PasskeySmartAccount accountWithPolicy = PasskeySmartAccount(payable(factory.createAccount(params)));
+
+        _setSponsorByPasskey(accountWithPolicy, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
+
+        require(address(accountWithPolicy) == predicted, "predicted address");
+        require(factory.getAccountAddress(params) == predicted, "policy excluded");
+    }
+
+    function testFactoryRegistryLookupAndPagination() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params0 = _accountParams(keccak256("device zero"));
+        PasskeySmartAccountFactory.AccountParams memory params1 = _accountParams(keccak256("device one"));
+        PasskeySmartAccountFactory.AccountParams memory params2 = _accountParams(keccak256("device two"));
+
+        address account0 = factory.createAccount(params0);
+        address account1 = factory.createAccount(params1);
+        address account2 = factory.createAccount(params2);
+
+        require(factory.getAccountCountByRecoveryId(RECOVERY_ID) == 3, "recovery count");
+        require(factory.getAccountCountByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH) == 3, "credential count");
+
+        address[] memory recoveryPage = factory.getAccountsByRecoveryId(RECOVERY_ID, 1, 2);
+        require(recoveryPage.length == 2, "recovery page length");
+        require(recoveryPage[0] == account1, "recovery page account 1");
+        require(recoveryPage[1] == account2, "recovery page account 2");
+
+        address[] memory credentialPage = factory.getAccountsByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH, 0, 2);
+        require(credentialPage.length == 2, "credential page length");
+        require(credentialPage[0] == account0, "credential page account 0");
+        require(credentialPage[1] == account1, "credential page account 1");
+
+        address[] memory emptyPage = factory.getAccountsByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH, 3, 2);
+        require(emptyPage.length == 0, "empty page");
+    }
+
+    function testDuplicateCreateDoesNotPolluteRegistry() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("duplicate device"));
+        factory.createAccount(params);
+
+        vm.expectRevert(bytes("ACCOUNT_DEPLOY_FAILED"));
+        factory.createAccount(params);
+
+        require(factory.getAccountCountByRecoveryId(RECOVERY_ID) == 1, "recovery count");
+        require(factory.getAccountCountByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH) == 1, "credential count");
+    }
+
+    function testFactoryDeploysAndExecutesPasskeyAuthorizedPolicy() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        bytes32 salt = keccak256("device one");
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
+        address predicted = factory.getAccountAddress(params);
+        PasskeySmartAccount.Execution memory execution = PasskeySmartAccount.Execution({
+            target: predicted,
+            value: 0,
+            data: abi.encodeCall(
+                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH)
+            ),
+            nonce: 0,
+            deadline: block.timestamp + 1 hours
+        });
+        bytes32 actionHash = factory.getAccountActionHash(params, _single(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+
+        (address deployed,) =
+            factory.createAccountAndExecute(params, _single(execution), proof, _sponsorProof(actionHash));
+
+        require(deployed == predicted, "predicted address");
+        require(
+            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.Required,
+            "sponsor mode"
+        );
+        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == sponsor, "sponsor signer");
+        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == URL_HASH, "sponsor url hash");
+        require(PasskeySmartAccount(payable(deployed)).nonce() == 1, "nonce");
+    }
+
+    function testFactoryDeploysAndExecutesPasskeyAuthorizedPolicyAndSendBatch() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        bytes32 salt = keccak256("device one");
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
+        address predicted = factory.getAccountAddress(params);
+        PasskeySmartAccount.Execution[] memory executions = new PasskeySmartAccount.Execution[](2);
+        executions[0] = PasskeySmartAccount.Execution({
+            target: predicted,
+            value: 0,
+            data: abi.encodeCall(
+                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH)
+            ),
+            nonce: 0,
+            deadline: block.timestamp + 1 hours
+        });
+        executions[1] = PasskeySmartAccount.Execution({
+            target: address(receiver),
+            value: 1 ether,
+            data: "",
+            nonce: 1,
+            deadline: block.timestamp + 1 hours
+        });
+        bytes32 actionHash = factory.getAccountActionHash(params, executions);
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+
+        (address deployed,) =
+            factory.createAccountAndExecute{value: 1 ether}(params, executions, proof, _sponsorProof(actionHash));
+
+        require(deployed == predicted, "predicted address");
+        require(
+            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.Required,
+            "sponsor mode"
+        );
+        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == sponsor, "sponsor signer");
+        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == URL_HASH, "sponsor url hash");
+        require(PasskeySmartAccount(payable(deployed)).nonce() == 2, "nonce");
+        require(receiver.received() == 1 ether, "receiver value");
+    }
+
+    function _setSponsorByPasskey(
+        PasskeySmartAccount target,
+        PasskeySmartAccount.SponsorMode mode,
+        address signer,
+        bytes32 urlHash
+    ) internal {
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(target), 0, abi.encodeCall(PasskeySmartAccount.setSponsor, (mode, signer, urlHash)), target.nonce()
+        );
+        bytes32 actionHash = target.getActionHash(_single(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+        PasskeySmartAccount.SponsorProof memory sponsorProof =
+            mode == PasskeySmartAccount.SponsorMode.Required ? _sponsorProof(actionHash) : _emptySponsorProof();
+        target.execute(_single(execution), proof, sponsorProof);
+    }
+
+    function _single(PasskeySmartAccount.Execution memory execution)
+        internal
+        pure
+        returns (PasskeySmartAccount.Execution[] memory executions)
+    {
+        executions = new PasskeySmartAccount.Execution[](1);
+        executions[0] = execution;
+    }
+
+    function _newAccount(bytes32 salt) internal returns (PasskeySmartAccount) {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        return PasskeySmartAccount(payable(factory.createAccount(_accountParams(salt))));
+    }
+
+    function _accountParams(bytes32 salt) internal pure returns (PasskeySmartAccountFactory.AccountParams memory) {
+        return PasskeySmartAccountFactory.AccountParams({
+            recoveryId: RECOVERY_ID,
+            passkeyX: PASSKEY_X,
+            passkeyY: PASSKEY_Y,
+            credentialIdHash: CREDENTIAL_ID_HASH,
+            rpIdHash: RP_ID_HASH,
+            originHash: ORIGIN_HASH,
+            originLength: ORIGIN_LENGTH,
+            salt: salt
+        });
+    }
+
+    function _accountInitParams(bytes32 salt) internal pure returns (PasskeySmartAccount.AccountParams memory) {
+        return PasskeySmartAccount.AccountParams({
+            recoveryId: RECOVERY_ID,
+            passkeyX: PASSKEY_X,
+            passkeyY: PASSKEY_Y,
+            credentialIdHash: CREDENTIAL_ID_HASH,
+            rpIdHash: RP_ID_HASH,
+            originHash: ORIGIN_HASH,
+            originLength: ORIGIN_LENGTH,
+            salt: salt
+        });
     }
 
     function _execution(address target, uint256 value, bytes memory data, uint256 executionNonce)
