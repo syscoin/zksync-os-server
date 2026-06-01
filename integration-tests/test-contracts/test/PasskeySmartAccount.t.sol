@@ -49,6 +49,7 @@ contract PasskeySmartAccountTest {
     string internal constant ORIGIN = "chrome-extension://pali";
     bytes32 internal constant ORIGIN_HASH = keccak256(bytes(ORIGIN));
     uint256 internal constant ORIGIN_LENGTH = 23;
+    bytes32 internal constant RECOVERY_ID = keccak256("pali recovery id");
     bytes32 internal constant URL_HASH = keccak256("https://sponsor.example/user/123");
     bytes32 internal constant HIGH_S =
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
@@ -268,7 +269,7 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         bytes32 salt = keccak256("device one");
         address predicted = factory.getAccountAddress(
-            address(this),
+            RECOVERY_ID,
             PASSKEY_X,
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,
@@ -282,6 +283,7 @@ contract PasskeySmartAccountTest {
         );
 
         address deployed = factory.createAccount(
+            RECOVERY_ID,
             PASSKEY_X,
             PASSKEY_Y,
             CREDENTIAL_ID_HASH,

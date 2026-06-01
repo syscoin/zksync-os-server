@@ -4,9 +4,12 @@ pragma solidity ^0.8.13;
 import {PasskeySmartAccount} from "./PasskeySmartAccount.sol";
 
 contract PasskeySmartAccountFactory {
-    event AccountCreated(address indexed account, bytes32 indexed credentialIdHash, bytes32 salt);
+    event AccountCreated(
+        address indexed account, bytes32 indexed recoveryId, bytes32 indexed credentialIdHash, bytes32 salt
+    );
 
     function createAccount(
+        bytes32 recoveryId,
         bytes32 passkeyX,
         bytes32 passkeyY,
         bytes32 credentialIdHash,
@@ -18,7 +21,8 @@ contract PasskeySmartAccountFactory {
         bytes32 sponsorUrlHash,
         bytes32 salt
     ) external payable returns (address account) {
-        bytes32 derivedSalt = keccak256(abi.encode(msg.sender, credentialIdHash, salt));
+        require(recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
+        bytes32 derivedSalt = keccak256(abi.encode(recoveryId, credentialIdHash, salt));
         bytes memory bytecode = abi.encodePacked(
             type(PasskeySmartAccount).creationCode,
             abi.encode(
@@ -39,11 +43,11 @@ contract PasskeySmartAccountFactory {
         }
 
         require(account != address(0), "ACCOUNT_DEPLOY_FAILED");
-        emit AccountCreated(account, credentialIdHash, derivedSalt);
+        emit AccountCreated(account, recoveryId, credentialIdHash, salt);
     }
 
     function getAccountAddress(
-        address creator,
+        bytes32 recoveryId,
         bytes32 passkeyX,
         bytes32 passkeyY,
         bytes32 credentialIdHash,
@@ -55,7 +59,8 @@ contract PasskeySmartAccountFactory {
         bytes32 sponsorUrlHash,
         bytes32 salt
     ) external view returns (address) {
-        bytes32 derivedSalt = keccak256(abi.encode(creator, credentialIdHash, salt));
+        require(recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
+        bytes32 derivedSalt = keccak256(abi.encode(recoveryId, credentialIdHash, salt));
         bytes32 bytecodeHash = keccak256(
             abi.encodePacked(
                 type(PasskeySmartAccount).creationCode,
