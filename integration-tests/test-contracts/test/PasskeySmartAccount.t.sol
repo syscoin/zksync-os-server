@@ -78,6 +78,20 @@ contract PasskeySmartAccountTest {
         require(account.nonce() == 1, "nonce");
     }
 
+    function testRecoveryMetadataReturnsAccountState() public {
+        PasskeySmartAccount.RecoveryMetadata memory metadata = account.getRecoveryMetadata();
+
+        require(metadata.passkeyX == PASSKEY_X, "passkey x");
+        require(metadata.passkeyY == PASSKEY_Y, "passkey y");
+        require(metadata.credentialIdHash == CREDENTIAL_ID_HASH, "credential");
+        require(metadata.rpIdHash == RP_ID_HASH, "rp id");
+        require(metadata.originHash == ORIGIN_HASH, "origin hash");
+        require(metadata.originLength == ORIGIN_LENGTH, "origin length");
+        require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
+        require(metadata.sponsorSigner == address(0), "sponsor signer");
+        require(metadata.sponsorUrlHash == bytes32(0), "sponsor url hash");
+    }
+
     function testReplayFails() public {
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", 0);
         PasskeySmartAccount.WebAuthnProof memory proof = _proof(account.getActionHash(_single(execution)));
@@ -247,24 +261,12 @@ contract PasskeySmartAccountTest {
         address deployed = factory.createAccount(params);
 
         require(deployed == predicted, "predicted address");
-        require(PasskeySmartAccount(payable(deployed)).initialized(), "initialized");
-        require(PasskeySmartAccount(payable(deployed)).passkeyX() == PASSKEY_X, "passkey x");
-        require(PasskeySmartAccount(payable(deployed)).passkeyY() == PASSKEY_Y, "passkey y");
-        require(PasskeySmartAccount(payable(deployed)).credentialIdHash() == CREDENTIAL_ID_HASH, "credential hash");
-        require(PasskeySmartAccount(payable(deployed)).rpIdHash() == RP_ID_HASH, "rp id hash");
-        require(PasskeySmartAccount(payable(deployed)).originHash() == ORIGIN_HASH, "origin hash");
-        require(PasskeySmartAccount(payable(deployed)).originLength() == ORIGIN_LENGTH, "origin length");
-        require(
-            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.None, "sponsor mode"
-        );
-        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == address(0), "sponsor signer");
-        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == bytes32(0), "sponsor url hash");
+        _assertDefaultRecoveryMetadata(PasskeySmartAccount(payable(deployed)));
     }
 
     function testImplementationIsLocked() public {
         PasskeySmartAccount implementation = new PasskeySmartAccount();
 
-        require(implementation.initialized(), "implementation initialized");
         vm.expectRevert(PasskeySmartAccount.AlreadyInitialized.selector);
         implementation.initialize(_accountInitParams(keccak256("implementation")));
     }
@@ -302,8 +304,12 @@ contract PasskeySmartAccountTest {
         address userDeployed = factory.createAccount(userParams);
         require(attackerDeployed == attackerPredicted, "attacker predicted");
         require(userDeployed == userPredicted, "user predicted");
-        require(PasskeySmartAccount(payable(userDeployed)).passkeyX() == PASSKEY_X, "user passkey");
-        require(PasskeySmartAccount(payable(attackerDeployed)).passkeyX() == attackerParams.passkeyX, "attacker passkey");
+        PasskeySmartAccount.RecoveryMetadata memory userMetadata =
+            PasskeySmartAccount(payable(userDeployed)).getRecoveryMetadata();
+        PasskeySmartAccount.RecoveryMetadata memory attackerMetadata =
+            PasskeySmartAccount(payable(attackerDeployed)).getRecoveryMetadata();
+        require(userMetadata.passkeyX == PASSKEY_X, "user passkey");
+        require(attackerMetadata.passkeyX == attackerParams.passkeyX, "attacker passkey");
     }
 
     function testFactoryAddressExcludesSponsorPolicy() public {
@@ -378,12 +384,7 @@ contract PasskeySmartAccountTest {
             factory.createAccountAndExecute(params, _single(execution), proof, _sponsorProof(actionHash));
 
         require(deployed == predicted, "predicted address");
-        require(
-            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.Required,
-            "sponsor mode"
-        );
-        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == sponsor, "sponsor signer");
-        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == URL_HASH, "sponsor url hash");
+        _assertSponsorMetadata(PasskeySmartAccount(payable(deployed)));
         require(PasskeySmartAccount(payable(deployed)).nonce() == 1, "nonce");
     }
 
@@ -416,12 +417,7 @@ contract PasskeySmartAccountTest {
             factory.createAccountAndExecute{value: 1 ether}(params, executions, proof, _sponsorProof(actionHash));
 
         require(deployed == predicted, "predicted address");
-        require(
-            PasskeySmartAccount(payable(deployed)).sponsorMode() == PasskeySmartAccount.SponsorMode.Required,
-            "sponsor mode"
-        );
-        require(PasskeySmartAccount(payable(deployed)).sponsorSigner() == sponsor, "sponsor signer");
-        require(PasskeySmartAccount(payable(deployed)).sponsorUrlHash() == URL_HASH, "sponsor url hash");
+        _assertSponsorMetadata(PasskeySmartAccount(payable(deployed)));
         require(PasskeySmartAccount(payable(deployed)).nonce() == 2, "nonce");
         require(receiver.received() == 1 ether, "receiver value");
     }
@@ -440,6 +436,26 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccount.SponsorProof memory sponsorProof =
             mode == PasskeySmartAccount.SponsorMode.Required ? _sponsorProof(actionHash) : _emptySponsorProof();
         target.execute(_single(execution), proof, sponsorProof);
+    }
+
+    function _assertDefaultRecoveryMetadata(PasskeySmartAccount target) internal view {
+        PasskeySmartAccount.RecoveryMetadata memory metadata = target.getRecoveryMetadata();
+        require(metadata.passkeyX == PASSKEY_X, "passkey x");
+        require(metadata.passkeyY == PASSKEY_Y, "passkey y");
+        require(metadata.credentialIdHash == CREDENTIAL_ID_HASH, "credential hash");
+        require(metadata.rpIdHash == RP_ID_HASH, "rp id hash");
+        require(metadata.originHash == ORIGIN_HASH, "origin hash");
+        require(metadata.originLength == ORIGIN_LENGTH, "origin length");
+        require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
+        require(metadata.sponsorSigner == address(0), "sponsor signer");
+        require(metadata.sponsorUrlHash == bytes32(0), "sponsor url hash");
+    }
+
+    function _assertSponsorMetadata(PasskeySmartAccount target) internal view {
+        PasskeySmartAccount.RecoveryMetadata memory metadata = target.getRecoveryMetadata();
+        require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.Required, "sponsor mode");
+        require(metadata.sponsorSigner == sponsor, "sponsor signer");
+        require(metadata.sponsorUrlHash == URL_HASH, "sponsor url hash");
     }
 
     function _single(PasskeySmartAccount.Execution memory execution)
