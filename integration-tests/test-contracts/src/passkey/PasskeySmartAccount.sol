@@ -58,6 +58,18 @@ contract PasskeySmartAccount {
         bytes32 salt;
     }
 
+    struct RecoveryMetadata {
+        bytes32 passkeyX;
+        bytes32 passkeyY;
+        bytes32 credentialIdHash;
+        bytes32 rpIdHash;
+        bytes32 originHash;
+        uint256 originLength;
+        SponsorMode sponsorMode;
+        address sponsorSigner;
+        bytes32 sponsorUrlHash;
+    }
+
     event Executed(bytes32 indexed actionHash, address indexed target, uint256 value, address indexed submitter);
     event SponsorUpdated(SponsorMode mode, address indexed signer, bytes32 urlHash);
 
@@ -72,18 +84,18 @@ contract PasskeySmartAccount {
     error OnlySelf();
     error SponsorRequired();
 
-    bytes32 public passkeyX;
-    bytes32 public passkeyY;
-    bytes32 public credentialIdHash;
-    bytes32 public rpIdHash;
-    bytes32 public originHash;
-    uint256 public originLength;
+    bytes32 private passkeyX;
+    bytes32 private passkeyY;
+    bytes32 private credentialIdHash;
+    bytes32 private rpIdHash;
+    bytes32 private originHash;
+    uint256 private originLength;
 
-    bool public initialized;
+    bool private initialized;
     uint256 public nonce;
-    SponsorMode public sponsorMode;
-    address public sponsorSigner;
-    bytes32 public sponsorUrlHash;
+    SponsorMode private sponsorMode;
+    address private sponsorSigner;
+    bytes32 private sponsorUrlHash;
 
     modifier onlySelf() {
         if (msg.sender != address(this)) {
@@ -110,6 +122,20 @@ contract PasskeySmartAccount {
         rpIdHash = params.rpIdHash;
         originHash = params.originHash;
         originLength = params.originLength;
+    }
+
+    function getRecoveryMetadata() external view returns (RecoveryMetadata memory metadata) {
+        metadata = RecoveryMetadata({
+            passkeyX: passkeyX,
+            passkeyY: passkeyY,
+            credentialIdHash: credentialIdHash,
+            rpIdHash: rpIdHash,
+            originHash: originHash,
+            originLength: originLength,
+            sponsorMode: sponsorMode,
+            sponsorSigner: sponsorSigner,
+            sponsorUrlHash: sponsorUrlHash
+        });
     }
 
     function execute(Execution[] calldata executions, WebAuthnProof calldata proof, SponsorProof calldata sponsorProof)
