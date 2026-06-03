@@ -1780,9 +1780,11 @@ where
                 tracing::warn!(
                     tx_index = i,
                     return_data = ?call.return_data,
-                    "eth_simulateV1 call reverted, falling back to {L1_GAS_LIMIT_FALLBACK}",
+                    "eth_simulateV1 call reverted; refusing to submit L1 transaction",
                 );
-                Ok(fallback_gas_limit)
+                anyhow::bail!(
+                    "eth_simulateV1 call at index {i} reverted; refusing to submit L1 transaction"
+                );
             }
             None => {
                 tracing::warn!(
