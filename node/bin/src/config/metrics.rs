@@ -29,6 +29,10 @@ pub(super) static CONFIG_METRICS: vise::Global<ConfigMetrics> = vise::Global::ne
 pub(crate) fn report_static_config_metrics(config: &Config) {
     report_flat_config_metrics(&config.general_config, "general");
     report_flat_config_metrics(&config.l1_provider_config, "l1_provider");
+    report_flat_config_metrics_opt(
+        config.l1_archive_provider_config.as_ref(),
+        "l1_archive_provider",
+    );
     report_flat_config_metrics_opt(config.gateway_provider_config.as_ref(), "gateway_provider");
     report_flat_config_metrics(&config.network_config, "network");
     report_flat_config_metrics(&config.genesis_config, "genesis");

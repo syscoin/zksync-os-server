@@ -26,6 +26,12 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse L1 provider config");
 
+    let l1_archive_provider_config = repo
+        .get::<ProviderConfig>("l1_archive_provider")
+        .expect("Failed to load L1 archive provider config")
+        .parse_opt()
+        .expect("Failed to parse L1 archive provider config");
+
     let gateway_provider_config = repo
         .get::<ProviderConfig>("gateway_provider")
         .expect("Failed to load Gateway provider config")
@@ -177,7 +183,7 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
     Config {
         general_config,
         l1_provider_config,
-        l1_archive_provider_config: None,
+        l1_archive_provider_config,
         gateway_provider_config,
         network_config,
         consensus_config,
