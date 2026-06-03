@@ -96,7 +96,7 @@ impl CommittedBatchProvider {
             .load_batch_numbers(
                 max_l1_blocks_to_scan,
                 &batch_storage,
-                None,
+                archive_l1_provider.as_ref(),
                 prioritized_batch_numbers,
             )
             .await?;
