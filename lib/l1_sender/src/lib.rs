@@ -1732,29 +1732,58 @@ where
             return Ok(vec![L1_GAS_LIMIT_FALLBACK; commands.len()]);
         }
     };
+    // SYSCOIN: preserve the pre-simulate gas-limit safety invariant from
+    // `apply_l1_gas_limit`: never sign an L1 tx whose gas limit exceeds the
+    // currently observed L1 block gas limit.
+    let latest_block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .context("latest L1 block is unavailable while setting simulated L1 gas limits")?;
+    let block_gas_limit = latest_block.header.gas_limit;
 
     let gas_limits = blocks
         .iter()
         .enumerate()
         .map(|(i, block)| match block.calls.first() {
-            Some(call) if call.status => call.gas_used.saturating_mul(2),
+            Some(call) if call.status => {
+                if call.gas_used > block_gas_limit {
+                    anyhow::bail!(
+                        "simulated L1 transaction gas ({}) exceeds latest L1 block gas limit ({})",
+                        call.gas_used,
+                        block_gas_limit,
+                    );
+                }
+                let padded_gas_limit = call.gas_used.saturating_mul(2);
+                let gas_limit = padded_gas_limit.min(block_gas_limit);
+                if gas_limit < padded_gas_limit {
+                    tracing::warn!(
+                        tx_index = i,
+                        simulated_gas_used = call.gas_used,
+                        padded_gas_limit,
+                        block_gas_limit,
+                        gas_limit,
+                        "capping simulated L1 transaction gas limit at latest block gas limit"
+                    );
+                }
+                Ok(gas_limit)
+            }
             Some(call) => {
                 tracing::warn!(
                     tx_index = i,
                     return_data = ?call.return_data,
                     "eth_simulateV1 call reverted, falling back to {L1_GAS_LIMIT_FALLBACK}",
                 );
-                L1_GAS_LIMIT_FALLBACK
+                Ok(L1_GAS_LIMIT_FALLBACK.min(block_gas_limit))
             }
             None => {
                 tracing::warn!(
                     tx_index = i,
                     "eth_simulateV1 block had no call result, falling back to {L1_GAS_LIMIT_FALLBACK}",
                 );
-                L1_GAS_LIMIT_FALLBACK
+                Ok(L1_GAS_LIMIT_FALLBACK.min(block_gas_limit))
             }
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(gas_limits)
 }
 

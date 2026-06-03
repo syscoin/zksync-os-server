@@ -495,6 +495,13 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
     ) -> Result<ZkTransaction, EthCallError> {
         let block_gas_limit = block_context.gas_limit;
         let mut highest_gas_limit = request.gas.unwrap_or(block_gas_limit).min(block_gas_limit);
+        // SYSCOIN: `eth_estimateGas` relaxes RPC-layer fee validation, but the bootloader
+        // still executes against the real basefee. Clamp explicit underpriced fee fields
+        // before computing the balance-derived gas cap and constructing the tx.
+        clamp_estimate_request_fees_to_basefee(
+            &mut request,
+            block_context.eip1559_basefee.saturating_to::<u128>(),
+        );
 
         let effective_gas_price = request
             .gas_price
@@ -742,6 +749,20 @@ fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
             tx.to_mint = tx.value + U256::from(tx.max_fee_per_gas) * U256::from(gas_limit);
         }
         ZkEnvelope::Upgrade(envelope) => envelope.inner.gas_limit = gas_limit,
+    }
+}
+
+// SYSCOIN: estimateGas callers often omit all fee fields and expect estimation to run
+// without requiring a funded sender. Only clamp explicit fee fields that would otherwise
+// produce an underpriced transaction after relaxed RPC validation.
+fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, basefee: u128) {
+    if let Some(gas_price) = request.gas_price {
+        request.gas_price = Some(gas_price.max(basefee));
+    } else if request.max_fee_per_gas.is_some() || request.max_priority_fee_per_gas.is_some() {
+        request.max_fee_per_gas = Some(request.max_fee_per_gas.unwrap_or(0).max(basefee));
+        if request.max_priority_fee_per_gas.is_none() {
+            request.max_priority_fee_per_gas = Some(0);
+        }
     }
 }
 
