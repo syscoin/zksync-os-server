@@ -368,52 +368,66 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
-        Ok(_) if archive_tip < live_tip => {
-            tracing::warn!(
-                batch_number,
-                live_tip,
-                archive_tip,
-                "archive provider is behind live provider; retrying committed batch lookup on live provider",
-            );
-            fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
-                .await
-                .with_context(|| {
+        Ok(batch) => {
+            let live_tip_after_fetch = live_proxy.provider().get_block_number().await.with_context(|| {
+                format!("failed to fetch live provider tip after archive batch {batch_number} lookup")
+            })?;
+            let archive_tip_after_fetch =
+                archive_provider.get_block_number().await.with_context(|| {
                     format!(
-                        "archive provider is behind live provider for committed batch {batch_number} \
-                         (archive tip {archive_tip}, live tip {live_tip}); live provider fallback also failed"
+                        "failed to fetch archive provider tip after batch {batch_number} lookup"
                     )
-                })
-        }
-        Ok(batch) => match validate_archive_batch_against_live(live_proxy, &batch).await {
-            Ok(()) => {
+                })?;
+            if archive_tip_after_fetch < live_tip_after_fetch {
                 tracing::warn!(
                     batch_number,
                     live_tip,
                     archive_tip,
-                    "archive committed batch hash matches live state",
+                    live_tip_after_fetch,
+                    archive_tip_after_fetch,
+                    "archive provider is behind live provider; retrying committed batch lookup on live provider",
                 );
-                Ok(batch)
-            }
-            Err(validation_err) => {
-                let validation_err = format!("{validation_err:#}");
-                tracing::warn!(
-                    batch_number,
-                    live_tip,
-                    archive_tip,
-                    validation_error = validation_err,
-                    "archive batch metadata could not be validated against live state; retrying live provider",
-                );
-                fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                return fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
                     .await
                     .with_context(|| {
                         format!(
-                            "archive committed batch {batch_number} failed live hash validation \
-                             (archive tip {archive_tip}, live tip {live_tip}): {validation_err}; \
-                             live provider fallback also failed"
+                            "archive provider is behind live provider for committed batch {batch_number} \
+                             (archive tip {archive_tip_after_fetch}, live tip {live_tip_after_fetch}); live provider fallback also failed"
                         )
-                    })
+                    });
             }
-        },
+
+            match validate_archive_batch_against_live(live_proxy, &batch).await {
+                Ok(()) => {
+                    tracing::warn!(
+                        batch_number,
+                        live_tip = live_tip_after_fetch,
+                        archive_tip = archive_tip_after_fetch,
+                        "archive committed batch hash matches live state",
+                    );
+                    Ok(batch)
+                }
+                Err(validation_err) => {
+                    let validation_err = format!("{validation_err:#}");
+                    tracing::warn!(
+                        batch_number,
+                        live_tip = live_tip_after_fetch,
+                        archive_tip = archive_tip_after_fetch,
+                        validation_error = validation_err,
+                        "archive batch metadata could not be validated against live state; retrying live provider",
+                    );
+                    fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "archive committed batch {batch_number} failed live hash validation \
+                                 (archive tip {archive_tip_after_fetch}, live tip {live_tip_after_fetch}): {validation_err}; \
+                                 live provider fallback also failed"
+                            )
+                        })
+                }
+            }
+        }
         Err(archive_err) => {
             let archive_err = format!("{archive_err:#}");
             tracing::warn!(
