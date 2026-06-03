@@ -1,6 +1,6 @@
 use crate::util;
 use alloy::primitives::BlockNumber;
-use alloy::providers::DynProvider;
+use alloy::providers::{DynProvider, Provider};
 use anyhow::Context;
 use futures::stream::{self, StreamExt};
 use rangemap::RangeInclusiveMap;
@@ -236,36 +236,15 @@ impl CommittedBatchProvider {
                 let discovered_batch =
                     match (&interval.settlement_layer, archive_l1_provider.as_ref()) {
                         (IntervalSettlementLayer::L1, Some(provider)) => {
-                            // SYSCOIN: Only background historical L1 reads prefer the archive
-                            // provider. If the archive endpoint is behind the live node, retry
-                            // against the live provider for recent batches.
-                            let archive_proxy =
-                                ZkChain::new(*interval.proxy.address(), (*provider).clone());
-                            match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan)
-                                .await
-                            {
-                                Ok(batch) => batch,
-                                Err(archive_err) => {
-                                    let archive_err = format!("{archive_err:#}");
-                                    tracing::warn!(
-                                        batch_number,
-                                        archive_error = archive_err,
-                                        "archive provider failed to fetch committed batch; retrying live provider",
-                                    );
-                                    fetch_batch(
-                                        &interval.proxy,
-                                        batch_number,
-                                        max_l1_blocks_to_scan,
-                                    )
-                                    .await
-                                    .with_context(|| {
-                                        format!(
-                                            "archive provider failed to fetch committed batch {batch_number}: {archive_err}; \
-                                             live provider fallback also failed"
-                                        )
-                                    })?
-                                }
-                            }
+                            // SYSCOIN: Accept archive-backed batch metadata only after
+                            // verifying archive freshness against the live provider.
+                            fetch_batch_with_archive_fallback(
+                                &interval.proxy,
+                                provider,
+                                batch_number,
+                                max_l1_blocks_to_scan,
+                            )
+                            .await?
                         }
                         _ => fetch_batch(&interval.proxy, batch_number, max_l1_blocks_to_scan)
                             .await?,
@@ -347,6 +326,119 @@ async fn fetch_batch(
     util::fetch_stored_batch_data(diamond_proxy_sl, sl_block_with_commit, batch_number)
         .await?
         .with_context(|| format!("failed to find committed batch {batch_number} on L1"))
+}
+
+// SYSCOIN: Archive-backed batch metadata is only safe if the archive endpoint
+// has caught up to the live endpoint. Otherwise `fetch_batch` can miss later
+// reverts visible on live L1 and return stale committed batch metadata.
+async fn fetch_batch_with_archive_fallback(
+    live_proxy: &ZkChain<DynProvider>,
+    archive_provider: &DynProvider,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+) -> anyhow::Result<DiscoveredCommittedBatch> {
+    let live_tip = live_proxy
+        .provider()
+        .get_block_number()
+        .await
+        .with_context(|| {
+            format!("failed to fetch live provider tip before batch {batch_number} lookup")
+        })?;
+    let archive_tip = match archive_provider.get_block_number().await {
+        Ok(archive_tip) => archive_tip,
+        Err(archive_tip_err) => {
+            let archive_tip_err = format!("{archive_tip_err:#}");
+            tracing::warn!(
+                batch_number,
+                live_tip,
+                archive_error = archive_tip_err,
+                "archive provider tip lookup failed; retrying committed batch lookup on live provider",
+            );
+            return fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                .await
+                .with_context(|| {
+                    format!(
+                        "archive provider tip lookup failed before committed batch {batch_number}: {archive_tip_err}; \
+                         live provider fallback also failed"
+                    )
+                });
+        }
+    };
+
+    let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
+    match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
+        Ok(batch) => match validate_archive_batch_against_live(live_proxy, &batch).await {
+            Ok(()) => {
+                tracing::warn!(
+                    batch_number,
+                    live_tip,
+                    archive_tip,
+                    "archive committed batch hash matches live state",
+                );
+                Ok(batch)
+            }
+            Err(validation_err) => {
+                let validation_err = format!("{validation_err:#}");
+                tracing::warn!(
+                    batch_number,
+                    live_tip,
+                    archive_tip,
+                    validation_error = validation_err,
+                    "archive batch metadata could not be validated against live state; retrying live provider",
+                );
+                fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "archive committed batch {batch_number} failed live hash validation \
+                             (archive tip {archive_tip}, live tip {live_tip}): {validation_err}; \
+                             live provider fallback also failed"
+                        )
+                    })
+            }
+        },
+        Err(archive_err) => {
+            let archive_err = format!("{archive_err:#}");
+            tracing::warn!(
+                batch_number,
+                live_tip,
+                archive_tip,
+                archive_error = archive_err,
+                "archive provider failed to fetch committed batch; retrying live provider",
+            );
+            fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                .await
+                .with_context(|| {
+                    format!(
+                        "archive provider failed to fetch committed batch {batch_number}: {archive_err}; \
+                         live provider fallback also failed"
+                    )
+                })
+        }
+    }
+}
+
+// SYSCOIN: A behind archive can still serve valid historical commit calldata.
+// Validate the decoded batch against live latest state before accepting it.
+async fn validate_archive_batch_against_live(
+    live_proxy: &ZkChain<DynProvider>,
+    batch: &DiscoveredCommittedBatch,
+) -> anyhow::Result<()> {
+    let live_batch_hash = live_proxy
+        .stored_batch_hash(batch.number())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to fetch live stored batch hash for batch {}",
+                batch.number()
+            )
+        })?;
+    let archive_batch_hash = batch.batch_info.hash();
+    anyhow::ensure!(
+        live_batch_hash == archive_batch_hash,
+        "archive batch hash {archive_batch_hash} does not match live stored batch hash {live_batch_hash}",
+    );
+    Ok(())
 }
 
 #[cfg(test)]
