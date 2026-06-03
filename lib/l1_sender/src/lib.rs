@@ -1672,6 +1672,7 @@ where
         .pending()
         .await
         .context("get pending nonce for L1 sender gas estimation")?;
+    const SIM_GAS_LIMIT: u64 = 30_000_000;
     let balance_override = StateOverridesBuilder::default()
         .append(
             operator_address,
@@ -1698,16 +1699,7 @@ where
             "capping fallback L1 transaction gas limit at latest block gas limit"
         );
     }
-    const SIM_GAS_LIMIT: u64 = 30_000_000;
     let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
-    if sim_gas_limit < SIM_GAS_LIMIT {
-        tracing::warn!(
-            configured_sim_gas_limit = SIM_GAS_LIMIT,
-            block_gas_limit,
-            gas_limit = sim_gas_limit,
-            "capping L1 simulation transaction gas limit at latest block gas limit"
-        );
-    }
     let block_state_calls = commands
         .iter()
         .enumerate()
