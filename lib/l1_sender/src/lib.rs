@@ -1780,11 +1780,11 @@ where
                 tracing::warn!(
                     tx_index = i,
                     return_data = ?call.return_data,
-                    "eth_simulateV1 call reverted; refusing to submit L1 transaction",
+                    "eth_simulateV1 call reverted",
                 );
-                anyhow::bail!(
-                    "eth_simulateV1 call at index {i} reverted; refusing to submit L1 transaction"
-                );
+                fallback_gas_limit_for_reverted_call(commands.len()).with_context(|| {
+                    format!("eth_simulateV1 call at index {i} reverted")
+                })
             }
             None => {
                 tracing::warn!(
@@ -1812,6 +1812,17 @@ fn fallback_gas_limit_for_command(command_count: usize, fallback_gas_limit: u64)
 
 fn fallback_gas_limits(command_count: usize, fallback_gas_limit: u64) -> Vec<Option<u64>> {
     vec![fallback_gas_limit_for_command(command_count, fallback_gas_limit); command_count]
+}
+
+// SYSCOIN: a simulated revert is stronger evidence than a missing simulation result. For a
+// single command, use `eth_estimateGas` as a second opinion; for multi-command batches,
+// do not submit fixed-gas txs after a simulated revert.
+fn fallback_gas_limit_for_reverted_call(command_count: usize) -> anyhow::Result<Option<u64>> {
+    if command_count == 1 {
+        Ok(None)
+    } else {
+        anyhow::bail!("refusing fixed gas fallback for reverted multi-command batch")
+    }
 }
 
 async fn report_custom_priority_fee_metrics(provider: &dyn Provider) -> anyhow::Result<()> {
@@ -1983,8 +1994,9 @@ async fn validate_tx_receipt<Input: SendToL1>(
 #[cfg(test)]
 mod tests {
     use super::{
-        FeeParams, L1SenderFeeConfig, apply_fee_caps, fallback_gas_limits,
-        is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
+        FeeParams, L1SenderFeeConfig, apply_fee_caps, fallback_gas_limit_for_reverted_call,
+        fallback_gas_limits, is_retryable_gateway_da_admission_message,
+        notify_commit_submitted_batch,
     };
     use crate::config::SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
     use alloy::providers::utils::Eip1559Estimation;
@@ -2044,6 +2056,16 @@ mod tests {
             fallback_gas_limits(2, 15_000_000),
             vec![Some(15_000_000), Some(15_000_000)]
         );
+    }
+
+    #[test]
+    fn single_command_simulate_revert_uses_estimate_gas() {
+        assert_eq!(fallback_gas_limit_for_reverted_call(1).unwrap(), None);
+    }
+
+    #[test]
+    fn multi_command_simulate_revert_refuses_fixed_gas() {
+        assert!(fallback_gas_limit_for_reverted_call(2).is_err());
     }
 
     #[test]
