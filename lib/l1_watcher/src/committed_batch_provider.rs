@@ -631,18 +631,6 @@ async fn fetch_batch_with_archive_fallback(
         TipReadOutcome::LiveBatch(batch) => return Ok(batch),
     };
 
-    if let Some(batch) = live_fallback_if_archive_is_behind(
-        live_proxy,
-        tips,
-        batch_number,
-        max_l1_blocks_to_scan,
-        "before archive fetch",
-    )
-    .await?
-    {
-        return Ok(batch);
-    }
-
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     for attempt in 0..2 {
         match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {

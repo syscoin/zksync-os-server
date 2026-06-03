@@ -390,11 +390,16 @@ async fn latest_block_for_event_scan(
         };
         match event_scan_block_count(start_block_number, latest_block) {
             Ok(_) => return Ok(latest_block),
-            Err(_) if latest_block.checked_add(1) == Some(start_block_number) => {
+            Err(err)
+                if latest_block.checked_add(1) == Some(start_block_number)
+                    && stale_height_attempts + 1 < STALE_L1_HEIGHT_RETRY_ATTEMPTS =>
+            {
+                stale_height_attempts += 1;
                 if !logged_next_block_wait {
                     tracing::warn!(
                         start_block_number,
                         latest_block,
+                        attempt = stale_height_attempts,
                         "event scan cursor is at the next block; waiting for provider tip to advance"
                     );
                     logged_next_block_wait = true;
@@ -402,6 +407,8 @@ async fn latest_block_for_event_scan(
                     tracing::debug!(
                         start_block_number,
                         latest_block,
+                        attempt = stale_height_attempts,
+                        error = %err,
                         "still waiting for provider tip to advance to event scan start"
                     );
                 }
