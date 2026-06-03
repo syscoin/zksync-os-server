@@ -764,6 +764,11 @@ fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, base
         if max_fee_per_gas == 0 && request.max_priority_fee_per_gas.unwrap_or_default() != 0 {
             return;
         }
+        // SYSCOIN: preserve `TipAboveFeeCap` for requests whose original cap is
+        // below the priority fee instead of clamping the cap into a valid shape.
+        if max_fee_per_gas < request.max_priority_fee_per_gas.unwrap_or_default() {
+            return;
+        }
         request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
     }
 }

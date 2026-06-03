@@ -10,6 +10,7 @@ use alloy::primitives::{B256, Bloom, Bytes, Sealable, U256};
 use alloy::rpc::types::simulate::{
     MAX_SIMULATE_BLOCKS, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
 };
+use alloy::rpc::types::state::StateOverride;
 use alloy::rpc::types::{BlockOverrides, TransactionRequest};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -97,22 +98,35 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 )?;
             }
 
-            let simulation_view =
+            let mut simulation_view =
                 OverriddenStateView::new(base_state.clone(), Arc::clone(&overlays));
 
-            let mut user_state_overrides = sim_block.state_overrides.unwrap_or_default();
+            let user_state_overrides = sim_block.state_overrides.unwrap_or_default();
+            let mut internal_state_overrides = StateOverride::default();
             if !validation {
                 // RPC-layer `ensure_fees` only suppresses the early `FeeCapTooLow`; the
                 // bootloader still enforces `gas_price >= basefee` and
                 // `balance >= gas_limit * gas_price + value`. Clamp fees up to basefee and
-                // bump unfunded senders to `U256::MAX`. User-supplied overrides win.
+                // bump unfunded senders to `U256::MAX`. User-supplied overrides win,
+                // and internal fee-bypass balances are not carried into later simulated blocks.
                 let basefee = block_context.eip1559_basefee.saturating_to::<u128>();
+                let default_gas_limit = simulation_default_gas_limit(
+                    &sim_block.calls,
+                    block_context.gas_limit,
+                    self.config.eth_call_gas as u64,
+                )?;
                 for call in &mut sim_block.calls {
                     clamp_request_fees_to_basefee(call, basefee);
                     let from = call.from.unwrap_or_default();
-                    let entry = user_state_overrides.entry(from).or_default();
-                    if entry.balance.is_none() {
-                        entry.balance = Some(U256::MAX);
+                    let user_balance_override = user_state_overrides
+                        .get(&from)
+                        .and_then(|account| account.balance)
+                        .is_some();
+                    if !user_balance_override
+                        && simulation_view.balance(from)
+                            < required_balance_for_request(call, default_gas_limit)
+                    {
+                        internal_state_overrides.entry(from).or_default().balance = Some(U256::MAX);
                     }
                 }
             }
@@ -123,8 +137,12 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 return Err(EthCallError::SimulateMovePrecompileNotSupported);
             }
             let state_overrides = build_state_override_maps(&simulation_view, user_state_overrides);
-            let overridden_view =
+            let user_overridden_view =
                 OverriddenStateView::new(simulation_view, state_overrides.clone());
+            let internal_state_overrides =
+                build_state_override_maps(&user_overridden_view, internal_state_overrides);
+            let overridden_view =
+                OverriddenStateView::new(user_overridden_view, internal_state_overrides);
             let txs = self.create_simulation_txs(
                 sim_block.calls,
                 block_context,
@@ -593,6 +611,11 @@ fn clamp_request_fees_to_basefee(call: &mut TransactionRequest, basefee: u128) {
         if max_fee_per_gas == 0 && call.max_priority_fee_per_gas.unwrap_or_default() != 0 {
             return;
         }
+        // SYSCOIN: preserve `TipAboveFeeCap` for requests whose original cap is
+        // below the priority fee instead of clamping the cap into a valid shape.
+        if max_fee_per_gas < call.max_priority_fee_per_gas.unwrap_or_default() {
+            return;
+        }
         call.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
         if call.max_priority_fee_per_gas.is_none() {
             call.max_priority_fee_per_gas = Some(0);
@@ -604,6 +627,18 @@ fn clamp_request_fees_to_basefee(call: &mut TransactionRequest, basefee: u128) {
     } else {
         call.gas_price = Some(basefee);
     }
+}
+
+fn required_balance_for_request(call: &TransactionRequest, default_gas_limit: u64) -> U256 {
+    let gas_limit = call.gas.unwrap_or(default_gas_limit);
+    let gas_price = call.gas_price.or(call.max_fee_per_gas).unwrap_or_default();
+    let gas_cost = U256::from(gas_limit)
+        .checked_mul(U256::from(gas_price))
+        .unwrap_or(U256::MAX);
+
+    gas_cost
+        .checked_add(call.value.unwrap_or_default())
+        .unwrap_or(U256::MAX)
 }
 
 struct SimulatedTx {
