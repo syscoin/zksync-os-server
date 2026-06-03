@@ -9,7 +9,7 @@ use alloy::rpc::client::RpcClient;
 use alloy::signers::local::PrivateKeySigner;
 use tower::ServiceBuilder;
 use vise::{EncodeLabelSet, EncodeLabelValue};
-use zksync_os_alloy_ext::dyn_wallet_provider::EthDynProvider;
+use zksync_os_provider::NodeProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue, EncodeLabelSet)]
 #[metrics(label = "provider", rename_all = "snake_case")]
@@ -22,7 +22,7 @@ pub(crate) enum ProviderKind {
 pub(crate) async fn build_node_provider(
     config: &ProviderConfig,
     provider: ProviderKind,
-) -> EthDynProvider {
+) -> NodeProvider {
     let max_retries = config.max_retries;
     let retry_backoff = config.retry_backoff;
     let provider_layers = ServiceBuilder::new()
@@ -43,5 +43,5 @@ pub(crate) async fn build_node_provider(
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::new(PrivateKeySigner::random()))
         .connect_client(client);
-    EthDynProvider::new(provider)
+    NodeProvider::new(provider)
 }

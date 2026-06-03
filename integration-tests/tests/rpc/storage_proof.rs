@@ -102,7 +102,7 @@ async fn verify_storage_proof_with_l1_contract() -> anyhow::Result<()> {
     let bridgehub_address = tester.l2_zk_provider.get_bridgehub_contract().await?;
     tracing::info!(?bridgehub_address, chain_id, "fetched L1 state");
     let l1_state = L1State::fetch(
-        tester.l1_provider().clone().erased(),
+        tester.l1_provider().clone(),
         tester.gateway_eth_provider(),
         bridgehub_address,
         chain_id,
@@ -256,7 +256,7 @@ async fn verify_storage_proof_empty_slot() -> anyhow::Result<()> {
     let chain_id = tester.l2_provider.get_chain_id().await?;
     tracing::info!(?bridgehub_address, chain_id, "fetched L1 state");
     let l1_state = L1State::fetch(
-        tester.l1_provider().clone().erased(),
+        tester.l1_provider().clone(),
         tester.gateway_eth_provider(),
         bridgehub_address,
         chain_id,
