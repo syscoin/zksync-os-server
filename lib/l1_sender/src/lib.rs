@@ -1670,8 +1670,6 @@ where
         .pending()
         .await
         .context("get pending nonce for L1 sender gas estimation")?;
-    const SIM_GAS_LIMIT: u64 = 30_000_000;
-
     let balance_override = StateOverridesBuilder::default()
         .append(
             operator_address,
@@ -1689,6 +1687,16 @@ where
         .await?
         .context("latest L1 block is unavailable while setting simulated L1 gas limits")?;
     let block_gas_limit = latest_block.header.gas_limit;
+    const SIM_GAS_LIMIT: u64 = 30_000_000;
+    let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
+    if sim_gas_limit < SIM_GAS_LIMIT {
+        tracing::warn!(
+            configured_sim_gas_limit = SIM_GAS_LIMIT,
+            block_gas_limit,
+            gas_limit = sim_gas_limit,
+            "capping L1 simulation transaction gas limit at latest block gas limit"
+        );
+    }
     let block_state_calls = commands
         .iter()
         .enumerate()
@@ -1700,7 +1708,7 @@ where
                 .with_max_fee_per_gas(fee_params.max_fee_per_gas)
                 .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
                 .with_nonce(starting_nonce + i as u64)
-                .with_gas_limit(SIM_GAS_LIMIT);
+                .with_gas_limit(sim_gas_limit);
             if let Some(sidecar) = cmd.blob_sidecar() {
                 req.blob_versioned_hashes = Some(sidecar.versioned_hashes().collect());
                 req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
