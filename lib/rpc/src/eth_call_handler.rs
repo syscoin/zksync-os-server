@@ -758,11 +758,8 @@ fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
 fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, basefee: u128) {
     if let Some(gas_price) = request.gas_price {
         request.gas_price = Some(gas_price.max(basefee));
-    } else if request.max_fee_per_gas.is_some() || request.max_priority_fee_per_gas.is_some() {
-        request.max_fee_per_gas = Some(request.max_fee_per_gas.unwrap_or(0).max(basefee));
-        if request.max_priority_fee_per_gas.is_none() {
-            request.max_priority_fee_per_gas = Some(0);
-        }
+    } else if let Some(max_fee_per_gas) = request.max_fee_per_gas {
+        request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
     }
 }
 
