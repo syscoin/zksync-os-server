@@ -73,6 +73,7 @@ use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
     BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
 };
+use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::BatchDaInputMode;
 use zksync_os_gas_adjuster::GasAdjuster;
@@ -435,6 +436,20 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     } else {
         (l1_provider.clone(), l1_block_updates.clone())
     };
+    // SYSCOIN: Startup cursor resolution can require historical L1 state. Keep
+    // live watchers on the configured live providers, but use the archive L1
+    // provider for startup-only L1 binary searches when available.
+    let archive_lookup_diamond_proxy_l1 = l1_archive_provider.as_ref().map(|provider| {
+        ZkChain::new(
+            *l1_state.diamond_proxy_l1.address(),
+            provider.clone().erased(),
+        )
+    });
+    let archive_lookup_diamond_proxy_sl = if settles_on_gateway {
+        None
+    } else {
+        archive_lookup_diamond_proxy_l1.clone()
+    };
     tracing::info!(?l1_state, settles_on_gateway, "L1 state");
     l1_state.report_metrics();
     if node_role.is_main() {
@@ -767,6 +782,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         L1CommitWatcher::create_watcher(
             config.l1_watcher_config.clone().into(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
+            archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
             finality_storage.clone(),
             l1_state.sl_block_number,
@@ -789,6 +805,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         L1ExecuteWatcher::create_watcher(
             config.l1_watcher_config.clone().into(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
+            archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
             finality_storage.clone(),
             // SYSCOIN: this watcher follows the active settlement layer, so validate
@@ -806,6 +823,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         L1FinalizedExecuteWatcher::create_finalized_watcher(
             config.l1_watcher_config.clone().into(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
+            archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
             finality_storage.clone(),
             sl_block_updates.clone(),
@@ -911,6 +929,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             "gateway migration watcher",
             GatewayMigrationWatcher::create_watcher(
                 node_startup_state.l1_state.diamond_proxy_l1.clone(),
+                archive_lookup_diamond_proxy_l1.clone(),
                 node_startup_state.l1_state.bridgehub_l1.clone(),
                 chain_id,
                 node_startup_state.l1_state.l1_chain_id,
@@ -931,6 +950,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         // the watcher is skipped — the seeded counter alone keeps the gate transparent.
         let migration_finalized_watcher = MigrationFinalizedWatcher::create_watcher(
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
+            archive_lookup_diamond_proxy_sl.clone(),
             node_startup_state.l1_state.bridgehub_sl.clone(),
             &node_startup_state.l1_state.settlement_layer_intervals,
             chain_id,
@@ -985,6 +1005,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone().into(),
             node_startup_state.l1_state.diamond_proxy_l1.clone(),
+            archive_lookup_diamond_proxy_l1.clone(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             l1_subpool.clone(),
             next_cursors.l1_priority_id,
@@ -1142,6 +1163,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             node_startup_state.l1_state.bridgehub_l1.clone(),
             node_startup_state.l1_state.bridgehub_sl.clone(),
             node_startup_state.l1_state.diamond_proxy_l1.clone(),
+            archive_lookup_diamond_proxy_l1.clone(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             bytecode_supplier_address,
             current_protocol_version.clone(),

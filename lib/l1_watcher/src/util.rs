@@ -7,6 +7,7 @@ use alloy::sol_types::SolEvent;
 use anyhow::Context;
 use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use zksync_os_batch_types::DiscoveredCommittedBatch;
@@ -19,6 +20,43 @@ use zksync_os_contract_interface::{
 };
 
 pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
+
+// SYSCOIN: Startup cursor resolution may need historical L1 state that a live
+// pruned provider cannot serve. Prefer an archive provider for the lookup, but
+// retry the live provider so recent cursors still work if the archive endpoint
+// is unavailable or lagging.
+pub async fn find_startup_block_with_archive_fallback<F, Fut>(
+    live_zk_chain: ZkChain<DynProvider>,
+    archive_zk_chain: Option<ZkChain<DynProvider>>,
+    operation: &'static str,
+    find: F,
+) -> anyhow::Result<BlockNumber>
+where
+    F: Fn(ZkChain<DynProvider>) -> Fut,
+    Fut: Future<Output = anyhow::Result<BlockNumber>>,
+{
+    if let Some(archive_zk_chain) = archive_zk_chain {
+        match find(archive_zk_chain).await {
+            Ok(block) => return Ok(block),
+            Err(archive_err) => {
+                let archive_err = format!("{archive_err:#}");
+                tracing::warn!(
+                    operation,
+                    archive_error = archive_err,
+                    "archive provider failed startup cursor lookup; retrying live provider",
+                );
+                return find(live_zk_chain).await.with_context(|| {
+                    format!(
+                        "archive provider failed startup cursor lookup for {operation}: {archive_err}; \
+                         live provider fallback also failed"
+                    )
+                });
+            }
+        }
+    }
+
+    find(live_zk_chain).await
+}
 
 /// Finds the first block where `IChainAssetHandler::migrationNumber(chain_id) >= migration_number`
 /// using binary search. Returns latest block if migration number is not reached yet.

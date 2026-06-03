@@ -32,6 +32,7 @@ impl MigrationFinalizedWatcher {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_watcher(
         zk_chain: ZkChain<DynProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
         bridgehub_sl: Bridgehub<DynProvider>,
         intervals: &SettlementLayerIntervals,
         l2_chain_id: u64,
@@ -93,11 +94,20 @@ impl MigrationFinalizedWatcher {
 
         let chain_asset_handler = bridgehub_sl.chain_asset_handler_address().await?;
         // todo: not necessary to run binary search here, just use latest
-        let starting_block = util::find_block_by_migration_number(
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain` below.
+        let starting_block = util::find_startup_block_with_archive_fallback(
             zk_chain.clone(),
-            chain_asset_handler,
-            l2_chain_id,
-            active_migration_number,
+            archive_lookup_zk_chain,
+            "migration finalized watcher",
+            |zk_chain| {
+                util::find_block_by_migration_number(
+                    zk_chain,
+                    chain_asset_handler,
+                    l2_chain_id,
+                    active_migration_number,
+                )
+            },
         )
         .await?;
 

@@ -33,6 +33,7 @@ impl GatewayMigrationWatcher {
     #[allow(clippy::too_many_arguments)]
     pub async fn create_watcher(
         zk_chain: ZkChain<DynProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
         bridgehub: Bridgehub<DynProvider>,
         l2_chain_id: ChainId,
         l1_chain_id: ChainId,
@@ -45,11 +46,20 @@ impl GatewayMigrationWatcher {
         let server_notifier_contract = zk_chain.get_server_notifier_address().await?;
         let chain_asset_handler_address = bridgehub.chain_asset_handler_address().await?;
 
-        let next_l1_block = util::find_block_by_migration_number(
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain` below.
+        let next_l1_block = util::find_startup_block_with_archive_fallback(
             zk_chain.clone(),
-            chain_asset_handler_address,
-            l2_chain_id,
-            next_migration_number,
+            archive_lookup_zk_chain,
+            "gateway migration watcher",
+            |zk_chain| {
+                util::find_block_by_migration_number(
+                    zk_chain,
+                    chain_asset_handler_address,
+                    l2_chain_id,
+                    next_migration_number,
+                )
+            },
         )
         .await?;
 
