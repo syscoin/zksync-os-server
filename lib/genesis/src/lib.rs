@@ -338,13 +338,20 @@ async fn load_genesis_upgrade_tx(
 ) -> anyhow::Result<GenesisUpgradeTxInfo> {
     let zk_chain_address = *zk_chain.address();
     let provider = zk_chain.provider().clone();
-    // The `GenesisUpgrade` event is emitted in the diamond proxy's deployment block, so the search
-    // collapses to that single block (`0` when undeployed, e.g. localhost — scans the genesis block).
     let deployment_block = zk_chain.deployment_block().await?;
+    // SYSCOIN: In real deployments the GenesisUpgrade event is emitted in the
+    // nonzero diamond deployment block. Local/preloaded Anvil states can have
+    // the proxy code present at block 0 while the setup log is emitted later,
+    // so preserve the old sentinel behavior and scan through latest only there.
+    let to_block = if deployment_block == 0 {
+        provider.get_block_number().await?
+    } else {
+        deployment_block
+    };
     let event_sig = GenesisUpgrade::SIGNATURE_HASH;
     let filter = Filter::new()
         .from_block(deployment_block)
-        .to_block(deployment_block)
+        .to_block(to_block)
         .event_signature(event_sig)
         .address(zk_chain_address);
     let logs = provider.get_logs(&filter).await?;
