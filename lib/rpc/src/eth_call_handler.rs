@@ -759,6 +759,11 @@ fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, base
     if let Some(gas_price) = request.gas_price {
         request.gas_price = Some(gas_price.max(basefee));
     } else if let Some(max_fee_per_gas) = request.max_fee_per_gas {
+        // SYSCOIN: preserve this invalid explicit fee shape so `CallFees` can keep
+        // returning `FeeCapTooLow` instead of clamping it into a valid estimate.
+        if max_fee_per_gas == 0 && request.max_priority_fee_per_gas.unwrap_or_default() != 0 {
+            return;
+        }
         request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
     }
 }

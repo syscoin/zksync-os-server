@@ -587,11 +587,20 @@ fn simulation_default_gas_limit(
 fn clamp_request_fees_to_basefee(call: &mut TransactionRequest, basefee: u128) {
     if let Some(gas_price) = call.gas_price {
         call.gas_price = Some(gas_price.max(basefee));
-    } else if call.max_fee_per_gas.is_some() || call.max_priority_fee_per_gas.is_some() {
-        call.max_fee_per_gas = Some(call.max_fee_per_gas.unwrap_or(0).max(basefee));
+    } else if let Some(max_fee_per_gas) = call.max_fee_per_gas {
+        // SYSCOIN: preserve this invalid explicit fee shape so `CallFees` can keep
+        // returning `FeeCapTooLow` instead of clamping it into a valid simulation.
+        if max_fee_per_gas == 0 && call.max_priority_fee_per_gas.unwrap_or_default() != 0 {
+            return;
+        }
+        call.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
         if call.max_priority_fee_per_gas.is_none() {
             call.max_priority_fee_per_gas = Some(0);
         }
+    } else if let Some(max_priority_fee_per_gas) = call.max_priority_fee_per_gas {
+        // SYSCOIN: priority-only requests are valid and `CallFees` treats them as
+        // `basefee + priority`; do not synthesize a cap below the priority fee.
+        call.max_fee_per_gas = Some(basefee.saturating_add(max_priority_fee_per_gas));
     } else {
         call.gas_price = Some(basefee);
     }
