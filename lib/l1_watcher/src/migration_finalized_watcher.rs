@@ -96,18 +96,13 @@ impl MigrationFinalizedWatcher {
         // todo: not necessary to run binary search here, just use latest
         // SYSCOIN: Resolve the startup cursor through the archive-capable
         // provider while keeping live polling on `zk_chain` below.
-        let starting_block = util::find_startup_block_with_archive_fallback(
+        let starting_block = util::find_startup_migration_block_with_archive_fallback(
             zk_chain.clone(),
             archive_lookup_zk_chain,
+            chain_asset_handler,
+            l2_chain_id,
+            active_migration_number,
             "migration finalized watcher",
-            |zk_chain| {
-                util::find_block_by_migration_number(
-                    zk_chain,
-                    chain_asset_handler,
-                    l2_chain_id,
-                    active_migration_number,
-                )
-            },
         )
         .await?;
 

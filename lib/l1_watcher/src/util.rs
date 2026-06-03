@@ -58,6 +58,112 @@ where
     find(live_zk_chain).await
 }
 
+// SYSCOIN: `find_block_by_migration_number` returns the provider's latest block
+// when the target migration has not happened yet. Do not accept a stale archive
+// latest in that case; resolve through the live provider so the watcher starts
+// from the live tip.
+pub async fn find_startup_migration_block_with_archive_fallback(
+    live_zk_chain: ZkChain<DynProvider>,
+    archive_zk_chain: Option<ZkChain<DynProvider>>,
+    chain_asset_handler: Address,
+    chain_id: u64,
+    migration_number: u64,
+    operation: &'static str,
+) -> anyhow::Result<BlockNumber> {
+    if let Some(archive_zk_chain) = archive_zk_chain {
+        match latest_migration_number(&archive_zk_chain, chain_asset_handler, chain_id).await {
+            Ok((_archive_latest, latest_migration_number))
+                if latest_migration_number >= U256::from(migration_number) =>
+            {
+                match find_block_by_migration_number(
+                    archive_zk_chain,
+                    chain_asset_handler,
+                    chain_id,
+                    migration_number,
+                )
+                .await
+                {
+                    Ok(block) => return Ok(block),
+                    Err(archive_err) => {
+                        let archive_err = format!("{archive_err:#}");
+                        tracing::warn!(
+                            operation,
+                            archive_error = archive_err,
+                            "archive provider failed startup migration lookup; retrying live provider",
+                        );
+                        return find_block_by_migration_number(
+                            live_zk_chain,
+                            chain_asset_handler,
+                            chain_id,
+                            migration_number,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "archive provider failed startup migration lookup for {operation}: {archive_err}; \
+                                 live provider fallback also failed"
+                            )
+                        });
+                    }
+                }
+            }
+            Ok((archive_latest, latest_migration_number)) => {
+                tracing::warn!(
+                    operation,
+                    archive_latest,
+                    %latest_migration_number,
+                    migration_number,
+                    "archive provider has not reached startup migration target; using live provider tip",
+                );
+            }
+            Err(archive_err) => {
+                let archive_err = format!("{archive_err:#}");
+                tracing::warn!(
+                    operation,
+                    archive_error = archive_err,
+                    "archive provider failed startup migration tip lookup; retrying live provider",
+                );
+                return find_block_by_migration_number(
+                    live_zk_chain,
+                    chain_asset_handler,
+                    chain_id,
+                    migration_number,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "archive provider failed startup migration tip lookup for {operation}: {archive_err}; \
+                         live provider fallback also failed"
+                    )
+                });
+            }
+        }
+    }
+
+    find_block_by_migration_number(
+        live_zk_chain,
+        chain_asset_handler,
+        chain_id,
+        migration_number,
+    )
+    .await
+}
+
+async fn latest_migration_number(
+    zk_chain: &ZkChain<DynProvider>,
+    chain_asset_handler: Address,
+    chain_id: u64,
+) -> anyhow::Result<(BlockNumber, U256)> {
+    let instance = IChainAssetHandler::new(chain_asset_handler, zk_chain.provider().clone());
+    let latest = instance.provider().get_block_number().await?;
+    let latest_migration_number = instance
+        .migrationNumber(U256::from(chain_id))
+        .block(latest.into())
+        .call()
+        .await?;
+    Ok((latest, latest_migration_number))
+}
+
 /// Finds the first block where `IChainAssetHandler::migrationNumber(chain_id) >= migration_number`
 /// using binary search. Returns latest block if migration number is not reached yet.
 ///

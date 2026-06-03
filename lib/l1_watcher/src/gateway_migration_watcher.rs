@@ -48,18 +48,13 @@ impl GatewayMigrationWatcher {
 
         // SYSCOIN: Resolve the startup cursor through the archive-capable
         // provider while keeping live polling on `zk_chain` below.
-        let next_l1_block = util::find_startup_block_with_archive_fallback(
+        let next_l1_block = util::find_startup_migration_block_with_archive_fallback(
             zk_chain.clone(),
             archive_lookup_zk_chain,
+            chain_asset_handler_address,
+            l2_chain_id,
+            next_migration_number,
             "gateway migration watcher",
-            |zk_chain| {
-                util::find_block_by_migration_number(
-                    zk_chain,
-                    chain_asset_handler_address,
-                    l2_chain_id,
-                    next_migration_number,
-                )
-            },
         )
         .await?;
 
