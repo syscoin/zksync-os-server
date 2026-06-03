@@ -48,6 +48,7 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
         config: L1WatcherConfig,
         intervals: SettlementLayerIntervals,
         batch_storage: BatchStorage,
+        archive_l1_provider: Option<DynProvider>,
         l1_block_updates: watch::Receiver<BlockUpdates>,
         gateway_block_updates: Option<watch::Receiver<BlockUpdates>>,
     ) -> anyhow::Result<SlAwareL1Watcher> {
@@ -83,6 +84,15 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
             }
 
             let zk_chain = &interval.proxy;
+            // SYSCOIN: L1 interval cursor resolution can require historical L1
+            // state. Use the archive provider for startup lookups only; segment
+            // polling below still uses the interval's live provider.
+            let archive_lookup_zk_chain = match &interval.settlement_layer {
+                IntervalSettlementLayer::L1 => archive_l1_provider
+                    .as_ref()
+                    .map(|provider| ZkChain::new(*zk_chain.address(), provider.clone())),
+                IntervalSettlementLayer::Gateway(_) => None,
+            };
             let block_updates = match &interval.settlement_layer {
                 IntervalSettlementLayer::L1 => l1_block_updates.clone(),
                 IntervalSettlementLayer::Gateway(_) => {
@@ -105,10 +115,17 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
             };
             is_first = false;
 
-            let start_block = util::find_l1_commit_block_by_batch_number(
+            let start_block = util::find_startup_block_with_archive_fallback(
                 zk_chain.clone(),
-                first_batch,
-                config.max_blocks_to_process,
+                archive_lookup_zk_chain.clone(),
+                "persist batch watcher commit cursor",
+                |zk_chain| {
+                    util::find_l1_commit_block_by_batch_number(
+                        zk_chain,
+                        first_batch,
+                        config.max_blocks_to_process,
+                    )
+                },
             )
             .await
             .with_context(|| {
@@ -116,7 +133,12 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
             })?;
             let end_block = match interval.last_batch {
                 Some(last_batch) => Some(
-                    util::find_l1_execute_block_by_batch_number(zk_chain.clone(), last_batch)
+                    util::find_startup_block_with_archive_fallback(
+                        zk_chain.clone(),
+                        archive_lookup_zk_chain,
+                        "persist batch watcher execute cursor",
+                        |zk_chain| util::find_l1_execute_block_by_batch_number(zk_chain, last_batch),
+                    )
                         .await
                         .with_context(|| {
                             format!(
