@@ -44,7 +44,7 @@ pub struct SyscoinEdgeDaRef<'a> {
 // across edge chains or batches.
 fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
     assert!(
-        edge_ref.blob_version_hashes.len() % 32 == 0,
+        edge_ref.blob_version_hashes.len().is_multiple_of(32),
         "Syscoin edge DA refs must be a concatenation of 32-byte blob hashes"
     );
 

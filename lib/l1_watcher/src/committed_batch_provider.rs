@@ -51,6 +51,36 @@ struct Inner {
     block_range_index: RangeInclusiveMap<BlockNumber, u64>,
 }
 
+// SYSCOIN: Startup loads the committed/proved/executed/finalized frontier first
+// so consumers can resume without waiting for the full historical scan.
+#[derive(Debug, Clone, Copy)]
+struct StartupBatchFrontier {
+    last_committed: u64,
+    last_proved: u64,
+    last_executed: u64,
+    last_finalized_executed: u64,
+}
+
+impl StartupBatchFrontier {
+    fn from_l1_state(l1_state: &L1State) -> Self {
+        Self {
+            last_committed: l1_state.last_committed_batch,
+            last_proved: l1_state.last_proved_batch,
+            last_executed: l1_state.last_executed_batch,
+            last_finalized_executed: l1_state.last_finalized_executed_batch,
+        }
+    }
+
+    fn startup_batch_numbers(self) -> (Vec<u64>, Vec<u64>) {
+        startup_batch_numbers(
+            self.last_committed,
+            self.last_proved,
+            self.last_executed,
+            self.last_finalized_executed,
+        )
+    }
+}
+
 impl CommittedBatchProvider {
     /// Creates a provider, inserts the genesis batch if needed, and eagerly loads the startup
     /// frontier batches used by startup bookkeeping.
@@ -87,12 +117,8 @@ impl CommittedBatchProvider {
             });
         }
 
-        let (prioritized_batch_numbers, _) = startup_batch_numbers(
-            l1_state.last_committed_batch,
-            l1_state.last_proved_batch,
-            l1_state.last_executed_batch,
-            l1_state.last_finalized_executed_batch,
-        );
+        let startup_frontier = StartupBatchFrontier::from_l1_state(l1_state);
+        let (prioritized_batch_numbers, _) = startup_frontier.startup_batch_numbers();
         provider
             .load_batch_numbers(
                 max_l1_blocks_to_scan,
@@ -103,19 +129,12 @@ impl CommittedBatchProvider {
             .await?;
 
         let provider_for_init = provider.clone();
-        let last_committed = l1_state.last_committed_batch;
-        let last_proved = l1_state.last_proved_batch;
-        let last_executed = l1_state.last_executed_batch;
-        let last_finalized_executed = l1_state.last_finalized_executed_batch;
         let batch_storage_for_init = batch_storage.clone();
         let archive_l1_provider_for_init = archive_l1_provider.clone();
         runtime.spawn_critical_task("committed batch provider init", async move {
             provider_for_init
                 .init(
-                    last_committed,
-                    last_proved,
-                    last_executed,
-                    last_finalized_executed,
+                    startup_frontier,
                     max_l1_blocks_to_scan,
                     batch_storage_for_init,
                     archive_l1_provider_for_init,
@@ -131,10 +150,7 @@ impl CommittedBatchProvider {
     // SYSCOIN: Keep background startup catch-up cache-first too.
     async fn init<BatchStorage>(
         &self,
-        last_committed_batch: u64,
-        last_proved_batch: u64,
-        last_executed_batch: u64,
-        last_finalized_executed_batch: u64,
+        startup_frontier: StartupBatchFrontier,
         max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
         archive_l1_provider: Option<NodeProvider>,
@@ -142,12 +158,7 @@ impl CommittedBatchProvider {
     where
         BatchStorage: ReadBatch,
     {
-        let (_, remaining_batch_numbers) = startup_batch_numbers(
-            last_committed_batch,
-            last_proved_batch,
-            last_executed_batch,
-            last_finalized_executed_batch,
-        );
+        let (_, remaining_batch_numbers) = startup_frontier.startup_batch_numbers();
         self.load_batch_numbers(
             max_l1_blocks_to_scan,
             &batch_storage,
@@ -329,12 +340,15 @@ async fn fetch_batch(
         .with_context(|| format!("failed to find committed batch {batch_number} on L1"))
 }
 
+// SYSCOIN: Helpers below implement the archive/live startup lookup policy for
+// committed batch metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProviderTips {
     live: BlockNumber,
     archive: BlockNumber,
 }
 
+// SYSCOIN
 async fn fetch_batch_from_live_with_context(
     live_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
@@ -346,6 +360,7 @@ async fn fetch_batch_from_live_with_context(
         .with_context(|| format!("{context}; live provider fallback also failed"))
 }
 
+// SYSCOIN
 async fn read_provider_tips(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -366,16 +381,19 @@ async fn read_provider_tips(
     Ok(ProviderTips { live, archive })
 }
 
+// SYSCOIN
 enum TipReadOutcome {
     Tips(ProviderTips),
     LiveBatch(DiscoveredCommittedBatch),
 }
 
+// SYSCOIN
 enum ArchiveLookupOutcome {
     Batch(DiscoveredCommittedBatch),
     Retry(ProviderTips),
 }
 
+// SYSCOIN
 async fn read_provider_tips_or_live_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -418,6 +436,7 @@ async fn read_provider_tips_or_live_fallback(
     }
 }
 
+// SYSCOIN
 async fn live_fallback_if_archive_is_behind(
     live_proxy: &ZkChain<NodeProvider>,
     tips: ProviderTips,
@@ -450,6 +469,7 @@ async fn live_fallback_if_archive_is_behind(
     .map(Some)
 }
 
+// SYSCOIN
 fn retry_if_tips_changed(
     tips_before: ProviderTips,
     tips_after: ProviderTips,
@@ -474,6 +494,7 @@ fn retry_if_tips_changed(
     Some(ArchiveLookupOutcome::Retry(tips_after))
 }
 
+// SYSCOIN
 async fn archive_batch_lookup_outcome(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,

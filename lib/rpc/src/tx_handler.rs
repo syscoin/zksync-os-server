@@ -508,7 +508,7 @@ fn compact_edge_da_refs_from_commit_calldata(
     let operator_da_input = &commit.commit_batch_info.operator_da_input;
     let blob_hash_count = operator_da_input.len() / 32;
     if operator_da_input.is_empty()
-        || operator_da_input.len() % 32 != 0
+        || !operator_da_input.len().is_multiple_of(32)
         || blob_hash_count > SYSCOIN_DA_MAX_BLOBS_PER_BATCH
     {
         return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
