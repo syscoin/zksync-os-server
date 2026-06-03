@@ -333,7 +333,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             use_replacement_fee_params_for_commands,
         )
         .await?;
-        let gas_limits = estimate_gas_limits(
+        let gas_limit_overrides = estimate_gas_limits(
             &provider,
             to_address,
             gateway,
@@ -345,7 +345,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         tracing::info!(
             command_name,
             range,
-            ?gas_limits,
+            ?gas_limit_overrides,
             "estimated gas limits via eth_simulateV1",
         );
         // It's important to preserve the order of commands -
@@ -361,7 +361,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             .await
             .context("get pending operator nonce before signing L1 transaction batch")?;
         let mut pending_txs = Vec::with_capacity(commands.len());
-        for (mut cmd, gas_limit) in commands.drain(..).zip(gas_limits) {
+        for (mut cmd, gas_limit_override) in commands.drain(..).zip(gas_limit_overrides) {
             let tx_nonce = next_tx_nonce;
             next_tx_nonce = next_tx_nonce
                 .checked_add(1)
@@ -378,7 +378,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                     &commit_submitted_tx,
                     Some(tx_nonce),
                     use_replacement_fee_params_for_commands,
-                    Some(gas_limit),
+                    gas_limit_override,
                 )
                 .await?;
             pending_txs.push((
@@ -1655,7 +1655,8 @@ async fn apply_l1_gas_limit(
 /// Estimates gas limits for a batch of L1 commands via `eth_simulateV1`, returning
 /// `2 * gas_used` per call. Each command goes into its own simulated block so cumulative
 /// block-gas-limit constraints cannot reject the batch, while writes from earlier blocks
-/// remain visible to later ones. Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on errors.
+/// remain visible to later ones. Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on errors
+/// for multi-command batches, and to per-tx `eth_estimateGas` for single-command batches.
 async fn estimate_gas_limits<Input>(
     provider: &EthDynProvider,
     to_address: Address,
@@ -1663,7 +1664,7 @@ async fn estimate_gas_limits<Input>(
     commands: &[Input],
     operator_address: Address,
     fee_params: FeeParams,
-) -> anyhow::Result<Vec<u64>>
+) -> anyhow::Result<Vec<Option<u64>>>
 where
     Input: SendToL1,
 {
@@ -1673,7 +1674,6 @@ where
         .await
         .context("get pending nonce for L1 sender gas estimation")?;
     const SIM_GAS_LIMIT: u64 = 30_000_000;
-
     let balance_override = StateOverridesBuilder::default()
         .append(
             operator_address,
@@ -1700,7 +1700,7 @@ where
             "capping fallback L1 transaction gas limit at latest block gas limit"
         );
     }
-
+    let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
     let block_state_calls = commands
         .iter()
         .enumerate()
@@ -1712,7 +1712,7 @@ where
                 .with_max_fee_per_gas(fee_params.max_fee_per_gas)
                 .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
                 .with_nonce(starting_nonce + i as u64)
-                .with_gas_limit(SIM_GAS_LIMIT);
+                .with_gas_limit(sim_gas_limit);
             if let Some(sidecar) = cmd.blob_sidecar() {
                 req.blob_versioned_hashes = Some(sidecar.versioned_hashes().collect());
                 req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
@@ -1737,16 +1737,16 @@ where
             tracing::warn!(
                 returned = blocks.len(),
                 expected = commands.len(),
-                "eth_simulateV1 returned mismatched block count, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                "eth_simulateV1 returned mismatched block count, falling back to safe gas estimation path",
             );
-            return Ok(vec![fallback_gas_limit; commands.len()]);
+            return Ok(fallback_gas_limits(commands.len(), fallback_gas_limit));
         }
         Err(err) => {
             tracing::warn!(
                 %err,
-                "eth_simulateV1 unavailable or errored, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                "eth_simulateV1 unavailable or errored, falling back to safe gas estimation path",
             );
-            return Ok(vec![fallback_gas_limit; commands.len()]);
+            return Ok(fallback_gas_limits(commands.len(), fallback_gas_limit));
         }
     };
 
@@ -1774,7 +1774,7 @@ where
                         "capping simulated L1 transaction gas limit at latest block gas limit"
                     );
                 }
-                Ok(gas_limit)
+                Ok(Some(gas_limit))
             }
             Some(call) => {
                 tracing::warn!(
@@ -1789,13 +1789,29 @@ where
             None => {
                 tracing::warn!(
                     tx_index = i,
-                    "eth_simulateV1 block had no call result, falling back to {L1_GAS_LIMIT_FALLBACK}",
+                    "eth_simulateV1 block had no call result, falling back to safe gas estimation path",
                 );
-                Ok(fallback_gas_limit)
+                Ok(fallback_gas_limit_for_command(commands.len(), fallback_gas_limit))
             }
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(gas_limits)
+}
+
+// SYSCOIN: single-command fallbacks can safely use the older per-tx `eth_estimateGas`
+// path, avoiding fixed 15M gas transactions that trip settlement RPC tx fee caps.
+// Multi-command batches keep upstream's fixed fallback because later txs may depend on
+// state written by earlier nonce-ordered txs that are not mined yet.
+fn fallback_gas_limit_for_command(command_count: usize, fallback_gas_limit: u64) -> Option<u64> {
+    if command_count == 1 {
+        None
+    } else {
+        Some(fallback_gas_limit)
+    }
+}
+
+fn fallback_gas_limits(command_count: usize, fallback_gas_limit: u64) -> Vec<Option<u64>> {
+    vec![fallback_gas_limit_for_command(command_count, fallback_gas_limit); command_count]
 }
 
 async fn report_custom_priority_fee_metrics(provider: &dyn Provider) -> anyhow::Result<()> {
@@ -1967,8 +1983,8 @@ async fn validate_tx_receipt<Input: SendToL1>(
 #[cfg(test)]
 mod tests {
     use super::{
-        FeeParams, L1SenderFeeConfig, apply_fee_caps, is_retryable_gateway_da_admission_message,
-        notify_commit_submitted_batch,
+        FeeParams, L1SenderFeeConfig, apply_fee_caps, fallback_gas_limits,
+        is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use crate::config::SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
     use alloy::providers::utils::Eip1559Estimation;
@@ -2015,6 +2031,19 @@ mod tests {
         assert!(!is_retryable_gateway_da_admission_message(
             "compact edge da admission check failed: unsupported child-chain da commitment scheme",
         ));
+    }
+
+    #[test]
+    fn single_command_simulate_fallback_uses_estimate_gas() {
+        assert_eq!(fallback_gas_limits(1, 15_000_000), vec![None]);
+    }
+
+    #[test]
+    fn multi_command_simulate_fallback_preserves_fixed_gas() {
+        assert_eq!(
+            fallback_gas_limits(2, 15_000_000),
+            vec![Some(15_000_000), Some(15_000_000)]
+        );
     }
 
     #[test]
