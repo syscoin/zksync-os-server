@@ -59,9 +59,9 @@ where
 }
 
 // SYSCOIN: `find_block_by_migration_number` returns the provider's latest block
-// when the target migration has not happened yet. Do not accept a stale archive
-// latest in that case; resolve through the live provider so the watcher starts
-// from the live tip.
+// when the target migration has not happened yet. If an archive provider is
+// lagging behind the target migration, use the archive tip as the scan cursor
+// instead of forcing historical binary-search calls through a pruned live node.
 pub async fn find_startup_migration_block_with_archive_fallback(
     live_zk_chain: ZkChain<DynProvider>,
     archive_zk_chain: Option<ZkChain<DynProvider>>,
@@ -113,8 +113,9 @@ pub async fn find_startup_migration_block_with_archive_fallback(
                     archive_latest,
                     %latest_migration_number,
                     migration_number,
-                    "archive provider has not reached startup migration target; using live provider tip",
+                    "archive provider has not reached startup migration target; using archive tip as startup cursor",
                 );
+                return Ok(archive_latest);
             }
             Err(archive_err) => {
                 let archive_err = format!("{archive_err:#}");
