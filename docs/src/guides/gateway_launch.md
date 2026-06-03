@@ -157,6 +157,12 @@ export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet --migrate-edge
 ```
 
+`L1_RPC_URL` is written as the normal OS-server L1 provider and can point at the
+local sysgeth used for live traffic. `GATEWAY_ARCHIVE_L1_RPC_URL` is written as
+the archive L1 provider used only for historical committed-batch startup reads;
+point it at an archive-capable Syscoin L1 RPC unless the local `L1_RPC_URL` node
+was synced in archive mode from genesis.
+
 Do not pass production private keys as raw command-line arguments. Import the
 launch signer into Foundry's keystore first with
 `cast wallet import funder --interactive`, or use the `keystore`, `ledger`,

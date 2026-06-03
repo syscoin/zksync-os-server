@@ -177,6 +177,7 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
     Config {
         general_config,
         l1_provider_config,
+        l1_archive_provider_config: None,
         gateway_provider_config,
         network_config,
         consensus_config,

@@ -61,6 +61,7 @@ pub use build_external_config::{build_external_config, load_config_file_sources}
 pub struct Config {
     pub general_config: GeneralConfig,
     pub l1_provider_config: ProviderConfig,
+    pub l1_archive_provider_config: Option<ProviderConfig>,
     pub gateway_provider_config: Option<ProviderConfig>,
     pub network_config: NetworkConfig,
     pub consensus_config: ConsensusConfig,
@@ -198,6 +199,9 @@ impl Config {
         schema
             .insert(&ProviderConfig::DESCRIPTION, "l1_provider")
             .expect("Failed to insert L1 provider config");
+        schema
+            .insert(&ProviderConfig::DESCRIPTION, "l1_archive_provider")
+            .expect("Failed to insert L1 archive provider config");
         schema
             .insert(&ProviderConfig::DESCRIPTION, "gateway_provider")
             .expect("Failed to insert Gateway provider config");
@@ -2829,6 +2833,7 @@ mod tests {
                 ..Default::default()
             },
             l1_provider_config: ProviderConfig::default(),
+            l1_archive_provider_config: None,
             gateway_provider_config: None,
             network_config: NetworkConfig::default(),
             consensus_config: ConsensusConfig::default(),
