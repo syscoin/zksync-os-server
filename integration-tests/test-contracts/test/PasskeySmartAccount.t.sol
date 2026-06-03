@@ -50,7 +50,7 @@ contract PasskeySmartAccountTest {
     bytes32 internal constant ORIGIN_HASH = keccak256(bytes(ORIGIN));
     uint256 internal constant ORIGIN_LENGTH = 23;
     bytes32 internal constant RECOVERY_ID = keccak256("pali recovery id");
-    bytes32 internal constant URL_HASH = keccak256("https://sponsor.example/user/123");
+    string internal constant SPONSOR_URL = "https://sponsor.example/pali";
     bytes32 internal constant HIGH_S =
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
 
@@ -89,7 +89,7 @@ contract PasskeySmartAccountTest {
         require(metadata.originLength == ORIGIN_LENGTH, "origin length");
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
         require(metadata.sponsorSigner == address(0), "sponsor signer");
-        require(metadata.sponsorUrlHash == bytes32(0), "sponsor url hash");
+        require(bytes(metadata.sponsorUrl).length == 0, "sponsor url");
     }
 
     function testReplayFails() public {
@@ -227,7 +227,7 @@ contract PasskeySmartAccountTest {
 
     function testRequiredSponsorMustSignSameAction() public {
         PasskeySmartAccount sponsored = _newAccount(keccak256("sponsored account"));
-        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
         vm.deal(address(sponsored), 10 ether);
 
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
@@ -242,7 +242,7 @@ contract PasskeySmartAccountTest {
 
     function testRequiredSponsorMissingFails() public {
         PasskeySmartAccount sponsored = _newAccount(keccak256("sponsor missing account"));
-        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
         vm.deal(address(sponsored), 10 ether);
 
         PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
@@ -318,7 +318,7 @@ contract PasskeySmartAccountTest {
         address predicted = factory.getAccountAddress(params);
         PasskeySmartAccount accountWithPolicy = PasskeySmartAccount(payable(factory.createAccount(params)));
 
-        _setSponsorByPasskey(accountWithPolicy, PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH);
+        _setSponsorByPasskey(accountWithPolicy, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
 
         require(address(accountWithPolicy) == predicted, "predicted address");
         require(factory.getAccountAddress(params) == predicted, "policy excluded");
@@ -372,7 +372,7 @@ contract PasskeySmartAccountTest {
             target: predicted,
             value: 0,
             data: abi.encodeCall(
-                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH)
+                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL)
             ),
             nonce: 0,
             deadline: block.timestamp + 1 hours
@@ -398,7 +398,7 @@ contract PasskeySmartAccountTest {
             target: predicted,
             value: 0,
             data: abi.encodeCall(
-                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, URL_HASH)
+                PasskeySmartAccount.setSponsor, (PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL)
             ),
             nonce: 0,
             deadline: block.timestamp + 1 hours
@@ -422,14 +422,41 @@ contract PasskeySmartAccountTest {
         require(receiver.received() == 1 ether, "receiver value");
     }
 
+    function testSponsorUrlLengthIsCapped() public {
+        bytes memory longUrlBytes = new bytes(129);
+        for (uint256 i = 0; i < longUrlBytes.length; ++i) {
+            longUrlBytes[i] = bytes1(uint8(97));
+        }
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(account),
+            0,
+            abi.encodeCall(
+                PasskeySmartAccount.setSponsor,
+                (PasskeySmartAccount.SponsorMode.Required, sponsor, string(longUrlBytes))
+            ),
+            account.nonce()
+        );
+        bytes32 actionHash = account.getActionHash(_single(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+        PasskeySmartAccount.SponsorProof memory sponsorProof = _sponsorProof(actionHash);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PasskeySmartAccount.CallFailed.selector,
+                abi.encodeWithSelector(PasskeySmartAccount.SponsorUrlTooLong.selector)
+            )
+        );
+        account.execute(_single(execution), proof, sponsorProof);
+    }
+
     function _setSponsorByPasskey(
         PasskeySmartAccount target,
         PasskeySmartAccount.SponsorMode mode,
         address signer,
-        bytes32 urlHash
+        string memory url
     ) internal {
         PasskeySmartAccount.Execution memory execution = _execution(
-            address(target), 0, abi.encodeCall(PasskeySmartAccount.setSponsor, (mode, signer, urlHash)), target.nonce()
+            address(target), 0, abi.encodeCall(PasskeySmartAccount.setSponsor, (mode, signer, url)), target.nonce()
         );
         bytes32 actionHash = target.getActionHash(_single(execution));
         PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
@@ -448,14 +475,14 @@ contract PasskeySmartAccountTest {
         require(metadata.originLength == ORIGIN_LENGTH, "origin length");
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
         require(metadata.sponsorSigner == address(0), "sponsor signer");
-        require(metadata.sponsorUrlHash == bytes32(0), "sponsor url hash");
+        require(bytes(metadata.sponsorUrl).length == 0, "sponsor url");
     }
 
     function _assertSponsorMetadata(PasskeySmartAccount target) internal view {
         PasskeySmartAccount.RecoveryMetadata memory metadata = target.getRecoveryMetadata();
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.Required, "sponsor mode");
         require(metadata.sponsorSigner == sponsor, "sponsor signer");
-        require(metadata.sponsorUrlHash == URL_HASH, "sponsor url hash");
+        require(keccak256(bytes(metadata.sponsorUrl)) == keccak256(bytes(SPONSOR_URL)), "sponsor url");
     }
 
     function _single(PasskeySmartAccount.Execution memory execution)
