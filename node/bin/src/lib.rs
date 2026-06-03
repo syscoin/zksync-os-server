@@ -1194,6 +1194,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .settlement_layer_intervals
             .clone();
         let persistent_batch_storage = persistent_batch_storage.clone();
+        let archive_l1_provider = l1_archive_provider
+            .as_ref()
+            .map(|provider| provider.clone().erased());
         let l1_block_updates = l1_block_updates.clone();
         let gateway_block_updates = gateway_block_updates.clone();
         async move {
@@ -1201,6 +1204,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 config.into(),
                 settlement_layer_intervals,
                 persistent_batch_storage,
+                archive_l1_provider,
                 l1_block_updates,
                 gateway_block_updates,
             )
