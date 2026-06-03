@@ -259,7 +259,7 @@ where
                         if let Some((tx_index, err)) = execution_error {
                             if self.allow_bootstrap_skip
                                 && replay_record.block_context.block_number
-                                <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
+                                    <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
                             {
                                 PUSH_METRICS.revm_blocks_skipped.inc();
                                 tracing::warn!(
