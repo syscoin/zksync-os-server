@@ -13,7 +13,10 @@ use zksync_os_batch_types::DiscoveredCommittedBatch;
 use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_contract_interface::models::StoredBatchInfo;
-use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
+use zksync_os_contract_interface::settlement_layer_intervals::{
+    IntervalSettlementLayer, SettlementLayerIntervals,
+};
+use zksync_os_storage_api::ReadBatch;
 
 const INIT_MAX_PARALLEL_BATCH_FETCHES: usize = 10;
 const WAIT_FOR_BATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -50,12 +53,19 @@ struct Inner {
 impl CommittedBatchProvider {
     /// Creates a provider, inserts the genesis batch if needed, and eagerly loads the startup
     /// frontier batches used by startup bookkeeping.
-    pub async fn new(
+    // SYSCOIN: Thread persisted batch storage through startup loading so restarts
+    // use local committed-batch data before falling back to archive L1 calls.
+    pub async fn new<BatchStorage>(
         runtime: &Runtime,
         l1_state: &L1State,
         max_l1_blocks_to_scan: u64,
+        batch_storage: BatchStorage,
+        archive_l1_provider: Option<DynProvider>,
         load_genesis_batch_info: impl AsyncFnOnce() -> StoredBatchInfo,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Self>
+    where
+        BatchStorage: ReadBatch + Clone,
+    {
         let provider = Self {
             inner: Arc::new(RwLock::new(Inner::default())),
             intervals: l1_state.settlement_layer_intervals.clone(),
@@ -83,7 +93,12 @@ impl CommittedBatchProvider {
             l1_state.last_finalized_executed_batch,
         );
         provider
-            .load_batch_numbers(max_l1_blocks_to_scan, prioritized_batch_numbers)
+            .load_batch_numbers(
+                max_l1_blocks_to_scan,
+                &batch_storage,
+                archive_l1_provider.as_ref(),
+                prioritized_batch_numbers,
+            )
             .await?;
 
         let provider_for_init = provider.clone();
@@ -91,6 +106,8 @@ impl CommittedBatchProvider {
         let last_proved = l1_state.last_proved_batch;
         let last_executed = l1_state.last_executed_batch;
         let last_finalized_executed = l1_state.last_finalized_executed_batch;
+        let batch_storage_for_init = batch_storage.clone();
+        let archive_l1_provider_for_init = archive_l1_provider.clone();
         runtime.spawn_critical_task("committed batch provider init", async move {
             provider_for_init
                 .init(
@@ -99,6 +116,8 @@ impl CommittedBatchProvider {
                     last_executed,
                     last_finalized_executed,
                     max_l1_blocks_to_scan,
+                    batch_storage_for_init,
+                    archive_l1_provider_for_init,
                 )
                 .await
                 .expect("failed to initialize CommittedBatchProvider");
@@ -108,22 +127,33 @@ impl CommittedBatchProvider {
     }
 
     /// Loads the remaining historical committed batches discovered on startup.
-    async fn init(
+    // SYSCOIN: Keep background startup catch-up cache-first too.
+    async fn init<BatchStorage>(
         &self,
         last_committed_batch: u64,
         last_proved_batch: u64,
         last_executed_batch: u64,
         last_finalized_executed_batch: u64,
         max_l1_blocks_to_scan: u64,
-    ) -> anyhow::Result<()> {
+        batch_storage: BatchStorage,
+        archive_l1_provider: Option<DynProvider>,
+    ) -> anyhow::Result<()>
+    where
+        BatchStorage: ReadBatch,
+    {
         let (_, remaining_batch_numbers) = startup_batch_numbers(
             last_committed_batch,
             last_proved_batch,
             last_executed_batch,
             last_finalized_executed_batch,
         );
-        self.load_batch_numbers(max_l1_blocks_to_scan, remaining_batch_numbers)
-            .await?;
+        self.load_batch_numbers(
+            max_l1_blocks_to_scan,
+            &batch_storage,
+            archive_l1_provider.as_ref(),
+            remaining_batch_numbers,
+        )
+        .await?;
         Ok(())
     }
 
@@ -177,20 +207,69 @@ impl CommittedBatchProvider {
 
     /// Fetches a batch set with bounded concurrency to reduce startup latency without issuing an
     /// unbounded number of L1 requests.
-    async fn load_batch_numbers(
+    // SYSCOIN: Check persisted executed batch storage before issuing historical L1 calls.
+    async fn load_batch_numbers<BatchStorage>(
         &self,
         max_l1_blocks_to_scan: u64,
+        batch_storage: &BatchStorage,
+        archive_l1_provider: Option<&DynProvider>,
         batch_numbers: Vec<u64>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<()>
+    where
+        BatchStorage: ReadBatch,
+    {
         stream::iter(batch_numbers)
             .map(|batch_number| async move {
-                let proxy = &self
+                if let Some(committed_batch) = load_persisted_batch(batch_storage, batch_number)? {
+                    tracing::info!(
+                        batch_number,
+                        "loaded committed batch from persisted batch storage on startup",
+                    );
+                    self.insert(committed_batch);
+                    return anyhow::Ok(());
+                }
+
+                let interval = self
                     .intervals
                     .find_interval(batch_number)
-                    .with_context(|| format!("batch {batch_number} does not belong to any known settlement layer interval"))?
-                    .proxy;
+                    .with_context(|| format!("batch {batch_number} does not belong to any known settlement layer interval"))?;
                 let discovered_batch =
-                    fetch_batch(&proxy, batch_number, max_l1_blocks_to_scan).await?;
+                    match (&interval.settlement_layer, archive_l1_provider.as_ref()) {
+                        (IntervalSettlementLayer::L1, Some(provider)) => {
+                            // SYSCOIN: Only background historical L1 reads prefer the archive
+                            // provider. If the archive endpoint is behind the live node, retry
+                            // against the live provider for recent batches.
+                            let archive_proxy =
+                                ZkChain::new(*interval.proxy.address(), (*provider).clone());
+                            match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan)
+                                .await
+                            {
+                                Ok(batch) => batch,
+                                Err(archive_err) => {
+                                    let archive_err = format!("{archive_err:#}");
+                                    tracing::warn!(
+                                        batch_number,
+                                        archive_error = archive_err,
+                                        "archive provider failed to fetch committed batch; retrying live provider",
+                                    );
+                                    fetch_batch(
+                                        &interval.proxy,
+                                        batch_number,
+                                        max_l1_blocks_to_scan,
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "archive provider failed to fetch committed batch {batch_number}: {archive_err}; \
+                                             live provider fallback also failed"
+                                        )
+                                    })?
+                                }
+                            }
+                        }
+                        _ => fetch_batch(&interval.proxy, batch_number, max_l1_blocks_to_scan)
+                            .await?,
+                    };
                 tracing::info!(
                     batch_number = discovered_batch.number(),
                     "discovered committed batch {} on startup",
@@ -238,6 +317,20 @@ fn startup_batch_numbers(
     (prioritized_in_range, remaining_batch_numbers)
 }
 
+// SYSCOIN: Rehydrate committed batch metadata that was already persisted by the L1 watcher.
+fn load_persisted_batch<BatchStorage>(
+    batch_storage: &BatchStorage,
+    batch_number: u64,
+) -> anyhow::Result<Option<DiscoveredCommittedBatch>>
+where
+    BatchStorage: ReadBatch,
+{
+    Ok(batch_storage
+        .get_batch_by_number(batch_number)
+        .with_context(|| format!("failed to read persisted batch {batch_number} during startup"))?
+        .map(|batch| batch.committed_batch))
+}
+
 /// Resolves a committed batch from L1 by first finding the block that committed it and then
 /// decoding the corresponding stored batch data.
 async fn fetch_batch(
@@ -258,7 +351,13 @@ async fn fetch_batch(
 
 #[cfg(test)]
 mod tests {
-    use super::startup_batch_numbers;
+    use super::{load_persisted_batch, startup_batch_numbers};
+    use alloy::primitives::B256;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use zksync_os_batch_types::DiscoveredCommittedBatch;
+    use zksync_os_contract_interface::models::StoredBatchInfo;
+    use zksync_os_storage_api::{PersistedBatch, ReadBatch};
 
     #[test]
     fn prioritizes_frontier_batches_once() {
@@ -271,5 +370,81 @@ mod tests {
             startup_batch_numbers(10, 8, 6, 4),
             (vec![4, 6, 8, 10], vec![5, 7, 9])
         );
+    }
+
+    #[test]
+    fn loads_committed_batch_from_persisted_storage() {
+        let storage = MockBatchStorage::default();
+        let committed_batch = discovered_batch(7, 70, 79);
+        storage.insert(PersistedBatch {
+            committed_batch: committed_batch.clone(),
+            execute_sl_block_number: Some(100),
+        });
+
+        assert_eq!(
+            load_persisted_batch(&storage, 7).unwrap(),
+            Some(committed_batch)
+        );
+        assert!(load_persisted_batch(&storage, 8).unwrap().is_none());
+    }
+
+    #[derive(Clone, Default)]
+    struct MockBatchStorage {
+        batches: Arc<Mutex<HashMap<u64, PersistedBatch>>>,
+    }
+
+    impl MockBatchStorage {
+        fn insert(&self, batch: PersistedBatch) {
+            self.batches.lock().unwrap().insert(batch.number(), batch);
+        }
+    }
+
+    impl ReadBatch for MockBatchStorage {
+        fn get_batch_by_block_number(
+            &self,
+            block_number: u64,
+        ) -> anyhow::Result<Option<PersistedBatch>> {
+            Ok(self
+                .batches
+                .lock()
+                .unwrap()
+                .values()
+                .find(|batch| batch.block_range.contains(&block_number))
+                .cloned())
+        }
+
+        fn get_batch_by_number(&self, batch_number: u64) -> anyhow::Result<Option<PersistedBatch>> {
+            Ok(self.batches.lock().unwrap().get(&batch_number).cloned())
+        }
+
+        fn latest_batch(&self) -> u64 {
+            self.batches
+                .lock()
+                .unwrap()
+                .keys()
+                .max()
+                .copied()
+                .unwrap_or_default()
+        }
+    }
+
+    fn discovered_batch(
+        batch_number: u64,
+        first_block: u64,
+        last_block: u64,
+    ) -> DiscoveredCommittedBatch {
+        DiscoveredCommittedBatch {
+            batch_info: StoredBatchInfo {
+                batch_number,
+                state_commitment: B256::with_last_byte(1),
+                number_of_layer1_txs: 0,
+                priority_operations_hash: B256::with_last_byte(2),
+                dependency_roots_rolling_hash: B256::with_last_byte(3),
+                l2_to_l1_logs_root_hash: B256::with_last_byte(4),
+                commitment: B256::with_last_byte(5),
+                last_block_timestamp: Some(0),
+            },
+            block_range: first_block..=last_block,
+        }
     }
 }

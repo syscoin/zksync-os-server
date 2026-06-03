@@ -31,7 +31,7 @@ Required env:
   L1_RPC_URL=http(s)://...  (HTTP(S) only)
 
 Optional env:
-  GATEWAY_ARCHIVE_L1_RPC_URL   runtime L1 RPC for os-server/migration startup (defaults to L1_RPC_URL)
+  GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for os-server historical startup reads (defaults to L1_RPC_URL)
   BITCOIN_DA_MIN_BALANCE_SYS    target DA wallet balance, default 10 on Tanenbaum, 0 on mainnet
   PROTOCOL_VERSION             default v31.0
   GATEWAY_DIR                  default ~/gateway
@@ -249,14 +249,16 @@ config_path = Path(sys.argv[1])
 new_rpc_url = sys.argv[2]
 lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
 in_l1_provider = False
+in_l1_archive_provider = False
 patched = False
 
 for idx, line in enumerate(lines):
     stripped = line.strip()
     if line and not line.startswith((" ", "\t")):
         in_l1_provider = stripped == "l1_provider:"
+        in_l1_archive_provider = stripped == "l1_archive_provider:"
         continue
-    if in_l1_provider and stripped.startswith("rpc_url:"):
+    if in_l1_archive_provider and stripped.startswith("rpc_url:"):
         indent = line[: len(line) - len(line.lstrip())]
         newline = "\n" if line.endswith("\n") else ""
         lines[idx] = f"{indent}rpc_url: {json.dumps(new_rpc_url)}{newline}"
@@ -264,10 +266,25 @@ for idx, line in enumerate(lines):
         break
 
 if not patched:
-    raise SystemExit(f"failed to patch l1_provider.rpc_url in {config_path}")
+    insert_at = None
+    for idx, line in enumerate(lines):
+        if line.strip() == "l1_provider:":
+            insert_at = idx + 1
+            while insert_at < len(lines) and (
+                not lines[insert_at].strip() or lines[insert_at].startswith((" ", "\t"))
+            ):
+                insert_at += 1
+            break
+    if insert_at is None:
+        raise SystemExit(f"failed to find l1_provider section in {config_path}")
+    lines[insert_at:insert_at] = [
+        "l1_archive_provider:\n",
+        f"  rpc_url: {json.dumps(new_rpc_url)}\n",
+    ]
+    patched = True
 
 config_path.write_text("".join(lines), encoding="utf-8")
-print(f"gateway-launch: set {config_path} l1_provider.rpc_url -> {new_rpc_url}")
+print(f"gateway-launch: set {config_path} l1_archive_provider.rpc_url -> {new_rpc_url}")
 PY
 }
 

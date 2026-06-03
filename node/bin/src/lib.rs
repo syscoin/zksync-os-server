@@ -367,6 +367,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // This is the only place where we initialize L1 provider, every component shares the same
     // cloned provider.
     let l1_provider = build_node_provider(&config.l1_provider_config, ProviderKind::L1).await;
+    // SYSCOIN: Optional archive-capable L1 provider for startup historical batch reads only.
+    let l1_archive_provider = if let Some(config) = &config.l1_archive_provider_config {
+        Some(build_node_provider(config, ProviderKind::L1Archive).await)
+    } else {
+        None
+    };
     let gateway_provider = if let Some(config) = &config.gateway_provider_config {
         Some(build_node_provider(config, ProviderKind::Gateway).await)
     } else {
@@ -516,11 +522,17 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .expect("Failed to get genesis root info")
         .expect("tree is not initialized");
     let tree_for_rpc = Arc::new(tree_db.clone());
+    // SYSCOIN: Reuse executed batch storage to hydrate committed batches before
+    // falling back to historical archive L1 reads during startup.
+    let persistent_batch_storage =
+        ExecutedBatchStorage::new(&config.general_config.rocks_db_path.join(BATCH_DB_NAME));
 
     let committed_batch_provider = CommittedBatchProvider::new(
         runtime,
         &l1_state,
         config.l1_watcher_config.max_blocks_to_process,
+        persistent_batch_storage.clone(),
+        l1_archive_provider.as_ref().map(|p| p.clone().erased()),
         || async {
             let genesis_state = genesis.state().await;
             load_genesis_stored_batch_info(genesis_state, genesis_root_hash, genesis_root_leaves)
@@ -1143,8 +1155,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // ========== Start L1 Persist Batch Watcher ===========
 
-    let persistent_batch_storage =
-        ExecutedBatchStorage::new(&config.general_config.rocks_db_path.join(BATCH_DB_NAME));
     let rpc_storage = RpcStorage::new(
         repositories.clone(),
         block_replay_storage.clone(),

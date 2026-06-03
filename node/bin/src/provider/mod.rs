@@ -15,6 +15,7 @@ use zksync_os_alloy_ext::dyn_wallet_provider::EthDynProvider;
 #[metrics(label = "provider", rename_all = "snake_case")]
 pub(crate) enum ProviderKind {
     L1,
+    L1Archive,
     Gateway,
 }
 

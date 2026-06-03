@@ -104,9 +104,9 @@ if [ "${GATEWAY_ARCHIVE_L1_RPC_URL_WAS_SET}" = false ] &&
   [ "${L1_RPC_URL_WAS_SET}" = false ] &&
   [ -f "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" ]; then
   # SYSCOIN: checkpoint repairs may regenerate configs without RPC env. Preserve
-  # the materialized archive runtime RPC only in that case. If L1_RPC_URL or
+  # both materialized L1 RPCs only in that case. If L1_RPC_URL or
   # GATEWAY_ARCHIVE_L1_RPC_URL is supplied, the explicit value wins.
-  existing_l1_rpc_url="$(python3 - "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" <<'PY'
+  existing_l1_rpc_urls="$(python3 - "${GATEWAY_DIR}/os-server-configs/${GATEWAY_CHAIN_NAME}/config.yaml" <<'PY'
 import sys
 from pathlib import Path
 
@@ -114,15 +114,30 @@ import yaml
 
 p = Path(sys.argv[1])
 data = yaml.safe_load(p.read_text(encoding="utf-8"))
+archive_provider = data.get("l1_archive_provider") if isinstance(data, dict) else None
 l1_provider = data.get("l1_provider") if isinstance(data, dict) else None
-if isinstance(l1_provider, dict):
-    rpc_url = l1_provider.get("rpc_url")
-    if isinstance(rpc_url, str) and rpc_url.strip():
-        print(rpc_url.strip())
+
+def rpc_url(provider):
+    if not isinstance(provider, dict):
+        return ""
+    url = provider.get("rpc_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip()
+    return ""
+
+runtime_url = rpc_url(l1_provider)
+archive_url = rpc_url(archive_provider) or runtime_url
+print(runtime_url)
+print(archive_url)
 PY
 )"
-  if [ -n "${existing_l1_rpc_url}" ]; then
-    GATEWAY_ARCHIVE_L1_RPC_URL="${existing_l1_rpc_url}"
+  existing_runtime_l1_rpc_url="$(printf '%s\n' "${existing_l1_rpc_urls}" | sed -n '1p')"
+  existing_archive_l1_rpc_url="$(printf '%s\n' "${existing_l1_rpc_urls}" | sed -n '2p')"
+  if [ -n "${existing_runtime_l1_rpc_url}" ]; then
+    L1_RPC_URL="${existing_runtime_l1_rpc_url}"
+  fi
+  if [ -n "${existing_archive_l1_rpc_url}" ]; then
+    GATEWAY_ARCHIVE_L1_RPC_URL="${existing_archive_l1_rpc_url}"
   fi
 fi
 
@@ -185,6 +200,7 @@ export EDGE_NATIVE_PER_GAS
 export EDGE_NATIVE_PRICE_USD
 export NATIVE_TOKEN_PRICE_USD
 export MATERIALIZE_EDGE_CONFIG
+export L1_RPC_URL
 export GATEWAY_ARCHIVE_L1_RPC_URL
 export BITCOIN_DA_RPC_URL
 export BITCOIN_DA_RPC_USER
@@ -327,10 +343,15 @@ use_mock_prover = prover_mode == "no-proofs"
 materialize_edge_config = os.environ.get("MATERIALIZE_EDGE_CONFIG", "true").strip().lower()
 if materialize_edge_config not in {"true", "false"}:
     raise SystemExit("invalid MATERIALIZE_EDGE_CONFIG (expected true|false)")
-l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
-if not l1_rpc_url:
+runtime_l1_rpc_url = os.environ.get("L1_RPC_URL", "").strip()
+archive_l1_rpc_url = os.environ.get("GATEWAY_ARCHIVE_L1_RPC_URL", "").strip()
+if not runtime_l1_rpc_url:
+    runtime_l1_rpc_url = archive_l1_rpc_url
+if not archive_l1_rpc_url:
+    archive_l1_rpc_url = runtime_l1_rpc_url
+if not runtime_l1_rpc_url:
     raise SystemExit(
-        "missing gateway runtime L1 RPC URL: set GATEWAY_ARCHIVE_L1_RPC_URL or L1_RPC_URL"
+        "missing gateway runtime L1 RPC URL: set L1_RPC_URL or GATEWAY_ARCHIVE_L1_RPC_URL"
     )
 prover_api_auth_user = os.environ.get("PROVER_API_AUTH_USER", "").strip()
 prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip()
@@ -456,7 +477,9 @@ def materialize_chain(
             else []
         ),
         "l1_provider:",
-        f"  rpc_url: '{l1_rpc_url}'",
+        f"  rpc_url: '{runtime_l1_rpc_url}'",
+        "l1_archive_provider:",
+        f"  rpc_url: '{archive_l1_rpc_url}'",
     ]
     config_lines.extend(
         [
