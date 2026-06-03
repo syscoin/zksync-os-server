@@ -51,6 +51,36 @@ struct Inner {
     block_range_index: RangeInclusiveMap<BlockNumber, u64>,
 }
 
+// SYSCOIN: Startup loads the committed/proved/executed/finalized frontier first
+// so consumers can resume without waiting for the full historical scan.
+#[derive(Debug, Clone, Copy)]
+struct StartupBatchFrontier {
+    last_committed: u64,
+    last_proved: u64,
+    last_executed: u64,
+    last_finalized_executed: u64,
+}
+
+impl StartupBatchFrontier {
+    fn from_l1_state(l1_state: &L1State) -> Self {
+        Self {
+            last_committed: l1_state.last_committed_batch,
+            last_proved: l1_state.last_proved_batch,
+            last_executed: l1_state.last_executed_batch,
+            last_finalized_executed: l1_state.last_finalized_executed_batch,
+        }
+    }
+
+    fn startup_batch_numbers(self) -> (Vec<u64>, Vec<u64>) {
+        startup_batch_numbers(
+            self.last_committed,
+            self.last_proved,
+            self.last_executed,
+            self.last_finalized_executed,
+        )
+    }
+}
+
 impl CommittedBatchProvider {
     /// Creates a provider, inserts the genesis batch if needed, and eagerly loads the startup
     /// frontier batches used by startup bookkeeping.
@@ -87,12 +117,8 @@ impl CommittedBatchProvider {
             });
         }
 
-        let (prioritized_batch_numbers, _) = startup_batch_numbers(
-            l1_state.last_committed_batch,
-            l1_state.last_proved_batch,
-            l1_state.last_executed_batch,
-            l1_state.last_finalized_executed_batch,
-        );
+        let startup_frontier = StartupBatchFrontier::from_l1_state(l1_state);
+        let (prioritized_batch_numbers, _) = startup_frontier.startup_batch_numbers();
         provider
             .load_batch_numbers(
                 max_l1_blocks_to_scan,
@@ -103,19 +129,12 @@ impl CommittedBatchProvider {
             .await?;
 
         let provider_for_init = provider.clone();
-        let last_committed = l1_state.last_committed_batch;
-        let last_proved = l1_state.last_proved_batch;
-        let last_executed = l1_state.last_executed_batch;
-        let last_finalized_executed = l1_state.last_finalized_executed_batch;
         let batch_storage_for_init = batch_storage.clone();
         let archive_l1_provider_for_init = archive_l1_provider.clone();
         runtime.spawn_critical_task("committed batch provider init", async move {
             provider_for_init
                 .init(
-                    last_committed,
-                    last_proved,
-                    last_executed,
-                    last_finalized_executed,
+                    startup_frontier,
                     max_l1_blocks_to_scan,
                     batch_storage_for_init,
                     archive_l1_provider_for_init,
@@ -131,10 +150,7 @@ impl CommittedBatchProvider {
     // SYSCOIN: Keep background startup catch-up cache-first too.
     async fn init<BatchStorage>(
         &self,
-        last_committed_batch: u64,
-        last_proved_batch: u64,
-        last_executed_batch: u64,
-        last_finalized_executed_batch: u64,
+        startup_frontier: StartupBatchFrontier,
         max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
         archive_l1_provider: Option<NodeProvider>,
@@ -142,12 +158,7 @@ impl CommittedBatchProvider {
     where
         BatchStorage: ReadBatch,
     {
-        let (_, remaining_batch_numbers) = startup_batch_numbers(
-            last_committed_batch,
-            last_proved_batch,
-            last_executed_batch,
-            last_finalized_executed_batch,
-        );
+        let (_, remaining_batch_numbers) = startup_frontier.startup_batch_numbers();
         self.load_batch_numbers(
             max_l1_blocks_to_scan,
             &batch_storage,
@@ -329,94 +340,359 @@ async fn fetch_batch(
         .with_context(|| format!("failed to find committed batch {batch_number} on L1"))
 }
 
-// SYSCOIN: Archive-backed batch metadata is only safe if the archive endpoint
-// has caught up to the live endpoint. Otherwise `fetch_batch` can miss later
-// reverts visible on live L1 and return stale committed batch metadata.
+// SYSCOIN: Helpers below implement the archive/live startup lookup policy for
+// committed batch metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProviderTips {
+    live: BlockNumber,
+    archive: BlockNumber,
+}
+
+// SYSCOIN
+async fn fetch_batch_from_live_with_context(
+    live_proxy: &ZkChain<NodeProvider>,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+    context: String,
+) -> anyhow::Result<DiscoveredCommittedBatch> {
+    fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+        .await
+        .with_context(|| format!("{context}; live provider fallback also failed"))
+}
+
+// SYSCOIN
+async fn read_provider_tips(
+    live_proxy: &ZkChain<NodeProvider>,
+    archive_provider: &NodeProvider,
+    batch_number: u64,
+    phase: &str,
+) -> anyhow::Result<ProviderTips> {
+    let live = live_proxy
+        .provider()
+        .get_block_number()
+        .await
+        .with_context(|| {
+            format!("failed to fetch live provider tip {phase} batch {batch_number} lookup")
+        })?;
+    let archive = archive_provider.get_block_number().await.with_context(|| {
+        format!("failed to fetch archive provider tip {phase} batch {batch_number} lookup")
+    })?;
+
+    Ok(ProviderTips { live, archive })
+}
+
+// SYSCOIN
+enum TipReadOutcome {
+    Tips(ProviderTips),
+    LiveBatch(DiscoveredCommittedBatch),
+}
+
+// SYSCOIN
+enum ArchiveLookupOutcome {
+    Batch(DiscoveredCommittedBatch),
+    Retry(ProviderTips),
+}
+
+// SYSCOIN
+async fn read_provider_tips_or_live_fallback(
+    live_proxy: &ZkChain<NodeProvider>,
+    archive_provider: &NodeProvider,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+    phase: &str,
+    observed_tips: Option<ProviderTips>,
+) -> anyhow::Result<TipReadOutcome> {
+    match read_provider_tips(live_proxy, archive_provider, batch_number, phase).await {
+        Ok(tips) => Ok(TipReadOutcome::Tips(tips)),
+        Err(tip_err) => {
+            let tip_err = format!("{tip_err:#}");
+            if let Some(tips) = observed_tips {
+                tracing::warn!(
+                    batch_number,
+                    live_tip = tips.live,
+                    archive_tip = tips.archive,
+                    tip_error = tip_err,
+                    "provider tip lookup failed; retrying committed batch lookup on live provider",
+                );
+            } else {
+                tracing::warn!(
+                    batch_number,
+                    tip_error = tip_err,
+                    "provider tip lookup failed; retrying committed batch lookup on live provider",
+                );
+            }
+
+            fetch_batch_from_live_with_context(
+                live_proxy,
+                batch_number,
+                max_l1_blocks_to_scan,
+                format!(
+                    "provider tip lookup failed {phase} committed batch {batch_number}: {tip_err}"
+                ),
+            )
+            .await
+            .map(TipReadOutcome::LiveBatch)
+        }
+    }
+}
+
+// SYSCOIN
+async fn live_fallback_if_archive_is_behind(
+    live_proxy: &ZkChain<NodeProvider>,
+    tips: ProviderTips,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+    phase: &str,
+) -> anyhow::Result<Option<DiscoveredCommittedBatch>> {
+    if tips.archive >= tips.live {
+        return Ok(None);
+    }
+
+    tracing::warn!(
+        batch_number,
+        live_tip = tips.live,
+        archive_tip = tips.archive,
+        phase,
+        "archive provider is behind live provider; retrying committed batch lookup on live provider",
+    );
+    fetch_batch_from_live_with_context(
+        live_proxy,
+        batch_number,
+        max_l1_blocks_to_scan,
+        format!(
+            "archive provider is behind live provider {phase} committed batch {batch_number} \
+             (archive tip {}, live tip {})",
+            tips.archive, tips.live,
+        ),
+    )
+    .await
+    .map(Some)
+}
+
+// SYSCOIN
+fn retry_if_tips_changed(
+    tips_before: ProviderTips,
+    tips_after: ProviderTips,
+    attempt: usize,
+    batch_number: u64,
+    phase: &str,
+) -> Option<ArchiveLookupOutcome> {
+    if tips_after == tips_before {
+        return None;
+    }
+
+    tracing::warn!(
+        batch_number,
+        attempt,
+        live_tip_before = tips_before.live,
+        archive_tip_before = tips_before.archive,
+        live_tip_after = tips_after.live,
+        archive_tip_after = tips_after.archive,
+        phase,
+        "provider tip changed during archive batch lookup; retrying archive lookup with fresh scan range",
+    );
+    Some(ArchiveLookupOutcome::Retry(tips_after))
+}
+
+// SYSCOIN
+async fn archive_batch_lookup_outcome(
+    live_proxy: &ZkChain<NodeProvider>,
+    archive_provider: &NodeProvider,
+    batch: DiscoveredCommittedBatch,
+    tips_before_fetch: ProviderTips,
+    attempt: usize,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+) -> anyhow::Result<ArchiveLookupOutcome> {
+    let tips_after_fetch = match read_provider_tips_or_live_fallback(
+        live_proxy,
+        archive_provider,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "after archive",
+        Some(tips_before_fetch),
+    )
+    .await?
+    {
+        TipReadOutcome::Tips(tips) => tips,
+        TipReadOutcome::LiveBatch(batch) => return Ok(ArchiveLookupOutcome::Batch(batch)),
+    };
+
+    if let Some(batch) = live_fallback_if_archive_is_behind(
+        live_proxy,
+        tips_after_fetch,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "after archive fetch",
+    )
+    .await?
+    {
+        return Ok(ArchiveLookupOutcome::Batch(batch));
+    }
+
+    if let Some(outcome) = retry_if_tips_changed(
+        tips_before_fetch,
+        tips_after_fetch,
+        attempt,
+        batch_number,
+        "after archive fetch",
+    ) {
+        return Ok(outcome);
+    }
+
+    if let Err(validation_err) = validate_archive_batch_against_live(live_proxy, &batch).await {
+        let validation_err = format!("{validation_err:#}");
+        tracing::warn!(
+            batch_number,
+            live_tip = tips_after_fetch.live,
+            archive_tip = tips_after_fetch.archive,
+            validation_error = validation_err,
+            "archive batch metadata could not be validated against live state; retrying live provider",
+        );
+        return fetch_batch_from_live_with_context(
+            live_proxy,
+            batch_number,
+            max_l1_blocks_to_scan,
+            format!(
+                "archive committed batch {batch_number} failed live hash validation \
+                 (archive tip {}, live tip {}): {validation_err}",
+                tips_after_fetch.archive, tips_after_fetch.live,
+            ),
+        )
+        .await
+        .map(ArchiveLookupOutcome::Batch);
+    }
+
+    let tips_after_validation = match read_provider_tips_or_live_fallback(
+        live_proxy,
+        archive_provider,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "after archive validation",
+        Some(tips_after_fetch),
+    )
+    .await?
+    {
+        TipReadOutcome::Tips(tips) => tips,
+        TipReadOutcome::LiveBatch(batch) => return Ok(ArchiveLookupOutcome::Batch(batch)),
+    };
+
+    if let Some(batch) = live_fallback_if_archive_is_behind(
+        live_proxy,
+        tips_after_validation,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "after archive validation",
+    )
+    .await?
+    {
+        return Ok(ArchiveLookupOutcome::Batch(batch));
+    }
+
+    if let Some(outcome) = retry_if_tips_changed(
+        tips_after_fetch,
+        tips_after_validation,
+        attempt,
+        batch_number,
+        "after archive validation",
+    ) {
+        return Ok(outcome);
+    }
+
+    tracing::warn!(
+        batch_number,
+        live_tip = tips_after_validation.live,
+        archive_tip = tips_after_validation.archive,
+        "archive committed batch hash matches live state",
+    );
+    Ok(ArchiveLookupOutcome::Batch(batch))
+}
+
+// SYSCOIN: Archive-backed batch metadata is only safe inside a stable live/archive
+// tip window. `storedBatchHash` authenticates `StoredBatchInfo`, but not the L2
+// block range decoded from the commit log.
 async fn fetch_batch_with_archive_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
-    let live_tip = live_proxy
-        .provider()
-        .get_block_number()
-        .await
-        .with_context(|| {
-            format!("failed to fetch live provider tip before batch {batch_number} lookup")
-        })?;
-    let archive_tip = match archive_provider.get_block_number().await {
-        Ok(archive_tip) => archive_tip,
-        Err(archive_tip_err) => {
-            let archive_tip_err = format!("{archive_tip_err:#}");
-            tracing::warn!(
-                batch_number,
-                live_tip,
-                archive_error = archive_tip_err,
-                "archive provider tip lookup failed; retrying committed batch lookup on live provider",
-            );
-            return fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
-                .await
-                .with_context(|| {
-                    format!(
-                        "archive provider tip lookup failed before committed batch {batch_number}: {archive_tip_err}; \
-                         live provider fallback also failed"
-                    )
-                });
-        }
+    let mut tips = match read_provider_tips_or_live_fallback(
+        live_proxy,
+        archive_provider,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "before",
+        None,
+    )
+    .await?
+    {
+        TipReadOutcome::Tips(tips) => tips,
+        TipReadOutcome::LiveBatch(batch) => return Ok(batch),
     };
 
+    if let Some(batch) = live_fallback_if_archive_is_behind(
+        live_proxy,
+        tips,
+        batch_number,
+        max_l1_blocks_to_scan,
+        "before archive fetch",
+    )
+    .await?
+    {
+        return Ok(batch);
+    }
+
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
-    match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
-        Ok(batch) => match validate_archive_batch_against_live(live_proxy, &batch).await {
-            Ok(()) => {
-                tracing::warn!(
-                    batch_number,
-                    live_tip,
-                    archive_tip,
-                    "archive committed batch hash matches live state",
-                );
-                Ok(batch)
-            }
-            Err(validation_err) => {
-                let validation_err = format!("{validation_err:#}");
-                tracing::warn!(
-                    batch_number,
-                    live_tip,
-                    archive_tip,
-                    validation_error = validation_err,
-                    "archive batch metadata could not be validated against live state; retrying live provider",
-                );
-                fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "archive committed batch {batch_number} failed live hash validation \
-                             (archive tip {archive_tip}, live tip {live_tip}): {validation_err}; \
-                             live provider fallback also failed"
-                        )
-                    })
-            }
-        },
-        Err(archive_err) => {
-            let archive_err = format!("{archive_err:#}");
-            tracing::warn!(
+    for attempt in 0..2 {
+        match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
+            Ok(batch) => match archive_batch_lookup_outcome(
+                live_proxy,
+                archive_provider,
+                batch,
+                tips,
+                attempt,
                 batch_number,
-                live_tip,
-                archive_tip,
-                archive_error = archive_err,
-                "archive provider failed to fetch committed batch; retrying live provider",
-            );
-            fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
-                .await
-                .with_context(|| {
-                    format!(
-                        "archive provider failed to fetch committed batch {batch_number}: {archive_err}; \
-                         live provider fallback also failed"
+                max_l1_blocks_to_scan,
+            )
+            .await?
+            {
+                ArchiveLookupOutcome::Batch(batch) => return Ok(batch),
+                ArchiveLookupOutcome::Retry(updated_tips) => tips = updated_tips,
+            },
+            Err(archive_err) => {
+                let archive_err = format!("{archive_err:#}");
+                tracing::warn!(
+                    batch_number,
+                    live_tip = tips.live,
+                    archive_tip = tips.archive,
+                    archive_error = archive_err,
+                    "archive provider failed to fetch committed batch; retrying live provider",
+                );
+                return fetch_batch_from_live_with_context(
+                        live_proxy,
+                        batch_number,
+                        max_l1_blocks_to_scan,
+                    format!("archive provider failed to fetch committed batch {batch_number}: {archive_err}"),
                     )
-                })
+                    .await;
+            }
         }
     }
+
+    tracing::warn!(
+        batch_number,
+        live_tip = tips.live,
+        archive_tip = tips.archive,
+        "provider tip changed during archive committed batch lookup retry; retrying live provider",
+    );
+    fetch_batch_from_live_with_context(
+        live_proxy,
+        batch_number,
+        max_l1_blocks_to_scan,
+        format!("provider tip changed during archive committed batch {batch_number} lookup retry"),
+    )
+    .await
 }
 
 // SYSCOIN: A behind archive can still serve valid historical commit calldata.

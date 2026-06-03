@@ -225,7 +225,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         if has_batch_da {
             if commit_data.operator_da_input.is_empty()
-                || commit_data.operator_da_input.len() % 32 != 0
+                || !commit_data.operator_da_input.len().is_multiple_of(32)
             {
                 return Err(BatchVerificationError::InvalidSyscoinDaCommitment(
                     "operator DA input must be a non-empty array of 32-byte blob hashes"
