@@ -59,9 +59,10 @@ where
 }
 
 // SYSCOIN: `find_block_by_migration_number` returns the provider's latest block
-// when the target migration has not happened yet. Do not accept a stale archive
-// latest in that case; resolve through the live provider so the watcher starts
-// from the live tip.
+// when the target migration has not happened yet. If an archive provider is
+// lagging behind the target migration, only start from the live tip when live
+// latest state also proves the target has not happened yet; otherwise fail
+// closed until archive catches up enough to resolve the historical cursor.
 pub async fn find_startup_migration_block_with_archive_fallback(
     live_zk_chain: ZkChain<DynProvider>,
     archive_zk_chain: Option<ZkChain<DynProvider>>,
@@ -72,8 +73,8 @@ pub async fn find_startup_migration_block_with_archive_fallback(
 ) -> anyhow::Result<BlockNumber> {
     if let Some(archive_zk_chain) = archive_zk_chain {
         match latest_migration_number(&archive_zk_chain, chain_asset_handler, chain_id).await {
-            Ok((_archive_latest, latest_migration_number))
-                if latest_migration_number >= U256::from(migration_number) =>
+            Ok((_archive_latest, archive_latest_migration_number))
+                if archive_latest_migration_number >= U256::from(migration_number) =>
             {
                 match find_block_by_migration_number(
                     archive_zk_chain,
@@ -107,14 +108,41 @@ pub async fn find_startup_migration_block_with_archive_fallback(
                     }
                 }
             }
-            Ok((archive_latest, latest_migration_number)) => {
-                tracing::warn!(
-                    operation,
-                    archive_latest,
-                    %latest_migration_number,
-                    migration_number,
-                    "archive provider has not reached startup migration target; using live provider tip",
-                );
+            Ok((archive_latest, archive_latest_migration_number)) => {
+                return match latest_migration_number(&live_zk_chain, chain_asset_handler, chain_id)
+                    .await
+                {
+                    Ok((live_latest, live_latest_migration_number))
+                        if live_latest_migration_number < U256::from(migration_number) =>
+                    {
+                        tracing::warn!(
+                            operation,
+                            archive_latest,
+                            %archive_latest_migration_number,
+                            live_latest,
+                            %live_latest_migration_number,
+                            migration_number,
+                            "archive provider has not reached startup migration target; using live tip because target is not reached on live either",
+                        );
+                        Ok(live_latest)
+                    }
+                    Ok((live_latest, live_latest_migration_number)) => {
+                        anyhow::bail!(
+                            "archive provider has not reached startup migration target for {operation}: \
+                             archive latest block {archive_latest} has migration number {archive_latest_migration_number}, \
+                             but live latest block {live_latest} has migration number {live_latest_migration_number} \
+                             for target migration {migration_number}; archive must catch up or live provider must support historical reads"
+                        )
+                    }
+                    Err(live_err) => {
+                        let live_err = format!("{live_err:#}");
+                        anyhow::bail!(
+                            "archive provider has not reached startup migration target for {operation}: \
+                             archive latest block {archive_latest} has migration number {archive_latest_migration_number}, \
+                             and live provider latest migration check failed: {live_err}"
+                        )
+                    }
+                };
             }
             Err(archive_err) => {
                 let archive_err = format!("{archive_err:#}");
