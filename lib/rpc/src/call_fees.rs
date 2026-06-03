@@ -14,12 +14,14 @@ pub struct CallFees {
 
 impl CallFees {
     // todo(EIP-4844): handle blob fees
-    /// `relax_fee_validation` skips the `FeeCapTooLow` check so under-priced requests are
-    /// accepted by `eth_estimateGas` and `eth_simulateV1` (with `validation=false`) instead
-    /// of being rejected. The resulting `gas_price` is the request's own value (or 0 when
-    /// no fees were supplied) — callers that need the bootloader to actually accept the tx
-    /// must ensure `gas_price >= basefee` themselves (e.g. by clamping the request's fees
-    /// upstream before calling `ensure_fees`).
+    /// SYSCOIN: `relax_fee_validation` skips the general `FeeCapTooLow` check so under-priced
+    /// requests are accepted by `eth_estimateGas` and `eth_simulateV1`
+    /// (with `validation=false`) instead of being rejected. It still preserves invalid
+    /// explicit fee shapes, such as zero fee cap with a non-zero tip. The resulting
+    /// `gas_price` is the request's own value (or 0 when no fees were supplied), so
+    /// callers that need the bootloader to actually accept the tx must ensure
+    /// `gas_price >= basefee` themselves (e.g. by clamping the request's fees upstream
+    /// before calling `ensure_fees`).
     pub fn ensure_fees(
         call_gas_price: Option<u128>,
         call_max_fee_per_gas: Option<u128>,
@@ -70,6 +72,15 @@ impl CallFees {
                         if !relax_fee_validation
                             && request_carries_fee
                             && max_fee_per_gas < block_base_fee
+                        {
+                            return Err(CallFeesError::FeeCapTooLow);
+                        }
+                        // SYSCOIN: even relaxed validation must preserve the explicit-zero-cap
+                        // rejection for requests that carry a non-zero tip. Otherwise the
+                        // error regresses to `TipAboveFeeCap` below.
+                        if relax_fee_validation
+                            && max_fee_per_gas == 0
+                            && max_priority_fee_per_gas != 0
                         {
                             return Err(CallFeesError::FeeCapTooLow);
                         }
