@@ -6,7 +6,7 @@ use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_roo
 use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::eips::BlockId;
 use alloy::network::primitives::BlockTransactions;
-use alloy::primitives::{B256, Bloom, Bytes, Sealable, U256};
+use alloy::primitives::{Address, B256, Bloom, Bytes, Sealable, U256};
 use alloy::rpc::types::simulate::{
     MAX_SIMULATE_BLOCKS, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
 };
@@ -15,6 +15,7 @@ use alloy::rpc::types::{BlockOverrides, TransactionRequest};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use zk_os_api::helpers::get_nonce;
+use zk_os_basic_system::system_implementation::flat_storage_model::AccountProperties;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{NopTracer, NopValidator};
 use zksync_os_interface::traits::{NoopTxCallback, TxListSource};
@@ -24,7 +25,8 @@ use zksync_os_rpc_api::types::{ZkApiBlock, ZkHeader};
 use zksync_os_storage_api::BlockContext;
 use zksync_os_storage_api::ViewState;
 use zksync_os_storage_api::state_override_view::{
-    OverriddenStateView, OwnedOverrides, account_properties_storage_key, build_state_override_maps,
+    OverriddenStateView, OverrideProvider, OwnedOverrides, account_properties_storage_key,
+    build_state_override_maps,
 };
 use zksync_os_types::{BlockOutput, ZkReceipt, ZkReceiptEnvelope, ZkTransaction, ZksyncOsEncode};
 
@@ -123,12 +125,12 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                         .get(&from)
                         .and_then(|account| account.balance)
                         .is_some();
+                    let sender_balance = simulation_view.balance(from);
                     if !user_balance_override
-                        && simulation_view.balance(from)
-                            < required_balance_for_request(call, default_gas_limit)
+                        && sender_balance < required_balance_for_request(call, default_gas_limit)
                     {
                         internal_state_overrides.entry(from).or_default().balance = Some(U256::MAX);
-                        internally_funded_senders.push(from);
+                        internally_funded_senders.push((from, sender_balance));
                     }
                 }
             }
@@ -179,11 +181,11 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 block_output,
                 return_full_transactions,
             )?;
-            // SYSCOIN: internal fee-bypass balances are execution scaffolding, not
-            // caller-visible state. Remove account-property writes produced from those
-            // synthetic balances before carrying overlays into later simulated blocks.
-            for sender in internally_funded_senders {
-                block_overlay.remove_storage_override(&account_properties_storage_key(sender));
+            // SYSCOIN: internal fee-bypass balances are execution scaffolding. Preserve
+            // VM-produced account-property changes such as nonce increments, but replace
+            // the synthetic balance before carrying overlays into later simulated blocks.
+            for (sender, original_balance) in internally_funded_senders {
+                restore_internal_sender_balance(&mut block_overlay, sender, original_balance);
             }
             let next_hash = simulated_block.inner.header.hash;
 
@@ -647,6 +649,35 @@ fn required_balance_for_request(call: &TransactionRequest, default_gas_limit: u6
     gas_cost
         .checked_add(call.value.unwrap_or_default())
         .unwrap_or(U256::MAX)
+}
+
+fn restore_internal_sender_balance(
+    block_overlay: &mut OwnedOverrides,
+    sender: Address,
+    original_balance: U256,
+) {
+    let account_key = account_properties_storage_key(sender);
+    let Some(account_hash) = block_overlay.get_storage_override(&account_key) else {
+        return;
+    };
+    let Some(account_preimage) = block_overlay.get_preimage_override(&account_hash) else {
+        block_overlay.remove_storage_override(&account_key);
+        return;
+    };
+    let Ok(encoded_account) = <&[u8] as TryInto<[u8; AccountProperties::ENCODED_SIZE]>>::try_into(
+        account_preimage.as_slice(),
+    ) else {
+        block_overlay.remove_storage_override(&account_key);
+        return;
+    };
+
+    let mut account = AccountProperties::decode(&encoded_account);
+    account.balance = original_balance;
+    let account_preimage = account.encoding();
+    let account_hash = B256::from(account.compute_hash().as_u8_array());
+
+    block_overlay.insert_preimage_override(account_hash, account_preimage.to_vec());
+    block_overlay.insert_storage_override(account_key, account_hash);
 }
 
 struct SimulatedTx {

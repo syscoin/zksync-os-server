@@ -45,6 +45,18 @@ impl OwnedOverrides {
     pub fn remove_storage_override(&mut self, key: &B256) {
         self.storage.remove(key);
     }
+
+    // SYSCOIN: lets RPC simulation rewrite internal account-property overlays
+    // without exposing the whole override map.
+    pub fn insert_storage_override(&mut self, key: B256, value: B256) {
+        self.storage.insert(key, value);
+    }
+
+    // SYSCOIN: lets RPC simulation publish rewritten account-property preimages
+    // without exposing the whole override map.
+    pub fn insert_preimage_override(&mut self, hash: B256, preimage: Vec<u8>) {
+        self.preimages.insert(hash, preimage);
+    }
 }
 
 impl OverrideProvider for OwnedOverrides {
