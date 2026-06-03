@@ -18,7 +18,7 @@ use alloy::network::{
     TransactionResponse,
 };
 use alloy::primitives::utils::{format_ether, format_units};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
 use alloy::providers::utils::Eip1559Estimation;
@@ -32,11 +32,11 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
-use zksync_os_alloy_ext::dyn_wallet_provider::{EthDynProvider, EthWalletProvider};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
 use zksync_os_pipeline::{ComponentId, PeekableReceiver, SendAndRecordExt};
+use zksync_os_provider::{EthWalletProvider, NodeProvider};
 
 /// Component-specific state for the L1 sender.
 pub enum L1SenderState {
@@ -101,6 +101,8 @@ const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
 /// Per-tx gas limit used when `eth_simulateV1` cannot produce a usable estimate.
 /// Sized to cover the bounded set of commit/prove/execute calls.
 const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
+/// Per-call cap for `eth_simulateV1`. The simulation reports the actual `gas_used`.
+const L1_SIM_GAS_LIMIT: u64 = 30_000_000;
 
 #[derive(Debug, Clone, Copy)]
 struct FeeParams {
@@ -138,6 +140,43 @@ where
     }
 }
 
+fn build_l1_simulation_request(
+    operator_address: Address,
+    to_address: Address,
+    input: Bytes,
+    nonce: u64,
+    fee_params: FeeParams,
+    blob_sidecar: Option<alloy::consensus::BlobTransactionSidecar>,
+    use_eip7594_sidecar: bool,
+) -> anyhow::Result<TransactionRequest> {
+    // Mirror submission fees so providers (e.g. anvil) that parse the request
+    // as a typed tx accept it.
+    let mut req = TransactionRequest::default()
+        .with_from(operator_address)
+        .with_to(to_address)
+        .with_input(input)
+        .with_max_fee_per_gas(fee_params.max_fee_per_gas)
+        .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
+        .with_nonce(nonce)
+        .with_gas_limit(L1_SIM_GAS_LIMIT);
+
+    if let Some(blob_sidecar) = blob_sidecar {
+        req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
+        if use_eip7594_sidecar {
+            req.set_blob_sidecar(BlobTransactionSidecarVariant::Eip7594(
+                blob_sidecar.try_into_7594(EnvKzgSettings::Default.get())?,
+            ));
+        } else {
+            req.set_blob_sidecar(BlobTransactionSidecarVariant::Eip4844(blob_sidecar));
+        }
+        // Anvil routes blob requests through the EIP-4844 arm only when
+        // `type=3` is set explicitly; otherwise it returns -32602.
+        req.transaction_type = Some(3);
+    }
+
+    Ok(req)
+}
+
 /// Process responsible for sending transactions to L1.
 /// Handles one type of l1 command (e.g. Commit or Prove).
 /// Loads up to `command_limit` commands from the channel and sends them to L1 in parallel.
@@ -163,7 +202,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
     to_address: Address,
 
     // == config ==
-    mut provider: EthDynProvider,
+    mut provider: NodeProvider,
     config: L1SenderConfig<Input>,
     gateway: bool,
     state_reporter: ComponentStateReporter,
@@ -340,6 +379,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             &commands,
             operator_address,
             sim_fee_params,
+            config.fusaka_upgrade_timestamp,
         )
         .await?;
         tracing::info!(
@@ -410,7 +450,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
 
 // SYSCOIN: common L1 tx submission path used by the normal loop and by dropped-tx recovery.
 async fn submit_l1_transaction<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     to_address: Address,
     config: &L1SenderConfig<Input>,
@@ -567,7 +607,7 @@ where
 // `Provider::sign_transaction()` reaches the RPC-signing layer. Build and sign with the
 // local wallet directly after filling the request fields required for the selected tx type.
 async fn sign_l1_transaction(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     mut tx_request: TransactionRequest,
 ) -> anyhow::Result<(Vec<u8>, u64)> {
@@ -628,7 +668,7 @@ fn notify_commit_submitted_batch(
 /// metrics, and forwards the completed commands downstream.
 async fn wait_for_txs_and_forward<Input>(
     pending_txs: Vec<PendingTx<Input>>,
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     to_address: Address,
     config: &L1SenderConfig<Input>,
@@ -909,7 +949,7 @@ where
 // Keep looking for the same-nonce tx instead of resubmitting the command at a later nonce or
 // re-arming a waiter for the dropped hash.
 async fn recover_same_nonce_tx<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -1013,7 +1053,7 @@ where
 // SYSCOIN: standard-RPC fallback for providers that do not implement sender+nonce lookup.
 // Scan recent mined blocks and accept only a transaction with the same sender, nonce, and calldata.
 async fn find_matching_mined_sender_nonce_tx<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -1115,7 +1155,7 @@ enum SameNonceTx {
 // SYSCOIN: if a rebroadcast reports nonce reuse, try to discover the tx currently occupying the
 // original sender nonce and track it only if it carries the same command calldata.
 async fn find_matching_sender_nonce_tx<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     to_address: Address,
     nonce: u64,
@@ -1301,7 +1341,7 @@ where
 /// prevents the race where txs mined between the `getTotalBatches` call and this nonce check
 /// cause us to mis-count in-flight txs and crash on calldata mismatch.
 async fn recover_in_flight_txs<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     operator_address: Address,
     gateway: bool,
     inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
@@ -1658,12 +1698,13 @@ async fn apply_l1_gas_limit(
 /// remain visible to later ones. Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on errors
 /// for multi-command batches, and to per-tx `eth_estimateGas` for single-command batches.
 async fn estimate_gas_limits<Input>(
-    provider: &EthDynProvider,
+    provider: &NodeProvider,
     to_address: Address,
     gateway: bool,
     commands: &[Input],
     operator_address: Address,
     fee_params: FeeParams,
+    fusaka_upgrade_timestamp: u64,
 ) -> anyhow::Result<Vec<Option<u64>>>
 where
     Input: SendToL1,
@@ -1701,30 +1742,34 @@ where
         );
     }
     let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
+    let use_eip7594_sidecar = if commands.iter().any(|cmd| cmd.blob_sidecar().is_some()) {
+        let pending_block = provider
+            .get_block(BlockId::pending())
+            .await?
+            .context("pending L1 block is unavailable while setting simulated blob format")?;
+        fusaka_upgrade_timestamp <= pending_block.header.timestamp
+    } else {
+        false
+    };
     let block_state_calls = commands
         .iter()
         .enumerate()
         .map(|(i, cmd)| {
-            let mut req = TransactionRequest::default()
-                .with_from(operator_address)
-                .with_to(to_address)
-                .with_input(cmd.solidity_call(gateway, &operator_address))
-                .with_max_fee_per_gas(fee_params.max_fee_per_gas)
-                .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
-                .with_nonce(starting_nonce + i as u64)
-                .with_gas_limit(sim_gas_limit);
-            if let Some(sidecar) = cmd.blob_sidecar() {
-                req.blob_versioned_hashes = Some(sidecar.versioned_hashes().collect());
-                req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
-                // Anvil routes blob requests through the EIP-4844 arm only when
-                // `type=3` is set explicitly; otherwise it returns -32602.
-                req.transaction_type = Some(3);
-            }
+            let mut req = build_l1_simulation_request(
+                operator_address,
+                to_address,
+                cmd.solidity_call(gateway, &operator_address),
+                starting_nonce + i as u64,
+                fee_params,
+                cmd.blob_sidecar(),
+                use_eip7594_sidecar,
+            )?;
+            req.set_gas_limit(sim_gas_limit);
             let mut sim_block = SimBlock::default().call(req);
             sim_block.state_overrides = Some(balance_override.clone());
-            sim_block
+            anyhow::Ok(sim_block)
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     let payload = SimulatePayload {
         block_state_calls,
@@ -1871,7 +1916,7 @@ async fn estimate_eip1559_fees(
 }
 
 async fn register_operator<Input: SendToL1>(
-    provider: &mut EthDynProvider,
+    provider: &mut NodeProvider,
     signer_config: SignerConfig,
 ) -> anyhow::Result<Address> {
     let address = signer_config
@@ -2068,6 +2113,58 @@ mod tests {
         assert!(fallback_gas_limit_for_reverted_call(2).is_err());
     }
 
+    #[test]
+    fn blob_simulation_request_is_buildable_only_with_sidecar() {
+        let operator_address = Address::with_last_byte(1);
+        let to_address = Address::with_last_byte(2);
+        let input = Bytes::from_static(b"commit");
+        let nonce = 7;
+        let fee_params = FeeParams {
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 10,
+            max_fee_per_blob_gas: 20,
+        };
+        let blob_sidecar = alloy::consensus::BlobTransactionSidecar::default();
+
+        let mut old_request = TransactionRequest::default()
+            .with_from(operator_address)
+            .with_to(to_address)
+            .with_input(input.clone())
+            .with_max_fee_per_gas(fee_params.max_fee_per_gas)
+            .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
+            .with_nonce(nonce)
+            .with_gas_limit(L1_SIM_GAS_LIMIT);
+        old_request.blob_versioned_hashes = Some(blob_sidecar.versioned_hashes().collect());
+        old_request.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
+        old_request.transaction_type = Some(3);
+
+        let old_err = old_request
+            .build_typed_simulate_transaction()
+            .expect_err("hashes-only blob simulation request should not be buildable");
+        assert!(
+            old_err.to_string().contains("Transaction is not buildable"),
+            "unexpected old request error: {old_err}",
+        );
+
+        let fixed_request = build_l1_simulation_request(
+            operator_address,
+            to_address,
+            input,
+            nonce,
+            fee_params,
+            Some(blob_sidecar),
+            false,
+        )
+        .expect("sidecar-backed blob simulation request should be constructed");
+        fixed_request
+            .build_typed_simulate_transaction()
+            .expect("sidecar-backed blob simulation request should be buildable");
+    }
+
+    /// `max_fee_per_gas` and `max_fee_per_blob_gas` are static caps set by
+    /// the operator — they must equal the configured values regardless of
+    /// what the network estimate reports. Only `max_priority_fee_per_gas` is
+    /// allowed to track the estimate (capped from above).
     #[test]
     fn apply_fee_caps_keeps_max_fee_and_blob_fee_static() {
         let configured = FeeParams {

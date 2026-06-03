@@ -1,6 +1,6 @@
 use crate::util;
 use alloy::primitives::BlockNumber;
-use alloy::providers::{DynProvider, Provider};
+use alloy::providers::Provider;
 use anyhow::Context;
 use futures::stream::{self, StreamExt};
 use rangemap::RangeInclusiveMap;
@@ -16,6 +16,7 @@ use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_contract_interface::settlement_layer_intervals::{
     IntervalSettlementLayer, SettlementLayerIntervals,
 };
+use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReadBatch;
 
 const INIT_MAX_PARALLEL_BATCH_FETCHES: usize = 10;
@@ -60,7 +61,7 @@ impl CommittedBatchProvider {
         l1_state: &L1State,
         max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
-        archive_l1_provider: Option<DynProvider>,
+        archive_l1_provider: Option<NodeProvider>,
         load_genesis_batch_info: impl AsyncFnOnce() -> StoredBatchInfo,
     ) -> anyhow::Result<Self>
     where
@@ -136,7 +137,7 @@ impl CommittedBatchProvider {
         last_finalized_executed_batch: u64,
         max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
-        archive_l1_provider: Option<DynProvider>,
+        archive_l1_provider: Option<NodeProvider>,
     ) -> anyhow::Result<()>
     where
         BatchStorage: ReadBatch,
@@ -212,7 +213,7 @@ impl CommittedBatchProvider {
         &self,
         max_l1_blocks_to_scan: u64,
         batch_storage: &BatchStorage,
-        archive_l1_provider: Option<&DynProvider>,
+        archive_l1_provider: Option<&NodeProvider>,
         batch_numbers: Vec<u64>,
     ) -> anyhow::Result<()>
     where
@@ -313,7 +314,7 @@ where
 /// Resolves a committed batch from L1 by first finding the block that committed it and then
 /// decoding the corresponding stored batch data.
 async fn fetch_batch(
-    diamond_proxy_sl: &ZkChain<DynProvider>,
+    diamond_proxy_sl: &ZkChain<NodeProvider>,
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
@@ -332,8 +333,8 @@ async fn fetch_batch(
 // has caught up to the live endpoint. Otherwise `fetch_batch` can miss later
 // reverts visible on live L1 and return stale committed batch metadata.
 async fn fetch_batch_with_archive_fallback(
-    live_proxy: &ZkChain<DynProvider>,
-    archive_provider: &DynProvider,
+    live_proxy: &ZkChain<NodeProvider>,
+    archive_provider: &NodeProvider,
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
@@ -421,7 +422,7 @@ async fn fetch_batch_with_archive_fallback(
 // SYSCOIN: A behind archive can still serve valid historical commit calldata.
 // Validate the decoded batch against live latest state before accepting it.
 async fn validate_archive_batch_against_live(
-    live_proxy: &ZkChain<DynProvider>,
+    live_proxy: &ZkChain<NodeProvider>,
     batch: &DiscoveredCommittedBatch,
 ) -> anyhow::Result<()> {
     let live_batch_hash = live_proxy

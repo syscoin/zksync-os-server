@@ -1,7 +1,6 @@
 use crate::watcher::{L1Watcher, L1WatcherError};
 use crate::{BlockUpdates, L1WatcherConfig, ProcessRawEvents, util};
 use alloy::primitives::{B256, U256};
-use alloy::providers::DynProvider;
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
 use tokio::sync::watch;
@@ -9,6 +8,7 @@ use zksync_os_contract_interface::settlement_layer_intervals::{
     IntervalSettlementLayer, SettlementLayerIntervals,
 };
 use zksync_os_contract_interface::{Bridgehub, IChainAssetHandler::MigrationFinalized, ZkChain};
+use zksync_os_provider::NodeProvider;
 
 /// Watches for `MigrationFinalized(uint256 indexed chainId, uint256 migrationNumber, ...)` events
 /// emitted by the `IChainAssetHandler` contract on the current settlement layer.
@@ -31,9 +31,9 @@ impl MigrationFinalizedWatcher {
     /// destination's view of finalized migrations) and decides whether to spawn the watcher.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_watcher(
-        zk_chain: ZkChain<DynProvider>,
-        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
-        bridgehub_sl: Bridgehub<DynProvider>,
+        zk_chain: ZkChain<NodeProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<NodeProvider>>,
+        bridgehub_sl: Bridgehub<NodeProvider>,
         intervals: &SettlementLayerIntervals,
         l2_chain_id: u64,
         l1_chain_id: u64,
@@ -155,7 +155,7 @@ impl ProcessRawEvents for MigrationFinalizedWatcher {
 
     async fn process_raw_event(
         &mut self,
-        _provider: &DynProvider,
+        _provider: &NodeProvider,
         log: Log,
     ) -> Result<(), L1WatcherError> {
         let Some(&topic0) = log.topic0() else {
