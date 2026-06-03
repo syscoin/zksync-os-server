@@ -330,8 +330,8 @@ async fn fetch_batch(
 }
 
 // SYSCOIN: Archive-backed batch metadata is only safe if the archive endpoint
-// has caught up to the live endpoint. Otherwise `fetch_batch` can miss later
-// reverts visible on live L1 and return stale committed batch metadata.
+// has caught up to the live endpoint. The live storedBatchHash authenticates
+// StoredBatchInfo, but not the L2 block range decoded from the commit log.
 async fn fetch_batch_with_archive_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -368,6 +368,22 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
+        Ok(_) if archive_tip < live_tip => {
+            tracing::warn!(
+                batch_number,
+                live_tip,
+                archive_tip,
+                "archive provider is behind live provider; retrying committed batch lookup on live provider",
+            );
+            fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+                .await
+                .with_context(|| {
+                    format!(
+                        "archive provider is behind live provider for committed batch {batch_number} \
+                         (archive tip {archive_tip}, live tip {live_tip}); live provider fallback also failed"
+                    )
+                })
+        }
         Ok(batch) => match validate_archive_batch_against_live(live_proxy, &batch).await {
             Ok(()) => {
                 tracing::warn!(
