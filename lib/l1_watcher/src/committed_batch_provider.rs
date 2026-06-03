@@ -368,7 +368,6 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     for attempt in 0..2 {
-        let archive_was_caught_up = archive_tip >= live_tip;
         match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
             Ok(batch) => {
                 let live_tip_after_fetch = match live_proxy.provider().get_block_number().await {
@@ -433,7 +432,7 @@ async fn fetch_batch_with_archive_fallback(
                         });
                 }
 
-                if !archive_was_caught_up {
+                if live_tip_after_fetch != live_tip || archive_tip_after_fetch != archive_tip {
                     tracing::warn!(
                         batch_number,
                         attempt,
@@ -441,7 +440,7 @@ async fn fetch_batch_with_archive_fallback(
                         archive_tip,
                         live_tip_after_fetch,
                         archive_tip_after_fetch,
-                        "archive provider caught up during committed batch lookup; retrying archive lookup with fresh scan range",
+                        "provider tip changed during committed batch archive lookup; retrying archive lookup with fresh scan range",
                     );
                     live_tip = live_tip_after_fetch;
                     archive_tip = archive_tip_after_fetch;
@@ -504,13 +503,13 @@ async fn fetch_batch_with_archive_fallback(
         batch_number,
         live_tip,
         archive_tip,
-        "archive provider caught up only after a stale committed batch lookup; retrying live provider",
+        "provider tip changed during archive committed batch lookup retry; retrying live provider",
     );
     fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
         .await
         .with_context(|| {
             format!(
-                "archive provider caught up only after stale committed batch {batch_number} lookup; \
+                "provider tip changed during archive committed batch {batch_number} lookup retry; \
                  live provider fallback also failed"
             )
         })
