@@ -367,14 +367,13 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
-        Ok(batch) if archive_tip >= live_tip => Ok(batch),
         Ok(batch) => match validate_archive_batch_against_live(live_proxy, &batch).await {
             Ok(()) => {
                 tracing::warn!(
                     batch_number,
                     live_tip,
                     archive_tip,
-                    "archive provider is behind live provider, but committed batch hash matches live state",
+                    "archive committed batch hash matches live state",
                 );
                 Ok(batch)
             }
@@ -385,14 +384,15 @@ async fn fetch_batch_with_archive_fallback(
                     live_tip,
                     archive_tip,
                     validation_error = validation_err,
-                    "archive provider is behind live provider and batch metadata could not be validated; retrying live provider",
+                    "archive batch metadata could not be validated against live state; retrying live provider",
                 );
                 fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
                     .await
                     .with_context(|| {
                         format!(
-                            "archive provider tip {archive_tip} is behind live provider tip {live_tip} and committed batch \
-                             {batch_number} failed live hash validation: {validation_err}; live provider fallback also failed"
+                            "archive committed batch {batch_number} failed live hash validation \
+                             (archive tip {archive_tip}, live tip {live_tip}): {validation_err}; \
+                             live provider fallback also failed"
                         )
                     })
             }
