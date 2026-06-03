@@ -28,6 +28,7 @@ impl L1TxWatcher {
     pub async fn create_watcher(
         config: L1WatcherConfig,
         zk_chain_l1: ZkChain<DynProvider>,
+        archive_lookup_zk_chain_l1: Option<ZkChain<DynProvider>>,
         zk_chain_sl: ZkChain<DynProvider>,
         l1_subpool: L1Subpool,
         next_l1_priority_id: u64,
@@ -41,8 +42,15 @@ impl L1TxWatcher {
             "initializing L1 transaction watcher"
         );
 
-        let next_l1_block =
-            find_l1_block_by_priority_id(zk_chain_l1.clone(), next_l1_priority_id).await?;
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain_l1` below.
+        let next_l1_block = util::find_startup_block_with_archive_fallback(
+            zk_chain_l1.clone(),
+            archive_lookup_zk_chain_l1,
+            "L1 priority tx watcher",
+            |zk_chain| find_l1_block_by_priority_id(zk_chain, next_l1_priority_id),
+        )
+        .await?;
 
         tracing::info!(next_l1_block, "resolved on L1");
 

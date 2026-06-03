@@ -36,6 +36,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
     pub async fn create_watcher(
         config: L1WatcherConfig,
         zk_chain: ZkChain<DynProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
         sl_block_initial_finality_init_at: u64,
@@ -52,10 +53,19 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
             zk_chain_address = ?zk_chain.address(),
             "initializing L1 commit watcher"
         );
-        let last_l1_block = util::find_l1_commit_block_by_batch_number(
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain` below.
+        let last_l1_block = util::find_startup_block_with_archive_fallback(
             zk_chain.clone(),
-            last_committed_batch,
-            config.max_blocks_to_process,
+            archive_lookup_zk_chain,
+            "commit watcher",
+            |zk_chain| {
+                util::find_l1_commit_block_by_batch_number(
+                    zk_chain,
+                    last_committed_batch,
+                    config.max_blocks_to_process,
+                )
+            },
         )
         .await?;
         tracing::info!(last_l1_block, "resolved on L1");

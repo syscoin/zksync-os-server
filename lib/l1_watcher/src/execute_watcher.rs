@@ -38,6 +38,7 @@ impl<Finality: WriteFinality> L1ExecuteWatcher<Finality> {
     pub async fn create_watcher(
         config: L1WatcherConfig,
         zk_chain: ZkChain<DynProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
         sl_chain_id: u64,
@@ -53,9 +54,15 @@ impl<Finality: WriteFinality> L1ExecuteWatcher<Finality> {
             zk_chain_address = ?zk_chain.address(),
             "initializing L1 execute watcher"
         );
-        let last_l1_block =
-            util::find_l1_execute_block_by_batch_number(zk_chain.clone(), last_executed_batch)
-                .await?;
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain` below.
+        let last_l1_block = util::find_startup_block_with_archive_fallback(
+            zk_chain.clone(),
+            archive_lookup_zk_chain,
+            "execute watcher",
+            |zk_chain| util::find_l1_execute_block_by_batch_number(zk_chain, last_executed_batch),
+        )
+        .await?;
         tracing::info!(last_l1_block, "resolved on L1");
 
         let this = Self {
@@ -85,6 +92,7 @@ impl<Finality: WriteFinality> L1FinalizedExecuteWatcher<Finality> {
     pub async fn create_finalized_watcher(
         config: L1WatcherConfig,
         zk_chain: ZkChain<DynProvider>,
+        archive_lookup_zk_chain: Option<ZkChain<DynProvider>>,
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
         block_updates: watch::Receiver<BlockUpdates>,
@@ -100,9 +108,15 @@ impl<Finality: WriteFinality> L1FinalizedExecuteWatcher<Finality> {
             zk_chain_address = ?zk_chain.address(),
             "initializing finalized L1 execute watcher"
         );
-        let last_l1_block = util::find_l1_execute_block_by_batch_number(
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain` below.
+        let last_l1_block = util::find_startup_block_with_archive_fallback(
             zk_chain.clone(),
-            last_finalized_executed_batch,
+            archive_lookup_zk_chain,
+            "finalized execute watcher",
+            |zk_chain| {
+                util::find_l1_execute_block_by_batch_number(zk_chain, last_finalized_executed_batch)
+            },
         )
         .await?;
         tracing::info!(last_l1_block, "resolved on L1");

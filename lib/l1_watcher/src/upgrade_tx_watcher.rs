@@ -77,6 +77,7 @@ impl L1UpgradeTxWatcher {
         bridgehub_l1: Bridgehub<DynProvider>,
         bridgehub_sl: Bridgehub<DynProvider>,
         zk_chain_l1: ZkChain<DynProvider>,
+        archive_lookup_zk_chain_l1: Option<ZkChain<DynProvider>>,
         zk_chain_sl: ZkChain<DynProvider>,
         bytecode_supplier_address: Address,
         current_protocol_version: ProtocolSemanticVersion,
@@ -100,9 +101,15 @@ impl L1UpgradeTxWatcher {
         let ctm_sl = zk_chain_sl.get_chain_type_manager().await?;
         tracing::info!(ctm_sl = ?ctm_sl, "resolved SL chain type manager");
 
-        let last_l1_block = find_l1_block_by_protocol_version(
+        // SYSCOIN: Resolve the startup cursor through the archive-capable
+        // provider while keeping live polling on `zk_chain_l1` below.
+        let last_l1_block = util::find_startup_block_with_archive_fallback(
             zk_chain_l1.clone(),
-            current_protocol_version.clone(),
+            archive_lookup_zk_chain_l1,
+            "L1 upgrade tx watcher",
+            |zk_chain| {
+                find_l1_block_by_protocol_version(zk_chain, current_protocol_version.clone())
+            },
         )
         .await?;
         // The configured bytecode supplier address is used as fallback for pre-v31 CTMs.
