@@ -14,12 +14,20 @@ pub struct CallFees {
 
 impl CallFees {
     // todo(EIP-4844): handle blob fees
+    /// SYSCOIN: `relax_fee_validation` skips the general `FeeCapTooLow` check so under-priced
+    /// requests are accepted by `eth_estimateGas` and `eth_simulateV1`
+    /// (with `validation=false`) instead of being rejected. It still preserves invalid
+    /// explicit fee shapes, such as zero fee cap with a non-zero tip. The resulting
+    /// `gas_price` is the request's own value (or 0 when no fees were supplied), so
+    /// callers that need the bootloader to actually accept the tx must ensure
+    /// `gas_price >= basefee` themselves (e.g. by clamping the request's fees upstream
+    /// before calling `ensure_fees`).
     pub fn ensure_fees(
         call_gas_price: Option<u128>,
         call_max_fee_per_gas: Option<u128>,
         call_max_priority_fee_per_gas: Option<u128>,
         block_base_fee: u128,
-        for_estimate_gas: bool,
+        relax_fee_validation: bool,
     ) -> Result<Self, CallFeesError> {
         match (
             call_gas_price,
@@ -27,7 +35,7 @@ impl CallFees {
             call_max_priority_fee_per_gas,
         ) {
             (gas_price, None, None) => {
-                let gas_price = match (for_estimate_gas, gas_price) {
+                let gas_price = match (relax_fee_validation, gas_price) {
                     (false, _) => {
                         // either legacy transaction or no fee fields are specified
                         // when no fields are specified, set gas price to zero
@@ -35,10 +43,7 @@ impl CallFees {
                     }
                     // ignore base fee when tx's gas price is missing
                     (_, None | Some(0)) => 0,
-                    // only enforce the fee cap if provided input is not zero
-                    (_, Some(gas_price)) if gas_price < block_base_fee => {
-                        return Err(CallFeesError::FeeCapTooLow);
-                    }
+                    // Under relaxation, accept under-priced gas_price as-is.
                     (_, Some(gas_price)) => gas_price,
                 };
                 Ok(Self {
@@ -60,9 +65,22 @@ impl CallFees {
                     Some(max_fee_per_gas) => {
                         let max_priority_fee_per_gas = max_priority_fee_per_gas.unwrap_or_default();
 
-                        // only enforce the fee cap if provided input is not zero
-                        if !(max_fee_per_gas == 0 && max_priority_fee_per_gas == 0)
+                        // Enforce the fee cap only under strict validation and when the
+                        // request actually carried a non-zero fee.
+                        let request_carries_fee =
+                            !(max_fee_per_gas == 0 && max_priority_fee_per_gas == 0);
+                        if !relax_fee_validation
+                            && request_carries_fee
                             && max_fee_per_gas < block_base_fee
+                        {
+                            return Err(CallFeesError::FeeCapTooLow);
+                        }
+                        // SYSCOIN: even relaxed validation must preserve the explicit-zero-cap
+                        // rejection for requests that carry a non-zero tip. Otherwise the
+                        // error regresses to `TipAboveFeeCap` below.
+                        if relax_fee_validation
+                            && max_fee_per_gas == 0
+                            && max_priority_fee_per_gas != 0
                         {
                             return Err(CallFeesError::FeeCapTooLow);
                         }

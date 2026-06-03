@@ -6,14 +6,16 @@ use alloy::consensus::proofs::{calculate_receipt_root, calculate_transaction_roo
 use alloy::consensus::{Header as ConsensusHeader, Transaction as _};
 use alloy::eips::BlockId;
 use alloy::network::primitives::BlockTransactions;
-use alloy::primitives::{B256, Bloom, Bytes, Sealable, U256};
+use alloy::primitives::{Address, B256, Bloom, Bytes, Sealable, U256};
 use alloy::rpc::types::simulate::{
     MAX_SIMULATE_BLOCKS, SimCallResult, SimulateError, SimulatePayload, SimulatedBlock,
 };
+use alloy::rpc::types::state::StateOverride;
 use alloy::rpc::types::{BlockOverrides, TransactionRequest};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use zk_os_api::helpers::get_nonce;
+use zk_os_basic_system::system_implementation::flat_storage_model::AccountProperties;
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::tracing::{NopTracer, NopValidator};
 use zksync_os_interface::traits::{NoopTxCallback, TxListSource};
@@ -23,32 +25,27 @@ use zksync_os_rpc_api::types::{ZkApiBlock, ZkHeader};
 use zksync_os_storage_api::BlockContext;
 use zksync_os_storage_api::ViewState;
 use zksync_os_storage_api::state_override_view::{
-    OverriddenStateView, OwnedOverrides, build_state_override_maps,
+    OverriddenStateView, OverrideProvider, OwnedOverrides, account_properties_storage_key,
+    build_state_override_maps,
 };
 use zksync_os_types::{BlockOutput, ZkReceipt, ZkReceiptEnvelope, ZkTransaction, ZksyncOsEncode};
 
 impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
-    /// Implements `eth_simulateV1` using the same high-level model as reth: execute the requested
-    /// blocks linearly, carry an overlay of simulated writes into subsequent blocks, and use a
-    /// separate execution context when `validation=false` so fee validation does not leak into the
-    /// returned header.
+    /// Implements `eth_simulateV1`: executes the requested blocks linearly, carrying an
+    /// overlay of simulated writes into subsequent blocks.
     ///
     /// # Spec limitations
     ///
-    /// The following features from the `eth_simulateV1` spec are not supported:
-    ///
-    /// - `traceTransfers=true`: rejected with an error. ZKsync OS has no transfer-tracing
-    ///   inspector equivalent, so synthetic ERC-20 transfer logs cannot be generated.
-    /// - `movePrecompileToAddress`: rejected with an error. The VM does not support remapping
-    ///   precompile addresses on a per-block basis.
-    /// - `blockOverrides.difficulty`: silently ignored. ZKsync OS has no `difficulty` field in
-    ///   its block context; use `blockOverrides.random` (prevrandao) instead.
-    /// - `blockOverrides.parentBeaconBlockRoot`: silently ignored. There is no corresponding
-    ///   field in `BlockContext`.
-    /// - `validation=false` nonce relaxation: partially unsupported. The basefee is zeroed as
-    ///   the spec requires, but nonce checks are not disabled. Transactions without an explicit
-    ///   nonce are auto-filled from state (the common case works), but an explicitly supplied
-    ///   stale nonce will be rejected by the VM.
+    /// - `traceTransfers=true`: rejected. ZKsync OS has no transfer-tracing inspector.
+    /// - `movePrecompileToAddress`: rejected. Precompile remapping is not supported.
+    /// - `blockOverrides.difficulty`: silently ignored. Use `blockOverrides.random`
+    ///   (prevrandao) instead.
+    /// - `blockOverrides.parentBeaconBlockRoot`: silently ignored.
+    /// - `validation=false` nonce relaxation: partial. Missing nonces are auto-filled from
+    ///   state, but an explicitly supplied stale nonce is still rejected by the VM.
+    /// - `validation=false` fee relaxation: under-priced requests are accepted, but the
+    ///   real basefee is preserved during execution so the bootloader's gas accounting
+    ///   matches a future real submission.
     pub fn simulate_v1_impl(
         &self,
         opts: SimulatePayload,
@@ -89,7 +86,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         let mut previous_block_number = parent_block_number;
         let mut previous_timestamp = parent_timestamp;
 
-        for sim_block in block_state_calls {
+        for mut sim_block in block_state_calls {
             // Per the eth_simulateV1 spec, prevrandao defaults to zero for simulated blocks
             // unless explicitly overridden via `blockOverrides.random`.
             block_context.mix_hash = U256::ZERO;
@@ -103,33 +100,58 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 )?;
             }
 
-            let response_context = block_context;
-            let mut execution_context = response_context;
-            if !validation {
-                execution_context.eip1559_basefee = U256::ZERO;
-            }
-
-            let simulation_view =
+            let mut simulation_view =
                 OverriddenStateView::new(base_state.clone(), Arc::clone(&overlays));
 
-            let state_overrides = match sim_block.state_overrides {
-                Some(state_overrides) => {
-                    if state_overrides
-                        .values()
-                        .any(|account| account.move_precompile_to.is_some())
+            let user_state_overrides = sim_block.state_overrides.unwrap_or_default();
+            let mut internal_state_overrides = StateOverride::default();
+            let mut internally_funded_senders = Vec::new();
+            if !validation {
+                // RPC-layer `ensure_fees` only suppresses the early `FeeCapTooLow`; the
+                // bootloader still enforces `gas_price >= basefee` and
+                // `balance >= gas_limit * gas_price + value`. Clamp fees up to basefee and
+                // bump unfunded senders to `U256::MAX`. User-supplied overrides win,
+                // and internal fee-bypass balances are not carried into later simulated blocks.
+                let basefee = block_context.eip1559_basefee.saturating_to::<u128>();
+                let default_gas_limit = simulation_default_gas_limit(
+                    &sim_block.calls,
+                    block_context.gas_limit,
+                    self.config.eth_call_gas as u64,
+                )?;
+                for call in &mut sim_block.calls {
+                    clamp_request_fees_to_basefee(call, basefee);
+                    let from = call.from.unwrap_or_default();
+                    let user_balance_override = user_state_overrides
+                        .get(&from)
+                        .and_then(|account| account.balance)
+                        .is_some();
+                    let sender_balance = simulation_view.balance(from);
+                    if !user_balance_override
+                        && sender_balance < required_balance_for_request(call, default_gas_limit)
                     {
-                        return Err(EthCallError::SimulateMovePrecompileNotSupported);
+                        internal_state_overrides.entry(from).or_default().balance = Some(U256::MAX);
+                        internally_funded_senders.push((from, sender_balance));
                     }
-                    build_state_override_maps(&simulation_view, state_overrides)
                 }
-                None => OwnedOverrides::default(),
-            };
-            let overridden_view =
+            }
+            if user_state_overrides
+                .values()
+                .any(|account| account.move_precompile_to.is_some())
+            {
+                return Err(EthCallError::SimulateMovePrecompileNotSupported);
+            }
+            let state_overrides = build_state_override_maps(&simulation_view, user_state_overrides);
+            let user_overridden_view =
                 OverriddenStateView::new(simulation_view, state_overrides.clone());
+            let internal_state_overrides =
+                build_state_override_maps(&user_overridden_view, internal_state_overrides);
+            let overridden_view =
+                OverriddenStateView::new(user_overridden_view, internal_state_overrides);
             let txs = self.create_simulation_txs(
                 sim_block.calls,
-                execution_context,
+                block_context,
                 overridden_view.clone(),
+                !validation,
             )?;
             // SYSCOIN: `eth_simulateV1` executes a whole synthetic block with `NopValidator`.
             // Until policy validation is wired through multi-tx simulation, reject covered txs
@@ -143,7 +165,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                 transactions: txs.iter().cloned().map(|tx| tx.encode()).collect(),
             };
             let block_output = run_block(
-                execution_context,
+                block_context,
                 overridden_view.clone(),
                 overridden_view,
                 tx_source,
@@ -153,12 +175,18 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             )
             .map_err(EthCallError::ForwardSubsystemError)?;
 
-            let (simulated_block, block_overlay) = build_simulated_block_response(
-                response_context,
+            let (simulated_block, mut block_overlay) = build_simulated_block_response(
+                block_context,
                 txs,
                 block_output,
                 return_full_transactions,
             )?;
+            // SYSCOIN: internal fee-bypass balances are execution scaffolding. Preserve
+            // VM-produced account-property changes such as nonce increments, but replace
+            // the synthetic balance before carrying overlays into later simulated blocks.
+            for (sender, original_balance) in internally_funded_senders {
+                restore_internal_sender_balance(&mut block_overlay, sender, original_balance);
+            }
             let next_hash = simulated_block.inner.header.hash;
 
             let mut overlay = state_overrides;
@@ -250,6 +278,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         calls: Vec<TransactionRequest>,
         block_context: BlockContext,
         mut state_view: V,
+        relax_fee_validation: bool,
     ) -> Result<Vec<ZkTransaction>, EthCallError> {
         let default_gas_limit = simulation_default_gas_limit(
             &calls,
@@ -295,7 +324,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                             ))?;
                 }
 
-                self.create_tx_from_request(request, &block_context, false)
+                self.create_tx_from_request(request, &block_context, relax_fee_validation)
             })
             .collect()
     }
@@ -578,6 +607,77 @@ fn simulation_default_gas_limit(
     // Cap the per-call default at `per_call_gas_cap` to avoid handing a single call the entire
     // block's gas when the block limit is large and few calls specify gas explicitly.
     Ok(((block_gas_limit - total_specified_gas) / calls_without_gas).min(per_call_gas_cap))
+}
+
+/// Raises the request's fees up to `basefee` so it passes the bootloader's adequacy
+/// check, preserving whichever fee shape the caller used. When no fees are supplied,
+/// defaults to legacy `gas_price` to avoid promoting the request to EIP-1559.
+fn clamp_request_fees_to_basefee(call: &mut TransactionRequest, basefee: u128) {
+    if let Some(gas_price) = call.gas_price {
+        call.gas_price = Some(gas_price.max(basefee));
+    } else if let Some(max_fee_per_gas) = call.max_fee_per_gas {
+        // SYSCOIN: preserve this invalid explicit fee shape so `CallFees` can keep
+        // returning `FeeCapTooLow` instead of clamping it into a valid simulation.
+        if max_fee_per_gas == 0 && call.max_priority_fee_per_gas.unwrap_or_default() != 0 {
+            return;
+        }
+        // SYSCOIN: preserve `TipAboveFeeCap` for requests whose original cap is
+        // below the priority fee instead of clamping the cap into a valid shape.
+        if max_fee_per_gas < call.max_priority_fee_per_gas.unwrap_or_default() {
+            return;
+        }
+        call.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
+        if call.max_priority_fee_per_gas.is_none() {
+            call.max_priority_fee_per_gas = Some(0);
+        }
+    } else if let Some(max_priority_fee_per_gas) = call.max_priority_fee_per_gas {
+        // SYSCOIN: priority-only requests are valid and `CallFees` treats them as
+        // `basefee + priority`; do not synthesize a cap below the priority fee.
+        call.max_fee_per_gas = Some(basefee.saturating_add(max_priority_fee_per_gas));
+    } else {
+        call.gas_price = Some(basefee);
+    }
+}
+
+fn required_balance_for_request(call: &TransactionRequest, default_gas_limit: u64) -> U256 {
+    let gas_limit = call.gas.unwrap_or(default_gas_limit);
+    let gas_price = call.gas_price.or(call.max_fee_per_gas).unwrap_or_default();
+    let gas_cost = U256::from(gas_limit)
+        .checked_mul(U256::from(gas_price))
+        .unwrap_or(U256::MAX);
+
+    gas_cost
+        .checked_add(call.value.unwrap_or_default())
+        .unwrap_or(U256::MAX)
+}
+
+fn restore_internal_sender_balance(
+    block_overlay: &mut OwnedOverrides,
+    sender: Address,
+    original_balance: U256,
+) {
+    let account_key = account_properties_storage_key(sender);
+    let Some(account_hash) = block_overlay.get_storage_override(&account_key) else {
+        return;
+    };
+    let Some(account_preimage) = block_overlay.get_preimage_override(&account_hash) else {
+        block_overlay.remove_storage_override(&account_key);
+        return;
+    };
+    let Ok(encoded_account) = <&[u8] as TryInto<[u8; AccountProperties::ENCODED_SIZE]>>::try_into(
+        account_preimage.as_slice(),
+    ) else {
+        block_overlay.remove_storage_override(&account_key);
+        return;
+    };
+
+    let mut account = AccountProperties::decode(&encoded_account);
+    account.balance = original_balance;
+    let account_preimage = account.encoding();
+    let account_hash = B256::from(account.compute_hash().as_u8_array());
+
+    block_overlay.insert_preimage_override(account_hash, account_preimage.to_vec());
+    block_overlay.insert_storage_override(account_key, account_hash);
 }
 
 struct SimulatedTx {

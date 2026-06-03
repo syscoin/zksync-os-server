@@ -233,6 +233,48 @@ Then rerun the canonical launcher command.
 - Ensures DA pair correctness and deposit unpause via migration script guards.
 - Generates final `os-server-configs` launchers.
 
+## Configure replay archive before production start
+
+Before the first mainnet node start, enable an independent replay archive in
+each final OS-server config that you intend to rely on for recovery. External
+nodes keep their own `block_replay_wal` once fully synced, but explorer EN
+disks are operational redundancy, not a cold backup. Keep at least one
+off-node replay archive for Gateway and zksys so replay records survive local
+RocksDB loss, host rebuilds, or accidental EN database wipes.
+
+For production, prefer encrypted S3 or another S3-compatible object store:
+
+```yaml
+replay_archive:
+  type: S3WithCredentialFile
+  bucket_base_url: syscoin-mainnet-replay-archive
+  s3_credential_file_path: /etc/zksync-os/replay-archive-s3-credentials
+  endpoint: null
+  region: us-east-2
+  encryption:
+    type: AgeX25519
+    recipient: age1...
+```
+
+The node only needs the age public recipient key. Store the corresponding
+`AGE-SECRET-KEY-...` separately from the hot node and use it only for recovery.
+If S3 is not ready at launch, enable a filesystem replay archive on a durable
+path and back that path up off-host:
+
+```yaml
+replay_archive:
+  type: FileSystem
+  root_path: /var/lib/zksync-os/replay_archive
+  encryption:
+    type: AgeX25519
+    recipient: age1...
+```
+
+Do not treat `replay_archive: { type: Noop }` as sufficient for mainnet
+operations. Test recovery before relying on the archive: download the archive
+objects, rebuild `db/block_replay_wal` with `replay_archive_recovery`, and
+start a node from the recovered replay WAL using a known canonical anchor.
+
 ## Start nodes after successful launch
 
 ```bash

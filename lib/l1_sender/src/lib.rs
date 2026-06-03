@@ -10,7 +10,7 @@ use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityF
 use crate::pipeline_component::L1Sender;
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::eip2718::Encodable2718;
-use alloy::eips::eip4844::env_settings::EnvKzgSettings;
+use alloy::eips::eip4844::{DATA_GAS_PER_BLOB, env_settings::EnvKzgSettings};
 use alloy::eips::eip7594::BlobTransactionSidecarVariant;
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{
@@ -18,10 +18,12 @@ use alloy::network::{
     TransactionResponse,
 };
 use alloy::primitives::utils::{format_ether, format_units};
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::Provider;
 use alloy::providers::ext::DebugApi;
 use alloy::providers::utils::Eip1559Estimation;
+use alloy::rpc::types::simulate::{SimBlock, SimulatePayload};
+use alloy::rpc::types::state::{AccountOverride, StateOverridesBuilder};
 use alloy::rpc::types::trace::geth::{CallConfig, GethDebugTracingOptions};
 use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::transports::TransportError;
@@ -96,6 +98,9 @@ const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
+/// Per-tx gas limit used when `eth_simulateV1` cannot produce a usable estimate.
+/// Sized to cover the bounded set of commit/prove/execute calls.
+const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
 
 #[derive(Debug, Clone, Copy)]
 struct FeeParams {
@@ -322,6 +327,27 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         let range = Input::display_range(&commands); // Only for logging
         tracing::info!(command_name, range, "sending L1 transactions");
         L1_SENDER_METRICS.parallel_transactions[&command_name].set(commands.len() as u64);
+        let sim_fee_params = resolve_fee_params(
+            &provider,
+            config.fee_config,
+            use_replacement_fee_params_for_commands,
+        )
+        .await?;
+        let gas_limits = estimate_gas_limits(
+            &provider,
+            to_address,
+            gateway,
+            &commands,
+            operator_address,
+            sim_fee_params,
+        )
+        .await?;
+        tracing::info!(
+            command_name,
+            range,
+            ?gas_limits,
+            "estimated gas limits via eth_simulateV1",
+        );
         // It's important to preserve the order of commands -
         // so that we send them downstream also in order.
         // This holds true because l1 transactions are included in the order of sender nonce.
@@ -335,7 +361,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             .await
             .context("get pending operator nonce before signing L1 transaction batch")?;
         let mut pending_txs = Vec::with_capacity(commands.len());
-        for mut cmd in commands.drain(..) {
+        for (mut cmd, gas_limit) in commands.drain(..).zip(gas_limits) {
             let tx_nonce = next_tx_nonce;
             next_tx_nonce = next_tx_nonce
                 .checked_add(1)
@@ -352,6 +378,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                     &commit_submitted_tx,
                     Some(tx_nonce),
                     use_replacement_fee_params_for_commands,
+                    Some(gas_limit),
                 )
                 .await?;
             pending_txs.push((
@@ -393,6 +420,7 @@ async fn submit_l1_transaction<Input>(
     commit_submitted_tx: &Option<watch::Sender<u64>>,
     nonce_override: Option<u64>,
     use_replacement_fee_params: bool,
+    gas_limit_override: Option<u64>,
 ) -> anyhow::Result<(
     TransactionReceiptFuture,
     Instant,
@@ -416,7 +444,9 @@ where
         tx_request.set_nonce(nonce);
     }
 
+    let mut blob_gas_limit = 0;
     if let Some(blob_sidecar) = cmd.blob_sidecar() {
+        blob_gas_limit = blob_sidecar.blobs.len() as u64 * DATA_GAS_PER_BLOB;
         let fee_per_blob_gas = provider.get_blob_base_fee().await?;
         L1_SENDER_METRICS.report_blob_base_fee(fee_per_blob_gas)?;
         let max_fee_per_blob_gas = fee_params.max_fee_per_blob_gas;
@@ -446,7 +476,23 @@ where
         tx_request.set_blob_sidecar(blob_sidecar);
     };
 
-    apply_l1_gas_limit(provider, &mut tx_request).await?;
+    if let Some(gas_limit) = gas_limit_override {
+        tx_request.set_gas_limit(gas_limit);
+    } else {
+        // SYSCOIN: recovery resubmissions are outside the normal pre-simulated batch,
+        // so keep the existing padded `eth_estimateGas` path for those one-off txs.
+        apply_l1_gas_limit(provider, &mut tx_request).await?;
+    }
+
+    let execution_balance_required = tx_request.max_fee_per_gas.unwrap_or_default()
+        * u128::from(tx_request.gas.unwrap_or_default());
+    let blob_balance_required =
+        tx_request.max_fee_per_blob_gas.unwrap_or_default() * u128::from(blob_gas_limit);
+    let balance_required = execution_balance_required
+        .saturating_add(blob_balance_required)
+        .min(u128::from(u64::MAX)) as u64;
+
+    L1_SENDER_METRICS.balance_required_for_tx[&Input::COMPONENT_ID.as_str()].set(balance_required);
 
     // SYSCOIN: sign explicitly so dropped-tx recovery can rebroadcast the exact same bytes.
     let (raw_tx, tx_nonce) = sign_l1_transaction(provider, operator_address, tx_request).await?;
@@ -640,6 +686,7 @@ where
                         commit_submitted_tx,
                         Some(tx_nonce),
                         true,
+                        None,
                     )
                     .await
                     {
@@ -736,6 +783,7 @@ where
                             commit_submitted_tx,
                             Some(tx_nonce),
                             true,
+                            None,
                         )
                         .await?;
                         receipt_fut = resubmitted.0;
@@ -805,6 +853,7 @@ where
                                     commit_submitted_tx,
                                     Some(tx_nonce),
                                     true,
+                                    None,
                                 )
                                 .await?;
                                 receipt_fut = resubmitted.0;
@@ -1603,6 +1652,152 @@ async fn apply_l1_gas_limit(
     Ok(())
 }
 
+/// Estimates gas limits for a batch of L1 commands via `eth_simulateV1`, returning
+/// `2 * gas_used` per call. Each command goes into its own simulated block so cumulative
+/// block-gas-limit constraints cannot reject the batch, while writes from earlier blocks
+/// remain visible to later ones. Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on errors.
+async fn estimate_gas_limits<Input>(
+    provider: &EthDynProvider,
+    to_address: Address,
+    gateway: bool,
+    commands: &[Input],
+    operator_address: Address,
+    fee_params: FeeParams,
+) -> anyhow::Result<Vec<u64>>
+where
+    Input: SendToL1,
+{
+    let starting_nonce = provider
+        .get_transaction_count(operator_address)
+        .pending()
+        .await
+        .context("get pending nonce for L1 sender gas estimation")?;
+    const SIM_GAS_LIMIT: u64 = 30_000_000;
+
+    let balance_override = StateOverridesBuilder::default()
+        .append(
+            operator_address,
+            AccountOverride {
+                balance: Some(U256::MAX),
+                ..Default::default()
+            },
+        )
+        .build();
+    // SYSCOIN: preserve the pre-simulate gas-limit safety invariant from
+    // `apply_l1_gas_limit`: never sign an L1 tx whose gas limit exceeds the
+    // currently observed L1 block gas limit, including fallback paths below.
+    let latest_block = provider
+        .get_block(BlockId::latest())
+        .await?
+        .context("latest L1 block is unavailable while setting simulated L1 gas limits")?;
+    let block_gas_limit = latest_block.header.gas_limit;
+    let fallback_gas_limit = L1_GAS_LIMIT_FALLBACK.min(block_gas_limit);
+    if fallback_gas_limit < L1_GAS_LIMIT_FALLBACK {
+        tracing::warn!(
+            fallback_gas_limit = L1_GAS_LIMIT_FALLBACK,
+            block_gas_limit,
+            gas_limit = fallback_gas_limit,
+            "capping fallback L1 transaction gas limit at latest block gas limit"
+        );
+    }
+
+    let block_state_calls = commands
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let mut req = TransactionRequest::default()
+                .with_from(operator_address)
+                .with_to(to_address)
+                .with_input(cmd.solidity_call(gateway, &operator_address))
+                .with_max_fee_per_gas(fee_params.max_fee_per_gas)
+                .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
+                .with_nonce(starting_nonce + i as u64)
+                .with_gas_limit(SIM_GAS_LIMIT);
+            if let Some(sidecar) = cmd.blob_sidecar() {
+                req.blob_versioned_hashes = Some(sidecar.versioned_hashes().collect());
+                req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
+                // Anvil routes blob requests through the EIP-4844 arm only when
+                // `type=3` is set explicitly; otherwise it returns -32602.
+                req.transaction_type = Some(3);
+            }
+            let mut sim_block = SimBlock::default().call(req);
+            sim_block.state_overrides = Some(balance_override.clone());
+            sim_block
+        })
+        .collect();
+
+    let payload = SimulatePayload {
+        block_state_calls,
+        ..Default::default()
+    };
+
+    let blocks = match provider.simulate(&payload).pending().await {
+        Ok(blocks) if blocks.len() == commands.len() => blocks,
+        Ok(blocks) => {
+            tracing::warn!(
+                returned = blocks.len(),
+                expected = commands.len(),
+                "eth_simulateV1 returned mismatched block count, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+            );
+            return Ok(vec![fallback_gas_limit; commands.len()]);
+        }
+        Err(err) => {
+            tracing::warn!(
+                %err,
+                "eth_simulateV1 unavailable or errored, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+            );
+            return Ok(vec![fallback_gas_limit; commands.len()]);
+        }
+    };
+
+    let gas_limits = blocks
+        .iter()
+        .enumerate()
+        .map(|(i, block)| match block.calls.first() {
+            Some(call) if call.status => {
+                if call.gas_used > block_gas_limit {
+                    anyhow::bail!(
+                        "simulated L1 transaction gas ({}) exceeds latest L1 block gas limit ({})",
+                        call.gas_used,
+                        block_gas_limit,
+                    );
+                }
+                let padded_gas_limit = call.gas_used.saturating_mul(2);
+                let gas_limit = padded_gas_limit.min(block_gas_limit);
+                if gas_limit < padded_gas_limit {
+                    tracing::warn!(
+                        tx_index = i,
+                        simulated_gas_used = call.gas_used,
+                        padded_gas_limit,
+                        block_gas_limit,
+                        gas_limit,
+                        "capping simulated L1 transaction gas limit at latest block gas limit"
+                    );
+                }
+                Ok(gas_limit)
+            }
+            Some(call) => {
+                tracing::warn!(
+                    tx_index = i,
+                    return_data = ?call.return_data,
+                    "eth_simulateV1 call reverted; refusing to submit L1 transaction",
+                );
+                anyhow::bail!(
+                    "eth_simulateV1 call at index {i} reverted; refusing to submit L1 transaction"
+                );
+            }
+            None => {
+                tracing::warn!(
+                    tx_index = i,
+                    "eth_simulateV1 block had no call result, falling back to {L1_GAS_LIMIT_FALLBACK}",
+                );
+                Ok(fallback_gas_limit)
+            }
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(gas_limits)
+}
+
 async fn report_custom_priority_fee_metrics(provider: &dyn Provider) -> anyhow::Result<()> {
     for (window, blocks_behind) in [
         (PriorityFeeEstimateWindow::Blocks3, 3),
@@ -1718,6 +1913,18 @@ async fn validate_tx_receipt<Input: SendToL1>(
     command: &Input,
     receipt: TransactionReceipt,
 ) -> anyhow::Result<()> {
+    let execution_fee = receipt.gas_used as u128 * receipt.effective_gas_price;
+    let blob_fee = receipt
+        .blob_gas_used
+        .zip(receipt.blob_gas_price)
+        .map(|(gas_used, gas_price)| gas_used as u128 * gas_price)
+        .unwrap_or_default();
+    let balance_consumed = execution_fee
+        .saturating_add(blob_fee)
+        .min(u128::from(u64::MAX)) as u64;
+
+    L1_SENDER_METRICS.balance_consumed_by_tx[&Input::COMPONENT_ID.as_str()].set(balance_consumed);
+
     if receipt.status() {
         // Transaction succeeded - log output and return OK(())
         L1_SENDER_METRICS.report_tx_receipt(command, receipt)?;

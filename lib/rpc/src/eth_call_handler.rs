@@ -123,7 +123,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         &self,
         request: TransactionRequest,
         block_context: &BlockContext,
-        for_estimate_gas: bool,
+        relax_fee_validation: bool,
     ) -> Result<ZkTransaction, EthCallError> {
         let tx_type = request.minimal_tx_type();
 
@@ -169,7 +169,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             max_fee_per_gas,
             max_priority_fee_per_gas,
             block_context.eip1559_basefee.saturating_to(),
-            for_estimate_gas,
+            relax_fee_validation,
         )?;
         let chain_id = chain_id.unwrap_or(self.chain_id);
         let from = from.unwrap_or_default();
@@ -495,6 +495,13 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
     ) -> Result<ZkTransaction, EthCallError> {
         let block_gas_limit = block_context.gas_limit;
         let mut highest_gas_limit = request.gas.unwrap_or(block_gas_limit).min(block_gas_limit);
+        // SYSCOIN: `eth_estimateGas` relaxes RPC-layer fee validation, but the bootloader
+        // still executes against the real basefee. Clamp explicit underpriced fee fields
+        // before computing the balance-derived gas cap and constructing the tx.
+        clamp_estimate_request_fees_to_basefee(
+            &mut request,
+            block_context.eip1559_basefee.saturating_to::<u128>(),
+        );
 
         let effective_gas_price = request
             .gas_price
@@ -742,6 +749,27 @@ fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
             tx.to_mint = tx.value + U256::from(tx.max_fee_per_gas) * U256::from(gas_limit);
         }
         ZkEnvelope::Upgrade(envelope) => envelope.inner.gas_limit = gas_limit,
+    }
+}
+
+// SYSCOIN: estimateGas callers often omit all fee fields and expect estimation to run
+// without requiring a funded sender. Only clamp explicit fee fields that would otherwise
+// produce an underpriced transaction after relaxed RPC validation.
+fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, basefee: u128) {
+    if let Some(gas_price) = request.gas_price {
+        request.gas_price = Some(gas_price.max(basefee));
+    } else if let Some(max_fee_per_gas) = request.max_fee_per_gas {
+        // SYSCOIN: preserve this invalid explicit fee shape so `CallFees` can keep
+        // returning `FeeCapTooLow` instead of clamping it into a valid estimate.
+        if max_fee_per_gas == 0 && request.max_priority_fee_per_gas.unwrap_or_default() != 0 {
+            return;
+        }
+        // SYSCOIN: preserve `TipAboveFeeCap` for requests whose original cap is
+        // below the priority fee instead of clamping the cap into a valid shape.
+        if max_fee_per_gas < request.max_priority_fee_per_gas.unwrap_or_default() {
+            return;
+        }
+        request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
     }
 }
 
