@@ -9,6 +9,7 @@ contract PasskeySmartAccount {
     bytes4 internal constant EIP1271_INVALID_VALUE = 0xffffffff;
     bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
     bytes4 internal constant SET_SPONSOR_SELECTOR = PasskeySmartAccount.setSponsor.selector;
+    uint256 internal constant MAX_SPONSOR_URL_LENGTH = 128;
     uint256 internal constant WEBAUTHN_AUTH_DATA_MIN_LENGTH = 37;
     bytes1 internal constant WEBAUTHN_FLAG_USER_PRESENT = 0x01;
     bytes1 internal constant WEBAUTHN_FLAG_USER_VERIFIED = 0x04;
@@ -67,11 +68,11 @@ contract PasskeySmartAccount {
         uint256 originLength;
         SponsorMode sponsorMode;
         address sponsorSigner;
-        bytes32 sponsorUrlHash;
+        string sponsorUrl;
     }
 
     event Executed(bytes32 indexed actionHash, address indexed target, uint256 value, address indexed submitter);
-    event SponsorUpdated(SponsorMode mode, address indexed signer, bytes32 urlHash);
+    event SponsorUpdated(SponsorMode mode, address indexed signer, string url);
 
     error BadChallenge();
     error BadWebAuthnAuthenticatorData();
@@ -83,6 +84,7 @@ contract PasskeySmartAccount {
     error InvalidSponsor();
     error OnlySelf();
     error SponsorRequired();
+    error SponsorUrlTooLong();
 
     bytes32 private passkeyX;
     bytes32 private passkeyY;
@@ -95,7 +97,7 @@ contract PasskeySmartAccount {
     uint256 public nonce;
     SponsorMode private sponsorMode;
     address private sponsorSigner;
-    bytes32 private sponsorUrlHash;
+    string private sponsorUrl;
 
     modifier onlySelf() {
         if (msg.sender != address(this)) {
@@ -134,7 +136,7 @@ contract PasskeySmartAccount {
             originLength: originLength,
             sponsorMode: sponsorMode,
             sponsorSigner: sponsorSigner,
-            sponsorUrlHash: sponsorUrlHash
+            sponsorUrl: sponsorUrl
         });
     }
 
@@ -209,8 +211,8 @@ contract PasskeySmartAccount {
         emit Executed(actionHash, execution.target, execution.value, msg.sender);
     }
 
-    function setSponsor(SponsorMode mode, address signer, bytes32 urlHash) external onlySelf {
-        _setSponsor(mode, signer, urlHash);
+    function setSponsor(SponsorMode mode, address signer, string calldata url) external onlySelf {
+        _setSponsor(mode, signer, url);
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
@@ -584,7 +586,7 @@ contract PasskeySmartAccount {
         pure
         returns (bool isSetSponsor, SponsorMode mode, address signer)
     {
-        if (data.length != 4 + 32 * 3) {
+        if (data.length < 4 + 32 * 4) {
             return (false, SponsorMode.None, address(0));
         }
 
@@ -596,19 +598,22 @@ contract PasskeySmartAccount {
             return (false, SponsorMode.None, address(0));
         }
 
-        bytes32 urlHash;
-        (mode, signer, urlHash) = abi.decode(data[4:], (SponsorMode, address, bytes32));
-        urlHash;
+        string memory url;
+        (mode, signer, url) = abi.decode(data[4:], (SponsorMode, address, string));
+        url;
         return (true, mode, signer);
     }
 
-    function _setSponsor(SponsorMode mode, address signer, bytes32 urlHash) internal {
+    function _setSponsor(SponsorMode mode, address signer, string calldata url) internal {
         if (mode == SponsorMode.Required && signer == address(0)) {
             revert SponsorRequired();
         }
+        if (bytes(url).length > MAX_SPONSOR_URL_LENGTH) {
+            revert SponsorUrlTooLong();
+        }
         sponsorMode = mode;
         sponsorSigner = signer;
-        sponsorUrlHash = urlHash;
-        emit SponsorUpdated(mode, signer, urlHash);
+        sponsorUrl = url;
+        emit SponsorUpdated(mode, signer, url);
     }
 }
