@@ -201,8 +201,8 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             // We do not need to wait for pending transaction here, so it's safe to forget about it
             if let Err(err) = forwarding_result {
                 tracing::debug!(%err, "forwarding error from main node back to user");
-                // SYSCOIN: keep EN pending state consistent when the main node already knows the
-                // transaction or when the forwarding result is ambiguous after local acceptance.
+                // SYSCOIN: keep the EN mirror only when the main node definitely accepted the tx
+                // or already knows it. Transport failures must not create EN-only pending state.
                 if forwarding_error_indicates_main_node_already_knows_tx(&err) {
                     tracing::debug!(%err, %hash, "main node already knows forwarded transaction");
                     local_cleanup.disarm();
@@ -417,8 +417,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
                         local_cleanup.disarm();
                     } else {
                         // SYSCOIN: mirror async forwarding semantics. Ambiguous transport/response
-                        // failures may occur after main accepted the tx, so keep the local mirror;
-                        // explicit main-node rejections still roll back on drop.
+                        // failures roll back on drop so EN pending state cannot diverge from main.
                         if !forwarding_error_should_rollback_local_tx(&err) {
                             local_cleanup.disarm();
                         }
@@ -580,9 +579,9 @@ fn remember_unavailable_edge_da_refs_in_cache<'a>(
     }
 }
 
-// SYSCOIN: forwarding can fail after local mempool insertion. Only roll back errors that are
-// definitely local/pre-send failures or explicit main-node rejections; keep the tx for ambiguous
-// transport/response failures so pending RPC state does not drop a tx the main node may include.
+// SYSCOIN: forwarding can fail after local mempool insertion. Keep the local mirror only when main
+// definitely accepted the tx or reports it already known; otherwise rollback so EN pending state
+// cannot advance independently of the sequencer.
 fn forwarding_error_should_rollback_local_tx(err: &TxForwardError) -> bool {
     match err {
         TxForwardError::Rpc(RpcError::ErrorResp(_)) => {
@@ -595,7 +594,7 @@ fn forwarding_error_should_rollback_local_tx(err: &TxForwardError) -> bool {
         | TxForwardError::NoProvider(_) => true,
         TxForwardError::Rpc(
             RpcError::Transport(_) | RpcError::NullResp | RpcError::DeserError { .. },
-        ) => false,
+        ) => true,
     }
 }
 
@@ -1060,9 +1059,9 @@ mod tests {
     }
 
     #[test]
-    fn forwarding_ambiguous_errors_do_not_rollback_local_tx() {
+    fn forwarding_ambiguous_errors_rollback_local_tx() {
         let null_response = TxForwardError::Rpc(RpcError::<TransportErrorKind>::NullResp);
 
-        assert!(!forwarding_error_should_rollback_local_tx(&null_response));
+        assert!(forwarding_error_should_rollback_local_tx(&null_response));
     }
 }
