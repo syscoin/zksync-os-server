@@ -98,9 +98,6 @@ const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
-/// Per-tx gas limit used when `eth_simulateV1` cannot produce a usable estimate.
-/// Sized to cover the bounded set of commit/prove/execute calls.
-const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
 
 #[derive(Debug, Clone, Copy)]
 struct FeeParams {
@@ -333,7 +330,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             use_replacement_fee_params_for_commands,
         )
         .await?;
-        let gas_limits = estimate_gas_limits(
+        let gas_limit_overrides = estimate_gas_limits(
             &provider,
             to_address,
             gateway,
@@ -345,7 +342,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         tracing::info!(
             command_name,
             range,
-            ?gas_limits,
+            ?gas_limit_overrides,
             "estimated gas limits via eth_simulateV1",
         );
         // It's important to preserve the order of commands -
@@ -361,7 +358,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             .await
             .context("get pending operator nonce before signing L1 transaction batch")?;
         let mut pending_txs = Vec::with_capacity(commands.len());
-        for (mut cmd, gas_limit) in commands.drain(..).zip(gas_limits) {
+        for (mut cmd, gas_limit_override) in commands.drain(..).zip(gas_limit_overrides) {
             let tx_nonce = next_tx_nonce;
             next_tx_nonce = next_tx_nonce
                 .checked_add(1)
@@ -378,7 +375,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                     &commit_submitted_tx,
                     Some(tx_nonce),
                     use_replacement_fee_params_for_commands,
-                    Some(gas_limit),
+                    gas_limit_override,
                 )
                 .await?;
             pending_txs.push((
@@ -1655,7 +1652,8 @@ async fn apply_l1_gas_limit(
 /// Estimates gas limits for a batch of L1 commands via `eth_simulateV1`, returning
 /// `2 * gas_used` per call. Each command goes into its own simulated block so cumulative
 /// block-gas-limit constraints cannot reject the batch, while writes from earlier blocks
-/// remain visible to later ones. Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on errors.
+/// remain visible to later ones. Returns `None` for commands that need the older per-tx
+/// `eth_estimateGas` path because simulation was unavailable or incomplete.
 async fn estimate_gas_limits<Input>(
     provider: &EthDynProvider,
     to_address: Address,
@@ -1663,7 +1661,7 @@ async fn estimate_gas_limits<Input>(
     commands: &[Input],
     operator_address: Address,
     fee_params: FeeParams,
-) -> anyhow::Result<Vec<u64>>
+) -> anyhow::Result<Vec<Option<u64>>>
 where
     Input: SendToL1,
 {
@@ -1691,16 +1689,6 @@ where
         .await?
         .context("latest L1 block is unavailable while setting simulated L1 gas limits")?;
     let block_gas_limit = latest_block.header.gas_limit;
-    let fallback_gas_limit = L1_GAS_LIMIT_FALLBACK.min(block_gas_limit);
-    if fallback_gas_limit < L1_GAS_LIMIT_FALLBACK {
-        tracing::warn!(
-            fallback_gas_limit = L1_GAS_LIMIT_FALLBACK,
-            block_gas_limit,
-            gas_limit = fallback_gas_limit,
-            "capping fallback L1 transaction gas limit at latest block gas limit"
-        );
-    }
-
     let block_state_calls = commands
         .iter()
         .enumerate()
@@ -1737,16 +1725,16 @@ where
             tracing::warn!(
                 returned = blocks.len(),
                 expected = commands.len(),
-                "eth_simulateV1 returned mismatched block count, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                "eth_simulateV1 returned mismatched block count, falling back to per-tx eth_estimateGas",
             );
-            return Ok(vec![fallback_gas_limit; commands.len()]);
+            return Ok(vec![None; commands.len()]);
         }
         Err(err) => {
             tracing::warn!(
                 %err,
-                "eth_simulateV1 unavailable or errored, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                "eth_simulateV1 unavailable or errored, falling back to per-tx eth_estimateGas",
             );
-            return Ok(vec![fallback_gas_limit; commands.len()]);
+            return Ok(vec![None; commands.len()]);
         }
     };
 
@@ -1774,7 +1762,7 @@ where
                         "capping simulated L1 transaction gas limit at latest block gas limit"
                     );
                 }
-                Ok(gas_limit)
+                Ok(Some(gas_limit))
             }
             Some(call) => {
                 tracing::warn!(
@@ -1789,9 +1777,9 @@ where
             None => {
                 tracing::warn!(
                     tx_index = i,
-                    "eth_simulateV1 block had no call result, falling back to {L1_GAS_LIMIT_FALLBACK}",
+                    "eth_simulateV1 block had no call result, falling back to per-tx eth_estimateGas",
                 );
-                Ok(fallback_gas_limit)
+                Ok(None)
             }
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
