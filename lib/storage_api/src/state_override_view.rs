@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::ViewState;
-use alloy::primitives::B256;
 use alloy::primitives::ruint::aliases::B160;
+use alloy::primitives::{Address, B256};
 use alloy::rpc::types::state::StateOverride;
 use zk_ee::common_structs::derive_flat_storage_key;
 use zk_os_api::helpers::{set_properties_balance, set_properties_code, set_properties_nonce};
@@ -38,6 +38,12 @@ impl OwnedOverrides {
     pub fn extend(&mut self, changes: Self) {
         self.storage.extend(changes.storage);
         self.preimages.extend(changes.preimages);
+    }
+
+    // SYSCOIN: used by RPC simulation to keep internal fee-bypass balance overrides
+    // from leaking into the cross-block simulation overlay.
+    pub fn remove_storage_override(&mut self, key: &B256) {
+        self.storage.remove(key);
     }
 }
 
@@ -157,13 +163,19 @@ pub fn build_state_override_maps<V: ViewState>(
             preimages.insert(acc_hash_b256, base.encoding().to_vec());
 
             // Compute flat storage key for account properties of this address and override it
-            let key = derive_flat_storage_key(
-                &ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
-                &address_into_special_storage_key(&B160::from_be_bytes(address.into_array())),
-            );
-            storage.insert(B256::from(key.as_u8_array()), acc_hash_b256);
+            storage.insert(account_properties_storage_key(address), acc_hash_b256);
         }
     }
 
     OwnedOverrides::new(storage, preimages)
+}
+
+// SYSCOIN: exposes the account-properties slot key so callers that create internal
+// balance overrides can remove only those synthetic account writes from overlays.
+pub fn account_properties_storage_key(address: Address) -> B256 {
+    let key = derive_flat_storage_key(
+        &ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
+        &address_into_special_storage_key(&B160::from_be_bytes(address.into_array())),
+    );
+    B256::from(key.as_u8_array())
 }

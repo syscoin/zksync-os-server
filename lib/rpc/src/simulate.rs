@@ -24,7 +24,7 @@ use zksync_os_rpc_api::types::{ZkApiBlock, ZkHeader};
 use zksync_os_storage_api::BlockContext;
 use zksync_os_storage_api::ViewState;
 use zksync_os_storage_api::state_override_view::{
-    OverriddenStateView, OwnedOverrides, build_state_override_maps,
+    OverriddenStateView, OwnedOverrides, account_properties_storage_key, build_state_override_maps,
 };
 use zksync_os_types::{BlockOutput, ZkReceipt, ZkReceiptEnvelope, ZkTransaction, ZksyncOsEncode};
 
@@ -103,6 +103,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
 
             let user_state_overrides = sim_block.state_overrides.unwrap_or_default();
             let mut internal_state_overrides = StateOverride::default();
+            let mut internally_funded_senders = Vec::new();
             if !validation {
                 // RPC-layer `ensure_fees` only suppresses the early `FeeCapTooLow`; the
                 // bootloader still enforces `gas_price >= basefee` and
@@ -127,6 +128,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
                             < required_balance_for_request(call, default_gas_limit)
                     {
                         internal_state_overrides.entry(from).or_default().balance = Some(U256::MAX);
+                        internally_funded_senders.push(from);
                     }
                 }
             }
@@ -171,12 +173,18 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             )
             .map_err(EthCallError::ForwardSubsystemError)?;
 
-            let (simulated_block, block_overlay) = build_simulated_block_response(
+            let (simulated_block, mut block_overlay) = build_simulated_block_response(
                 block_context,
                 txs,
                 block_output,
                 return_full_transactions,
             )?;
+            // SYSCOIN: internal fee-bypass balances are execution scaffolding, not
+            // caller-visible state. Remove account-property writes produced from those
+            // synthetic balances before carrying overlays into later simulated blocks.
+            for sender in internally_funded_senders {
+                block_overlay.remove_storage_override(&account_properties_storage_key(sender));
+            }
             let next_hash = simulated_block.inner.header.hash;
 
             let mut overlay = state_overrides;
