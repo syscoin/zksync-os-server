@@ -96,7 +96,7 @@ impl CommittedBatchProvider {
             .load_batch_numbers(
                 max_l1_blocks_to_scan,
                 &batch_storage,
-                archive_l1_provider.as_ref(),
+                None,
                 prioritized_batch_numbers,
             )
             .await?;
@@ -233,17 +233,43 @@ impl CommittedBatchProvider {
                     .intervals
                     .find_interval(batch_number)
                     .with_context(|| format!("batch {batch_number} does not belong to any known settlement layer interval"))?;
-                let archive_proxy =
+                let discovered_batch =
                     match (&interval.settlement_layer, archive_l1_provider.as_ref()) {
                         (IntervalSettlementLayer::L1, Some(provider)) => {
-                            // SYSCOIN: Only startup historical L1 reads use the archive provider.
-                            Some(ZkChain::new(*interval.proxy.address(), (*provider).clone()))
+                            // SYSCOIN: Only background historical L1 reads prefer the archive
+                            // provider. If the archive endpoint is behind the live node, retry
+                            // against the live provider for recent batches.
+                            let archive_proxy =
+                                ZkChain::new(*interval.proxy.address(), (*provider).clone());
+                            match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan)
+                                .await
+                            {
+                                Ok(batch) => batch,
+                                Err(archive_err) => {
+                                    let archive_err = format!("{archive_err:#}");
+                                    tracing::warn!(
+                                        batch_number,
+                                        archive_error = archive_err,
+                                        "archive provider failed to fetch committed batch; retrying live provider",
+                                    );
+                                    fetch_batch(
+                                        &interval.proxy,
+                                        batch_number,
+                                        max_l1_blocks_to_scan,
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "archive provider failed to fetch committed batch {batch_number}: {archive_err}; \
+                                             live provider fallback also failed"
+                                        )
+                                    })?
+                                }
+                            }
                         }
-                        _ => None,
+                        _ => fetch_batch(&interval.proxy, batch_number, max_l1_blocks_to_scan)
+                            .await?,
                     };
-                let proxy = archive_proxy.as_ref().unwrap_or(&interval.proxy);
-                let discovered_batch =
-                    fetch_batch(proxy, batch_number, max_l1_blocks_to_scan).await?;
                 tracing::info!(
                     batch_number = discovered_batch.number(),
                     "discovered committed batch {} on startup",
