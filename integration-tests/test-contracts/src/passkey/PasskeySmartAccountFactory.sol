@@ -9,7 +9,6 @@ contract PasskeySmartAccountFactory {
     address public immutable implementation;
 
     struct AccountParams {
-        bytes32 recoveryId;
         bytes32 passkeyX;
         bytes32 passkeyY;
         bytes32 credentialIdHash;
@@ -19,9 +18,7 @@ contract PasskeySmartAccountFactory {
         bytes32 salt;
     }
 
-    event AccountCreated(
-        address indexed account, bytes32 indexed recoveryId, bytes32 indexed credentialIdHash, bytes32 salt
-    );
+    event AccountCreated(address indexed account, bytes32 indexed credentialIdHash, bytes32 salt);
 
     constructor() {
         implementation = address(new PasskeySmartAccount());
@@ -41,8 +38,7 @@ contract PasskeySmartAccountFactory {
         returndata = PasskeySmartAccount(payable(account)).execute(executions, proof, sponsorProof);
     }
 
-    mapping(bytes32 => address[]) internal accountsByRecoveryId;
-    mapping(bytes32 => mapping(bytes32 => address[])) internal accountsByCredential;
+    mapping(bytes32 => address[]) internal accountsByCredential;
 
     function getAccountActionHash(AccountParams calldata params, PasskeySmartAccount.Execution[] calldata executions)
         external
@@ -76,7 +72,6 @@ contract PasskeySmartAccountFactory {
     }
 
     function _createAccount(AccountParams calldata params) internal returns (address account) {
-        require(params.recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
         bytes32 derivedSalt = _deriveSalt(params);
         bytes memory bytecode = _cloneCreationCode();
 
@@ -87,7 +82,6 @@ contract PasskeySmartAccountFactory {
         require(account != address(0), "ACCOUNT_DEPLOY_FAILED");
         PasskeySmartAccount(payable(account)).initialize(
             PasskeySmartAccount.AccountParams({
-                recoveryId: params.recoveryId,
                 passkeyX: params.passkeyX,
                 passkeyY: params.passkeyY,
                 credentialIdHash: params.credentialIdHash,
@@ -97,13 +91,11 @@ contract PasskeySmartAccountFactory {
                 salt: params.salt
             })
         );
-        accountsByRecoveryId[params.recoveryId].push(account);
-        accountsByCredential[params.recoveryId][params.credentialIdHash].push(account);
-        emit AccountCreated(account, params.recoveryId, params.credentialIdHash, params.salt);
+        accountsByCredential[params.credentialIdHash].push(account);
+        emit AccountCreated(account, params.credentialIdHash, params.salt);
     }
 
     function getAccountAddress(AccountParams calldata params) public view returns (address) {
-        require(params.recoveryId != bytes32(0), "MISSING_RECOVERY_ID");
         bytes32 derivedSalt = _deriveSalt(params);
         bytes32 bytecodeHash = keccak256(_cloneCreationCode());
 
@@ -112,34 +104,21 @@ contract PasskeySmartAccountFactory {
         );
     }
 
-    function getAccountCountByRecoveryId(bytes32 recoveryId) external view returns (uint256) {
-        return accountsByRecoveryId[recoveryId].length;
+    function getAccountCountByCredential(bytes32 credentialIdHash) external view returns (uint256) {
+        return accountsByCredential[credentialIdHash].length;
     }
 
-    function getAccountCountByCredential(bytes32 recoveryId, bytes32 credentialIdHash) external view returns (uint256) {
-        return accountsByCredential[recoveryId][credentialIdHash].length;
-    }
-
-    function getAccountsByRecoveryId(bytes32 recoveryId, uint256 offset, uint256 limit)
+    function getAccountsByCredential(bytes32 credentialIdHash, uint256 offset, uint256 limit)
         external
         view
         returns (address[] memory accounts)
     {
-        return _slice(accountsByRecoveryId[recoveryId], offset, limit);
-    }
-
-    function getAccountsByCredential(bytes32 recoveryId, bytes32 credentialIdHash, uint256 offset, uint256 limit)
-        external
-        view
-        returns (address[] memory accounts)
-    {
-        return _slice(accountsByCredential[recoveryId][credentialIdHash], offset, limit);
+        return _slice(accountsByCredential[credentialIdHash], offset, limit);
     }
 
     function _deriveSalt(AccountParams calldata params) internal pure returns (bytes32) {
         return keccak256(
             abi.encode(
-                params.recoveryId,
                 params.credentialIdHash,
                 params.passkeyX,
                 params.passkeyY,

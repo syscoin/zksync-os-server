@@ -49,7 +49,6 @@ contract PasskeySmartAccount {
     }
 
     struct AccountParams {
-        bytes32 recoveryId;
         bytes32 passkeyX;
         bytes32 passkeyY;
         bytes32 credentialIdHash;
