@@ -257,10 +257,31 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
         address predicted = factory.getAccountAddress(params);
 
-        address deployed = factory.createAccount(params);
+        address deployed = _createAccount(factory, params);
 
         require(deployed == predicted, "predicted address");
         _assertDefaultRecoveryMetadata(PasskeySmartAccount(payable(deployed)));
+    }
+
+    function testFactoryCreateRequiresPasskeyProof() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("proof required device"));
+
+        vm.expectRevert(bytes("INVALID_CREATE_PROOF"));
+        factory.createAccount(params, _proof(keccak256("wrong create hash")));
+
+        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 0, "credential count");
+    }
+
+    function testFactoryCreateAndExecuteRejectsEmptyBatch() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("empty batch device"));
+        PasskeySmartAccount.Execution[] memory executions = new PasskeySmartAccount.Execution[](0);
+
+        vm.expectRevert(bytes("MISSING_EXECUTION"));
+        factory.createAccountAndExecute(params, executions, _proof(keccak256("unused")), _emptySponsorProof());
+
+        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 0, "credential count");
     }
 
     function testImplementationIsLocked() public {
@@ -273,7 +294,7 @@ contract PasskeySmartAccountTest {
     function testCloneInitializesOnlyOnce() public {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("device one"));
-        address deployed = factory.createAccount(params);
+        address deployed = _createAccount(factory, params);
 
         vm.expectRevert(PasskeySmartAccount.AlreadyInitialized.selector);
         PasskeySmartAccount(payable(deployed)).initialize(_accountInitParams(params.salt));
@@ -283,7 +304,7 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("funded device"));
 
-        address deployed = factory.createAccount{value: 2 ether}(params);
+        address deployed = _createAccountWithValue(factory, params, 2 ether);
 
         require(deployed.balance == 2 ether, "clone balance");
     }
@@ -299,8 +320,8 @@ contract PasskeySmartAccountTest {
         address attackerPredicted = factory.getAccountAddress(attackerParams);
 
         require(userPredicted != attackerPredicted, "identity must affect address");
-        address attackerDeployed = factory.createAccount(attackerParams);
-        address userDeployed = factory.createAccount(userParams);
+        address attackerDeployed = _createAccount(factory, attackerParams);
+        address userDeployed = _createAccount(factory, userParams);
         require(attackerDeployed == attackerPredicted, "attacker predicted");
         require(userDeployed == userPredicted, "user predicted");
         PasskeySmartAccount.RecoveryMetadata memory userMetadata =
@@ -315,7 +336,7 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("policy device"));
         address predicted = factory.getAccountAddress(params);
-        PasskeySmartAccount accountWithPolicy = PasskeySmartAccount(payable(factory.createAccount(params)));
+        PasskeySmartAccount accountWithPolicy = PasskeySmartAccount(payable(_createAccount(factory, params)));
 
         _setSponsorByPasskey(accountWithPolicy, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
 
@@ -329,9 +350,9 @@ contract PasskeySmartAccountTest {
         PasskeySmartAccountFactory.AccountParams memory params1 = _accountParams(keccak256("device one"));
         PasskeySmartAccountFactory.AccountParams memory params2 = _accountParams(keccak256("device two"));
 
-        address account0 = factory.createAccount(params0);
-        address account1 = factory.createAccount(params1);
-        address account2 = factory.createAccount(params2);
+        address account0 = _createAccount(factory, params0);
+        address account1 = _createAccount(factory, params1);
+        address account2 = _createAccount(factory, params2);
 
         require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 3, "credential count");
 
@@ -351,10 +372,11 @@ contract PasskeySmartAccountTest {
     function testDuplicateCreateDoesNotPolluteRegistry() public {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("duplicate device"));
-        factory.createAccount(params);
+        _createAccount(factory, params);
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(factory.getAccountCreateHash(params));
 
         vm.expectRevert(bytes("ACCOUNT_DEPLOY_FAILED"));
-        factory.createAccount(params);
+        factory.createAccount(params, proof);
 
         require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 1, "credential count");
     }
@@ -492,7 +514,23 @@ contract PasskeySmartAccountTest {
 
     function _newAccount(bytes32 salt) internal returns (PasskeySmartAccount) {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
-        return PasskeySmartAccount(payable(factory.createAccount(_accountParams(salt))));
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
+        return PasskeySmartAccount(payable(_createAccount(factory, params)));
+    }
+
+    function _createAccount(PasskeySmartAccountFactory factory, PasskeySmartAccountFactory.AccountParams memory params)
+        internal
+        returns (address)
+    {
+        return factory.createAccount(params, _proof(factory.getAccountCreateHash(params)));
+    }
+
+    function _createAccountWithValue(
+        PasskeySmartAccountFactory factory,
+        PasskeySmartAccountFactory.AccountParams memory params,
+        uint256 value
+    ) internal returns (address) {
+        return factory.createAccount{value: value}(params, _proof(factory.getAccountCreateHash(params)));
     }
 
     function _accountParams(bytes32 salt) internal pure returns (PasskeySmartAccountFactory.AccountParams memory) {

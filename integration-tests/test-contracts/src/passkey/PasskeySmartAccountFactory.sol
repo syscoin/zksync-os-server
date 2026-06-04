@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import {PasskeySmartAccount} from "./PasskeySmartAccount.sol";
 
 contract PasskeySmartAccountFactory {
+    bytes32 internal constant PASSKEY_CREATE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_CREATE_V1");
     bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
 
     address public immutable implementation;
@@ -24,8 +25,16 @@ contract PasskeySmartAccountFactory {
         implementation = address(new PasskeySmartAccount());
     }
 
-    function createAccount(AccountParams calldata params) external payable returns (address account) {
+    function createAccount(AccountParams calldata params, PasskeySmartAccount.WebAuthnProof calldata proof)
+        external
+        payable
+        returns (address account)
+    {
         account = _createAccount(params);
+        require(
+            PasskeySmartAccount(payable(account)).validateSignature(getAccountCreateHash(params), abi.encode(proof)),
+            "INVALID_CREATE_PROOF"
+        );
     }
 
     function createAccountAndExecute(
@@ -34,6 +43,7 @@ contract PasskeySmartAccountFactory {
         PasskeySmartAccount.WebAuthnProof calldata proof,
         PasskeySmartAccount.SponsorProof calldata sponsorProof
     ) external payable returns (address account, bytes[] memory returndata) {
+        require(executions.length != 0, "MISSING_EXECUTION");
         account = _createAccount(params);
         returndata = PasskeySmartAccount(payable(account)).execute(executions, proof, sponsorProof);
     }
@@ -67,6 +77,23 @@ contract PasskeySmartAccountFactory {
                 keccak256(abi.encodePacked(executionHashes)),
                 PasskeySmartAccount.SponsorMode.None,
                 address(0)
+            )
+        );
+    }
+
+    function getAccountCreateHash(AccountParams calldata params) public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                PASSKEY_CREATE_TYPEHASH,
+                block.chainid,
+                getAccountAddress(params),
+                params.credentialIdHash,
+                params.passkeyX,
+                params.passkeyY,
+                params.rpIdHash,
+                params.originHash,
+                params.originLength,
+                params.salt
             )
         );
     }
