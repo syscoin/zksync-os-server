@@ -49,7 +49,6 @@ contract PasskeySmartAccountTest {
     string internal constant ORIGIN = "chrome-extension://pali";
     bytes32 internal constant ORIGIN_HASH = keccak256(bytes(ORIGIN));
     uint256 internal constant ORIGIN_LENGTH = 23;
-    bytes32 internal constant RECOVERY_ID = keccak256("pali recovery id");
     string internal constant SPONSOR_URL = "https://sponsor.example/pali";
     bytes32 internal constant HIGH_S =
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
@@ -334,20 +333,18 @@ contract PasskeySmartAccountTest {
         address account1 = factory.createAccount(params1);
         address account2 = factory.createAccount(params2);
 
-        require(factory.getAccountCountByRecoveryId(RECOVERY_ID) == 3, "recovery count");
-        require(factory.getAccountCountByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH) == 3, "credential count");
+        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 3, "credential count");
 
-        address[] memory recoveryPage = factory.getAccountsByRecoveryId(RECOVERY_ID, 1, 2);
-        require(recoveryPage.length == 2, "recovery page length");
-        require(recoveryPage[0] == account1, "recovery page account 1");
-        require(recoveryPage[1] == account2, "recovery page account 2");
-
-        address[] memory credentialPage = factory.getAccountsByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH, 0, 2);
+        address[] memory credentialPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 0, 2);
         require(credentialPage.length == 2, "credential page length");
         require(credentialPage[0] == account0, "credential page account 0");
         require(credentialPage[1] == account1, "credential page account 1");
 
-        address[] memory emptyPage = factory.getAccountsByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH, 3, 2);
+        address[] memory nextPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 2, 2);
+        require(nextPage.length == 1, "next page length");
+        require(nextPage[0] == account2, "next page account");
+
+        address[] memory emptyPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 3, 2);
         require(emptyPage.length == 0, "empty page");
     }
 
@@ -359,8 +356,7 @@ contract PasskeySmartAccountTest {
         vm.expectRevert(bytes("ACCOUNT_DEPLOY_FAILED"));
         factory.createAccount(params);
 
-        require(factory.getAccountCountByRecoveryId(RECOVERY_ID) == 1, "recovery count");
-        require(factory.getAccountCountByCredential(RECOVERY_ID, CREDENTIAL_ID_HASH) == 1, "credential count");
+        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 1, "credential count");
     }
 
     function testFactoryDeploysAndExecutesPasskeyAuthorizedPolicy() public {
@@ -501,7 +497,6 @@ contract PasskeySmartAccountTest {
 
     function _accountParams(bytes32 salt) internal pure returns (PasskeySmartAccountFactory.AccountParams memory) {
         return PasskeySmartAccountFactory.AccountParams({
-            recoveryId: RECOVERY_ID,
             passkeyX: PASSKEY_X,
             passkeyY: PASSKEY_Y,
             credentialIdHash: CREDENTIAL_ID_HASH,
@@ -514,7 +509,6 @@ contract PasskeySmartAccountTest {
 
     function _accountInitParams(bytes32 salt) internal pure returns (PasskeySmartAccount.AccountParams memory) {
         return PasskeySmartAccount.AccountParams({
-            recoveryId: RECOVERY_ID,
             passkeyX: PASSKEY_X,
             passkeyY: PASSKEY_Y,
             credentialIdHash: CREDENTIAL_ID_HASH,
