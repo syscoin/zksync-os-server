@@ -17,6 +17,8 @@ contract PasskeySmartAccount {
     bytes8 internal constant WEBAUTHN_TYPE_PREFIX = '"type":"';
     bytes12 internal constant WEBAUTHN_TYPE_VALUE = "webauthn.get";
     bytes10 internal constant WEBAUTHN_ORIGIN_PREFIX = '"origin":"';
+    uint256 internal constant SECP256K1_HALF_ORDER =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     enum SponsorMode {
         None,
@@ -531,6 +533,10 @@ contract PasskeySmartAccount {
     }
 
     function _verifySponsorSigner(bytes32 actionHash, SponsorProof calldata proof, address signer) internal pure {
+        if ((proof.v != 27 && proof.v != 28) || uint256(proof.s) > SECP256K1_HALF_ORDER) {
+            revert InvalidSponsor();
+        }
+
         bytes32 sponsorDigest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", actionHash));
         address recovered = ecrecover(sponsorDigest, proof.v, proof.r, proof.s);
         if (recovered == address(0) || recovered != signer) {
