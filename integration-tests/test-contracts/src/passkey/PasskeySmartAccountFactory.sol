@@ -18,7 +18,7 @@ contract PasskeySmartAccountFactory {
         bytes32 salt;
     }
 
-    event AccountCreated(address indexed account, bytes32 indexed credentialIdHash, bytes32 salt);
+    event AccountCreated(address indexed account, bytes32 indexed lookupKey, bytes32 salt);
 
     constructor() {
         implementation = address(new PasskeySmartAccount());
@@ -47,7 +47,7 @@ contract PasskeySmartAccountFactory {
         returndata = PasskeySmartAccount(payable(account)).execute(executions, proof, sponsorProof);
     }
 
-    mapping(bytes32 => address[]) internal accountsByCredential;
+    mapping(bytes32 => address[]) internal accountsByPasskeyLookup;
 
     function getAccountCreateHash(AccountParams calldata params) public view returns (bytes32) {
         return keccak256(
@@ -86,8 +86,9 @@ contract PasskeySmartAccountFactory {
                 salt: params.salt
             })
         );
-        accountsByCredential[params.credentialIdHash].push(account);
-        emit AccountCreated(account, params.credentialIdHash, params.salt);
+        bytes32 lookupKey = _getAccountLookupKey(params);
+        accountsByPasskeyLookup[lookupKey].push(account);
+        emit AccountCreated(account, lookupKey, params.salt);
     }
 
     function getAccountAddress(AccountParams calldata params) public view returns (address) {
@@ -99,16 +100,16 @@ contract PasskeySmartAccountFactory {
         );
     }
 
-    function getAccountCountByCredential(bytes32 credentialIdHash) external view returns (uint256) {
-        return accountsByCredential[credentialIdHash].length;
+    function getAccountCountByPasskeyLookup(bytes32 lookupKey) external view returns (uint256) {
+        return accountsByPasskeyLookup[lookupKey].length;
     }
 
-    function getAccountsByCredential(bytes32 credentialIdHash, uint256 offset, uint256 limit)
+    function getAccountsByPasskeyLookup(bytes32 lookupKey, uint256 offset, uint256 limit)
         external
         view
         returns (address[] memory accounts)
     {
-        return _slice(accountsByCredential[credentialIdHash], offset, limit);
+        return _slice(accountsByPasskeyLookup[lookupKey], offset, limit);
     }
 
     function _deriveSalt(AccountParams calldata params) internal pure returns (bytes32) {
@@ -121,6 +122,19 @@ contract PasskeySmartAccountFactory {
                 params.originHash,
                 params.originLength,
                 params.salt
+            )
+        );
+    }
+
+    function _getAccountLookupKey(AccountParams calldata params) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                params.credentialIdHash,
+                params.passkeyX,
+                params.passkeyY,
+                params.rpIdHash,
+                params.originHash,
+                params.originLength
             )
         );
     }

@@ -304,7 +304,7 @@ contract PasskeySmartAccountTest {
         vm.expectRevert(bytes("INVALID_CREATE_PROOF"));
         factory.createAccount(params, _proof(keccak256("wrong create hash")));
 
-        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 0, "credential count");
+        require(factory.getAccountCountByPasskeyLookup(_accountLookupKey(params)) == 0, "lookup count");
     }
 
     function testFactoryCreateAndExecuteRejectsEmptyBatch() public {
@@ -315,7 +315,7 @@ contract PasskeySmartAccountTest {
         vm.expectRevert(bytes("MISSING_EXECUTION"));
         factory.createAccountAndExecute(params, executions, _proof(keccak256("unused")), _emptySponsorProof());
 
-        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 0, "credential count");
+        require(factory.getAccountCountByPasskeyLookup(_accountLookupKey(params)) == 0, "lookup count");
     }
 
     function testImplementationIsLocked() public {
@@ -388,19 +388,40 @@ contract PasskeySmartAccountTest {
         address account1 = _createAccount(factory, params1);
         address account2 = _createAccount(factory, params2);
 
-        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 3, "credential count");
+        bytes32 lookupKey = _accountLookupKey(params0);
+        require(lookupKey == _accountLookupKey(params1), "same lookup key");
+        require(factory.getAccountCountByPasskeyLookup(lookupKey) == 3, "lookup count");
 
-        address[] memory credentialPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 0, 2);
-        require(credentialPage.length == 2, "credential page length");
-        require(credentialPage[0] == account0, "credential page account 0");
-        require(credentialPage[1] == account1, "credential page account 1");
+        address[] memory lookupPage = factory.getAccountsByPasskeyLookup(lookupKey, 0, 2);
+        require(lookupPage.length == 2, "lookup page length");
+        require(lookupPage[0] == account0, "lookup page account 0");
+        require(lookupPage[1] == account1, "lookup page account 1");
 
-        address[] memory nextPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 2, 2);
+        address[] memory nextPage = factory.getAccountsByPasskeyLookup(lookupKey, 2, 2);
         require(nextPage.length == 1, "next page length");
         require(nextPage[0] == account2, "next page account");
 
-        address[] memory emptyPage = factory.getAccountsByCredential(CREDENTIAL_ID_HASH, 3, 2);
+        address[] memory emptyPage = factory.getAccountsByPasskeyLookup(lookupKey, 3, 2);
         require(emptyPage.length == 0, "empty page");
+    }
+
+    function testFactoryRegistryLookupCommitsToPasskeyIdentity() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory userParams = _accountParams(keccak256("user device"));
+        PasskeySmartAccountFactory.AccountParams memory attackerParams = _accountParams(keccak256("attacker device"));
+        attackerParams.passkeyX = bytes32(uint256(999));
+
+        bytes32 userLookupKey = _accountLookupKey(userParams);
+        bytes32 attackerLookupKey = _accountLookupKey(attackerParams);
+        require(userLookupKey != attackerLookupKey, "identity must affect lookup");
+
+        address attackerAccount = _createAccount(factory, attackerParams);
+        require(factory.getAccountCountByPasskeyLookup(userLookupKey) == 0, "user lookup polluted");
+        require(factory.getAccountCountByPasskeyLookup(attackerLookupKey) == 1, "attacker lookup count");
+
+        address[] memory attackerPage = factory.getAccountsByPasskeyLookup(attackerLookupKey, 0, 1);
+        require(attackerPage.length == 1, "attacker page length");
+        require(attackerPage[0] == attackerAccount, "attacker page account");
     }
 
     function testDuplicateCreateDoesNotPolluteRegistry() public {
@@ -412,7 +433,7 @@ contract PasskeySmartAccountTest {
         vm.expectRevert(bytes("ACCOUNT_DEPLOY_FAILED"));
         factory.createAccount(params, proof);
 
-        require(factory.getAccountCountByCredential(CREDENTIAL_ID_HASH) == 1, "credential count");
+        require(factory.getAccountCountByPasskeyLookup(_accountLookupKey(params)) == 1, "lookup count");
     }
 
     function testFactoryDeploysAndExecutesPasskeyAuthorizedPolicy() public {
@@ -619,6 +640,19 @@ contract PasskeySmartAccountTest {
             originLength: ORIGIN_LENGTH,
             salt: salt
         });
+    }
+
+    function _accountLookupKey(PasskeySmartAccountFactory.AccountParams memory params) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                params.credentialIdHash,
+                params.passkeyX,
+                params.passkeyY,
+                params.rpIdHash,
+                params.originHash,
+                params.originLength
+            )
+        );
     }
 
     function _execution(address target, uint256 value, bytes memory data, uint256 executionNonce)
