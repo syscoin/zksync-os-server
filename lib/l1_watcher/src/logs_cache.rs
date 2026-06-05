@@ -14,7 +14,9 @@ use zksync_os_provider::NodeProvider;
 
 const UNSYNCED_BLOCK_UPDATES: BlockUpdates = BlockUpdates {
     latest_block: BlockNumber::MAX,
-    finalized_block: BlockNumber::MAX,
+    // SYSCOIN: finalized block updates are optional while the provider has no
+    // finalized block; keep the cache sentinel distinct from that real state.
+    finalized_block: Some(BlockNumber::MAX),
 };
 
 #[derive(Debug)]
