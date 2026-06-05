@@ -72,9 +72,11 @@ use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
     BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
 };
-use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::BatchDaInputMode;
+use zksync_os_contract_interface::{
+    ZkChain, settlement_layer_intervals::IntervalSettlementLayer,
+};
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
 use zksync_os_internal_config::InternalConfigManager;
@@ -455,12 +457,17 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     );
     let gateway_logs_cache = if let Some(provider) = &gateway_provider {
         // SYSCOIN: Gateway may be configured while the chain currently settles on
-        // L1, so label Gateway cache metrics by the provider's chain ID rather
-        // than the current settlement-layer chain ID.
-        let gateway_chain_id = provider
-            .get_chain_id()
-            .await
-            .expect("failed to fetch Gateway provider chain ID");
+        // L1. Use discovered interval metadata instead of making an optional
+        // pre-migration Gateway RPC a hard startup dependency.
+        let gateway_chain_id = l1_state
+            .settlement_layer_intervals
+            .intervals()
+            .iter()
+            .find_map(|interval| match interval.settlement_layer {
+                IntervalSettlementLayer::L1 => None,
+                IntervalSettlementLayer::Gateway(chain_id) => Some(chain_id),
+            })
+            .unwrap_or(l1_state.sl_chain_id);
         Some(LogsCache::new(
             provider.clone(),
             gateway_block_updates
