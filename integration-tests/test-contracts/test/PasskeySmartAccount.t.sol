@@ -42,6 +42,7 @@ contract Receiver {
 contract PasskeySmartAccountTest {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
+    bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
     bytes32 internal constant PASSKEY_X = bytes32(uint256(1));
     bytes32 internal constant PASSKEY_Y = bytes32(uint256(2));
     bytes32 internal constant CREDENTIAL_ID_HASH = keccak256("credential");
@@ -395,7 +396,7 @@ contract PasskeySmartAccountTest {
             nonce: 0,
             deadline: block.timestamp + 1 hours
         });
-        bytes32 actionHash = factory.getAccountActionHash(params, _single(execution));
+        bytes32 actionHash = _initialActionHash(predicted, _single(execution));
         PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
 
         (address deployed,) =
@@ -428,7 +429,7 @@ contract PasskeySmartAccountTest {
             nonce: 1,
             deadline: block.timestamp + 1 hours
         });
-        bytes32 actionHash = factory.getAccountActionHash(params, executions);
+        bytes32 actionHash = _initialActionHash(predicted, executions);
         PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
 
         (address deployed,) =
@@ -501,6 +502,36 @@ contract PasskeySmartAccountTest {
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.Required, "sponsor mode");
         require(metadata.sponsorSigner == sponsor, "sponsor signer");
         require(keccak256(bytes(metadata.sponsorUrl)) == keccak256(bytes(SPONSOR_URL)), "sponsor url");
+    }
+
+    function _initialActionHash(address targetAccount, PasskeySmartAccount.Execution[] memory executions)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32[] memory executionHashes = new bytes32[](executions.length);
+        for (uint256 i = 0; i < executions.length; ++i) {
+            executionHashes[i] = keccak256(
+                abi.encode(
+                    executions[i].target,
+                    executions[i].value,
+                    keccak256(executions[i].data),
+                    executions[i].nonce,
+                    executions[i].deadline
+                )
+            );
+        }
+
+        return keccak256(
+            abi.encode(
+                PASSKEY_EXECUTE_TYPEHASH,
+                block.chainid,
+                targetAccount,
+                keccak256(abi.encodePacked(executionHashes)),
+                PasskeySmartAccount.SponsorMode.None,
+                address(0)
+            )
+        );
     }
 
     function _single(PasskeySmartAccount.Execution memory execution)

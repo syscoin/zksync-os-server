@@ -5,7 +5,6 @@ import {PasskeySmartAccount} from "./PasskeySmartAccount.sol";
 
 contract PasskeySmartAccountFactory {
     bytes32 internal constant PASSKEY_CREATE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_CREATE_V1");
-    bytes32 internal constant PASSKEY_EXECUTE_TYPEHASH = keccak256("PALI_PASSKEY_SMART_ACCOUNT_EXECUTE_V1");
 
     address public immutable implementation;
 
@@ -49,37 +48,6 @@ contract PasskeySmartAccountFactory {
     }
 
     mapping(bytes32 => address[]) internal accountsByCredential;
-
-    function getAccountActionHash(AccountParams calldata params, PasskeySmartAccount.Execution[] calldata executions)
-        external
-        view
-        returns (bytes32)
-    {
-        address account = getAccountAddress(params);
-        bytes32[] memory executionHashes = new bytes32[](executions.length);
-        for (uint256 i = 0; i < executions.length; ++i) {
-            executionHashes[i] = keccak256(
-                abi.encode(
-                    executions[i].target,
-                    executions[i].value,
-                    keccak256(executions[i].data),
-                    executions[i].nonce,
-                    executions[i].deadline
-                )
-            );
-        }
-
-        return keccak256(
-            abi.encode(
-                PASSKEY_EXECUTE_TYPEHASH,
-                block.chainid,
-                account,
-                keccak256(abi.encodePacked(executionHashes)),
-                PasskeySmartAccount.SponsorMode.None,
-                address(0)
-            )
-        );
-    }
 
     function getAccountCreateHash(AccountParams calldata params) public view returns (bytes32) {
         return keccak256(
