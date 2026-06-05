@@ -204,27 +204,30 @@ impl LogsCache {
                 ?err,
                 "Recent logs cache synchronization failed; Clearing cache & not using it for this request."
             );
-            let mut recent = self.recent.write().await;
-            let capacity = recent.capacity;
-            *recent = RecentLogs::new(capacity);
-            METRICS.logs_cache_approx_memory[&self.metric_labels].set(0);
+            self.clear().await;
         }
 
         let cached_logs = if let (Some(from_block), Some(to_block)) = filter.extract_block_range() {
-            self.recent
-                .read()
-                .await
+            let recent = self.recent.read().await;
+            let cached_hash = recent.cached_hash(to_block);
+            recent
                 .cached_logs_in_range(from_block, to_block)
                 .map(|logs| {
-                    logs.filter(|log| filter.rpc_matches(log))
-                        .cloned()
-                        .collect()
+                    (
+                        logs.filter(|log| filter.rpc_matches(log))
+                            .cloned()
+                            .collect(),
+                        to_block,
+                        cached_hash,
+                    )
                 })
         } else {
             None
         };
 
-        if let Some(cached_logs) = cached_logs {
+        if let Some((cached_logs, to_block, Some(cached_hash))) = cached_logs
+            && self.is_cached_tip_canonical(to_block, cached_hash).await?
+        {
             METRICS.logs_cache_hits[&self.metric_labels].inc();
             Ok(cached_logs)
         } else {
@@ -307,5 +310,41 @@ impl LogsCache {
             METRICS.logs_cache_approx_memory[&self.metric_labels].set(recent.approx_bytes);
             Ok(())
         })
+    }
+
+    async fn is_cached_tip_canonical(
+        &self,
+        block_number: u64,
+        cached_hash: B256,
+    ) -> TransportResult<bool> {
+        let Some(block) = self
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Number(block_number))
+            .await?
+        else {
+            return Err(TransportErrorKind::custom_str(
+                "cached logs canonicality check block not found",
+            ));
+        };
+        let is_canonical = block.header.hash == cached_hash;
+        if !is_canonical {
+            // SYSCOIN: block updates carry heights only, so a same-height reorg
+            // can otherwise leave stale logs in the cache.
+            tracing::warn!(
+                block_number,
+                ?cached_hash,
+                canonical_hash = ?block.header.hash,
+                "recent logs cache detected stale cached block hash"
+            );
+            self.clear().await;
+        }
+        Ok(is_canonical)
+    }
+
+    async fn clear(&self) {
+        let mut recent = self.recent.write().await;
+        let capacity = recent.capacity;
+        *recent = RecentLogs::new(capacity);
+        METRICS.logs_cache_approx_memory[&self.metric_labels].set(0);
     }
 }
