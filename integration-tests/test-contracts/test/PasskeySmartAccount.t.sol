@@ -53,6 +53,8 @@ contract PasskeySmartAccountTest {
     string internal constant SPONSOR_URL = "https://sponsor.example/pali";
     bytes32 internal constant HIGH_S =
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
+    uint256 internal constant SECP256K1_ORDER =
+        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
 
     PasskeySmartAccount internal account;
     Receiver internal receiver;
@@ -250,6 +252,37 @@ contract PasskeySmartAccountTest {
 
         vm.expectRevert(PasskeySmartAccount.InvalidSponsor.selector);
         sponsored.execute(_single(execution), proof, _emptySponsorProof());
+    }
+
+    function testRequiredSponsorHighSSignatureFails() public {
+        PasskeySmartAccount sponsored = _newAccount(keccak256("sponsor high-s account"));
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
+        vm.deal(address(sponsored), 10 ether);
+
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
+        bytes32 actionHash = sponsored.getActionHash(_single(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+        PasskeySmartAccount.SponsorProof memory sponsorProof = _sponsorProof(actionHash);
+        sponsorProof.s = bytes32(SECP256K1_ORDER - uint256(sponsorProof.s));
+        sponsorProof.v = sponsorProof.v == 27 ? 28 : 27;
+
+        vm.expectRevert(PasskeySmartAccount.InvalidSponsor.selector);
+        sponsored.execute(_single(execution), proof, sponsorProof);
+    }
+
+    function testRequiredSponsorInvalidVSignatureFails() public {
+        PasskeySmartAccount sponsored = _newAccount(keccak256("sponsor invalid-v account"));
+        _setSponsorByPasskey(sponsored, PasskeySmartAccount.SponsorMode.Required, sponsor, SPONSOR_URL);
+        vm.deal(address(sponsored), 10 ether);
+
+        PasskeySmartAccount.Execution memory execution = _execution(address(receiver), 1 ether, "", sponsored.nonce());
+        bytes32 actionHash = sponsored.getActionHash(_single(execution));
+        PasskeySmartAccount.WebAuthnProof memory proof = _proof(actionHash);
+        PasskeySmartAccount.SponsorProof memory sponsorProof = _sponsorProof(actionHash);
+        sponsorProof.v = 0;
+
+        vm.expectRevert(PasskeySmartAccount.InvalidSponsor.selector);
+        sponsored.execute(_single(execution), proof, sponsorProof);
     }
 
     function testFactoryPredictsAndDeploysAccount() public {
