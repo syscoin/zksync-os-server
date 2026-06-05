@@ -74,9 +74,7 @@ use zksync_os_batch_verification::{
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::BatchDaInputMode;
-use zksync_os_contract_interface::{
-    ZkChain, settlement_layer_intervals::IntervalSettlementLayer,
-};
+use zksync_os_contract_interface::{ZkChain, settlement_layer_intervals::IntervalSettlementLayer};
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
 use zksync_os_internal_config::InternalConfigManager;
