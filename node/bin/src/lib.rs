@@ -453,16 +453,25 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         config.l1_watcher_config.logs_cache_capacity,
         l1_state.l1_chain_id,
     );
-    let gateway_logs_cache = gateway_provider.as_ref().map(|provider| {
-        LogsCache::new(
+    let gateway_logs_cache = if let Some(provider) = &gateway_provider {
+        // SYSCOIN: Gateway may be configured while the chain currently settles on
+        // L1, so label Gateway cache metrics by the provider's chain ID rather
+        // than the current settlement-layer chain ID.
+        let gateway_chain_id = provider
+            .get_chain_id()
+            .await
+            .expect("failed to fetch Gateway provider chain ID");
+        Some(LogsCache::new(
             provider.clone(),
             gateway_block_updates
                 .clone()
                 .expect("gateway block updates must be initialized when gateway provider exists"),
             config.l1_watcher_config.logs_cache_capacity,
-            l1_state.sl_chain_id,
-        )
-    });
+            gateway_chain_id,
+        ))
+    } else {
+        None
+    };
     let sl_logs_cache = if l1_state.l1_chain_id == l1_state.sl_chain_id {
         l1_logs_cache.clone()
     } else {

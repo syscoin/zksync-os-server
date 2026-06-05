@@ -243,6 +243,8 @@ impl LogsCache {
     async fn synchronize_if_needed(&self) -> TransportResult<()> {
         let latest_snapshot = *self.block_updates.borrow();
         if self.recent.read().await.synced_with == latest_snapshot {
+            // SYSCOIN: same-height reorgs are checked before returning cache
+            // hits in `get_logs` by validating the cached range tip hash.
             return Ok(());
         }
 
