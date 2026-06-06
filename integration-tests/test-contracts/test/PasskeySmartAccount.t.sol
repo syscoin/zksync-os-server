@@ -50,6 +50,17 @@ contract RecoveryRelayer {
     }
 }
 
+contract ReentrantExecutor {
+    function reenter(
+        PasskeySmartAccount account,
+        PasskeySmartAccount.Execution[] calldata executions,
+        PasskeySmartAccount.WebAuthnProof calldata proof,
+        PasskeySmartAccount.SponsorProof calldata sponsorProof
+    ) external {
+        account.execute(executions, proof, sponsorProof);
+    }
+}
+
 contract PasskeySmartAccountTest {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -366,6 +377,60 @@ contract PasskeySmartAccountTest {
 
         vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadNonce.selector, 1, 0));
         account.execute(_single(execution), proof, _emptySponsorProof());
+    }
+
+    function testSingleExecuteRejectsSignedFutureNonceReentrancy() public {
+        ReentrantExecutor reentrantExecutor = new ReentrantExecutor();
+        PasskeySmartAccount.Execution memory innerExecution = _execution(address(receiver), 1 ether, "", 1);
+        PasskeySmartAccount.WebAuthnProof memory innerProof = _proof(account.getActionHash(_single(innerExecution)));
+        PasskeySmartAccount.Execution memory outerExecution = _execution(
+            address(reentrantExecutor),
+            0,
+            abi.encodeCall(
+                ReentrantExecutor.reenter, (account, _single(innerExecution), innerProof, _emptySponsorProof())
+            ),
+            0
+        );
+        PasskeySmartAccount.WebAuthnProof memory outerProof = _proof(account.getActionHash(_single(outerExecution)));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PasskeySmartAccount.CallFailed.selector,
+                abi.encodeWithSelector(PasskeySmartAccount.ReentrantExecution.selector)
+            )
+        );
+        account.execute(_single(outerExecution), outerProof, _emptySponsorProof());
+
+        require(account.nonce() == 0, "nonce unchanged");
+        require(receiver.received() == 0, "inner transfer blocked");
+    }
+
+    function testBatchExecuteRejectsSignedFutureNonceReentrancy() public {
+        ReentrantExecutor reentrantExecutor = new ReentrantExecutor();
+        PasskeySmartAccount.Execution memory innerExecution = _execution(address(receiver), 1 ether, "", 2);
+        PasskeySmartAccount.WebAuthnProof memory innerProof = _proof(account.getActionHash(_single(innerExecution)));
+        PasskeySmartAccount.Execution[] memory outerExecutions = new PasskeySmartAccount.Execution[](2);
+        outerExecutions[0] = _execution(
+            address(reentrantExecutor),
+            0,
+            abi.encodeCall(
+                ReentrantExecutor.reenter, (account, _single(innerExecution), innerProof, _emptySponsorProof())
+            ),
+            0
+        );
+        outerExecutions[1] = _execution(address(receiver), 1 ether, "", 1);
+        PasskeySmartAccount.WebAuthnProof memory outerProof = _proof(account.getActionHash(outerExecutions));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PasskeySmartAccount.CallFailed.selector,
+                abi.encodeWithSelector(PasskeySmartAccount.ReentrantExecution.selector)
+            )
+        );
+        account.execute(outerExecutions, outerProof, _emptySponsorProof());
+
+        require(account.nonce() == 0, "nonce unchanged");
+        require(receiver.received() == 0, "batch transfers blocked");
     }
 
     function testWrongChallengeFails() public {
