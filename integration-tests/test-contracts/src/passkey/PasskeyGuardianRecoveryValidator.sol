@@ -94,6 +94,7 @@ contract PasskeyGuardianRecoveryValidator {
         policy.threshold = threshold;
 
         emit GuardianPolicyUpdated(address(account), recoveryDelay, threshold, policy.guardianCount);
+        _cancelPendingRecovery(account, false);
     }
 
     function removeGuardian(PasskeySmartAccount account, address guardian, uint256 threshold) external {
@@ -211,6 +212,7 @@ contract PasskeyGuardianRecoveryValidator {
 
         emit GuardianAdded(accountAddress, guardian);
         emit GuardianPolicyUpdated(accountAddress, recoveryDelay, threshold, nextCount);
+        _cancelPendingRecovery(account, false);
     }
 
     function _removeGuardian(PasskeySmartAccount account, address guardian, uint256 threshold) internal {
@@ -232,7 +234,6 @@ contract PasskeyGuardianRecoveryValidator {
         uint256 nextCount = guardianList.length;
         if (nextCount == 0) {
             delete recoveryPolicies[accountAddress];
-            _cancelPendingRecovery(account, false);
         } else {
             RecoveryPolicy storage policy = recoveryPolicies[accountAddress];
             _validatePolicy(policy.delay, threshold, nextCount);
@@ -241,6 +242,7 @@ contract PasskeyGuardianRecoveryValidator {
             emit GuardianPolicyUpdated(accountAddress, policy.delay, threshold, nextCount);
         }
 
+        _cancelPendingRecovery(account, false);
         emit GuardianRemoved(accountAddress, guardian);
     }
 

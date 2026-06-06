@@ -286,6 +286,40 @@ contract PasskeySmartAccountTest {
         guardianRecoveryValidator.startRecovery(data);
     }
 
+    function testPasskeyCanRemoveOneGuardianAndInvalidatePendingRecovery() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        _addGuardianByPasskey(guardianAccount, guardian2, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+
+        _removeGuardianByPasskey(guardianAccount, guardian, 1);
+
+        require(guardianRecoveryValidator.guardianCount(address(guardianAccount)) == 1, "one guardian remains");
+        require(guardianAccount.recoveryNonce() == 1, "remove consumes recovery nonce");
+        vm.warp(block.timestamp + RECOVERY_DELAY);
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
+    function testPasskeyCanUpdatePolicyAndInvalidatePendingRecovery() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+
+        _updateRecoveryPolicyByPasskey(guardianAccount, RECOVERY_DELAY + 1, 1);
+
+        require(guardianAccount.recoveryNonce() == 1, "policy update consumes recovery nonce");
+        vm.warp(block.timestamp + RECOVERY_DELAY);
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
     function testUnauthorizedPasskeyRecoveryFails() public {
         PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
         uint256 currentRecoveryNonce = account.recoveryNonce();
@@ -782,6 +816,19 @@ contract PasskeySmartAccountTest {
             address(guardianRecoveryValidator),
             0,
             abi.encodeCall(PasskeyGuardianRecoveryValidator.removeGuardian, (target, guardianAddress, threshold)),
+            target.nonce()
+        );
+        bytes32 actionHash = target.getActionHash(_single(execution));
+        target.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
+    }
+
+    function _updateRecoveryPolicyByPasskey(PasskeySmartAccount target, uint256 recoveryDelay, uint256 threshold)
+        internal
+    {
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(guardianRecoveryValidator),
+            0,
+            abi.encodeCall(PasskeyGuardianRecoveryValidator.updateRecoveryPolicy, (target, recoveryDelay, threshold)),
             target.nonce()
         );
         bytes32 actionHash = target.getActionHash(_single(execution));
