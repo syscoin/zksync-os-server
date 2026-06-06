@@ -108,6 +108,7 @@ contract PasskeySmartAccount {
     error BadRecoveryNonce(uint256 expected, uint256 provided);
     error SponsorRequired();
     error SponsorUrlTooLong();
+    error ReentrantExecution();
 
     bytes32 private passkeyX;
     bytes32 private passkeyY;
@@ -118,6 +119,7 @@ contract PasskeySmartAccount {
     address public recoveryValidator;
 
     bool private initialized;
+    bool private executing;
     uint256 public nonce;
     uint256 public recoveryNonce;
     SponsorMode private sponsorMode;
@@ -136,6 +138,16 @@ contract PasskeySmartAccount {
             revert OnlyRecoveryValidator();
         }
         _;
+    }
+
+    modifier nonReentrantExecution() {
+        if (executing) {
+            revert ReentrantExecution();
+        }
+
+        executing = true;
+        _;
+        executing = false;
     }
 
     constructor() payable {
@@ -176,6 +188,7 @@ contract PasskeySmartAccount {
     function execute(Execution[] calldata executions, WebAuthnProof calldata proof, SponsorProof calldata sponsorProof)
         external
         payable
+        nonReentrantExecution
         returns (bytes[] memory returndata)
     {
         if (executions.length == 0) {
