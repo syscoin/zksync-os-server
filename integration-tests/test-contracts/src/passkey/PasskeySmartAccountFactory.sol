@@ -15,6 +15,7 @@ contract PasskeySmartAccountFactory {
         bytes32 rpIdHash;
         bytes32 originHash;
         uint256 originLength;
+        address recoveryValidator;
         bytes32 salt;
     }
 
@@ -61,6 +62,7 @@ contract PasskeySmartAccountFactory {
                 params.rpIdHash,
                 params.originHash,
                 params.originLength,
+                params.recoveryValidator,
                 params.salt
             )
         );
@@ -83,6 +85,7 @@ contract PasskeySmartAccountFactory {
                 rpIdHash: params.rpIdHash,
                 originHash: params.originHash,
                 originLength: params.originLength,
+                recoveryValidator: params.recoveryValidator,
                 salt: params.salt
             })
         );
@@ -121,6 +124,7 @@ contract PasskeySmartAccountFactory {
                 params.rpIdHash,
                 params.originHash,
                 params.originLength,
+                params.recoveryValidator,
                 params.salt
             )
         );

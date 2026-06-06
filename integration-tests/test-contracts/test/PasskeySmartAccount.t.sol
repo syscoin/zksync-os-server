@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 import {Base64Url} from "../src/passkey/Base64Url.sol";
+import {PasskeyGuardianRecoveryValidator} from "../src/passkey/PasskeyGuardianRecoveryValidator.sol";
 import {PasskeySmartAccount} from "../src/passkey/PasskeySmartAccount.sol";
 import {PasskeySmartAccountFactory} from "../src/passkey/PasskeySmartAccountFactory.sol";
 
@@ -12,6 +13,7 @@ interface Vm {
     function expectRevert(bytes calldata revertData) external;
     function expectRevert(bytes4 revertData) external;
     function sign(uint256 privateKey, bytes32 digest) external returns (uint8 v, bytes32 r, bytes32 s);
+    function warp(uint256 newTimestamp) external;
 }
 
 contract P256MockOk {
@@ -55,19 +57,33 @@ contract PasskeySmartAccountTest {
         bytes32(uint256(0x8000000000000000000000000000000000000000000000000000000000000000));
     uint256 internal constant SECP256K1_ORDER =
         0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    uint256 internal constant RECOVERY_DELAY = 1 days;
 
     PasskeySmartAccount internal account;
+    PasskeySmartAccount internal guardianAccount;
+    PasskeyGuardianRecoveryValidator internal guardianRecoveryValidator;
     Receiver internal receiver;
     address internal sponsor;
     uint256 internal sponsorKey;
+    address internal guardian;
+    address internal guardian2;
+    uint256 internal guardianKey;
+    uint256 internal guardianKey2;
 
     function setUp() public {
         vm.etch(address(uint160(0x100)), address(new P256MockOk()).code);
         sponsorKey = 0xA11CE;
         sponsor = vm.addr(sponsorKey);
-        account = _newAccount(keccak256("default account"));
+        guardianKey = 0xB0B;
+        guardianKey2 = 0xCAFE;
+        guardian = vm.addr(guardianKey);
+        guardian2 = vm.addr(guardianKey2);
+        guardianRecoveryValidator = new PasskeyGuardianRecoveryValidator(RECOVERY_DELAY);
+        account = _newAccountWithRecoveryValidator(keccak256("default account"), address(guardianRecoveryValidator));
+        guardianAccount = _newAccountWithRecoveryValidator(keccak256("guardian account"), address(guardianRecoveryValidator));
         receiver = new Receiver();
         vm.deal(address(account), 10 ether);
+        vm.deal(address(guardianAccount), 10 ether);
     }
 
     function testExecuteWithValidWebAuthnProof() public {
@@ -92,6 +108,164 @@ contract PasskeySmartAccountTest {
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
         require(metadata.sponsorSigner == address(0), "sponsor signer");
         require(bytes(metadata.sponsorUrl).length == 0, "sponsor url");
+        require(account.recoveryValidator() == address(guardianRecoveryValidator), "recovery validator");
+        require(account.recoveryNonce() == 0, "recovery nonce");
+    }
+
+    function testGuardianRecoveryCanRotatePasskey() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+        vm.warp(block.timestamp + RECOVERY_DELAY);
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+
+        PasskeySmartAccount.RecoveryMetadata memory metadata = guardianAccount.getRecoveryMetadata();
+        require(metadata.passkeyX == newIdentity.passkeyX, "guardian recovered passkey x");
+        require(metadata.passkeyY == newIdentity.passkeyY, "guardian recovered passkey y");
+        require(metadata.credentialIdHash == newIdentity.credentialIdHash, "guardian recovered credential");
+        require(guardianAccount.recoveryNonce() == 1, "guardian recovery nonce");
+    }
+
+    function testGuardianRecoveryCannotFinalizeBeforeDelay() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        uint256 readyAt = block.timestamp + 3 days;
+        _addGuardianByPasskey(guardianAccount, guardian, 3 days, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        guardianRecoveryValidator.startRecovery(data);
+
+        vm.expectRevert(abi.encodeWithSelector(PasskeyGuardianRecoveryValidator.RecoveryNotReady.selector, readyAt));
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
+    function testGuardianRecoveryCannotResetPendingTimelock() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        guardianRecoveryValidator.startRecovery(data);
+
+        vm.warp(block.timestamp + 1 hours);
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.RecoveryAlreadyPending.selector);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testGuardianRecoveryRequiresAccountConfiguredValidator() public {
+        PasskeyGuardianRecoveryValidator otherValidator = new PasskeyGuardianRecoveryValidator(RECOVERY_DELAY);
+        PasskeySmartAccount otherValidatorAccount =
+            _newAccountWithRecoveryValidator(keccak256("other validator account"), address(otherValidator));
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(otherValidatorAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(otherValidatorAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.InvalidRecoveryValidator.selector);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testPasskeyCanCancelGuardianRecovery() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(guardianRecoveryValidator),
+            0,
+            abi.encodeCall(PasskeyGuardianRecoveryValidator.cancelRecovery, (guardianAccount)),
+            guardianAccount.nonce()
+        );
+        bytes32 actionHash = guardianAccount.getActionHash(_single(execution));
+        guardianAccount.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
+
+        vm.warp(block.timestamp + RECOVERY_DELAY);
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
+    function testGuardianRecoveryRequiresRegisteredGuardian() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.InvalidRecoveryPolicy.selector);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testGuardianRecoveryRejectsInvalidSignature() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey2);
+
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.InvalidGuardianSignature.selector);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testGuardianRecoveryThresholdRequiresDistinctSignatures() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        _addGuardianByPasskey(guardianAccount, guardian2, RECOVERY_DELAY, 2);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PasskeyGuardianRecoveryValidator.InsufficientGuardianSignatures.selector, 1, 2)
+        );
+        guardianRecoveryValidator.startRecovery(data);
+
+        data.signatures = _guardianSignatures2(data, guardian, guardianKey, guardian2, guardianKey2);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testGuardianRecoveryRejectsDuplicateSignatures() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        _addGuardianByPasskey(guardianAccount, guardian2, RECOVERY_DELAY, 2);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures2(data, guardian, guardianKey, guardian, guardianKey);
+
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.DuplicateGuardian.selector);
+        guardianRecoveryValidator.startRecovery(data);
+    }
+
+    function testPasskeyCanRemoveGuardianAndCancelPendingRecovery() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+
+        _clearGuardiansByPasskey(guardianAccount);
+
+        require(guardianRecoveryValidator.guardianCount(address(guardianAccount)) == 0, "guardian removed");
+        vm.warp(block.timestamp + RECOVERY_DELAY);
+        vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
+        guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
+    function testUnauthorizedPasskeyRecoveryFails() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        uint256 currentRecoveryNonce = account.recoveryNonce();
+
+        vm.expectRevert(PasskeySmartAccount.OnlyRecoveryValidator.selector);
+        account.recoverPasskey(newIdentity, currentRecoveryNonce);
     }
 
     function testReplayFails() public {
@@ -378,6 +552,15 @@ contract PasskeySmartAccountTest {
         require(factory.getAccountAddress(params) == predicted, "policy excluded");
     }
 
+    function testFactoryAddressCommitsToRecoveryValidator() public {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(keccak256("recovery validator device"));
+        PasskeySmartAccountFactory.AccountParams memory otherParams = _accountParams(keccak256("recovery validator device"));
+        otherParams.recoveryValidator = address(new PasskeyGuardianRecoveryValidator(RECOVERY_DELAY));
+
+        require(factory.getAccountAddress(params) != factory.getAccountAddress(otherParams), "validator affects address");
+    }
+
     function testFactoryRegistryLookupAndPagination() public {
         PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
         PasskeySmartAccountFactory.AccountParams memory params0 = _accountParams(keccak256("device zero"));
@@ -538,6 +721,78 @@ contract PasskeySmartAccountTest {
         target.execute(_single(execution), proof, sponsorProof);
     }
 
+    function _addGuardianByPasskey(
+        PasskeySmartAccount target,
+        address guardianAddress,
+        uint256 recoveryDelay,
+        uint256 threshold
+    ) internal {
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(guardianRecoveryValidator),
+            0,
+            abi.encodeCall(
+                PasskeyGuardianRecoveryValidator.addGuardian,
+                (target, guardianAddress, recoveryDelay, threshold)
+            ),
+            target.nonce()
+        );
+        bytes32 actionHash = target.getActionHash(_single(execution));
+        target.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
+    }
+
+    function _clearGuardiansByPasskey(PasskeySmartAccount target) internal {
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(guardianRecoveryValidator),
+            0,
+            abi.encodeCall(PasskeyGuardianRecoveryValidator.clearGuardians, (target)),
+            target.nonce()
+        );
+        bytes32 actionHash = target.getActionHash(_single(execution));
+        target.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
+    }
+
+    function _guardianStartRecoveryData(
+        PasskeySmartAccount target,
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity
+    ) internal view returns (PasskeyGuardianRecoveryValidator.StartRecoveryData memory data) {
+        data.account = target;
+        data.newIdentity = newIdentity;
+        data.expectedRecoveryNonce = target.recoveryNonce();
+        data.expiresAt = block.timestamp + 1 hours;
+    }
+
+    function _guardianSignatures1(
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data,
+        address signer,
+        uint256 signerKey
+    ) internal returns (PasskeyGuardianRecoveryValidator.GuardianSignature[] memory signatures) {
+        signatures = new PasskeyGuardianRecoveryValidator.GuardianSignature[](1);
+        signatures[0] = _guardianSignature(data, signer, signerKey);
+    }
+
+    function _guardianSignatures2(
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data,
+        address firstSigner,
+        uint256 firstSignerKey,
+        address secondSigner,
+        uint256 secondSignerKey
+    ) internal returns (PasskeyGuardianRecoveryValidator.GuardianSignature[] memory signatures) {
+        signatures = new PasskeyGuardianRecoveryValidator.GuardianSignature[](2);
+        signatures[0] = _guardianSignature(data, firstSigner, firstSignerKey);
+        signatures[1] = _guardianSignature(data, secondSigner, secondSignerKey);
+    }
+
+    function _guardianSignature(
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data,
+        address signer,
+        uint256 signerKey
+    ) internal returns (PasskeyGuardianRecoveryValidator.GuardianSignature memory signature) {
+        bytes32 recoveryHash = guardianRecoveryValidator.getRecoveryHash(data);
+        bytes32 digest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", recoveryHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
+        signature = PasskeyGuardianRecoveryValidator.GuardianSignature({guardian: signer, v: v, r: r, s: s});
+    }
+
     function _assertDefaultRecoveryMetadata(PasskeySmartAccount target) internal view {
         PasskeySmartAccount.RecoveryMetadata memory metadata = target.getRecoveryMetadata();
         require(metadata.passkeyX == PASSKEY_X, "passkey x");
@@ -549,6 +804,8 @@ contract PasskeySmartAccountTest {
         require(metadata.sponsorMode == PasskeySmartAccount.SponsorMode.None, "sponsor mode");
         require(metadata.sponsorSigner == address(0), "sponsor signer");
         require(bytes(metadata.sponsorUrl).length == 0, "sponsor url");
+        require(target.recoveryValidator() == address(guardianRecoveryValidator), "recovery validator");
+        require(target.recoveryNonce() == 0, "recovery nonce");
     }
 
     function _assertSponsorMetadata(PasskeySmartAccount target) internal view {
@@ -603,6 +860,13 @@ contract PasskeySmartAccountTest {
         return PasskeySmartAccount(payable(_createAccount(factory, params)));
     }
 
+    function _newAccountWithRecoveryValidator(bytes32 salt, address validator) internal returns (PasskeySmartAccount) {
+        PasskeySmartAccountFactory factory = new PasskeySmartAccountFactory();
+        PasskeySmartAccountFactory.AccountParams memory params = _accountParams(salt);
+        params.recoveryValidator = validator;
+        return PasskeySmartAccount(payable(_createAccount(factory, params)));
+    }
+
     function _createAccount(PasskeySmartAccountFactory factory, PasskeySmartAccountFactory.AccountParams memory params)
         internal
         returns (address)
@@ -618,7 +882,7 @@ contract PasskeySmartAccountTest {
         return factory.createAccount{value: value}(params, _proof(factory.getAccountCreateHash(params)));
     }
 
-    function _accountParams(bytes32 salt) internal pure returns (PasskeySmartAccountFactory.AccountParams memory) {
+    function _accountParams(bytes32 salt) internal view returns (PasskeySmartAccountFactory.AccountParams memory) {
         return PasskeySmartAccountFactory.AccountParams({
             passkeyX: PASSKEY_X,
             passkeyY: PASSKEY_Y,
@@ -626,11 +890,12 @@ contract PasskeySmartAccountTest {
             rpIdHash: RP_ID_HASH,
             originHash: ORIGIN_HASH,
             originLength: ORIGIN_LENGTH,
+            recoveryValidator: address(guardianRecoveryValidator),
             salt: salt
         });
     }
 
-    function _accountInitParams(bytes32 salt) internal pure returns (PasskeySmartAccount.AccountParams memory) {
+    function _accountInitParams(bytes32 salt) internal view returns (PasskeySmartAccount.AccountParams memory) {
         return PasskeySmartAccount.AccountParams({
             passkeyX: PASSKEY_X,
             passkeyY: PASSKEY_Y,
@@ -638,7 +903,19 @@ contract PasskeySmartAccountTest {
             rpIdHash: RP_ID_HASH,
             originHash: ORIGIN_HASH,
             originLength: ORIGIN_LENGTH,
+            recoveryValidator: address(guardianRecoveryValidator),
             salt: salt
+        });
+    }
+
+    function _recoveredPasskeyIdentity() internal pure returns (PasskeySmartAccount.PasskeyIdentity memory identity) {
+        identity = PasskeySmartAccount.PasskeyIdentity({
+            passkeyX: bytes32(uint256(11)),
+            passkeyY: bytes32(uint256(12)),
+            credentialIdHash: keccak256("recovered credential"),
+            rpIdHash: RP_ID_HASH,
+            originHash: ORIGIN_HASH,
+            originLength: ORIGIN_LENGTH
         });
     }
 

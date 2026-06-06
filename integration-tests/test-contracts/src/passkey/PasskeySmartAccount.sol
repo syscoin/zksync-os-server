@@ -57,7 +57,17 @@ contract PasskeySmartAccount {
         bytes32 rpIdHash;
         bytes32 originHash;
         uint256 originLength;
+        address recoveryValidator;
         bytes32 salt;
+    }
+
+    struct PasskeyIdentity {
+        bytes32 passkeyX;
+        bytes32 passkeyY;
+        bytes32 credentialIdHash;
+        bytes32 rpIdHash;
+        bytes32 originHash;
+        uint256 originLength;
     }
 
     struct RecoveryMetadata {
@@ -74,6 +84,15 @@ contract PasskeySmartAccount {
 
     event Executed(bytes32 indexed actionHash, address indexed target, uint256 value, address indexed submitter);
     event SponsorUpdated(SponsorMode mode, address indexed signer, string url);
+    event PasskeyRecovered(
+        bytes32 indexed credentialIdHash,
+        bytes32 passkeyX,
+        bytes32 passkeyY,
+        bytes32 rpIdHash,
+        bytes32 originHash,
+        uint256 originLength,
+        uint256 recoveryNonce
+    );
 
     error BadChallenge();
     error BadWebAuthnAuthenticatorData();
@@ -84,6 +103,8 @@ contract PasskeySmartAccount {
     error AlreadyInitialized();
     error InvalidSponsor();
     error OnlySelf();
+    error OnlyRecoveryValidator();
+    error BadRecoveryNonce(uint256 expected, uint256 provided);
     error SponsorRequired();
     error SponsorUrlTooLong();
 
@@ -93,9 +114,11 @@ contract PasskeySmartAccount {
     bytes32 private rpIdHash;
     bytes32 private originHash;
     uint256 private originLength;
+    address public recoveryValidator;
 
     bool private initialized;
     uint256 public nonce;
+    uint256 public recoveryNonce;
     SponsorMode private sponsorMode;
     address private sponsorSigner;
     string private sponsorUrl;
@@ -103,6 +126,13 @@ contract PasskeySmartAccount {
     modifier onlySelf() {
         if (msg.sender != address(this)) {
             revert OnlySelf();
+        }
+        _;
+    }
+
+    modifier onlyRecoveryValidator() {
+        if (msg.sender != recoveryValidator) {
+            revert OnlyRecoveryValidator();
         }
         _;
     }
@@ -125,6 +155,7 @@ contract PasskeySmartAccount {
         rpIdHash = params.rpIdHash;
         originHash = params.originHash;
         originLength = params.originLength;
+        recoveryValidator = params.recoveryValidator;
     }
 
     function getRecoveryMetadata() external view returns (RecoveryMetadata memory metadata) {
@@ -214,6 +245,34 @@ contract PasskeySmartAccount {
 
     function setSponsor(SponsorMode mode, address signer, string calldata url) external onlySelf {
         _setSponsor(mode, signer, url);
+    }
+
+    function recoverPasskey(
+        PasskeyIdentity calldata newIdentity,
+        uint256 expectedRecoveryNonce
+    ) external onlyRecoveryValidator {
+        uint256 currentRecoveryNonce = recoveryNonce;
+        if (expectedRecoveryNonce != currentRecoveryNonce) {
+            revert BadRecoveryNonce(currentRecoveryNonce, expectedRecoveryNonce);
+        }
+
+        passkeyX = newIdentity.passkeyX;
+        passkeyY = newIdentity.passkeyY;
+        credentialIdHash = newIdentity.credentialIdHash;
+        rpIdHash = newIdentity.rpIdHash;
+        originHash = newIdentity.originHash;
+        originLength = newIdentity.originLength;
+        recoveryNonce = currentRecoveryNonce + 1;
+
+        emit PasskeyRecovered(
+            newIdentity.credentialIdHash,
+            newIdentity.passkeyX,
+            newIdentity.passkeyY,
+            newIdentity.rpIdHash,
+            newIdentity.originHash,
+            newIdentity.originLength,
+            currentRecoveryNonce
+        );
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {
