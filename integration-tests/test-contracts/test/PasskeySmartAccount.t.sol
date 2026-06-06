@@ -299,6 +299,9 @@ contract PasskeySmartAccountTest {
 
         require(guardianRecoveryValidator.guardianCount(address(guardianAccount)) == 1, "one guardian remains");
         require(guardianAccount.recoveryNonce() == 1, "remove consumes recovery nonce");
+        vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadRecoveryNonce.selector, 1, 0));
+        guardianRecoveryValidator.startRecovery(data);
+
         vm.warp(block.timestamp + RECOVERY_DELAY);
         vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
         guardianRecoveryValidator.finalizeRecovery(guardianAccount);
@@ -315,6 +318,9 @@ contract PasskeySmartAccountTest {
         _updateRecoveryPolicyByPasskey(guardianAccount, RECOVERY_DELAY + 1, 1);
 
         require(guardianAccount.recoveryNonce() == 1, "policy update consumes recovery nonce");
+        vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadRecoveryNonce.selector, 1, 0));
+        guardianRecoveryValidator.startRecovery(data);
+
         vm.warp(block.timestamp + RECOVERY_DELAY);
         vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
         guardianRecoveryValidator.finalizeRecovery(guardianAccount);
