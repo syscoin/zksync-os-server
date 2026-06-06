@@ -121,7 +121,6 @@ contract PasskeyGuardianRecoveryValidator {
                 RECOVERY_TYPEHASH,
                 block.chainid,
                 address(this),
-                msg.sender,
                 address(data.account),
                 _passkeyIdentityHash(data.newIdentity),
                 data.expectedRecoveryNonce,
