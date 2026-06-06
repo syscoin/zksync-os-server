@@ -162,14 +162,7 @@ contract PasskeyGuardianRecoveryValidator {
 
     function cancelRecovery(PasskeySmartAccount account) external {
         _onlyAccount(account);
-        PendingRecovery memory pending = pendingRecoveries[address(account)];
-        if (pending.readyAt == 0) {
-            revert NoPendingRecovery();
-        }
-
-        delete pendingRecoveries[address(account)];
-        account.invalidateRecoveryNonce(pending.recoveryNonce);
-        emit RecoveryCancelled(address(account), pending.recoveryNonce);
+        _cancelPendingRecovery(account, true);
     }
 
     function finalizeRecovery(PasskeySmartAccount account) external {
@@ -239,7 +232,7 @@ contract PasskeyGuardianRecoveryValidator {
         uint256 nextCount = guardianList.length;
         if (nextCount == 0) {
             delete recoveryPolicies[accountAddress];
-            _cancelPendingRecovery(accountAddress);
+            _cancelPendingRecovery(account, false);
         } else {
             RecoveryPolicy storage policy = recoveryPolicies[accountAddress];
             _validatePolicy(policy.delay, threshold, nextCount);
@@ -260,15 +253,22 @@ contract PasskeyGuardianRecoveryValidator {
 
         delete guardianLists[accountAddress];
         delete recoveryPolicies[accountAddress];
-        _cancelPendingRecovery(accountAddress);
+        _cancelPendingRecovery(account, false);
     }
 
-    function _cancelPendingRecovery(address accountAddress) internal {
+    function _cancelPendingRecovery(PasskeySmartAccount account, bool requirePending) internal {
+        address accountAddress = address(account);
         PendingRecovery memory pending = pendingRecoveries[accountAddress];
-        if (pending.readyAt != 0) {
-            delete pendingRecoveries[accountAddress];
-            emit RecoveryCancelled(accountAddress, pending.recoveryNonce);
+        if (pending.readyAt == 0) {
+            if (requirePending) {
+                revert NoPendingRecovery();
+            }
+            return;
         }
+
+        account.invalidateRecoveryNonce(pending.recoveryNonce);
+        delete pendingRecoveries[accountAddress];
+        emit RecoveryCancelled(accountAddress, pending.recoveryNonce);
     }
 
     function _validatePolicy(uint256 recoveryDelay, uint256 threshold, uint256 guardianCount_) internal pure {

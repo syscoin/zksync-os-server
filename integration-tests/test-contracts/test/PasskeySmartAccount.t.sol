@@ -259,9 +259,31 @@ contract PasskeySmartAccountTest {
         _clearGuardiansByPasskey(guardianAccount);
 
         require(guardianRecoveryValidator.guardianCount(address(guardianAccount)) == 0, "guardian removed");
+        require(guardianAccount.recoveryNonce() == 1, "clear consumes recovery nonce");
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadRecoveryNonce.selector, 1, 0));
+        guardianRecoveryValidator.startRecovery(data);
+
         vm.warp(block.timestamp + RECOVERY_DELAY);
         vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
         guardianRecoveryValidator.finalizeRecovery(guardianAccount);
+    }
+
+    function testPasskeyCanRemoveLastGuardianAndInvalidatePendingRecovery() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+        guardianRecoveryValidator.startRecovery(data);
+
+        _removeGuardianByPasskey(guardianAccount, guardian, 0);
+
+        require(guardianRecoveryValidator.guardianCount(address(guardianAccount)) == 0, "guardian removed");
+        require(guardianAccount.recoveryNonce() == 1, "remove consumes recovery nonce");
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+        vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadRecoveryNonce.selector, 1, 0));
+        guardianRecoveryValidator.startRecovery(data);
     }
 
     function testUnauthorizedPasskeyRecoveryFails() public {
@@ -749,6 +771,17 @@ contract PasskeySmartAccountTest {
             address(guardianRecoveryValidator),
             0,
             abi.encodeCall(PasskeyGuardianRecoveryValidator.clearGuardians, (target)),
+            target.nonce()
+        );
+        bytes32 actionHash = target.getActionHash(_single(execution));
+        target.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
+    }
+
+    function _removeGuardianByPasskey(PasskeySmartAccount target, address guardianAddress, uint256 threshold) internal {
+        PasskeySmartAccount.Execution memory execution = _execution(
+            address(guardianRecoveryValidator),
+            0,
+            abi.encodeCall(PasskeyGuardianRecoveryValidator.removeGuardian, (target, guardianAddress, threshold)),
             target.nonce()
         );
         bytes32 actionHash = target.getActionHash(_single(execution));
