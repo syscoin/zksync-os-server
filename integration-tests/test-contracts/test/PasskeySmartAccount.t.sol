@@ -41,6 +41,15 @@ contract Receiver {
     }
 }
 
+contract RecoveryRelayer {
+    function startRecovery(
+        PasskeyGuardianRecoveryValidator validator,
+        PasskeyGuardianRecoveryValidator.StartRecoveryData calldata data
+    ) external {
+        validator.startRecovery(data);
+    }
+}
+
 contract PasskeySmartAccountTest {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -128,6 +137,22 @@ contract PasskeySmartAccountTest {
         require(metadata.passkeyY == newIdentity.passkeyY, "guardian recovered passkey y");
         require(metadata.credentialIdHash == newIdentity.credentialIdHash, "guardian recovered credential");
         require(guardianAccount.recoveryNonce() == 1, "guardian recovery nonce");
+    }
+
+    function testGuardianRecoveryCanBeSubmittedByDifferentRelayer() public {
+        PasskeySmartAccount.PasskeyIdentity memory newIdentity = _recoveredPasskeyIdentity();
+        _addGuardianByPasskey(guardianAccount, guardian, RECOVERY_DELAY, 1);
+
+        PasskeyGuardianRecoveryValidator.StartRecoveryData memory data =
+            _guardianStartRecoveryData(guardianAccount, newIdentity);
+        data.signatures = _guardianSignatures1(data, guardian, guardianKey);
+
+        RecoveryRelayer relayer = new RecoveryRelayer();
+        relayer.startRecovery(guardianRecoveryValidator, data);
+
+        (, uint256 recoveryNonce, uint256 readyAt) = guardianRecoveryValidator.pendingRecoveries(address(guardianAccount));
+        require(recoveryNonce == 0, "relayed recovery nonce");
+        require(readyAt == block.timestamp + RECOVERY_DELAY, "relayed recovery ready");
     }
 
     function testGuardianRecoveryCannotFinalizeBeforeDelay() public {
