@@ -168,6 +168,7 @@ contract PasskeyGuardianRecoveryValidator {
         }
 
         delete pendingRecoveries[address(account)];
+        account.invalidateRecoveryNonce(pending.recoveryNonce);
         emit RecoveryCancelled(address(account), pending.recoveryNonce);
     }
 

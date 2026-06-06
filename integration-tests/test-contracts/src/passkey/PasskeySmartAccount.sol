@@ -93,6 +93,7 @@ contract PasskeySmartAccount {
         uint256 originLength,
         uint256 recoveryNonce
     );
+    event RecoveryNonceInvalidated(uint256 recoveryNonce);
 
     error BadChallenge();
     error BadWebAuthnAuthenticatorData();
@@ -273,6 +274,16 @@ contract PasskeySmartAccount {
             newIdentity.originLength,
             currentRecoveryNonce
         );
+    }
+
+    function invalidateRecoveryNonce(uint256 expectedRecoveryNonce) external onlyRecoveryValidator {
+        uint256 currentRecoveryNonce = recoveryNonce;
+        if (expectedRecoveryNonce != currentRecoveryNonce) {
+            revert BadRecoveryNonce(currentRecoveryNonce, expectedRecoveryNonce);
+        }
+
+        recoveryNonce = currentRecoveryNonce + 1;
+        emit RecoveryNonceInvalidated(currentRecoveryNonce);
     }
 
     function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4) {

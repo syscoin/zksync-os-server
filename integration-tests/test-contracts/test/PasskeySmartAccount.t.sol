@@ -189,6 +189,10 @@ contract PasskeySmartAccountTest {
         bytes32 actionHash = guardianAccount.getActionHash(_single(execution));
         guardianAccount.execute(_single(execution), _proof(actionHash), _emptySponsorProof());
 
+        require(guardianAccount.recoveryNonce() == 1, "cancel consumes recovery nonce");
+        vm.expectRevert(abi.encodeWithSelector(PasskeySmartAccount.BadRecoveryNonce.selector, 1, 0));
+        guardianRecoveryValidator.startRecovery(data);
+
         vm.warp(block.timestamp + RECOVERY_DELAY);
         vm.expectRevert(PasskeyGuardianRecoveryValidator.NoPendingRecovery.selector);
         guardianRecoveryValidator.finalizeRecovery(guardianAccount);
