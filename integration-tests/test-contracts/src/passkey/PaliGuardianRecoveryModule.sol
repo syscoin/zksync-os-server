@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {
     IERC7579Execution,
     IERC7579Module,
@@ -25,6 +25,11 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
         uint48 scheduledAt;
         bool executed;
         bool canceled;
+    }
+
+    struct GuardianApproval {
+        address guardian;
+        bytes signature;
     }
 
     event RecoveryScheduled(address indexed account, bytes32 indexed operationId, uint48 executableAt);
@@ -101,11 +106,11 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
         bytes32 salt,
         bytes32 mode,
         bytes calldata executionCalldata,
-        bytes[] calldata signatures
+        GuardianApproval[] calldata approvals
     ) external returns (bytes32 operationId) {
         RecoveryConfig memory config_ = _installedConfig(account);
         bytes32 recoveryHash = getRecoveryScheduleHash(account, salt, mode, executionCalldata);
-        if (!_validateGuardianSignatures(account, recoveryHash, signatures)) {
+        if (!_validateGuardianApprovals(account, recoveryHash, approvals)) {
             revert UnauthorizedRecoverySchedule(msg.sender);
         }
 
@@ -251,21 +256,25 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
         }
     }
 
-    function _validateGuardianSignatures(address account, bytes32 recoveryHash, bytes[] calldata signatures)
+    function _validateGuardianApprovals(address account, bytes32 recoveryHash, GuardianApproval[] calldata approvals)
         private
         view
         returns (bool)
     {
         RecoveryConfig memory config_ = _configs[account];
-        if (signatures.length < config_.threshold) {
+        if (approvals.length < config_.threshold) {
             return false;
         }
 
-        address[] memory seen = new address[](signatures.length);
+        address[] memory seen = new address[](approvals.length);
         uint64 validSignatures;
-        for (uint256 i = 0; i < signatures.length; ++i) {
-            (address guardian, ECDSA.RecoverError err,) = ECDSA.tryRecover(recoveryHash, signatures[i]);
-            if (err != ECDSA.RecoverError.NoError || !_isGuardian[account][guardian] || _contains(seen, i, guardian)) {
+        for (uint256 i = 0; i < approvals.length; ++i) {
+            GuardianApproval calldata approval = approvals[i];
+            address guardian = approval.guardian;
+            if (
+                !_isGuardian[account][guardian] || _contains(seen, i, guardian)
+                    || !SignatureChecker.isValidSignatureNowCalldata(guardian, recoveryHash, approval.signature)
+            ) {
                 return false;
             }
 
