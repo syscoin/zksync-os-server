@@ -1,4 +1,9 @@
 [profile.default]
 src = "src"
 out = "out"
-libs = []
+libs = ["lib"]
+remappings = [
+    "@openzeppelin/contracts/=lib/openzeppelin-community-contracts/lib/@openzeppelin-contracts/contracts/",
+    "@openzeppelin/community-contracts/=lib/openzeppelin-community-contracts/contracts/",
+    "modulekit/=lib/modulekit/src/",
+]
