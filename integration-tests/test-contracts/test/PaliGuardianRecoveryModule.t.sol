@@ -130,8 +130,15 @@ contract PaliGuardianRecoveryModuleTest is Test {
         recovery.onInstall(abi.encode(uint32(1 days), uint32(7 days), guardians, uint64(1)));
 
         vm.warp(block.timestamp + 1 days);
-        vm.expectRevert(abi.encodeWithSelector(PaliGuardianRecoveryModule.RecoveryUnknown.selector, operationId));
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliGuardianRecoveryModule.RecoveryCanceledOperation.selector, operationId)
+        );
         recovery.executeRecovery(address(account), SALT, MODE, executionCalldata);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliGuardianRecoveryModule.RecoveryCanceledOperation.selector, operationId)
+        );
+        recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
     }
 
     function testContractGuardianCanApproveRecoveryViaERC1271() public {
