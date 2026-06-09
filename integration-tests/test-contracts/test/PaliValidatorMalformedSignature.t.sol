@@ -59,6 +59,18 @@ contract PaliValidatorMalformedSignatureTest is Test {
         assertEq(composite.isValidSignatureWithSender(address(this), keccak256("pali"), hex"1234"), EIP1271_FAILED);
     }
 
+    function testCompositeRejectsStricterThresholds() public {
+        PaliCompositeValidatorModule strictComposite = new PaliCompositeValidatorModule();
+        address[] memory children = new address[](2);
+        children[0] = address(ecdsa);
+        children[1] = address(p256);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliCompositeValidatorModule.InvalidCompositeThreshold.selector, uint64(2), uint64(2))
+        );
+        strictComposite.onInstall(abi.encode(children, uint64(2)));
+    }
+
     function testP256MalformedSignatureFailsClosed() public view {
         assertEq(p256.isValidSignatureWithSender(address(this), keccak256("pali"), hex"1234"), EIP1271_FAILED);
     }
