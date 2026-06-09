@@ -75,6 +75,11 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
         for (uint256 i = 0; i < guardians_.length; ++i) {
             delete _isGuardian[msg.sender][guardians_[i]];
         }
+        bytes32 activeOperationId = _activeRecovery[msg.sender];
+        if (activeOperationId != bytes32(0)) {
+            delete _schedules[activeOperationId];
+            delete _activeRecovery[msg.sender];
+        }
         delete _guardians[msg.sender];
         delete _configs[msg.sender];
     }

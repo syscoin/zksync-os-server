@@ -103,6 +103,23 @@ contract PaliGuardianRecoveryModuleTest is Test {
         recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, signatures);
     }
 
+    function testUninstallRevokesPendingRecovery() public {
+        bytes[] memory signatures = _guardianSignatures();
+
+        bytes32 operationId = recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, signatures);
+        vm.prank(address(account));
+        recovery.onUninstall("");
+
+        address[] memory guardians = new address[](1);
+        guardians[0] = guardian;
+        vm.prank(address(account));
+        recovery.onInstall(abi.encode(uint32(1 days), uint32(7 days), guardians, uint64(1)));
+
+        vm.warp(block.timestamp + 1 days);
+        vm.expectRevert(abi.encodeWithSelector(PaliGuardianRecoveryModule.RecoveryUnknown.selector, operationId));
+        recovery.executeRecovery(address(account), SALT, MODE, executionCalldata);
+    }
+
     function _guardianSignatures() private view returns (bytes[] memory signatures) {
         return _guardianSignatures(SALT);
     }
