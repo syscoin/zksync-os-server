@@ -134,9 +134,10 @@ contract PaliGuardianRecoveryModule is IERC7579Module {
             if (schedule.canceled) {
                 revert RecoveryCanceledOperation(operationId);
             }
-            if (!_isExpired(schedule, config_)) {
-                revert RecoveryAlreadyScheduled(operationId);
+            if (_isExpired(schedule, config_)) {
+                revert RecoveryExpired(operationId);
             }
+            revert RecoveryAlreadyScheduled(operationId);
         }
 
         uint48 scheduledAt = uint48(block.timestamp);

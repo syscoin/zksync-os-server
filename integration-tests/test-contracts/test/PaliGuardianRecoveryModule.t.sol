@@ -80,16 +80,14 @@ contract PaliGuardianRecoveryModuleTest is Test {
         recovery.scheduleRecovery(address(account), nextSalt, MODE, executionCalldata, nextApprovals);
     }
 
-    function testExpiredRecoveryCanBeRescheduledWithDeterministicSalt() public {
+    function testExpiredRecoveryCannotBeRescheduledWithOldApprovals() public {
         PaliGuardianRecoveryModule.GuardianApproval[] memory approvals = _guardianApprovals();
 
         bytes32 operationId = recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
         vm.warp(block.timestamp + 8 days + 1);
 
-        bytes32 rescheduledOperationId =
-            recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
-
-        assertEq(rescheduledOperationId, operationId);
+        vm.expectRevert(abi.encodeWithSelector(PaliGuardianRecoveryModule.RecoveryExpired.selector, operationId));
+        recovery.scheduleRecovery(address(account), SALT, MODE, executionCalldata, approvals);
     }
 
     function testExpiredRecoveryCanStartNewAttemptWithDifferentSalt() public {
