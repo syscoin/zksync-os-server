@@ -23,18 +23,21 @@ contract MockHookModule {
 }
 
 contract PaliSmartAccountTest is Test {
+    bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
 
     PaliECDSAValidatorModule private ecdsa;
     PaliGuardianRecoveryModule private recovery;
     PaliSmartAccount private implementation;
 
-    address private owner = address(0xA11CE);
+    uint256 private ownerPrivateKey = 0xA11CE;
+    address private owner;
 
     function setUp() public {
         ecdsa = new PaliECDSAValidatorModule();
         recovery = new PaliGuardianRecoveryModule();
         implementation = new PaliSmartAccount();
+        owner = vm.addr(ownerPrivateKey);
     }
 
     function testInitializeInstallsValidatorAndExecutorModules() public {
@@ -82,6 +85,16 @@ contract PaliSmartAccountTest is Test {
         PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
 
         assertEq(account.isValidSignature(keccak256("pali"), hex"1234"), EIP1271_FAILED);
+    }
+
+    function testEip1271ValidationUsesAccountStateForInstalledValidator() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+        bytes32 hash = keccak256("pali");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, hash);
+        bytes memory signature = abi.encodePacked(address(ecdsa), r, s, bytes1(v));
+
+        vm.prank(address(0xB0B));
+        assertEq(account.isValidSignature(hash, signature), EIP1271_SUCCESS);
     }
 
     function _deployProxy(bytes memory initCode) private returns (PaliSmartAccount) {

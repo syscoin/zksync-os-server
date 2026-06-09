@@ -71,7 +71,7 @@ contract PaliECDSAValidatorModule is IERC7579Validator {
         override
         returns (bytes4)
     {
-        return _validateSignature(sender, hash, signature) ? EIP1271_SUCCESS : EIP1271_FAILED;
+        return _validateSignature(_validationAccount(sender), hash, signature) ? EIP1271_SUCCESS : EIP1271_FAILED;
     }
 
     function _validateSignature(address account, bytes32 hash, bytes calldata signature) internal view returns (bool) {
@@ -114,6 +114,10 @@ contract PaliECDSAValidatorModule is IERC7579Validator {
         }
 
         return false;
+    }
+
+    function _validationAccount(address sender) private view returns (address) {
+        return _threshold[msg.sender] != 0 ? msg.sender : sender;
     }
 
     function decodeSignatures(bytes calldata signature) external pure returns (bytes[] memory) {

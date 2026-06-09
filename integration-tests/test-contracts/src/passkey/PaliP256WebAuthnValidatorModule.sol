@@ -99,7 +99,7 @@ contract PaliP256WebAuthnValidatorModule is IERC7579Validator {
         override
         returns (bytes4)
     {
-        return _validateSignature(sender, hash, signature) ? EIP1271_SUCCESS : EIP1271_FAILED;
+        return _validateSignature(_validationAccount(sender), hash, signature) ? EIP1271_SUCCESS : EIP1271_FAILED;
     }
 
     function _validateSignature(address account, bytes32 hash, bytes calldata signature) internal view returns (bool) {
@@ -121,6 +121,10 @@ contract PaliP256WebAuthnValidatorModule is IERC7579Validator {
 
         bytes32 digest = sha256(abi.encodePacked(proof.authenticatorData, sha256(proof.clientDataJSON)));
         return P256Verifier.isValid(digest, proof.r, proof.s, authData_.publicKeyX, authData_.publicKeyY);
+    }
+
+    function _validationAccount(address sender) private view returns (address) {
+        return _authData[msg.sender].publicKeyX != bytes32(0) ? msg.sender : sender;
     }
 
     function decodeWebAuthnProof(bytes calldata signature) external pure returns (WebAuthnProof memory) {
