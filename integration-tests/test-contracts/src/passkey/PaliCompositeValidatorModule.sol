@@ -118,7 +118,7 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
     }
 
     function _setPolicy(address account, address[] memory children, uint64 threshold_) private {
-        if (threshold_ != 1 || threshold_ > children.length) {
+        if (threshold_ == 0 || threshold_ > children.length) {
             revert InvalidCompositeThreshold(uint64(children.length), threshold_);
         }
 

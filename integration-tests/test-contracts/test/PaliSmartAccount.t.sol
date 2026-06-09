@@ -27,17 +27,22 @@ contract PaliSmartAccountTest is Test {
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
 
     PaliECDSAValidatorModule private ecdsa;
+    PaliECDSAValidatorModule private secondEcdsa;
     PaliGuardianRecoveryModule private recovery;
     PaliSmartAccount private implementation;
 
     uint256 private ownerPrivateKey = 0xA11CE;
+    uint256 private secondOwnerPrivateKey = 0xB0B;
     address private owner;
+    address private secondOwner;
 
     function setUp() public {
         ecdsa = new PaliECDSAValidatorModule();
+        secondEcdsa = new PaliECDSAValidatorModule();
         recovery = new PaliGuardianRecoveryModule();
         implementation = new PaliSmartAccount();
         owner = vm.addr(ownerPrivateKey);
+        secondOwner = vm.addr(secondOwnerPrivateKey);
     }
 
     function testInitializeInstallsValidatorAndExecutorModules() public {
@@ -46,6 +51,7 @@ contract PaliSmartAccountTest is Test {
         assertEq(account.accountId(), "pali.smart-account.erc7579.1.0.0");
         assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
         assertTrue(account.isModuleInstalled(MODULE_TYPE_EXECUTOR, address(recovery), ""));
+        assertEq(account.activeValidator(), address(ecdsa));
 
         address[] memory owners = ecdsa.owners(address(account));
         assertEq(owners.length, 1);
@@ -95,6 +101,26 @@ contract PaliSmartAccountTest is Test {
 
         vm.prank(address(0xB0B));
         assertEq(account.isValidSignature(hash, signature), EIP1271_SUCCESS);
+    }
+
+    function testInstallingValidatorSwitchesActiveValidator() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+        bytes32 hash = keccak256("pali");
+
+        vm.prank(address(account));
+        account.installModule(MODULE_TYPE_VALIDATOR, address(secondEcdsa), _ecdsaInitData(secondOwner));
+
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(secondEcdsa), ""));
+        assertEq(account.activeValidator(), address(secondEcdsa));
+
+        (uint8 oldV, bytes32 oldR, bytes32 oldS) = vm.sign(ownerPrivateKey, hash);
+        bytes memory oldSignature = abi.encodePacked(address(ecdsa), oldR, oldS, bytes1(oldV));
+        assertEq(account.isValidSignature(hash, oldSignature), EIP1271_FAILED);
+
+        (uint8 newV, bytes32 newR, bytes32 newS) = vm.sign(secondOwnerPrivateKey, hash);
+        bytes memory newSignature = abi.encodePacked(address(secondEcdsa), newR, newS, bytes1(newV));
+        assertEq(account.isValidSignature(hash, newSignature), EIP1271_SUCCESS);
     }
 
     function _deployProxy(bytes memory initCode) private returns (PaliSmartAccount) {
