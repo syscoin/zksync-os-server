@@ -6,11 +6,14 @@
 //! [`NodeProvider::deployment_block`]), so the many startup binary searches over L1 history can use
 //! a tight lower bound without each rediscovering it.
 
+mod logs_cache;
+mod metrics;
+
 use alloy::consensus::{BlockHeader, TrieAccount};
 use alloy::eips::eip1559::Eip1559Estimation;
 use alloy::eips::eip2930::AccessListResult;
 use alloy::eips::{BlockId, BlockNumberOrTag};
-use alloy::network::primitives::BlockResponse;
+use alloy::network::primitives::{BlockResponse, HeaderResponse};
 use alloy::network::{Ethereum, EthereumWallet, Network};
 use alloy::primitives::{
     Address, B256, BlockHash, BlockNumber, Bytes, StorageKey, StorageValue, TxHash, U64, U128, U256,
@@ -29,11 +32,13 @@ use alloy::rpc::types::{
     FilterChanges, Index, Log, SyncStatus,
 };
 use alloy::transports::TransportResult;
+use logs_cache::LogsCache;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::OnceCell;
+use std::time::Duration;
+use tokio::sync::{OnceCell, watch};
 
 /// A version of `Provider<Ethereum> + WalletProvider<Ethereum, Wallet = EthereumWallet>` that is
 /// object safe. Has a blanket implementation for the aforementioned constraints.
@@ -108,6 +113,7 @@ impl ProviderCapabilities {
 /// at most once. Each address gets its own [`OnceCell`] so concurrent lookups for the same address
 /// run the binary search exactly once and the rest await its result.
 type DeploymentBlockCache = Arc<Mutex<HashMap<Address, Arc<OnceCell<u64>>>>>;
+type HeaderWatcher = Arc<OnceCell<watch::Sender<<Ethereum as Network>::HeaderResponse>>>;
 
 /// A version of `DynProvider` that exposes `wallet()` and `wallet_mut()` as defined in
 /// `EthWalletProvider`. Also uses `Box` instead of `Arc` to make sure the wallets are mutable.
@@ -117,18 +123,150 @@ pub struct NodeProvider {
     inner: Box<dyn EthWalletProvider + 'static>,
     capabilities: ProviderCapabilities,
     deployment_blocks: DeploymentBlockCache,
+    latest_header_watcher: HeaderWatcher,
+    finalized_header_watcher: HeaderWatcher,
+    // Poll intervals are read-only and should not be changed after initialization
+    // They are here becaue pollers are initialized lazily - if we don't need it it's not initialized.
+    latest_poll_interval: Duration,
+    finalized_poll_interval: Duration,
+    // This is optional because only the async feature-enabled constructor should eagerly create
+    // the cache and its latest-header subscription. It is stored by value rather than behind an
+    // `Arc` because `LogsCache` already shares its mutable state internally; cloning a
+    // `NodeProvider` simply clones / shares that internal state via `LogsCache::clone()`.
+    log_cache: Option<LogsCache>,
 }
 
 impl NodeProvider {
     /// Creates a new [`NodeProvider`] by erasing the type, probing the provider once for its
     /// optional [`ProviderCapabilities`].
-    pub async fn new<P: EthWalletProvider + 'static>(provider: P) -> Self {
+    pub async fn new<P>(provider: P) -> TransportResult<Self>
+    where
+        P: EthWalletProvider + 'static,
+    {
+        Self::new_with_features(provider, Duration::from_secs(1), Duration::from_secs(1), 0).await
+    }
+
+    /// Creates a new [`NodeProvider`] with provider-owned pollers and, optionally, a log cache.
+    pub async fn new_with_features<P>(
+        provider: P,
+        latest_poll_interval: Duration,
+        finalized_poll_interval: Duration,
+        log_cache_capacity: usize,
+    ) -> TransportResult<Self>
+    where
+        P: EthWalletProvider + 'static,
+    {
         let capabilities = ProviderCapabilities::detect(&provider).await;
-        Self {
+        let mut this = Self {
             inner: Box::new(provider),
             capabilities,
             deployment_blocks: Arc::new(Mutex::new(HashMap::new())),
+            latest_header_watcher: Arc::new(OnceCell::new()),
+            finalized_header_watcher: Arc::new(OnceCell::new()),
+            latest_poll_interval,
+            finalized_poll_interval,
+            log_cache: None,
+        };
+
+        if log_cache_capacity > 0 {
+            let chain_id = this.inner.get_chain_id().await?;
+            let latest_blocks = this.latest_header_watcher().await;
+            this.log_cache = Some(LogsCache::new(latest_blocks, log_cache_capacity, chain_id));
         }
+
+        Ok(this)
+    }
+
+    /// Returns a shared watcher for the latest block header via `eth_getBlockByNumber(latest, false)`.
+    pub async fn latest_header_watcher(
+        &self,
+    ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
+        self.latest_header_watcher
+            .get_or_init(|| async {
+                self.build_header_watcher(BlockNumberOrTag::Latest, self.latest_poll_interval)
+                    .await
+            })
+            .await
+            .subscribe()
+    }
+
+    /// Returns a shared watcher for the finalized block header via
+    /// `eth_getBlockByNumber(finalized, false)`.
+    /// Falls back to latetst if the chain does not support finalized tag.
+    pub async fn finalized_header_watcher(
+        &self,
+    ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
+        let finalized = if self.capabilities.finalized_tag {
+            BlockNumberOrTag::Finalized
+        } else {
+            BlockNumberOrTag::Latest
+        };
+        self.finalized_header_watcher
+            .get_or_init(|| async {
+                self.build_header_watcher(finalized, self.finalized_poll_interval)
+                    .await
+            })
+            .await
+            .subscribe()
+    }
+
+    /// Builds a provider-owned header watcher backed by a raw RPC client request.
+    ///
+    /// This uses the underlying RPC client directly so the spawned task can be tied to
+    /// `WeakClient` shutdown. That preserves the client's transport/request layers, but it
+    /// intentionally bypasses provider-level fillers/layers.
+    ///
+    /// The shutdown is not tied to reth-tasks, it is only tied to the Provider. But it should be
+    /// fine because the task does not own any resources. This is similar to how alloy pollers work.
+    async fn build_header_watcher(
+        &self,
+        block: BlockNumberOrTag,
+        poll_interval: Duration,
+    ) -> watch::Sender<<Ethereum as Network>::HeaderResponse> {
+        let initial_block: Option<<Ethereum as Network>::BlockResponse> = self
+            .client()
+            .request("eth_getBlockByNumber", (block, false))
+            .await
+            .unwrap_or_else(|err| panic!("failed to initialize {block:?} header watcher: {err}"));
+        let (tx, _) = watch::channel(
+            initial_block
+                .expect("header watcher RPC returned no block for a chain head")
+                .header()
+                .clone(),
+        );
+        let weak_client = self.weak_client();
+        let tx_task = tx.clone();
+
+        tokio::spawn(async move {
+            let mut timer = tokio::time::interval(poll_interval);
+            loop {
+                timer.tick().await;
+                let Some(client) = weak_client.upgrade() else {
+                    return;
+                };
+
+                let block: Option<<Ethereum as Network>::BlockResponse> = client
+                    .request("eth_getBlockByNumber", (block, false))
+                    .await
+                    .unwrap_or_else(|err| {
+                        panic!("failed to poll {block:?} header watcher: {err}");
+                    });
+                let header = block
+                    .expect("header watcher RPC returned no block for a chain head")
+                    .header()
+                    .clone();
+                tx_task.send_if_modified(|current: &mut <Ethereum as Network>::HeaderResponse| {
+                    if current.hash() == header.hash() {
+                        false
+                    } else {
+                        *current = header.clone();
+                        true
+                    }
+                });
+            }
+        });
+
+        tx
     }
 
     /// Returns the optional features the underlying provider was detected to support.
@@ -186,6 +324,11 @@ impl Clone for NodeProvider {
             inner: self.inner.dyn_clone(),
             capabilities: self.capabilities,
             deployment_blocks: self.deployment_blocks.clone(),
+            latest_header_watcher: self.latest_header_watcher.clone(),
+            finalized_header_watcher: self.finalized_header_watcher.clone(),
+            latest_poll_interval: self.latest_poll_interval,
+            finalized_poll_interval: self.finalized_poll_interval,
+            log_cache: self.log_cache.clone(),
         }
     }
 }
@@ -415,7 +558,11 @@ impl Provider<Ethereum> for NodeProvider {
     }
 
     async fn get_logs(&self, filter: &Filter) -> TransportResult<Vec<Log>> {
-        self.inner.get_logs(filter).await
+        if let Some(log_cache) = &self.log_cache {
+            log_cache.get_logs(self.inner.root(), filter).await
+        } else {
+            self.inner.get_logs(filter).await
+        }
     }
 
     fn get_proof(
@@ -663,7 +810,9 @@ mod tests {
         // finalized supported.
         asserter.push_success(&header_with_number(1));
         asserter.push_success(&header_with_number(1));
-        let provider = NodeProvider::new(mocked_provider(&asserter)).await;
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
 
@@ -684,7 +833,9 @@ mod tests {
         // finalized supported.
         asserter.push_failure(unsupported_method());
         asserter.push_success(&block_with_number(1));
-        let provider = NodeProvider::new(mocked_provider(&asserter)).await;
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
         assert!(!provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
 
@@ -705,7 +856,9 @@ mod tests {
         // finalized unsupported.
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(unsupported_method());
-        let provider = NodeProvider::new(mocked_provider(&asserter)).await;
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(!provider.capabilities().finalized_tag);
 
