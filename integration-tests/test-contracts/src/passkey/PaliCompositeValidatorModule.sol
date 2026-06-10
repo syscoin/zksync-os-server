@@ -102,7 +102,8 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
                     }
                 }
             } catch {
-                return false;
+                // A reverting child counts as an invalid signature; remaining children
+                // can still satisfy the threshold.
             }
         }
 
