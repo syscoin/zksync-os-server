@@ -123,6 +123,76 @@ contract PaliSmartAccountTest is Test {
         assertEq(account.isValidSignature(hash, newSignature), EIP1271_SUCCESS);
     }
 
+    function testCannotUninstallActiveValidator() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+
+        vm.prank(address(account));
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliSmartAccount.CannotUninstallActiveValidator.selector, address(ecdsa))
+        );
+        account.uninstallModule(MODULE_TYPE_VALIDATOR, address(ecdsa), "");
+
+        assertEq(account.activeValidator(), address(ecdsa));
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
+    }
+
+    function testCanUninstallPreviousValidatorAfterReplacement() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+
+        vm.prank(address(account));
+        account.installModule(MODULE_TYPE_VALIDATOR, address(secondEcdsa), _ecdsaInitData(secondOwner));
+        assertEq(account.activeValidator(), address(secondEcdsa));
+
+        vm.prank(address(account));
+        account.uninstallModule(MODULE_TYPE_VALIDATOR, address(ecdsa), "");
+
+        assertFalse(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
+        assertEq(account.activeValidator(), address(secondEcdsa));
+    }
+
+    function testRotateValidatorRekeysActiveValidator() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+        bytes32 hash = keccak256("pali");
+
+        vm.prank(address(account));
+        account.rotateValidator(address(ecdsa), "", _ecdsaInitData(secondOwner));
+
+        assertEq(account.activeValidator(), address(ecdsa));
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
+
+        address[] memory owners = ecdsa.owners(address(account));
+        assertEq(owners.length, 1);
+        assertEq(owners[0], secondOwner);
+
+        (uint8 oldV, bytes32 oldR, bytes32 oldS) = vm.sign(ownerPrivateKey, hash);
+        bytes memory oldSignature = abi.encodePacked(address(ecdsa), oldR, oldS, bytes1(oldV));
+        assertEq(account.isValidSignature(hash, oldSignature), EIP1271_FAILED);
+
+        (uint8 newV, bytes32 newR, bytes32 newS) = vm.sign(secondOwnerPrivateKey, hash);
+        bytes memory newSignature = abi.encodePacked(address(ecdsa), newR, newS, bytes1(newV));
+        assertEq(account.isValidSignature(hash, newSignature), EIP1271_SUCCESS);
+    }
+
+    function testRotateValidatorRejectsModuleThatIsNotInstalled() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+
+        vm.prank(address(account));
+        vm.expectRevert(
+            abi.encodeWithSignature(
+                "ERC7579UninstalledModule(uint256,address)", MODULE_TYPE_VALIDATOR, address(secondEcdsa)
+            )
+        );
+        account.rotateValidator(address(secondEcdsa), "", _ecdsaInitData(secondOwner));
+    }
+
+    function testRotateValidatorRejectsUnauthorizedCaller() public {
+        PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSignature("AccountUnauthorized(address)", owner));
+        account.rotateValidator(address(ecdsa), "", _ecdsaInitData(secondOwner));
+    }
+
     function _deployProxy(bytes memory initCode) private returns (PaliSmartAccount) {
         ERC1967Proxy proxy =
             new ERC1967Proxy(address(implementation), abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode)));

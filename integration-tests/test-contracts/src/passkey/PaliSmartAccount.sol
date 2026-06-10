@@ -20,6 +20,7 @@ contract PaliSmartAccount is AccountERC7579Hooked {
     }
 
     error AlreadyInitialized();
+    error CannotUninstallActiveValidator(address validator);
     error InvalidInitialValidator();
     error TooManyInitialHooks();
 
@@ -105,12 +106,25 @@ contract PaliSmartAccount is AccountERC7579Hooked {
         }
     }
 
+    /// @notice Atomically re-keys an installed validator module by uninstalling and reinstalling it
+    /// with fresh configuration, and makes it the active validator. This is the only way to change
+    /// the configuration of the active validator, since uninstalling it directly is rejected to
+    /// keep the account from ever being left without an active validator.
+    function rotateValidator(address module, bytes calldata deInitData, bytes calldata initData)
+        external
+        onlyEntryPointOrSelf
+    {
+        // Intentionally bypasses the active-validator uninstall guard in this contract's
+        // _uninstallModule override: the module is reinstalled in the same call.
+        AccountERC7579Hooked._uninstallModule(MODULE_TYPE_VALIDATOR, module, deInitData);
+        _installModule(MODULE_TYPE_VALIDATOR, module, initData);
+    }
+
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal override {
-        super._uninstallModule(moduleTypeId, module, deInitData);
         if (moduleTypeId == MODULE_TYPE_VALIDATOR && activeValidator == module) {
-            activeValidator = address(0);
-            emit ActiveValidatorChanged(address(0));
+            revert CannotUninstallActiveValidator(module);
         }
+        super._uninstallModule(moduleTypeId, module, deInitData);
     }
 
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata)
