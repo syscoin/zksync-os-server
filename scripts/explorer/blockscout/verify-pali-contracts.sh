@@ -99,11 +99,18 @@ done
 
 echo
 echo "Final status:"
+unverified=0
 for entry in "${CONTRACTS[@]}"; do
   IFS='|' read -r addr label _ _ _ <<< "${entry}"
   if is_verified "${addr}"; then
     echo "  VERIFIED   ${label} (${addr})"
   else
     echo "  UNVERIFIED ${label} (${addr})"
+    unverified=$((unverified + 1))
   fi
 done
+
+if [[ "${unverified}" -gt 0 ]]; then
+  echo "error: ${unverified} contract(s) still unverified after the polling window" >&2
+  exit 1
+fi
