@@ -19,12 +19,35 @@ services:
   db:
     image: postgres:17
     user: "2000:2000"
-    shm_size: 256m
+    # /dev/shm backs parallel-query workers; must comfortably exceed work_mem
+    # times the realistic number of concurrent sorts.
+    shm_size: 1g
     restart: always
     depends_on:
       db-init:
         condition: service_completed_successfully
-    command: postgres -c 'max_connections=200' -c 'client_connection_check_interval=60000'
+    # Production tuning for an insert-heavy Blockscout workload. The host runs
+    # two explorer stacks (zksys + gateway) next to two ENs, so shared_buffers
+    # is sized per instance rather than the bare-metal 25%-of-RAM rule.
+    # Autovacuum scale factors are lowered because the defaults (20%/10% of
+    # table size) let large append-mostly tables bloat and their planner stats
+    # go stale; thresholds are raised to compensate on small tables. The
+    # default 1min autovacuum naptime is kept on purpose: a realtime indexer
+    # wants timely vacuum/analyze, not hourly batches.
+    command: >
+      postgres
+      -c 'max_connections=${POSTGRES_MAX_CONNECTIONS:-250}'
+      -c 'client_connection_check_interval=60000'
+      -c 'shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}'
+      -c 'work_mem=32MB'
+      -c 'maintenance_work_mem=1GB'
+      -c 'max_parallel_maintenance_workers=4'
+      -c 'autovacuum_vacuum_scale_factor=0.05'
+      -c 'autovacuum_vacuum_insert_scale_factor=0.05'
+      -c 'autovacuum_analyze_scale_factor=0.02'
+      -c 'autovacuum_vacuum_threshold=100'
+      -c 'autovacuum_vacuum_insert_threshold=1000'
+      -c 'autovacuum_analyze_threshold=1000'
     environment:
       POSTGRES_DB: blockscout
       POSTGRES_USER: blockscout
@@ -53,6 +76,10 @@ services:
       DATABASE_URL: postgresql://blockscout:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment secrets env file}@db:5432/blockscout?ssl=false
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in the deployment secrets env file}
       MIX_ENV: prod
+      # Hard watermark for the indexer's memory monitor. Without it the limit
+      # is derived from total host RAM (61G here), letting the BEAM balloon
+      # before shedding load.
+      INDEXER_MEMORY_LIMIT: "${INDEXER_MEMORY_LIMIT:-4g}"
       ECTO_USE_SSL: "false"
       API_V2_ENABLED: "true"
       API_ETH_RPC_EXTENDED_PROXY_METHODS_ENABLED: "${API_ETH_RPC_EXTENDED_PROXY_METHODS_ENABLED:-false}"
