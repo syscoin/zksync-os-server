@@ -1,0 +1,12 @@
+---
+description: Think through deployment context before editing code
+alwaysApply: true
+---
+
+# Context Before Changes
+
+- Before proposing or making code changes, analyze the user's deployment context and explicit instructions first.
+- Treat findings against upstream or legacy paths as not automatically applicable to Syscoin. Confirm reachability in the Syscoin fork and current launch or upgrade path before acting.
+- Do not change code just to make progress. If the correct answer is "no change needed" or "false positive for this deployment," say that clearly.
+- Only edit when the issue is real for the stated Syscoin context, the fix is necessary, and the change can be made surgically without altering unrelated upstream behavior.
+- When touching upstream-derived code for a Syscoin-specific reason, keep the change minimal and mark it with `// SYSCOIN` where appropriate.
