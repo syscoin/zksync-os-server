@@ -73,9 +73,27 @@ if [[ ! -f "${secrets_file}" ]]; then
   } > "${secrets_file}"
 fi
 
+# Profile activation (e.g. user-ops) is declared per instance via
+# COMPOSE_PROFILES in the env file. Recent Compose versions honor it from
+# --env-file, but the documented contract is shell environment / .env /
+# --profile, so export it explicitly to stay correct on any Compose version.
+compose_profiles="$(grep -E '^COMPOSE_PROFILES=' "envs/${instance}.env" | tail -n 1 | cut -d= -f2- || true)"
+if [[ -n "${compose_profiles}" ]]; then
+  export COMPOSE_PROFILES="${compose_profiles}"
+fi
+
 docker compose \
   --env-file "envs/${instance}.env" \
   --env-file "${secrets_file}" \
   -p "${project_name}" \
   up -d
+
+# The proxy mounts the nginx template as a volume; Compose does not detect
+# in-place template edits, so force-recreate it to re-run envsubst and pick up
+# config changes (e.g. gzip, cache headers) on every deploy.
+docker compose \
+  --env-file "envs/${instance}.env" \
+  --env-file "${secrets_file}" \
+  -p "${project_name}" \
+  up -d --force-recreate proxy
 REMOTE_SCRIPT

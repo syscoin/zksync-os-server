@@ -41,7 +41,13 @@ DEBUG_P2P_ADDRESS="${DEBUG_P2P_ADDRESS:-0.0.0.0}"
 DEBUG_P2P_PORT="${DEBUG_P2P_PORT:-3062}"
 DEBUG_STATUS_PORT="${DEBUG_STATUS_PORT:-3074}"
 DEBUG_PROMETHEUS_PORT="${DEBUG_PROMETHEUS_PORT:-3315}"
-DEBUG_RPC_RATE_LIMITS="${DEBUG_RPC_RATE_LIMITS:-debug_traceTransaction=5,debug_traceCall=5,debug_traceBlockByNumber=2,debug_traceBlockByHash=2}"
+# Per-method RPC rate limits, "method=requests_per_second" comma-separated; empty disables
+# rate limiting entirely. The debug EN binds to the docker0 address and only serves the local
+# Blockscout indexer, so it runs unlimited by default — throttling it just makes the internal
+# transactions backfill fail with -32005 and retry. The public EN is the place to add limits
+# (its debug namespace is disabled, so only the cheap eth_* surface is exposed).
+DEBUG_RPC_RATE_LIMITS="${DEBUG_RPC_RATE_LIMITS:-}"
+PUBLIC_RPC_RATE_LIMITS="${PUBLIC_RPC_RATE_LIMITS:-}"
 DEBUG_RPC_BIND_HOST_ARG="${DEBUG_RPC_BIND_HOST:-__AUTO__}"
 
 if [[ -z "${REMOTE_HOST}" ]]; then
@@ -176,7 +182,8 @@ ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
   "${START_SERVICES}" \
   "${INSTALL_BUILD_DEPS}" \
   "${START_PUBLIC_SERVICE}" \
-  "${START_DEBUG_SERVICE}" <<'REMOTE_SCRIPT'
+  "${START_DEBUG_SERVICE}" \
+  "${PUBLIC_RPC_RATE_LIMITS}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 PROVIDER_B64="$1"
@@ -203,6 +210,7 @@ START_SERVICES="${21}"
 INSTALL_BUILD_DEPS="${22}"
 START_PUBLIC_SERVICE="${23}"
 START_DEBUG_SERVICE="${24}"
+PUBLIC_RPC_RATE_LIMITS="${25}"
 
 if [[ ! -d "${REMOTE_OS_SERVER_PATH}" ]]; then
   echo "missing remote zksync-os-server checkout: ${REMOTE_OS_SERVER_PATH}" >&2
@@ -309,7 +317,8 @@ python3 - \
   "${DEBUG_P2P_PORT}" \
   "${DEBUG_STATUS_PORT}" \
   "${DEBUG_PROMETHEUS_PORT}" \
-  "${DEBUG_RPC_RATE_LIMITS}" <<'PY'
+  "${DEBUG_RPC_RATE_LIMITS}" \
+  "${PUBLIC_RPC_RATE_LIMITS}" <<'PY'
 import base64
 import json
 import os
@@ -416,7 +425,7 @@ public = {
     "p2p_port": sys.argv[11],
     "status_port": sys.argv[12],
     "prometheus_port": sys.argv[13],
-    "rate_limits": {},
+    "rate_limits": parse_rate_limits(sys.argv[21]),
 }
 debug = {
     "name": "zksys-debug",

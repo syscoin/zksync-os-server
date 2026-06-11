@@ -19,12 +19,35 @@ services:
   db:
     image: postgres:17
     user: "2000:2000"
-    shm_size: 256m
+    # /dev/shm backs parallel-query workers; must comfortably exceed work_mem
+    # times the realistic number of concurrent sorts.
+    shm_size: 1g
     restart: always
     depends_on:
       db-init:
         condition: service_completed_successfully
-    command: postgres -c 'max_connections=200' -c 'client_connection_check_interval=60000'
+    # Production tuning for an insert-heavy Blockscout workload. The host runs
+    # two explorer stacks (zksys + gateway) next to two ENs, so shared_buffers
+    # is sized per instance rather than the bare-metal 25%-of-RAM rule.
+    # Autovacuum scale factors are lowered because the defaults (20%/10% of
+    # table size) let large append-mostly tables bloat and their planner stats
+    # go stale; thresholds are raised to compensate on small tables. The
+    # default 1min autovacuum naptime is kept on purpose: a realtime indexer
+    # wants timely vacuum/analyze, not hourly batches.
+    command: >
+      postgres
+      -c 'max_connections=${POSTGRES_MAX_CONNECTIONS:-250}'
+      -c 'client_connection_check_interval=60000'
+      -c 'shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}'
+      -c 'work_mem=32MB'
+      -c 'maintenance_work_mem=1GB'
+      -c 'max_parallel_maintenance_workers=4'
+      -c 'autovacuum_vacuum_scale_factor=0.05'
+      -c 'autovacuum_vacuum_insert_scale_factor=0.05'
+      -c 'autovacuum_analyze_scale_factor=0.02'
+      -c 'autovacuum_vacuum_threshold=100'
+      -c 'autovacuum_vacuum_insert_threshold=1000'
+      -c 'autovacuum_analyze_threshold=1000'
     environment:
       POSTGRES_DB: blockscout
       POSTGRES_USER: blockscout
@@ -53,6 +76,10 @@ services:
       DATABASE_URL: postgresql://blockscout:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment secrets env file}@db:5432/blockscout?ssl=false
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in the deployment secrets env file}
       MIX_ENV: prod
+      # Hard watermark for the indexer's memory monitor. Without it the limit
+      # is derived from total host RAM (61G here), letting the BEAM balloon
+      # before shedding load.
+      INDEXER_MEMORY_LIMIT: "${INDEXER_MEMORY_LIMIT:-4g}"
       ECTO_USE_SSL: "false"
       API_V2_ENABLED: "true"
       API_ETH_RPC_EXTENDED_PROXY_METHODS_ENABLED: "${API_ETH_RPC_EXTENDED_PROXY_METHODS_ENABLED:-false}"
@@ -68,11 +95,80 @@ services:
       DISABLE_EXCHANGE_RATES: "true"
       FIRST_BLOCK: "${FIRST_BLOCK:-0}"
       TRACE_FIRST_BLOCK: "${TRACE_FIRST_BLOCK:-${FIRST_BLOCK:-0}}"
-      INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
+      INDEXER_REALTIME_FETCHER_POLLING_PERIOD: "${INDEXER_REALTIME_FETCHER_POLLING_PERIOD:-1s}"
+      # Internal transactions ("internal txns" tab + contract-creation
+      # discovery). Off by default so instances whose EN lacks trace RPC are
+      # unaffected; enable per instance via the env file once the EN supports
+      # debug_traceBlockByNumber/debug_traceTransaction with callTracer.
+      INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "${INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER:-true}"
+      # callTracer is far cheaper than the default opcode (struct-log) tracer
+      # and is what our EN exposes; ignored while the fetcher is disabled.
+      INDEXER_INTERNAL_TRANSACTIONS_TRACER_TYPE: "${INDEXER_INTERNAL_TRANSACTIONS_TRACER_TYPE:-call_tracer}"
+      # Trace fetcher parallelism. The dedicated zksys-debug EN runs without
+      # RPC rate limits (see deploy-zksys-en-rpc.sh), so Blockscout defaults
+      # are fine; lower these per instance if an EN throttles trace methods
+      # (JSON-RPC -32005 "Too many requests").
+      INDEXER_INTERNAL_TRANSACTIONS_CONCURRENCY: "${INDEXER_INTERNAL_TRANSACTIONS_CONCURRENCY:-4}"
+      INDEXER_INTERNAL_TRANSACTIONS_BATCH_SIZE: "${INDEXER_INTERNAL_TRANSACTIONS_BATCH_SIZE:-10}"
       INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
+      # ERC-4337 user operations (served by the user-ops-indexer microservice,
+      # enabled per instance via COMPOSE_PROFILES=user-ops in the env file).
+      MICROSERVICE_ACCOUNT_ABSTRACTION_ENABLED: "${MICROSERVICE_ACCOUNT_ABSTRACTION_ENABLED:-false}"
+      MICROSERVICE_ACCOUNT_ABSTRACTION_URL: "${MICROSERVICE_ACCOUNT_ABSTRACTION_URL:-}"
+      # Contract verification through the Rust verifier microservice.
+      MICROSERVICE_SC_VERIFIER_ENABLED: "true"
+      MICROSERVICE_SC_VERIFIER_URL: http://smart-contract-verifier:8050
+      MICROSERVICE_SC_VERIFIER_TYPE: sc_verifier
     volumes:
       - backend-logs:/app/logs
       - backend-dets:/app/dets
+
+  smart-contract-verifier:
+    image: ghcr.io/blockscout/smart-contract-verifier:${SMART_CONTRACT_VERIFIER_TAG:-latest}
+    pull_policy: always
+    platform: linux/amd64
+    restart: always
+    environment:
+      SMART_CONTRACT_VERIFIER__SERVER__HTTP__ENABLED: "true"
+      SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR: 0.0.0.0:8050
+      SMART_CONTRACT_VERIFIER__SERVER__HTTP__MAX_BODY_SIZE: "2097152"
+      SMART_CONTRACT_VERIFIER__SOLIDITY__ENABLED: "true"
+      SMART_CONTRACT_VERIFIER__SOLIDITY__COMPILERS_DIR: /tmp/solidity-compilers
+      SMART_CONTRACT_VERIFIER__SOLIDITY__REFRESH_VERSIONS_SCHEDULE: 0 0 * * * * *
+      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: https://binaries.soliditylang.org/linux-amd64/list.json
+      SMART_CONTRACT_VERIFIER__VYPER__ENABLED: "false"
+      SMART_CONTRACT_VERIFIER__SOURCIFY__ENABLED: "false"
+
+  user-ops-indexer:
+    image: ghcr.io/blockscout/user-ops-indexer:${USER_OPS_INDEXER_TAG:-latest}
+    # Only instances that opt in via COMPOSE_PROFILES=user-ops run this service.
+    profiles: ["user-ops"]
+    pull_policy: always
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      USER_OPS_INDEXER__SERVER__HTTP__ENABLED: "true"
+      USER_OPS_INDEXER__SERVER__HTTP__ADDR: 0.0.0.0:8050
+      USER_OPS_INDEXER__DATABASE__CONNECT__URL: postgresql://blockscout:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the deployment secrets env file}@db:5432/blockscout?ssl=false
+      USER_OPS_INDEXER__DATABASE__RUN_MIGRATIONS: "true"
+      USER_OPS_INDEXER__INDEXER__RPC_URL: ${USER_OPS_RPC_URL:-${L2_RPC_URL}}
+      # Pali EntryPoint v0.9 shares the v0.8 PackedUserOperation wire format
+      # and event ABI, so it is indexed through the v0.8 handler at its
+      # custom CREATE2 address (set per instance in the env file).
+      USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V06: "false"
+      USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V07: "false"
+      USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V08: "true"
+      USER_OPS_INDEXER__INDEXER__ENTRYPOINTS__V08_ENTRY_POINT: "${USER_OPS_ENTRYPOINT_V08_ADDRESSES:-}"
+      USER_OPS_INDEXER__INDEXER__REALTIME__ENABLED: "true"
+      USER_OPS_INDEXER__INDEXER__REALTIME__POLLING_INTERVAL: "${USER_OPS_POLLING_INTERVAL:-3}"
+      # One-time backfill of ops mined before the indexer was enabled.
+      USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__ENABLED: "${USER_OPS_PAST_RPC_LOGS_ENABLED:-true}"
+      USER_OPS_INDEXER__INDEXER__PAST_RPC_LOGS_INDEXER__BLOCK_RANGE: "${USER_OPS_PAST_RPC_LOGS_BLOCK_RANGE:-100000}"
+      USER_OPS_INDEXER__INDEXER__TRACE_CLIENT: "${USER_OPS_TRACE_CLIENT:-debug}"
 
   frontend:
     image: ghcr.io/blockscout/frontend:${BLOCKSCOUT_FRONTEND_TAG}
@@ -114,6 +210,7 @@ services:
       NEXT_PUBLIC_AD_TEXT_PROVIDER: ${NEXT_PUBLIC_AD_TEXT_PROVIDER:-none}
       NEXT_PUBLIC_PROMOTE_BLOCKSCOUT_IN_TITLE: "false"
       NEXT_PUBLIC_HIDE_INDEXING_ALERT_INT_TXS: "true"
+      NEXT_PUBLIC_HAS_USER_OPS: "${NEXT_PUBLIC_HAS_USER_OPS:-false}"
       FAVICON_MASTER_URL: ${FAVICON_MASTER_URL}
 
   proxy:
