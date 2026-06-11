@@ -78,4 +78,13 @@ docker compose \
   --env-file "${secrets_file}" \
   -p "${project_name}" \
   up -d
+
+# The proxy mounts the nginx template as a volume; Compose does not detect
+# in-place template edits, so force-recreate it to re-run envsubst and pick up
+# config changes (e.g. gzip, cache headers) on every deploy.
+docker compose \
+  --env-file "envs/${instance}.env" \
+  --env-file "${secrets_file}" \
+  -p "${project_name}" \
+  up -d --force-recreate proxy
 REMOTE_SCRIPT
