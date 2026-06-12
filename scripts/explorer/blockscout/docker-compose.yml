@@ -119,6 +119,13 @@ services:
       MICROSERVICE_SC_VERIFIER_ENABLED: "true"
       MICROSERVICE_SC_VERIFIER_URL: http://smart-contract-verifier:8050
       MICROSERVICE_SC_VERIFIER_TYPE: sc_verifier
+      # Sourcify integration (per instance: the chain must be registered with
+      # Sourcify). Adds "verify via Sourcify" and, more importantly, makes the
+      # backend query Sourcify for unverified contracts and import matches —
+      # so verifications published to Sourcify survive a local DB reset.
+      SOURCIFY_INTEGRATION_ENABLED: "${SOURCIFY_INTEGRATION_ENABLED:-false}"
+      SOURCIFY_SERVER_URL: "${SOURCIFY_SERVER_URL:-https://sourcify.dev/server}"
+      SOURCIFY_REPO_URL: "${SOURCIFY_REPO_URL:-https://repo.sourcify.dev/contracts}"
     volumes:
       - backend-logs:/app/logs
       - backend-dets:/app/dets
