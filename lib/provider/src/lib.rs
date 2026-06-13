@@ -123,15 +123,49 @@ impl ProviderCapabilities {
                     break;
                 }
                 Err(err) if is_unsupported_finalized_tag_error(&err) => {
-                    tracing::info!(%err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
-                    finalized_tag = false;
-                    break;
+                    if get_header {
+                        // SYSCOIN: some providers support the finalized tag on the standard
+                        // block API but not on the optional header API. The live finalized
+                        // watcher polls `eth_getBlockByNumber`, so confirm that path before
+                        // disabling finalized support entirely.
+                        let block_result = provider
+                            .get_block(BlockId::finalized())
+                            .await
+                            .map(drop::<Option<_>>);
+                        match block_result {
+                            Ok(()) => break,
+                            Err(block_err) if is_block_unavailable_error(&block_err) => {
+                                tracing::info!(
+                                    %block_err,
+                                    "no finalized block available yet via block API; keeping the `finalized` tag enabled"
+                                );
+                                break;
+                            }
+                            Err(block_err) if is_unsupported_finalized_tag_error(&block_err) => {
+                                tracing::info!(header_err = %err, %block_err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
+                                finalized_tag = false;
+                                break;
+                            }
+                            Err(block_err) => {
+                                tracing::warn!(
+                                    header_err = %err,
+                                    %block_err,
+                                    attempt,
+                                    "transient error probing the `finalized` tag via block API; retrying"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::info!(%err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
+                        finalized_tag = false;
+                        break;
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(%err, attempt, "transient error probing the `finalized` tag; retrying");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
         Self {
             get_header,
@@ -477,7 +511,9 @@ impl Provider<Ethereum> for NodeProvider {
                         "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
                     ));
                 }
-                if self.capabilities.get_header {
+                if block_id.is_finalized() || block_id.is_safe() {
+                    Ok(self.get_block(block_id).await?.map(|b| b.header().number()))
+                } else if self.capabilities.get_header {
                     Ok(self.get_header(block_id).await?.map(|h| h.number()))
                 } else {
                     Ok(self.get_block(block_id).await?.map(|b| b.header().number()))
@@ -920,12 +956,12 @@ mod tests {
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
 
-        // The lookup itself resolves via get_header.
-        asserter.push_success(&header_with_number(42));
+        // Finalized/safe lookups use the standard block API, matching the finalized watcher.
+        asserter.push_success(&block_with_number(42));
         let result = provider
             .get_block_number_by_id(BlockId::finalized())
             .await
-            .expect("get_header lookup should succeed");
+            .expect("get_block lookup should succeed");
         assert_eq!(result, Some(42));
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
@@ -972,12 +1008,36 @@ mod tests {
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 
+    // SYSCOIN: finalized support is determined by the standard block API used by live finalized
+    // watchers, not only by the optional header API.
+    #[tokio::test]
+    async fn keeps_finalized_tag_when_header_probe_rejected_but_block_probe_succeeds() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(invalid_params());
+        asserter.push_success(&block_with_number(1));
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(provider.capabilities().finalized_tag);
+
+        asserter.push_success(&block_with_number(42));
+        let result = provider
+            .get_block_number_by_id(BlockId::finalized())
+            .await
+            .expect("get_block lookup should succeed");
+        assert_eq!(result, Some(42));
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
     // SYSCOIN: providers commonly report unknown block tags as JSON-RPC invalid params. For the
     // finalized-tag probe, this is definitive unsupported-tag evidence, not a transient error.
     #[tokio::test]
     async fn invalid_params_finalized_probe_fails_closed() {
         let asserter = Asserter::new();
         asserter.push_success(&header_with_number(1));
+        asserter.push_failure(invalid_params());
         asserter.push_failure(invalid_params());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
