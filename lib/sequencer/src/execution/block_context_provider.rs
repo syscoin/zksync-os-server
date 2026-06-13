@@ -59,6 +59,12 @@ struct LastBlock {
     next_cursors: BlockStartCursors,
 }
 
+pub struct LastBlockSeed {
+    pub record: ReplayRecord,
+    pub hash: BlockHash,
+    pub next_cursors: BlockStartCursors,
+}
+
 impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     pub fn new(
         fee_provider: FeeProvider,
@@ -66,16 +72,22 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         config: Config,
         intervals: &SettlementLayerIntervals,
         last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
+        last_block_seed: Option<LastBlockSeed>,
     ) -> Self {
         let current_sl_chain_id = match intervals.current_settlement_layer() {
             IntervalSettlementLayer::L1 => config.l1_chain_id,
             IntervalSettlementLayer::Gateway(gw_chain_id) => *gw_chain_id,
         };
+        let last_block = last_block_seed.map(|seed| LastBlock {
+            record: seed.record,
+            hash: seed.hash,
+            next_cursors: seed.next_cursors,
+        });
         Self {
             fee_provider,
             pool,
             config,
-            last_block: None,
+            last_block,
             next_interop_tx_allowed_after: Instant::now(),
             current_sl_chain_id,
             last_constructed_block_ctx_sender,
@@ -277,8 +289,13 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         &mut self,
         record: Box<ReplayRecord>,
     ) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
+        validate_replay_record_context(
+            self.last_block
+                .as_ref()
+                .map(|last_block| (&last_block.record, last_block.hash)),
+            &record,
+        )?;
         if record.block_context.block_number == 0 {
-            validate_genesis_replay_record(&record)?;
             let genesis_header = genesis_header();
             self.last_block = Some(LastBlock {
                 record: *record,
@@ -286,15 +303,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 next_cursors: Default::default(),
             });
             return Ok(None);
-        }
-
-        if let Some(LastBlock {
-            record: last_record,
-            hash,
-            ..
-        }) = &self.last_block
-        {
-            validate_next_replay_record(last_record, *hash, &record)?;
         }
 
         let expect_sl_chain_id_tx_after_upgrade = record
@@ -551,6 +559,22 @@ fn validate_genesis_replay_record(record: &ReplayRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_replay_record_context(
+    last_block: Option<(&ReplayRecord, BlockHash)>,
+    record: &ReplayRecord,
+) -> anyhow::Result<()> {
+    if record.block_context.block_number == 0 {
+        validate_genesis_replay_record(record)
+    } else if let Some((last_record, last_hash)) = last_block {
+        validate_next_replay_record(last_record, last_hash, record)
+    } else {
+        anyhow::bail!(
+            "cannot validate replay block {} without previous local block",
+            record.block_context.block_number
+        )
+    }
+}
+
 fn validate_next_replay_record(
     last_record: &ReplayRecord,
     last_hash: BlockHash,
@@ -690,6 +714,18 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("inconsistent previous block hashes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn non_genesis_replay_requires_previous_local_seed() {
+        let record = replay_record(11, 101, 100, BlockHashes::default());
+
+        let err = validate_replay_record_context(None, &record)
+            .expect_err("first non-genesis replay must require previous local block");
+        assert!(
+            err.to_string().contains("without previous local block"),
             "unexpected error: {err}"
         );
     }
