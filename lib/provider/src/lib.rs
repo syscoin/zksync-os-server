@@ -153,8 +153,13 @@ fn is_block_unavailable_error(err: &alloy::transports::TransportError) -> bool {
 }
 
 fn is_unsupported_finalized_tag_error(err: &alloy::transports::TransportError) -> bool {
-    if err.as_error_resp().is_some() {
-        return true;
+    if let Some(resp) = err.as_error_resp() {
+        let message = resp.message.to_lowercase();
+        return resp.code == -32601
+            || message.contains("method not found")
+            || message.contains("unsupported")
+            || message.contains("invalid block")
+            || message.contains("invalid argument");
     }
 
     let message = err.to_string().to_lowercase();
@@ -879,8 +884,16 @@ mod tests {
 
     fn unsupported_method() -> ErrorPayload {
         ErrorPayload {
-            code: -39001,
-            message: Cow::Borrowed("custom upstream error"),
+            code: -32601,
+            message: Cow::Borrowed("method not found"),
+            data: None,
+        }
+    }
+
+    fn transient_upstream_error() -> ErrorPayload {
+        ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("temporary upstream error"),
             data: None,
         }
     }
@@ -942,6 +955,22 @@ mod tests {
             message: Cow::Borrowed("finalized block not found"),
             data: None,
         });
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(provider.capabilities().finalized_tag);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: a transient provider-side JSON-RPC error during capability detection must not
+    // poison the provider as permanently lacking finalized/safe tags.
+    #[tokio::test]
+    async fn retries_transient_finalized_probe_errors() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(transient_upstream_error());
+        asserter.push_success(&header_with_number(1));
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
