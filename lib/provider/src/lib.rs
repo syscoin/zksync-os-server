@@ -512,7 +512,13 @@ impl Provider<Ethereum> for NodeProvider {
                     ));
                 }
                 if block_id.is_finalized() || block_id.is_safe() {
-                    Ok(self.get_block(block_id).await?.map(|b| b.header().number()))
+                    match self.get_block(block_id).await {
+                        Ok(block) => Ok(block.map(|b| b.header().number())),
+                        // SYSCOIN: the tag can be supported before any block is finalized/safe.
+                        // Surface that as `None` so callers can wait instead of crash-looping.
+                        Err(err) if is_block_unavailable_error(&err) => Ok(None),
+                        Err(err) => Err(err),
+                    }
                 } else if self.capabilities.get_header {
                     Ok(self.get_header(block_id).await?.map(|h| h.number()))
                 } else {
@@ -1005,6 +1011,16 @@ mod tests {
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("finalized block not found"),
+            data: None,
+        });
+        let result = provider
+            .get_block_number_by_id(BlockId::finalized())
+            .await
+            .expect("missing finalized block should not be fatal");
+        assert_eq!(result, None);
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 

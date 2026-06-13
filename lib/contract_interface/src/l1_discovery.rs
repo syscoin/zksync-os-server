@@ -297,12 +297,27 @@ impl L1State {
 async fn fetch_finalized_executed_batch(
     zk_chain_sl: &ZkChain<NodeProvider>,
 ) -> anyhow::Result<(u64, u64)> {
-    let finalized_sl_block_number = zk_chain_sl
-        .provider()
-        .get_block_number_by_id(BlockId::finalized())
-        .await
-        .context("failed to fetch finalized SL block number")?
-        .context("failed to fetch finalized SL block number (`None` returned)")?;
+    const RETRY_DELAY: Duration = Duration::from_secs(1);
+    let mut retries = 0_u64;
+    let finalized_sl_block_number = loop {
+        match zk_chain_sl
+            .provider()
+            .get_block_number_by_id(BlockId::finalized())
+            .await
+            .context("failed to fetch finalized SL block number")?
+        {
+            Some(block_number) => break block_number,
+            None => {
+                // SYSCOIN: a fresh Gateway/SL may support the finalized tag before any block is
+                // finalized. Wait for finality instead of aborting startup discovery.
+                retries = retries.saturating_add(1);
+                if retries == 1 || retries % 30 == 0 {
+                    tracing::warn!(retries, "finalized SL block is not available yet; waiting");
+                }
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+        }
+    };
 
     if !zk_chain_sl
         .code_exists_at_block(finalized_sl_block_number.into())
