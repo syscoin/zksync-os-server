@@ -45,7 +45,6 @@ pub struct FeeProvider {
 impl FeeProvider {
     pub fn new(
         fee_config: FeeConfig,
-        previous_block_fee_params: Option<FeeParams>,
         pubdata_price_provider: watch::Receiver<Option<U256>>,
         blob_fill_ratio_provider: watch::Receiver<Option<Ratio<u64>>>,
         token_price_provider: watch::Receiver<Option<TokenPricesForFees>>,
@@ -53,7 +52,7 @@ impl FeeProvider {
     ) -> Self {
         Self {
             fee_config,
-            previous_block_fee_params,
+            previous_block_fee_params: None,
             pubdata_price_provider,
             blob_fill_ratio_provider,
             token_price_provider,
@@ -391,7 +390,7 @@ mod tests {
             pubdata_price: U256::from(pubdata_price),
         });
 
-        FeeProvider::new(
+        let mut provider = FeeProvider::new(
             FeeConfig {
                 native_price_usd: Ratio::from_integer(BigUint::from(1u32)),
                 base_fee_override: None,
@@ -400,12 +399,13 @@ mod tests {
                 pubdata_price_cap: None,
                 native_price_override: None,
             },
-            previous_block_fee_params,
             pubdata_price_receiver,
             blob_fill_ratio_receiver,
             token_price_receiver,
             Some(PubdataMode::Calldata),
-        )
+        );
+        provider.previous_block_fee_params = previous_block_fee_params;
+        provider
     }
 
     #[test]

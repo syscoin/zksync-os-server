@@ -1,45 +1,55 @@
 use crate::metrics::METRICS;
-use crate::{BlockBoundary, BlockUpdates, L1WatcherConfig, LogsCache, ProcessRawEvents};
+use crate::{L1WatcherConfig, ProcessRawEvents};
 use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log, ValueOrArray};
+use futures::future::BoxFuture;
 use std::time::Duration;
-use tokio::sync::watch;
 use zksync_os_provider::NodeProvider;
 
-/// An abstract watcher for events.
-/// Handles polling for new blocks and extracting logs,
-/// while delegating the actual event processing to a user-provided processor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BlockBoundary {
+    Confirmed { confirmations: BlockNumber },
+    Finalized,
+}
+
+/// Boxed async closure that turns a starting point `S` into a concrete start block and the
+/// processor `P` that consumes it.
+type ResolveStartFn<S, P> =
+    Box<dyn FnOnce(S) -> BoxFuture<'static, anyhow::Result<(BlockNumber, P)>> + Send>;
+
+/// Deferred constructor for an [`L1Watcher`]: holds the watcher's static dependencies and turns
+/// a starting point `S` into a ready-to-run watcher once that starting point is finally known.
 ///
-/// May be run unbounded (live tail) or bounded by `end_block` (used by
-/// [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) to scan a closed segment to completion).
-pub struct L1Watcher {
+/// Constructing a resolver only requires static dependencies; the provider-dependent binary
+/// search that turns a starting point (a priority id, batch number, protocol version, …) into a
+/// concrete `next_block` — together with the processor `P` that consumes the resolved start
+/// point — is deferred into the `resolve_start` closure and invoked by
+/// [`resolve`](Self::resolve). This lets watchers be created in one place and started in
+/// another, once the first replayed block is known.
+pub struct StartResolver<S, P> {
     provider: NodeProvider,
-    logs_cache: LogsCache,
     address: ValueOrArray<Address>,
-    next_block: BlockNumber,
-    /// `Some(eb)` makes the watcher exit `run` once `next_block > eb`. `None` runs forever.
+    /// `Some(eb)` makes the watcher exit once the cursor passes `eb`. `None` runs forever.
     end_block: Option<BlockNumber>,
     max_blocks_to_process: u64,
     block_boundary: BlockBoundary,
     poll_interval: Duration,
-    block_updates: watch::Receiver<BlockUpdates>,
-    pub(crate) processor: Box<dyn ProcessRawEvents>,
+    resolve_start: ResolveStartFn<S, P>,
 }
 
-impl L1Watcher {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn new(
+impl<S, P: ProcessRawEvents> StartResolver<S, P> {
+    pub(crate) async fn new<Fut>(
         config: L1WatcherConfig,
         provider: NodeProvider,
-        logs_cache: LogsCache,
-        block_updates: watch::Receiver<BlockUpdates>,
         address: ValueOrArray<Address>,
-        next_block: BlockNumber,
         end_block: Option<BlockNumber>,
         expected_chain_id: u64,
-        processor: Box<dyn ProcessRawEvents>,
-    ) -> anyhow::Result<Self> {
+        resolve_start: impl FnOnce(S) -> Fut + Send + 'static,
+    ) -> anyhow::Result<Self>
+    where
+        Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
+    {
         // SYSCOIN: the confirmation lag must apply to the chain being watched. Callers
         // pass the expected provider chain ID so gateway/SL watchers keep the same reorg
         // protection instead of silently falling back to latest-block processing.
@@ -51,47 +61,121 @@ impl L1Watcher {
 
         Ok(Self {
             provider,
-            logs_cache,
             address,
-            next_block,
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
             block_boundary: BlockBoundary::Confirmed {
                 confirmations: config.confirmations,
             },
             poll_interval: config.poll_interval,
-            block_updates,
+            resolve_start: Box::new(move |start| Box::pin(resolve_start(start))),
+        })
+    }
+
+    /// Like [`new`](Self::new), but tails the finalized boundary so the produced watcher only
+    /// reacts to irreversibly observed events.
+    pub(crate) fn new_finalized<Fut>(
+        config: L1WatcherConfig,
+        provider: NodeProvider,
+        address: ValueOrArray<Address>,
+        end_block: Option<BlockNumber>,
+        resolve_start: impl FnOnce(S) -> Fut + Send + 'static,
+    ) -> Self
+    where
+        Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
+    {
+        Self {
+            provider,
+            address,
+            end_block,
+            max_blocks_to_process: config.max_blocks_to_process,
+            block_boundary: BlockBoundary::Finalized,
+            poll_interval: config.poll_interval,
+            resolve_start: Box::new(move |start| Box::pin(resolve_start(start))),
+        }
+    }
+
+    /// Resolves the starting point into a concrete start block and processor, producing a
+    /// ready-to-run [`L1Watcher`].
+    pub async fn resolve(self, start: S) -> anyhow::Result<L1Watcher<P>> {
+        let Self {
+            provider,
+            address,
+            end_block,
+            max_blocks_to_process,
+            block_boundary,
+            poll_interval,
+            resolve_start,
+        } = self;
+        let (next_block, processor) = resolve_start(start).await?;
+        Ok(L1Watcher {
+            provider,
+            address,
+            next_block,
+            end_block,
+            max_blocks_to_process,
+            block_boundary,
+            poll_interval,
             processor,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Resolves the starting point and runs the produced watcher. A failure to resolve the
+    /// start block is fatal (panics), matching the previous behavior where resolution happened
+    /// at construction.
+    pub async fn run(self, start: S) {
+        self.resolve(start)
+            .await
+            .expect("failed to resolve L1 watcher start block")
+            .run()
+            .await;
+    }
+}
+
+/// An abstract watcher for events.
+/// Handles polling for new blocks and extracting logs,
+/// while delegating the actual event processing to the processor `P`.
+///
+/// Produced by [`StartResolver::resolve`] once the starting point has been resolved into a
+/// concrete `next_block` and processor. May be run unbounded (live tail) or bounded by
+/// `end_block` (used by [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) to scan a closed segment
+/// to completion).
+pub struct L1Watcher<P> {
+    provider: NodeProvider,
+    address: ValueOrArray<Address>,
+    next_block: BlockNumber,
+    /// `Some(eb)` makes the watcher exit `run` once `next_block > eb`. `None` runs forever.
+    end_block: Option<BlockNumber>,
+    max_blocks_to_process: u64,
+    block_boundary: BlockBoundary,
+    poll_interval: Duration,
+    pub(crate) processor: P,
+}
+
+impl<P: ProcessRawEvents> L1Watcher<P> {
+    /// Builds a watcher for a single pre-resolved segment, tailing the finalized boundary
+    /// (closed segments are dominated by `end_block`, so the boundary mode only matters for the
+    /// open-ended segment).
     pub(crate) fn new_finalized(
         config: L1WatcherConfig,
         provider: NodeProvider,
-        logs_cache: LogsCache,
-        block_updates: watch::Receiver<BlockUpdates>,
         address: ValueOrArray<Address>,
         next_block: BlockNumber,
         end_block: Option<BlockNumber>,
-        processor: Box<dyn ProcessRawEvents>,
+        processor: P,
     ) -> Self {
         Self {
             provider,
-            logs_cache,
             address,
             next_block,
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
             block_boundary: BlockBoundary::Finalized,
             poll_interval: config.poll_interval,
-            block_updates,
             processor,
         }
     }
-}
 
-impl L1Watcher {
     /// Polls for new events.
     ///
     /// For unbounded watchers (`end_block = None`) this never returns; for bounded watchers
@@ -102,51 +186,68 @@ impl L1Watcher {
 
     /// Non-consuming version of `run`, intended for internal usage in this crate.
     pub(crate) async fn run_inner(&mut self) {
+        // SYSCOIN: closed segments already have a pre-resolved cap, so do not initialize a
+        // finalized/latest header watcher that can block startup before the segment is scanned.
+        let mut headers = if self.end_block.is_none() {
+            Some(match self.block_boundary {
+                BlockBoundary::Confirmed { .. } => self.provider.latest_header_watcher().await,
+                BlockBoundary::Finalized => self.provider.finalized_header_watcher().await,
+            })
+        } else {
+            None
+        };
+
         loop {
-            match self.poll().await {
+            let cap = match self.end_block {
+                // Closed segment: `end_block` was already resolved against a finalized/executed
+                // batch, so the confirmation/finalization window doesn't apply and we don't need
+                // an additional RPC.
+                Some(end_block) => end_block,
+                None => {
+                    let number = headers
+                        .as_mut()
+                        .expect("unbounded watcher must have a header subscription")
+                        .borrow_and_update()
+                        .number;
+                    match self.block_boundary {
+                        BlockBoundary::Confirmed { confirmations } => {
+                            number.saturating_sub(confirmations)
+                        }
+                        BlockBoundary::Finalized => number,
+                    }
+                }
+            };
+
+            match self.poll(cap).await {
                 Ok(()) => {}
                 // SYSCOIN
                 Err(L1WatcherError::Transport(err)) => {
                     tracing::warn!(?err, "watcher transport error; retrying on next poll");
                     // SYSCOIN: retry the same block range even if the chain is idle and the
-                    // shared block update channel does not publish a new head.
+                    // shared header watcher does not publish a new head.
                     tokio::time::sleep(self.poll_interval).await;
                     continue;
                 }
                 Err(err) => panic!("watcher failed: {err}"),
             }
-            if let Some(eb) = self.end_block
-                && self.next_block > eb
+
+            if let Some(end_block) = self.end_block
+                && self.next_block > end_block
             {
                 return;
             }
-            if let Err(e) = self.block_updates.changed().await {
-                tracing::error!("l1 watcher block update channel closed: {e}");
-                panic!("l1 watcher block update channel closed: {e}");
+
+            let headers = headers
+                .as_mut()
+                .expect("unbounded watcher must have a header subscription");
+            if let Err(e) = headers.changed().await {
+                tracing::error!("l1 watcher header watcher closed unexpectedly: {e}");
+                panic!("l1 watcher header watcher closed unexpectedly: {e}");
             }
         }
     }
 
-    async fn poll(&mut self) -> Result<(), L1WatcherError> {
-        let Some(cap) = (match self.end_block {
-            // Closed segment: `end_block` was already resolved against a finalized/executed batch,
-            // so the confirmation/finalization window doesn't apply and we don't need an
-            // additional RPC.
-            Some(eb) => Some(eb),
-            None => self
-                .block_updates
-                .borrow()
-                .get_block_number(self.block_boundary),
-        }) else {
-            // SYSCOIN: finalized watchers can start before the provider exposes
-            // a finalized block. Keep them idle until shared block polling sees one.
-            tracing::debug!(
-                event_name = &self.processor.name(),
-                "no finalized L1 block available yet"
-            );
-            return Ok(());
-        };
-
+    async fn poll(&mut self, cap: BlockNumber) -> Result<(), L1WatcherError> {
         while self.next_block <= cap {
             let from_block = self.next_block;
             // Inspect up to `self.max_blocks_to_process` blocks at a time
@@ -189,7 +290,7 @@ impl L1Watcher {
         if let Some(topic1) = self.processor.topic1_filter() {
             filter = filter.topic1(topic1);
         }
-        let new_logs = self.logs_cache.get_logs(&filter).await?;
+        let new_logs = self.provider.get_logs(&filter).await?;
 
         if new_logs.is_empty() {
             tracing::trace!(

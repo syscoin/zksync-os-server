@@ -709,49 +709,55 @@ pub async fn fetch_committed_batch_data(
     zk_chain: &ZkChain<NodeProvider>,
     tx_hash: TxHash,
 ) -> Result<StoredBatchInfo, L1WatcherError> {
-    let tx = (|| async {
-        let tx = zk_chain
-            .provider()
-            .get_transaction_by_hash(tx_hash)
-            .await
-            .map_err(|e| L1WatcherError::Other(e.into()))?
-            .ok_or_else(|| {
-                L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} not found"))
+    // SYSCOIN: fetch the commit tx and its receipt in parallel (mirrors upstream's parallel
+    // fetch of committed batch data elements).
+    let tx_fut = async {
+        (|| async {
+            let tx = zk_chain
+                .provider()
+                .get_transaction_by_hash(tx_hash)
+                .await
+                .map_err(|e| L1WatcherError::Other(e.into()))?
+                .ok_or_else(|| {
+                    L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} not found"))
+                })?;
+            tx.block_number.ok_or_else(|| {
+                L1WatcherError::Other(anyhow::anyhow!(
+                    "commit tx {tx_hash} has no block number (still pending)"
+                ))
             })?;
-        tx.block_number.ok_or_else(|| {
-            L1WatcherError::Other(anyhow::anyhow!(
-                "commit tx {tx_hash} has no block number (still pending)"
-            ))
-        })?;
-        Ok::<_, L1WatcherError>(tx)
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(Duration::from_millis(200))
-            .with_max_times(50),
-    )
-    .await?;
+            Ok::<_, L1WatcherError>(tx)
+        })
+        .retry(
+            ConstantBuilder::default()
+                .with_delay(Duration::from_millis(200))
+                .with_max_times(50),
+        )
+        .await
+    };
+    let receipt_fut = async {
+        (|| async {
+            zk_chain
+                .provider()
+                .get_transaction_receipt(tx_hash)
+                .await
+                .map_err(|e| L1WatcherError::Other(e.into()))?
+                .ok_or_else(|| {
+                    L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} receipt not found"))
+                })
+        })
+        .retry(
+            ConstantBuilder::default()
+                .with_delay(Duration::from_millis(200))
+                .with_max_times(50),
+        )
+        .await
+    };
+    let (tx, receipt) = tokio::try_join!(tx_fut, receipt_fut)?;
 
     let CommitCalldata {
         commit_batch_info, ..
     } = CommitCalldata::decode(tx.input()).map_err(L1WatcherError::Other)?;
-
-    let receipt = (|| async {
-        zk_chain
-            .provider()
-            .get_transaction_receipt(tx_hash)
-            .await
-            .map_err(|e| L1WatcherError::Other(e.into()))?
-            .ok_or_else(|| {
-                L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} receipt not found"))
-            })
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(Duration::from_millis(200))
-            .with_max_times(50),
-    )
-    .await?;
 
     // SYSCOIN: use the exact commitment emitted by the commit transaction instead of
     // reconstructing hash-sensitive upgrade/protocol metadata from end-of-L1-block state.

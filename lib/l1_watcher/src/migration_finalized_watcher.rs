@@ -1,5 +1,5 @@
-use crate::watcher::{L1Watcher, L1WatcherError};
-use crate::{BlockUpdates, L1WatcherConfig, LogsCache, ProcessRawEvents, util};
+use crate::watcher::{L1WatcherError, StartResolver};
+use crate::{L1WatcherConfig, ProcessRawEvents, util};
 use alloy::primitives::{B256, U256};
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
@@ -40,9 +40,7 @@ impl MigrationFinalizedWatcher {
         current_sl_chain_id: u64,
         config: L1WatcherConfig,
         last_finalized_migration: watch::Sender<u64>,
-        block_updates: watch::Receiver<BlockUpdates>,
-        logs_cache: LogsCache,
-    ) -> anyhow::Result<Option<L1Watcher>> {
+    ) -> anyhow::Result<Option<StartResolver<(), Self>>> {
         let active_migration_number = (intervals.intervals().len() - 1) as u64;
         let active_interval = intervals
             .intervals()
@@ -94,45 +92,49 @@ impl MigrationFinalizedWatcher {
         }
 
         let chain_asset_handler = bridgehub_sl.chain_asset_handler_address().await?;
-        // todo: not necessary to run binary search here, just use latest
-        // SYSCOIN: Resolve the startup cursor through the archive-capable
-        // provider while keeping live polling on `zk_chain` below.
-        let starting_block = util::find_startup_migration_block_with_archive_fallback(
-            zk_chain.clone(),
-            archive_lookup_zk_chain,
-            chain_asset_handler,
-            l2_chain_id,
-            active_migration_number,
-            "migration finalized watcher",
-        )
-        .await?;
+        let provider = zk_chain.provider().clone();
 
-        tracing::info!(
-            contract = %chain_asset_handler,
-            l2_chain_id,
-            starting_block,
-            active_migration_number,
-            "migration finalized watcher starting"
-        );
+        let resolve_start = move |()| async move {
+            // todo: not necessary to run binary search here, just use latest
+            // SYSCOIN: Resolve the startup cursor through the archive-capable
+            // provider while keeping live polling on `zk_chain`.
+            let starting_block = util::find_startup_migration_block_with_archive_fallback(
+                zk_chain,
+                archive_lookup_zk_chain,
+                chain_asset_handler,
+                l2_chain_id,
+                active_migration_number,
+                "migration finalized watcher",
+            )
+            .await?;
 
-        let watcher = L1Watcher::new(
+            tracing::info!(
+                contract = %chain_asset_handler,
+                l2_chain_id,
+                starting_block,
+                active_migration_number,
+                "migration finalized watcher starting"
+            );
+
+            let processor = Self {
+                l2_chain_id,
+                last_finalized_migration,
+            };
+            Ok((starting_block, processor))
+        };
+
+        let resolver = StartResolver::new(
             config,
-            zk_chain.provider().clone(),
-            logs_cache,
-            block_updates,
+            provider,
             chain_asset_handler.into(),
-            starting_block,
             None,
             // SYSCOIN: migration finalization is emitted on the current settlement layer,
             // so preserve confirmation lag against that provider's chain ID.
             current_sl_chain_id,
-            Box::new(Self {
-                l2_chain_id,
-                last_finalized_migration,
-            }),
+            resolve_start,
         )
         .await?;
-        Ok(Some(watcher))
+        Ok(Some(resolver))
     }
 }
 
