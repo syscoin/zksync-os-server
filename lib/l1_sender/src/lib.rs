@@ -2023,12 +2023,14 @@ async fn validate_tx_receipt<Input: SendToL1>(
 #[cfg(test)]
 mod tests {
     use super::{
-        FeeParams, L1SenderFeeConfig, apply_fee_caps, fallback_gas_limit_for_reverted_call,
-        fallback_gas_limits, is_retryable_gateway_da_admission_message,
-        notify_commit_submitted_batch,
+        FeeParams, L1_SIM_GAS_LIMIT, L1SenderFeeConfig, apply_fee_caps,
+        build_l1_simulation_request, fallback_gas_limit_for_reverted_call, fallback_gas_limits,
+        is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use crate::config::SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
+    use alloy::primitives::{Address, Bytes};
     use alloy::providers::utils::Eip1559Estimation;
+    use alloy::rpc::types::TransactionRequest;
     use tokio::sync::watch;
 
     #[test]

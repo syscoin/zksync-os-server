@@ -390,7 +390,7 @@ mod tests {
             pubdata_price: U256::from(pubdata_price),
         });
 
-        FeeProvider::new(
+        let mut provider = FeeProvider::new(
             FeeConfig {
                 native_price_usd: Ratio::from_integer(BigUint::from(1u32)),
                 base_fee_override: None,
@@ -404,7 +404,9 @@ mod tests {
             blob_fill_ratio_receiver,
             token_price_receiver,
             Some(PubdataMode::Calldata),
-        )
+        );
+        provider.previous_block_fee_params = previous_block_fee_params;
+        provider
     }
 
     #[test]
