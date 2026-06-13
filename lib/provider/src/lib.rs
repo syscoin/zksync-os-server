@@ -122,7 +122,7 @@ impl ProviderCapabilities {
                     );
                     break;
                 }
-                Err(err) if err.as_error_resp().is_some() => {
+                Err(err) if is_unsupported_finalized_tag_error(&err) => {
                     tracing::info!(%err, "provider lacks the `finalized` block tag; degrading to latest");
                     finalized_tag = false;
                     break;
@@ -150,6 +150,18 @@ fn is_block_unavailable_error(err: &alloy::transports::TransportError) -> bool {
             || message.contains("unknown finalized block")
             || message.contains("unknown safe block")
     })
+}
+
+fn is_unsupported_finalized_tag_error(err: &alloy::transports::TransportError) -> bool {
+    if err.as_error_resp().is_some() {
+        return true;
+    }
+
+    let message = err.to_string().to_lowercase();
+    message.contains("method not found")
+        || message.contains("unsupported")
+        || message.contains("invalid block")
+        || message.contains("invalid argument")
 }
 
 /// Per-address cache of contract deployment blocks. Cloning a [`NodeProvider`] shares this cache
