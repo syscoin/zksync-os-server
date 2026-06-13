@@ -884,7 +884,7 @@ mod tests {
 
     fn unsupported_method() -> ErrorPayload {
         ErrorPayload {
-            code: -32601,
+            code: -39001,
             message: Cow::Borrowed("method not found"),
             data: None,
         }
