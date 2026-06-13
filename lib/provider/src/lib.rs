@@ -145,7 +145,10 @@ impl ProviderCapabilities {
 fn is_block_unavailable_error(err: &alloy::transports::TransportError) -> bool {
     err.as_error_resp().is_some_and(|resp| {
         let message = resp.message.to_lowercase();
-        message.contains("not found") || message.contains("unknown block")
+        message.contains("finalized block not found")
+            || message.contains("safe block not found")
+            || message.contains("unknown finalized block")
+            || message.contains("unknown safe block")
     })
 }
 
@@ -925,6 +928,23 @@ mod tests {
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    #[tokio::test]
+    async fn method_not_found_does_not_look_like_missing_finalized_block() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(ErrorPayload {
+            code: -32601,
+            message: Cow::Borrowed("method not found"),
+            data: None,
+        });
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(!provider.capabilities().finalized_tag);
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 
