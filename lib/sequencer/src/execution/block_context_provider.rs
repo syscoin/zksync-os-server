@@ -590,7 +590,7 @@ mod tests {
             pubdata_price: U256::ZERO,
             block_number,
             timestamp,
-            chain_id: U256::ONE,
+            chain_id: 1,
             coinbase: Address::ZERO,
             block_hashes,
             gas_limit: 0,
