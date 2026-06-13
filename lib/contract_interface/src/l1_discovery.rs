@@ -111,6 +111,10 @@ impl L1State {
         let diamond_proxy_sl = bridgehub_sl.zk_chain().await?;
         let validator_timelock_sl = bridgehub_sl.validator_timelock_address().await?;
 
+        // SYSCOIN: wait for a finalized SL block before sampling latest counters. Sampling latest
+        // first can mix stale latest counters with a later finalized frontier during fresh startup.
+        let (finalized_sl_block_number, last_finalized_executed_batch) =
+            fetch_finalized_executed_batch(&diamond_proxy_sl).await?;
         let latest_sl_block_number = diamond_proxy_sl.provider().get_block_number().await?;
         let last_committed_batch = diamond_proxy_sl
             .get_total_batches_committed(latest_sl_block_number.into())
@@ -121,8 +125,14 @@ impl L1State {
         let last_executed_batch = diamond_proxy_sl
             .get_total_batches_executed(latest_sl_block_number.into())
             .await?;
-        let (finalized_sl_block_number, last_finalized_executed_batch) =
-            fetch_finalized_executed_batch(&diamond_proxy_sl).await?;
+        // SYSCOIN: keep the finalized frontier from `fetch()`. Refetching it after
+        // `wait_to_finalize()` can again combine a later finalized block with earlier latest counters.
+        validate_batch_frontiers(
+            last_committed_batch,
+            last_proved_batch,
+            last_executed_batch,
+            last_finalized_executed_batch,
+        )?;
 
         let pubdata_pricing_mode = diamond_proxy_sl.get_pubdata_pricing_mode().await?;
         let da_input_mode = match pubdata_pricing_mode {
@@ -244,8 +254,12 @@ impl L1State {
         )
         .await
         .context("failed to fetch finalized batch state")?;
-        let (finalized_sl_block_number, last_finalized_executed_batch) =
-            fetch_finalized_executed_batch(zk_chain_sl).await?;
+        validate_batch_frontiers(
+            batch_finality.last_committed_batch,
+            batch_finality.last_proved_batch,
+            batch_finality.last_executed_batch,
+            this.last_finalized_executed_batch,
+        )?;
         Ok(Self {
             bridgehub_l1: this.bridgehub_l1,
             bridgehub_sl: this.bridgehub_sl,
@@ -256,9 +270,9 @@ impl L1State {
             last_committed_batch: batch_finality.last_committed_batch,
             last_proved_batch: batch_finality.last_proved_batch,
             last_executed_batch: batch_finality.last_executed_batch,
-            last_finalized_executed_batch,
+            last_finalized_executed_batch: this.last_finalized_executed_batch,
             sl_block_number,
-            finalized_sl_block_number,
+            finalized_sl_block_number: this.finalized_sl_block_number,
             da_input_mode: this.da_input_mode,
             l1_chain_id: this.l1_chain_id,
             sl_chain_id: this.sl_chain_id,
@@ -291,6 +305,33 @@ impl L1State {
             BatchDaInputMode::Validium => "validium",
         };
         L1_STATE_METRICS.da_input_mode[&da_input_mode].set(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_frontiers_allow_ordered_state() {
+        validate_batch_frontiers(10, 9, 8, 7).expect("ordered frontiers must be accepted");
+        validate_batch_frontiers(0, 0, 0, 0).expect("empty fresh-chain frontiers must be accepted");
+    }
+
+    #[test]
+    fn batch_frontiers_reject_finalized_ahead_of_latest() {
+        let err = validate_batch_frontiers(1, 1, 1, 2)
+            .expect_err("finalized executed cannot be ahead of latest executed");
+        assert!(
+            err.to_string().contains("finalized executed batch 2"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn batch_frontiers_reject_non_monotonic_latest_counters() {
+        assert!(validate_batch_frontiers(1, 1, 2, 1).is_err());
+        assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
     }
 }
 
@@ -349,6 +390,35 @@ async fn fetch_finalized_executed_batch(
         .get_total_batches_executed(finalized_sl_block_number.into())
         .await?;
     Ok((finalized_sl_block_number, last_finalized_executed_batch))
+}
+
+fn validate_batch_frontiers(
+    last_committed_batch: u64,
+    last_proved_batch: u64,
+    last_executed_batch: u64,
+    last_finalized_executed_batch: u64,
+) -> anyhow::Result<()> {
+    // SYSCOIN: L1 startup state must be sampled from compatible SL frontiers. A finalized
+    // frontier ahead of latest counters can make startup skip required committed batches.
+    anyhow::ensure!(
+        last_finalized_executed_batch <= last_executed_batch,
+        "inconsistent L1 batch frontiers: finalized executed batch {} is ahead of executed batch {}",
+        last_finalized_executed_batch,
+        last_executed_batch
+    );
+    anyhow::ensure!(
+        last_executed_batch <= last_proved_batch,
+        "inconsistent L1 batch frontiers: executed batch {} is ahead of proved batch {}",
+        last_executed_batch,
+        last_proved_batch
+    );
+    anyhow::ensure!(
+        last_proved_batch <= last_committed_batch,
+        "inconsistent L1 batch frontiers: proved batch {} is ahead of committed batch {}",
+        last_proved_batch,
+        last_committed_batch
+    );
+    Ok(())
 }
 
 /// Waits until the pending SL state matches the latest SL block.
