@@ -156,6 +156,7 @@ fn is_unsupported_finalized_tag_error(err: &alloy::transports::TransportError) -
     if let Some(resp) = err.as_error_resp() {
         let message = resp.message.to_lowercase();
         return resp.code == -32601
+            || resp.code == -32602
             || message.contains("method not found")
             || message.contains("unsupported")
             || message.contains("invalid block")
@@ -890,6 +891,14 @@ mod tests {
         }
     }
 
+    fn invalid_params() -> ErrorPayload {
+        ErrorPayload {
+            code: -32602,
+            message: Cow::Borrowed("invalid params"),
+            data: None,
+        }
+    }
+
     fn transient_upstream_error() -> ErrorPayload {
         ErrorPayload {
             code: -32000,
@@ -960,6 +969,21 @@ mod tests {
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: providers commonly report unknown block tags as JSON-RPC invalid params. For the
+    // finalized-tag probe, this is definitive unsupported-tag evidence, not a transient error.
+    #[tokio::test]
+    async fn invalid_params_finalized_probe_fails_closed() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(invalid_params());
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(!provider.capabilities().finalized_tag);
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 
