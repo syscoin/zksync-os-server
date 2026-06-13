@@ -80,11 +80,19 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
         address: ValueOrArray<Address>,
         end_block: Option<BlockNumber>,
         resolve_start: impl FnOnce(S) -> Fut + Send + 'static,
-    ) -> Self
+    ) -> anyhow::Result<Self>
     where
         Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
     {
-        Self {
+        // SYSCOIN: unbounded finalized watchers must not be constructed when the provider
+        // cannot actually query finalized/safe tags; otherwise startup would fail later in the
+        // critical watcher task.
+        anyhow::ensure!(
+            end_block.is_some() || provider.supports_finalized_tag(),
+            "provider lacks finalized/safe block tags; refusing to treat latest as finalized"
+        );
+
+        Ok(Self {
             provider,
             address,
             end_block,
@@ -92,7 +100,7 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
             block_boundary: BlockBoundary::Finalized,
             poll_interval: config.poll_interval,
             resolve_start: Box::new(move |start| Box::pin(resolve_start(start))),
-        }
+        })
     }
 
     /// Resolves the starting point into a concrete start block and processor, producing a
@@ -191,7 +199,16 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
         let mut headers = if self.end_block.is_none() {
             Some(match self.block_boundary {
                 BlockBoundary::Confirmed { .. } => self.provider.latest_header_watcher().await,
-                BlockBoundary::Finalized => self.provider.finalized_header_watcher().await,
+                BlockBoundary::Finalized => match self.provider.finalized_header_watcher().await {
+                    Ok(headers) => headers,
+                    Err(err) => {
+                        tracing::error!(
+                            %err,
+                            "failed to initialize finalized L1 watcher header subscription"
+                        );
+                        return;
+                    }
+                },
             })
         } else {
             None

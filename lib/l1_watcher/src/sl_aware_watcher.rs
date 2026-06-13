@@ -106,6 +106,14 @@ impl<P: ProcessRawEvents> SlAwareL1Watcher<P> {
                 "non-final SlAwareL1Watcher segments must be closed"
             );
         }
+        if let Some(open_segment) = segments.iter().find(|seg| seg.end_block.is_none()) {
+            // SYSCOIN: the open segment is tailed against finalized blocks, so fail before the
+            // critical watcher task starts if the provider cannot support that boundary.
+            anyhow::ensure!(
+                open_segment.provider.supports_finalized_tag(),
+                "provider lacks finalized/safe block tags; refusing to treat latest as finalized"
+            );
+        }
 
         Ok(Self {
             config,

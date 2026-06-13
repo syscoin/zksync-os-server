@@ -250,20 +250,27 @@ impl NodeProvider {
     /// `eth_getBlockByNumber(finalized, false)`.
     pub async fn finalized_header_watcher(
         &self,
-    ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
+    ) -> TransportResult<watch::Receiver<<Ethereum as Network>::HeaderResponse>> {
         // SYSCOIN: fail closed for finalized watchers instead of assuming unsupported finalized
         // tags imply immediate finality.
-        assert!(
-            self.capabilities.finalized_tag,
-            "provider lacks finalized/safe block tags; refusing to treat latest as finalized"
-        );
-        self.finalized_header_watcher
+        if !self.capabilities.finalized_tag {
+            return Err(alloy::transports::TransportErrorKind::non_retryable_str(
+                "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
+            ));
+        }
+        Ok(self
+            .finalized_header_watcher
             .get_or_init(|| async {
                 self.build_header_watcher(BlockNumberOrTag::Finalized, self.finalized_poll_interval)
                     .await
             })
             .await
-            .subscribe()
+            .subscribe())
+    }
+
+    /// Returns whether this provider can query finalized/safe block tags.
+    pub fn supports_finalized_tag(&self) -> bool {
+        self.capabilities.finalized_tag
     }
 
     /// Builds a provider-owned header watcher backed by a raw RPC client request.
@@ -310,20 +317,18 @@ impl NodeProvider {
                     return;
                 };
 
-                let polled_block: Option<<Ethereum as Network>::BlockResponse> = match client
-                    .request("eth_getBlockByNumber", (block, false))
-                    .await
-                {
-                    Ok(polled_block) => polled_block,
-                    // SYSCOIN: retry transient transport errors on the next poll.
-                    Err(err) => {
-                        tracing::warn!(
-                            %err, ?block,
-                            "header watcher transport error; retrying on next poll"
-                        );
-                        continue;
-                    }
-                };
+                let polled_block: Option<<Ethereum as Network>::BlockResponse> =
+                    match client.request("eth_getBlockByNumber", (block, false)).await {
+                        Ok(polled_block) => polled_block,
+                        // SYSCOIN: retry transient transport errors on the next poll.
+                        Err(err) => {
+                            tracing::warn!(
+                                %err, ?block,
+                                "header watcher transport error; retrying on next poll"
+                            );
+                            continue;
+                        }
+                    };
                 let Some(header) = polled_block.map(|b| b.header().clone()) else {
                     // SYSCOIN: the chain head may be temporarily unavailable (e.g. no finalized
                     // block yet); keep the last known header and retry.
@@ -969,6 +974,15 @@ mod tests {
             .get_block_number_by_id(BlockId::finalized())
             .await
             .expect_err("unsupported finalized tags must fail closed");
+        assert!(
+            err.to_string()
+                .contains("refusing to treat latest as finalized"),
+            "unexpected error: {err}"
+        );
+        let err = provider
+            .finalized_header_watcher()
+            .await
+            .expect_err("unsupported finalized watcher must fail closed");
         assert!(
             err.to_string()
                 .contains("refusing to treat latest as finalized"),
