@@ -943,21 +943,11 @@ mod tests {
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 
-    #[tokio::test]
-    async fn method_not_found_does_not_look_like_missing_finalized_block() {
-        let asserter = Asserter::new();
-        asserter.push_success(&header_with_number(1));
-        asserter.push_failure(ErrorPayload {
-            code: -32601,
-            message: Cow::Borrowed("method not found"),
-            data: None,
-        });
-        let provider = NodeProvider::new(mocked_provider(&asserter))
-            .await
-            .expect("mocked provider construction should succeed");
-        assert!(provider.capabilities().get_header);
-        assert!(!provider.capabilities().finalized_tag);
-        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    #[test]
+    fn method_not_found_does_not_look_like_missing_finalized_block() {
+        let err = alloy::transports::TransportErrorKind::non_retryable_str("method not found");
+        assert!(!is_block_unavailable_error(&err));
+        assert!(is_unsupported_finalized_tag_error(&err));
     }
 
     #[tokio::test]
