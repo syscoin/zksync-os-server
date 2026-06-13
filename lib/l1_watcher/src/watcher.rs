@@ -186,9 +186,15 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
 
     /// Non-consuming version of `run`, intended for internal usage in this crate.
     pub(crate) async fn run_inner(&mut self) {
-        let mut headers = match self.block_boundary {
-            BlockBoundary::Confirmed { .. } => self.provider.latest_header_watcher().await,
-            BlockBoundary::Finalized => self.provider.finalized_header_watcher().await,
+        // SYSCOIN: closed segments already have a pre-resolved cap, so do not initialize a
+        // finalized/latest header watcher that can block startup before the segment is scanned.
+        let mut headers = if self.end_block.is_none() {
+            Some(match self.block_boundary {
+                BlockBoundary::Confirmed { .. } => self.provider.latest_header_watcher().await,
+                BlockBoundary::Finalized => self.provider.finalized_header_watcher().await,
+            })
+        } else {
+            None
         };
 
         loop {
@@ -198,7 +204,11 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
                 // an additional RPC.
                 Some(end_block) => end_block,
                 None => {
-                    let number = headers.borrow_and_update().number;
+                    let number = headers
+                        .as_mut()
+                        .expect("unbounded watcher must have a header subscription")
+                        .borrow_and_update()
+                        .number;
                     match self.block_boundary {
                         BlockBoundary::Confirmed { confirmations } => {
                             number.saturating_sub(confirmations)
@@ -227,6 +237,9 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
                 return;
             }
 
+            let headers = headers
+                .as_mut()
+                .expect("unbounded watcher must have a header subscription");
             if let Err(e) = headers.changed().await {
                 tracing::error!("l1 watcher header watcher closed unexpectedly: {e}");
                 panic!("l1 watcher header watcher closed unexpectedly: {e}");
