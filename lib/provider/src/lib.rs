@@ -74,7 +74,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderCapabilities {
     /// Whether the RPC understands the `finalized`/`safe` block tags. When false, finalized/safe
-    /// lookups degrade to the latest block.
+    /// lookups fail closed instead of treating latest as finalized.
     pub finalized_tag: bool,
     /// Whether the RPC implements `eth_getHeaderBy*`. When false, header lookups use
     /// `eth_getBlockBy*` instead.
@@ -123,7 +123,7 @@ impl ProviderCapabilities {
                     break;
                 }
                 Err(err) if is_unsupported_finalized_tag_error(&err) => {
-                    tracing::info!(%err, "provider lacks the `finalized` block tag; degrading to latest");
+                    tracing::info!(%err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
                     finalized_tag = false;
                     break;
                 }
@@ -248,18 +248,18 @@ impl NodeProvider {
 
     /// Returns a shared watcher for the finalized block header via
     /// `eth_getBlockByNumber(finalized, false)`.
-    /// Falls back to latetst if the chain does not support finalized tag.
     pub async fn finalized_header_watcher(
         &self,
     ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
-        let finalized = if self.capabilities.finalized_tag {
-            BlockNumberOrTag::Finalized
-        } else {
-            BlockNumberOrTag::Latest
-        };
+        // SYSCOIN: fail closed for finalized watchers instead of assuming unsupported finalized
+        // tags imply immediate finality.
+        assert!(
+            self.capabilities.finalized_tag,
+            "provider lacks finalized/safe block tags; refusing to treat latest as finalized"
+        );
         self.finalized_header_watcher
             .get_or_init(|| async {
-                self.build_header_watcher(finalized, self.finalized_poll_interval)
+                self.build_header_watcher(BlockNumberOrTag::Finalized, self.finalized_poll_interval)
                     .await
             })
             .await
@@ -446,9 +446,9 @@ impl Provider<Ethereum> for NodeProvider {
         self.inner.get_block_number()
     }
 
-    // Dispatch based on the capabilities probed at construction (see `ProviderCapabilities`)
-    // instead of trying-and-failing: skip `eth_getHeaderBy*` when unsupported, and degrade
-    // finalized/safe lookups straight to the latest block when the tags are unsupported.
+    // Dispatch based on the capabilities probed at construction (see `ProviderCapabilities`):
+    // skip `eth_getHeaderBy*` when unsupported, but fail closed for finalized/safe lookups when
+    // those tags are unsupported.
     async fn get_block_number_by_id(
         &self,
         block_id: BlockId,
@@ -460,9 +460,11 @@ impl Provider<Ethereum> for NodeProvider {
                 if (block_id.is_finalized() || block_id.is_safe())
                     && !self.capabilities.finalized_tag
                 {
-                    // If `finalized`/`safe` are not supported we presume immediate finality like it
-                    // is with Besu: https://besu.hyperledger.org/private-networks/concepts/poa
-                    return self.get_block_number().await.map(Some);
+                    // SYSCOIN: do not map finalized/safe to latest on non-immediate-finality
+                    // settlement layers. Callers that require finality must fail closed.
+                    return Err(alloy::transports::TransportErrorKind::non_retryable_str(
+                        "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
+                    ));
                 }
                 if self.capabilities.get_header {
                     Ok(self.get_header(block_id).await?.map(|h| h.number()))
@@ -951,7 +953,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn degrades_to_latest_when_finalized_unsupported() {
+    async fn fails_closed_when_finalized_unsupported() {
         let asserter = Asserter::new();
         // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) fails ->
         // finalized unsupported.
@@ -963,13 +965,15 @@ mod tests {
         assert!(provider.capabilities().get_header);
         assert!(!provider.capabilities().finalized_tag);
 
-        // The lookup degrades straight to get_block_number (latest), issuing no header/block call.
-        asserter.push_success(&U64::from(99));
-        let result = provider
+        let err = provider
             .get_block_number_by_id(BlockId::finalized())
             .await
-            .expect("degraded latest lookup should succeed");
-        assert_eq!(result, Some(99));
+            .expect_err("unsupported finalized tags must fail closed");
+        assert!(
+            err.to_string()
+                .contains("refusing to treat latest as finalized"),
+            "unexpected error: {err}"
+        );
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 }
