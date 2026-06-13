@@ -1073,9 +1073,10 @@ mod tests {
     #[tokio::test]
     async fn fails_closed_when_finalized_unsupported() {
         let asserter = Asserter::new();
-        // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) fails ->
-        // finalized unsupported.
+        // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) fails,
+        // then get_block(finalized) fails -> finalized unsupported.
         asserter.push_success(&header_with_number(1));
+        asserter.push_failure(unsupported_method());
         asserter.push_failure(unsupported_method());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
