@@ -251,6 +251,8 @@ impl NodeProvider {
     pub async fn finalized_header_watcher(
         &self,
     ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
+        // SYSCOIN: fail closed for finalized watchers instead of assuming unsupported finalized
+        // tags imply immediate finality.
         assert!(
             self.capabilities.finalized_tag,
             "provider lacks finalized/safe block tags; refusing to treat latest as finalized"
@@ -458,6 +460,8 @@ impl Provider<Ethereum> for NodeProvider {
                 if (block_id.is_finalized() || block_id.is_safe())
                     && !self.capabilities.finalized_tag
                 {
+                    // SYSCOIN: do not map finalized/safe to latest on non-immediate-finality
+                    // settlement layers. Callers that require finality must fail closed.
                     return Err(alloy::transports::TransportErrorKind::non_retryable_str(
                         "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
                     ));
