@@ -298,24 +298,42 @@ async fn fetch_finalized_executed_batch(
     zk_chain_sl: &ZkChain<NodeProvider>,
 ) -> anyhow::Result<(u64, u64)> {
     const RETRY_DELAY: Duration = Duration::from_secs(1);
+    let retry_builder = ConstantBuilder::new()
+        .with_delay(RETRY_DELAY)
+        .without_max_times();
     let mut retries = 0_u64;
-    let finalized_sl_block_number = loop {
-        match zk_chain_sl
+    let finalized_sl_block_number = (|| async {
+        let block_number = zk_chain_sl
             .provider()
             .get_block_number_by_id(BlockId::finalized())
             .await
-            .context("failed to fetch finalized SL block number")?
-        {
-            Some(block_number) => break block_number,
-            None => {
+            .context("failed to fetch finalized SL block number");
+        match block_number {
+            Ok(Some(block_number)) => Ok(Ok(block_number)),
+            Ok(None) => {
                 // SYSCOIN: a fresh Gateway/SL may support the finalized tag before any block is
                 // finalized. Wait for finality instead of aborting startup discovery.
-                retries = retries.saturating_add(1);
-                if retries == 1 || retries % 30 == 0 {
-                    tracing::warn!(retries, "finalized SL block is not available yet; waiting");
-                }
-                tokio::time::sleep(RETRY_DELAY).await;
+                Err(())
             }
+            Err(err) => Ok(Err(err)),
+        }
+    })
+    .retry(retry_builder)
+    .notify(|(), _| {
+        retries = retries.saturating_add(1);
+        if retries == 1 || retries % 30 == 0 {
+            tracing::warn!(retries, "finalized SL block is not available yet; waiting");
+        }
+    })
+    .await;
+
+    let finalized_sl_block_number = match finalized_sl_block_number {
+        Ok(Ok(block_number)) => block_number,
+        Ok(Err(err)) => return Err(err),
+        Err(()) => {
+            return Err(anyhow::anyhow!(
+                "finalized SL block retry loop stopped unexpectedly"
+            ));
         }
     };
 
