@@ -71,9 +71,9 @@ use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
     BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
 };
+use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
 use zksync_os_contract_interface::models::BatchDaInputMode;
-use zksync_os_contract_interface::ZkChain;
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
 use zksync_os_internal_config::InternalConfigManager;
@@ -120,7 +120,7 @@ use zksync_os_reth_compat::provider::ZkProviderFactory;
 use zksync_os_revm_consistency_checker::node::RevmConsistencyChecker;
 use zksync_os_rpc::{EthCallHandler, RpcStorage};
 use zksync_os_rpc_api::eth::EthApiClient;
-use zksync_os_sequencer::execution::block_context_provider::BlockContextProvider;
+use zksync_os_sequencer::execution::block_context_provider::{BlockContextProvider, LastBlockSeed};
 use zksync_os_sequencer::execution::{BlockApplier, BlockCanonizer, BlockExecutor, FeeProvider};
 use zksync_os_status_server::run_status_server;
 use zksync_os_storage::db::{BlockReplayStorage, ExecutedBatchStorage};
@@ -841,6 +841,24 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .map_or(BlockStartCursors::default(), |record| {
             record.starting_cursors.clone()
         });
+    let last_block_seed = (starting_block > 0).then(|| {
+        let previous_block = starting_block - 1;
+        // SYSCOIN: seed replay validation from local canonical replay storage so the first
+        // non-genesis replay record cannot choose its own newest previous-block hash.
+        let record = block_replay_storage
+            .get_replay_record(previous_block)
+            .unwrap_or_else(|| panic!("missing replay record for seed block {previous_block}"));
+        let hash = block_replay_storage
+            .get_canonical_block_hash(previous_block)
+            .unwrap_or_else(|| {
+                panic!("missing canonical block hash for seed block {previous_block}")
+            });
+        LastBlockSeed {
+            record,
+            hash,
+            next_cursors: next_cursors.clone(),
+        }
+    });
 
     let current_protocol_version = if let Some(record) = &first_replay_record {
         &record.protocol_version
@@ -1113,6 +1131,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         },
         &node_startup_state.l1_state.settlement_layer_intervals,
         last_constructed_block_ctx_sender,
+        last_block_seed,
     );
 
     // ========== Start L1 Upgrade Watcher ===========
