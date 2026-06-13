@@ -399,7 +399,6 @@ mod tests {
                 pubdata_price_cap: None,
                 native_price_override: None,
             },
-            previous_block_fee_params,
             pubdata_price_receiver,
             blob_fill_ratio_receiver,
             token_price_receiver,

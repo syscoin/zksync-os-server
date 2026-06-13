@@ -2028,6 +2028,7 @@ mod tests {
         is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use crate::config::SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
+    use alloy::network::TransactionBuilder;
     use alloy::primitives::{Address, Bytes};
     use alloy::providers::utils::Eip1559Estimation;
     use alloy::rpc::types::TransactionRequest;
