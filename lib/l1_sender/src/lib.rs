@@ -90,10 +90,6 @@ enum ReceiptWaitOutcome {
     TimedOut,
 }
 
-const REQUIRED_CONFIRMATIONS_L1: u64 = 3;
-/// In case there's only one chain connected to gateway, it is very likely that there will be not enough block production
-/// to reach 3 confirmations for such transactions
-const REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
 const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// SYSCOIN Extra headroom over the L1 RPC gas estimate.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
@@ -274,11 +270,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
                 let fut = wait_for_confirmed_receipt(
                     provider.root().clone(),
                     tx_hash,
-                    if gateway {
-                        REQUIRED_CONFIRMATIONS_GATEWAY
-                    } else {
-                        REQUIRED_CONFIRMATIONS_L1
-                    },
+                    config.required_confirmations,
                     config.transaction_timeout,
                     config.tx_liveness_poll_interval,
                     config.tx_liveness_max_missing_polls,
@@ -570,11 +562,7 @@ where
     let receipt_fut = wait_for_confirmed_receipt(
         provider.root().clone(),
         tx_hash,
-        if gateway {
-            REQUIRED_CONFIRMATIONS_GATEWAY
-        } else {
-            REQUIRED_CONFIRMATIONS_L1
-        },
+        config.required_confirmations,
         config.transaction_timeout,
         config.tx_liveness_poll_interval,
         config.tx_liveness_max_missing_polls,
@@ -683,11 +671,7 @@ where
 {
     state_reporter.enter_state(L1SenderState::WaitingL1Inclusion);
 
-    let required_confirmations = if gateway {
-        REQUIRED_CONFIRMATIONS_GATEWAY
-    } else {
-        REQUIRED_CONFIRMATIONS_L1
-    };
+    let required_confirmations = config.required_confirmations;
     let transaction_timeout = config.transaction_timeout;
     let mut completed_commands = Vec::with_capacity(pending_txs.len());
     for (

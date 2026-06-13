@@ -6,6 +6,14 @@ use zksync_os_operator_signer::SignerConfig;
 /// though miners enforce a higher tip floor. Keep L1 settlement txs above that policy.
 pub const SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI: u128 = 20_000;
 
+/// Default confirmations required when settling directly on L1.
+pub const DEFAULT_REQUIRED_CONFIRMATIONS_L1: u64 = 3;
+/// Default confirmations required when settling on a Gateway.
+///
+/// Kept low because a Gateway with a single connected chain may not produce enough blocks to reach
+/// the L1 default.
+pub const DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
+
 /// Configuration of L1 sender.
 #[derive(Clone, Debug)]
 pub struct L1SenderConfig<Input> {
@@ -50,6 +58,9 @@ pub struct L1SenderConfig<Input> {
     /// SYSCOIN: how often to retry Gateway admission after a compact Bitcoin DA availability
     /// rejection.
     pub gateway_da_admission_retry_interval: Duration,
+
+    /// Settlement-layer blocks (inclusive of the inclusion block) before a transaction is confirmed.
+    pub required_confirmations: u64,
 
     /// Use Fusaka blob transaction format if the timestamp has passed.
     pub fusaka_upgrade_timestamp: u64,

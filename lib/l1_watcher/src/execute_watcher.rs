@@ -1,10 +1,7 @@
-use crate::watcher::{L1Watcher, L1WatcherError};
-use crate::{
-    BlockUpdates, CommittedBatchProvider, L1WatcherConfig, LogsCache, ProcessL1Event, util,
-};
+use crate::watcher::{L1WatcherError, StartResolver};
+use crate::{CommittedBatchProvider, L1WatcherConfig, ProcessL1Event, util};
 use alloy::providers::Provider;
 use alloy::rpc::types::Log;
-use tokio::sync::watch;
 use zksync_os_contract_interface::IExecutor::BlockExecution;
 use zksync_os_contract_interface::ZkChain;
 use zksync_os_provider::NodeProvider;
@@ -45,51 +42,52 @@ impl<Finality: WriteFinality> L1ExecuteWatcher<Finality> {
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
         sl_chain_id: u64,
-        block_updates: watch::Receiver<BlockUpdates>,
-        logs_cache: LogsCache,
-    ) -> anyhow::Result<L1Watcher> {
-        let current_l1_block = zk_chain.provider().get_block_number().await?;
-        let last_executed_batch = finality.get_finality_status().last_executed_batch;
+    ) -> anyhow::Result<StartResolver<(), Self>> {
         tracing::info!(
-            current_l1_block,
-            last_executed_batch,
             config.max_blocks_to_process,
             ?config.poll_interval,
             zk_chain_address = ?zk_chain.address(),
             "initializing L1 execute watcher"
         );
-        // SYSCOIN: Resolve the startup cursor through the archive-capable
-        // provider while keeping live polling on `zk_chain` below.
-        let last_l1_block = util::find_startup_block_with_archive_fallback(
-            zk_chain.clone(),
-            archive_lookup_zk_chain,
-            "execute watcher",
-            |zk_chain| util::find_l1_execute_block_by_batch_number(zk_chain, last_executed_batch),
-        )
-        .await?;
-        tracing::info!(last_l1_block, "resolved on L1");
 
-        let this = Self {
-            inner: ExecuteWatcherState {
-                next_batch_number: last_executed_batch + 1,
-                committed_batch_provider,
-                finality,
-            },
+        let provider = zk_chain.provider().clone();
+        let address = (*zk_chain.address()).into();
+
+        let resolve_start = move |()| async move {
+            let current_l1_block = zk_chain.provider().get_block_number().await?;
+            let last_executed_batch = finality.get_finality_status().last_executed_batch;
+            // SYSCOIN: Resolve the startup cursor through the archive-capable
+            // provider while keeping live polling on `zk_chain`.
+            let last_l1_block = util::find_startup_block_with_archive_fallback(
+                zk_chain,
+                archive_lookup_zk_chain,
+                "execute watcher",
+                |zk_chain| {
+                    util::find_l1_execute_block_by_batch_number(zk_chain, last_executed_batch)
+                },
+            )
+            .await?;
+            tracing::info!(
+                current_l1_block,
+                last_executed_batch,
+                last_l1_block,
+                "resolved on L1"
+            );
+
+            let processor = Self {
+                inner: ExecuteWatcherState {
+                    next_batch_number: last_executed_batch + 1,
+                    committed_batch_provider,
+                    finality,
+                },
+            };
+            // We start from the last L1 block as it may contain more executed batches apart
+            // from the last one.
+            Ok((last_l1_block, processor))
         };
-        L1Watcher::new(
-            config,
-            zk_chain.provider().clone(),
-            logs_cache,
-            block_updates,
-            (*zk_chain.address()).into(),
-            // We start from last L1 block as it may contain more executed batches apart from the last
-            // one.
-            last_l1_block,
-            None,
-            sl_chain_id,
-            Box::new(this),
-        )
-        .await
+        // SYSCOIN: this watcher follows the active settlement layer, so validate against the
+        // SL provider chain ID and preserve the configured confirmations.
+        StartResolver::new(config, provider, address, None, sl_chain_id, resolve_start).await
     }
 }
 
@@ -100,49 +98,58 @@ impl<Finality: WriteFinality> L1FinalizedExecuteWatcher<Finality> {
         archive_lookup_zk_chain: Option<ZkChain<NodeProvider>>,
         committed_batch_provider: CommittedBatchProvider,
         finality: Finality,
-        block_updates: watch::Receiver<BlockUpdates>,
-        logs_cache: LogsCache,
-    ) -> anyhow::Result<L1Watcher> {
-        let current_l1_block = zk_chain.provider().get_block_number().await?;
-        let last_finalized_executed_batch =
-            finality.get_finality_status().last_finalized_executed_batch;
+    ) -> anyhow::Result<StartResolver<(), Self>> {
         tracing::info!(
-            current_l1_block,
-            last_finalized_executed_batch,
             config.max_blocks_to_process,
             ?config.poll_interval,
             zk_chain_address = ?zk_chain.address(),
             "initializing finalized L1 execute watcher"
         );
-        // SYSCOIN: Resolve the startup cursor through the archive-capable
-        // provider while keeping live polling on `zk_chain` below.
-        let last_l1_block = util::find_startup_block_with_archive_fallback(
-            zk_chain.clone(),
-            archive_lookup_zk_chain,
-            "finalized execute watcher",
-            |zk_chain| {
-                util::find_l1_execute_block_by_batch_number(zk_chain, last_finalized_executed_batch)
-            },
-        )
-        .await?;
-        tracing::info!(last_l1_block, "resolved on L1");
 
-        let this = Self {
-            inner: ExecuteWatcherState {
-                next_batch_number: last_finalized_executed_batch + 1,
-                committed_batch_provider,
-                finality,
-            },
+        let provider = zk_chain.provider().clone();
+        let address = (*zk_chain.address()).into();
+
+        let resolve_start = move |()| async move {
+            let current_l1_block = zk_chain.provider().get_block_number().await?;
+            let last_finalized_executed_batch =
+                finality.get_finality_status().last_finalized_executed_batch;
+            // SYSCOIN: Resolve the startup cursor through the archive-capable
+            // provider while keeping live polling on `zk_chain`.
+            let last_l1_block = util::find_startup_block_with_archive_fallback(
+                zk_chain,
+                archive_lookup_zk_chain,
+                "finalized execute watcher",
+                |zk_chain| {
+                    util::find_l1_execute_block_by_batch_number(
+                        zk_chain,
+                        last_finalized_executed_batch,
+                    )
+                },
+            )
+            .await?;
+            tracing::info!(
+                current_l1_block,
+                last_finalized_executed_batch,
+                last_l1_block,
+                "resolved on L1"
+            );
+
+            let processor = Self {
+                inner: ExecuteWatcherState {
+                    next_batch_number: last_finalized_executed_batch + 1,
+                    committed_batch_provider,
+                    finality,
+                },
+            };
+            Ok((last_l1_block, processor))
         };
-        Ok(L1Watcher::new_finalized(
+
+        Ok(StartResolver::new_finalized(
             config,
-            zk_chain.provider().clone(),
-            logs_cache,
-            block_updates,
-            (*zk_chain.address()).into(),
-            last_l1_block,
+            provider,
+            address,
             None,
-            Box::new(this),
+            resolve_start,
         ))
     }
 }

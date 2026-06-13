@@ -1,6 +1,6 @@
 use crate::committed_batch_provider::CommittedBatchProvider;
-use crate::watcher::{L1Watcher, L1WatcherError};
-use crate::{BlockUpdates, L1WatcherConfig, LogsCache, ProcessL1Event, util};
+use crate::watcher::{L1WatcherError, StartResolver};
+use crate::{L1WatcherConfig, ProcessL1Event, util};
 use alloy::rpc::types::Log;
 use tokio::sync::watch;
 use zksync_os_batch_types::DiscoveredCommittedBatch;
@@ -41,58 +41,54 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
         finality: Finality,
         sl_block_initial_finality_init_at: u64,
         sl_chain_id: u64,
-        block_updates: watch::Receiver<BlockUpdates>,
-        logs_cache: LogsCache,
         commit_submitted_rx: Option<watch::Receiver<u64>>,
-    ) -> anyhow::Result<L1Watcher> {
-        let last_committed_batch = finality.get_finality_status().last_committed_batch;
+    ) -> anyhow::Result<StartResolver<(), Self>> {
         tracing::info!(
             sl_block_initial_finality_init_at,
-            last_committed_batch,
             config.max_blocks_to_process,
             ?config.poll_interval,
             zk_chain_address = ?zk_chain.address(),
             "initializing L1 commit watcher"
         );
-        // SYSCOIN: Resolve the startup cursor through the archive-capable
-        // provider while keeping live polling on `zk_chain` below.
-        let last_l1_block = util::find_startup_block_with_archive_fallback(
-            zk_chain.clone(),
-            archive_lookup_zk_chain,
-            "commit watcher",
-            |zk_chain| {
-                util::find_l1_commit_block_by_batch_number(
-                    zk_chain,
-                    last_committed_batch,
-                    config.max_blocks_to_process,
-                )
-            },
-        )
-        .await?;
-        tracing::info!(last_l1_block, "resolved on L1");
 
-        let this = Self {
-            next_batch_number: last_committed_batch + 1,
-            sl_block_initial_finality_init_at,
-            startup_last_committed_batch: last_committed_batch,
-            committed_batch_provider,
-            finality,
-            commit_submitted_rx,
+        let provider = zk_chain.provider().clone();
+        let address = (*zk_chain.address()).into();
+        let max_blocks_to_process = config.max_blocks_to_process;
+
+        let resolve_start = move |()| async move {
+            let last_committed_batch = finality.get_finality_status().last_committed_batch;
+            // SYSCOIN: Resolve the startup cursor through the archive-capable
+            // provider while keeping live polling on `zk_chain`.
+            let last_l1_block = util::find_startup_block_with_archive_fallback(
+                zk_chain,
+                archive_lookup_zk_chain,
+                "commit watcher",
+                |zk_chain| {
+                    util::find_l1_commit_block_by_batch_number(
+                        zk_chain,
+                        last_committed_batch,
+                        max_blocks_to_process,
+                    )
+                },
+            )
+            .await?;
+            tracing::info!(last_committed_batch, last_l1_block, "resolved on L1");
+
+            let processor = Self {
+                next_batch_number: last_committed_batch + 1,
+                sl_block_initial_finality_init_at,
+                startup_last_committed_batch: last_committed_batch,
+                committed_batch_provider,
+                finality,
+                commit_submitted_rx,
+            };
+            // We start from the last L1 block as it may contain more committed batches apart
+            // from the last one.
+            Ok((last_l1_block, processor))
         };
-        L1Watcher::new(
-            config,
-            zk_chain.provider().clone(),
-            logs_cache,
-            block_updates,
-            (*zk_chain.address()).into(),
-            // We start from last L1 block as it may contain more committed batches apart from the last
-            // one.
-            last_l1_block,
-            None,
-            sl_chain_id,
-            Box::new(this),
-        )
-        .await
+        // SYSCOIN: this watcher follows the active settlement layer, so validate against the
+        // SL provider chain ID and preserve the configured confirmations.
+        StartResolver::new(config, provider, address, None, sl_chain_id, resolve_start).await
     }
 }
 
@@ -137,6 +133,8 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
             tracing::debug!(batch_number, "discovered committed batch");
             let tx_hash = log.transaction_hash.expect("indexed log without tx hash");
             let zk_chain = ZkChain::new(log.address(), provider.clone());
+            // SYSCOIN: commitment is taken from the commit tx receipt logs; no historical
+            // block-state reads needed.
             let batch_info = util::fetch_committed_batch_data(&zk_chain, tx_hash).await?;
             let committed_batch = DiscoveredCommittedBatch {
                 batch_info,
