@@ -74,7 +74,7 @@ where
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderCapabilities {
     /// Whether the RPC understands the `finalized`/`safe` block tags. When false, finalized/safe
-    /// lookups degrade to the latest block.
+    /// lookups fail closed instead of treating latest as finalized.
     pub finalized_tag: bool,
     /// Whether the RPC implements `eth_getHeaderBy*`. When false, header lookups use
     /// `eth_getBlockBy*` instead.
@@ -123,15 +123,49 @@ impl ProviderCapabilities {
                     break;
                 }
                 Err(err) if is_unsupported_finalized_tag_error(&err) => {
-                    tracing::info!(%err, "provider lacks the `finalized` block tag; degrading to latest");
-                    finalized_tag = false;
-                    break;
+                    if get_header {
+                        // SYSCOIN: some providers support the finalized tag on the standard
+                        // block API but not on the optional header API. The live finalized
+                        // watcher polls `eth_getBlockByNumber`, so confirm that path before
+                        // disabling finalized support entirely.
+                        let block_result = provider
+                            .get_block(BlockId::finalized())
+                            .await
+                            .map(drop::<Option<_>>);
+                        match block_result {
+                            Ok(()) => break,
+                            Err(block_err) if is_block_unavailable_error(&block_err) => {
+                                tracing::info!(
+                                    %block_err,
+                                    "no finalized block available yet via block API; keeping the `finalized` tag enabled"
+                                );
+                                break;
+                            }
+                            Err(block_err) if is_unsupported_finalized_tag_error(&block_err) => {
+                                tracing::info!(header_err = %err, %block_err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
+                                finalized_tag = false;
+                                break;
+                            }
+                            Err(block_err) => {
+                                tracing::warn!(
+                                    header_err = %err,
+                                    %block_err,
+                                    attempt,
+                                    "transient error probing the `finalized` tag via block API; retrying"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::info!(%err, "provider lacks the `finalized` block tag; finalized lookups will fail closed");
+                        finalized_tag = false;
+                        break;
+                    }
                 }
                 Err(err) => {
                     tracing::warn!(%err, attempt, "transient error probing the `finalized` tag; retrying");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
         Self {
             get_header,
@@ -153,8 +187,14 @@ fn is_block_unavailable_error(err: &alloy::transports::TransportError) -> bool {
 }
 
 fn is_unsupported_finalized_tag_error(err: &alloy::transports::TransportError) -> bool {
-    if err.as_error_resp().is_some() {
-        return true;
+    if let Some(resp) = err.as_error_resp() {
+        let message = resp.message.to_lowercase();
+        return resp.code == -32601
+            || resp.code == -32602
+            || message.contains("method not found")
+            || message.contains("unsupported")
+            || message.contains("invalid block")
+            || message.contains("invalid argument");
     }
 
     let message = err.to_string().to_lowercase();
@@ -248,22 +288,29 @@ impl NodeProvider {
 
     /// Returns a shared watcher for the finalized block header via
     /// `eth_getBlockByNumber(finalized, false)`.
-    /// Falls back to latetst if the chain does not support finalized tag.
     pub async fn finalized_header_watcher(
         &self,
-    ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
-        let finalized = if self.capabilities.finalized_tag {
-            BlockNumberOrTag::Finalized
-        } else {
-            BlockNumberOrTag::Latest
-        };
-        self.finalized_header_watcher
+    ) -> TransportResult<watch::Receiver<<Ethereum as Network>::HeaderResponse>> {
+        // SYSCOIN: fail closed for finalized watchers instead of assuming unsupported finalized
+        // tags imply immediate finality.
+        if !self.capabilities.finalized_tag {
+            return Err(alloy::transports::TransportErrorKind::non_retryable_str(
+                "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
+            ));
+        }
+        Ok(self
+            .finalized_header_watcher
             .get_or_init(|| async {
-                self.build_header_watcher(finalized, self.finalized_poll_interval)
+                self.build_header_watcher(BlockNumberOrTag::Finalized, self.finalized_poll_interval)
                     .await
             })
             .await
-            .subscribe()
+            .subscribe())
+    }
+
+    /// Returns whether this provider can query finalized/safe block tags.
+    pub fn supports_finalized_tag(&self) -> bool {
+        self.capabilities.finalized_tag
     }
 
     /// Builds a provider-owned header watcher backed by a raw RPC client request.
@@ -310,20 +357,18 @@ impl NodeProvider {
                     return;
                 };
 
-                let polled_block: Option<<Ethereum as Network>::BlockResponse> = match client
-                    .request("eth_getBlockByNumber", (block, false))
-                    .await
-                {
-                    Ok(polled_block) => polled_block,
-                    // SYSCOIN: retry transient transport errors on the next poll.
-                    Err(err) => {
-                        tracing::warn!(
-                            %err, ?block,
-                            "header watcher transport error; retrying on next poll"
-                        );
-                        continue;
-                    }
-                };
+                let polled_block: Option<<Ethereum as Network>::BlockResponse> =
+                    match client.request("eth_getBlockByNumber", (block, false)).await {
+                        Ok(polled_block) => polled_block,
+                        // SYSCOIN: retry transient transport errors on the next poll.
+                        Err(err) => {
+                            tracing::warn!(
+                                %err, ?block,
+                                "header watcher transport error; retrying on next poll"
+                            );
+                            continue;
+                        }
+                    };
                 let Some(header) = polled_block.map(|b| b.header().clone()) else {
                     // SYSCOIN: the chain head may be temporarily unavailable (e.g. no finalized
                     // block yet); keep the last known header and retry.
@@ -446,9 +491,9 @@ impl Provider<Ethereum> for NodeProvider {
         self.inner.get_block_number()
     }
 
-    // Dispatch based on the capabilities probed at construction (see `ProviderCapabilities`)
-    // instead of trying-and-failing: skip `eth_getHeaderBy*` when unsupported, and degrade
-    // finalized/safe lookups straight to the latest block when the tags are unsupported.
+    // Dispatch based on the capabilities probed at construction (see `ProviderCapabilities`):
+    // skip `eth_getHeaderBy*` when unsupported, but fail closed for finalized/safe lookups when
+    // those tags are unsupported.
     async fn get_block_number_by_id(
         &self,
         block_id: BlockId,
@@ -460,11 +505,21 @@ impl Provider<Ethereum> for NodeProvider {
                 if (block_id.is_finalized() || block_id.is_safe())
                     && !self.capabilities.finalized_tag
                 {
-                    // If `finalized`/`safe` are not supported we presume immediate finality like it
-                    // is with Besu: https://besu.hyperledger.org/private-networks/concepts/poa
-                    return self.get_block_number().await.map(Some);
+                    // SYSCOIN: do not map finalized/safe to latest on non-immediate-finality
+                    // settlement layers. Callers that require finality must fail closed.
+                    return Err(alloy::transports::TransportErrorKind::non_retryable_str(
+                        "provider lacks finalized/safe block tags; refusing to treat latest as finalized",
+                    ));
                 }
-                if self.capabilities.get_header {
+                if block_id.is_finalized() || block_id.is_safe() {
+                    match self.get_block(block_id).await {
+                        Ok(block) => Ok(block.map(|b| b.header().number())),
+                        // SYSCOIN: the tag can be supported before any block is finalized/safe.
+                        // Surface that as `None` so callers can wait instead of crash-looping.
+                        Err(err) if is_block_unavailable_error(&err) => Ok(None),
+                        Err(err) => Err(err),
+                    }
+                } else if self.capabilities.get_header {
                     Ok(self.get_header(block_id).await?.map(|h| h.number()))
                 } else {
                     Ok(self.get_block(block_id).await?.map(|b| b.header().number()))
@@ -873,7 +928,23 @@ mod tests {
     fn unsupported_method() -> ErrorPayload {
         ErrorPayload {
             code: -39001,
-            message: Cow::Borrowed("custom upstream error"),
+            message: Cow::Borrowed("method not found"),
+            data: None,
+        }
+    }
+
+    fn invalid_params() -> ErrorPayload {
+        ErrorPayload {
+            code: -32602,
+            message: Cow::Borrowed("invalid params"),
+            data: None,
+        }
+    }
+
+    fn transient_upstream_error() -> ErrorPayload {
+        ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("temporary upstream error"),
             data: None,
         }
     }
@@ -891,12 +962,12 @@ mod tests {
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
 
-        // The lookup itself resolves via get_header.
-        asserter.push_success(&header_with_number(42));
+        // Finalized/safe lookups use the standard block API, matching the finalized watcher.
+        asserter.push_success(&block_with_number(42));
         let result = provider
             .get_block_number_by_id(BlockId::finalized())
             .await
-            .expect("get_header lookup should succeed");
+            .expect("get_block lookup should succeed");
         assert_eq!(result, Some(42));
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
@@ -940,6 +1011,71 @@ mod tests {
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: Cow::Borrowed("finalized block not found"),
+            data: None,
+        });
+        let result = provider
+            .get_block_number_by_id(BlockId::finalized())
+            .await
+            .expect("missing finalized block should not be fatal");
+        assert_eq!(result, None);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: finalized support is determined by the standard block API used by live finalized
+    // watchers, not only by the optional header API.
+    #[tokio::test]
+    async fn keeps_finalized_tag_when_header_probe_rejected_but_block_probe_succeeds() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(invalid_params());
+        asserter.push_success(&block_with_number(1));
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(provider.capabilities().finalized_tag);
+
+        asserter.push_success(&block_with_number(42));
+        let result = provider
+            .get_block_number_by_id(BlockId::finalized())
+            .await
+            .expect("get_block lookup should succeed");
+        assert_eq!(result, Some(42));
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: providers commonly report unknown block tags as JSON-RPC invalid params. For the
+    // finalized-tag probe, this is definitive unsupported-tag evidence, not a transient error.
+    #[tokio::test]
+    async fn invalid_params_finalized_probe_fails_closed() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(invalid_params());
+        asserter.push_failure(invalid_params());
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(!provider.capabilities().finalized_tag);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: a transient provider-side JSON-RPC error during capability detection must not
+    // poison the provider as permanently lacking finalized/safe tags.
+    #[tokio::test]
+    async fn retries_transient_finalized_probe_errors() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(transient_upstream_error());
+        asserter.push_success(&header_with_number(1));
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(provider.capabilities().get_header);
+        assert!(provider.capabilities().finalized_tag);
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 
@@ -951,11 +1087,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn degrades_to_latest_when_finalized_unsupported() {
+    async fn fails_closed_when_finalized_unsupported() {
         let asserter = Asserter::new();
-        // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) fails ->
-        // finalized unsupported.
+        // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) fails,
+        // then get_block(finalized) fails -> finalized unsupported.
         asserter.push_success(&header_with_number(1));
+        asserter.push_failure(unsupported_method());
         asserter.push_failure(unsupported_method());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
@@ -963,13 +1100,24 @@ mod tests {
         assert!(provider.capabilities().get_header);
         assert!(!provider.capabilities().finalized_tag);
 
-        // The lookup degrades straight to get_block_number (latest), issuing no header/block call.
-        asserter.push_success(&U64::from(99));
-        let result = provider
+        let err = provider
             .get_block_number_by_id(BlockId::finalized())
             .await
-            .expect("degraded latest lookup should succeed");
-        assert_eq!(result, Some(99));
+            .expect_err("unsupported finalized tags must fail closed");
+        assert!(
+            err.to_string()
+                .contains("refusing to treat latest as finalized"),
+            "unexpected error: {err}"
+        );
+        let err = provider
+            .finalized_header_watcher()
+            .await
+            .expect_err("unsupported finalized watcher must fail closed");
+        assert!(
+            err.to_string()
+                .contains("refusing to treat latest as finalized"),
+            "unexpected error: {err}"
+        );
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 }

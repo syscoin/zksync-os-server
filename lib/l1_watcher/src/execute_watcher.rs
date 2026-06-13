@@ -144,13 +144,7 @@ impl<Finality: WriteFinality> L1FinalizedExecuteWatcher<Finality> {
             Ok((last_l1_block, processor))
         };
 
-        Ok(StartResolver::new_finalized(
-            config,
-            provider,
-            address,
-            None,
-            resolve_start,
-        ))
+        StartResolver::new_finalized(config, provider, address, None, resolve_start)
     }
 }
 

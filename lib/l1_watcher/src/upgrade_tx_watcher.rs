@@ -102,7 +102,6 @@ impl L1UpgradeTxWatcher {
         let provider_l1 = zk_chain_l1.provider().clone();
         let provider_sl = zk_chain_sl.provider().clone();
 
-
         // The configured bytecode supplier address is used as fallback for pre-v31 CTMs.
         // On v31+ CTMs, `resolve_active_bytecode_supplier` discovers the address dynamically.
         // Sanity check: make sure the fallback address has code deployed.
