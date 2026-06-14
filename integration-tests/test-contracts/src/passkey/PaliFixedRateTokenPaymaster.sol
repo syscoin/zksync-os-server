@@ -11,6 +11,8 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 /// @notice ERC-4337 paymaster that charges one ERC-20 token unit per one native gas unit.
 /// @dev Uses OZ Community Contracts' ERC-20 paymaster base and pins the token price to 1:1.
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
+    using ERC4337Utils for PackedUserOperation;
+
     uint256 private constant POST_OP_COST = 30_000;
     uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
@@ -83,6 +85,38 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         }
 
         return (0, token, _tokenPriceDenominator());
+    }
+
+    function _prefund(
+        PackedUserOperation calldata userOp,
+        bytes32 userOpHash,
+        IERC20 paymentToken,
+        uint256 tokenPrice,
+        address prefunder_,
+        uint256 maxCost
+    )
+        internal
+        override
+        returns (bool prefunded, uint256 prefundAmount, address prefunder, bytes memory prefundContext)
+    {
+        if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
+            return (false, 0, prefunder_, "");
+        }
+
+        uint128 paymasterPostOpGasLimit = uint128(
+            bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
+        );
+        if (paymasterPostOpGasLimit < POST_OP_COST || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT) {
+            return (false, 0, prefunder_, "");
+        }
+
+        uint256 reservedPostOpCost = paymasterPostOpGasLimit * userOp.maxFeePerGas();
+        if (reservedPostOpCost > maxCost) {
+            return (false, 0, prefunder_, "");
+        }
+        uint256 adjustedMaxCost = maxCost - reservedPostOpCost;
+
+        return super._prefund(userOp, userOpHash, paymentToken, tokenPrice, prefunder_, adjustedMaxCost);
     }
 
     function _authorizeWithdraw() internal override onlyOwner {}

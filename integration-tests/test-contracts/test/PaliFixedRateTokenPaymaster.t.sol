@@ -115,6 +115,24 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(token.balanceOf(address(paymaster)), maxCost);
     }
 
+    function testValidateDoesNotPrechargeExtraPostOpHeadroom() public {
+        uint256 maxFeePerGas = 1 gwei;
+        uint256 maxCost = 10 ether;
+        uint256 extraPostOpHeadroomCost = 50_000 * maxFeePerGas;
+        PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(80_000);
+        userOp.gasFees = bytes32(abi.encodePacked(uint128(0), uint128(maxFeePerGas)));
+
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 0);
+        assertGt(context.length, 0);
+        assertEq(token.balanceOf(sender), 1_000 ether - maxCost + extraPostOpHeadroomCost);
+        assertEq(token.balanceOf(address(paymaster)), maxCost - extraPostOpHeadroomCost);
+    }
+
     function _assertPostOpGasLimitRejected(uint128 paymasterPostOpGasLimit) private {
         uint256 maxCost = 10 ether;
         PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(paymasterPostOpGasLimit);
