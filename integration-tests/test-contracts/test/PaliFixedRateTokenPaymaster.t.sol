@@ -25,11 +25,10 @@ contract MockEntryPoint {
         withdrawAddress.transfer(withdrawAmount);
     }
 
-    function validate(
-        PaliFixedRateTokenPaymaster paymaster,
-        PackedUserOperation calldata userOp,
-        uint256 maxCost
-    ) external returns (bytes memory context, uint256 validationData) {
+    function validate(PaliFixedRateTokenPaymaster paymaster, PackedUserOperation calldata userOp, uint256 maxCost)
+        external
+        returns (bytes memory context, uint256 validationData)
+    {
         return paymaster.validatePaymasterUserOp(userOp, bytes32(0), maxCost);
     }
 
@@ -37,9 +36,10 @@ contract MockEntryPoint {
         PaliFixedRateTokenPaymaster paymaster,
         IPaymaster.PostOpMode mode,
         bytes calldata context,
-        uint256 actualGasCost
+        uint256 actualGasCost,
+        uint256 actualUserOpFeePerGas
     ) external {
-        paymaster.postOp(mode, context, actualGasCost, 0);
+        paymaster.postOp(mode, context, actualGasCost, actualUserOpFeePerGas);
     }
 }
 
@@ -55,13 +55,16 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     function setUp() public {
         entryPoint = new MockEntryPoint();
         token = new TestERC20(0, "zkSYS", "zkSYS");
-        paymaster = new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20(address(token)), treasury, owner);
+        paymaster =
+            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20(address(token)), treasury, owner);
         token.mint(sender, 1_000 ether);
     }
 
     function testValidatePrechargesMaxCostAndPostOpRefundsExcess() public {
         uint256 maxCost = 10 ether;
         uint256 actualCost = 6 ether;
+        uint256 actualFeePerGas = 1 gwei;
+        uint256 postOpCost = 45_000 * actualFeePerGas;
         PackedUserOperation memory userOp = _userOp();
 
         vm.prank(sender);
@@ -73,10 +76,25 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(token.balanceOf(sender), 990 ether);
         assertEq(token.balanceOf(address(paymaster)), maxCost);
 
-        entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost);
+        entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost, actualFeePerGas);
 
-        assertEq(token.balanceOf(sender), 994 ether);
-        assertEq(token.balanceOf(treasury), actualCost);
+        assertEq(token.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
+        assertEq(token.balanceOf(treasury), actualCost + postOpCost);
+        assertEq(token.balanceOf(address(paymaster)), 0);
+    }
+
+    function testValidateRejectsExcessivePostOpGasLimit() public {
+        uint256 maxCost = 10 ether;
+        PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(45_001);
+
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 1);
+        assertEq(context.length, 0);
+        assertEq(token.balanceOf(sender), 1_000 ether);
         assertEq(token.balanceOf(address(paymaster)), 0);
     }
 
@@ -131,7 +149,15 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function _userOp() private view returns (PackedUserOperation memory userOp) {
+        userOp = _userOpWithPostOpGasLimit(45_000);
+    }
+
+    function _userOpWithPostOpGasLimit(uint128 paymasterPostOpGasLimit)
+        private
+        view
+        returns (PackedUserOperation memory userOp)
+    {
         userOp.sender = sender;
-        userOp.paymasterAndData = abi.encodePacked(address(paymaster), uint128(120_000), uint128(45_000));
+        userOp.paymasterAndData = abi.encodePacked(address(paymaster), uint128(120_000), paymasterPostOpGasLimit);
     }
 }

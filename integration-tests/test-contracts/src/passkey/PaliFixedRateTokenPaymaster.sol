@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaster/PaymasterERC20.sol";
@@ -11,6 +12,10 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 /// @dev Uses OZ Community Contracts' ERC-20 paymaster base and pins the token price to 1:1.
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     using SafeERC20 for IERC20;
+
+    uint256 private constant POST_OP_COST = 45_000;
+    uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
+    uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
     error InvalidAddress();
 
@@ -57,10 +62,23 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         treasury = newTreasury;
     }
 
-    function _fetchDetails(
-        PackedUserOperation calldata,
-        bytes32
-    ) internal view override returns (uint256 validationData, IERC20 paymentToken, uint256 tokenPrice) {
+    function _fetchDetails(PackedUserOperation calldata userOp, bytes32)
+        internal
+        view
+        override
+        returns (uint256 validationData, IERC20 paymentToken, uint256 tokenPrice)
+    {
+        if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
+            return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
+        }
+
+        uint128 paymasterPostOpGasLimit = uint128(
+            bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
+        );
+        if (paymasterPostOpGasLimit > POST_OP_COST) {
+            return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
+        }
+
         return (0, token, _tokenPriceDenominator());
     }
 
@@ -73,8 +91,9 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint256 prefundAmount,
         bytes calldata prefundContext
     ) internal override returns (bool refunded, uint256 actualAmount) {
-        (refunded, actualAmount) =
-            super._refund(paymentToken, tokenPrice, actualGasCost, actualUserOpFeePerGas, prefunder, prefundAmount, prefundContext);
+        (refunded, actualAmount) = super._refund(
+            paymentToken, tokenPrice, actualGasCost, actualUserOpFeePerGas, prefunder, prefundAmount, prefundContext
+        );
         if (!refunded) {
             return (false, actualAmount);
         }
@@ -84,6 +103,6 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     function _authorizeWithdraw() internal override onlyOwner {}
 
     function _postOpCost() internal pure override returns (uint256) {
-        return 0;
+        return POST_OP_COST;
     }
 }
