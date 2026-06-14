@@ -21,6 +21,10 @@
 #   PAYMASTER_INITIAL_DEPOSIT_NATIVE
 #                           optional native amount to send to paymaster after deployment
 #                           (for example: 1000ether)
+#   PAYMASTER_STAKE_NATIVE  optional native stake amount to add after deployment
+#                           (required by ERC-4337 bundlers for storage-accessing paymasters)
+#   PAYMASTER_UNSTAKE_DELAY_SEC
+#                           unstake delay for PAYMASTER_STAKE_NATIVE, default: 86400
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -39,6 +43,8 @@ CHAIN_ID="${CHAIN_ID:-57057}"
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
+PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
+PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
 
 if [[ -z "${ZKSYS_TOKEN_ADDRESS:-}" ]]; then
   echo "error: ZKSYS_TOKEN_ADDRESS is required" >&2
@@ -124,5 +130,19 @@ if [[ -n "${paymaster_address}" ]]; then
       --chain "${CHAIN_ID}" \
       --value "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" \
       "${wallet_args[@]}"
+  fi
+
+  if [[ -n "${PAYMASTER_STAKE_NATIVE}" ]]; then
+    echo
+    echo "Staking ${PAYMASTER_STAKE_NATIVE} native for paymaster ${paymaster_address}"
+    cast send "${paymaster_address}" \
+      "addStake(uint32)" "${PAYMASTER_UNSTAKE_DELAY_SEC}" \
+      --rpc-url "${RPC_URL}" \
+      --chain "${CHAIN_ID}" \
+      --value "${PAYMASTER_STAKE_NATIVE}" \
+      "${wallet_args[@]}"
+  else
+    echo
+    echo "warning: PAYMASTER_STAKE_NATIVE was not set; ERC-4337 bundlers may reject this storage-accessing paymaster until addStake is called." >&2
   fi
 fi
