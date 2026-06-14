@@ -13,7 +13,7 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     using SafeERC20 for IERC20;
 
-    uint256 private constant POST_OP_COST = 45_000;
+    uint256 private constant POST_OP_COST = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
@@ -52,6 +52,10 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
             revert InvalidAddress();
         }
         withdraw(withdrawAddress, withdrawAmount);
+    }
+
+    function addStake(uint32 unstakeDelaySec) public payable override onlyOwner {
+        super.addStake(unstakeDelaySec);
     }
 
     function setTreasury(address newTreasury) external onlyOwner {

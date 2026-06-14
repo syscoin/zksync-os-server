@@ -11,6 +11,8 @@ import {TestERC20} from "../src/TestERC20.sol";
 
 contract MockEntryPoint {
     mapping(address => uint256) public balanceOf;
+    mapping(address => uint256) public stakeOf;
+    mapping(address => uint32) public unstakeDelayOf;
 
     receive() external payable {}
 
@@ -23,6 +25,13 @@ contract MockEntryPoint {
         require(balanceOf[account] >= withdrawAmount, "insufficient deposit");
         balanceOf[account] -= withdrawAmount;
         withdrawAddress.transfer(withdrawAmount);
+    }
+
+    function addStake(uint32 unstakeDelaySec) external payable {
+        stakeOf[msg.sender] += msg.value;
+        if (unstakeDelaySec > unstakeDelayOf[msg.sender]) {
+            unstakeDelayOf[msg.sender] = unstakeDelaySec;
+        }
     }
 
     function validate(PaliFixedRateTokenPaymaster paymaster, PackedUserOperation calldata userOp, uint256 maxCost)
@@ -64,7 +73,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         uint256 maxCost = 10 ether;
         uint256 actualCost = 6 ether;
         uint256 actualFeePerGas = 1 gwei;
-        uint256 postOpCost = 45_000 * actualFeePerGas;
+        uint256 postOpCost = 80_000 * actualFeePerGas;
         PackedUserOperation memory userOp = _userOp();
 
         vm.prank(sender);
@@ -84,11 +93,11 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function testValidateRejectsExcessivePostOpGasLimit() public {
-        _assertPostOpGasLimitRejected(45_001);
+        _assertPostOpGasLimitRejected(80_001);
     }
 
     function testValidateRejectsUndersizedPostOpGasLimit() public {
-        _assertPostOpGasLimitRejected(44_999);
+        _assertPostOpGasLimitRejected(79_999);
     }
 
     function _assertPostOpGasLimitRejected(uint128 paymasterPostOpGasLimit) private {
@@ -134,6 +143,21 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(entryPoint.balanceOf(address(paymaster)), 1 ether);
     }
 
+    function testOnlyOwnerCanAddStake() public {
+        vm.deal(owner, 2 ether);
+        vm.deal(sender, 1 ether);
+
+        vm.prank(sender);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, sender));
+        paymaster.addStake{value: 1 ether}(365 days);
+
+        vm.prank(owner);
+        paymaster.addStake{value: 2 ether}(1 days);
+
+        assertEq(entryPoint.stakeOf(address(paymaster)), 2 ether);
+        assertEq(entryPoint.unstakeDelayOf(address(paymaster)), 1 days);
+    }
+
     function testOwnerCanWithdrawCollectedTokens() public {
         token.mint(address(paymaster), 5 ether);
 
@@ -157,7 +181,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function _userOp() private view returns (PackedUserOperation memory userOp) {
-        userOp = _userOpWithPostOpGasLimit(45_000);
+        userOp = _userOpWithPostOpGasLimit(80_000);
     }
 
     function _userOpWithPostOpGasLimit(uint128 paymasterPostOpGasLimit)
