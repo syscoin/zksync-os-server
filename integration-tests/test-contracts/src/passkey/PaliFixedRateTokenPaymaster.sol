@@ -12,6 +12,7 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 /// @dev Uses OZ Community Contracts' ERC-20 paymaster base and pins the token price to 1:1.
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     uint256 private constant POST_OP_COST = 30_000;
+    uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
@@ -77,7 +78,7 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint128 paymasterPostOpGasLimit = uint128(
             bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
         );
-        if (paymasterPostOpGasLimit != POST_OP_COST) {
+        if (paymasterPostOpGasLimit < POST_OP_COST || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT) {
             return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
         }
 

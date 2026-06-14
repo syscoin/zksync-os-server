@@ -51,6 +51,10 @@ if [[ -z "${ZKSYS_TOKEN_ADDRESS:-}" ]]; then
   exit 1
 fi
 
+if [[ -z "${DEPLOYER_ADDRESS:-}" && -n "${DEPLOYER_PRIVATE_KEY:-}" ]]; then
+  DEPLOYER_ADDRESS="$(cast wallet address --private-key "${DEPLOYER_PRIVATE_KEY}")"
+fi
+
 PAYMASTER_OWNER="${PAYMASTER_OWNER:-${DEPLOYER_ADDRESS:-}}"
 PAYMASTER_TREASURY="${PAYMASTER_TREASURY:-${DEPLOYER_ADDRESS:-}}"
 if [[ -z "${PAYMASTER_OWNER}" || -z "${PAYMASTER_TREASURY}" ]]; then
