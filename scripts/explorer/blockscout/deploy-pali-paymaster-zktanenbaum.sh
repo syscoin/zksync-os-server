@@ -8,9 +8,8 @@
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
 #   ENTRYPOINT_ADDRESS      default: 0x433709009B8330FDa32311DF1C2AFA402eD8D009
-#   PAYMASTER_TREASURY      default: deployer address, if DEPLOYER_ADDRESS is set
 #   PAYMASTER_OWNER         default: deployer address, if DEPLOYER_ADDRESS is set
-#   DEPLOYER_ADDRESS        used as default owner/treasury for hardware or keystore signers
+#   DEPLOYER_ADDRESS        used as default owner for hardware or keystore signers
 #   DEPLOYER_PRIVATE_KEY    raw private key signer
 #   DEPLOYER_MNEMONIC       mnemonic signer, index 0 by default
 #   DEPLOYER_MNEMONIC_INDEX mnemonic index, default: 0
@@ -56,9 +55,8 @@ if [[ -z "${DEPLOYER_ADDRESS:-}" && -n "${DEPLOYER_PRIVATE_KEY:-}" ]]; then
 fi
 
 PAYMASTER_OWNER="${PAYMASTER_OWNER:-${DEPLOYER_ADDRESS:-}}"
-PAYMASTER_TREASURY="${PAYMASTER_TREASURY:-${DEPLOYER_ADDRESS:-}}"
-if [[ -z "${PAYMASTER_OWNER}" || -z "${PAYMASTER_TREASURY}" ]]; then
-  echo "error: set PAYMASTER_OWNER and PAYMASTER_TREASURY, or set DEPLOYER_ADDRESS as their default" >&2
+if [[ -z "${PAYMASTER_OWNER}" ]]; then
+  echo "error: set PAYMASTER_OWNER, or set DEPLOYER_ADDRESS as its default" >&2
   exit 1
 fi
 
@@ -102,7 +100,6 @@ echo "  rpc:       ${RPC_URL}"
 echo "  chain:     ${CHAIN_ID}"
 echo "  entrypoint:${ENTRYPOINT_ADDRESS}"
 echo "  token:     ${ZKSYS_TOKEN_ADDRESS}"
-echo "  treasury:  ${PAYMASTER_TREASURY}"
 echo "  owner:     ${PAYMASTER_OWNER}"
 echo
 
@@ -116,7 +113,7 @@ output="$(
     --optimizer-runs 200 \
     "${verify_args[@]}" \
     "${wallet_args[@]}" \
-    --constructor-args "${ENTRYPOINT_ADDRESS}" "${ZKSYS_TOKEN_ADDRESS}" "${PAYMASTER_TREASURY}" "${PAYMASTER_OWNER}"
+    --constructor-args "${ENTRYPOINT_ADDRESS}" "${ZKSYS_TOKEN_ADDRESS}" "${PAYMASTER_OWNER}"
 )"
 
 printf '%s\n' "${output}"

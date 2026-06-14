@@ -13,33 +13,24 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     using ERC4337Utils for PackedUserOperation;
 
-    uint256 private constant MIN_PAYMASTER_POST_OP_GAS_LIMIT = 30_000;
     // EntryPoint charges a 10% unused-gas penalty when the 80k stipend leaves ~50k unused.
     uint256 private constant POST_OP_COST = 35_000;
+    uint256 private constant MIN_PAYMASTER_POST_OP_GAS_LIMIT = POST_OP_COST;
     uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
     error InvalidAddress();
 
-    event TreasuryChanged(address indexed previousTreasury, address indexed newTreasury);
-
     IEntryPoint private immutable _entryPoint;
     IERC20 public immutable token;
 
-    address public treasury;
-
-    constructor(IEntryPoint entryPoint_, IERC20 token_, address treasury_, address owner_) Ownable(owner_) {
-        if (
-            address(entryPoint_) == address(0) || address(token_) == address(0) || treasury_ == address(0)
-                || owner_ == address(0)
-        ) {
+    constructor(IEntryPoint entryPoint_, IERC20 token_, address owner_) Ownable(owner_) {
+        if (address(entryPoint_) == address(0) || address(token_) == address(0) || owner_ == address(0)) {
             revert InvalidAddress();
         }
         _entryPoint = entryPoint_;
         token = token_;
-        treasury = treasury_;
-        emit TreasuryChanged(address(0), treasury_);
     }
 
     receive() external payable {
@@ -59,14 +50,6 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     function addStake(uint32 unstakeDelaySec) public payable override onlyOwner {
         super.addStake(unstakeDelaySec);
-    }
-
-    function setTreasury(address newTreasury) external onlyOwner {
-        if (newTreasury == address(0)) {
-            revert InvalidAddress();
-        }
-        emit TreasuryChanged(treasury, newTreasury);
-        treasury = newTreasury;
     }
 
     function _fetchDetails(PackedUserOperation calldata userOp, bytes32)

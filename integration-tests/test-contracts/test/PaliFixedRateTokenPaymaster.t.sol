@@ -59,13 +59,11 @@ contract PaliFixedRateTokenPaymasterTest is Test {
 
     address private owner = address(0xA11CE);
     address private sender = address(0xB0B);
-    address private treasury = address(0xCAFE);
 
     function setUp() public {
         entryPoint = new MockEntryPoint();
         token = new TestERC20(0, "zkSYS", "zkSYS");
-        paymaster =
-            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20(address(token)), treasury, owner);
+        paymaster = new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20(address(token)), owner);
         token.mint(sender, 1_000 ether);
     }
 
@@ -88,7 +86,6 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost, actualFeePerGas);
 
         assertEq(token.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
-        assertEq(token.balanceOf(treasury), 0);
         assertEq(token.balanceOf(address(paymaster)), actualCost + postOpCost);
     }
 
@@ -97,7 +94,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function testValidateRejectsUndersizedPostOpGasLimit() public {
-        _assertPostOpGasLimitRejected(29_999);
+        _assertPostOpGasLimitRejected(34_999);
     }
 
     function testValidateAcceptsBoundedLargerPostOpGasLimit() public {
@@ -201,20 +198,8 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(token.balanceOf(address(paymaster)), 0);
     }
 
-    function testOnlyOwnerCanChangeTreasury() public {
-        address nextTreasury = address(0xBEEF);
-
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
-        paymaster.setTreasury(nextTreasury);
-
-        vm.prank(owner);
-        paymaster.setTreasury(nextTreasury);
-
-        assertEq(paymaster.treasury(), nextTreasury);
-    }
-
     function _userOp() private view returns (PackedUserOperation memory userOp) {
-        userOp = _userOpWithPostOpGasLimit(30_000);
+        userOp = _userOpWithPostOpGasLimit(35_000);
     }
 
     function _userOpWithPostOpGasLimit(uint128 paymasterPostOpGasLimit)
