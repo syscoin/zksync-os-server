@@ -73,7 +73,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         uint256 maxCost = 10 ether;
         uint256 actualCost = 6 ether;
         uint256 actualFeePerGas = 1 gwei;
-        uint256 postOpCost = 80_000 * actualFeePerGas;
+        uint256 postOpCost = 30_000 * actualFeePerGas;
         PackedUserOperation memory userOp = _userOp();
 
         vm.prank(sender);
@@ -88,16 +88,16 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost, actualFeePerGas);
 
         assertEq(token.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
-        assertEq(token.balanceOf(treasury), actualCost + postOpCost);
-        assertEq(token.balanceOf(address(paymaster)), 0);
+        assertEq(token.balanceOf(treasury), 0);
+        assertEq(token.balanceOf(address(paymaster)), actualCost + postOpCost);
     }
 
     function testValidateRejectsExcessivePostOpGasLimit() public {
-        _assertPostOpGasLimitRejected(80_001);
+        _assertPostOpGasLimitRejected(30_001);
     }
 
     function testValidateRejectsUndersizedPostOpGasLimit() public {
-        _assertPostOpGasLimitRejected(79_999);
+        _assertPostOpGasLimitRejected(29_999);
     }
 
     function _assertPostOpGasLimitRejected(uint128 paymasterPostOpGasLimit) private {
@@ -181,7 +181,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function _userOp() private view returns (PackedUserOperation memory userOp) {
-        userOp = _userOpWithPostOpGasLimit(80_000);
+        userOp = _userOpWithPostOpGasLimit(30_000);
     }
 
     function _userOpWithPostOpGasLimit(uint128 paymasterPostOpGasLimit)
