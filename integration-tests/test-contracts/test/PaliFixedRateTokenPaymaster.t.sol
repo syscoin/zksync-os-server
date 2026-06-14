@@ -84,8 +84,16 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function testValidateRejectsExcessivePostOpGasLimit() public {
+        _assertPostOpGasLimitRejected(45_001);
+    }
+
+    function testValidateRejectsUndersizedPostOpGasLimit() public {
+        _assertPostOpGasLimitRejected(44_999);
+    }
+
+    function _assertPostOpGasLimitRejected(uint128 paymasterPostOpGasLimit) private {
         uint256 maxCost = 10 ether;
-        PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(45_001);
+        PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(paymasterPostOpGasLimit);
 
         vm.prank(sender);
         token.approve(address(paymaster), maxCost);

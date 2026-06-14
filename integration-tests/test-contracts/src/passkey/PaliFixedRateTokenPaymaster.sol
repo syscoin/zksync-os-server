@@ -75,7 +75,7 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint128 paymasterPostOpGasLimit = uint128(
             bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
         );
-        if (paymasterPostOpGasLimit > POST_OP_COST) {
+        if (paymasterPostOpGasLimit != POST_OP_COST) {
             return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
         }
 
