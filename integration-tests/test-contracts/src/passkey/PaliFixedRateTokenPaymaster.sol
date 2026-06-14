@@ -13,7 +13,9 @@ import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaste
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     using ERC4337Utils for PackedUserOperation;
 
-    uint256 private constant POST_OP_COST = 30_000;
+    uint256 private constant MIN_PAYMASTER_POST_OP_GAS_LIMIT = 30_000;
+    // EntryPoint charges a 10% unused-gas penalty when the 80k stipend leaves ~50k unused.
+    uint256 private constant POST_OP_COST = 35_000;
     uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
@@ -80,7 +82,10 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint128 paymasterPostOpGasLimit = uint128(
             bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
         );
-        if (paymasterPostOpGasLimit < POST_OP_COST || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT) {
+        if (
+            paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
+                || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT
+        ) {
             return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
         }
 
@@ -106,7 +111,10 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint128 paymasterPostOpGasLimit = uint128(
             bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
         );
-        if (paymasterPostOpGasLimit < POST_OP_COST || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT) {
+        if (
+            paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
+                || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT
+        ) {
             return (false, 0, prefunder_, "");
         }
 

@@ -73,7 +73,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         uint256 maxCost = 10 ether;
         uint256 actualCost = 6 ether;
         uint256 actualFeePerGas = 1 gwei;
-        uint256 postOpCost = 30_000 * actualFeePerGas;
+        uint256 postOpCost = 35_000 * actualFeePerGas;
         PackedUserOperation memory userOp = _userOp();
 
         vm.prank(sender);
@@ -118,7 +118,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     function testValidateDoesNotPrechargeExtraPostOpHeadroom() public {
         uint256 maxFeePerGas = 1 gwei;
         uint256 maxCost = 10 ether;
-        uint256 extraPostOpHeadroomCost = 50_000 * maxFeePerGas;
+        uint256 extraPostOpHeadroomCost = 45_000 * maxFeePerGas;
         PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(80_000);
         userOp.gasFees = bytes32(abi.encodePacked(uint128(0), uint128(maxFeePerGas)));
 
