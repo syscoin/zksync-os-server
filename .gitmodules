@@ -4,3 +4,6 @@
 [submodule "integration-tests/test-contracts/lib/forge-std"]
 	path = integration-tests/test-contracts/lib/forge-std
 	url = https://github.com/foundry-rs/forge-std.git
+[submodule "integration-tests/test-contracts/lib/openzeppelin-community-contracts"]
+	path = integration-tests/test-contracts/lib/openzeppelin-community-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-community-contracts
