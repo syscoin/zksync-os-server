@@ -948,6 +948,15 @@ pub struct RpcConfig {
     #[config(default_t = 10000000)]
     pub eth_call_gas: usize,
 
+    /// Maximum execution time of a single JS tracer run
+    #[config(default_t = 10 * TimeUnit::Seconds)]
+    pub js_tracer_timeout: Duration,
+
+    /// Maximum memory growth allowed during a single JS tracer run, measured via jemalloc
+    /// per-thread allocation counters. Set to `0` to disable the check.
+    #[config(default_t = 512 * SizeUnit::MiB)]
+    pub js_tracer_max_memory: ByteSize,
+
     /// Maximum block gas limit accepted for an `eth_simulateV1` block override.
     #[config(default_t = 100_000_000)]
     pub eth_simulate_block_gas_limit: u64,
@@ -1824,6 +1833,8 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
         Self {
             address: c.address,
             eth_call_gas: c.eth_call_gas,
+            js_tracer_timeout: c.js_tracer_timeout,
+            js_tracer_max_memory_bytes: c.js_tracer_max_memory.0 as usize,
             eth_simulate_block_gas_limit: c.eth_simulate_block_gas_limit,
             max_connections: c.max_connections,
             max_request_size: c.max_request_size,
