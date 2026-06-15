@@ -25,7 +25,6 @@ Remaining assumptions include the SHA-256 precompile/model bridge, an opaque
 SHA-256 primitive package, and source-to-model transcription fidelity.
 
 Local tests currently cover the Pali validator module integration, fail-closed
-behavior, malformed signature length, non-canonical public keys, and rejection of
-an all-zero 3,856-byte signature. Before production use, pin at least one
-independent valid known-answer vector from a signer/reference implementation and
-keep the per-key signature-count policy outside this stateless verifier.
+behavior, malformed signature length, non-canonical public keys, rejection of an
+all-zero 3,856-byte signature, and one pinned valid signer vector. Keep the
+per-key signature-count policy outside this stateless verifier.

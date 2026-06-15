@@ -49,6 +49,11 @@ contract PaliSLHDSAValidatorModuleTest is Test {
     bytes32 internal constant PK_SEED = 0x1111111111111111111111111111111100000000000000000000000000000000;
     bytes32 internal constant PK_ROOT = 0x2222222222222222222222222222222200000000000000000000000000000000;
     bytes32 internal constant HASH = 0x3333333333333333333333333333333333333333333333333333333333333333;
+    bytes32 internal constant KAT_PK_SEED =
+        0x9af9a6d986bc7450f99c34e8aca453c800000000000000000000000000000000;
+    bytes32 internal constant KAT_PK_ROOT =
+        0x37b5d97afcfbd8118e75e50aba480a9e00000000000000000000000000000000;
+    bytes32 internal constant KAT_HASH = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 
     MockSLHDSAVerifier private verifier;
     PaliSLHDSAValidatorModule private module;
@@ -121,6 +126,21 @@ contract PaliSLHDSAValidatorModuleTest is Test {
         assertEq(realModule.isValidSignatureWithSender(address(0xB0B), HASH, new bytes(3856)), EIP1271_FAILED);
     }
 
+    function testRealVerifierAcceptsPinnedKnownAnswerVector() public {
+        SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
+        bytes memory signature = _knownAnswerSignature();
+
+        assertTrue(realVerifier.verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, signature));
+    }
+
+    function testRealModuleAcceptsPinnedKnownAnswerVector() public {
+        SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
+        PaliSLHDSAValidatorModule realModule = new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)));
+        realModule.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: KAT_PK_SEED, pkRoot: KAT_PK_ROOT})));
+
+        assertEq(realModule.isValidSignatureWithSender(address(0xB0B), KAT_HASH, _knownAnswerSignature()), EIP1271_SUCCESS);
+    }
+
     function testRealVerifierRejectsMalformedSignatureLength() public {
         SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
 
@@ -145,5 +165,9 @@ contract PaliSLHDSAValidatorModuleTest is Test {
     function _signature() private pure returns (bytes memory signature) {
         signature = new bytes(3856);
         signature[0] = 0x01;
+    }
+
+    function _knownAnswerSignature() private view returns (bytes memory) {
+        return vm.parseBytes(vm.readFile("test/fixtures/slh_dsa_sha2_128_24_valid.sig.hex"));
     }
 }
