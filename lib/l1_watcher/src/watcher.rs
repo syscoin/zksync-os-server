@@ -16,7 +16,7 @@ enum BlockBoundary {
 /// Boxed async closure that turns a starting point `S` into a concrete start block and the
 /// processor `P` that consumes it.
 type ResolveStartFn<S, P> =
-    Box<dyn FnOnce(S) -> BoxFuture<'static, anyhow::Result<(BlockNumber, P)>> + Send>;
+    Box<dyn FnOnce(S) -> BoxFuture<'static, anyhow::Result<(BlockNumber, P)>> + Send + Sync>;
 
 /// Deferred constructor for an [`L1Watcher`]: holds the watcher's static dependencies and turns
 /// a starting point `S` into a ready-to-run watcher once that starting point is finally known.
@@ -44,8 +44,8 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
         provider: NodeProvider,
         address: ValueOrArray<Address>,
         end_block: Option<BlockNumber>,
-        expected_chain_id: u64,
-        resolve_start: impl FnOnce(S) -> Fut + Send + 'static,
+        l1_chain_id: u64,
+        resolve_start: impl FnOnce(S) -> Fut + Send + Sync + 'static,
     ) -> anyhow::Result<Self>
     where
         Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
@@ -55,8 +55,8 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
         // protection instead of silently falling back to latest-block processing.
         let provider_chain_id = provider.get_chain_id().await?;
         anyhow::ensure!(
-            provider_chain_id == expected_chain_id,
-            "L1 watcher provider chain ID mismatch: expected {expected_chain_id}, got {provider_chain_id}"
+            provider_chain_id == l1_chain_id,
+            "L1 watcher provider chain ID mismatch: expected {l1_chain_id}, got {provider_chain_id}"
         );
 
         Ok(Self {
@@ -79,7 +79,7 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
         provider: NodeProvider,
         address: ValueOrArray<Address>,
         end_block: Option<BlockNumber>,
-        resolve_start: impl FnOnce(S) -> Fut + Send + 'static,
+        resolve_start: impl FnOnce(S) -> Fut + Send + Sync + 'static,
     ) -> anyhow::Result<Self>
     where
         Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,

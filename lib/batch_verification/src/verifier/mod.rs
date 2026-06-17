@@ -10,7 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_batch_types::{
-    BatchSignature, ExtendedCommitBatchInfo, SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+    BatchSignature, PendingBatchInfo, SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
     syscoin_edge_da_refs_from_input,
 };
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
@@ -143,7 +143,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         let expected_upgrade_tx_hash = Self::expected_upgrade_tx_hash_from_replay_records(&blocks)?;
         let (_, last_replay_record, _) = blocks.last().unwrap();
 
-        let (batch_info, _) = ExtendedCommitBatchInfo::build(
+        let (batch_info, _) = PendingBatchInfo::build(
             blocks
                 .iter()
                 .map(|(block_output, replay_record, tree)| {

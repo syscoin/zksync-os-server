@@ -90,9 +90,30 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     }
                 }
             }
-            // SYSCOIN: Do not execute attacker-supplied JavaScript tracers on RPC threads.
-            // Boa execution is not resource bounded here, so only built-in tracers are exposed.
-            GethDebugTracerType::JsTracer(_) => Err(DebugError::UnsupportedJsTracer),
+            GethDebugTracerType::JsTracer(js) => {
+                let limits = crate::js_tracer::tracer::JsTracerLimits::from_config(
+                    &self.eth_call_handler.config,
+                );
+                match crate::js_tracer::tracer::trace_block(
+                    txs,
+                    block_context,
+                    prev_state_view,
+                    js,
+                    limits,
+                ) {
+                    Ok(outputs) => Ok(outputs
+                        .into_iter()
+                        .zip(&block.body.transactions)
+                        .map(|(value, tx_hash)| {
+                            TraceResult::new_success(GethTrace::JS(value), Some(*tx_hash))
+                        })
+                        .collect()),
+                    Err(err) => {
+                        tracing::error!(?err, "Failed to trace transaction with JS tracer");
+                        Err(DebugError::InternalError)
+                    }
+                }
+            }
             other => Err(DebugError::UnsupportedTracer(other)),
         }
     }

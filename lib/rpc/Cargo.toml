@@ -62,3 +62,8 @@ bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", 
 
 boa_engine.workspace = true
 boa_gc.workspace = true
+
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[features]
+jemalloc = ["dep:tikv-jemalloc-ctl", "tikv-jemalloc-ctl/stats"]

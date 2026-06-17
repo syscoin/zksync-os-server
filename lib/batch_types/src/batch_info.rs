@@ -211,8 +211,12 @@ pub fn syscoin_blob_ids_and_chunks_from_pubdata(
     Ok((blob_ids, blob_chunks))
 }
 
+/// Information about a batch produced by the batcher and driven through the pipeline before it is
+/// committed on-chain.
+/// Contains enough data to restore `StoredBatchInfo` that got applied on-chain.
+/// Contains enough data to construct public input hash (the batch commitment).
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct ExtendedCommitBatchInfo {
+pub struct PendingBatchInfo {
     #[serde(flatten)]
     pub commit_info: CommitBatchInfo,
     /// L1 protocol upgrade transaction that was finalized in this batch. Missing for the vast
@@ -221,7 +225,7 @@ pub struct ExtendedCommitBatchInfo {
     pub protocol_version: ProtocolSemanticVersion,
 }
 
-impl ExtendedCommitBatchInfo {
+impl PendingBatchInfo {
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
@@ -398,8 +402,8 @@ impl ExtendedCommitBatchInfo {
         ))
     }
 
-    /// Calculate keccak256 hash of BatchOutput part of public input
-    pub fn public_input_hash(&self) -> B256 {
+    /// Calculate keccak256 hash of BatchOutput part of public input (the batch commitment).
+    fn public_input_hash(&self) -> B256 {
         let commit_info = &self.commit_info;
         let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
         match self.protocol_version.minor {
@@ -443,8 +447,46 @@ impl ExtendedCommitBatchInfo {
         }
     }
 
-    pub fn into_stored(self) -> StoredBatchInfo {
+    /// Computes the batch commitment and turns this into its committed form.
+    pub fn into_committed(self) -> CommittedBatchInfo {
         let commitment = self.public_input_hash();
+        CommittedBatchInfo {
+            commit_info: self.commit_info,
+            commitment,
+        }
+    }
+
+    pub fn into_stored(self) -> StoredBatchInfo {
+        self.into_committed().into_stored()
+    }
+}
+
+impl Deref for PendingBatchInfo {
+    type Target = CommitBatchInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.commit_info
+    }
+}
+
+impl DerefMut for PendingBatchInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.commit_info
+    }
+}
+
+/// Information about a batch that has already been committed on-chain, as discovered from L1.
+/// Carries the batch `commitment` directly (e.g. read from the `BlockCommit` event) instead of
+/// the data required to recompute it.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct CommittedBatchInfo {
+    #[serde(flatten)]
+    pub commit_info: CommitBatchInfo,
+    pub commitment: B256,
+}
+
+impl CommittedBatchInfo {
+    pub fn into_stored(self) -> StoredBatchInfo {
         let commit_info = self.commit_info;
         StoredBatchInfo {
             batch_number: commit_info.batch_number,
@@ -453,24 +495,10 @@ impl ExtendedCommitBatchInfo {
             priority_operations_hash: commit_info.priority_operations_hash,
             dependency_roots_rolling_hash: commit_info.dependency_roots_rolling_hash,
             l2_to_l1_logs_root_hash: commit_info.l2_to_l1_logs_root_hash,
-            commitment,
+            commitment: self.commitment,
             // unused
             last_block_timestamp: Some(0),
         }
-    }
-}
-
-impl Deref for ExtendedCommitBatchInfo {
-    type Target = CommitBatchInfo;
-
-    fn deref(&self) -> &Self::Target {
-        &self.commit_info
-    }
-}
-
-impl DerefMut for ExtendedCommitBatchInfo {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.commit_info
     }
 }
 
