@@ -4,7 +4,6 @@ use std::sync::Arc;
 use crate::watcher::{L1WatcherError, StartResolver};
 use crate::{EventSink, L1WatcherConfig, ProcessL1Event, util};
 use alloy::dyn_abi::SolType;
-use alloy::eips::BlockId;
 use alloy::primitives::{Address, B256, BlockNumber, ChainId, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::{Filter, Log};
@@ -45,7 +44,6 @@ pub struct L1UpgradeTxWatcher {
     l2_chain_id: ChainId,
     provider_l1: NodeProvider,
     provider_sl: NodeProvider,
-    zk_chain_sl: ZkChain<NodeProvider>,
     bridgehub_l1: Address,
     bridgehub_sl: Address,
     /// Address of the bytecode supplier contract on L1 (used to scan EVMBytecodePublished events)
@@ -135,7 +133,6 @@ impl L1UpgradeTxWatcher {
                 l2_chain_id,
                 provider_l1,
                 provider_sl,
-                zk_chain_sl,
                 bridgehub_l1,
                 bridgehub_sl,
                 bytecode_supplier_address,
@@ -252,17 +249,13 @@ impl L1UpgradeTxWatcher {
             );
             (Some(tx), force_preimages)
         };
-        let canonical_tx_hash = match self
-            .zk_chain_sl
-            .get_upgrade_tx_hash(BlockId::latest())
-            .await
-        {
-            Ok(hash) if !hash.is_zero() => hash,
-            Ok(_) | Err(_) => l2_upgrade_tx
-                .as_ref()
-                .map(|tx| *tx.hash())
-                .unwrap_or(B256::ZERO),
-        };
+        // SYSCOIN: upstream does not expose a canonical upgrade hash contract helper here. For
+        // full upgrade txs, bind replay metadata to the tx we actually fetched; patch-only
+        // metadata keeps the zero default and the patched OS falls back to its recorder.
+        let canonical_tx_hash = l2_upgrade_tx
+            .as_ref()
+            .map(|tx| *tx.hash())
+            .unwrap_or(B256::ZERO);
 
         let upgrade_tx = UpgradeInfo {
             tx: l2_upgrade_tx,

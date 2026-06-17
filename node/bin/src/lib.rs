@@ -52,7 +52,6 @@ use crate::provider::{ProviderKind, build_node_provider};
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
-use alloy::eips::BlockId;
 use alloy::primitives::{Address, BlockNumber};
 use alloy::providers::Provider;
 use anyhow::Context;
@@ -1049,6 +1048,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             gateway_chain_id: config.general_config.gateway_chain_id,
             interop_roots_per_tx: config.sequencer_config.interop_roots_per_tx,
             bytecode_supplier_address,
+            // SYSCOIN: use the archive-capable L1 lookup chain for startup cursor resolution.
+            archive_lookup_diamond_proxy_l1: archive_lookup_diamond_proxy_l1.clone(),
             l1_watcher_config: config.l1_watcher_config.clone().into(),
         },
         l2_subpool.clone(),
@@ -1513,37 +1514,10 @@ async fn run_main_node_pipeline(
         );
     }
 
-    let upgrade_batch_number = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_batch_number(BlockId::latest())
-        .await
-    {
-        Ok(batch_number) => batch_number,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade batch marker from settlement layer"
-            );
-            0
-        }
-    };
-    let upgrade_tx_hash = match node_state_on_startup
-        .l1_state
-        .diamond_proxy_sl
-        .get_upgrade_tx_hash(BlockId::latest())
-        .await
-    {
-        Ok(hash) if !hash.is_zero() => Some(hash),
-        Ok(_) => None,
-        Err(err) => {
-            tracing::warn!(
-                ?err,
-                "failed to fetch upgrade tx hash from settlement layer"
-            );
-            None
-        }
-    };
+    // SYSCOIN: upstream contracts do not expose canonical upgrade marker helpers. Fresh v31
+    // deployments rely on the OS-recorded upgrade tx hash, so no startup override is required.
+    let upgrade_batch_number = 0;
+    let upgrade_tx_hash = None;
 
     // Pick the L1Sender config based on whether the chain is currently settling on Gateway:
     // when it is, gateway_sender operator keys and fee caps are used; otherwise the L1-targeted

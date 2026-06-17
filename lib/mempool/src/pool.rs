@@ -16,6 +16,7 @@ use reth_primitives_traits::SealedBlock;
 use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
+use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
@@ -23,6 +24,7 @@ use zksync_os_l1_watcher::{
     GatewayMigrationWatcher, InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig,
     SegmentResolver, StartResolver,
 };
+use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
     L1TxSerialId, ProtocolSemanticVersion, SystemTxType, UpgradeInfo, UpgradeMetadata, ZkEnvelope,
@@ -56,6 +58,9 @@ pub struct Config {
     pub gateway_chain_id: ChainId,
     pub interop_roots_per_tx: usize,
     pub bytecode_supplier_address: Address,
+    // SYSCOIN: startup cursor resolution may need an archive L1 provider while live watchers keep
+    // polling the live provider.
+    pub archive_lookup_diamond_proxy_l1: Option<ZkChain<NodeProvider>>,
     pub l1_watcher_config: L1WatcherConfig,
 }
 
@@ -77,7 +82,9 @@ impl<T: L2Subpool> Pool<T> {
             config.l1_watcher_config.clone(),
             config.chain_id,
             l1_state.bridgehub_l1.clone(),
+            l1_state.bridgehub_sl.clone(),
             l1_state.diamond_proxy_l1.clone(),
+            config.archive_lookup_diamond_proxy_l1.clone(),
             l1_state.diamond_proxy_sl.clone(),
             config.bytecode_supplier_address,
             upgrade_subpool.clone(),
@@ -96,6 +103,7 @@ impl<T: L2Subpool> Pool<T> {
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
             l1_state.diamond_proxy_l1.clone(),
+            config.archive_lookup_diamond_proxy_l1.clone(),
             l1_state.diamond_proxy_sl.clone(),
             l1_subpool.clone(),
         )
@@ -104,6 +112,7 @@ impl<T: L2Subpool> Pool<T> {
 
         let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
             l1_state.diamond_proxy_l1.clone(),
+            config.archive_lookup_diamond_proxy_l1.clone(),
             l1_state.bridgehub_l1.clone(),
             config.chain_id,
             l1_state.l1_chain_id,
@@ -156,6 +165,9 @@ impl<T: L2Subpool> Pool<T> {
                     protocol_version: genesis_upgrade.protocol_version.clone(),
                     timestamp: 0, // No restrictions on timestamp.
                     force_preimages: genesis_upgrade.force_deploy_preimages.clone(),
+                    // SYSCOIN: fresh genesis uses the OS-recorded upgrade tx hash; no canonical
+                    // override is required for direct v31 deployment.
+                    canonical_tx_hash: Default::default(),
                 },
             };
             self.upgrade_subpool.insert(upgrade_tx).await;

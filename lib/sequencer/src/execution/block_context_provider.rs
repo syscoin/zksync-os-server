@@ -34,6 +34,9 @@ pub struct BlockContextProvider<Subpool> {
     pool: Pool<Subpool>,
     config: Config,
     last_block: Option<LastBlock>,
+    // SYSCOIN: upstream moved L1 watcher ownership into `Pool`; initialize it exactly once even
+    // when startup seeds `last_block` and the first command is produce/rebuild rather than replay.
+    pool_initialized: bool,
     next_interop_tx_allowed_after: Instant,
     /// L2 chain id of the chain's currently-active settlement layer. Can change in runtime if there
     /// is a migration in the process.
@@ -88,6 +91,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             pool,
             config,
             last_block,
+            pool_initialized: false,
             next_interop_tx_allowed_after: Instant::now(),
             current_sl_chain_id,
             last_constructed_block_ctx_sender,
@@ -117,6 +121,14 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         }
     }
 
+    // SYSCOIN: seed mempool-owned watchers/subpools from the first available replay record.
+    async fn ensure_pool_initialized(&mut self, replay: &ReplayRecord) {
+        if !self.pool_initialized {
+            self.pool.init(replay).await;
+            self.pool_initialized = true;
+        }
+    }
+
     async fn produce(&mut self) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
         let LastBlock {
             record: previous_record,
@@ -126,6 +138,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             .last_block
             .take()
             .expect("tried to produce a block without replaying at least one record");
+        self.ensure_pool_initialized(&previous_record).await;
         let block_number = previous_record.block_context.block_number + 1;
         let (fee_params, best_txs) = loop {
             let pending_fee_params = self.fee_provider.produce_fee_params().await?;
@@ -295,10 +308,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 .map(|last_block| (&last_block.record, last_block.hash)),
             &record,
         )?;
-        if self.last_block.is_none() {
-            // As this is the first block we are replaying, we need to initialize the mempool.
-            self.pool.init(&record).await;
-        }
+        self.ensure_pool_initialized(&record).await;
 
         if record.block_context.block_number == 0 {
             let genesis_header = genesis_header();
@@ -346,10 +356,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         &mut self,
         rebuild: Box<RebuildCommand>,
     ) -> anyhow::Result<Option<PreparedBlockCommand<'_>>> {
-        if self.last_block.is_none() {
-            // As this is the first block we are rebuilding, we need to initialize the mempool.
-            self.pool.init(&rebuild.replay_record).await;
-        }
+        self.ensure_pool_initialized(&rebuild.replay_record).await;
 
         let (previous_block_timestamp, next_cursors, block_hashes) =
             if let Some(last_block) = self.last_block.as_ref() {

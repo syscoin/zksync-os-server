@@ -4,6 +4,7 @@ use alloy::primitives::{Address, BlockNumber, TxHash, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
+use anyhow::Context as _;
 use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
 use std::future::Future;

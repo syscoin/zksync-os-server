@@ -159,8 +159,11 @@ impl UpgradeSubpool {
 
 impl Inner {
     fn drop_stale_full_upgrades(&mut self) {
+        let Some(current_protocol_version) = self.current_protocol_version.as_ref() else {
+            return;
+        };
         while self.pending_upgrades.back().is_some_and(|upgrade| {
-            upgrade.tx.is_some() && upgrade.protocol_version() < &self.current_protocol_version
+            upgrade.tx.is_some() && upgrade.protocol_version() < current_protocol_version
         }) {
             // SYSCOIN: a lower-version full upgrade transaction cannot be applied anymore. Drop it
             // before stream selection so the executor does not fail liveness on stale metadata.
@@ -169,7 +172,7 @@ impl Inner {
             };
             tracing::warn!(
                 protocol_version = %upgrade.protocol_version(),
-                current_protocol_version = %self.current_protocol_version,
+                %current_protocol_version,
                 "dropping stale full protocol upgrade transaction"
             );
         }
@@ -283,6 +286,7 @@ mod tests {
                 timestamp: 0,
                 protocol_version,
                 force_preimages: Vec::new(),
+                canonical_tx_hash: B256::ZERO,
             },
         }
     }

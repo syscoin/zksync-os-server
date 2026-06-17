@@ -347,6 +347,7 @@ mod tests {
     use num::BigUint;
     use num::rational::Ratio;
     use tokio::sync::watch;
+    use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
     use zksync_os_types::{PubdataMode, TokenApiRatio, TokenPricesForFees};
 
     fn token_prices(base_token_usd_price: f64, sl_token_usd_price: f64) -> TokenPricesForFees {
@@ -371,7 +372,6 @@ mod tests {
         let (_pubdata_price_sender, pubdata_price_receiver) =
             watch::channel(Some(U256::from(pubdata_price_in_sl_token)));
         let (_blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
-        let (_token_price_sender, token_price_receiver) = watch::channel(None);
         let previous_block_fee_params = previous_pubdata_price.map(|pubdata_price| FeeParams {
             eip1559_basefee: U256::ZERO,
             native_price: U256::ZERO,
@@ -389,7 +389,7 @@ mod tests {
             },
             pubdata_price_receiver,
             blob_fill_ratio_receiver,
-            token_price_receiver,
+            BaseTokenPriceHandle::pending(),
             Some(PubdataMode::Calldata),
         );
         provider.previous_block_fee_params = previous_block_fee_params;

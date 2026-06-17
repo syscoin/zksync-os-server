@@ -16100,6 +16100,7 @@ dependencies = [
  "zksync_os_genesis",
  "zksync_os_interface",
  "zksync_os_l1_watcher",
+ "zksync_os_provider",
  "zksync_os_reth_compat",
  "zksync_os_storage_api",
  "zksync_os_types",
