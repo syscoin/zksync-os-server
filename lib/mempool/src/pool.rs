@@ -165,9 +165,9 @@ impl<T: L2Subpool> Pool<T> {
                     protocol_version: genesis_upgrade.protocol_version.clone(),
                     timestamp: 0, // No restrictions on timestamp.
                     force_preimages: genesis_upgrade.force_deploy_preimages.clone(),
-                    // SYSCOIN: fresh genesis uses the OS-recorded upgrade tx hash; no canonical
-                    // override is required for direct v31 deployment.
-                    canonical_tx_hash: Default::default(),
+                    // SYSCOIN: batch verification rebuilds upgrade batches from replay records;
+                    // use the actual genesis upgrade tx hash loaded from the L1 GenesisUpgrade event.
+                    canonical_tx_hash: *genesis_upgrade.tx.hash(),
                 },
             };
             self.upgrade_subpool.insert(upgrade_tx).await;
