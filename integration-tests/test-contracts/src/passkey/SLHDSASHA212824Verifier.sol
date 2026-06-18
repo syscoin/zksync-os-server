@@ -5,11 +5,24 @@ pragma solidity ^0.8.28;
 /// @notice FIPS 205 external SLH-DSA.Verify with an empty context and fixed
 /// 32-byte messages. Parameters: n=16, h=22, d=1, a=24, k=6, w=4, l=68.
 contract SLHDSASHA212824Verifier {
+    address internal constant SLH_DSA_SHA2_128_24_VERIFY_PRECOMPILE = address(0x101);
+    bytes32 internal constant SLH_DSA_N_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000000000000000000000000000;
+    uint256 internal constant SIGNATURE_LENGTH = 3856;
+
     function verify(bytes32 pkSeed, bytes32 pkRoot, bytes32 message, bytes calldata sig)
         external
         view
         returns (bool valid)
     {
+        require(sig.length == SIGNATURE_LENGTH, "Invalid sig length");
+        require(pkSeed == (pkSeed & SLH_DSA_N_MASK) && pkRoot == (pkRoot & SLH_DSA_N_MASK), "Invalid public key");
+
+        (bool precompileSuccess, bytes memory precompileResult) =
+            SLH_DSA_SHA2_128_24_VERIFY_PRECOMPILE.staticcall(abi.encodePacked(pkSeed, pkRoot, message, sig));
+        if (precompileSuccess && precompileResult.length == 32) {
+            return abi.decode(precompileResult, (uint256)) == 1;
+        }
+
         assembly {
             let N_MASK := 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000000000000000000000000000
 

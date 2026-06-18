@@ -761,3 +761,444 @@ index 2ebf44bf..a565e805 100644
          };
 
          Ok(new)
+diff --git a/basic_system/src/cost_constants.rs b/basic_system/src/cost_constants.rs
+--- a/basic_system/src/cost_constants.rs
++++ b/basic_system/src/cost_constants.rs
+@@ -11,6 +11,8 @@ pub const RIPEMD_160_PER_WORD_COST_ERGS: Ergs = Ergs(120 * ERGS_PER_GAS);
+ pub const MODEXP_MINIMAL_COST_ERGS: Ergs = Ergs(200 * ERGS_PER_GAS);
+ pub const P256_VERIFY_COST_ERGS: Ergs = Ergs(6900 * ERGS_PER_GAS);
+ pub const ECRECOVER_COST_ERGS: Ergs = Ergs(3000 * ERGS_PER_GAS);
++// SYSCOIN: fixed cost for SLH-DSA-SHA2-128-24 verification at precompile 0x101.
++// Derived from the verifier's worst-case SHA-256 precompile-equivalent work:
++// 379 SHA calls, 778 compression rounds, and no EVM interpreter loop overhead.
++pub const SLH_DSA_SHA2_128_24_VERIFY_COST_ERGS: Ergs = Ergs(45_000 * ERGS_PER_GAS);
+ pub const BN254_ECADD_COST_ERGS: Ergs = Ergs(150 * ERGS_PER_GAS);
+ pub const BN254_ECMUL_COST_ERGS: Ergs = Ergs(6000 * ERGS_PER_GAS);
+ pub const BN254_PAIRING_STATIC_COST_ERGS: Ergs = Ergs(45000 * ERGS_PER_GAS);
+@@ -48,6 +50,8 @@ pub const BN254_PAIRING_BASE_NATIVE_COST: u64 = native_with_delegations!(13_000_
+ pub const BN254_PAIRING_PER_PAIR_NATIVE_COST: u64 = BN254_PAIRING_BASE_NATIVE_COST;
+ pub const MODEXP_WORST_CASE_NATIVE_PER_GAS: u64 = 300;
+ pub const P256_NATIVE_COST: u64 = native_with_delegations!(500_000, 71_000, 0);
++// SYSCOIN: same SHA-256 round accounting as `Sha256Impl`, with a small parser/loop margin.
++pub const SLH_DSA_SHA2_128_24_VERIFY_NATIVE_COST: u64 = native_with_delegations!(4_300_000, 650_000, 0);
+ // TODO(EVM-1178) Add more vectors and benchmark cost better
+ pub const POINT_EVALUATION_NATIVE_COST: u64 = native_with_delegations!(49_900_000, 3_301_000, 0);
+diff --git a/basic_system/src/system_functions/mod.rs b/basic_system/src/system_functions/mod.rs
+--- a/basic_system/src/system_functions/mod.rs
++++ b/basic_system/src/system_functions/mod.rs
+@@ -12,6 +12,7 @@ pub mod p256_verify;
+ pub mod point_evaluation;
+ pub mod ripemd160;
+ pub mod sha256;
++pub mod slh_dsa_sha2_128_24_verify;
+
+ ///
+ /// Internal utility function to reverse byte array
+@@ -40,6 +41,7 @@ impl<R: Resources> SystemFunctions<R> for NoStdSystemFunctions {
+     type Secp256r1AddProjective = MissingSystemFunction;
+     type Secp256r1MulProjective = MissingSystemFunction;
+     type P256Verify = p256_verify::P256VerifyImpl;
++    type SlhDsaSha212824Verify = slh_dsa_sha2_128_24_verify::SlhDsaSha212824VerifyImpl;
+     type Bn254Add = bn254_ecadd::Bn254AddImpl;
+     type Bn254Mul = bn254_ecmul::Bn254MulImpl;
+     type Bn254PairingCheck = bn254_pairing_check::Bn254PairingCheckImpl;
+diff --git a/basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs b/basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs
+new file mode 100644
+--- /dev/null
++++ b/basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs
+@@ -0,0 +1,251 @@
++use crate::cost_constants::{
++    SLH_DSA_SHA2_128_24_VERIFY_COST_ERGS, SLH_DSA_SHA2_128_24_VERIFY_NATIVE_COST,
++};
++use ruint::aliases::U256;
++use zk_ee::common_traits::TryExtend;
++use zk_ee::out_of_return_memory;
++use zk_ee::system::{
++    base_system_functions::{SlhDsaSha212824VerifyErrors, SystemFunction},
++    errors::subsystem::SubsystemError,
++    Computational, Resources,
++};
++
++const N: usize = 16;
++const SIGNATURE_LEN: usize = 3856;
++const INPUT_LEN: usize = 32 + 32 + 32 + SIGNATURE_LEN;
++const FORS_TREES: usize = 6;
++const FORS_HEIGHT: usize = 24;
++const WOTS_LEN: usize = 68;
++const MERKLE_HEIGHT: usize = 22;
++
++pub struct SlhDsaSha212824VerifyImpl;
++
++impl<R: Resources> SystemFunction<R, SlhDsaSha212824VerifyErrors> for SlhDsaSha212824VerifyImpl {
++    fn execute<D: TryExtend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
++        src: &[u8],
++        dst: &mut D,
++        resources: &mut R,
++        _: A,
++    ) -> Result<(), SubsystemError<SlhDsaSha212824VerifyErrors>> {
++        let native = <R as Resources>::Native::from_computational(
++            SLH_DSA_SHA2_128_24_VERIFY_NATIVE_COST,
++        );
++        resources.charge(&R::from_ergs_and_native(
++            SLH_DSA_SHA2_128_24_VERIFY_COST_ERGS,
++            native,
++        ))?;
++
++        if slh_dsa_sha2_128_24_verify(src) {
++            dst.try_extend(ruint::aliases::U256::ONE.to_be_bytes::<32>())
++                .map_err(|_| out_of_return_memory!())?;
++        }
++        Ok(())
++    }
++}
++
++fn slh_dsa_sha2_128_24_verify(src: &[u8]) -> bool {
++    if src.len() != INPUT_LEN {
++        return false;
++    }
++
++    let seed = match canonical_n(&src[0..32]) {
++        Some(value) => value,
++        None => return false,
++    };
++    let root = match canonical_n(&src[32..64]) {
++        Some(value) => value,
++        None => return false,
++    };
++    let message: &[u8; 32] = src[64..96].try_into().expect("slice length checked");
++    let sig = &src[96..];
++
++    let digest_word = message_digest_word(&seed, &root, message, sig);
++    let leaf_idx =
++        (((digest_word[18] as u32) & 0x3f) << 16) | ((digest_word[19] as u32) << 8) | digest_word[20] as u32;
++
++    let fors_base = (U256::from(3u64) << 176) | (U256::from(leaf_idx) << 144);
++    let wots_base = U256::from(leaf_idx) << 144;
++    let mut fors_roots = [[0u8; N]; FORS_TREES];
++
++    for (t, fors_root) in fors_roots.iter_mut().enumerate() {
++        let md_t_offset = t * 3;
++        let md_t = ((digest_word[md_t_offset] as u32) << 16)
++            | ((digest_word[md_t_offset + 1] as u32) << 8)
++            | digest_word[md_t_offset + 2] as u32;
++        let tree_offset = N + t * (N + FORS_HEIGHT * N);
++        let sk = n_at(sig, tree_offset);
++        let mut node = hash_n(&seed, fors_base | (U256::from(((t as u32) << 24) | md_t) << 80), &[sk]);
++        let mut path_idx = md_t;
++
++        for j in 0..FORS_HEIGHT {
++            let sibling = n_at(sig, tree_offset + N + j * N);
++            let parent_idx = path_idx >> 1;
++            let global_y = ((t as u32) << (23 - j)) | parent_idx;
++            let address = fors_base | (U256::from((j + 1) as u64) << 112) | (U256::from(global_y) << 80);
++            node = if path_idx & 1 == 0 {
++                hash_n(&seed, address, &[node, sibling])
++            } else {
++                hash_n(&seed, address, &[sibling, node])
++            };
++            path_idx = parent_idx;
++        }
++        *fors_root = node;
++    }
++
++    let current_node = hash_n(&seed, (U256::from(4u64) << 176) | (U256::from(leaf_idx) << 144), &fors_roots);
++    let wots_ptr = N + FORS_TREES * (N + FORS_HEIGHT * N);
++    let mut csum = 0u32;
++    let mut wots_chains = [[0u8; N]; WOTS_LEN];
++
++    for (i, wots_chain) in wots_chains.iter_mut().take(64).enumerate() {
++        let digit = base4_digit(&current_node, i);
++        csum += 3 - digit as u32;
++        let mut value = n_at(sig, wots_ptr + i * N);
++        let chain_base = wots_base | (U256::from(i as u64) << 112);
++        for s in 0..(3 - digit) {
++            value = hash_n(&seed, chain_base | (U256::from((digit + s) as u64) << 80), &[value]);
++        }
++        *wots_chain = value;
++    }
++
++    for j in 0..4 {
++        let digit = ((csum >> (6 - 2 * j)) & 3) as u8;
++        let i = 64 + j;
++        let mut value = n_at(sig, wots_ptr + i * N);
++        let chain_base = wots_base | (U256::from(i as u64) << 112);
++        for s in 0..(3 - digit) {
++            value = hash_n(&seed, chain_base | (U256::from((digit + s) as u64) << 80), &[value]);
++        }
++        wots_chains[i] = value;
++    }
++
++    let wots_pk = hash_n(&seed, (U256::from(1u64) << 176) | (U256::from(leaf_idx) << 144), &wots_chains);
++    let auth_ptr = wots_ptr + WOTS_LEN * N;
++    let mut merkle_node = wots_pk;
++    let mut merkle_idx = leaf_idx;
++
++    for height in 0..MERKLE_HEIGHT {
++        let sibling = n_at(sig, auth_ptr + height * N);
++        let parent_idx = merkle_idx >> 1;
++        let address =
++            (U256::from(2u64) << 176) | (U256::from((height + 1) as u64) << 112) | (U256::from(parent_idx) << 80);
++        merkle_node = if merkle_idx & 1 == 0 {
++            hash_n(&seed, address, &[merkle_node, sibling])
++        } else {
++            hash_n(&seed, address, &[sibling, merkle_node])
++        };
++        merkle_idx = parent_idx;
++    }
++
++    merkle_node == root
++}
++
++fn canonical_n(word: &[u8]) -> Option<[u8; N]> {
++    if word.len() != 32 || word[N..].iter().any(|byte| *byte != 0) {
++        return None;
++    }
++    Some(word[..N].try_into().expect("slice length checked"))
++}
++
++fn n_at(src: &[u8], offset: usize) -> [u8; N] {
++    src[offset..offset + N].try_into().expect("SLH-DSA offsets are fixed")
++}
++
++fn message_digest_word(seed: &[u8; N], root: &[u8; N], message: &[u8; 32], sig: &[u8]) -> [u8; 32] {
++    let mut input = [0u8; 82];
++    input[0..N].copy_from_slice(&sig[0..N]);
++    input[16..32].copy_from_slice(seed);
++    input[32..48].copy_from_slice(root);
++    input[50..82].copy_from_slice(message);
++    let first = sha256(&input);
++
++    let mut second_input = [0u8; 68];
++    second_input[0..N].copy_from_slice(&sig[0..N]);
++    second_input[16..32].copy_from_slice(seed);
++    second_input[32..64].copy_from_slice(&first);
++    sha256(&second_input)
++}
++
++fn hash_n<const M: usize>(seed: &[u8; N], address: U256, parts: &[[u8; N]; M]) -> [u8; N] {
++    let mut input = [0u8; 1174];
++    input[0..N].copy_from_slice(seed);
++    let address_bytes = address.to_be_bytes::<32>();
++    input[64..86].copy_from_slice(&address_bytes[..22]);
++    let mut offset = 86;
++    for part in parts {
++        input[offset..offset + N].copy_from_slice(part);
++        offset += N;
++    }
++    let digest = sha256(&input[..offset]);
++    digest[..N].try_into().expect("slice length checked")
++}
++
++fn sha256(input: &[u8]) -> [u8; 32] {
++    use crypto::sha256::*;
++    let mut hasher = Sha256::new();
++    hasher.update(input);
++    hasher.finalize().into()
++}
++
++fn base4_digit(value: &[u8; N], index: usize) -> u8 {
++    (value[index / 4] >> (6 - 2 * (index % 4))) & 3
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::alloc::Global;
++    use zk_ee::reference_implementations::{BaseResources, DecreasingNative};
++    use zk_ee::system::{Resource, SystemFunction};
++
++    const PK_SEED: [u8; 32] = [
++        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
++        0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    ];
++    const PK_ROOT: [u8; 32] = [
++        0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
++        0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    ];
++    const MESSAGE: [u8; 32] = [0x33; 32];
++    const KAT_PK_SEED: [u8; 32] = [
++        0x9a, 0xf9, 0xa6, 0xd9, 0x86, 0xbc, 0x74, 0x50,
++        0xf9, 0x9c, 0x34, 0xe8, 0xac, 0xa4, 0x53, 0xc8,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    ];
++    const KAT_PK_ROOT: [u8; 32] = [
++        0x37, 0xb5, 0xd9, 0x7a, 0xfc, 0xfb, 0xd8, 0x11,
++        0x8e, 0x75, 0xe5, 0x0a, 0xba, 0x48, 0x0a, 0x9e,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    ];
++    const KAT_MESSAGE: [u8; 32] = [0xaa; 32];
++    const KAT_SIGNATURE_HEX: &str = "bd60ba6ad8d703a4d8d790c2e9e11d2bb18b3843cae896c3df7f8e2e85f56b5cffa2bca00b4bc8a79988fe182d07a5b27faaa62a1619a8ecd8519bf3c17efd475e422b022fd47396394cf85d0ccfe5c57cd2d9af5cd942fb3716b05f8d8d88645dca3067ce75013552fb5ea31d2abfbd475800565986a6de7ceae379e30cb890007eb5bf5501bce8bfe0cd5f8415f5d3292c7829f2ee335a37067ea08149520e7ec419351f54d248d2f913eb57e17de65cb4fb7d34af2ec5460f56e26ed6467f09d30e79e055aa978d12174d6903abb26ebb8d39eb934c159b1cd4ee20cdd5ff650cf796344e81d604074bfa3a538987269f4b546516d8dd38eb466cb7363cdf7190f24c4a441b7626398126f995c4376fb0c0888bd47a056f468be7c6502eeb066f5c0bd52bb66f671ac3469e2e5468da21d233d5886fcd421167f1bf0d4b981b09fe2b61371806baee850c522ce39bdc6d96e55ace1cf63d14cf9c24ea0945bc83b648554b7cfe5222f5796f24ba0be1a58b72e33977eea59ad395564537c08eb69799deee206e681c6dcc8dfaf079fa4826275eda22eae179c8aaf7dbf7c8def911138af9be89bdbd71b74321e53015ffeab0b8fbb7e2c313d151287a9c8866b517adbf999b17dbaeef40500bf7fe1d8c42be48ce977be16f243f09051eb0d82fd3fbe09b7af05fa5602521f662c92ae914bbfe1c5aac518941d0e91aa33a6677ca974444bff6a03551c3a789f5d74e6fda5a4b9aa555c5f88bfa529bc9791c8072427c01aae4469d2f09477e29d8c51d7132a0b745ffd49c0ff4db57fd97a10559e899106043c2699ba78672f37ae69cec718c2f7942f0f2f30a9c3ba2b16f4c2f468f0c833f2d54527825f7b8582c06541b9c9a8a2f7d4e4ed94abc1b649906364cf35e1f9df2259acc04684e37702e61c91830eb3ff5536fced3d4726fdc229abbd501b75e11117c02e6b5b4c9fcbc74f1744aecf05d9f649ded057fc41a961aac0192da5d11c2551a29c0a338deb32d66609b28bd3887f378cc3043014f72923c3081b1a647a018fc7fc7cc78f1b5d624ab93672548c7e5d0e8c34a43c93ab7203f3344e3c82e96b2bdae6bddda092c5666c0022046c60aebf106a50467442951720ad0398c8a4836d0aedc09a69a68d770343c44c78c3eca8d11a01bbcbbfb762ba6cffd611f0d6ff7c698b1781569d32384bc1549111b8651bd721206aa1472a070f6508dee001d571d6a6ea60e8e63da0395a7905c98cf2ffc5c9cb3ef67c70aaa673d73c630dea687026f159fe097dbb6f887335f0b4d994fbe6e7e1704a49dd0d69ea99a7e67e601dda36f85ef23c58baa120da64213c5c614f7af0dc53d0ea569caf390ae417f47b249513e60a33dceb2a8b5919e98b4c80ff55e2a0fc2ead229be3d44cbc1a5ece6fad9d9c247b5110eb6fd2ce68bc3c650e1d09a17f4592e7ee2df1229b63e4ce4727a30c75b85c96c1c8e38ef703c27de0dd8c02ef8b3732158a2b6875b2732628722ab9d19dbec51540a2f8e5024c24ae7189b7d6049b2377e04799110d24575b558397aa97384403075d2b0eae09bac1fe4a6d4ba4b3f7ec5f7c063abe470f700a06e78a8470ab530302a7ed12e4fc932d5dd6ee1abf95fe381047df22c558e08318e24e811f74627108bf70508ac7c47d505603ed61cc5700fd4f640c3afa4fe995f5264da45231b6c6414991fff34fb73ae53d38a53f29b6938cb437cdb072d43209656f7a1fbb59a5ff88920897ff8d07a3ec76c2d3111ba0d84dc87d7dd6f1932a6331d925f80987a8f669c92076a2013e76e99380e75817e58ee78775a3ad6b21bad068cd679f59b28841af61b73f08abd6e72d281caf33249add798f65aa135cfdf9ef768f9b747336bbed0d3c892e3c729aee71455d0225364928aa98782cef3bab3d952d0f7a33606f25926ff24e098ad83829983a87a876e0fe886276c6f0d8bff73ff7520b6a817783839f132ccf12f14d2d06eecdababd61df5995b43ae33596a240c01c2cd7021df2f8facfec23471caa6ab251c715f2bd6a0d46a01a408a86c6dd0a2ecfdf61fa85574a17c83927e6eefa8780fcd8028af81db45de22be3fe941c7d97e1266034a27405d6df8c6e9b8c59bccfb58f8964f6225c370c68d19541a58723fcc2e3870c3143f289e864bb5eef0f47545607f90260506b8d4d763d69e4fcb7b51727983a5ba1d0313db7235b8e8b1603acfc006b291b651cf04a9d4841876e43fc584271d7a17d2f6ca45314c8f132504ce2fcb60ded5ef3a49ef281811e913c2d25684e2c275477128abc33e4f66800f3dc8341a64065f4024bd925471e1e799a68bf47a30516fc7b6de77c8236097b00d2cce087338e4c5d8e0a64decda943883566756b174e9d2740c69d2bcfa20823544737aaf8831cc9bbe53a9ef3e44937887ca706fcf525629d8ec5e3df37910ff1432e212b17a35cb4bf0e19c45203338550881d5cd2ece93c995b7ec3723fca0d9bb900062c5957b482d2de1612139ff5ac5ea7e79f5a3be93be60ba1448ebb5d10f5f8444312d87727aa4238778233dbefe57c70d7d3de241c7551ba0f1164e663f2cde0b9d8e903d2b41faea73fd94beccc00550b1d2511fad53bab56ac708124b17d4724fc8fc555d14e3e5ab1bfad50c152a8c97e4b68256d97e4f6b1be5871a18f4fecd9384c1cd802a51f14b35aa4486312ef4fb76c445c37885cfaac95b382ffb1098ed88ac4b23ba9b3b88865601793204b0160d6e7c3ffdb6240fbb773f10a6aa9c5df41c8a7bbdaa3b80c6f50c65d52da73b97e6c05b72d179f498063b69e5a05a52dfd7b96ca1241e335d74e83f18b642cd7b9a81a735cd0ac99c7952e0bbaf9d830e9d4a67b75b77033c2b566bb076d1efecfc2d060b6784f2cc2969cbd5387e3500d9fba731d983985c855954f19833312c265167b410f72751f5f89624c59238db5b727f03d84ec0e17da4e55b79aff564d3ba7bb47a0554a14596267ba089469de5579b369b5379e6229c4fd11cf156929d09d3cab60d528d9f778987b4b2cc4ead8978f47776712f7ce1779bb665673d72435904d02a1b789b4c174cf0561a21174b7442cb561d898eca4fd88b23be11b14e073a8e6a0567681b409e9ae0efdb6faa991262f5a5294b9a95f08ead7d9089e6fc47a45151234e03ffc909cdfea4754be389288971d4c1d50c9c52eea09f53c85666a107a4237d3d4e9c5dea8abbf167609f6fdd196085709b0afbb892e676d5a1094c6519795661b24f07d51e05ed120ae5a521cf3cd2148cde417a0f62458b987f426ae72979fe0983a2bab19b88f56681f2209a7efcfe539ad1168177784ba98e90946fbe8857ef7f2d8bd5874db0a9bdbce342157037e821e446f8824a37c6c3306d20776bd94197d8ded2611a7ada59bec4886b4a0176c6110f4dfec7922b60b4d40ea242aa9e255a286256c68185abcb65f40f419a346a281d3910d5e922c67938c84bb36ddb2196fec2a3767f7ebeaa090cf1fbfa9d20ec9c79b7d08b92f89676dd198a340dd4744fc0b81f22bfba88ac50fe1256ebcc63e8c13d154dd139d90730d48cc36a6d9cbbf65b371f8595ef4b40906a152aaf8c0e7e58b55267fccb68bc7e637a4934b1fcee678ede09dfcad3ed09a517c7b30b03092998961f963a94ebccd22f63b76c4ed3932ee6e82746be615c90a2b86dfb485e731ec2c2379d6ecdfa0fa6a5b5a960e70543806bdd61e50e9fd1a5612fecd96521272877ea8ff40f2877208e56136e766e45c741e57ccc884595c6a33c5dd7208bdc28f4d1f04a23f30748f19949a172176fa66fcc06fb25cfacc80f8fcc96edf0c694fcf4826458123056454d3427dad2a10ac0dcf316d1605c6360b1b57fa60d9ed658634e51d7cda78e8db3ceac5e6f85060beea2c5f3b89106e3f3f67b4347cc8db1b1a16ea09b68ddf092acdedebee9f87facbe336307e9c337c0421bf90e785310749e3f3af14b78c7443cf24ed71b402c7d5c06810e27ea46afeb0b8b7aff4fc75a586eddee5e4abcf6debb94059ee63a1cd79d448ca8a6dad551c1e76475cb316801637c66e880ff5ef392a204cf9bf4344acb1789fea57ee2495acff462590f11823ab8b8a07dd44bcefc4fedcd9ce31bd9decab3fabe9f158c64208e88112b8cdc64a58f19464ad42409e22ae57a290338dc78fd9e967ae4c8827f1a21c0a4b999128b90b572b554976f4b161642d7db971d7ec929b3ac26588064ef713a7473caec298e6498f8c4aaf2feb5c7b14a9f9304b1fdb269c3bb330443ca5218806874ea30f491d8fc636fc92c66228164aeecd01b90bd81d3a9687a3e09ec0aeeecd6d69fbead98e3a1edcd122e0694f8fec3dea3b541692de6bf11093af4a9c06ef5f16fa8ceec7b598ed9ccd2725a28bc2522ca9a69f00a9b421febffd13f06d80f3a0f0abf684df6e4983f634414cce72fd48404ab338050139ab09a96d7a69e8f974dd174f9ecd504de8e8a8736bc7ac07a94709ee936f96d9069973e5a4cbb4ebfb9bbe2907f1be9bf5bb78bb3178b2575adb5dfcd8a5869385f6ad28ab0fc71a21fc3a0cca256a08ebce24b64169d7a965f63a9f3fcc31495a222ccd403870892d10387fe1f80b99a9fb5133f5525cd5bdbc43c2583d3948fcdb2e03169313ea3d8f5bcfb0bdc0916364aea49ad85e161d9a347a38a18ff19bfea46d3e33043ea5aaaa8c83fab7c9501be1607905377b5f6ecddf52d5fb868d37037626ed29cf38102e55115a62a3846a5959a79ec377bafabeaa346df0dada87e0dd4a7ea1e42d52e96bf23a1cc78044d854be0f16f60f1c6f1cabce663ace2d2d55632d350431be8693ba3e7f7c48acec5c5f230c2cf72bf9345cbdac2c2005b74a606c061b02bb65c5213e24f2b0abf9002a75de87b6191c5cb5f20377561d8fb75467757d542c0f346703be2aa607faf6ceae05be89be4d960fc00c0f087bb9c8725b65b2d3d53b99a09c2e1ce8addf2a9f1451a635cdf1cf3954367034d16e5ab95cf879e96742e83f5bde5836cc7c2f03ef9ae15789e69c98bcb6be92b372b939ec6c8421b0b2388d6fac620e2eaadca554bb2b7ad6417e20d11c786d8cdd60c301b86786c41919319a190e8c438c56dc2ddd49474db262f5c47f7306a7892b2d8632b3f272014f4748c59ceebede6ee33ec5a4d74c76a2c603e11f0cb906fe6d3aba6a022f7f407e8f62ae332815d3ed06f5cff8e86bc373b0cc177aa7e4a3b67995ceb34041218d275bd853f2e0fe5c5ad6653e8a866741a61928899306402ffc56be940857ae7a548ea6a46f8e805bba3fa311c97fbc660b23e1b81ebc6f62250ae79a55bd222db33dad924726d61ba56c898394d2953569316c2b9ce65b52b3131f2c7b99db680896d3277e2078e93a26106c07554054a46278f38f84b0a5959897b003bbb23df819";
++
++    #[test]
++    fn valid_known_answer_vector_returns_one() {
++        let signature = hex::decode(KAT_SIGNATURE_HEX).expect("valid hex fixture");
++        assert_eq!(signature.len(), SIGNATURE_LEN);
++        let mut input = vec![];
++        input.extend_from_slice(&KAT_PK_SEED);
++        input.extend_from_slice(&KAT_PK_ROOT);
++        input.extend_from_slice(&KAT_MESSAGE);
++        input.extend_from_slice(&signature);
++        let mut dst = vec![];
++        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
++        SlhDsaSha212824VerifyImpl::execute(&input, &mut dst, &mut resources, Global)
++            .expect("precompile execution");
++        assert_eq!(dst, ruint::aliases::U256::ONE.to_be_bytes::<32>());
++    }
++
++    #[test]
++    fn malformed_input_returns_empty() {
++        let mut dst = vec![];
++        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
++        SlhDsaSha212824VerifyImpl::execute(&[0u8; 3], &mut dst, &mut resources, Global)
++            .expect("precompile execution");
++        assert!(dst.is_empty());
++    }
++
++    #[test]
++    fn noncanonical_public_key_returns_empty() {
++        let mut input = vec![];
++        input.extend_from_slice(&PK_SEED);
++        input.extend_from_slice(&PK_ROOT);
++        input.extend_from_slice(&MESSAGE);
++        input.extend_from_slice(&[0u8; SIGNATURE_LEN]);
++        input[31] = 1;
++        let mut dst = vec![];
++        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
++        SlhDsaSha212824VerifyImpl::execute(&input, &mut dst, &mut resources, Global)
++            .expect("precompile execution");
++        assert!(dst.is_empty());
++    }
++
++    #[test]
++    fn zero_signature_returns_empty() {
++        let mut input = vec![];
++        input.extend_from_slice(&PK_SEED);
++        input.extend_from_slice(&PK_ROOT);
++        input.extend_from_slice(&MESSAGE);
++        input.extend_from_slice(&[0u8; SIGNATURE_LEN]);
++        let mut dst = vec![];
++        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
++        SlhDsaSha212824VerifyImpl::execute(&input, &mut dst, &mut resources, Global)
++            .expect("precompile execution");
++        assert!(dst.is_empty());
++    }
++}
+diff --git a/evm_interpreter/Cargo.toml b/evm_interpreter/Cargo.toml
+--- a/evm_interpreter/Cargo.toml
++++ b/evm_interpreter/Cargo.toml
+@@ -25,6 +25,7 @@ point_eval_precompile = []
+ mock-unsupported-precompiles = []
+ p256_precompile = []
++slh_dsa_precompile = []
+ eip-7645 = []
+ eip-2537 = []
+ eip-152 = []
+diff --git a/evm_interpreter/src/precompile_addresses.rs b/evm_interpreter/src/precompile_addresses.rs
+--- a/evm_interpreter/src/precompile_addresses.rs
++++ b/evm_interpreter/src/precompile_addresses.rs
+@@ -16,6 +16,9 @@ pub const POINT_EVAL_HOOK_ADDRESS_LOW: u16 = 0x000a;
+ #[cfg(feature = "p256_precompile")]
+ pub const P256_VERIFY_PREHASH_HOOK_ADDRESS_LOW: u16 = 0x0100;
++// SYSCOIN: fixed-parameter SLH-DSA-SHA2-128-24 verifier precompile.
++#[cfg(feature = "slh_dsa_precompile")]
++pub const SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW: u16 = 0x0101;
+
+ pub const BLS12_G1ADD_ADDRESS_LOW: u16 = 0x0b;
+ pub const BLS12_G1MSM_ADDRESS_LOW: u16 = 0x0c;
+@@ -44,6 +47,8 @@ pub const PRECOMPILE_ADDRESSES_LOWS: &[u16] = &[
+     POINT_EVAL_HOOK_ADDRESS_LOW,
+     #[cfg(feature = "p256_precompile")]
+     P256_VERIFY_PREHASH_HOOK_ADDRESS_LOW,
++    #[cfg(feature = "slh_dsa_precompile")]
++    SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW,
+     #[cfg(feature = "eip-2537")]
+     BLS12_G1ADD_ADDRESS_LOW,
+     #[cfg(feature = "eip-2537")]
+diff --git a/forward_system/Cargo.toml b/forward_system/Cargo.toml
+--- a/forward_system/Cargo.toml
++++ b/forward_system/Cargo.toml
+@@ -45,7 +45,7 @@ unlimited_native = ["basic_bootloader/unlimited_native"]
+ # A feature for every specific use case
+
+ # Features used for production, by both the singleblock_batch and multiblock_batch binaries.
+-production = ["basic_bootloader/eip-7702", "system_hooks/p256_precompile"]
++production = ["basic_bootloader/eip-7702", "system_hooks/p256_precompile", "system_hooks/slh_dsa_precompile"]
+
+ # Features used for tests.
+ for_tests = ["production", "basic_bootloader/eip-4844"]
+diff --git a/proof_running_system/Cargo.toml b/proof_running_system/Cargo.toml
+--- a/proof_running_system/Cargo.toml
++++ b/proof_running_system/Cargo.toml
+@@ -43,7 +43,7 @@ state-diffs-pi = []
+ # A feature for every specific use case
+
+ # Features used for production, by both the singleblock_batch and multiblock_batch binaries.
+-production = ["basic_bootloader/eip-7702", "system_hooks/p256_precompile"]
++production = ["basic_bootloader/eip-7702", "system_hooks/p256_precompile", "system_hooks/slh_dsa_precompile"]
+
+ # Features used for tests.
+ for_tests = ["production", "state-diffs-pi", "cycle_marker", "basic_bootloader/eip-4844"]
+diff --git a/system_hooks/Cargo.toml b/system_hooks/Cargo.toml
+--- a/system_hooks/Cargo.toml
++++ b/system_hooks/Cargo.toml
+@@ -23,5 +23,6 @@ point_eval_precompile = ["evm_interpreter/point_eval_precompile"]
+ mock-unsupported-precompiles = ["evm_interpreter/mock-unsupported-precompiles"]
+ p256_precompile = ["evm_interpreter/p256_precompile"]
++slh_dsa_precompile = ["evm_interpreter/slh_dsa_precompile"]
+ cycle_marker = ["cycle_marker/log_to_file"]
+diff --git a/system_hooks/src/lib.rs b/system_hooks/src/lib.rs
+--- a/system_hooks/src/lib.rs
++++ b/system_hooks/src/lib.rs
+@@ -194,6 +194,16 @@ where
+             P256VerifyErrors,
+         >(hooks, P256_VERIFY_PREHASH_HOOK_ADDRESS_LOW)?;
+     }
++    #[cfg(feature = "slh_dsa_precompile")]
++    {
++        // SYSCOIN: fixed-parameter SLH-DSA-SHA2-128-24 verifier at 0x101.
++        add_precompile::<
++            _,
++            _,
++            <S::SystemFunctions as SystemFunctions<_>>::SlhDsaSha212824Verify,
++            SlhDsaSha212824VerifyErrors,
++        >(hooks, SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW)?;
++    }
+     Ok(())
+ }
+diff --git a/zk_ee/src/system/base_system_functions.rs b/zk_ee/src/system/base_system_functions.rs
+--- a/zk_ee/src/system/base_system_functions.rs
++++ b/zk_ee/src/system/base_system_functions.rs
+@@ -15,6 +15,7 @@ define_subsystem!(Secp256k1MulProjective);
+ define_subsystem!(Secp256r1AddProjective);
+ define_subsystem!(Secp256r1MulProjective);
+ define_subsystem!(P256Verify);
++define_subsystem!(SlhDsaSha212824Verify);
+
+ define_subsystem!(Bn254Add,
+                   interface Bn254AddInterfaceError
+@@ -172,6 +173,7 @@ pub trait SystemFunctions<R: Resources> {
+     type Secp256r1AddProjective: SystemFunction<R, Secp256r1AddProjectiveErrors>;
+     type Secp256r1MulProjective: SystemFunction<R, Secp256r1MulProjectiveErrors>;
+     type P256Verify: SystemFunction<R, P256VerifyErrors>;
++    type SlhDsaSha212824Verify: SystemFunction<R, SlhDsaSha212824VerifyErrors>;
+     type Bn254Add: SystemFunction<R, Bn254AddErrors>;
+     type Bn254Mul: SystemFunction<R, Bn254MulErrors>;
+     type Bn254PairingCheck: SystemFunction<R, Bn254PairingCheckErrors>;
+@@ -250,6 +252,15 @@ pub trait SystemFunctions<R: Resources> {
+         Self::P256Verify::execute(input, output, resources, allocator)
+     }
+
++    fn slh_dsa_sha2_128_24_verify<D: TryExtend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
++        input: &[u8],
++        output: &mut D,
++        resources: &mut R,
++        allocator: A,
++    ) -> Result<(), SubsystemError<SlhDsaSha212824VerifyErrors>> {
++        Self::SlhDsaSha212824Verify::execute(input, output, resources, allocator)
++    }
++
+     fn bn254_add<D: TryExtend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
+         input: &[u8],
+         output: &mut D,
