@@ -46,12 +46,19 @@ canonical_upgrade_fix_applied() {
     && has_text "apply_syscoin_edge_da_refs_root_for_tx_numbers" "${ZKSYNC_OS_PATH}/zk_ee/src/common_structs/logs_storage.rs"
 }
 
-if base_patch_applied && canonical_upgrade_fix_applied; then
+slh_dsa_precompile_applied() {
+  has_text "slh_dsa_precompile = [\"evm_interpreter/slh_dsa_precompile\"]" "${ZKSYNC_OS_PATH}/system_hooks/Cargo.toml" \
+    && has_text "SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW" "${ZKSYNC_OS_PATH}/evm_interpreter/src/precompile_addresses.rs" \
+    && has_text "SlhDsaSha212824VerifyImpl" "${ZKSYNC_OS_PATH}/basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs" \
+    && has_text "system_hooks/slh_dsa_precompile" "${ZKSYNC_OS_PATH}/forward_system/Cargo.toml"
+}
+
+if base_patch_applied && canonical_upgrade_fix_applied && slh_dsa_precompile_applied; then
   echo "zksync-os Syscoin patch appears already applied; skipping." >&2
   exit 0
 fi
 
-if base_patch_applied && ! canonical_upgrade_fix_applied; then
+if base_patch_applied && { ! canonical_upgrade_fix_applied || ! slh_dsa_precompile_applied; }; then
   echo "error: detected an older partially applied Syscoin patch in ${ZKSYNC_OS_PATH}." >&2
   echo "Please start from a clean upstream checkout/tag before applying the updated patch." >&2
   exit 1

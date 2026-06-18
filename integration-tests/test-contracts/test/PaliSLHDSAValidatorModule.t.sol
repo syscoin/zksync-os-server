@@ -8,10 +8,7 @@ import {
     VALIDATION_SUCCESS
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
-import {
-    ISLHDSAVerifier,
-    PaliSLHDSAValidatorModule
-} from "../src/passkey/PaliSLHDSAValidatorModule.sol";
+import {ISLHDSAVerifier, PaliSLHDSAValidatorModule} from "../src/passkey/PaliSLHDSAValidatorModule.sol";
 import {SLHDSASHA212824Verifier} from "../src/passkey/SLHDSASHA212824Verifier.sol";
 
 contract MockSLHDSAVerifier is ISLHDSAVerifier {
@@ -43,16 +40,36 @@ contract MockSLHDSAVerifier is ISLHDSAVerifier {
     }
 }
 
+contract SucceedingSLHDSAPrecompile {
+    fallback() external {
+        assembly {
+            mstore(0x00, 1)
+            return(0x00, 0x20)
+        }
+    }
+}
+
+contract FailingSLHDSAPrecompile {
+    fallback() external {
+        assembly {
+            mstore(0x00, 0)
+            return(0x00, 0x20)
+        }
+    }
+}
+
+contract EmptySLHDSAPrecompile {
+    fallback() external {}
+}
+
 contract PaliSLHDSAValidatorModuleTest is Test {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
     bytes32 internal constant PK_SEED = 0x1111111111111111111111111111111100000000000000000000000000000000;
     bytes32 internal constant PK_ROOT = 0x2222222222222222222222222222222200000000000000000000000000000000;
     bytes32 internal constant HASH = 0x3333333333333333333333333333333333333333333333333333333333333333;
-    bytes32 internal constant KAT_PK_SEED =
-        0x9af9a6d986bc7450f99c34e8aca453c800000000000000000000000000000000;
-    bytes32 internal constant KAT_PK_ROOT =
-        0x37b5d97afcfbd8118e75e50aba480a9e00000000000000000000000000000000;
+    bytes32 internal constant KAT_PK_SEED = 0x9af9a6d986bc7450f99c34e8aca453c800000000000000000000000000000000;
+    bytes32 internal constant KAT_PK_ROOT = 0x37b5d97afcfbd8118e75e50aba480a9e00000000000000000000000000000000;
     bytes32 internal constant KAT_HASH = 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 
     MockSLHDSAVerifier private verifier;
@@ -133,12 +150,32 @@ contract PaliSLHDSAValidatorModuleTest is Test {
         assertTrue(realVerifier.verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, signature));
     }
 
+    function testRealVerifierUsesSuccessfulPrecompileFastPath() public {
+        vm.etch(address(0x101), address(new SucceedingSLHDSAPrecompile()).code);
+
+        assertTrue(new SLHDSASHA212824Verifier().verify(PK_SEED, PK_ROOT, HASH, new bytes(3856)));
+    }
+
+    function testRealVerifierUsesFailingPrecompileFastPath() public {
+        vm.etch(address(0x101), address(new FailingSLHDSAPrecompile()).code);
+
+        assertFalse(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
+    }
+
+    function testRealVerifierFallsBackWhenPrecompileReturnsEmpty() public {
+        vm.etch(address(0x101), address(new EmptySLHDSAPrecompile()).code);
+
+        assertTrue(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
+    }
+
     function testRealModuleAcceptsPinnedKnownAnswerVector() public {
         SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
         PaliSLHDSAValidatorModule realModule = new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)));
         realModule.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: KAT_PK_SEED, pkRoot: KAT_PK_ROOT})));
 
-        assertEq(realModule.isValidSignatureWithSender(address(0xB0B), KAT_HASH, _knownAnswerSignature()), EIP1271_SUCCESS);
+        assertEq(
+            realModule.isValidSignatureWithSender(address(0xB0B), KAT_HASH, _knownAnswerSignature()), EIP1271_SUCCESS
+        );
     }
 
     function testRealVerifierRejectsMalformedSignatureLength() public {
