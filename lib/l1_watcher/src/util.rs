@@ -710,10 +710,9 @@ pub async fn fetch_committed_batch_data(
     l1_block_number: BlockNumber,
     batch_number: u64,
 ) -> Result<CommittedBatchInfo, L1WatcherError> {
-    // The commit transaction (which carries the `CommitBatchInfo` calldata) and the `BlockCommit`
-    // event (which carries the commitment) are independent given the batch number, so we fetch
-    // them concurrently. Both can transiently lag right after the commit is observed when hitting
-    // a load-balanced RPC, so each is retried.
+    // The commit transaction carries the `CommitBatchInfo` calldata, while the `BlockCommit` event
+    // from that same transaction carries the commitment. Both can transiently lag right after the
+    // commit is observed when hitting a load-balanced RPC, so each is retried.
     let retry_policy = || {
         ConstantBuilder::default()
             .with_delay(Duration::from_millis(200))
@@ -741,12 +740,12 @@ pub async fn fetch_committed_batch_data(
         .await
     };
 
-    // The batch commitment is emitted in the `BlockCommit` event (indexed by batch number) of the
-    // commit transaction. Reading it from L1 directly is safe and accurate, unlike deriving it from
-    // the current protocol version / upgrade transaction hash, which reflect the latest chain state
-    // rather than the state at the moment this batch was committed. Filtering on the indexed
-    // `batchNumber` topic isolates this batch's event directly (a single commit tx covers a range
-    // of L2 blocks, and an L1 block may contain commits for several batches).
+    // SYSCOIN: The batch commitment is emitted in the `BlockCommit` event of the commit transaction.
+    // Reading it from L1 directly is safe and accurate, unlike deriving it from the current
+    // protocol version / upgrade transaction hash, which reflect the latest chain state rather than
+    // the state at the moment this batch was committed. Bind the lookup to `tx_hash`: same-block
+    // commit/revert/re-commit sequences can otherwise expose more than one `BlockCommit` for the
+    // same batch number.
     let log_fut = async {
         (|| async {
             zk_chain
@@ -762,10 +761,10 @@ pub async fn fetch_committed_batch_data(
                 .await
                 .map_err(|e| L1WatcherError::Other(e.into()))?
                 .into_iter()
-                .next()
+                .find(|log| log.transaction_hash == Some(tx_hash))
                 .ok_or_else(|| {
                     L1WatcherError::Other(anyhow::anyhow!(
-                        "`BlockCommit` event for batch {batch_number} not found in L1 block {l1_block_number}"
+                        "`BlockCommit` event for batch {batch_number} from commit tx {tx_hash} not found in L1 block {l1_block_number}"
                     ))
                 })
         })
@@ -774,6 +773,12 @@ pub async fn fetch_committed_batch_data(
     };
 
     let (tx, log) = tokio::try_join!(tx_fut, log_fut)?;
+    if tx.block_number != Some(l1_block_number) {
+        return Err(L1WatcherError::Other(anyhow::anyhow!(
+            "commit tx {tx_hash} belongs to L1 block {:?}, but block {l1_block_number} was expected",
+            tx.block_number
+        )));
+    }
 
     let CommitCalldata {
         commit_batch_info, ..
@@ -785,13 +790,19 @@ pub async fn fetch_committed_batch_data(
         )));
     }
 
-    let commitment = IExecutor::BlockCommit::decode_log(&log.inner)
-        .map_err(|e| {
-            L1WatcherError::Other(anyhow::anyhow!(
-                "failed to decode `BlockCommit` event for batch {batch_number}: {e}"
-            ))
-        })?
-        .commitment;
+    let block_commit = IExecutor::BlockCommit::decode_log(&log.inner).map_err(|e| {
+        L1WatcherError::Other(anyhow::anyhow!(
+            "failed to decode `BlockCommit` event for batch {batch_number}: {e}"
+        ))
+    })?;
+    if block_commit.batchHash != commit_batch_info.new_state_commitment {
+        return Err(L1WatcherError::Other(anyhow::anyhow!(
+            "`BlockCommit` event for batch {batch_number} from commit tx {tx_hash} emitted batchHash {}, but commit calldata has newStateCommitment {}",
+            block_commit.batchHash,
+            commit_batch_info.new_state_commitment
+        )));
+    }
+    let commitment = block_commit.commitment;
 
     Ok(CommittedBatchInfo {
         commit_info: commit_batch_info,
