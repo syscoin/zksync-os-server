@@ -15,6 +15,8 @@
 #   - pali-contracts.json : 6 Pali contracts (solc 0.8.26, 200 runs, viaIR,
 #                           cancun). The verifier selects the matching contract
 #                           per address by bytecode.
+#   - slh-dsa-contracts.json : SLH-DSA verifier and validator (solc 0.8.28,
+#                              200 runs, viaIR, cancun).
 #   - entrypoint.json     : ERC-4337 EntryPoint v0.9 (solc 0.8.28, 1,000,000
 #                           runs, viaIR, cancun).
 #
@@ -34,10 +36,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_DIR="${SCRIPT_DIR}/pali-verification/standard-json"
 
 PALI_SOLC="v0.8.26+commit.8a97fa7a"
+SLH_DSA_SOLC="v0.8.28+commit.7893614a"
 ENTRYPOINT_SOLC="v0.8.28+commit.7893614a"
 
 # Factory constructor args: abi.encode(accountImplementation, entryPoint).
 FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000d8549b9a7ed189947d4cc34be0370b3ee8547b46000000000000000000000000433709009b8330fda32311df1c2afa402ed8d009"
+# SLH-DSA validator constructor args: abi.encode(verifier).
+SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000e0886beb95d4005c1de667351312b8dd68b8e8f4"
 
 # address|label|standard-json|compiler|constructor_args
 CONTRACTS=(
@@ -45,6 +50,8 @@ CONTRACTS=(
   "0xD8549B9a7ED189947D4Cc34Be0370B3eE8547B46|Smart account implementation|pali-contracts.json|${PALI_SOLC}|"
   "0xce2cBf654544db522187c5F4D1446016cF505093|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x3B590190A11119dF42864efaCe0C6E3E0aF02ac8|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|"
+  "0xe0886Beb95D4005C1de667351312b8dD68b8E8f4|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|"
+  "0x827630cb1410448F2ADdB9277aEd3853e3CE5a46|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
   "0xCf82A12c0296072C528A5957a67F63842100861A|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x752dfc110cD2343E06b9eEDEc0B0dC833fB0A2cB|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
   "0x1e399Ed1B391cAbC174ef5F708FAb225a22Dc726|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
