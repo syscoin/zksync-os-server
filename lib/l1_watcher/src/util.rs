@@ -4,23 +4,20 @@ use alloy::primitives::{Address, BlockNumber, TxHash, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
-use anyhow::Context;
+use anyhow::Context as _;
 use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use zksync_os_batch_types::DiscoveredCommittedBatch;
+use zksync_os_batch_types::{CommittedBatchInfo, DiscoveredCommittedBatch};
 use zksync_os_contract_interface::IChainAssetHandler;
-use zksync_os_contract_interface::IExecutor::{BlockCommit, ReportCommittedBatchRangeZKsyncOS};
+use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
-use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_contract_interface::{
     Bridgehub, Error as ContractInterfaceError, IExecutor, MessageRoot, ZkChain,
 };
 use zksync_os_provider::NodeProvider;
-
-pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
 
 // SYSCOIN: Startup cursor resolution may need historical L1 state that a live
 // pruned provider cannot serve. Prefer an archive provider for the lookup, but
@@ -695,7 +692,9 @@ pub async fn fetch_stored_batch_data(
     }) else {
         return Ok(None);
     };
-    let batch_info = fetch_committed_batch_data(zk_chain, tx_hash).await?;
+    let batch_info = fetch_committed_batch_data(zk_chain, tx_hash, l1_block_number, batch_number)
+        .await?
+        .into_stored();
 
     Ok(Some(DiscoveredCommittedBatch {
         batch_info,
@@ -708,9 +707,19 @@ pub async fn fetch_stored_batch_data(
 pub async fn fetch_committed_batch_data(
     zk_chain: &ZkChain<NodeProvider>,
     tx_hash: TxHash,
-) -> Result<StoredBatchInfo, L1WatcherError> {
-    // SYSCOIN: fetch the commit tx and its receipt in parallel (mirrors upstream's parallel
-    // fetch of committed batch data elements).
+    l1_block_number: BlockNumber,
+    batch_number: u64,
+) -> Result<CommittedBatchInfo, L1WatcherError> {
+    // The commit transaction (which carries the `CommitBatchInfo` calldata) and the `BlockCommit`
+    // event (which carries the commitment) are independent given the batch number, so we fetch
+    // them concurrently. Both can transiently lag right after the commit is observed when hitting
+    // a load-balanced RPC, so each is retried.
+    let retry_policy = || {
+        ConstantBuilder::default()
+            .with_delay(Duration::from_millis(200))
+            .with_max_times(50)
+    };
+
     let tx_fut = async {
         (|| async {
             let tx = zk_chain
@@ -728,62 +737,65 @@ pub async fn fetch_committed_batch_data(
             })?;
             Ok::<_, L1WatcherError>(tx)
         })
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(Duration::from_millis(200))
-                .with_max_times(50),
-        )
+        .retry(retry_policy())
         .await
     };
-    let receipt_fut = async {
+
+    // The batch commitment is emitted in the `BlockCommit` event (indexed by batch number) of the
+    // commit transaction. Reading it from L1 directly is safe and accurate, unlike deriving it from
+    // the current protocol version / upgrade transaction hash, which reflect the latest chain state
+    // rather than the state at the moment this batch was committed. Filtering on the indexed
+    // `batchNumber` topic isolates this batch's event directly (a single commit tx covers a range
+    // of L2 blocks, and an L1 block may contain commits for several batches).
+    let log_fut = async {
         (|| async {
             zk_chain
                 .provider()
-                .get_transaction_receipt(tx_hash)
+                .get_logs(
+                    &Filter::new()
+                        .address(*zk_chain.address())
+                        .event_signature(IExecutor::BlockCommit::SIGNATURE_HASH)
+                        .topic1(U256::from(batch_number))
+                        .from_block(l1_block_number)
+                        .to_block(l1_block_number),
+                )
                 .await
                 .map_err(|e| L1WatcherError::Other(e.into()))?
+                .into_iter()
+                .next()
                 .ok_or_else(|| {
-                    L1WatcherError::Other(anyhow::anyhow!("commit tx {tx_hash} receipt not found"))
+                    L1WatcherError::Other(anyhow::anyhow!(
+                        "`BlockCommit` event for batch {batch_number} not found in L1 block {l1_block_number}"
+                    ))
                 })
         })
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(Duration::from_millis(200))
-                .with_max_times(50),
-        )
+        .retry(retry_policy())
         .await
     };
-    let (tx, receipt) = tokio::try_join!(tx_fut, receipt_fut)?;
+
+    let (tx, log) = tokio::try_join!(tx_fut, log_fut)?;
 
     let CommitCalldata {
         commit_batch_info, ..
     } = CommitCalldata::decode(tx.input()).map_err(L1WatcherError::Other)?;
+    if commit_batch_info.batch_number != batch_number {
+        return Err(L1WatcherError::Other(anyhow::anyhow!(
+            "commit tx {tx_hash} encodes batch {} but batch {batch_number} was expected",
+            commit_batch_info.batch_number
+        )));
+    }
 
-    // SYSCOIN: use the exact commitment emitted by the commit transaction instead of
-    // reconstructing hash-sensitive upgrade/protocol metadata from end-of-L1-block state.
-    let block_commit = receipt
-        .logs()
-        .iter()
-        .filter(|log| log.address() == *zk_chain.address())
-        .filter_map(|log| log.log_decode::<BlockCommit>().ok())
-        .find(|log| log.inner.batchNumber == U256::from(commit_batch_info.batch_number))
-        .ok_or_else(|| {
+    let commitment = IExecutor::BlockCommit::decode_log(&log.inner)
+        .map_err(|e| {
             L1WatcherError::Other(anyhow::anyhow!(
-                "commit tx {tx_hash} has no BlockCommit log for batch {}",
-                commit_batch_info.batch_number
+                "failed to decode `BlockCommit` event for batch {batch_number}: {e}"
             ))
-        })?;
+        })?
+        .commitment;
 
-    Ok(StoredBatchInfo {
-        batch_number: commit_batch_info.batch_number,
-        state_commitment: block_commit.inner.batchHash,
-        number_of_layer1_txs: commit_batch_info.number_of_layer1_txs,
-        priority_operations_hash: commit_batch_info.priority_operations_hash,
-        dependency_roots_rolling_hash: commit_batch_info.dependency_roots_rolling_hash,
-        l2_to_l1_logs_root_hash: commit_batch_info.l2_to_l1_logs_root_hash,
-        commitment: block_commit.inner.commitment,
-        // unused
-        last_block_timestamp: Some(0),
+    Ok(CommittedBatchInfo {
+        commit_info: commit_batch_info,
+        commitment,
     })
 }
 

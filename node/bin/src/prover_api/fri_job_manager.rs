@@ -516,7 +516,7 @@ mod tests {
     use crate::config::ProofStorageConfig;
     use alloy::primitives::{Address, B256};
     use tempfile::TempDir;
-    use zksync_os_batch_types::ExtendedCommitBatchInfo;
+    use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchSignatureData, ProverInput};
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
@@ -560,7 +560,7 @@ mod tests {
                 commitment: B256::ZERO,
                 last_block_timestamp: Some(0),
             },
-            batch_info: ExtendedCommitBatchInfo {
+            batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
                 protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
                 upgrade_tx_hash: None,
@@ -569,6 +569,7 @@ mod tests {
             blob_sidecar: None,
             first_block_number: from,
             last_block_number: to,
+            last_block_hash: None,
             pubdata_mode: PubdataMode::Calldata,
             tx_count: 0,
             computational_native_used: None,

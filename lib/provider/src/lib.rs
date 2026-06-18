@@ -69,6 +69,9 @@ where
     }
 }
 
+/// The chain id used by a local Anvil dev node by default.
+pub const ANVIL_L1_CHAIN_ID: u64 = 31337;
+
 /// Optional RPC features the underlying provider may or may not support, probed once when the
 /// [`NodeProvider`] is constructed.
 #[derive(Debug, Clone, Copy)]
@@ -79,6 +82,8 @@ pub struct ProviderCapabilities {
     /// Whether the RPC implements `eth_getHeaderBy*`. When false, header lookups use
     /// `eth_getBlockBy*` instead.
     pub get_header: bool,
+    /// Whether the underlying node supports the EIP-7594 (Fusaka/PeerDAS) blob format.
+    pub supports_eip7594: bool,
 }
 
 impl ProviderCapabilities {
@@ -167,9 +172,24 @@ impl ProviderCapabilities {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+        // SYSCOIN: local Anvil dev nodes do not support EIP-7594 blobs yet, even when gateway
+        // scripts run them with custom chain IDs. Prefer client detection, retaining the default
+        // chain-id fallback only if the client-version probe itself fails.
+        let supports_eip7594 = match provider.get_client_version().await {
+            Ok(version) => !version.to_lowercase().contains("anvil"),
+            Err(err) => {
+                tracing::warn!(%err, "failed to probe provider client version; falling back to chain-id EIP-7594 detection");
+                provider
+                    .get_chain_id()
+                    .await
+                    .map(|id| id != ANVIL_L1_CHAIN_ID)
+                    .unwrap_or(true)
+            }
+        };
         Self {
             get_header,
             finalized_tag,
+            supports_eip7594,
         }
     }
 }
@@ -949,18 +969,28 @@ mod tests {
         }
     }
 
+    fn geth_client_version() -> String {
+        "reth/v1.0.0".to_string()
+    }
+
+    fn anvil_client_version() -> String {
+        "anvil/v1.0.0".to_string()
+    }
+
     #[tokio::test]
     async fn uses_get_header_when_supported() {
         let asserter = Asserter::new();
         // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) ok ->
-        // finalized supported.
+        // finalized supported; client version -> non-anvil.
         asserter.push_success(&header_with_number(1));
         asserter.push_success(&header_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        assert!(provider.capabilities().supports_eip7594);
 
         // Finalized/safe lookups use the standard block API, matching the finalized watcher.
         asserter.push_success(&block_with_number(42));
@@ -976,14 +1006,16 @@ mod tests {
     async fn falls_back_to_get_block_when_get_header_unsupported() {
         let asserter = Asserter::new();
         // Probe: get_header(latest) fails -> get_header unsupported; get_block(finalized) ok ->
-        // finalized supported.
+        // finalized supported; client version -> non-anvil.
         asserter.push_failure(unsupported_method());
         asserter.push_success(&block_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
         assert!(!provider.capabilities().get_header);
         assert!(provider.capabilities().finalized_tag);
+        assert!(provider.capabilities().supports_eip7594);
 
         // The lookup resolves via get_block, never touching get_header.
         asserter.push_success(&block_with_number(42));
@@ -1006,6 +1038,7 @@ mod tests {
             message: Cow::Borrowed("finalized block not found"),
             data: None,
         });
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1032,6 +1065,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(invalid_params());
         asserter.push_success(&block_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1055,6 +1089,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(invalid_params());
         asserter.push_failure(invalid_params());
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1071,6 +1106,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(transient_upstream_error());
         asserter.push_success(&header_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1094,11 +1130,13 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(unsupported_method());
         asserter.push_failure(unsupported_method());
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
         assert!(provider.capabilities().get_header);
         assert!(!provider.capabilities().finalized_tag);
+        assert!(provider.capabilities().supports_eip7594);
 
         let err = provider
             .get_block_number_by_id(BlockId::finalized())
@@ -1118,6 +1156,34 @@ mod tests {
                 .contains("refusing to treat latest as finalized"),
             "unexpected error: {err}"
         );
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    #[tokio::test]
+    async fn anvil_client_version_disables_eip7594() {
+        let asserter = Asserter::new();
+        // Probe: get_header(latest) ok; get_header(finalized) ok; client version -> anvil.
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&anvil_client_version());
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(!provider.capabilities().supports_eip7594);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    #[tokio::test]
+    async fn anvil_chain_id_disables_eip7594_when_client_probe_fails() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(transient_upstream_error());
+        asserter.push_success(&U64::from(ANVIL_L1_CHAIN_ID));
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(!provider.capabilities().supports_eip7594);
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 }

@@ -371,7 +371,6 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             &commands,
             operator_address,
             sim_fee_params,
-            config.fusaka_upgrade_timestamp,
         )
         .await?;
         tracing::info!(
@@ -492,13 +491,9 @@ where
         }
         tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
 
-        let pending_block = provider
-            .get_block(BlockId::pending())
-            .await?
-            .expect("no pending block");
-        // todo: make conversion unconditional (and remove respective config) once anvil
-        //       supports EIP-7594 blobs (see https://github.com/foundry-rs/foundry/issues/12222)
-        let blob_sidecar = if config.fusaka_upgrade_timestamp <= pending_block.header.timestamp {
+        // Fusaka is active on all real chains, so send the EIP-7594 blob format by default.
+        // Anvil does not support EIP-7594 yet, so fall back to EIP-4844 there.
+        let blob_sidecar = if provider.capabilities().supports_eip7594 {
             BlobTransactionSidecarVariant::Eip7594(
                 blob_sidecar.try_into_7594(EnvKzgSettings::Default.get())?,
             )
@@ -1688,7 +1683,6 @@ async fn estimate_gas_limits<Input>(
     commands: &[Input],
     operator_address: Address,
     fee_params: FeeParams,
-    fusaka_upgrade_timestamp: u64,
 ) -> anyhow::Result<Vec<Option<u64>>>
 where
     Input: SendToL1,
@@ -1726,15 +1720,9 @@ where
         );
     }
     let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
-    let use_eip7594_sidecar = if commands.iter().any(|cmd| cmd.blob_sidecar().is_some()) {
-        let pending_block = provider
-            .get_block(BlockId::pending())
-            .await?
-            .context("pending L1 block is unavailable while setting simulated blob format")?;
-        fusaka_upgrade_timestamp <= pending_block.header.timestamp
-    } else {
-        false
-    };
+    // Mirror the submission path: EIP-7594 by default, EIP-4844 only on Anvil. Only consumed
+    // by `build_l1_simulation_request` when a command actually carries a blob sidecar.
+    let use_eip7594_sidecar = provider.capabilities().supports_eip7594;
     let block_state_calls = commands
         .iter()
         .enumerate()

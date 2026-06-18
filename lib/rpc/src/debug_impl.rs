@@ -45,6 +45,11 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
             // Short-circuit for genesis block.
             return Ok(Vec::new());
         }
+        // SYSCOIN: debug_traceTransaction replays the block prefix for warm state but must only
+        // expose JS tracer hooks/results for the requested transaction.
+        let js_trace_tx_index = txs_range
+            .as_ref()
+            .map(|range| range.len().saturating_sub(1));
 
         let Some(block_context) = self.storage.replay_storage().get_context(block.number) else {
             tracing::error!(
@@ -90,9 +95,42 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     }
                 }
             }
-            // SYSCOIN: Do not execute attacker-supplied JavaScript tracers on RPC threads.
-            // Boa execution is not resource bounded here, so only built-in tracers are exposed.
-            GethDebugTracerType::JsTracer(_) => Err(DebugError::UnsupportedJsTracer),
+            GethDebugTracerType::JsTracer(js) => {
+                let limits = crate::js_tracer::tracer::JsTracerLimits::from_config(
+                    &self.eth_call_handler.config,
+                );
+                // SYSCOIN: upstream bounded JS tracers accept `{code, config}` payloads; preserve
+                // raw JS source behavior while forwarding standard tracerConfig when provided.
+                let js_cfg = if opts.tracer_config.is_null() {
+                    js
+                } else {
+                    serde_json::json!({
+                        "code": js,
+                        "config": opts.tracer_config.0,
+                    })
+                    .to_string()
+                };
+                match crate::js_tracer::tracer::trace_block_with_target(
+                    txs,
+                    block_context,
+                    prev_state_view,
+                    js_cfg,
+                    limits,
+                    js_trace_tx_index,
+                ) {
+                    Ok(outputs) => Ok(outputs
+                        .into_iter()
+                        .zip(&block.body.transactions)
+                        .map(|(value, tx_hash)| {
+                            TraceResult::new_success(GethTrace::JS(value), Some(*tx_hash))
+                        })
+                        .collect()),
+                    Err(err) => {
+                        tracing::error!(?err, "Failed to trace transaction with JS tracer");
+                        Err(DebugError::InternalError)
+                    }
+                }
+            }
             other => Err(DebugError::UnsupportedTracer(other)),
         }
     }
