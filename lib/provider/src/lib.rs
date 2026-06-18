@@ -172,9 +172,9 @@ impl ProviderCapabilities {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        // A local Anvil dev node does not support EIP-7594 blobs yet, even when gateway scripts
-        // run it with custom chain IDs. Prefer client detection, retaining the default chain-id
-        // fallback only if the client-version probe itself fails.
+        // SYSCOIN: local Anvil dev nodes do not support EIP-7594 blobs yet, even when gateway
+        // scripts run them with custom chain IDs. Prefer client detection, retaining the default
+        // chain-id fallback only if the client-version probe itself fails.
         let supports_eip7594 = match provider.get_client_version().await {
             Ok(version) => !version.to_lowercase().contains("anvil"),
             Err(err) => {

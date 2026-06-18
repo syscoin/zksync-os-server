@@ -136,6 +136,8 @@ pub struct JsTracer {
     tx_failed: bool,
 
     error: Option<anyhow::Error>,
+    // SYSCOIN: lets debug_traceTransaction warm state with predecessor transactions without
+    // exposing their hooks/results to stateful user JS tracers.
     trace_tx_index: Option<usize>,
     current_tx_index: usize,
     tracing_current_tx: bool,
@@ -358,6 +360,7 @@ impl JsTracer {
     }
 
     fn invoke_method(&mut self, method: TracerMethod, arg: &JsonValue) {
+        // SYSCOIN: maintain overlays for warm-up transactions, but suppress user JS hooks.
         if !self.tracing_current_tx {
             return;
         }
@@ -909,6 +912,7 @@ impl EvmTracer for JsTracer {
 
         let config = self.tracer_config.clone();
         self.invoke_method(TracerMethod::Setup, &config);
+        // SYSCOIN: setup(config) may install tracer hooks such as step/result.
         match resolve_invokers(&mut self.ctx) {
             Ok(invokers) => self.invokers = invokers,
             Err(err) => self.record_error(TracerMethod::Setup, err),
@@ -1124,6 +1128,7 @@ pub fn trace_block_with_target<V: ViewState + 'static>(
     limits: JsTracerLimits,
     trace_tx_index: Option<usize>,
 ) -> anyhow::Result<Vec<JsonValue>> {
+    // SYSCOIN: optional target index is used by debug_traceTransaction; block tracing passes None.
     let mut tracer =
         JsTracer::new_with_target(state_view.clone(), js_tracer_config, limits, trace_tx_index)?;
 

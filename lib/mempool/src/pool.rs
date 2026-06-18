@@ -16,8 +16,8 @@ use reth_primitives_traits::SealedBlock;
 use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
-use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::L1State;
+use zksync_os_contract_interface::{Bridgehub, ZkChain};
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
@@ -50,7 +50,19 @@ struct Watchers {
     upgrade_watcher: Option<StartResolver<ProtocolSemanticVersion, L1UpgradeTxWatcher>>,
     l1_tx_watcher: Option<StartResolver<u64, L1TxWatcher>>,
     interop_watcher: Option<SegmentResolver<u64, InteropWatcher>>,
-    gateway_migration_watcher: Option<StartResolver<u64, GatewayMigrationWatcher>>,
+    // SYSCOIN: build the gateway migration watcher only after replay proves v31+.
+    gateway_migration_watcher_config: Option<GatewayMigrationWatcherConfig>,
+}
+
+struct GatewayMigrationWatcherConfig {
+    zk_chain: ZkChain<NodeProvider>,
+    archive_lookup_zk_chain: Option<ZkChain<NodeProvider>>,
+    bridgehub: Bridgehub<NodeProvider>,
+    l2_chain_id: ChainId,
+    l1_chain_id: ChainId,
+    gw_chain_id: ChainId,
+    config: L1WatcherConfig,
+    sink: SlChainIdSubpool,
 }
 
 pub struct Config {
@@ -110,24 +122,20 @@ impl<T: L2Subpool> Pool<T> {
         .await
         .context("failed to create L1 transaction watcher")?;
 
-        let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
-            l1_state.diamond_proxy_l1.clone(),
-            config.archive_lookup_diamond_proxy_l1.clone(),
-            l1_state.bridgehub_l1.clone(),
-            config.chain_id,
-            l1_state.l1_chain_id,
-            config.gateway_chain_id,
-            config.l1_watcher_config.clone(),
-            sl_chain_id_subpool.clone(),
-        )
-        .await
-        .context("failed to create gateway migration watcher")?;
-
         let watchers = Watchers {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
             interop_watcher,
-            gateway_migration_watcher: Some(gateway_migration_watcher),
+            gateway_migration_watcher_config: Some(GatewayMigrationWatcherConfig {
+                zk_chain: l1_state.diamond_proxy_l1.clone(),
+                archive_lookup_zk_chain: config.archive_lookup_diamond_proxy_l1.clone(),
+                bridgehub: l1_state.bridgehub_l1.clone(),
+                l2_chain_id: config.chain_id,
+                l1_chain_id: l1_state.l1_chain_id,
+                gw_chain_id: config.gateway_chain_id,
+                config: config.l1_watcher_config.clone(),
+                sink: sl_chain_id_subpool.clone(),
+            }),
         };
 
         Ok(Self {
@@ -190,8 +198,21 @@ impl<T: L2Subpool> Pool<T> {
             );
         }
         if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
-            if let Some(gateway_migration_watcher) = self.watchers.gateway_migration_watcher.take()
+            if let Some(gateway_migration_config) =
+                self.watchers.gateway_migration_watcher_config.take()
             {
+                let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
+                    gateway_migration_config.zk_chain,
+                    gateway_migration_config.archive_lookup_zk_chain,
+                    gateway_migration_config.bridgehub,
+                    gateway_migration_config.l2_chain_id,
+                    gateway_migration_config.l1_chain_id,
+                    gateway_migration_config.gw_chain_id,
+                    gateway_migration_config.config,
+                    gateway_migration_config.sink,
+                )
+                .await
+                .expect("failed to create gateway migration watcher");
                 self.runtime.spawn_critical_task(
                     "gateway migration watcher",
                     gateway_migration_watcher.run(replay.starting_cursors.migration_number),

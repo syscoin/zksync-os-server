@@ -45,6 +45,8 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
             // Short-circuit for genesis block.
             return Ok(Vec::new());
         }
+        // SYSCOIN: debug_traceTransaction replays the block prefix for warm state but must only
+        // expose JS tracer hooks/results for the requested transaction.
         let js_trace_tx_index = txs_range
             .as_ref()
             .map(|range| range.len().saturating_sub(1));
@@ -97,6 +99,8 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                 let limits = crate::js_tracer::tracer::JsTracerLimits::from_config(
                     &self.eth_call_handler.config,
                 );
+                // SYSCOIN: upstream bounded JS tracers accept `{code, config}` payloads; preserve
+                // raw JS source behavior while forwarding standard tracerConfig when provided.
                 let js_cfg = if opts.tracer_config.is_null() {
                     js
                 } else {
