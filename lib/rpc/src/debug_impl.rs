@@ -45,6 +45,9 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
             // Short-circuit for genesis block.
             return Ok(Vec::new());
         }
+        let js_trace_tx_index = txs_range
+            .as_ref()
+            .map(|range| range.len().saturating_sub(1));
 
         let Some(block_context) = self.storage.replay_storage().get_context(block.number) else {
             tracing::error!(
@@ -103,12 +106,13 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                     })
                     .to_string()
                 };
-                match crate::js_tracer::tracer::trace_block(
+                match crate::js_tracer::tracer::trace_block_with_target(
                     txs,
                     block_context,
                     prev_state_view,
                     js_cfg,
                     limits,
+                    js_trace_tx_index,
                 ) {
                     Ok(outputs) => Ok(outputs
                         .into_iter()

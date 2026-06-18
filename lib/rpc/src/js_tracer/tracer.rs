@@ -136,6 +136,9 @@ pub struct JsTracer {
     tx_failed: bool,
 
     error: Option<anyhow::Error>,
+    trace_tx_index: Option<usize>,
+    current_tx_index: usize,
+    tracing_current_tx: bool,
 }
 
 impl JsTracer {
@@ -143,6 +146,15 @@ impl JsTracer {
         state_view: impl ViewState + 'static,
         js_cfg: String,
         limits: JsTracerLimits,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_target(state_view, js_cfg, limits, None)
+    }
+
+    fn new_with_target(
+        state_view: impl ViewState + 'static,
+        js_cfg: String,
+        limits: JsTracerLimits,
+        trace_tx_index: Option<usize>,
     ) -> anyhow::Result<Self> {
         if js_cfg.len() > MAX_JS_TRACER_PAYLOAD_BYTES {
             return Err(anyhow::anyhow!(format!(
@@ -193,6 +205,9 @@ impl JsTracer {
             frame_stack: Vec::new(),
             finished_root_frames: Vec::new(),
             tx_failed: false,
+            trace_tx_index,
+            current_tx_index: 0,
+            tracing_current_tx: true,
         })
     }
 
@@ -663,6 +678,9 @@ impl AnyTracer for JsTracer {
 
 impl EvmTracer for JsTracer {
     fn on_new_execution_frame(&mut self, request: impl EvmRequest) {
+        if !self.tracing_current_tx {
+            return;
+        }
         let checkpoint = self.current_overlay_checkpoint();
 
         let call_value = request.nominal_token_value();
@@ -725,6 +743,9 @@ impl EvmTracer for JsTracer {
     }
 
     fn after_execution_frame_completed(&mut self, result: Option<(EvmResources, CallResult)>) {
+        if !self.tracing_current_tx {
+            return;
+        }
         let (gas_used, output, revert_reason) = match &result {
             Some((resources, res)) => match res {
                 CallResult::Successful { returndata } => (
@@ -778,6 +799,9 @@ impl EvmTracer for JsTracer {
     /// This method only performs a sanity check that the values in the overlay match the ones
     /// from the state.
     fn on_storage_read(&mut self, _: bool, address: Address, key: B256, value: B256) {
+        if !self.tracing_current_tx {
+            return;
+        }
         let storage_key = (address, key);
         if let Some(entry) = self
             .storage_overlay
@@ -802,6 +826,9 @@ impl EvmTracer for JsTracer {
     }
 
     fn on_storage_write(&mut self, _is_transient: bool, address: Address, key: B256, value: B256) {
+        if !self.tracing_current_tx {
+            return;
+        }
         {
             let mut overlay = self.storage_overlay.borrow_mut();
             let storage_key = (address, key);
@@ -837,6 +864,9 @@ impl EvmTracer for JsTracer {
         _new_internal_bytecode_hash: B256,
         new_observable_bytecode_length: u32,
     ) {
+        if !self.tracing_current_tx {
+            return;
+        }
         let new_value = new_raw_bytecode.map(|code| {
             let len = new_observable_bytecode_length as usize;
             let slice = if code.len() >= len {
@@ -873,6 +903,10 @@ impl EvmTracer for JsTracer {
     fn on_event(&mut self, _: Address, _: Vec<B256>, _: &[u8]) {}
 
     fn begin_tx(&mut self, _calldata: &[u8]) {
+        self.tracing_current_tx = self
+            .trace_tx_index
+            .map(|target| target == self.current_tx_index)
+            .unwrap_or(true);
         self.tx_failed = false;
         self.current_depth = 0;
         self.pending_step = None;
@@ -881,17 +915,30 @@ impl EvmTracer for JsTracer {
         self.frame_stack.clear();
         self.clear_overlay_journals();
 
+        if !self.tracing_current_tx {
+            return;
+        }
+
         let config = self.tracer_config.clone();
         self.invoke_method(TracerMethod::Setup, &config);
+        match resolve_invokers(&mut self.ctx) {
+            Ok(invokers) => self.invokers = invokers,
+            Err(err) => self.record_error(TracerMethod::Setup, err),
+        }
     }
 
     fn finish_tx(&mut self) {
+        if !self.tracing_current_tx {
+            self.current_tx_index += 1;
+            return;
+        }
         if self.error.is_some() {
             self.rollback_overlays();
             self.clear_overlay_journals();
             self.frame_stack.clear();
             self.tx_failed = false;
             self.finished_root_frames.clear();
+            self.current_tx_index += 1;
             return;
         }
 
@@ -906,6 +953,7 @@ impl EvmTracer for JsTracer {
                 self.clear_overlay_journals();
                 self.frame_stack.clear();
                 self.tx_failed = false;
+                self.current_tx_index += 1;
 
                 return;
             }
@@ -932,6 +980,7 @@ impl EvmTracer for JsTracer {
         self.clear_overlay_journals();
         self.frame_stack.clear();
         self.tx_failed = false;
+        self.current_tx_index += 1;
     }
 
     fn before_evm_interpreter_execution_step(
@@ -939,6 +988,9 @@ impl EvmTracer for JsTracer {
         opcode: u8,
         frame_state: impl EvmFrameInterface,
     ) {
+        if !self.tracing_current_tx {
+            return;
+        }
         let gas_before = frame_state.resources().ergs / ERGS_PER_GAS;
         let pc = frame_state.instruction_pointer() as u64;
 
@@ -955,6 +1007,9 @@ impl EvmTracer for JsTracer {
         opcode: u8,
         frame_state: impl EvmFrameInterface,
     ) {
+        if !self.tracing_current_tx {
+            return;
+        }
         if self.error.is_some() {
             return;
         }
@@ -980,6 +1035,9 @@ impl EvmTracer for JsTracer {
     }
 
     fn on_opcode_error(&mut self, error: &EvmError, frame_state: impl EvmFrameInterface) {
+        if !self.tracing_current_tx {
+            return;
+        }
         if self.error.is_some() {
             return;
         }
@@ -998,6 +1056,9 @@ impl EvmTracer for JsTracer {
     }
 
     fn on_call_error(&mut self, error: &EvmError) {
+        if !self.tracing_current_tx {
+            return;
+        }
         self.pending_step = None;
         self.tx_failed = true;
         let obj = serde_json::json!({
@@ -1014,6 +1075,9 @@ impl EvmTracer for JsTracer {
         token_value: U256,
         frame_state: impl EvmFrameInterface,
     ) {
+        if !self.tracing_current_tx {
+            return;
+        }
         if token_value != U256::ZERO {
             if let Err(err) =
                 self.apply_balance_delta(frame_state.address(), U256::ZERO, token_value)
@@ -1062,7 +1126,26 @@ pub fn trace_block<V: ViewState + 'static>(
     js_tracer_config: String,
     limits: JsTracerLimits,
 ) -> anyhow::Result<Vec<JsonValue>> {
-    let mut tracer = JsTracer::new(state_view.clone(), js_tracer_config, limits)?;
+    trace_block_with_target(
+        txs,
+        block_context,
+        state_view,
+        js_tracer_config,
+        limits,
+        None,
+    )
+}
+
+pub fn trace_block_with_target<V: ViewState + 'static>(
+    txs: Vec<ZkTransaction>,
+    block_context: zksync_os_storage_api::BlockContext,
+    state_view: V,
+    js_tracer_config: String,
+    limits: JsTracerLimits,
+    trace_tx_index: Option<usize>,
+) -> anyhow::Result<Vec<JsonValue>> {
+    let mut tracer =
+        JsTracer::new_with_target(state_view.clone(), js_tracer_config, limits, trace_tx_index)?;
 
     let tx_source = zksync_os_interface::traits::TxListSource {
         transactions: txs.into_iter().map(|tx| tx.encode()).collect(),
@@ -1126,6 +1209,9 @@ mod tests {
             finished_root_frames: vec![],
             tx_failed: false,
             error: None,
+            trace_tx_index: None,
+            current_tx_index: 0,
+            tracing_current_tx: true,
         };
         let actual = tx_context(Address::from([0x11; 20]), 10, 3);
         let mut asset_tracker = tx_context(ASSET_TRACKER_ADDRESS, 20, 7);
