@@ -455,6 +455,11 @@ impl JsTracer {
         let value = f
             .call(&JsValue::undefined(), &[arg], &mut self.ctx)
             .map_err(|e| anyhow::anyhow!("JS tracer method {method_name} failed: {e}"))?;
+        // SYSCOIN: result() can allocate independently of opcode-step hooks, so enforce the
+        // configured budget after the final user callback as well.
+        if let Some(reason) = self.budget_exceeded() {
+            return Err(anyhow::anyhow!(reason));
+        }
 
         let out = value
             .to_string(&mut self.ctx)
