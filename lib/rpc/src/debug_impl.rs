@@ -94,11 +94,20 @@ impl<RpcStorage: ReadRpcStorage> DebugNamespace<RpcStorage> {
                 let limits = crate::js_tracer::tracer::JsTracerLimits::from_config(
                     &self.eth_call_handler.config,
                 );
+                let js_cfg = if opts.tracer_config.is_null() {
+                    js
+                } else {
+                    serde_json::json!({
+                        "code": js,
+                        "config": opts.tracer_config.0,
+                    })
+                    .to_string()
+                };
                 match crate::js_tracer::tracer::trace_block(
                     txs,
                     block_context,
                     prev_state_view,
-                    js,
+                    js_cfg,
                     limits,
                 ) {
                     Ok(outputs) => Ok(outputs
