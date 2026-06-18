@@ -844,10 +844,13 @@ new file mode 100644
 +            native,
 +        ))?;
 +
-+        if slh_dsa_sha2_128_24_verify(src) {
-+            dst.try_extend(ruint::aliases::U256::ONE.to_be_bytes::<32>())
-+                .map_err(|_| out_of_return_memory!())?;
-+        }
++        let result = if slh_dsa_sha2_128_24_verify(src) {
++            ruint::aliases::U256::ONE
++        } else {
++            ruint::aliases::U256::ZERO
++        };
++        dst.try_extend(result.to_be_bytes::<32>())
++            .map_err(|_| out_of_return_memory!())?;
 +        Ok(())
 +    }
 +}
@@ -1048,16 +1051,16 @@ new file mode 100644
 +    }
 +
 +    #[test]
-+    fn malformed_input_returns_empty() {
++    fn malformed_input_returns_zero() {
 +        let mut dst = vec![];
 +        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
 +        SlhDsaSha212824VerifyImpl::execute(&[0u8; 3], &mut dst, &mut resources, Global)
 +            .expect("precompile execution");
-+        assert!(dst.is_empty());
++        assert_eq!(dst, ruint::aliases::U256::ZERO.to_be_bytes::<32>());
 +    }
 +
 +    #[test]
-+    fn noncanonical_public_key_returns_empty() {
++    fn noncanonical_public_key_returns_zero() {
 +        let mut input = vec![];
 +        input.extend_from_slice(&PK_SEED);
 +        input.extend_from_slice(&PK_ROOT);
@@ -1068,11 +1071,11 @@ new file mode 100644
 +        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
 +        SlhDsaSha212824VerifyImpl::execute(&input, &mut dst, &mut resources, Global)
 +            .expect("precompile execution");
-+        assert!(dst.is_empty());
++        assert_eq!(dst, ruint::aliases::U256::ZERO.to_be_bytes::<32>());
 +    }
 +
 +    #[test]
-+    fn zero_signature_returns_empty() {
++    fn zero_signature_returns_zero() {
 +        let mut input = vec![];
 +        input.extend_from_slice(&PK_SEED);
 +        input.extend_from_slice(&PK_ROOT);
@@ -1082,7 +1085,7 @@ new file mode 100644
 +        let mut resources = BaseResources::<DecreasingNative>::FORMAL_INFINITE;
 +        SlhDsaSha212824VerifyImpl::execute(&input, &mut dst, &mut resources, Global)
 +            .expect("precompile execution");
-+        assert!(dst.is_empty());
++        assert_eq!(dst, ruint::aliases::U256::ZERO.to_be_bytes::<32>());
 +    }
 +}
 diff --git a/evm_interpreter/Cargo.toml b/evm_interpreter/Cargo.toml
