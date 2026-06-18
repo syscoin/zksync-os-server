@@ -172,13 +172,20 @@ impl ProviderCapabilities {
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        // A local Anvil dev node (detected by chain id) does not support EIP-7594 blobs yet. On any
-        // probe failure we assume a real node that does support them.
-        let supports_eip7594 = provider
-            .get_chain_id()
-            .await
-            .map(|id| id != ANVIL_L1_CHAIN_ID)
-            .unwrap_or(true);
+        // A local Anvil dev node does not support EIP-7594 blobs yet, even when gateway scripts
+        // run it with custom chain IDs. Prefer client detection, retaining the default chain-id
+        // fallback only if the client-version probe itself fails.
+        let supports_eip7594 = match provider.get_client_version().await {
+            Ok(version) => !version.to_lowercase().contains("anvil"),
+            Err(err) => {
+                tracing::warn!(%err, "failed to probe provider client version; falling back to chain-id EIP-7594 detection");
+                provider
+                    .get_chain_id()
+                    .await
+                    .map(|id| id != ANVIL_L1_CHAIN_ID)
+                    .unwrap_or(true)
+            }
+        };
         Self {
             get_header,
             finalized_tag,
@@ -962,14 +969,22 @@ mod tests {
         }
     }
 
+    fn geth_client_version() -> String {
+        "reth/v1.0.0".to_string()
+    }
+
+    fn anvil_client_version() -> String {
+        "anvil/v1.0.0".to_string()
+    }
+
     #[tokio::test]
     async fn uses_get_header_when_supported() {
         let asserter = Asserter::new();
         // Probe: get_header(latest) ok -> get_header supported; get_header(finalized) ok ->
-        // finalized supported; get_chain_id -> non-anvil.
+        // finalized supported; client version -> non-anvil.
         asserter.push_success(&header_with_number(1));
         asserter.push_success(&header_with_number(1));
-        asserter.push_success(&U64::from(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -991,10 +1006,10 @@ mod tests {
     async fn falls_back_to_get_block_when_get_header_unsupported() {
         let asserter = Asserter::new();
         // Probe: get_header(latest) fails -> get_header unsupported; get_block(finalized) ok ->
-        // finalized supported; get_chain_id -> non-anvil.
+        // finalized supported; client version -> non-anvil.
         asserter.push_failure(unsupported_method());
         asserter.push_success(&block_with_number(1));
-        asserter.push_success(&U64::from(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1023,6 +1038,7 @@ mod tests {
             message: Cow::Borrowed("finalized block not found"),
             data: None,
         });
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1049,6 +1065,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(invalid_params());
         asserter.push_success(&block_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1072,6 +1089,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(invalid_params());
         asserter.push_failure(invalid_params());
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1088,6 +1106,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(transient_upstream_error());
         asserter.push_success(&header_with_number(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1111,7 +1130,7 @@ mod tests {
         asserter.push_success(&header_with_number(1));
         asserter.push_failure(unsupported_method());
         asserter.push_failure(unsupported_method());
-        asserter.push_success(&U64::from(1));
+        asserter.push_success(&geth_client_version());
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
             .expect("mocked provider construction should succeed");
@@ -1141,11 +1160,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn anvil_chain_id_disables_eip7594() {
+    async fn anvil_client_version_disables_eip7594() {
         let asserter = Asserter::new();
-        // Probe: get_header(latest) ok; get_header(finalized) ok; get_chain_id -> anvil.
+        // Probe: get_header(latest) ok; get_header(finalized) ok; client version -> anvil.
         asserter.push_success(&header_with_number(1));
         asserter.push_success(&header_with_number(1));
+        asserter.push_success(&anvil_client_version());
+        let provider = NodeProvider::new(mocked_provider(&asserter))
+            .await
+            .expect("mocked provider construction should succeed");
+        assert!(!provider.capabilities().supports_eip7594);
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    #[tokio::test]
+    async fn anvil_chain_id_disables_eip7594_when_client_probe_fails() {
+        let asserter = Asserter::new();
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&header_with_number(1));
+        asserter.push_failure(transient_upstream_error());
         asserter.push_success(&U64::from(ANVIL_L1_CHAIN_ID));
         let provider = NodeProvider::new(mocked_provider(&asserter))
             .await
