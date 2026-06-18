@@ -358,6 +358,9 @@ impl JsTracer {
     }
 
     fn invoke_method(&mut self, method: TracerMethod, arg: &JsonValue) {
+        if !self.tracing_current_tx {
+            return;
+        }
         if self.error.is_some() {
             return;
         }
@@ -678,9 +681,6 @@ impl AnyTracer for JsTracer {
 
 impl EvmTracer for JsTracer {
     fn on_new_execution_frame(&mut self, request: impl EvmRequest) {
-        if !self.tracing_current_tx {
-            return;
-        }
         let checkpoint = self.current_overlay_checkpoint();
 
         let call_value = request.nominal_token_value();
@@ -743,9 +743,6 @@ impl EvmTracer for JsTracer {
     }
 
     fn after_execution_frame_completed(&mut self, result: Option<(EvmResources, CallResult)>) {
-        if !self.tracing_current_tx {
-            return;
-        }
         let (gas_used, output, revert_reason) = match &result {
             Some((resources, res)) => match res {
                 CallResult::Successful { returndata } => (
@@ -799,9 +796,6 @@ impl EvmTracer for JsTracer {
     /// This method only performs a sanity check that the values in the overlay match the ones
     /// from the state.
     fn on_storage_read(&mut self, _: bool, address: Address, key: B256, value: B256) {
-        if !self.tracing_current_tx {
-            return;
-        }
         let storage_key = (address, key);
         if let Some(entry) = self
             .storage_overlay
@@ -826,9 +820,6 @@ impl EvmTracer for JsTracer {
     }
 
     fn on_storage_write(&mut self, _is_transient: bool, address: Address, key: B256, value: B256) {
-        if !self.tracing_current_tx {
-            return;
-        }
         {
             let mut overlay = self.storage_overlay.borrow_mut();
             let storage_key = (address, key);
@@ -864,9 +855,6 @@ impl EvmTracer for JsTracer {
         _new_internal_bytecode_hash: B256,
         new_observable_bytecode_length: u32,
     ) {
-        if !self.tracing_current_tx {
-            return;
-        }
         let new_value = new_raw_bytecode.map(|code| {
             let len = new_observable_bytecode_length as usize;
             let slice = if code.len() >= len {
@@ -928,10 +916,6 @@ impl EvmTracer for JsTracer {
     }
 
     fn finish_tx(&mut self) {
-        if !self.tracing_current_tx {
-            self.current_tx_index += 1;
-            return;
-        }
         if self.error.is_some() {
             self.rollback_overlays();
             self.clear_overlay_journals();
@@ -962,11 +946,13 @@ impl EvmTracer for JsTracer {
 
         let mut tx_failed = self.tx_failed || ctx.error.is_some();
 
-        match self.call_result(&ctx) {
-            Ok(val) => self.results.push(val),
-            Err(err) => {
-                tx_failed = true;
-                self.record_error(TracerMethod::Result, err);
+        if self.tracing_current_tx {
+            match self.call_result(&ctx) {
+                Ok(val) => self.results.push(val),
+                Err(err) => {
+                    tx_failed = true;
+                    self.record_error(TracerMethod::Result, err);
+                }
             }
         }
 
@@ -1056,9 +1042,6 @@ impl EvmTracer for JsTracer {
     }
 
     fn on_call_error(&mut self, error: &EvmError) {
-        if !self.tracing_current_tx {
-            return;
-        }
         self.pending_step = None;
         self.tx_failed = true;
         let obj = serde_json::json!({
@@ -1075,9 +1058,6 @@ impl EvmTracer for JsTracer {
         token_value: U256,
         frame_state: impl EvmFrameInterface,
     ) {
-        if !self.tracing_current_tx {
-            return;
-        }
         if token_value != U256::ZERO {
             if let Err(err) =
                 self.apply_balance_delta(frame_state.address(), U256::ZERO, token_value)
