@@ -201,6 +201,14 @@ fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn initial_applied_block_number<T: L2Subpool>(
+    block_context_provider: &BlockContextProvider<T>,
+) -> Option<BlockNumber> {
+    block_context_provider
+        .last_block_number()
+        .filter(|block_number| *block_number > 0)
+}
+
 // SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
 // its first Produce command, which can be delayed by replay.
 fn initial_transaction_acceptance_state(
@@ -1264,7 +1272,8 @@ async fn run_main_node_pipeline(
     let pipeline_gate = monitor.subscribe_gate();
 
     let (replays_to_execute_sender, replays_to_execute) = tokio::sync::mpsc::unbounded_channel();
-    let (applied_block_number_sender, applied_block_number_receiver) = watch::channel(None);
+    let (applied_block_number_sender, applied_block_number_receiver) =
+        watch::channel(initial_applied_block_number(&block_context_provider));
 
     let pipeline = Pipeline::new(runtime.clone())
         .pipe(ConsensusNodeCommandSource {
@@ -1603,7 +1612,8 @@ async fn run_en_pipeline(
             .rocks_db_path
             .join(INTERNAL_CONFIG_FILE_NAME),
     );
-    let (applied_block_number_sender, applied_block_number_receiver) = watch::channel(None);
+    let (applied_block_number_sender, applied_block_number_receiver) =
+        watch::channel(initial_applied_block_number(&block_context_provider));
 
     let monitor =
         BackpressureMonitor::new(config.build_backpressure_config(), stop_receiver.clone());
