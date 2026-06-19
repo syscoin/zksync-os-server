@@ -996,8 +996,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         effective_pubdata_mode,
     );
 
-    let persistent_batch_storage =
-        ExecutedBatchStorage::new(&config.general_config.rocks_db_path.join(BATCH_DB_NAME));
     let rpc_storage = RpcStorage::new(
         repositories.clone(),
         block_replay_storage.clone(),
