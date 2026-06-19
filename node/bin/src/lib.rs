@@ -9,10 +9,8 @@ mod command_source;
 pub mod config;
 pub mod default_protocol_version;
 // SYSCOIN
-mod en_migration_trigger;
 mod en_remote_config;
 mod init_tx_forwarder;
-mod migration_gate;
 mod node_state_on_startup;
 mod priority_tree_pipeline_step;
 pub mod prover_api;
@@ -34,7 +32,6 @@ use crate::config::{
     Config, ProverApiConfig, base_token_price_updater_config, gas_adjuster_config,
     report_static_config_metrics,
 };
-use crate::en_migration_trigger::EnMigrationTrigger;
 use crate::en_remote_config::load_remote_config;
 use crate::init_tx_forwarder::{build_consensus_tx_forwarder, build_static_tx_forwarder};
 use crate::node_state_on_startup::NodeStateOnStartup;
@@ -76,7 +73,6 @@ use zksync_os_contract_interface::models::BatchDaInputMode;
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
 use zksync_os_internal_config::InternalConfigManager;
-use zksync_os_interop_fee_updater::{InteropFeeUpdater, InteropFeeUpdaterConfig};
 use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
@@ -85,8 +81,8 @@ use zksync_os_l1_sender::upgrade_gatekeeper::UpgradeGatekeeper;
 use zksync_os_l1_watcher::L1PersistBatchWatcher;
 use zksync_os_l1_watcher::{
     CommittedBatchProvider, L1CommitWatcher, L1ExecuteWatcher, L1FinalizedExecuteWatcher,
-    MigrationFinalizedWatcher, SettlementLayerWatcher,
 };
+use zksync_os_mempool::LocalEthCall;
 use zksync_os_mempool::Pool;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
@@ -124,8 +120,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
-    PubdataMode, TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
+    TransactionAcceptanceState,
 };
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -203,6 +199,16 @@ fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
             .as_ref()
             .map(|secret| secret.expose_secret())
             .is_some_and(|value| !value.trim().is_empty())
+}
+
+// SYSCOIN: restarts from an already-persisted non-genesis block must not wait
+// for BlockApplier to re-emit that seed block before replay can begin.
+fn initial_applied_block_number<T: L2Subpool>(
+    block_context_provider: &BlockContextProvider<T>,
+) -> Option<BlockNumber> {
+    block_context_provider
+        .last_block_number()
+        .filter(|block_number| *block_number > 0)
 }
 
 // SYSCOIN: A read-only main node must reject RPC txs before the sequencer consumes
@@ -890,55 +896,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         );
     }
 
-    // Last-finalized migration counter, the sole input to `MigrationGate`'s pause decision.
-    // Always created so the gate has a stable receiver regardless of protocol version; on
-    // pre-v31 chains it stays at 0 (no migrations exist) and the gate is transparent.
-    let (last_finalized_migration_sender, last_finalized_migration_receiver) =
-        watch::channel::<u64>(0);
-
-    // Carries the trigger batch number from MigrationGate to SettlementLayerWatcher.
-    // None until MigrationGate detects the SetSLChainId batch; Some(N) after detection.
-    let (migration_triggered_sender, migration_triggered_receiver) =
-        watch::channel::<Option<u64>>(None);
-
-    if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
-        // Initializes `last_finalized_migration` from the SL's `migrationNumber(chainId)` and,
-        // if the current SL interval migration has not yet finalized, spawns a watcher to track
-        // future `MigrationFinalized` events. When the migration is already finalized at startup
-        // the watcher is skipped — the seeded counter alone keeps the gate transparent.
-        let migration_finalized_watcher = MigrationFinalizedWatcher::create_watcher(
-            node_startup_state.l1_state.diamond_proxy_sl.clone(),
-            archive_lookup_diamond_proxy_sl.clone(),
-            node_startup_state.l1_state.bridgehub_sl.clone(),
-            &node_startup_state.l1_state.settlement_layer_intervals,
-            chain_id,
-            node_startup_state.l1_state.l1_chain_id,
-            node_startup_state.l1_state.sl_chain_id,
-            config.l1_watcher_config.clone().into(),
-            // SYSCOIN: keep a sender alive when the watcher is skipped so MigrationGate's
-            // receiver is not closed before a future migration.
-            last_finalized_migration_sender.clone(),
-        )
-        .await
-        .expect("failed to start migration finalized watcher");
-        if let Some(watcher) = migration_finalized_watcher {
-            runtime.spawn_critical_task("migration finalized watcher", watcher.run(()));
-        }
-
-        // Crashes the node when getSettlementLayer() changes, forcing a restart against the
-        // new settlement layer.
-        runtime.spawn_critical_task(
-            "settlement layer watcher",
-            SettlementLayerWatcher::new(
-                node_startup_state.l1_state.diamond_proxy_l1.clone(),
-                node_startup_state.l1_state.settlement_layer_address,
-                config.l1_watcher_config.poll_interval,
-                migration_triggered_receiver,
-            )
-            .run(),
-        );
-    }
-
     // Transaction acceptance state - tracks whether we're accepting new transactions
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
     // External nodes: always accepts, but may be rejected on the main node side during forwarding
@@ -1039,11 +996,33 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         effective_pubdata_mode,
     );
 
+    let rpc_storage = RpcStorage::new(
+        repositories.clone(),
+        block_replay_storage.clone(),
+        finality_storage.clone(),
+        persistent_batch_storage.clone(),
+        state.clone(),
+        tree_for_rpc,
+    );
+
+    // Mini-component capable of doing local `eth_call` without going through RPC. Needed for
+    // interop fee updater so it can query the current interop fee.
+    let local_eth_call = Box::new(EthCallHandler::new(
+        config.rpc_config.clone().into(),
+        rpc_storage.clone(),
+        chain_id,
+        last_constructed_block_ctx_receiver.clone(),
+        // Interop fee updater runs inside the node and is not a user-facing
+        // RPC surface, so the admit boundary doesn't apply.
+        None,
+    )) as Box<dyn LocalEthCall>;
+
     let pool = Pool::new(
         runtime.clone(),
         genesis.clone(),
         &node_startup_state.l1_state,
         zksync_os_mempool::Config {
+            node_role,
             chain_id,
             gateway_chain_id: config.general_config.gateway_chain_id,
             interop_roots_per_tx: config.sequencer_config.interop_roots_per_tx,
@@ -1051,12 +1030,15 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             // SYSCOIN: use the archive-capable L1 lookup chain for startup cursor resolution.
             archive_lookup_diamond_proxy_l1: archive_lookup_diamond_proxy_l1.clone(),
             l1_watcher_config: config.l1_watcher_config.clone().into(),
+            interop_fee_updater_config: config.interop_fee_updater_config.clone().into(),
         },
+        local_eth_call,
+        base_token_price_handle.clone(),
+        // todo: eventually this should be initialized inside `Pool::new`
         l2_subpool.clone(),
     )
     .await
     .expect("failed to create mempool");
-    let interop_fee_subpool = pool.interop_fee_subpool().clone();
     let block_context_provider = BlockContextProvider::new(
         fee_provider,
         pool,
@@ -1079,14 +1061,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // ========== Start L1 Persist Batch Watcher ===========
 
-    let rpc_storage = RpcStorage::new(
-        repositories.clone(),
-        block_replay_storage.clone(),
-        finality_storage.clone(),
-        persistent_batch_storage.clone(),
-        state.clone(),
-        tree_for_rpc,
-    );
     // SYSCOIN: persist watcher setup may lazily resolve historical Gateway intervals that still
     // need persistence.
     runtime.spawn_critical_task("l1 batch persist watcher", {
@@ -1121,45 +1095,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         "state compact loop",
         state_clone.compact_periodically_optional(),
     );
-
-    if node_role.is_main()
-        && settles_on_gateway
-        && current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0)
-    {
-        let eth_call_handler = EthCallHandler::new(
-            config.rpc_config.clone().into(),
-            rpc_storage.clone(),
-            chain_id,
-            last_constructed_block_ctx_receiver.clone(),
-            // Interop fee updater runs inside the node and is not a user-facing
-            // RPC surface, so the admit boundary doesn't apply.
-            None,
-        );
-        // todo: make this a subcomponent of mempool
-        let interop_fee_updater = InteropFeeUpdater::new(
-            eth_call_handler,
-            sl_provider.clone().erased(),
-            interop_fee_subpool,
-            base_token_price_handle.clone(),
-            InteropFeeUpdaterConfig {
-                polling_interval: config.interop_fee_updater_config.polling_interval,
-                update_deviation_percentage: config
-                    .interop_fee_updater_config
-                    .update_deviation_percentage,
-            },
-        );
-        runtime.spawn_critical_with_graceful_shutdown_signal(
-            "interop fee updater",
-            |shutdown| async move {
-                tokio::select! {
-                    _ = interop_fee_updater.run() => {}
-                    _guard = shutdown => {
-                        tracing::info!("interop fee updater graceful shutdown complete");
-                    }
-                }
-            },
-        );
-    }
 
     let replay_archive =
         init_replay_archive(config.replay_archive_config.clone().into(), runtime).await;
@@ -1199,8 +1134,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             commit_submitted_tx,
             verify_request_tx,
             verify_result_rx,
-            last_finalized_migration_receiver,
-            migration_triggered_sender,
             settles_on_gateway,
             effective_pubdata_mode,
             replay_archiver,
@@ -1214,7 +1147,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             node_startup_state,
             archiving_block_replay_storage,
             runtime,
-            starting_block,
             block_context_provider,
             state.clone(),
             tree_db,
@@ -1225,9 +1157,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             chain_id,
             verify_batch_rx,
             outgoing_verify_results.clone(),
-            last_finalized_migration_receiver,
-            // SYSCOIN
-            migration_triggered_sender,
         )
         .await
     };
@@ -1324,8 +1253,6 @@ async fn run_main_node_pipeline(
     commit_submitted_tx: watch::Sender<u64>,
     verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
-    last_finalized_migration: watch::Receiver<u64>,
-    migration_triggered: watch::Sender<Option<u64>>,
     settles_on_gateway: bool,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
@@ -1346,7 +1273,7 @@ async fn run_main_node_pipeline(
 
     let (replays_to_execute_sender, replays_to_execute) = tokio::sync::mpsc::unbounded_channel();
     let (applied_block_number_sender, applied_block_number_receiver) =
-        watch::channel(starting_block.saturating_sub(1));
+        watch::channel(initial_applied_block_number(&block_context_provider));
 
     let pipeline = Pipeline::new(runtime.clone())
         .pipe(ConsensusNodeCommandSource {
@@ -1598,10 +1525,6 @@ async fn run_main_node_pipeline(
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
-        .pipe(migration_gate::MigrationGate {
-            last_finalized_migration,
-            migration_triggered,
-        })
         // SYSCOIN
         .pipe(BitcoinDaFinalityGate::new(
             config.batcher_config.clone(),
@@ -1672,7 +1595,6 @@ async fn run_en_pipeline(
     node_state_on_startup: NodeStateOnStartup,
     block_replay_storage: impl WriteReplay + Clone,
     runtime: &Runtime,
-    starting_block: u64,
     block_context_provider: BlockContextProvider<impl L2Subpool>,
     state: impl ReadStateHistory + WriteState + Clone,
     tree: MerkleTree<RocksDBWrapper>,
@@ -1683,8 +1605,6 @@ async fn run_en_pipeline(
     chain_id: u64,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
-    last_finalized_migration: watch::Receiver<u64>,
-    migration_triggered: watch::Sender<Option<u64>>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
     let internal_config_manager = init_and_report_internal_config_manager(
         config
@@ -1693,7 +1613,7 @@ async fn run_en_pipeline(
             .join(INTERNAL_CONFIG_FILE_NAME),
     );
     let (applied_block_number_sender, applied_block_number_receiver) =
-        watch::channel(starting_block.saturating_sub(1));
+        watch::channel(initial_applied_block_number(&block_context_provider));
 
     let monitor =
         BackpressureMonitor::new(config.build_backpressure_config(), stop_receiver.clone());
@@ -1718,13 +1638,6 @@ async fn run_en_pipeline(
             repositories: repositories.clone(),
             config: config.into(),
             applied_block_number_sender,
-        })
-        // SYSCOIN
-        .pipe(EnMigrationTrigger {
-            committed_batch_provider: committed_batch_provider.clone(),
-            finality: finality.clone(),
-            last_finalized_migration,
-            migration_triggered,
         })
         .pipe_opt(
             config

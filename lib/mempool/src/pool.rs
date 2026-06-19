@@ -1,3 +1,4 @@
+use crate::interop_fee_updater::{InteropFeeUpdater, InteropFeeUpdaterConfig, LocalEthCall};
 use crate::metrics::TRANSACTION_POOL_METRICS;
 use crate::subpools::interop_fee::InteropFeeSubpool;
 use crate::subpools::interop_roots::InteropRootsSubpool;
@@ -7,6 +8,7 @@ use crate::subpools::sl_chain_id::SlChainIdSubpool;
 use crate::subpools::upgrade::{UpgradeSubpool, UpgradeTransactionsStream};
 use alloy::consensus::{Header, Sealed};
 use alloy::primitives::{Address, ChainId, TxHash};
+use alloy::providers::Provider;
 use anyhow::Context;
 use futures::stream::{BoxStream, PollNext};
 use futures::{Stream, StreamExt};
@@ -16,19 +18,20 @@ use reth_primitives_traits::SealedBlock;
 use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
+use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
 use zksync_os_contract_interface::l1_discovery::L1State;
-use zksync_os_contract_interface::{Bridgehub, ZkChain};
+use zksync_os_contract_interface::ZkChain;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
-    GatewayMigrationWatcher, InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig,
-    SegmentResolver, StartResolver,
+    InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig, SegmentResolver,
+    StartResolver,
 };
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
-    L1TxSerialId, ProtocolSemanticVersion, SystemTxType, UpgradeInfo, UpgradeMetadata, ZkEnvelope,
-    ZkTransaction,
+    L1TxSerialId, NodeRole, ProtocolSemanticVersion, SystemTxType, UpgradeInfo, UpgradeMetadata,
+    ZkEnvelope, ZkTransaction,
 };
 
 /// General pool that provides unified access to all transaction sources in the system.
@@ -43,29 +46,22 @@ pub struct Pool<T> {
     interop_roots_subpool: InteropRootsSubpool,
     l1_subpool: L1Subpool,
     l2_subpool: T,
-    watchers: Watchers,
+    subcomponents: Subcomponents,
 }
 
-struct Watchers {
+struct Subcomponents {
     upgrade_watcher: Option<StartResolver<ProtocolSemanticVersion, L1UpgradeTxWatcher>>,
     l1_tx_watcher: Option<StartResolver<u64, L1TxWatcher>>,
     interop_watcher: Option<SegmentResolver<u64, InteropWatcher>>,
-    // SYSCOIN: build the gateway migration watcher only after replay proves v31+.
-    gateway_migration_watcher_config: Option<GatewayMigrationWatcherConfig>,
-}
-
-struct GatewayMigrationWatcherConfig {
-    zk_chain: ZkChain<NodeProvider>,
-    archive_lookup_zk_chain: Option<ZkChain<NodeProvider>>,
-    bridgehub: Bridgehub<NodeProvider>,
-    l2_chain_id: ChainId,
-    l1_chain_id: ChainId,
-    gw_chain_id: ChainId,
-    config: L1WatcherConfig,
-    sink: SlChainIdSubpool,
+    /// Polls local + gateway state and enqueues interop-fee-update system txs into
+    /// `interop_fee_subpool`.
+    /// `None` unless this node is responsible for interop fee updates (main node settling on
+    /// Gateway) - see [`Pool::new`].
+    interop_fee_updater: Option<InteropFeeUpdater>,
 }
 
 pub struct Config {
+    pub node_role: NodeRole,
     pub chain_id: ChainId,
     pub gateway_chain_id: ChainId,
     pub interop_roots_per_tx: usize,
@@ -74,6 +70,7 @@ pub struct Config {
     // polling the live provider.
     pub archive_lookup_diamond_proxy_l1: Option<ZkChain<NodeProvider>>,
     pub l1_watcher_config: L1WatcherConfig,
+    pub interop_fee_updater_config: InteropFeeUpdaterConfig,
 }
 
 impl<T: L2Subpool> Pool<T> {
@@ -82,6 +79,8 @@ impl<T: L2Subpool> Pool<T> {
         genesis: Genesis,
         l1_state: &L1State,
         config: Config,
+        eth_call: Box<dyn LocalEthCall>,
+        base_token_price: BaseTokenPriceHandle,
         l2_subpool: T,
     ) -> anyhow::Result<Self> {
         let upgrade_subpool = UpgradeSubpool::default();
@@ -89,6 +88,19 @@ impl<T: L2Subpool> Pool<T> {
         let interop_fee_subpool = InteropFeeSubpool::default();
         let interop_roots_subpool = InteropRootsSubpool::new(config.interop_roots_per_tx);
         let l1_subpool = L1Subpool::new(10);
+
+        // The interop fee updater only runs on the main node and only when it is settling on Gateway.
+        let interop_fee_updater = if config.node_role.is_main() && l1_state.settles_on_gateway() {
+            Some(InteropFeeUpdater::new(
+                eth_call,
+                l1_state.diamond_proxy_sl.provider().clone().erased(),
+                base_token_price,
+                interop_fee_subpool.clone(),
+                config.interop_fee_updater_config.clone(),
+            ))
+        } else {
+            None
+        };
 
         let upgrade_watcher = L1UpgradeTxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -102,7 +114,7 @@ impl<T: L2Subpool> Pool<T> {
             upgrade_subpool.clone(),
         )
         .await
-        .expect("failed to start L1 upgrade transaction watcher");
+        .context("failed to start L1 upgrade transaction watcher")?;
 
         let interop_watcher = InteropWatcher::create_watcher(
             l1_state.settlement_layer_intervals.clone(),
@@ -122,20 +134,11 @@ impl<T: L2Subpool> Pool<T> {
         .await
         .context("failed to create L1 transaction watcher")?;
 
-        let watchers = Watchers {
+        let subcomponents = Subcomponents {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
             interop_watcher,
-            gateway_migration_watcher_config: Some(GatewayMigrationWatcherConfig {
-                zk_chain: l1_state.diamond_proxy_l1.clone(),
-                archive_lookup_zk_chain: config.archive_lookup_diamond_proxy_l1.clone(),
-                bridgehub: l1_state.bridgehub_l1.clone(),
-                l2_chain_id: config.chain_id,
-                l1_chain_id: l1_state.l1_chain_id,
-                gw_chain_id: config.gateway_chain_id,
-                config: config.l1_watcher_config.clone(),
-                sink: sl_chain_id_subpool.clone(),
-            }),
+            interop_fee_updater,
         };
 
         Ok(Self {
@@ -147,12 +150,8 @@ impl<T: L2Subpool> Pool<T> {
             interop_roots_subpool,
             l1_subpool,
             l2_subpool,
-            watchers,
+            subcomponents,
         })
-    }
-
-    pub fn interop_fee_subpool(&self) -> &InteropFeeSubpool {
-        &self.interop_fee_subpool
     }
 
     /// Initializes mempool with the starting block, expects to be called exactly once during the
@@ -185,44 +184,31 @@ impl<T: L2Subpool> Pool<T> {
             .init(replay.starting_cursors.interop_fee_number)
             .await;
 
-        if let Some(upgrade_watcher) = self.watchers.upgrade_watcher.take() {
+        if let Some(upgrade_watcher) = self.subcomponents.upgrade_watcher.take() {
             self.runtime.spawn_critical_task(
                 "L1 upgrade transaction watcher",
                 upgrade_watcher.run(current_protocol_version.clone()),
             );
         }
-        if let Some(l1_tx_watcher) = self.watchers.l1_tx_watcher.take() {
+        if let Some(l1_tx_watcher) = self.subcomponents.l1_tx_watcher.take() {
             self.runtime.spawn_critical_task(
                 "L1 transaction watcher",
                 l1_tx_watcher.run(replay.starting_cursors.l1_priority_id),
             );
         }
         if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
-            if let Some(gateway_migration_config) =
-                self.watchers.gateway_migration_watcher_config.take()
-            {
-                let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
-                    gateway_migration_config.zk_chain,
-                    gateway_migration_config.archive_lookup_zk_chain,
-                    gateway_migration_config.bridgehub,
-                    gateway_migration_config.l2_chain_id,
-                    gateway_migration_config.l1_chain_id,
-                    gateway_migration_config.gw_chain_id,
-                    gateway_migration_config.config,
-                    gateway_migration_config.sink,
-                )
-                .await
-                .expect("failed to create gateway migration watcher");
-                self.runtime.spawn_critical_task(
-                    "gateway migration watcher",
-                    gateway_migration_watcher.run(replay.starting_cursors.migration_number),
-                );
-            }
-            if let Some(interop_watcher) = self.watchers.interop_watcher.take() {
+            // SYSCOIN: upstream removed the restart/gate path required for safe live
+            // Gateway migrations. Syscoin deploys directly on v31, so do not emit live
+            // SetSLChainId migration txs without the corresponding restart machinery.
+            if let Some(interop_watcher) = self.subcomponents.interop_watcher.take() {
                 self.runtime.spawn_critical_task(
                     "interop roots watcher",
                     interop_watcher.run(replay.starting_cursors.interop_root_id),
                 );
+            }
+            if let Some(interop_fee_updater) = self.subcomponents.interop_fee_updater.take() {
+                self.runtime
+                    .spawn_critical_task("interop fee updater", interop_fee_updater.run());
             }
         }
     }
