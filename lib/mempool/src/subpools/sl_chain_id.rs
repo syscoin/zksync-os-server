@@ -78,17 +78,8 @@ impl SlChainIdSubpool {
         self.notify.notify_waiters();
     }
 
-    async fn pop_wait(&self) -> SystemTxEnvelope {
-        loop {
-            let notified = self.notify.notified();
-            {
-                let mut inner = self.inner.write().await;
-                if let Some(pending_tx) = inner.pending_txs.pop_back() {
-                    return pending_tx;
-                }
-            }
-            notified.await;
-        }
+    async fn pop_pending(&self) -> Option<SystemTxEnvelope> {
+        self.inner.write().await.pending_txs.pop_back()
     }
 
     /// Returns the migration_number and the target SL chain id of the most recent
@@ -109,8 +100,17 @@ impl SlChainIdSubpool {
                 continue;
             }
 
-            let pending_tx = self.pop_wait().await;
-            assert_eq!(tx, &pending_tx);
+            if let Some(pending_tx) = self.pop_pending().await {
+                assert_eq!(tx, &pending_tx);
+            } else {
+                // SYSCOIN: live gateway migration emission is disabled after upstream removed the
+                // restart gate. Historical replay may still contain non-placeholder migration txs,
+                // so reconcile them from the replay record instead of waiting for a watcher source.
+                tracing::debug!(
+                    ?tx,
+                    "reconciled replayed SetSLChainId transaction without pending subpool entry"
+                );
+            }
 
             if let SystemTxType::SetSLChainId(target_sl_chain_id, migration_number) =
                 *tx.system_subtype()
