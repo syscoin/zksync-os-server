@@ -88,6 +88,7 @@ alloy = { workspace = true, default-features = false, features = [
 ] }
 blake2.workspace = true
 clap = { workspace = true, features = ["derive", "wrap_help"] }
+# SYSCOIN: prover input metadata injects compact edge DA commit target as B160.
 ruint.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-stream.workspace = true

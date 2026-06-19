@@ -20,12 +20,12 @@ use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
 use zksync_os_contract_interface::l1_discovery::L1State;
-use zksync_os_contract_interface::{Bridgehub, ZkChain};
+use zksync_os_contract_interface::ZkChain;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
-    GatewayMigrationWatcher, InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig,
-    SegmentResolver, StartResolver,
+    InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig, SegmentResolver,
+    StartResolver,
 };
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReplayRecord;
@@ -53,24 +53,11 @@ struct Subcomponents {
     upgrade_watcher: Option<StartResolver<ProtocolSemanticVersion, L1UpgradeTxWatcher>>,
     l1_tx_watcher: Option<StartResolver<u64, L1TxWatcher>>,
     interop_watcher: Option<SegmentResolver<u64, InteropWatcher>>,
-    // SYSCOIN: build the gateway migration watcher only after replay proves v31+.
-    gateway_migration_watcher_config: Option<GatewayMigrationWatcherConfig>,
     /// Polls local + gateway state and enqueues interop-fee-update system txs into
     /// `interop_fee_subpool`.
     /// `None` unless this node is responsible for interop fee updates (main node settling on
     /// Gateway) - see [`Pool::new`].
     interop_fee_updater: Option<InteropFeeUpdater>,
-}
-
-struct GatewayMigrationWatcherConfig {
-    zk_chain: ZkChain<NodeProvider>,
-    archive_lookup_zk_chain: Option<ZkChain<NodeProvider>>,
-    bridgehub: Bridgehub<NodeProvider>,
-    l2_chain_id: ChainId,
-    l1_chain_id: ChainId,
-    gw_chain_id: ChainId,
-    config: L1WatcherConfig,
-    sink: SlChainIdSubpool,
 }
 
 pub struct Config {
@@ -151,16 +138,6 @@ impl<T: L2Subpool> Pool<T> {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
             interop_watcher,
-            gateway_migration_watcher_config: Some(GatewayMigrationWatcherConfig {
-                zk_chain: l1_state.diamond_proxy_l1.clone(),
-                archive_lookup_zk_chain: config.archive_lookup_diamond_proxy_l1.clone(),
-                bridgehub: l1_state.bridgehub_l1.clone(),
-                l2_chain_id: config.chain_id,
-                l1_chain_id: l1_state.l1_chain_id,
-                gw_chain_id: config.gateway_chain_id,
-                config: config.l1_watcher_config.clone(),
-                sink: sl_chain_id_subpool.clone(),
-            }),
             interop_fee_updater,
         };
 
@@ -220,26 +197,9 @@ impl<T: L2Subpool> Pool<T> {
             );
         }
         if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
-            if let Some(gateway_migration_config) =
-                self.subcomponents.gateway_migration_watcher_config.take()
-            {
-                let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
-                    gateway_migration_config.zk_chain,
-                    gateway_migration_config.archive_lookup_zk_chain,
-                    gateway_migration_config.bridgehub,
-                    gateway_migration_config.l2_chain_id,
-                    gateway_migration_config.l1_chain_id,
-                    gateway_migration_config.gw_chain_id,
-                    gateway_migration_config.config,
-                    gateway_migration_config.sink,
-                )
-                .await
-                .expect("failed to create gateway migration watcher");
-                self.runtime.spawn_critical_task(
-                    "gateway migration watcher",
-                    gateway_migration_watcher.run(replay.starting_cursors.migration_number),
-                );
-            }
+            // SYSCOIN: upstream removed the restart/gate path required for safe live
+            // Gateway migrations. Syscoin deploys directly on v31, so do not emit live
+            // SetSLChainId migration txs without the corresponding restart machinery.
             if let Some(interop_watcher) = self.subcomponents.interop_watcher.take() {
                 self.runtime.spawn_critical_task(
                     "interop roots watcher",

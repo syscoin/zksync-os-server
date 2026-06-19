@@ -201,6 +201,8 @@ fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+// SYSCOIN: restarts from an already-persisted non-genesis block must not wait
+// for BlockApplier to re-emit that seed block before replay can begin.
 fn initial_applied_block_number<T: L2Subpool>(
     block_context_provider: &BlockContextProvider<T>,
 ) -> Option<BlockNumber> {
