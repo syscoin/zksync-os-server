@@ -16592,6 +16592,7 @@ dependencies = [
  "reth-net-nat",
  "reth-network-peers",
  "reth-tasks",
+ "ruint",
  "rustls",
  "secrecy",
  "serde",
