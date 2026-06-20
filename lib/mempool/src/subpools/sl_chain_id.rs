@@ -92,6 +92,7 @@ impl SlChainIdSubpool {
             return Ok(None);
         }
 
+        let mut last_outcome = None;
         for tx in txs {
             if matches!(tx.system_subtype(), SystemTxType::SetSLChainId(_, u64::MAX)) {
                 // If we received a transaction with migration number `u64::MAX`, it means
@@ -117,13 +118,13 @@ impl SlChainIdSubpool {
             if let SystemTxType::SetSLChainId(target_sl_chain_id, migration_number) =
                 *tx.system_subtype()
             {
-                return Ok(Some(SlChainIdOutcome {
+                last_outcome = Some(SlChainIdOutcome {
                     last_migration_number: migration_number,
                     last_sl_chain_id_target: target_sl_chain_id,
-                }));
+                });
             }
         }
-        Ok(None)
+        Ok(last_outcome)
     }
 }
 
@@ -201,6 +202,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scans_all_replayed_migrations_and_returns_last_authenticated_tx() {
+        let subpool = SlChainIdSubpool::default();
+        let first_tx = SystemTxEnvelope::set_sl_chain_id(5700, 7);
+        let second_tx = SystemTxEnvelope::set_sl_chain_id(5701, 8);
+        subpool.insert(first_tx.clone()).await;
+        subpool.insert(second_tx.clone()).await;
+
+        let outcome = subpool
+            .on_canonical_state_change(vec![&first_tx, &second_tx])
+            .await
+            .expect("all migration txs should be authenticated");
+
+        let outcome = outcome.expect("last migration should advance cursor");
+        assert_eq!(outcome.last_migration_number, 8);
+        assert_eq!(outcome.last_sl_chain_id_target, 5701);
+    }
+
+    #[tokio::test]
     async fn rejects_replayed_migration_without_pending_watcher_tx() {
         let subpool = SlChainIdSubpool::default();
         let tx = SystemTxEnvelope::set_sl_chain_id(5700, 7);
@@ -209,6 +228,24 @@ mod tests {
             .on_canonical_state_change(vec![&tx])
             .await
             .expect_err("replay-only migration must fail closed");
+
+        assert!(
+            err.to_string()
+                .contains("no watcher-authenticated pending entry")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_later_replayed_migration_after_authenticated_tx() {
+        let subpool = SlChainIdSubpool::default();
+        let authenticated_tx = SystemTxEnvelope::set_sl_chain_id(5700, 7);
+        let replayed_tx = SystemTxEnvelope::set_sl_chain_id(5701, 8);
+        subpool.insert(authenticated_tx.clone()).await;
+
+        let err = subpool
+            .on_canonical_state_change(vec![&authenticated_tx, &replayed_tx])
+            .await
+            .expect_err("every non-placeholder migration must be authenticated");
 
         assert!(
             err.to_string()
