@@ -19,8 +19,8 @@ use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
-use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_contract_interface::ZkChain;
+use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
