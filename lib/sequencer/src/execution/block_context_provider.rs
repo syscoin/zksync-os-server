@@ -489,7 +489,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         block_output: &BlockOutput,
         replay_record: &ReplayRecord,
         strict_subpool_cleanup: bool,
-    ) {
+    ) -> anyhow::Result<()> {
         let mut next_cursors = replay_record.starting_cursors.clone();
         let outcome = self
             .pool
@@ -499,7 +499,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
                 replay_record,
                 strict_subpool_cleanup,
             )
-            .await;
+            .await?;
         if let Some(last_l1_priority_id) = outcome.last_l1_priority_id {
             next_cursors.l1_priority_id = last_l1_priority_id + 1;
             EXECUTION_METRICS
@@ -537,7 +537,8 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             record: replay_record.clone(),
             hash: block_output.header.hash(),
             next_cursors,
-        })
+        });
+        Ok(())
     }
 }
 

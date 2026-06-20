@@ -87,9 +87,9 @@ impl SlChainIdSubpool {
     pub async fn on_canonical_state_change(
         &self,
         txs: Vec<&SystemTxEnvelope>,
-    ) -> Option<SlChainIdOutcome> {
+    ) -> anyhow::Result<Option<SlChainIdOutcome>> {
         if txs.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         for tx in txs {
@@ -101,27 +101,29 @@ impl SlChainIdSubpool {
             }
 
             if let Some(pending_tx) = self.pop_pending().await {
-                assert_eq!(tx, &pending_tx);
+                anyhow::ensure!(
+                    tx == &pending_tx,
+                    "replayed SetSLChainId tx does not match watcher-authenticated migration tx"
+                );
             } else {
-                // SYSCOIN: live gateway migration emission is disabled after upstream removed the
-                // restart gate. Historical replay may still contain non-placeholder migration txs,
-                // so reconcile them from the replay record instead of waiting for a watcher source.
-                tracing::debug!(
-                    ?tx,
-                    "reconciled replayed SetSLChainId transaction without pending subpool entry"
+                // SYSCOIN: live gateway migration emission is disabled after upstream removed
+                // the restart gate. Do not accept non-placeholder replayed migrations without
+                // watcher/L1 provenance; Syscoin direct-v31 uses only the u64::MAX placeholder.
+                anyhow::bail!(
+                    "SetSLChainId migration tx has no watcher-authenticated pending entry: {tx:?}"
                 );
             }
 
             if let SystemTxType::SetSLChainId(target_sl_chain_id, migration_number) =
                 *tx.system_subtype()
             {
-                return Some(SlChainIdOutcome {
+                return Ok(Some(SlChainIdOutcome {
                     last_migration_number: migration_number,
                     last_sl_chain_id_target: target_sl_chain_id,
-                });
+                }));
             }
         }
-        None
+        Ok(None)
     }
 }
 
@@ -162,5 +164,55 @@ impl Stream for SlChainIdTransactionsStream {
             }
             StreamState::Closed => Poll::Ready(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ignores_direct_v31_placeholder_without_pending_tx() {
+        let subpool = SlChainIdSubpool::default();
+        let tx = SystemTxEnvelope::set_sl_chain_id(5700, u64::MAX);
+
+        let outcome = subpool
+            .on_canonical_state_change(vec![&tx])
+            .await
+            .expect("placeholder reconciliation should not fail");
+
+        assert!(outcome.is_none());
+    }
+
+    #[tokio::test]
+    async fn accepts_watcher_authenticated_migration_tx() {
+        let subpool = SlChainIdSubpool::default();
+        let tx = SystemTxEnvelope::set_sl_chain_id(5700, 7);
+        subpool.insert(tx.clone()).await;
+
+        let outcome = subpool
+            .on_canonical_state_change(vec![&tx])
+            .await
+            .expect("pending watcher tx should authenticate migration");
+
+        let outcome = outcome.expect("migration should advance cursor");
+        assert_eq!(outcome.last_migration_number, 7);
+        assert_eq!(outcome.last_sl_chain_id_target, 5700);
+    }
+
+    #[tokio::test]
+    async fn rejects_replayed_migration_without_pending_watcher_tx() {
+        let subpool = SlChainIdSubpool::default();
+        let tx = SystemTxEnvelope::set_sl_chain_id(5700, 7);
+
+        let err = subpool
+            .on_canonical_state_change(vec![&tx])
+            .await
+            .expect_err("replay-only migration must fail closed");
+
+        assert!(
+            err.to_string()
+                .contains("no watcher-authenticated pending entry")
+        );
     }
 }
