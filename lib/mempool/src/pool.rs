@@ -19,8 +19,8 @@ use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
 use tokio::time::Instant;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
-use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_contract_interface::ZkChain;
+use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
@@ -369,7 +369,7 @@ impl<T: L2Subpool> Pool<T> {
         account_diffs: &[AccountDiff],
         replay_record: &ReplayRecord,
         strict_subpool_cleanup: bool,
-    ) -> StateChangeOutcome {
+    ) -> anyhow::Result<StateChangeOutcome> {
         let mut upgrade_txs = Vec::new();
         let mut interop_txs = Vec::new();
         let mut interop_fee_txs = Vec::new();
@@ -414,7 +414,7 @@ impl<T: L2Subpool> Pool<T> {
         let sl_chain_id_outcome = self
             .sl_chain_id_subpool
             .on_canonical_state_change(sl_chain_id_txs)
-            .await;
+            .await?;
         let last_l1_priority_id = self
             .l1_subpool
             .on_canonical_state_change(l1_transactions)
@@ -443,13 +443,13 @@ impl<T: L2Subpool> Pool<T> {
                 update_kind: PoolUpdateKind::Commit,
             });
 
-        StateChangeOutcome {
+        Ok(StateChangeOutcome {
             last_interop_log_id,
             last_l1_priority_id,
             last_migration_number: sl_chain_id_outcome.map(|o| o.last_migration_number),
             last_sl_chain_id_target: sl_chain_id_outcome.map(|o| o.last_sl_chain_id_target),
             last_interop_fee_number,
-        }
+        })
     }
 }
 

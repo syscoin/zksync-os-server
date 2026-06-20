@@ -198,7 +198,7 @@ where
                     &replay_record,
                     strict_subpool_cleanup,
                 )
-                .await;
+                .await?;
             let purged_txs_hashes = purged_txs.iter().map(|(hash, _)| *hash).collect();
             self.block_context_provider
                 .purge_transactions(purged_txs_hashes);
