@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §2: patch, build, genesis, dev contracts, derive zkSYS asset id, zkstack ecosystem init --deploy-ecosystem.
+# §2: patch, build, genesis, dev contracts, zkstack ecosystem init --deploy-ecosystem.
 # Requires: GATEWAY_DIR, ZKSYNC_ERA_PATH, ZKSYNC_OS_SERVER_PATH, L1_RPC_URL, L1_CHAIN_ID,
 #           REQUIRED_CONTRACTS_SHA, REQUIRED_ZKSTACK_CLI_SHA, optional FOUNDRY_EVM_VERSION
 set -euo pipefail
@@ -144,90 +144,6 @@ require_code_at() {
     echo "${label} has no code at ${addr}" >&2
     exit 1
   fi
-}
-
-normalize_bytes32_env() {
-  local name="${1:?name required}"
-  local default_value="${2:?default required}"
-  python3 - "${name}" "${default_value}" <<'PY'
-import os, sys
-
-name, default = sys.argv[1:]
-raw = os.environ.get(name, default).strip()
-if raw.startswith(("0x", "0X")):
-    value = int(raw[2:] or "0", 16)
-elif raw.isdecimal():
-    value = int(raw, 10)
-else:
-    value = int(raw, 16)
-if value < 0 or value >= 1 << 256:
-    raise SystemExit(f"{name} must fit bytes32")
-print("0x" + format(value, "064x"))
-PY
-}
-
-derive_zksys_l2_create2_addresses() {
-  : "${ZKSYS_L2_CREATE2_DEPLOYER:=0x4e59b44847b379578588920cA78FbF26c0B4956C}"
-  : "${ZKSYS_L2_TOKEN_NAME:=ZKSYS}"
-  : "${ZKSYS_L2_TOKEN_SYMBOL:=ZKSYS}"
-  : "${ZKSYS_L2_TOKEN_DECIMALS:=18}"
-  gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
-
-  ZKSYS_L2_CREATE2_DEPLOYER="$(python3 - <<'PY'
-import os
-
-addr = os.environ["ZKSYS_L2_CREATE2_DEPLOYER"].strip()
-if not addr.startswith(("0x", "0X")) or len(addr) != 42:
-    raise SystemExit("ZKSYS_L2_CREATE2_DEPLOYER must be a 20-byte hex address")
-value = int(addr[2:], 16)
-if value == 0:
-    raise SystemExit("ZKSYS_L2_CREATE2_DEPLOYER must not be zero")
-print("0x" + format(value, "040x"))
-PY
-)"
-  export ZKSYS_L2_CREATE2_DEPLOYER
-
-  ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(python3 - <<'PY'
-import os
-
-addr = os.environ["ZKSYS_L2_TOKEN_ADMIN_ADDRESS"].strip()
-if not addr.startswith(("0x", "0X")) or len(addr) != 42:
-    raise SystemExit("ZKSYS_L2_TOKEN_ADMIN_ADDRESS must be a 20-byte hex address")
-value = int(addr[2:], 16)
-if value == 0:
-    raise SystemExit("ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero")
-print("0x" + format(value, "040x"))
-PY
-)"
-  export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
-
-  case "${ZKSYS_L2_TOKEN_DECIMALS}" in
-  ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
-  esac
-  [ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 255 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 255"
-
-  ZKSYS_L2_PROXY_ADMIN_SALT="$(normalize_bytes32_env ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
-  ZKSYS_L2_TOKEN_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_TOKEN_IMPL_SALT 0x7a6b7379732d746f6b656e2d696d706c00000000000000000000000000000000)"
-  ZKSYS_L2_TOKEN_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_TOKEN_PROXY_SALT 0x7a6b7379732d746f6b656e2d70726f7879000000000000000000000000000000)"
-  export ZKSYS_L2_PROXY_ADMIN_SALT
-  export ZKSYS_L2_TOKEN_IMPL_SALT
-  export ZKSYS_L2_TOKEN_PROXY_SALT
-
-  local inspect_dir proxy_admin_init_code proxy_admin_ctor_args proxy_admin_addr token_init_code proxy_init_code impl_addr init_data proxy_ctor_args
-  inspect_dir="${ZKSYNC_OS_SERVER_PATH}/contracts"
-  proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
-  proxy_admin_init_code="$(forge inspect ZkSysProxyAdmin bytecode --root "${inspect_dir}")${proxy_admin_ctor_args#0x}"
-  proxy_admin_addr="$(cast create2 --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" --salt "${ZKSYS_L2_PROXY_ADMIN_SALT}" --init-code "${proxy_admin_init_code}")"
-  token_init_code="$(forge inspect SyscoinZKSYSToken bytecode --root "${inspect_dir}")"
-  impl_addr="$(cast create2 --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" --salt "${ZKSYS_L2_TOKEN_IMPL_SALT}" --init-code "${token_init_code}")"
-  init_data="$(cast calldata "initialize(string,string,uint8,address)" "${ZKSYS_L2_TOKEN_NAME}" "${ZKSYS_L2_TOKEN_SYMBOL}" "${ZKSYS_L2_TOKEN_DECIMALS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
-  proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${impl_addr}" "${proxy_admin_addr}" "${init_data}")"
-  proxy_init_code="$(forge inspect ZkSysCreate2ProxyBytecode bytecode --root "${inspect_dir}")${proxy_ctor_args#0x}"
-
-  export ZKSYS_L2_PROXY_ADMIN_ADDRESS="${proxy_admin_addr}"
-  export ZKSYS_L2_TOKEN_IMPL_ADDRESS="${impl_addr}"
-  export ZKSYS_L2_TOKEN_ADDRESS
-  ZKSYS_L2_TOKEN_ADDRESS="$(cast create2 --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" --salt "${ZKSYS_L2_TOKEN_PROXY_SALT}" --init-code "${proxy_init_code}")"
 }
 
 if [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
@@ -491,39 +407,6 @@ PY
     rm -f "${tmp_erc20_log}"
     exit "${erc20_ec}"
   done
-fi
-
-if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ]; then
-  : "${GATEWAY_CHAIN_ID:=57001}"
-  case "${GATEWAY_CHAIN_ID}" in
-  ''|*[!0-9]*) gl_die "GATEWAY_CHAIN_ID must be a non-zero decimal integer" ;;
-  0) gl_die "GATEWAY_CHAIN_ID must be non-zero" ;;
-  esac
-  derive_zksys_l2_create2_addresses
-  export L2_NATIVE_TOKEN_VAULT_ADDR=0x0000000000000000000000000000000000010004
-  export ZK_TOKEN_ASSET_ID="$(cast keccak "$(cast abi-encode \
-    "f(uint256,address,address)" \
-    "${GATEWAY_CHAIN_ID}" \
-    "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
-    "${ZKSYS_L2_TOKEN_ADDRESS}")")"
-  export ZK_TOKEN_ASSET_ID
-  echo "gateway-launch: derived L2 zkSYS proxyAdmin=${ZKSYS_L2_PROXY_ADMIN_ADDRESS} implementation=${ZKSYS_L2_TOKEN_IMPL_ADDRESS} proxy=${ZKSYS_L2_TOKEN_ADDRESS}"
-  echo "gateway-launch: derived L2-canonical ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
-else
-  DEV_ZKSYS_TOKEN_ADDRESS="${DEV_ZKSYS_TOKEN_ADDRESS:-$(extract_zksys_address_from_output || true)}"
-  require_code_at "${DEV_ZKSYS_TOKEN_ADDRESS}" "dev zksys token"
-
-  export L2_NATIVE_TOKEN_VAULT_ADDR=0x0000000000000000000000000000000000010004
-  DERIVED_ZK_TOKEN_ASSET_ID="$(cast keccak "$(cast abi-encode \
-    "f(uint256,address,address)" \
-    "${L1_CHAIN_ID}" \
-    "${L2_NATIVE_TOKEN_VAULT_ADDR}" \
-    "${DEV_ZKSYS_TOKEN_ADDRESS}")")"
-  if [ -n "${ZK_TOKEN_ASSET_ID:-}" ] && [ "$(gl_to_lower "${ZK_TOKEN_ASSET_ID}")" != "$(gl_to_lower "${DERIVED_ZK_TOKEN_ASSET_ID}")" ]; then
-    gl_die "ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID} does not match derived ${DERIVED_ZK_TOKEN_ASSET_ID}"
-  fi
-  export ZK_TOKEN_ASSET_ID="${DERIVED_ZK_TOKEN_ASSET_ID}"
-  echo "gateway-launch: derived ZK_TOKEN_ASSET_ID=${ZK_TOKEN_ASSET_ID}"
 fi
 
 cd "${GATEWAY_DIR}"
