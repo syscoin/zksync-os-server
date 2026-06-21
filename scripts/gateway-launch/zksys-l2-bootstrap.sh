@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 
+gl_export_foundry_evm_version
+
 gl_require ZKSYS_L2_RPC_URL
 gl_require ZKSYS_L2_DEPLOYER_PRIVATE_KEY
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
