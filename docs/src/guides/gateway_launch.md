@@ -613,6 +613,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
 | `ZKSYS_L2_PAYMASTER_ADDRESS` | Optional known deterministic Pali paymaster address granted the token burn role during L2 bootstrap |
+| `PAYMASTER_GRANT_BURNER_ROLE` | Pali paymaster deploy helper option; defaults to `true` and grants zkSYS `BURNER_ROLE` to the deployed paymaster, set `false` only if role wiring is handled separately before use |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
 | `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |
