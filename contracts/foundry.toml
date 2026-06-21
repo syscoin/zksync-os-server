@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["../integration-tests/test-contracts/lib"]
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+allow_paths = [
+    "..",
+    "../../zksync-era/contracts/lib/openzeppelin-contracts-v4",
+    "../../zksync-era/contracts/lib/openzeppelin-contracts-upgradeable-v4",
+]
+remappings = [
+    "@openzeppelin/contracts/=../integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/",
+    "@openzeppelin/contracts-v4/=../../zksync-era/contracts/lib/openzeppelin-contracts-v4/contracts/",
+    "@openzeppelin/contracts-upgradeable-v4/=../../zksync-era/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/",
+    "@openzeppelin/community-contracts/=../integration-tests/test-contracts/lib/openzeppelin-community-contracts/contracts/",
+    "forge-std/=../integration-tests/test-contracts/lib/forge-std/src/",
+]

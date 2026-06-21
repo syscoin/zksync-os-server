@@ -5,13 +5,19 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {PaymasterERC20} from "@openzeppelin/community-contracts/account/paymaster/PaymasterERC20.sol";
+
+interface IERC20Burnable is IERC20 {
+    function burn(address from, uint256 amount) external returns (bool);
+}
 
 /// @title PaliFixedRateTokenPaymaster
 /// @notice ERC-4337 paymaster that charges one ERC-20 token unit per one native gas unit.
 /// @dev Uses OZ Community Contracts' ERC-20 paymaster base and pins the token price to 1:1.
 contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     using ERC4337Utils for PackedUserOperation;
+    using SafeERC20 for IERC20;
 
     // EntryPoint charges a 10% unused-gas penalty when the 80k stipend leaves ~50k unused.
     uint256 private constant POST_OP_COST = 35_000;
@@ -21,11 +27,13 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
     error InvalidAddress();
+    error NativeWithdrawalsDisabled();
+    error TokenWithdrawalsDisabled();
 
     IEntryPoint private immutable _entryPoint;
-    IERC20 public immutable token;
+    IERC20Burnable public immutable token;
 
-    constructor(IEntryPoint entryPoint_, IERC20 token_, address owner_) Ownable(owner_) {
+    constructor(IEntryPoint entryPoint_, IERC20Burnable token_, address owner_) Ownable(owner_) {
         if (address(entryPoint_) == address(0) || address(token_) == address(0) || owner_ == address(0)) {
             revert InvalidAddress();
         }
@@ -41,15 +49,16 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         return _entryPoint;
     }
 
-    function withdrawDepositTo(address payable withdrawAddress, uint256 withdrawAmount) external onlyOwner {
-        if (withdrawAddress == address(0)) {
-            revert InvalidAddress();
-        }
-        withdraw(withdrawAddress, withdrawAmount);
+    function withdrawDepositTo(address payable, uint256) external pure {
+        revert NativeWithdrawalsDisabled();
     }
 
     function addStake(uint32 unstakeDelaySec) public payable override onlyOwner {
         super.addStake(unstakeDelaySec);
+    }
+
+    function withdraw(address payable, uint256) public pure override {
+        revert NativeWithdrawalsDisabled();
     }
 
     function _fetchDetails(PackedUserOperation calldata userOp, bytes32)
@@ -108,6 +117,28 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         uint256 adjustedMaxCost = maxCost - reservedPostOpCost;
 
         return super._prefund(userOp, userOpHash, paymentToken, tokenPrice, prefunder_, adjustedMaxCost);
+    }
+
+    function _refund(
+        IERC20 paymentToken,
+        uint256 tokenPrice,
+        uint256 actualGasCost,
+        uint256 actualUserOpFeePerGas,
+        address prefunder,
+        uint256 prefundAmount,
+        bytes calldata
+    ) internal override returns (bool refunded, uint256 actualAmount) {
+        actualAmount = _erc20Cost(actualGasCost, actualUserOpFeePerGas, tokenPrice);
+        refunded = paymentToken.trySafeTransfer(prefunder, prefundAmount - actualAmount);
+        if (!refunded) {
+            return (false, actualAmount);
+        }
+
+        refunded = token.burn(address(this), actualAmount);
+    }
+
+    function withdrawTokens(IERC20, address, uint256) public pure override {
+        revert TokenWithdrawalsDisabled();
     }
 
     function _authorizeWithdraw() internal override onlyOwner {}

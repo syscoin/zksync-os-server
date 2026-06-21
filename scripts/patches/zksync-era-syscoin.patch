@@ -89,7 +89,7 @@ index 1d6300f12..6ee8479bc 100644
              L1Network::Mainnet => None, // TODO: add mainnet address after it is known
          }
      }
-@@ -68,6 +71,7 @@ impl L1Network {
+@@ -68,8 +71,8 @@ impl L1Network {
              L1Network::Mainnet => {
                  // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
                  H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
@@ -99,29 +99,67 @@ index 1d6300f12..6ee8479bc 100644
 +            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
          }
      }
-diff --git a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-index 3d8fdfd9c..93faa309f 100644
---- a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-+++ b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-@@ -1,3 +1,5 @@
-+use std::str::FromStr;
-+
- use ethers::types::{Address, H256};
- use serde::{Deserialize, Serialize};
- use zkstack_cli_types::{L1Network, VMOption};
-@@ -33,7 +35,11 @@ impl DeployCTMConfig {
-             is_zk_sync_os: vm_option.is_zksync_os(),
+diff --git a/zkstack_cli/crates/config/src/forge_interface/deploy_ecosystem/input.rs b/zkstack_cli/crates/config/src/forge_interface/deploy_ecosystem/input.rs
+index 67e7f22db..8f80c9028 100644
+--- a/zkstack_cli/crates/config/src/forge_interface/deploy_ecosystem/input.rs
++++ b/zkstack_cli/crates/config/src/forge_interface/deploy_ecosystem/input.rs
+@@ -143,5 +143,6 @@ pub struct DeployL1Config {
+     pub tokens: TokensDeployL1Config,
+     pub is_zk_sync_os: bool,
++    pub zk_token_asset_id: H256,
+ }
+ 
+ impl FileConfigTrait for DeployL1Config {}
+@@ -161,6 +162,13 @@ impl DeployL1Config {
+     ) -> Self {
+         Self {
+             is_zk_sync_os: zksync_os,
++            zk_token_asset_id: match std::env::var("ZK_TOKEN_ASSET_ID") {
++                Ok(value) => H256::from_str(&value).unwrap_or_else(|err| {
++                    panic!("invalid ZK_TOKEN_ASSET_ID={value}: {err}");
++                }),
++                Err(std::env::VarError::NotPresent) => l1_network.zk_token_asset_id(),
++                Err(err) => panic!("invalid ZK_TOKEN_ASSET_ID env: {err}"),
++            },
+             era_chain_id,
              testnet_verifier,
              owner_address: wallets_config.governor.address,
-             support_l2_legacy_shared_bridge_test,
--            zk_token_asset_id: l1_network.zk_token_asset_id(),
-+            zk_token_asset_id: std::env::var("ZK_TOKEN_ASSET_ID")
-+                .ok()
-+                .and_then(|value| H256::from_str(&value).ok())
-+                .unwrap_or_else(|| l1_network.zk_token_asset_id()),
-             contracts: ContractsDeployCTMConfig {
-                 create2_factory_addr: initial_deployment_config.create2_factory_addr,
-                 create2_factory_salt: initial_deployment_config.create2_factory_salt,
+diff --git a/contracts/l1-contracts/deploy-scripts/DeployUtils.s.sol b/contracts/l1-contracts/deploy-scripts/DeployUtils.s.sol
+index 856dc7528..aa574d278 100644
+--- a/contracts/l1-contracts/deploy-scripts/DeployUtils.s.sol
++++ b/contracts/l1-contracts/deploy-scripts/DeployUtils.s.sol
+@@ -79,6 +79,7 @@ struct Config {
+     bool testnetVerifier;
+     bool supportL2LegacySharedBridgeTest;
+     bool isZKsyncOS;
++    bytes32 zkTokenAssetId;
+     ContractsConfig contracts;
+     TokensConfig tokens;
+ }
+@@ -140,6 +141,9 @@ abstract contract DeployUtils is Create2FactoryUtils {
+         config.testnetVerifier = toml.readBool("$.testnet_verifier");
+         config.supportL2LegacySharedBridgeTest = toml.readBool("$.support_l2_legacy_shared_bridge_test");
+         config.isZKsyncOS = toml.readBool("$.is_zk_sync_os");
++        if (vm.keyExistsToml(toml, "$.zk_token_asset_id")) {
++            config.zkTokenAssetId = toml.readBytes32("$.zk_token_asset_id");
++        }
+ 
+         config.contracts.governanceSecurityCouncilAddress = toml.readAddress(
+             "$.contracts.governance_security_council_address"
+diff --git a/contracts/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol b/contracts/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol
+index 1ec1002a8..e62349560 100644
+--- a/contracts/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol
++++ b/contracts/l1-contracts/deploy-scripts/DeployL1CoreContracts.s.sol
+@@ -135,6 +135,9 @@ contract DeployL1CoreContractsScript is Script, DeployL1HelperScript {
+         IL1Bridgehub bridgehub = IL1Bridgehub(addresses.bridgehub.bridgehubProxy);
+         vm.startBroadcast(msg.sender);
+         bridgehub.addTokenAssetId(bridgehub.baseTokenAssetId(config.eraChainId));
++        if (config.zkTokenAssetId != bytes32(0)) {
++            bridgehub.addTokenAssetId(config.zkTokenAssetId);
++        }
+         BridgehubBase(address(bridgehub)).setAddresses(
+             addresses.bridges.l1AssetRouterProxy,
+             ICTMDeploymentTracker(addresses.bridgehub.ctmDeploymentTrackerProxy),
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
 index 707872ea0..9ae443887 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
@@ -205,7 +243,7 @@ index e667c383d..f7f70b107 100644
  use zksync_types::H160;
  
  use crate::{
-@@ -112,6 +112,9 @@ pub async fn register_ctm_on_existing_bh(
+@@ -112,4 +112,7 @@ pub async fn register_ctm_on_existing_bh(
  
      if !only_save_calldata {
          forge = forge.with_broadcast();
@@ -262,7 +300,7 @@ diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_ga
 index 3a65c7110..5d4d6a1cb 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-@@ -182,7 +182,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -182,6 +182,6 @@ pub(crate) async fn get_migrate_to_gateway_context(
          validator: chain_secrets_config.operator.address,
          prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
          execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),

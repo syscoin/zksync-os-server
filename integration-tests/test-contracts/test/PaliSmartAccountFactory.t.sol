@@ -3,9 +3,9 @@ pragma solidity ^0.8.26;
 
 import {MODULE_TYPE_VALIDATOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
-import {PaliECDSAValidatorModule} from "../src/passkey/PaliECDSAValidatorModule.sol";
-import {PaliSmartAccount} from "../src/passkey/PaliSmartAccount.sol";
-import {PaliSmartAccountFactory} from "../src/passkey/PaliSmartAccountFactory.sol";
+import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
+import {PaliSmartAccount} from "contracts/src/pali/PaliSmartAccount.sol";
+import {PaliSmartAccountFactory} from "contracts/src/pali/PaliSmartAccountFactory.sol";
 
 contract PaliSmartAccountFactoryTest is Test {
     PaliECDSAValidatorModule private ecdsa;

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
-import {P256Verifier} from "../src/passkey/P256Verifier.sol";
+import {P256Verifier} from "contracts/src/pali/P256Verifier.sol";
 
 contract P256VerifierHarness {
     function isValid(bytes32 digest, bytes32 r, bytes32 s, bytes32 x, bytes32 y) external view returns (bool) {

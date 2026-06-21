@@ -34,7 +34,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-CONTRACTS_DIR="${REPO_ROOT}/integration-tests/test-contracts"
+CONTRACTS_DIR="${REPO_ROOT}/contracts"
 
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
@@ -105,7 +105,7 @@ echo
 
 output="$(
   cd "${CONTRACTS_DIR}"
-  forge create src/passkey/PaliFixedRateTokenPaymaster.sol:PaliFixedRateTokenPaymaster \
+  forge create src/pali/PaliFixedRateTokenPaymaster.sol:PaliFixedRateTokenPaymaster \
     --rpc-url "${RPC_URL}" \
     --chain "${CHAIN_ID}" \
     --broadcast \

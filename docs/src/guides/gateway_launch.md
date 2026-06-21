@@ -601,9 +601,18 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
-| `GATEWAY_REUSE_ZKSYS_TOKEN` | Set to `true` only for explicit recovery reuse of an already deployed ZKSYS token; normal launches deploy ZKSYS and derive the asset id |
-| `ZKSYS_TOKEN_ADMIN_ADDRESS` | Required on `--l1 mainnet` unless reusing an existing ZKSYS token; admin/minter for the canonical access-controlled ZKSYS L1 token |
-| `ZKSYS_TOKEN_INITIAL_MINT_WEI` | Optional mainnet-only initial mint amount for canonical ZKSYS, default `0`; requires the admin to be the deployer |
+| `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id; used to derive the L2-origin zkSYS asset id for CTM |
+| `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
+| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet; initial token role admin and owner of the deterministic zkSYS `ProxyAdmin` |
+| `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |
+| `ZKSYS_L2_TOKEN_IMPL_SALT` / `ZKSYS_L2_TOKEN_PROXY_SALT` | Optional bytes32 salts for deriving the canonical L2 zkSYS implementation/proxy addresses |
+| `ZKSYS_L2_RPC_URL` / `ZKSYS_L2_DEPLOYER_PRIVATE_KEY` | Required by `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the L2 zkSYS suite after the chain is live |
+| `ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS` | L1 registry bridge address mirrored into the L2 membership registry; defaults to zero so it can be set after the L1 bridge is deployed |
+| `ZKSYS_L2_REGISTRY_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_SALT` / `ZKSYS_L2_ISSUER_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry, reward weight registry, and issuer deployments |
+| `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
+| `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
+| `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
+| `ZKSYS_L2_PAYMASTER_ADDRESS` | Optional known deterministic Pali paymaster address granted the token burn role during L2 bootstrap |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
 | `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |
@@ -629,6 +638,9 @@ If the script cannot raise the limit high enough, increase the shell / service h
 - For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
 - The prover API is plain HTTP in the node process. For internet-reachable provers, keep `PROVER_API_BIND_HOST=127.0.0.1` and expose it through HTTPS, VPN, or another trusted transport that forwards the Basic Auth header to the node.
 - Changing `GATEWAY_CREATE2_FACTORY_SALT` resets checkpoint state automatically (new redeploy run context).
+- After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, and algorithmic issuer with the same CREATE2 salts used for `ZK_TOKEN_ASSET_ID` derivation, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, and optional burn rights for the known deterministic Pali paymaster. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.
+- The membership registry only mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. Reward policy is isolated in the weight registry: nonzero Sentry Node collateral height contributes the fixed Sentry Node weight, a zero height removes that component, and admin-managed SYS stake weight is tracked separately.
+- The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.
 - If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf "${GATEWAY_DIR:-${HOME}/gateway}/.gateway-launch"`.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
