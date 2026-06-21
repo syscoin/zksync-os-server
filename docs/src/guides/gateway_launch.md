@@ -601,7 +601,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
 | `PROVER_MODE` | `gpu` (default) or `no-proofs` |
 | `PROTOCOL_VERSION` | Default `v31.0` |
-| `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id; used to derive the L2-origin zkSYS asset id for CTM |
+| `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
 | `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
 | `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet; initial token role admin and owner of the deterministic zkSYS `ProxyAdmin` |
 | `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |
