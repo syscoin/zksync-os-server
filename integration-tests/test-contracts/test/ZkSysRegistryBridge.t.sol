@@ -56,9 +56,13 @@ contract MockBridgehub is IL1BridgehubMinimal {
         );
     }
 
-    function lastDecodedUpdateFields() external view returns (address account, uint32 sentryNodeCollateralHeight) {
+    function lastDecodedUpdateFields()
+        external
+        view
+        returns (address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight)
+    {
         IZkSysMembershipRegistryL2.SentryNodeUpdate memory update = lastDecodedUpdate;
-        return (update.account, update.sentryNodeCollateralHeight);
+        return (update.account, update.sentryNodeCollateralHeight, update.sentryNodeWeight);
     }
 
     function _withoutSelector(bytes memory data) private pure returns (bytes memory result) {
@@ -75,13 +79,28 @@ contract ZkSysRegistryBridgeTest is Test {
     uint256 private zksysChainId = 57;
     address private l2Registry = address(0x1234);
     address private alice = address(0xA11CE);
+    uint32 private nevmStartBlock = 1_317_500;
+    uint32 private seniorityHeight1 = 210_240;
+    uint32 private seniorityHeight2 = 525_600;
+    uint16 private seniorityLevel1Bps = 3_500;
+    uint16 private seniorityLevel2Bps = 10_000;
 
     MockBridgehub private bridgehub;
     ZkSysRegistryBridge private bridge;
 
     function setUp() public {
         bridgehub = new MockBridgehub();
-        bridge = new ZkSysRegistryBridge(bridgehub, zksysChainId, l2Registry);
+        bridge = new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            nevmStartBlock,
+            seniorityHeight1,
+            seniorityHeight2,
+            seniorityLevel1Bps,
+            seniorityLevel2Bps
+        );
+        vm.roll(seniorityHeight2);
     }
 
     function testPushUpdatesVerifiesNevmFactAndRequestsL2Transaction() public {
@@ -115,9 +134,11 @@ contract ZkSysRegistryBridgeTest is Test {
         assertEq(refundRecipient, address(0xFEE));
         assertEq(bytes4(l2Calldata), IZkSysMembershipRegistryL2.applyL1SentryNodeUpdates.selector);
 
-        (address account, uint32 sentryNodeCollateralHeight) = bridgehub.lastDecodedUpdateFields();
+        (address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) =
+            bridgehub.lastDecodedUpdateFields();
         assertEq(account, alice);
         assertEq(sentryNodeCollateralHeight, 1_000);
+        assertEq(sentryNodeWeight, 200_000 ether);
     }
 
     function testPushUpdatesIsPermissionless() public {
@@ -129,9 +150,11 @@ contract ZkSysRegistryBridgeTest is Test {
         vm.prank(address(0xCA11));
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
 
-        (address account, uint32 sentryNodeCollateralHeight) = bridgehub.lastDecodedUpdateFields();
+        (address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) =
+            bridgehub.lastDecodedUpdateFields();
         assertEq(account, alice);
         assertEq(sentryNodeCollateralHeight, 1_000);
+        assertEq(sentryNodeWeight, 200_000 ether);
     }
 
     function testPushUpdatesUsesNevmFactInsteadOfCallerHeight() public {
@@ -142,8 +165,19 @@ contract ZkSysRegistryBridgeTest is Test {
 
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
 
-        (, uint32 sentryNodeCollateralHeight) = bridgehub.lastDecodedUpdateFields();
+        (, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) = bridgehub.lastDecodedUpdateFields();
         assertEq(sentryNodeCollateralHeight, 999);
+        assertEq(sentryNodeWeight, 200_000 ether);
+    }
+
+    function testSentryNodeWeightUsesSyscoinSeniorityTiers() public {
+        uint32 collateralHeight = nevmStartBlock;
+
+        assertEq(bridge.sentryNodeWeight(0, 0), 0);
+        assertEq(bridge.sentryNodeWeight(collateralHeight, 0), 100_000 ether);
+        assertEq(bridge.sentryNodeWeight(collateralHeight, seniorityHeight1 - 1), 100_000 ether);
+        assertEq(bridge.sentryNodeWeight(collateralHeight, seniorityHeight1), 135_000 ether);
+        assertEq(bridge.sentryNodeWeight(collateralHeight, seniorityHeight2), 200_000 ether);
     }
 
     function testPushUpdatesRejectsOverflowingNevmHeight() public {

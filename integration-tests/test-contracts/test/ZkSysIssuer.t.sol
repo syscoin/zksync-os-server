@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {SyscoinZKSYSToken} from "contracts/src/zksys/SyscoinZKSYSToken.sol";
 import {IZkSysMintableToken, IZkSysRewardWeightSource, ZkSysIssuer} from "contracts/src/zksys/ZkSysIssuer.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
+import {IZkSysStakeWeightRegistry, ZkSysNativeStakingVault} from "contracts/src/zksys/ZkSysNativeStakingVault.sol";
 import {ZkSysRewardWeightRegistry} from "contracts/src/zksys/ZkSysRewardWeightRegistry.sol";
 
 contract ZkSysIssuerTest is Test {
@@ -15,12 +16,13 @@ contract ZkSysIssuerTest is Test {
 
     address private admin = address(0xAD);
     address private l1RegistryBridge = address(0xA11CE);
-    address private alice = address(0xA);
-    address private bob = address(0xB);
+    address private alice = address(0xA11CE);
+    address private bob = address(0xB0B);
 
     SyscoinZKSYSToken private token;
     ZkSysMembershipRegistry private membershipRegistry;
     ZkSysRewardWeightRegistry private registry;
+    ZkSysNativeStakingVault private stakingVault;
     ZkSysIssuer private issuer;
 
     function setUp() public {
@@ -30,9 +32,10 @@ contract ZkSysIssuerTest is Test {
         );
         token = SyscoinZKSYSToken(address(proxy));
 
-        membershipRegistry = new ZkSysMembershipRegistry(admin, l1RegistryBridge);
-        registry = new ZkSysRewardWeightRegistry(admin, membershipRegistry);
-        issuer = new ZkSysIssuer(
+        membershipRegistry = _deployMembershipRegistry(admin, l1RegistryBridge);
+        registry = _deployWeightRegistry(admin, membershipRegistry);
+        stakingVault = _deployStakingVault(IZkSysStakeWeightRegistry(address(registry)));
+        issuer = _deployIssuer(
             IZkSysMintableToken(address(token)),
             IZkSysRewardWeightSource(address(registry)),
             admin,
@@ -44,22 +47,16 @@ contract ZkSysIssuerTest is Test {
         vm.startPrank(admin);
         registry.setWeightReceiver(issuer);
         membershipRegistry.setSentryNodeReceiver(registry);
+        registry.grantRole(registry.STAKE_WEIGHT_UPDATER_ROLE(), address(stakingVault));
         token.grantRole(token.MINTER_ROLE(), address(issuer));
         vm.stopPrank();
     }
 
     function testBatchUpdateAndDistributeThenClaim() public {
-        address[] memory accounts = new address[](2);
-        accounts[0] = alice;
-        accounts[1] = bob;
-        uint256[] memory weights = new uint256[](2);
-        weights[0] = 1;
-        weights[1] = 3;
+        _depositStake(alice, 1 ether);
+        _depositStake(bob, 3 ether);
 
-        vm.prank(admin);
-        registry.adminUpdateStakeWeights(accounts, weights);
-
-        assertEq(registry.totalWeight(), 4);
+        assertEq(registry.totalWeight(), 4 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 distributed = issuer.distribute();
@@ -80,14 +77,12 @@ contract ZkSysIssuerTest is Test {
     }
 
     function testWeightIncreaseDoesNotEarnPastRewards() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 firstDistribution = issuer.distribute();
 
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(bob, 1);
+        _depositStake(bob, 1 ether);
 
         vm.warp(START_TIME + 2 * PERIOD_SECONDS);
         uint256 secondDistribution = issuer.distribute();
@@ -98,15 +93,13 @@ contract ZkSysIssuerTest is Test {
     }
 
     function testLateWeightIncreaseDoesNotEarnUndistributedBacklog() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 firstDistribution = issuer.distribute();
 
         vm.warp(START_TIME + 3 * PERIOD_SECONDS);
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(bob, 1);
+        _depositStake(bob, 1 ether);
 
         uint256 twoPeriodBacklog = issuer.cumulativeScheduledRewards(3) - issuer.cumulativeScheduledRewards(1);
         assertEq(issuer.pendingRewards(alice), firstDistribution + twoPeriodBacklog);
@@ -123,8 +116,7 @@ contract ZkSysIssuerTest is Test {
     function testFirstWeightAfterStartDoesNotEarnEmptyRegistryBacklog() public {
         vm.warp(START_TIME + 2 * PERIOD_SECONDS);
 
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         assertEq(issuer.pendingRewards(alice), 0);
         assertEq(issuer.totalScheduledRewards(), 2 * yearOneEmission() / PERIODS_PER_YEAR);
@@ -138,14 +130,12 @@ contract ZkSysIssuerTest is Test {
     }
 
     function testWeightDecreaseSettlesPriorRewards() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 2);
+        _depositStake(alice, 2 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 firstDistribution = issuer.distribute();
 
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _withdrawStake(alice, 1 ether);
 
         assertEq(issuer.pendingRewards(alice), firstDistribution);
 
@@ -157,23 +147,20 @@ contract ZkSysIssuerTest is Test {
     }
 
     function testRemovingLastWeightSettlesBacklogAndLaterEmptyPeriodsAreSkipped() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 firstDistribution = issuer.distribute();
 
         vm.warp(START_TIME + 3 * PERIOD_SECONDS);
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 0);
+        _withdrawStake(alice, 1 ether);
 
         uint256 twoPeriodBacklog = issuer.cumulativeScheduledRewards(3) - issuer.cumulativeScheduledRewards(1);
         assertEq(issuer.pendingRewards(alice), firstDistribution + twoPeriodBacklog);
         assertEq(registry.totalWeight(), 0);
 
         vm.warp(START_TIME + 5 * PERIOD_SECONDS);
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(bob, 1);
+        _depositStake(bob, 1 ether);
 
         assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(5));
         assertEq(issuer.pendingRewards(bob), 0);
@@ -186,37 +173,35 @@ contract ZkSysIssuerTest is Test {
     }
 
     function testOutOfRangeWeightIsRejectedBeforeSettlement() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         vm.warp(START_TIME + PERIOD_SECONDS);
         issuer.distribute();
 
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 0);
+        _withdrawStake(alice, 1 ether);
 
-        vm.prank(admin);
+        vm.prank(address(stakingVault));
         vm.expectRevert(abi.encodeWithSelector(ZkSysRewardWeightRegistry.InvalidWeight.selector, type(uint256).max));
-        registry.adminUpdateStakeWeight(bob, type(uint256).max);
+        registry.updateStakeWeight(bob, type(uint256).max);
     }
 
     function testDistributeRevertsBeforeRewardsAreAvailable() public {
-        vm.prank(admin);
-        registry.adminUpdateStakeWeight(alice, 1);
+        _depositStake(alice, 1 ether);
 
         vm.expectRevert(ZkSysIssuer.NoRewardsAvailable.selector);
         issuer.distribute();
     }
 
-    function testConstructorRejectsScheduleThatIsNotOneYear() public {
+    function testInitializerRejectsScheduleThatIsNotOneYear() public {
+        ZkSysIssuer implementation = new ZkSysIssuer();
+
         vm.expectRevert(ZkSysIssuer.InvalidSchedule.selector);
-        new ZkSysIssuer(
-            IZkSysMintableToken(address(token)),
-            IZkSysRewardWeightSource(address(registry)),
-            admin,
-            START_TIME,
-            1 days,
-            364
+        new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysIssuer.initialize,
+                (IZkSysMintableToken(address(token)), IZkSysRewardWeightSource(address(registry)), admin, START_TIME, 1 days, 364)
+            )
         );
     }
 
@@ -244,5 +229,63 @@ contract ZkSysIssuerTest is Test {
 
     function remainingAfter(uint256 scheduledRewards) private view returns (uint256) {
         return token.maxSupply() - scheduledRewards;
+    }
+
+    function _depositStake(address account, uint256 amount) private {
+        vm.deal(account, account.balance + amount);
+        vm.prank(account);
+        stakingVault.deposit{value: amount}();
+    }
+
+    function _withdrawStake(address account, uint256 amount) private {
+        vm.prank(account);
+        stakingVault.withdraw(amount);
+    }
+
+    function _deployMembershipRegistry(address admin_, address l1RegistryBridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1RegistryBridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
+    }
+
+    function _deployWeightRegistry(
+        address admin_,
+        ZkSysMembershipRegistry membershipRegistry_
+    ) private returns (ZkSysRewardWeightRegistry) {
+        ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+        );
+        return ZkSysRewardWeightRegistry(address(proxy));
+    }
+
+    function _deployStakingVault(IZkSysStakeWeightRegistry weightRegistry_) private returns (ZkSysNativeStakingVault) {
+        ZkSysNativeStakingVault implementation = new ZkSysNativeStakingVault();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysNativeStakingVault.initialize, (weightRegistry_))
+        );
+        return ZkSysNativeStakingVault(payable(address(proxy)));
+    }
+
+    function _deployIssuer(
+        IZkSysMintableToken token_,
+        IZkSysRewardWeightSource registry_,
+        address admin_,
+        uint256 startTime_,
+        uint256 periodSeconds_,
+        uint256 periodsPerYear_
+    ) private returns (ZkSysIssuer) {
+        ZkSysIssuer implementation = new ZkSysIssuer();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysIssuer.initialize,
+                (token_, registry_, admin_, startTime_, periodSeconds_, periodsPerYear_)
+            )
+        );
+        return ZkSysIssuer(address(proxy));
     }
 }

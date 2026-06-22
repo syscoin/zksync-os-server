@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable-v4/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
 import {IZkSysSentryNodeReceiver, ZkSysMembershipRegistry} from "./ZkSysMembershipRegistry.sol";
 
 interface IZkSysWeightReceiver {
@@ -9,9 +10,10 @@ interface IZkSysWeightReceiver {
 }
 
 /// @title ZkSysRewardWeightRegistry
-/// @notice Converts membership facts and admin-managed stake weights into issuer reward weights.
-contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
+/// @notice Converts native SYS stake and membership facts into issuer reward weights.
+contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, IZkSysSentryNodeReceiver {
     uint256 public constant SENTRY_NODE_WEIGHT = 100_000 ether;
+    bytes32 public constant STAKE_WEIGHT_UPDATER_ROLE = keccak256("STAKE_WEIGHT_UPDATER_ROLE");
 
     struct Weight {
         uint256 stakeWeight;
@@ -24,24 +26,31 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
     error WeightReceiverAlreadySet(address currentWeightReceiver);
     error WeightReceiverNotSet();
 
-    ZkSysMembershipRegistry public immutable membershipRegistry;
+    ZkSysMembershipRegistry public membershipRegistry;
     IZkSysWeightReceiver public weightReceiver;
     uint256 public totalWeight;
 
     mapping(address account => Weight weight) private _weights;
+    uint256[46] private __gap;
 
     event StakeWeightUpdated(address indexed account, uint256 oldStakeWeight, uint256 newStakeWeight);
     event SentryNodeWeightUpdated(address indexed account, uint256 oldSentryNodeWeight, uint256 newSentryNodeWeight);
     event WeightReceiverUpdated(address indexed weightReceiver);
     event WeightUpdated(address indexed account, uint256 oldWeight, uint256 newWeight);
 
-    constructor(address admin, ZkSysMembershipRegistry membershipRegistry_) {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address admin, ZkSysMembershipRegistry membershipRegistry_) external initializer {
         if (admin == address(0) || address(membershipRegistry_) == address(0)) {
             revert InvalidAddress();
         }
 
+        __AccessControl_init();
         membershipRegistry = membershipRegistry_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _setRoleAdmin(STAKE_WEIGHT_UPDATER_ROLE, DEFAULT_ADMIN_ROLE);
     }
 
     function setWeightReceiver(IZkSysWeightReceiver weightReceiver_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -56,13 +65,13 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
         emit WeightReceiverUpdated(address(weightReceiver_));
     }
 
-    function adminUpdateStakeWeight(address account, uint256 stakeWeight) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateStakeWeight(address account, uint256 stakeWeight) external onlyRole(STAKE_WEIGHT_UPDATER_ROLE) {
         _updateStakeWeight(account, stakeWeight);
     }
 
-    function adminUpdateStakeWeights(address[] calldata accounts, uint256[] calldata stakeWeights)
+    function updateStakeWeights(address[] calldata accounts, uint256[] calldata stakeWeights)
         external
-        onlyRole(DEFAULT_ADMIN_ROLE)
+        onlyRole(STAKE_WEIGHT_UPDATER_ROLE)
     {
         if (accounts.length != stakeWeights.length) {
             revert InvalidWeight(stakeWeights.length);
@@ -72,11 +81,11 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
         }
     }
 
-    function onSentryNodeStatusChange(address account, uint32, uint32 newCollateralHeight) external {
+    function onSentryNodeStatusChange(address account, uint32, uint32, uint128, uint128 newSentryNodeWeight) external {
         if (msg.sender != address(membershipRegistry)) {
             revert UnauthorizedMembershipRegistry();
         }
-        _updateSentryNodeWeight(account, newCollateralHeight == 0 ? 0 : SENTRY_NODE_WEIGHT);
+        _updateSentryNodeWeight(account, newSentryNodeWeight);
     }
 
     function weightOf(address account) external view returns (uint256) {

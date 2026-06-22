@@ -44,6 +44,7 @@ contract SyscoinZKSYSToken is Initializable, ERC20VotesUpgradeable, AccessContro
         __ERC20_init(_name, _symbol);
         __ERC20Permit_init(_name);
         __ERC20Votes_init();
+        __AccessControl_init();
 
         uint256 maxSupply_ = 210_000_000 * 10 ** uint256(_decimals);
         require(maxSupply_ <= type(uint224).max, "max supply exceeds votes");

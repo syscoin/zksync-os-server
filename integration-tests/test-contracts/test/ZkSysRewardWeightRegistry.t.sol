@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {IZkSysWeightReceiver, ZkSysRewardWeightRegistry} from "contracts/src/zksys/ZkSysRewardWeightRegistry.sol";
@@ -21,6 +22,7 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
 
 contract ZkSysRewardWeightRegistryTest is Test {
     address private admin = address(0xAD);
+    address private stakeWeightUpdater = address(0x57A7E);
     address private l1Bridge = address(0xB111D6E);
     address private alice = address(0xA11CE);
     address private bob = address(0xB0B);
@@ -30,19 +32,20 @@ contract ZkSysRewardWeightRegistryTest is Test {
     MockRewardWeightReceiver private receiver;
 
     function setUp() public {
-        membershipRegistry = new ZkSysMembershipRegistry(admin, l1Bridge);
-        weightRegistry = new ZkSysRewardWeightRegistry(admin, membershipRegistry);
+        membershipRegistry = _deployMembershipRegistry(admin, l1Bridge);
+        weightRegistry = _deployWeightRegistry(admin, membershipRegistry);
         receiver = new MockRewardWeightReceiver();
 
         vm.startPrank(admin);
         membershipRegistry.setSentryNodeReceiver(weightRegistry);
         weightRegistry.setWeightReceiver(receiver);
+        weightRegistry.grantRole(weightRegistry.STAKE_WEIGHT_UPDATER_ROLE(), stakeWeightUpdater);
         vm.stopPrank();
     }
 
-    function testAdminCanUpdateStakeWeightSeparatelyFromSentryNodeWeight() public {
-        vm.prank(admin);
-        weightRegistry.adminUpdateStakeWeight(alice, 2);
+    function testUpdaterCanUpdateStakeWeightSeparatelyFromSentryNodeWeight() public {
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 2);
 
         assertEq(weightRegistry.weightOf(alice), 2);
         assertEq(weightRegistry.totalWeight(), 2);
@@ -82,8 +85,8 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function testStakeWeightSurvivesSentryNodeRemoval() public {
-        vm.prank(admin);
-        weightRegistry.adminUpdateStakeWeight(alice, 7);
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 7);
 
         vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000);
@@ -95,24 +98,106 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function testOnlyMembershipRegistryCanUpdateSentryNodeWeight() public {
+        address unauthorized = address(uint160(address(membershipRegistry)) + 1);
+        uint128 sentryNodeWeight = uint128(weightRegistry.SENTRY_NODE_WEIGHT());
+        vm.startPrank(unauthorized);
         vm.expectRevert(ZkSysRewardWeightRegistry.UnauthorizedMembershipRegistry.selector);
-        weightRegistry.onSentryNodeStatusChange(alice, 0, 1_000);
+        weightRegistry.onSentryNodeStatusChange(alice, 0, 1_000, 0, sentryNodeWeight);
+        vm.stopPrank();
+    }
+
+    function testL1SentryNodeSeniorityWeightUpdatesWithoutHeightChange() public {
+        vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _applyL1Update(alice, 1_000, 135_000 ether);
+        vm.stopPrank();
+
+        assertEq(weightRegistry.weightOf(alice), 135_000 ether);
+        assertEq(weightRegistry.totalWeight(), 135_000 ether);
+        assertEq(receiver.lastAccount(), alice);
+        assertEq(receiver.lastOldWeight(), 100_000 ether);
+        assertEq(receiver.lastNewWeight(), 135_000 ether);
+        assertEq(receiver.lastOldTotalWeight(), 100_000 ether);
+    }
+
+    function testOnlyStakeWeightUpdaterCanUpdateStakeWeight() public {
+        vm.expectRevert(_accessControlRevert(alice, weightRegistry.STAKE_WEIGHT_UPDATER_ROLE()));
+        vm.prank(alice);
+        weightRegistry.updateStakeWeight(alice, 1);
     }
 
     function testWeightMustFitUint128() public {
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysRewardWeightRegistry.InvalidWeight.selector, uint256(type(uint128).max) + 1)
         );
-        vm.prank(admin);
-        weightRegistry.adminUpdateStakeWeight(alice, uint256(type(uint128).max) + 1);
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, uint256(type(uint128).max) + 1);
     }
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
+        _applyL1Update(
+            account,
+            sentryNodeCollateralHeight,
+            sentryNodeCollateralHeight == 0 ? 0 : uint128(weightRegistry.SENTRY_NODE_WEIGHT())
+        );
+    }
+
+    function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
             account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight
+            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
+            sentryNodeWeight: sentryNodeWeight
         });
         membershipRegistry.applyL1SentryNodeUpdates(updates);
+    }
+
+    function _deployMembershipRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1Bridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
+    }
+
+    function _deployWeightRegistry(
+        address admin_,
+        ZkSysMembershipRegistry membershipRegistry_
+    ) private returns (ZkSysRewardWeightRegistry) {
+        ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+        );
+        return ZkSysRewardWeightRegistry(address(proxy));
+    }
+
+    function _accessControlRevert(address account, bytes32 role) private pure returns (bytes memory) {
+        return abi.encodePacked(
+            "AccessControl: account ",
+            _toLowerHexString(account),
+            " is missing role ",
+            _toLowerHexString(role)
+        );
+    }
+
+    function _toLowerHexString(address account) private pure returns (bytes memory) {
+        return _toLowerHexString(bytes32(uint256(uint160(account))), 20);
+    }
+
+    function _toLowerHexString(bytes32 value) private pure returns (bytes memory) {
+        return _toLowerHexString(value, 32);
+    }
+
+    function _toLowerHexString(bytes32 value, uint256 length) private pure returns (bytes memory buffer) {
+        bytes16 symbols = "0123456789abcdef";
+        buffer = new bytes(2 + length * 2);
+        buffer[0] = "0";
+        buffer[1] = "x";
+        for (uint256 i = 0; i < length; ++i) {
+            uint8 b = uint8(value[32 - length + i]);
+            buffer[2 + i * 2] = symbols[b >> 4];
+            buffer[3 + i * 2] = symbols[b & 0x0f];
+        }
     }
 }

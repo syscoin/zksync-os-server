@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable-v4/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IZkSysWeightReceiver} from "./ZkSysRewardWeightRegistry.sol";
 
@@ -18,7 +19,7 @@ interface IZkSysRewardWeightSource {
 
 /// @title ZkSysIssuer
 /// @notice Indexed zkSYS reward distributor for L2-canonical issuance.
-contract ZkSysIssuer is AccessControl, IZkSysWeightReceiver {
+contract ZkSysIssuer is Initializable, AccessControlUpgradeable, IZkSysWeightReceiver {
     uint256 public constant REWARD_PRECISION = 1e36;
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant SCHEDULE_YEAR_SECONDS = 365 days;
@@ -34,11 +35,11 @@ contract ZkSysIssuer is AccessControl, IZkSysWeightReceiver {
     error SupplyCapExceeded(uint256 scheduledSupply, uint256 maxSupply);
     error UnauthorizedRegistry();
 
-    IZkSysMintableToken public immutable token;
-    IZkSysRewardWeightSource public immutable registry;
-    uint256 public immutable startTime;
-    uint256 public immutable periodSeconds;
-    uint256 public immutable periodsPerYear;
+    IZkSysMintableToken public token;
+    IZkSysRewardWeightSource public registry;
+    uint256 public startTime;
+    uint256 public periodSeconds;
+    uint256 public periodsPerYear;
 
     uint256 public accRewardPerWeight;
     uint256 public scheduledUnclaimedRewards;
@@ -47,20 +48,25 @@ contract ZkSysIssuer is AccessControl, IZkSysWeightReceiver {
 
     mapping(address account => uint256 rewardDebt) public rewardDebtOf;
     mapping(address account => uint256 accruedRewards) public accruedRewardsOf;
+    uint256[44] private __gap;
 
     event RewardsDistributed(uint256 amount, uint256 indexed distributedThroughPeriod, uint256 accRewardPerWeight);
     event RewardsSkipped(uint256 amount, uint256 indexed distributedThroughPeriod);
     event RewardsClaimed(address indexed account, address indexed receiver, uint256 amount);
     event WeightChanged(address indexed account, uint256 oldWeight, uint256 newWeight);
 
-    constructor(
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         IZkSysMintableToken token_,
         IZkSysRewardWeightSource registry_,
         address admin,
         uint256 startTime_,
         uint256 periodSeconds_,
         uint256 periodsPerYear_
-    ) {
+    ) external initializer {
         if (address(token_) == address(0) || address(registry_) == address(0) || admin == address(0)) {
             revert InvalidAddress();
         }
@@ -77,6 +83,7 @@ contract ZkSysIssuer is AccessControl, IZkSysWeightReceiver {
             revert InvalidSchedule();
         }
 
+        __AccessControl_init();
         token = token_;
         registry = registry_;
         startTime = startTime_;

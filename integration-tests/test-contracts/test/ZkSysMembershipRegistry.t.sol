@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {IZkSysSentryNodeReceiver} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
@@ -9,11 +10,21 @@ contract MockSentryNodeReceiver is IZkSysSentryNodeReceiver {
     address public lastAccount;
     uint32 public lastOldCollateralHeight;
     uint32 public lastNewCollateralHeight;
+    uint128 public lastOldSentryNodeWeight;
+    uint128 public lastNewSentryNodeWeight;
 
-    function onSentryNodeStatusChange(address account, uint32 oldCollateralHeight, uint32 newCollateralHeight) external {
+    function onSentryNodeStatusChange(
+        address account,
+        uint32 oldCollateralHeight,
+        uint32 newCollateralHeight,
+        uint128 oldSentryNodeWeight,
+        uint128 newSentryNodeWeight
+    ) external {
         lastAccount = account;
         lastOldCollateralHeight = oldCollateralHeight;
         lastNewCollateralHeight = newCollateralHeight;
+        lastOldSentryNodeWeight = oldSentryNodeWeight;
+        lastNewSentryNodeWeight = newSentryNodeWeight;
     }
 }
 
@@ -26,12 +37,16 @@ contract ZkSysMembershipRegistryTest is Test {
     ZkSysMembershipRegistry private registry;
 
     function setUp() public {
-        registry = new ZkSysMembershipRegistry(admin, l1Bridge);
+        registry = _deployRegistry(admin, l1Bridge);
     }
 
     function testOnlyAliasedL1BridgeCanApplyL1Updates() public {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
-        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({account: alice, sentryNodeCollateralHeight: 1_000});
+        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
+            account: alice,
+            sentryNodeCollateralHeight: 1_000,
+            sentryNodeWeight: 135_000 ether
+        });
 
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysMembershipRegistry.UnauthorizedL1RegistryBridge.selector, address(this))
@@ -44,13 +59,14 @@ contract ZkSysMembershipRegistryTest is Test {
 
         ZkSysMembershipRegistry.Member memory member = registry.member(alice);
         assertEq(member.sentryNodeCollateralHeight, 1_000);
+        assertEq(member.sentryNodeWeight, 135_000 ether);
         assertTrue(registry.isActiveSentryNode(alice));
         assertEq(registry.activeSentryNodeCount(), 1);
         assertEq(registry.activeSentryNodeAt(0), alice);
     }
 
     function testAdminCanSetL1BridgeWhenBootstrappedWithZero() public {
-        ZkSysMembershipRegistry zeroBridgeRegistry = new ZkSysMembershipRegistry(admin, address(0));
+        ZkSysMembershipRegistry zeroBridgeRegistry = _deployRegistry(admin, address(0));
         address bridge = address(0xB0B);
 
         vm.prank(admin);
@@ -118,6 +134,28 @@ contract ZkSysMembershipRegistryTest is Test {
         assertEq(receiver.lastAccount(), alice);
         assertEq(receiver.lastOldCollateralHeight(), 0);
         assertEq(receiver.lastNewCollateralHeight(), 1_000);
+        assertEq(receiver.lastOldSentryNodeWeight(), 0);
+        assertEq(receiver.lastNewSentryNodeWeight(), 135_000 ether);
+    }
+
+    function testWeightOnlyChangeNotifiesReceiverWithoutChangingHeight() public {
+        MockSentryNodeReceiver receiver = new MockSentryNodeReceiver();
+
+        vm.prank(admin);
+        registry.setSentryNodeReceiver(receiver);
+
+        vm.startPrank(registry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _applyL1Update(alice, 1_000, 135_000 ether);
+        vm.stopPrank();
+
+        ZkSysMembershipRegistry.Member memory member = registry.member(alice);
+        assertEq(member.sentryNodeCollateralHeight, 1_000);
+        assertEq(member.sentryNodeWeight, 135_000 ether);
+        assertEq(receiver.lastOldCollateralHeight(), 1_000);
+        assertEq(receiver.lastNewCollateralHeight(), 1_000);
+        assertEq(receiver.lastOldSentryNodeWeight(), 100_000 ether);
+        assertEq(receiver.lastNewSentryNodeWeight(), 135_000 ether);
     }
 
     function testSentryNodeReceiverCannotBeZero() public {
@@ -149,11 +187,24 @@ contract ZkSysMembershipRegistryTest is Test {
         registry.setSentryNodeReceiver(receiver);
     }
 
+    function _deployRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1Bridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
+    }
+
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
+        _applyL1Update(account, sentryNodeCollateralHeight, sentryNodeCollateralHeight == 0 ? 0 : 135_000 ether);
+    }
+
+    function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
             account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight
+            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
+            sentryNodeWeight: sentryNodeWeight
         });
         registry.applyL1SentryNodeUpdates(updates);
     }

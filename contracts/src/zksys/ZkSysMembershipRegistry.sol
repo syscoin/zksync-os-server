@@ -1,22 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable-v4/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
 
 interface IZkSysSentryNodeReceiver {
-    function onSentryNodeStatusChange(address account, uint32 oldCollateralHeight, uint32 newCollateralHeight) external;
+    function onSentryNodeStatusChange(
+        address account,
+        uint32 oldCollateralHeight,
+        uint32 newCollateralHeight,
+        uint128 oldSentryNodeWeight,
+        uint128 newSentryNodeWeight
+    ) external;
 }
 
 /// @title ZkSysMembershipRegistry
 /// @notice L2 mirror of NEVM membership facts used by zkSYS issuance.
-contract ZkSysMembershipRegistry is AccessControl {
+contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
     struct Member {
         uint32 sentryNodeCollateralHeight;
+        uint128 sentryNodeWeight;
     }
 
     struct SentryNodeUpdate {
         address account;
         uint32 sentryNodeCollateralHeight;
+        uint128 sentryNodeWeight;
     }
 
     error InvalidAddress();
@@ -32,19 +41,26 @@ contract ZkSysMembershipRegistry is AccessControl {
     IZkSysSentryNodeReceiver public sentryNodeReceiver;
     address public l1RegistryBridge;
     address public aliasedL1RegistryBridge;
+    uint256[46] private __gap;
 
     event L1RegistryBridgeUpdated(address indexed l1RegistryBridge, address indexed aliasedL1RegistryBridge);
     event SentryNodeReceiverUpdated(address indexed receiver);
     event SentryNodeCollateralHeightUpdated(
         address indexed account, uint32 oldSentryNodeCollateralHeight, uint32 newSentryNodeCollateralHeight
     );
+    event SentryNodeWeightUpdated(address indexed account, uint128 oldSentryNodeWeight, uint128 newSentryNodeWeight);
     event SentryNodeMembershipUpdated(address indexed account, bool active);
 
-    constructor(address admin, address l1RegistryBridge_) {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address admin, address l1RegistryBridge_) external initializer {
         if (admin == address(0)) {
             revert InvalidAddress();
         }
 
+        __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         if (l1RegistryBridge_ != address(0)) {
             _setL1RegistryBridge(l1RegistryBridge_);
@@ -74,7 +90,7 @@ contract ZkSysMembershipRegistry is AccessControl {
 
         for (uint256 i = 0; i < updates.length; ++i) {
             SentryNodeUpdate calldata update = updates[i];
-            _updateSentryNodeCollateralHeight(update.account, update.sentryNodeCollateralHeight);
+            _updateSentryNode(update.account, update.sentryNodeCollateralHeight, update.sentryNodeWeight);
         }
     }
 
@@ -114,24 +130,33 @@ contract ZkSysMembershipRegistry is AccessControl {
         emit L1RegistryBridgeUpdated(l1RegistryBridge_, aliasedL1RegistryBridge);
     }
 
-    function _updateSentryNodeCollateralHeight(address account, uint32 sentryNodeCollateralHeight) private {
+    function _updateSentryNode(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         if (account == address(0)) {
             revert InvalidAddress();
         }
 
         Member storage stored = _members[account];
         uint32 oldSentryNodeCollateralHeight = stored.sentryNodeCollateralHeight;
+        uint128 oldSentryNodeWeight = stored.sentryNodeWeight;
         stored.sentryNodeCollateralHeight = sentryNodeCollateralHeight;
+        stored.sentryNodeWeight = sentryNodeWeight;
 
-        _setSentryNodeActive(account, sentryNodeCollateralHeight != 0);
+        _setSentryNodeActive(account, sentryNodeWeight != 0);
 
-        if (oldSentryNodeCollateralHeight != sentryNodeCollateralHeight) {
+        if (oldSentryNodeCollateralHeight != sentryNodeCollateralHeight || oldSentryNodeWeight != sentryNodeWeight) {
             IZkSysSentryNodeReceiver receiver = sentryNodeReceiver;
             if (address(receiver) == address(0)) {
                 revert SentryNodeReceiverNotSet();
             }
-            receiver.onSentryNodeStatusChange(account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight);
-            emit SentryNodeCollateralHeightUpdated(account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight);
+            receiver.onSentryNodeStatusChange(
+                account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight, oldSentryNodeWeight, sentryNodeWeight
+            );
+            if (oldSentryNodeCollateralHeight != sentryNodeCollateralHeight) {
+                emit SentryNodeCollateralHeightUpdated(account, oldSentryNodeCollateralHeight, sentryNodeCollateralHeight);
+            }
+            if (oldSentryNodeWeight != sentryNodeWeight) {
+                emit SentryNodeWeightUpdated(account, oldSentryNodeWeight, sentryNodeWeight);
+            }
         }
     }
 
