@@ -9,7 +9,6 @@ source "${SCRIPT_DIR}/_common.sh"
 gl_export_foundry_evm_version
 
 gl_require ZKSYS_L2_RPC_URL
-gl_require ZKSYS_L2_DEPLOYER_PRIVATE_KEY
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 gl_require ZKSYS_ISSUER_START_TIME
 : "${ZKSYNC_ERA_PATH:=$(cd "${ZKSYNC_OS_SERVER_PATH}/.." && pwd)/zksync-era}"
@@ -22,6 +21,7 @@ gl_require ZKSYS_ISSUER_START_TIME
 : "${ZKSYS_L2_PAYMASTER_ADDRESS:=}"
 : "${ZKSYS_ISSUER_PERIOD_SECONDS:=86400}"
 : "${ZKSYS_ISSUER_PERIODS_PER_YEAR:=365}"
+ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
 
 normalize_address_env() {
   local name="${1:?name required}"
@@ -90,7 +90,7 @@ deploy_create2() {
   echo "zksys-l2-bootstrap: deploying ${label} to ${expected_address}"
   cast send \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
-    --private-key "${ZKSYS_L2_DEPLOYER_PRIVATE_KEY}" \
+    "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
     "${ZKSYS_L2_CREATE2_DEPLOYER}" \
     "${salt}${init_code#0x}" >/dev/null
 
@@ -101,7 +101,7 @@ deploy_create2() {
 send_l2() {
   cast send \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
-    --private-key "${ZKSYS_L2_DEPLOYER_PRIVATE_KEY}" \
+    "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
     "$@" >/dev/null
 }
 
@@ -114,6 +114,65 @@ forge_inspect_bytecode() {
     -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \
     -R "@openzeppelin/community-contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-community-contracts/contracts/" \
     -R "forge-std/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/forge-std/src/"
+}
+
+prepare_zksys_l2_wallet_args() {
+  local signer account_name keystore_path password_file
+
+  if [ -z "${ZKSYS_L2_DEPLOYER_SIGNER:-}" ]; then
+    if [ -n "${ZKSYS_L2_DEPLOYER_PRIVATE_KEY:-}" ]; then
+      ZKSYS_L2_DEPLOYER_SIGNER="private-key"
+    else
+      ZKSYS_L2_DEPLOYER_SIGNER="${DEPLOYER_SIGNER:-${FUNDER_SIGNER:-account}}"
+    fi
+  fi
+
+  signer="$(gl_to_lower "${ZKSYS_L2_DEPLOYER_SIGNER}")"
+  ZKSYS_L2_CAST_WALLET_ARGS=()
+
+  case "${signer}" in
+  private-key)
+    if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || [ "$(gl_to_lower "${L1_NETWORK:-}")" = "tanenbaum" ]; then
+      if ! gl_allow_insecure_private_key_argv; then
+        gl_die "ZKSYS_L2_DEPLOYER_SIGNER=private-key is not allowed on ${L1_NETWORK}; use account, keystore, hardware wallet, or KMS signing"
+      fi
+    fi
+    gl_require ZKSYS_L2_DEPLOYER_PRIVATE_KEY
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--private-key "${ZKSYS_L2_DEPLOYER_PRIVATE_KEY}")
+    ;;
+  account)
+    account_name="${ZKSYS_L2_DEPLOYER_ACCOUNT_NAME:-${DEPLOYER_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}}"
+    [ -n "${account_name}" ] || gl_die "ZKSYS_L2_DEPLOYER_ACCOUNT_NAME must not be empty"
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--account "${account_name}")
+    ;;
+  keystore)
+    keystore_path="${ZKSYS_L2_DEPLOYER_KEYSTORE:-${DEPLOYER_KEYSTORE:-${FUNDER_KEYSTORE:-}}}"
+    [ -n "${keystore_path}" ] || gl_die "ZKSYS_L2_DEPLOYER_KEYSTORE is required when ZKSYS_L2_DEPLOYER_SIGNER=keystore"
+    [ -f "${keystore_path}" ] || gl_die "ZKSYS_L2_DEPLOYER_KEYSTORE does not exist: ${keystore_path}"
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--keystore "${keystore_path}")
+    ;;
+  ledger)
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--ledger)
+    ;;
+  trezor)
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--trezor)
+    ;;
+  aws)
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--aws)
+    ;;
+  gcp)
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--gcp)
+    ;;
+  *)
+    gl_die "unsupported ZKSYS_L2_DEPLOYER_SIGNER=${ZKSYS_L2_DEPLOYER_SIGNER}; expected account, keystore, ledger, trezor, aws, gcp, or private-key"
+    ;;
+  esac
+
+  password_file="${ZKSYS_L2_DEPLOYER_PASSWORD_FILE:-${DEPLOYER_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}}"
+  if [ -n "${password_file}" ]; then
+    [ -f "${password_file}" ] || gl_die "ZKSYS_L2_DEPLOYER_PASSWORD_FILE does not exist: ${password_file}"
+    ZKSYS_L2_CAST_WALLET_ARGS+=(--password-file "${password_file}")
+  fi
 }
 
 ZKSYS_L2_CREATE2_DEPLOYER="$(normalize_nonzero_address_env ZKSYS_L2_CREATE2_DEPLOYER)"
@@ -147,9 +206,10 @@ if period_seconds * periods_per_year != 365 * 24 * 60 * 60:
     raise SystemExit("ZKSYS_ISSUER_PERIOD_SECONDS * ZKSYS_ISSUER_PERIODS_PER_YEAR must equal 365 days")
 PY
 
-BOOTSTRAP_SIGNER_ADDRESS="$(cast wallet address --private-key "${ZKSYS_L2_DEPLOYER_PRIVATE_KEY}")"
+prepare_zksys_l2_wallet_args
+BOOTSTRAP_SIGNER_ADDRESS="$(cast wallet address "${ZKSYS_L2_CAST_WALLET_ARGS[@]}")"
 if [ "$(gl_to_lower "${BOOTSTRAP_SIGNER_ADDRESS}")" != "$(gl_to_lower "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")" ]; then
-  gl_die "ZKSYS_L2_DEPLOYER_PRIVATE_KEY must control ZKSYS_L2_TOKEN_ADMIN_ADDRESS for role wiring"
+  gl_die "ZKSYS_L2_DEPLOYER_SIGNER must control ZKSYS_L2_TOKEN_ADMIN_ADDRESS for role wiring"
 fi
 
 ZKSYS_L2_PROXY_ADMIN_SALT="$(normalize_bytes32_env ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
@@ -203,7 +263,7 @@ registry_ctor_args="$(
   cast abi-encode \
     "constructor(address,address)" \
     "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" \
-    "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+    "${ZERO_ADDRESS}"
 )"
 registry_init_code="$(forge_inspect_bytecode ZkSysMembershipRegistry)${registry_ctor_args#0x}"
 ZKSYS_L2_REGISTRY_ADDRESS="$(
@@ -260,6 +320,9 @@ echo "zksys-l2-bootstrap: wiring issuer minter role and registry receivers"
 send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
 send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "setWeightReceiver(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setSentryNodeReceiver(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
+  send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setL1RegistryBridge(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+fi
 
 if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
   echo "zksys-l2-bootstrap: wiring paymaster burner role"
