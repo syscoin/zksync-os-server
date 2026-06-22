@@ -603,7 +603,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `PROTOCOL_VERSION` | Default `v31.0` |
 | `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
 | `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
-| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet; initial token role admin and owner of the deterministic zkSYS `ProxyAdmin` |
+| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet; initial token role admin and owner of the deterministic zkSYS `ProxyAdmin`; also used during L1 launch to derive the v31 `zk_token_asset_id` for canonical L2 zkSYS |
 | `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |
 | `ZKSYS_L2_TOKEN_IMPL_SALT` / `ZKSYS_L2_TOKEN_PROXY_SALT` | Optional bytes32 salts for deriving the canonical L2 zkSYS implementation/proxy addresses |
 | `ZKSYS_L2_RPC_URL` / `ZKSYS_L2_DEPLOYER_PRIVATE_KEY` | Required by `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the L2 zkSYS suite after the chain is live |
@@ -637,6 +637,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 - `run-gateway-launch.sh` still enforces L1 chain-id preflight before broadcast steps.
 - Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).
 - For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
+- On mainnet, `gateway-deploy-l1.sh` derives `ZKSYS_ZK_TOKEN_ASSET_ID` from the deterministic L2 zkSYS proxy address and exports it for zkstack CTM deployment. v31 uses this asset id only for InteropCenter's optional fixed zkSYS fee path; the default interop fee path remains base-token `msg.value` in SYS.
 - The prover API is plain HTTP in the node process. For internet-reachable provers, keep `PROVER_API_BIND_HOST=127.0.0.1` and expose it through HTTPS, VPN, or another trusted transport that forwards the Basic Auth header to the node.
 - Changing `GATEWAY_CREATE2_FACTORY_SALT` resets checkpoint state automatically (new redeploy run context).
 - After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, and algorithmic issuer with deterministic CREATE2 salts, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, and optional burn rights for the known deterministic Pali paymaster. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.

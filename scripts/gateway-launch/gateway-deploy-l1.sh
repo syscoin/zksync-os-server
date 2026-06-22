@@ -146,6 +146,131 @@ require_code_at() {
   fi
 }
 
+normalize_zksys_bytes32_var() {
+  local name="${1:?name required}"
+  local default_value="${2:?default required}"
+  python3 - "${name}" "${default_value}" <<'PY'
+import os
+import sys
+
+name, default = sys.argv[1:]
+raw = os.environ.get(name, default).strip()
+if raw.startswith(("0x", "0X")):
+    value = int(raw[2:] or "0", 16)
+elif raw.isdecimal():
+    value = int(raw, 10)
+else:
+    value = int(raw, 16)
+if value < 0 or value >= 1 << 256:
+    raise SystemExit(f"{name} must fit bytes32")
+print("0x" + format(value, "064x"))
+PY
+}
+
+normalize_zksys_address_var() {
+  local name="${1:?name required}"
+  python3 - "${name}" "${!name:-}" <<'PY'
+import sys
+
+name, raw = sys.argv[1:]
+addr = raw.strip()
+if not addr.startswith(("0x", "0X")) or len(addr) != 42:
+    raise SystemExit(f"{name} must be a 20-byte hex address")
+print("0x" + format(int(addr[2:], 16), "040x"))
+PY
+}
+
+forge_inspect_zksys_bytecode() {
+  local contract="${1:?contract required}"
+  forge inspect "${contract}" bytecode \
+    --root "${ZKSYNC_OS_SERVER_PATH}/contracts" \
+    -R "@openzeppelin/contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/" \
+    -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
+    -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \
+    -R "@openzeppelin/community-contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-community-contracts/contracts/" \
+    -R "forge-std/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/forge-std/src/"
+}
+
+derive_and_export_zksys_zk_token_asset_id() {
+  if [ "$(gl_to_lower "${L1_NETWORK:-}")" != "mainnet" ]; then
+    return 0
+  fi
+
+  gl_require GATEWAY_CHAIN_ID
+  gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
+
+  [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
+    gl_die "missing OpenZeppelin v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
+  [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts" ] ||
+    gl_die "missing OpenZeppelin upgradeable v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
+
+  local create2_deployer proxy_admin_salt token_impl_salt token_proxy_salt
+  local proxy_admin_ctor_args proxy_admin_init_code proxy_admin_address
+  local token_impl_init_code token_impl_address token_init_data token_proxy_ctor_args token_proxy_init_code
+  local token_address encoded_asset_id_inputs
+
+  create2_deployer="${ZKSYS_L2_CREATE2_DEPLOYER:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
+  export ZKSYS_L2_CREATE2_DEPLOYER="${create2_deployer}"
+  create2_deployer="$(normalize_zksys_address_var ZKSYS_L2_CREATE2_DEPLOYER)"
+  ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
+  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
+    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
+  export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
+
+  proxy_admin_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
+  token_impl_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_TOKEN_IMPL_SALT 0x7a6b7379732d746f6b656e2d696d706c00000000000000000000000000000000)"
+  token_proxy_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_TOKEN_PROXY_SALT 0x7a6b7379732d746f6b656e2d70726f7879000000000000000000000000000000)"
+
+  proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
+  proxy_admin_init_code="$(forge_inspect_zksys_bytecode ZkSysProxyAdmin)${proxy_admin_ctor_args#0x}"
+  proxy_admin_address="$(
+    cast create2 \
+      --deployer "${create2_deployer}" \
+      --salt "${proxy_admin_salt}" \
+      --init-code "${proxy_admin_init_code}"
+  )"
+
+  token_impl_init_code="$(forge_inspect_zksys_bytecode SyscoinZKSYSToken)"
+  token_impl_address="$(
+    cast create2 \
+      --deployer "${create2_deployer}" \
+      --salt "${token_impl_salt}" \
+      --init-code "${token_impl_init_code}"
+  )"
+
+  token_init_data="$(
+    cast calldata \
+      "initialize(string,string,uint8,address)" \
+      "${ZKSYS_L2_TOKEN_NAME:-ZKSYS}" \
+      "${ZKSYS_L2_TOKEN_SYMBOL:-ZKSYS}" \
+      "${ZKSYS_L2_TOKEN_DECIMALS:-18}" \
+      "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
+  )"
+  token_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${token_impl_address}" "${proxy_admin_address}" "${token_init_data}")"
+  token_proxy_init_code="$(forge_inspect_zksys_bytecode ZkSysCreate2ProxyBytecode)${token_proxy_ctor_args#0x}"
+  token_address="$(
+    cast create2 \
+      --deployer "${create2_deployer}" \
+      --salt "${token_proxy_salt}" \
+      --init-code "${token_proxy_init_code}"
+  )"
+
+  # v31 InteropCenter resolves the fixed-fee token via
+  # L2NativeTokenVault.tokenAddress(keccak256(abi.encode(originChainId, L2_NTV, token))).
+  encoded_asset_id_inputs="$(
+    cast abi-encode \
+      "constructor(uint256,address,address)" \
+      "${GATEWAY_CHAIN_ID}" \
+      "0x0000000000000000000000000000000000008004" \
+      "${token_address}"
+  )"
+  ZKSYS_ZK_TOKEN_ASSET_ID="$(cast keccak "${encoded_asset_id_inputs}")"
+  export ZKSYS_ZK_TOKEN_ASSET_ID
+  export ZK_TOKEN_ASSET_ID="${ZKSYS_ZK_TOKEN_ASSET_ID}"
+  echo "gateway-launch: derived zkSYS L2 token address ${token_address}"
+  echo "gateway-launch: derived ZKSYS_ZK_TOKEN_ASSET_ID=${ZKSYS_ZK_TOKEN_ASSET_ID}"
+}
+
 if [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
   require_code_at "${L1_WETH_TOKEN_ADDRESS}" "L1 wrapped native token"
   export L1_WETH_TOKEN_ADDRESS
@@ -169,6 +294,7 @@ PY
 fi
 
 require_code_at "${CREATE2_FACTORY_ADDR}" "create2 factory"
+derive_and_export_zksys_zk_token_asset_id
 
 cat > script-config/permanent-values.toml <<EOF
 [permanent_contracts]
