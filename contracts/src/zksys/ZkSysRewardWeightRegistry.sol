@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable-v4/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
 import {IZkSysSentryNodeReceiver, ZkSysMembershipRegistry} from "./ZkSysMembershipRegistry.sol";
 
 interface IZkSysWeightReceiver {
@@ -10,7 +11,7 @@ interface IZkSysWeightReceiver {
 
 /// @title ZkSysRewardWeightRegistry
 /// @notice Converts membership facts and admin-managed stake weights into issuer reward weights.
-contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
+contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, IZkSysSentryNodeReceiver {
     uint256 public constant SENTRY_NODE_WEIGHT = 100_000 ether;
 
     struct Weight {
@@ -24,22 +25,28 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
     error WeightReceiverAlreadySet(address currentWeightReceiver);
     error WeightReceiverNotSet();
 
-    ZkSysMembershipRegistry public immutable membershipRegistry;
+    ZkSysMembershipRegistry public membershipRegistry;
     IZkSysWeightReceiver public weightReceiver;
     uint256 public totalWeight;
 
     mapping(address account => Weight weight) private _weights;
+    uint256[46] private __gap;
 
     event StakeWeightUpdated(address indexed account, uint256 oldStakeWeight, uint256 newStakeWeight);
     event SentryNodeWeightUpdated(address indexed account, uint256 oldSentryNodeWeight, uint256 newSentryNodeWeight);
     event WeightReceiverUpdated(address indexed weightReceiver);
     event WeightUpdated(address indexed account, uint256 oldWeight, uint256 newWeight);
 
-    constructor(address admin, ZkSysMembershipRegistry membershipRegistry_) {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address admin, ZkSysMembershipRegistry membershipRegistry_) external initializer {
         if (admin == address(0) || address(membershipRegistry_) == address(0)) {
             revert InvalidAddress();
         }
 
+        __AccessControl_init();
         membershipRegistry = membershipRegistry_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }

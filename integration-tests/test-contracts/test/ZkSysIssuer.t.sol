@@ -30,9 +30,9 @@ contract ZkSysIssuerTest is Test {
         );
         token = SyscoinZKSYSToken(address(proxy));
 
-        membershipRegistry = new ZkSysMembershipRegistry(admin, l1RegistryBridge);
-        registry = new ZkSysRewardWeightRegistry(admin, membershipRegistry);
-        issuer = new ZkSysIssuer(
+        membershipRegistry = _deployMembershipRegistry(admin, l1RegistryBridge);
+        registry = _deployWeightRegistry(admin, membershipRegistry);
+        issuer = _deployIssuer(
             IZkSysMintableToken(address(token)),
             IZkSysRewardWeightSource(address(registry)),
             admin,
@@ -208,15 +208,16 @@ contract ZkSysIssuerTest is Test {
         issuer.distribute();
     }
 
-    function testConstructorRejectsScheduleThatIsNotOneYear() public {
+    function testInitializerRejectsScheduleThatIsNotOneYear() public {
+        ZkSysIssuer implementation = new ZkSysIssuer();
+
         vm.expectRevert(ZkSysIssuer.InvalidSchedule.selector);
-        new ZkSysIssuer(
-            IZkSysMintableToken(address(token)),
-            IZkSysRewardWeightSource(address(registry)),
-            admin,
-            START_TIME,
-            1 days,
-            364
+        new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysIssuer.initialize,
+                (IZkSysMintableToken(address(token)), IZkSysRewardWeightSource(address(registry)), admin, START_TIME, 1 days, 364)
+            )
         );
     }
 
@@ -244,5 +245,44 @@ contract ZkSysIssuerTest is Test {
 
     function remainingAfter(uint256 scheduledRewards) private view returns (uint256) {
         return token.maxSupply() - scheduledRewards;
+    }
+
+    function _deployMembershipRegistry(address admin_, address l1RegistryBridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1RegistryBridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
+    }
+
+    function _deployWeightRegistry(
+        address admin_,
+        ZkSysMembershipRegistry membershipRegistry_
+    ) private returns (ZkSysRewardWeightRegistry) {
+        ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+        );
+        return ZkSysRewardWeightRegistry(address(proxy));
+    }
+
+    function _deployIssuer(
+        IZkSysMintableToken token_,
+        IZkSysRewardWeightSource registry_,
+        address admin_,
+        uint256 startTime_,
+        uint256 periodSeconds_,
+        uint256 periodsPerYear_
+    ) private returns (ZkSysIssuer) {
+        ZkSysIssuer implementation = new ZkSysIssuer();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysIssuer.initialize,
+                (token_, registry_, admin_, startTime_, periodSeconds_, periodsPerYear_)
+            )
+        );
+        return ZkSysIssuer(address(proxy));
     }
 }

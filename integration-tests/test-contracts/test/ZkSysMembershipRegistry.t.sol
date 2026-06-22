@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {IZkSysSentryNodeReceiver} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
@@ -26,7 +27,7 @@ contract ZkSysMembershipRegistryTest is Test {
     ZkSysMembershipRegistry private registry;
 
     function setUp() public {
-        registry = new ZkSysMembershipRegistry(admin, l1Bridge);
+        registry = _deployRegistry(admin, l1Bridge);
     }
 
     function testOnlyAliasedL1BridgeCanApplyL1Updates() public {
@@ -50,7 +51,7 @@ contract ZkSysMembershipRegistryTest is Test {
     }
 
     function testAdminCanSetL1BridgeWhenBootstrappedWithZero() public {
-        ZkSysMembershipRegistry zeroBridgeRegistry = new ZkSysMembershipRegistry(admin, address(0));
+        ZkSysMembershipRegistry zeroBridgeRegistry = _deployRegistry(admin, address(0));
         address bridge = address(0xB0B);
 
         vm.prank(admin);
@@ -147,6 +148,14 @@ contract ZkSysMembershipRegistryTest is Test {
         MockSentryNodeReceiver receiver = new MockSentryNodeReceiver();
         vm.prank(admin);
         registry.setSentryNodeReceiver(receiver);
+    }
+
+    function _deployRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1Bridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
     }
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {

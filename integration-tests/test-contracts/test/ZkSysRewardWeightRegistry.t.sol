@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {ERC1967Proxy} from "@openzeppelin/contracts-v4/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {ZkSysMembershipRegistry} from "contracts/src/zksys/ZkSysMembershipRegistry.sol";
 import {IZkSysWeightReceiver, ZkSysRewardWeightRegistry} from "contracts/src/zksys/ZkSysRewardWeightRegistry.sol";
@@ -30,8 +31,8 @@ contract ZkSysRewardWeightRegistryTest is Test {
     MockRewardWeightReceiver private receiver;
 
     function setUp() public {
-        membershipRegistry = new ZkSysMembershipRegistry(admin, l1Bridge);
-        weightRegistry = new ZkSysRewardWeightRegistry(admin, membershipRegistry);
+        membershipRegistry = _deployMembershipRegistry(admin, l1Bridge);
+        weightRegistry = _deployWeightRegistry(admin, membershipRegistry);
         receiver = new MockRewardWeightReceiver();
 
         vm.startPrank(admin);
@@ -114,5 +115,25 @@ contract ZkSysRewardWeightRegistryTest is Test {
             sentryNodeCollateralHeight: sentryNodeCollateralHeight
         });
         membershipRegistry.applyL1SentryNodeUpdates(updates);
+    }
+
+    function _deployMembershipRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
+        ZkSysMembershipRegistry implementation = new ZkSysMembershipRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation), abi.encodeCall(ZkSysMembershipRegistry.initialize, (admin_, l1Bridge_))
+        );
+        return ZkSysMembershipRegistry(address(proxy));
+    }
+
+    function _deployWeightRegistry(
+        address admin_,
+        ZkSysMembershipRegistry membershipRegistry_
+    ) private returns (ZkSysRewardWeightRegistry) {
+        ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+        );
+        return ZkSysRewardWeightRegistry(address(proxy));
     }
 }

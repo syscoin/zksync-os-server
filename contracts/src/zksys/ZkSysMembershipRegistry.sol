@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable-v4/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
 
 interface IZkSysSentryNodeReceiver {
     function onSentryNodeStatusChange(address account, uint32 oldCollateralHeight, uint32 newCollateralHeight) external;
@@ -9,7 +10,7 @@ interface IZkSysSentryNodeReceiver {
 
 /// @title ZkSysMembershipRegistry
 /// @notice L2 mirror of NEVM membership facts used by zkSYS issuance.
-contract ZkSysMembershipRegistry is AccessControl {
+contract ZkSysMembershipRegistry is Initializable, AccessControlUpgradeable {
     struct Member {
         uint32 sentryNodeCollateralHeight;
     }
@@ -32,6 +33,7 @@ contract ZkSysMembershipRegistry is AccessControl {
     IZkSysSentryNodeReceiver public sentryNodeReceiver;
     address public l1RegistryBridge;
     address public aliasedL1RegistryBridge;
+    uint256[46] private __gap;
 
     event L1RegistryBridgeUpdated(address indexed l1RegistryBridge, address indexed aliasedL1RegistryBridge);
     event SentryNodeReceiverUpdated(address indexed receiver);
@@ -40,11 +42,16 @@ contract ZkSysMembershipRegistry is AccessControl {
     );
     event SentryNodeMembershipUpdated(address indexed account, bool active);
 
-    constructor(address admin, address l1RegistryBridge_) {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address admin, address l1RegistryBridge_) external initializer {
         if (admin == address(0)) {
             revert InvalidAddress();
         }
 
+        __AccessControl_init();
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         if (l1RegistryBridge_ != address(0)) {
             _setL1RegistryBridge(l1RegistryBridge_);
