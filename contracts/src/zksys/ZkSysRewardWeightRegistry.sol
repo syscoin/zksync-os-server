@@ -10,9 +10,10 @@ interface IZkSysWeightReceiver {
 }
 
 /// @title ZkSysRewardWeightRegistry
-/// @notice Converts membership facts and admin-managed stake weights into issuer reward weights.
+/// @notice Converts native SYS stake and membership facts into issuer reward weights.
 contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, IZkSysSentryNodeReceiver {
     uint256 public constant SENTRY_NODE_WEIGHT = 100_000 ether;
+    bytes32 public constant STAKE_WEIGHT_UPDATER_ROLE = keccak256("STAKE_WEIGHT_UPDATER_ROLE");
 
     struct Weight {
         uint256 stakeWeight;
@@ -49,6 +50,7 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         __AccessControl_init();
         membershipRegistry = membershipRegistry_;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _setRoleAdmin(STAKE_WEIGHT_UPDATER_ROLE, DEFAULT_ADMIN_ROLE);
     }
 
     function setWeightReceiver(IZkSysWeightReceiver weightReceiver_) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -63,13 +65,13 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         emit WeightReceiverUpdated(address(weightReceiver_));
     }
 
-    function adminUpdateStakeWeight(address account, uint256 stakeWeight) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateStakeWeight(address account, uint256 stakeWeight) external onlyRole(STAKE_WEIGHT_UPDATER_ROLE) {
         _updateStakeWeight(account, stakeWeight);
     }
 
-    function adminUpdateStakeWeights(address[] calldata accounts, uint256[] calldata stakeWeights)
+    function updateStakeWeights(address[] calldata accounts, uint256[] calldata stakeWeights)
         external
-        onlyRole(DEFAULT_ADMIN_ROLE)
+        onlyRole(STAKE_WEIGHT_UPDATER_ROLE)
     {
         if (accounts.length != stakeWeights.length) {
             revert InvalidWeight(stakeWeights.length);

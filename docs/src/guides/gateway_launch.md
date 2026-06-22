@@ -614,6 +614,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_L2_REGISTRY_IMPL_SALT` / `ZKSYS_L2_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry implementation/proxy deployments; the proxy address is the operational registry address wired to the L1 bridge |
 | `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |
 | `ZKSYS_L2_ISSUER_IMPL_SALT` / `ZKSYS_L2_ISSUER_PROXY_SALT` | Optional bytes32 salts for deterministic L2 issuer implementation/proxy deployments; the proxy address receives the token minter role |
+| `ZKSYS_L2_STAKING_VAULT_IMPL_SALT` / `ZKSYS_L2_STAKING_VAULT_PROXY_SALT` | Optional bytes32 salts for deterministic L2 native SYS staking vault implementation/proxy deployments; the proxy address receives the reward weight updater role |
 | `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |

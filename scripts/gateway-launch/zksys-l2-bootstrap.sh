@@ -242,6 +242,8 @@ ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_WEIGHT_REGI
 ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT 0x7a6b7379732d7765696768742d72656769737472792d70726f78790000000000)"
 ZKSYS_L2_ISSUER_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_IMPL_SALT 0x7a6b7379732d6973737565722d696d706c000000000000000000000000000000)"
 ZKSYS_L2_ISSUER_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_PROXY_SALT 0x7a6b7379732d6973737565722d70726f78790000000000000000000000000000)"
+ZKSYS_L2_STAKING_VAULT_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_IMPL_SALT 0x7a6b7379732d7374616b696e672d7661756c742d696d706c0000000000000000)"
+ZKSYS_L2_STAKING_VAULT_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_PROXY_SALT 0x7a6b7379732d7374616b696e672d7661756c742d70726f787900000000000000)"
 
 inspect_dir="${ZKSYNC_OS_SERVER_PATH}/contracts"
 [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
@@ -353,6 +355,27 @@ ZKSYS_L2_ISSUER_ADDRESS="$(
     --init-code "${issuer_proxy_init_code}"
 )"
 
+staking_vault_impl_init_code="$(forge_inspect_bytecode ZkSysNativeStakingVault)"
+ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS="$(
+  cast create2 \
+    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    --salt "${ZKSYS_L2_STAKING_VAULT_IMPL_SALT}" \
+    --init-code "${staking_vault_impl_init_code}"
+)"
+staking_vault_init_data="$(
+  cast calldata \
+    "initialize(address)" \
+    "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+)"
+staking_vault_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${staking_vault_init_data}")"
+staking_vault_proxy_init_code="$(forge_inspect_bytecode ZkSysCreate2ProxyBytecode)${staking_vault_proxy_ctor_args#0x}"
+ZKSYS_L2_STAKING_VAULT_ADDRESS="$(
+  cast create2 \
+    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    --salt "${ZKSYS_L2_STAKING_VAULT_PROXY_SALT}" \
+    --init-code "${staking_vault_proxy_init_code}"
+)"
+
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
 deploy_create2 "zkSYS token implementation" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_SALT}" "${token_impl_init_code}"
@@ -363,12 +386,16 @@ deploy_create2 "zkSYS reward weight registry implementation" "${ZKSYS_L2_WEIGHT_
 deploy_create2 "zkSYS reward weight registry proxy" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "${ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT}" "${weight_registry_proxy_init_code}"
 deploy_create2 "zkSYS issuer implementation" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}" "${ZKSYS_L2_ISSUER_IMPL_SALT}" "${issuer_impl_init_code}"
 deploy_create2 "zkSYS issuer proxy" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_PROXY_SALT}" "${issuer_proxy_init_code}"
+deploy_create2 "zkSYS native staking vault implementation" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_IMPL_SALT}" "${staking_vault_impl_init_code}"
+deploy_create2 "zkSYS native staking vault proxy" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_PROXY_SALT}" "${staking_vault_proxy_init_code}"
 
 MINTER_ROLE="$(cast keccak "$(cast from-ascii MINTER_ROLE)")"
 BURNER_ROLE="$(cast keccak "$(cast from-ascii BURNER_ROLE)")"
+STAKE_WEIGHT_UPDATER_ROLE="$(cast keccak "$(cast from-ascii STAKE_WEIGHT_UPDATER_ROLE)")"
 
 echo "zksys-l2-bootstrap: wiring issuer minter role and registry receivers"
 send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
+send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "grantRole(bytes32,address)" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
 send_l2 "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "setWeightReceiver(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setSentryNodeReceiver(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
 if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
@@ -382,8 +409,10 @@ fi
 
 echo "zksys-l2-bootstrap: verifying role and receiver wiring"
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
+assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "weightReceiver()(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "sentryNodeReceiver()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+assert_l2_address_call "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "weightRegistry()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
 if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
   assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "l1RegistryBridge()(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
 fi
@@ -402,4 +431,6 @@ zksys-l2-bootstrap: complete
   weightRegistryProxy = ${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}
   issuerImpl          = ${ZKSYS_L2_ISSUER_IMPL_ADDRESS}
   issuerProxy         = ${ZKSYS_L2_ISSUER_ADDRESS}
+  stakingVaultImpl    = ${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}
+  stakingVaultProxy   = ${ZKSYS_L2_STAKING_VAULT_ADDRESS}
 EOF
