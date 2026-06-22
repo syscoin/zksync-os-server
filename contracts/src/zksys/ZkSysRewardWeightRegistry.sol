@@ -39,10 +39,10 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
 
     ZkSysMembershipRegistry public membershipRegistry;
     IZkSysWeightReceiver public weightReceiver;
-    uint256 public activationDelayPeriods;
     uint256 public totalWeight;
 
     mapping(address account => Weight weight) private _weights;
+    uint256 public activationDelayPeriods;
     mapping(address account => PendingWeight pendingWeight) private _pendingWeights;
     uint256[44] private __gap;
 
