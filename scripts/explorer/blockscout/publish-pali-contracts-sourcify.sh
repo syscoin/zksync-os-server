@@ -8,7 +8,7 @@
 # Sourcify when an unverified contract page is opened).
 #
 # Reuses the committed standard-JSON inputs from pali-verification/ (the exact
-# compilation units that produced the deployed bytecode) via Sourcify's v2 API:
+# metadata-free compilation units that produced the deployed bytecode) via Sourcify's v2 API:
 #   POST /v2/verify/{chainId}/{address}  {stdJsonInput, compilerVersion,
 #                                         contractIdentifier}
 #
@@ -33,14 +33,14 @@ ENTRYPOINT_SOLC="0.8.28+commit.7893614a"
 # address|label|standard-json|compiler|source-path:ContractName
 CONTRACTS=(
   "0x433709009B8330FDa32311DF1C2AFA402eD8D009|EntryPoint v0.9|entrypoint.json|${ENTRYPOINT_SOLC}|contracts/core/EntryPoint.sol:EntryPoint"
-  "0x16f8c2aa6532929383e34d3c4d1c26aad1f93ae7|Smart account implementation|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccount.sol:PaliSmartAccount"
-  "0x3b5102122e368b7a643e8d55d56d2face1299b34|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
-  "0x6b802a0db05616768f233d4264edf8cccfd5443c|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
-  "0xe34bba0c18b56ec29bbad1370458417c6c3c5176|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
-  "0x684682edf65b9d91d559b70d503558c1ce4be1a2|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule"
-  "0xa343139fc7d2397ee000d40b26a2598ba4ffd3e3|Composite validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
-  "0x0c2afbdb0cbf5f8a9dad12f1937eb68ccb7ecf9e|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
-  "0xa4279b355923cfbdbb0bd2cc481c944c715db3ca|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
+  "0xf9cd389c3a980633fb75e9997d463923239aedc9|Smart account implementation|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccount.sol:PaliSmartAccount"
+  "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
+  "0x5e480b89c2089437ebe8f0ff6356d9ba2f07a53a|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
+  "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
+  "0x0876d0c5a57bf31c1758c58d2c213fa47b8708db|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule"
+  "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
+  "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
+  "0xdb062bd34ed9b3b7c7a97fca895dd2ff59512370|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
 )
 
 match_status() {

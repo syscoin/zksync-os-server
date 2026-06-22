@@ -183,6 +183,7 @@ PY
 forge_inspect_zksys_bytecode() {
   local contract="${1:?contract required}"
   forge inspect "${contract}" bytecode \
+    --no-metadata \
     --root "${ZKSYNC_OS_SERVER_PATH}/contracts" \
     -R "@openzeppelin/contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/" \
     -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
