@@ -173,6 +173,54 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(receiver.lastOldTotalWeight(), 100_000 ether);
     }
 
+    function testDuplicateSentryNodeIncreaseDoesNotResetPendingEffectivePeriod() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.sentryNodeWeight, 100_000 ether);
+        assertEq(pending.sentryNodeEffectivePeriod, 1);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+
+        pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.sentryNodeWeight, 100_000 ether);
+        assertEq(pending.sentryNodeEffectivePeriod, 1);
+
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether);
+    }
+
+    function testLowerPendingSentryNodeIncreaseKeepsOriginalEffectivePeriod() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 135_000 ether);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.sentryNodeWeight, 135_000 ether);
+        assertEq(pending.sentryNodeEffectivePeriod, 1);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+
+        pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.sentryNodeWeight, 100_000 ether);
+        assertEq(pending.sentryNodeEffectivePeriod, 1);
+
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether);
+    }
+
     function testOnlyStakeWeightUpdaterCanUpdateStakeWeight() public {
         vm.expectRevert(_accessControlRevert(alice, weightRegistry.STAKE_WEIGHT_UPDATER_ROLE()));
         vm.prank(alice);
@@ -241,7 +289,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(weightRegistry.totalWeight(), 10);
     }
 
-    function testLaterSentryNodeIncreaseDelaysPendingStakeActivationUntilBothEffective() public {
+    function testMatureStakePendingCanActivateWhileSentryNodeIncreaseIsImmature() public {
         vm.warp(receiver.startTime());
         vm.prank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000, 100_000 ether);
@@ -258,11 +306,15 @@ contract ZkSysRewardWeightRegistryTest is Test {
         _applyL1Update(alice, 1_000, 135_000 ether);
 
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector, 3, 2));
         weightRegistry.activatePendingWeight();
 
-        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
-        assertEq(weightRegistry.totalWeight(), 100_000 ether);
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether + 10);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether + 10);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.stakeEffectivePeriod, 0);
+        assertEq(pending.sentryNodeWeight, 135_000 ether);
+        assertEq(pending.sentryNodeEffectivePeriod, 3);
 
         receiver.setCurrentPeriod(3);
         vm.prank(alice);
@@ -270,6 +322,47 @@ contract ZkSysRewardWeightRegistryTest is Test {
 
         assertEq(weightRegistry.weightOf(alice), 135_000 ether + 10);
         assertEq(weightRegistry.totalWeight(), 135_000 ether + 10);
+    }
+
+    function testMatureSentryNodePendingCanActivateWhileStakeIncreaseIsImmature() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 10);
+
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.stakeWeight, 10);
+        assertEq(pending.stakeEffectivePeriod, 2);
+        assertEq(pending.sentryNodeEffectivePeriod, 0);
+
+        receiver.setCurrentPeriod(2);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether + 10);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether + 10);
+    }
+
+    function testAnyoneCanActivateMaturePendingWeightForAccount() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(bob);
+        weightRegistry.activatePendingWeightFor(alice);
+
+        assertEq(weightRegistry.weightOf(alice), DEFAULT_SENTRY_NODE_WEIGHT);
+        assertEq(weightRegistry.totalWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
     }
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {

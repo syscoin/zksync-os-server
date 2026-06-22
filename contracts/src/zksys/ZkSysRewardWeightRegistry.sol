@@ -28,6 +28,13 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         uint256 sentryNodeEffectivePeriod;
     }
 
+    struct PendingWeightView {
+        uint256 stakeWeight;
+        uint256 stakeEffectivePeriod;
+        uint256 sentryNodeWeight;
+        uint256 sentryNodeEffectivePeriod;
+    }
+
     error InvalidAddress();
     error InvalidActivationDelay(uint256 activationDelayPeriods);
     error InvalidWeight(uint256 weight);
@@ -123,6 +130,10 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         _activatePendingWeight(msg.sender);
     }
 
+    function activatePendingWeightFor(address account) external {
+        _activatePendingWeight(account);
+    }
+
     function weightOf(address account) external view returns (uint256) {
         return _totalAccountWeight(_weights[account]);
     }
@@ -131,8 +142,16 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         return _weights[account];
     }
 
-    function pendingWeightComponents(address account) external view returns (PendingWeight memory) {
-        return _pendingWeights[account];
+    function pendingWeightComponents(address account) external view returns (PendingWeightView memory pendingWeight) {
+        PendingWeight storage stored = _pendingWeights[account];
+        if (stored.stakeEffectivePeriod != 0) {
+            pendingWeight.stakeWeight = stored.stakeWeight;
+            pendingWeight.stakeEffectivePeriod = stored.stakeEffectivePeriod - 1;
+        }
+        if (stored.sentryNodeEffectivePeriod != 0) {
+            pendingWeight.sentryNodeWeight = stored.sentryNodeWeight;
+            pendingWeight.sentryNodeEffectivePeriod = stored.sentryNodeEffectivePeriod - 1;
+        }
     }
 
     function _updateStakeWeight(address account, uint256 stakeWeight) private {
@@ -140,45 +159,70 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
             revert InvalidAddress();
         }
         Weight storage stored = _weights[account];
+        PendingWeight storage pending = _pendingWeights[account];
         uint256 oldStakeWeight = stored.stakeWeight;
 
-        if (stakeWeight > oldStakeWeight) {
-            PendingWeight storage pending = _pendingWeights[account];
+        if (stakeWeight <= oldStakeWeight) {
+            pending.stakeEffectivePeriod = 0;
+            _applyWeightChange(account, stakeWeight, stored.sentryNodeWeight);
+
+            emit StakeWeightUpdated(account, oldStakeWeight, stakeWeight);
+            return;
+        }
+
+        uint256 currentPendingStakeEffectivePeriod = pending.stakeEffectivePeriod;
+        if (currentPendingStakeEffectivePeriod != 0 && stakeWeight <= pending.stakeWeight) {
+            uint256 sentryNodeWeight =
+                pending.sentryNodeEffectivePeriod == 0 ? stored.sentryNodeWeight : pending.sentryNodeWeight;
+            _checkWeight(stakeWeight + sentryNodeWeight);
+            pending.stakeWeight = stakeWeight;
+            emit StakeWeightQueued(account, oldStakeWeight, stakeWeight, currentPendingStakeEffectivePeriod - 1);
+            return;
+        }
+
+        {
             uint256 sentryNodeWeight =
                 pending.sentryNodeEffectivePeriod == 0 ? stored.sentryNodeWeight : pending.sentryNodeWeight;
             _checkWeight(stakeWeight + sentryNodeWeight);
             uint256 effectivePeriod = _pendingEffectivePeriod();
-            pending.stakeWeight = stakeWeight;
             pending.stakeEffectivePeriod = effectivePeriod + 1;
+            pending.stakeWeight = stakeWeight;
             emit StakeWeightQueued(account, oldStakeWeight, stakeWeight, effectivePeriod);
-            return;
         }
-
-        _pendingWeights[account].stakeEffectivePeriod = 0;
-        _applyWeightChange(account, stakeWeight, stored.sentryNodeWeight);
-
-        emit StakeWeightUpdated(account, oldStakeWeight, stakeWeight);
     }
 
     function _updateSentryNodeWeight(address account, uint256 sentryNodeWeight) private {
         Weight storage stored = _weights[account];
+        PendingWeight storage pending = _pendingWeights[account];
         uint256 oldSentryNodeWeight = stored.sentryNodeWeight;
 
-        if (sentryNodeWeight > oldSentryNodeWeight) {
-            PendingWeight storage pending = _pendingWeights[account];
-            uint256 stakeWeight = pending.stakeEffectivePeriod == 0 ? stored.stakeWeight : pending.stakeWeight;
-            _checkWeight(stakeWeight + sentryNodeWeight);
-            uint256 effectivePeriod = _pendingEffectivePeriod();
-            pending.sentryNodeWeight = sentryNodeWeight;
-            pending.sentryNodeEffectivePeriod = effectivePeriod + 1;
-            emit SentryNodeWeightQueued(account, oldSentryNodeWeight, sentryNodeWeight, effectivePeriod);
+        if (sentryNodeWeight <= oldSentryNodeWeight) {
+            pending.sentryNodeEffectivePeriod = 0;
+            _applyWeightChange(account, stored.stakeWeight, sentryNodeWeight);
+
+            emit SentryNodeWeightUpdated(account, oldSentryNodeWeight, sentryNodeWeight);
             return;
         }
 
-        _pendingWeights[account].sentryNodeEffectivePeriod = 0;
-        _applyWeightChange(account, stored.stakeWeight, sentryNodeWeight);
+        uint256 currentPendingSentryNodeEffectivePeriod = pending.sentryNodeEffectivePeriod;
+        if (currentPendingSentryNodeEffectivePeriod != 0 && sentryNodeWeight <= pending.sentryNodeWeight) {
+            uint256 stakeWeight = pending.stakeEffectivePeriod == 0 ? stored.stakeWeight : pending.stakeWeight;
+            _checkWeight(stakeWeight + sentryNodeWeight);
+            pending.sentryNodeWeight = sentryNodeWeight;
+            emit SentryNodeWeightQueued(
+                account, oldSentryNodeWeight, sentryNodeWeight, currentPendingSentryNodeEffectivePeriod - 1
+            );
+            return;
+        }
 
-        emit SentryNodeWeightUpdated(account, oldSentryNodeWeight, sentryNodeWeight);
+        {
+            uint256 stakeWeight = pending.stakeEffectivePeriod == 0 ? stored.stakeWeight : pending.stakeWeight;
+            _checkWeight(stakeWeight + sentryNodeWeight);
+            uint256 effectivePeriod = _pendingEffectivePeriod();
+            pending.sentryNodeEffectivePeriod = effectivePeriod + 1;
+            pending.sentryNodeWeight = sentryNodeWeight;
+            emit SentryNodeWeightQueued(account, oldSentryNodeWeight, sentryNodeWeight, effectivePeriod);
+        }
     }
 
     function _activatePendingWeight(address account) private {
@@ -188,30 +232,36 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         uint256 newStakeWeight = stored.stakeWeight;
         uint256 newSentryNodeWeight = stored.sentryNodeWeight;
         bool hasEffectivePendingWeight;
+        uint256 nextEffectivePeriod = type(uint256).max;
 
         uint256 stakeEffectivePeriod = pending.stakeEffectivePeriod;
         if (stakeEffectivePeriod != 0) {
             --stakeEffectivePeriod;
-            if (currentPeriod < stakeEffectivePeriod) {
-                revert PendingWeightNotEffective(stakeEffectivePeriod, currentPeriod);
+            if (currentPeriod >= stakeEffectivePeriod) {
+                newStakeWeight = pending.stakeWeight;
+                pending.stakeEffectivePeriod = 0;
+                hasEffectivePendingWeight = true;
+            } else {
+                nextEffectivePeriod = stakeEffectivePeriod;
             }
-            newStakeWeight = pending.stakeWeight;
-            pending.stakeEffectivePeriod = 0;
-            hasEffectivePendingWeight = true;
         }
 
         uint256 sentryNodeEffectivePeriod = pending.sentryNodeEffectivePeriod;
         if (sentryNodeEffectivePeriod != 0) {
             --sentryNodeEffectivePeriod;
-            if (currentPeriod < sentryNodeEffectivePeriod) {
-                revert PendingWeightNotEffective(sentryNodeEffectivePeriod, currentPeriod);
+            if (currentPeriod >= sentryNodeEffectivePeriod) {
+                newSentryNodeWeight = pending.sentryNodeWeight;
+                pending.sentryNodeEffectivePeriod = 0;
+                hasEffectivePendingWeight = true;
+            } else if (sentryNodeEffectivePeriod < nextEffectivePeriod) {
+                nextEffectivePeriod = sentryNodeEffectivePeriod;
             }
-            newSentryNodeWeight = pending.sentryNodeWeight;
-            pending.sentryNodeEffectivePeriod = 0;
-            hasEffectivePendingWeight = true;
         }
 
         if (!hasEffectivePendingWeight) {
+            if (nextEffectivePeriod != type(uint256).max) {
+                revert PendingWeightNotEffective(nextEffectivePeriod, currentPeriod);
+            }
             revert NoPendingWeight();
         }
 
