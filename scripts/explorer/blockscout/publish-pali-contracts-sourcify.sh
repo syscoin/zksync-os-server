@@ -35,12 +35,12 @@ CONTRACTS=(
   "0x433709009B8330FDa32311DF1C2AFA402eD8D009|EntryPoint v0.9|entrypoint.json|${ENTRYPOINT_SOLC}|contracts/core/EntryPoint.sol:EntryPoint"
   "0xf9cd389c3a980633fb75e9997d463923239aedc9|Smart account implementation|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccount.sol:PaliSmartAccount"
   "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
-  "0x5e480b89c2089437ebe8f0ff6356d9ba2f07a53a|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
+  "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
   "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
-  "0x0876d0c5a57bf31c1758c58d2c213fa47b8708db|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule"
+  "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule"
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
-  "0xdb062bd34ed9b3b7c7a97fca895dd2ff59512370|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
+  "0xe9f08a58ed246b85ca799a613406a4d4e9900781|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
 )
 
 match_status() {

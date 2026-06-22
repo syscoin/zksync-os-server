@@ -33,7 +33,6 @@ contract PaliP256WebAuthnValidatorModule is IERC7579Validator {
     struct AuthData {
         bytes32 publicKeyX;
         bytes32 publicKeyY;
-        bytes32 credentialIdHash;
         bytes32 rpIdHash;
         bytes32 originHash;
         uint256 originLength;
@@ -59,8 +58,7 @@ contract PaliP256WebAuthnValidatorModule is IERC7579Validator {
 
         AuthData memory authData_ = abi.decode(initData, (AuthData));
         if (
-            authData_.publicKeyX == bytes32(0) || authData_.publicKeyY == bytes32(0)
-                || authData_.credentialIdHash == bytes32(0) || authData_.rpIdHash == bytes32(0)
+            authData_.publicKeyX == bytes32(0) || authData_.publicKeyY == bytes32(0) || authData_.rpIdHash == bytes32(0)
                 || authData_.originHash == bytes32(0) || authData_.originLength == 0
         ) {
             revert InvalidP256AuthConfig();

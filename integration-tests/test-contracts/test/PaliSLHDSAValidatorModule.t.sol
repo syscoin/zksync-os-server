@@ -77,7 +77,7 @@ contract PaliSLHDSAValidatorModuleTest is Test {
 
     function setUp() public {
         verifier = new MockSLHDSAVerifier();
-        module = new PaliSLHDSAValidatorModule(verifier);
+        module = new PaliSLHDSAValidatorModule(verifier, address(verifier).codehash);
         module.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: PK_SEED, pkRoot: PK_ROOT})));
     }
 
@@ -91,13 +91,18 @@ contract PaliSLHDSAValidatorModuleTest is Test {
     }
 
     function testRejectsInvalidAuthData() public {
-        PaliSLHDSAValidatorModule fresh = new PaliSLHDSAValidatorModule(verifier);
+        PaliSLHDSAValidatorModule fresh = new PaliSLHDSAValidatorModule(verifier, address(verifier).codehash);
 
         vm.expectRevert(PaliSLHDSAValidatorModule.InvalidSLHDSAAuthConfig.selector);
         fresh.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: bytes32(0), pkRoot: PK_ROOT})));
 
         vm.expectRevert(PaliSLHDSAValidatorModule.InvalidSLHDSAAuthConfig.selector);
         fresh.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: PK_SEED, pkRoot: bytes32(uint256(1))})));
+    }
+
+    function testConstructorRejectsUnexpectedVerifierCodeHash() public {
+        vm.expectRevert(PaliSLHDSAValidatorModule.InvalidSLHDSAVerifier.selector);
+        new PaliSLHDSAValidatorModule(verifier, keccak256("wrong verifier"));
     }
 
     function testEip1271ValidationUsesVerifier() public {
@@ -137,7 +142,8 @@ contract PaliSLHDSAValidatorModuleTest is Test {
 
     function testRealVerifierRejectsZeroSignature() public {
         SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
-        PaliSLHDSAValidatorModule realModule = new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)));
+        PaliSLHDSAValidatorModule realModule =
+            new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)), address(realVerifier).codehash);
         realModule.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: PK_SEED, pkRoot: PK_ROOT})));
 
         assertEq(realModule.isValidSignatureWithSender(address(0xB0B), HASH, new bytes(3856)), EIP1271_FAILED);
@@ -170,7 +176,8 @@ contract PaliSLHDSAValidatorModuleTest is Test {
 
     function testRealModuleAcceptsPinnedKnownAnswerVector() public {
         SLHDSASHA212824Verifier realVerifier = new SLHDSASHA212824Verifier();
-        PaliSLHDSAValidatorModule realModule = new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)));
+        PaliSLHDSAValidatorModule realModule =
+            new PaliSLHDSAValidatorModule(ISLHDSAVerifier(address(realVerifier)), address(realVerifier).codehash);
         realModule.onInstall(abi.encode(PaliSLHDSAValidatorModule.AuthData({pkSeed: KAT_PK_SEED, pkRoot: KAT_PK_ROOT})));
 
         assertEq(

@@ -205,16 +205,15 @@ contract ZkSysIssuer is AccessControl, IZkSysWeightReceiver {
         return accruedRewardsOf[account] + accumulated - rewardDebtOf[account];
     }
 
-    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight) external {
+    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight) external {
         if (msg.sender != address(registry)) {
             revert UnauthorizedRegistry();
         }
 
-        uint256 totalWeight = registry.totalWeight();
-        if (totalWeight == 0) {
+        if (oldTotalWeight == 0) {
             _checkpointBeforeFirstWeight();
         } else {
-            _checkpointRewards(totalWeight);
+            _checkpointRewards(oldTotalWeight);
         }
         _settle(account, oldWeight);
         rewardDebtOf[account] = _rewardDebt(newWeight);

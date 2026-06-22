@@ -39,6 +39,13 @@ contract PaliSmartAccountFactoryTest is Test {
         assertEq(ecdsa.threshold(account), 1);
     }
 
+    function testConstructorRejectsNonContractImplementation() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliSmartAccountFactory.InvalidImplementation.selector, address(0xBADC0DE))
+        );
+        new PaliSmartAccountFactory(address(0xBADC0DE));
+    }
+
     function testCreateAccountIsIdempotentForSameSaltAndInitCode() public {
         bytes32 salt = keccak256("pali.account.factory.idempotent");
         bytes memory initCode = factory.getInitData(address(ecdsa), _ecdsaInitData(owner));

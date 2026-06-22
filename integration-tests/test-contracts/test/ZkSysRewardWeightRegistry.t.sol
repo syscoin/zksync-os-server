@@ -9,11 +9,13 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
     address public lastAccount;
     uint256 public lastOldWeight;
     uint256 public lastNewWeight;
+    uint256 public lastOldTotalWeight;
 
-    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight) external {
+    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight) external {
         lastAccount = account;
         lastOldWeight = oldWeight;
         lastNewWeight = newWeight;
+        lastOldTotalWeight = oldTotalWeight;
     }
 }
 
@@ -47,6 +49,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(receiver.lastAccount(), alice);
         assertEq(receiver.lastOldWeight(), 0);
         assertEq(receiver.lastNewWeight(), 2);
+        assertEq(receiver.lastOldTotalWeight(), 0);
     }
 
     function testL1SentryNodeFactAddsAndRemovesSentryNodeWeight() public {
@@ -63,6 +66,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(receiver.lastAccount(), alice);
         assertEq(receiver.lastOldWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
         assertEq(receiver.lastNewWeight(), 0);
+        assertEq(receiver.lastOldTotalWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
     }
 
     function testL1AddressChangeIsRemoveOldAndAddNewWeight() public {

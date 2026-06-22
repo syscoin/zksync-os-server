@@ -2,7 +2,11 @@
 pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
-import {IL1BridgehubMinimal, IZkSysMembershipRegistryL2, ZkSysRegistryBridge} from "contracts/src/zksys/ZkSysRegistryBridge.sol";
+import {
+    IL1BridgehubMinimal,
+    IZkSysMembershipRegistryL2,
+    ZkSysRegistryBridge
+} from "contracts/src/zksys/ZkSysRegistryBridge.sol";
 
 contract MockBridgehub is IL1BridgehubMinimal {
     bytes32 public constant TX_HASH = keccak256("tx");
@@ -152,6 +156,37 @@ contract ZkSysRegistryBridgeTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysRegistryBridge.NevmCollateralHeightOverflow.selector, alice, overflowingHeight)
         );
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testPushUpdatesRejectsEmptyBatch() public {
+        address[] memory accounts = new address[](0);
+
+        vm.expectRevert(ZkSysRegistryBridge.EmptyBatch.selector);
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testPushUpdatesRejectsOversizedBatch() public {
+        address[] memory accounts = new address[](bridge.MAX_BATCH_SIZE() + 1);
+
+        vm.expectRevert(abi.encodeWithSelector(ZkSysRegistryBridge.InvalidBatchSize.selector, accounts.length));
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testPushUpdatesRejectsZeroAccount() public {
+        address[] memory accounts = new address[](1);
+        accounts[0] = address(0);
+
+        vm.expectRevert(ZkSysRegistryBridge.InvalidAddress.selector);
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testPushUpdatesRejectsDuplicateAccounts() public {
+        address[] memory accounts = new address[](2);
+        accounts[0] = alice;
+        accounts[1] = alice;
+
+        vm.expectRevert(abi.encodeWithSelector(ZkSysRegistryBridge.DuplicateAccount.selector, alice));
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
     }
 }

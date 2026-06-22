@@ -14,10 +14,14 @@ contract PaliSmartAccountFactory {
     event AccountCreated(address indexed account, bytes32 indexed salt, bytes32 indexed initCodeHash);
 
     error AccountPrefundFailed(address account, uint256 amount);
+    error InvalidImplementation(address implementation);
 
     address public immutable implementation;
 
     constructor(address implementation_) {
+        if (implementation_.code.length == 0) {
+            revert InvalidImplementation(implementation_);
+        }
         implementation = implementation_;
     }
 
@@ -42,11 +46,7 @@ contract PaliSmartAccountFactory {
         ModuleInit[] calldata executors,
         ModuleInit calldata fallbackHandler,
         ModuleInit[] calldata hooks
-    )
-        external
-        payable
-        returns (address account)
-    {
+    ) external payable returns (address account) {
         return createAccount(salt, getInitData(validators, executors, fallbackHandler, hooks));
     }
 
@@ -58,14 +58,7 @@ contract PaliSmartAccountFactory {
         return initCode;
     }
 
-    function getInitData(
-        address validator,
-        bytes memory initData
-    )
-        public
-        pure
-        returns (bytes memory)
-    {
+    function getInitData(address validator, bytes memory initData) public pure returns (bytes memory) {
         ModuleInit[] memory validators = new ModuleInit[](1);
         validators[0] = ModuleInit({module: validator, data: initData});
         ModuleInit[] memory executors = new ModuleInit[](0);
@@ -80,21 +73,14 @@ contract PaliSmartAccountFactory {
         ModuleInit[] memory executors,
         ModuleInit memory fallbackHandler,
         ModuleInit[] memory hooks
-    )
-        public
-        pure
-        returns (bytes memory)
-    {
+    ) public pure returns (bytes memory) {
         return abi.encode(validators, executors, fallbackHandler, hooks);
     }
 
     function _deploymentCode(bytes memory initCode) internal view returns (bytes memory) {
         return abi.encodePacked(
             type(ERC1967Proxy).creationCode,
-            abi.encode(
-                implementation,
-                abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode))
-            )
+            abi.encode(implementation, abi.encodeCall(PaliSmartAccount.initializeAccount, (initCode)))
         );
     }
 }

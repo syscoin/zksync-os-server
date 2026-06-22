@@ -28,14 +28,20 @@ contract PaliSLHDSAValidatorModule is IERC7579Validator {
     error InvalidSLHDSAVerifier();
 
     ISLHDSAVerifier public immutable verifier;
+    bytes32 public immutable verifierCodeHash;
 
     mapping(address account => AuthData) private _authData;
 
-    constructor(ISLHDSAVerifier verifier_) {
-        if (address(verifier_) == address(0)) {
+    constructor(ISLHDSAVerifier verifier_, bytes32 expectedVerifierCodeHash) {
+        bytes32 actualVerifierCodeHash = address(verifier_).codehash;
+        if (
+            address(verifier_) == address(0) || expectedVerifierCodeHash == bytes32(0)
+                || actualVerifierCodeHash != expectedVerifierCodeHash
+        ) {
             revert InvalidSLHDSAVerifier();
         }
         verifier = verifier_;
+        verifierCodeHash = actualVerifierCodeHash;
     }
 
     function onInstall(bytes calldata initData) public override {

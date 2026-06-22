@@ -5,7 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IZkSysSentryNodeReceiver, ZkSysMembershipRegistry} from "./ZkSysMembershipRegistry.sol";
 
 interface IZkSysWeightReceiver {
-    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight) external;
+    function onWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight) external;
 }
 
 /// @title ZkSysRewardWeightRegistry
@@ -93,13 +93,14 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
         }
         Weight storage stored = _weights[account];
         uint256 oldWeight = _totalAccountWeight(stored);
+        uint256 oldTotalWeight = totalWeight;
         uint256 oldStakeWeight = stored.stakeWeight;
         uint256 newWeight = stakeWeight + stored.sentryNodeWeight;
         _checkWeight(newWeight);
-        _checkpointWeightChange(account, oldWeight, newWeight);
 
         stored.stakeWeight = stakeWeight;
-        totalWeight = totalWeight - oldWeight + newWeight;
+        totalWeight = oldTotalWeight - oldWeight + newWeight;
+        _checkpointWeightChange(account, oldWeight, newWeight, oldTotalWeight);
 
         emit StakeWeightUpdated(account, oldStakeWeight, stakeWeight);
         emit WeightUpdated(account, oldWeight, newWeight);
@@ -108,25 +109,28 @@ contract ZkSysRewardWeightRegistry is AccessControl, IZkSysSentryNodeReceiver {
     function _updateSentryNodeWeight(address account, uint256 sentryNodeWeight) private {
         Weight storage stored = _weights[account];
         uint256 oldWeight = _totalAccountWeight(stored);
+        uint256 oldTotalWeight = totalWeight;
         uint256 oldSentryNodeWeight = stored.sentryNodeWeight;
         uint256 newWeight = stored.stakeWeight + sentryNodeWeight;
         _checkWeight(newWeight);
-        _checkpointWeightChange(account, oldWeight, newWeight);
 
         stored.sentryNodeWeight = sentryNodeWeight;
-        totalWeight = totalWeight - oldWeight + newWeight;
+        totalWeight = oldTotalWeight - oldWeight + newWeight;
+        _checkpointWeightChange(account, oldWeight, newWeight, oldTotalWeight);
 
         emit SentryNodeWeightUpdated(account, oldSentryNodeWeight, sentryNodeWeight);
         emit WeightUpdated(account, oldWeight, newWeight);
     }
 
-    function _checkpointWeightChange(address account, uint256 oldWeight, uint256 newWeight) private {
+    function _checkpointWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight)
+        private
+    {
         IZkSysWeightReceiver receiver = weightReceiver;
         if (oldWeight != newWeight) {
             if (address(receiver) == address(0)) {
                 revert WeightReceiverNotSet();
             }
-            receiver.onWeightChange(account, oldWeight, newWeight);
+            receiver.onWeightChange(account, oldWeight, newWeight, oldTotalWeight);
         }
     }
 
