@@ -80,8 +80,8 @@ contract ZkSysRegistryBridgeTest is Test {
     address private l2Registry = address(0x1234);
     address private alice = address(0xA11CE);
     uint32 private nevmStartBlock = 1_317_500;
-    uint32 private seniorityHeight1 = 525_600;
-    uint32 private seniorityHeight2 = 1_314_000;
+    uint32 private seniorityHeight1 = 210_240;
+    uint32 private seniorityHeight2 = 525_600;
     uint16 private seniorityLevel1Bps = 3_500;
     uint16 private seniorityLevel2Bps = 10_000;
 

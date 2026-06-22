@@ -44,6 +44,23 @@ normalize_nonzero_address_env() {
   printf '%s\n' "${value}"
 }
 
+load_l1_registry_bridge_address_from_gateway_config() {
+  local contracts_yaml="${GATEWAY_DIR:-${HOME}/gateway}/configs/contracts.yaml"
+  [ -f "${contracts_yaml}" ] || return 0
+  python3 - "${contracts_yaml}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+addr = data.get("zksys", {}).get("l1_registry_bridge_addr", "")
+if isinstance(addr, str) and addr.startswith(("0x", "0X")) and len(addr) == 42:
+    print("0x" + format(int(addr[2:], 16), "040x"))
+PY
+}
+
 normalize_bytes32_env() {
   local name="${1:?name required}"
   local default_value="${2:?default required}"
@@ -198,6 +215,12 @@ prepare_zksys_l2_wallet_args() {
 
 ZKSYS_L2_CREATE2_DEPLOYER="$(normalize_nonzero_address_env ZKSYS_L2_CREATE2_DEPLOYER)"
 ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_nonzero_address_env ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${ZERO_ADDRESS}" ]; then
+  configured_l1_registry_bridge="$(load_l1_registry_bridge_address_from_gateway_config || true)"
+  if [ -n "${configured_l1_registry_bridge}" ]; then
+    ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${configured_l1_registry_bridge}"
+  fi
+fi
 ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="$(normalize_address_env ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS)"
 if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
   ZKSYS_L2_PAYMASTER_ADDRESS="$(normalize_nonzero_address_env ZKSYS_L2_PAYMASTER_ADDRESS)"

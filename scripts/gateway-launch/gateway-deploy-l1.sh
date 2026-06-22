@@ -180,6 +180,26 @@ print("0x" + format(int(addr[2:], 16), "040x"))
 PY
 }
 
+normalize_zksys_uint_var() {
+  local name="${1:?name required}"
+  local default_value="${2:?default required}"
+  local max_value="${3:?max required}"
+  python3 - "${name}" "${default_value}" "${max_value}" <<'PY'
+import os
+import sys
+
+name, default, max_raw = sys.argv[1:]
+raw = os.environ.get(name, default).strip()
+if not raw.isdecimal():
+    raise SystemExit(f"{name} must be an unsigned decimal integer")
+value = int(raw, 10)
+max_value = int(max_raw, 10)
+if value > max_value:
+    raise SystemExit(f"{name} must be <= {max_value}")
+print(value)
+PY
+}
+
 forge_inspect_zksys_bytecode() {
   local contract="${1:?contract required}"
   forge inspect "${contract}" bytecode \
@@ -270,6 +290,199 @@ derive_and_export_zksys_zk_token_asset_id() {
   export ZK_TOKEN_ASSET_ID="${ZKSYS_ZK_TOKEN_ASSET_ID}"
   echo "gateway-launch: derived zkSYS L2 token address ${token_address}"
   echo "gateway-launch: derived ZKSYS_ZK_TOKEN_ASSET_ID=${ZKSYS_ZK_TOKEN_ASSET_ID}"
+}
+
+derive_zksys_l2_registry_address() {
+  gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
+
+  [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
+    gl_die "missing OpenZeppelin v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
+  [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts" ] ||
+    gl_die "missing OpenZeppelin upgradeable v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
+
+  local create2_deployer proxy_admin_salt registry_impl_salt registry_proxy_salt
+  local proxy_admin_ctor_args proxy_admin_init_code proxy_admin_address
+  local registry_impl_init_code registry_impl_address registry_init_data registry_proxy_ctor_args registry_proxy_init_code
+
+  create2_deployer="${ZKSYS_L2_CREATE2_DEPLOYER:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
+  export ZKSYS_L2_CREATE2_DEPLOYER="${create2_deployer}"
+  create2_deployer="$(normalize_zksys_address_var ZKSYS_L2_CREATE2_DEPLOYER)"
+  ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
+  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
+    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
+  export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
+
+  proxy_admin_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
+  registry_impl_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_REGISTRY_IMPL_SALT 0x7a6b7379732d72656769737472792d696d706c00000000000000000000000000)"
+  registry_proxy_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_REGISTRY_PROXY_SALT 0x7a6b7379732d72656769737472792d70726f7879000000000000000000000000)"
+
+  proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
+  proxy_admin_init_code="$(forge_inspect_zksys_bytecode ZkSysProxyAdmin)${proxy_admin_ctor_args#0x}"
+  proxy_admin_address="$(
+    cast create2 \
+      --deployer "${create2_deployer}" \
+      --salt "${proxy_admin_salt}" \
+      --init-code "${proxy_admin_init_code}"
+  )"
+
+  registry_impl_init_code="$(forge_inspect_zksys_bytecode ZkSysMembershipRegistry)"
+  registry_impl_address="$(
+    cast create2 \
+      --deployer "${create2_deployer}" \
+      --salt "${registry_impl_salt}" \
+      --init-code "${registry_impl_init_code}"
+  )"
+
+  registry_init_data="$(
+    cast calldata \
+      "initialize(address,address)" \
+      "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" \
+      "0x0000000000000000000000000000000000000000"
+  )"
+  registry_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${registry_impl_address}" "${proxy_admin_address}" "${registry_init_data}")"
+  registry_proxy_init_code="$(forge_inspect_zksys_bytecode ZkSysCreate2ProxyBytecode)${registry_proxy_ctor_args#0x}"
+  cast create2 \
+    --deployer "${create2_deployer}" \
+    --salt "${registry_proxy_salt}" \
+    --init-code "${registry_proxy_init_code}"
+}
+
+get_l1_bridgehub_proxy_addr() {
+  python3 - "${GATEWAY_DIR}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+addr = data.get("core_ecosystem_contracts", {}).get("bridgehub_proxy_addr", "")
+if not isinstance(addr, str) or not addr.startswith(("0x", "0X")) or len(addr) != 42:
+    raise SystemExit(f"missing core_ecosystem_contracts.bridgehub_proxy_addr in {path}")
+print("0x" + format(int(addr[2:], 16), "040x"))
+PY
+}
+
+persist_zksys_l1_registry_bridge_address() {
+  local address="${1:?address required}"
+  python3 - "${GATEWAY_DIR}/configs/contracts.yaml" "${address}" <<'PY'
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+address = sys.argv[2]
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+section = data.setdefault("zksys", {})
+section["l1_registry_bridge_addr"] = address
+
+with tempfile.NamedTemporaryFile("w", delete=False, dir=path.parent, encoding="utf-8") as tmp:
+    yaml.safe_dump(data, tmp, sort_keys=False)
+    tmp_name = tmp.name
+Path(tmp_name).replace(path)
+PY
+}
+
+deploy_zksys_l1_registry_bridge() {
+  : "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE:=true}"
+  case "$(gl_to_lower "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE}")" in
+  true) ;;
+  false)
+    echo "gateway-launch: skipping zkSYS L1 registry bridge deployment"
+    return 0
+    ;;
+  *) gl_die "ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE must be true or false" ;;
+  esac
+
+  gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
+
+  local bridgehub zksys_chain_id l2_registry nevm_start_block seniority_height1 seniority_height2
+  local seniority_level1_bps seniority_level2_bps salt ctor_args init_code expected_address code
+  local actual_bridgehub actual_chain_id actual_l2_registry actual_nevm_start_block
+  local actual_seniority_height1 actual_seniority_height2 actual_seniority_level1_bps actual_seniority_level2_bps
+
+  bridgehub="$(get_l1_bridgehub_proxy_addr)"
+  zksys_chain_id="$(normalize_zksys_uint_var EDGE_CHAIN_ID "${EDGE_CHAIN_ID:-57057}" 18446744073709551615)"
+  l2_registry="$(derive_zksys_l2_registry_address)"
+  nevm_start_block="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK 1317500 4294967295)"
+  seniority_height1="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1 210240 4294967295)"
+  seniority_height2="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2 525600 4294967295)"
+  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 3500 65535)"
+  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 10000 65535)"
+
+  if [ "${seniority_height1}" = "0" ] || [ "${seniority_height2}" -le "${seniority_height1}" ] ||
+    [ "${seniority_level2_bps}" -lt "${seniority_level1_bps}" ]; then
+    gl_die "invalid zkSYS L1 registry bridge seniority config"
+  fi
+
+  salt="$(normalize_zksys_bytes32_var ZKSYS_L1_REGISTRY_BRIDGE_SALT 0x7a6b7379732d6c312d72656769737472792d627269646765000000000000000000)"
+  ctor_args="$(
+    cast abi-encode \
+      "constructor(address,uint256,address,uint32,uint32,uint32,uint16,uint16)" \
+      "${bridgehub}" \
+      "${zksys_chain_id}" \
+      "${l2_registry}" \
+      "${nevm_start_block}" \
+      "${seniority_height1}" \
+      "${seniority_height2}" \
+      "${seniority_level1_bps}" \
+      "${seniority_level2_bps}"
+  )"
+  init_code="$(forge_inspect_zksys_bytecode ZkSysRegistryBridge)${ctor_args#0x}"
+  expected_address="$(
+    cast create2 \
+      --deployer "${CREATE2_FACTORY_ADDR}" \
+      --salt "${salt}" \
+      --init-code "${init_code}"
+  )"
+
+  code="$(cast_code_or_die "${expected_address}")"
+  if [ "${code}" = "0x" ]; then
+    echo "gateway-launch: deploying zkSYS L1 registry bridge to ${expected_address}"
+    cast send \
+      --rpc-url "${L1_RPC_URL}" \
+      "${DEPLOYER_CAST_WALLET_ARGS[@]}" \
+      "${CREATE2_FACTORY_ADDR}" \
+      "${salt}${init_code#0x}" >/dev/null
+    code="$(cast_code_or_die "${expected_address}")"
+    [ "${code}" != "0x" ] || gl_die "zkSYS L1 registry bridge deployment did not create code at ${expected_address}"
+  else
+    echo "gateway-launch: zkSYS L1 registry bridge already deployed at ${expected_address}"
+  fi
+
+  actual_bridgehub="$(cast call "${expected_address}" "bridgehub()(address)" --rpc-url "${L1_RPC_URL}")"
+  actual_chain_id="$(cast call "${expected_address}" "zksysChainId()(uint256)" --rpc-url "${L1_RPC_URL}")"
+  actual_l2_registry="$(cast call "${expected_address}" "l2Registry()(address)" --rpc-url "${L1_RPC_URL}")"
+  actual_nevm_start_block="$(cast call "${expected_address}" "nevmStartBlock()(uint32)" --rpc-url "${L1_RPC_URL}")"
+  actual_seniority_height1="$(cast call "${expected_address}" "seniorityHeight1()(uint32)" --rpc-url "${L1_RPC_URL}")"
+  actual_seniority_height2="$(cast call "${expected_address}" "seniorityHeight2()(uint32)" --rpc-url "${L1_RPC_URL}")"
+  actual_seniority_level1_bps="$(cast call "${expected_address}" "seniorityLevel1Bps()(uint16)" --rpc-url "${L1_RPC_URL}")"
+  actual_seniority_level2_bps="$(cast call "${expected_address}" "seniorityLevel2Bps()(uint16)" --rpc-url "${L1_RPC_URL}")"
+
+  [ "$(gl_to_lower "${actual_bridgehub}")" = "$(gl_to_lower "${bridgehub}")" ] ||
+    gl_die "zkSYS L1 registry bridge bridgehub mismatch: ${actual_bridgehub} != ${bridgehub}"
+  [ "${actual_chain_id}" = "${zksys_chain_id}" ] ||
+    gl_die "zkSYS L1 registry bridge chain id mismatch: ${actual_chain_id} != ${zksys_chain_id}"
+  [ "$(gl_to_lower "${actual_l2_registry}")" = "$(gl_to_lower "${l2_registry}")" ] ||
+    gl_die "zkSYS L1 registry bridge L2 registry mismatch: ${actual_l2_registry} != ${l2_registry}"
+  [ "${actual_nevm_start_block}" = "${nevm_start_block}" ] ||
+    gl_die "zkSYS L1 registry bridge NEVM start mismatch: ${actual_nevm_start_block} != ${nevm_start_block}"
+  [ "${actual_seniority_height1}" = "${seniority_height1}" ] ||
+    gl_die "zkSYS L1 registry bridge seniority height1 mismatch: ${actual_seniority_height1} != ${seniority_height1}"
+  [ "${actual_seniority_height2}" = "${seniority_height2}" ] ||
+    gl_die "zkSYS L1 registry bridge seniority height2 mismatch: ${actual_seniority_height2} != ${seniority_height2}"
+  [ "${actual_seniority_level1_bps}" = "${seniority_level1_bps}" ] ||
+    gl_die "zkSYS L1 registry bridge seniority level1 mismatch: ${actual_seniority_level1_bps} != ${seniority_level1_bps}"
+  [ "${actual_seniority_level2_bps}" = "${seniority_level2_bps}" ] ||
+    gl_die "zkSYS L1 registry bridge seniority level2 mismatch: ${actual_seniority_level2_bps} != ${seniority_level2_bps}"
+
+  ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${expected_address}"
+  export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
+  persist_zksys_l1_registry_bridge_address "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  echo "gateway-launch: zkSYS L1 registry bridge ready at ${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  echo "gateway-launch: zkSYS L1 registry bridge params: chain=${zksys_chain_id}, l2Registry=${l2_registry}, nevmStartBlock=${nevm_start_block}, seniority=${seniority_height1}/${seniority_height2}, bps=${seniority_level1_bps}/${seniority_level2_bps}"
 }
 
 if [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
@@ -658,12 +871,13 @@ GATEWAY_RETRY_GAS_BUMP_PCT="$(
 )"
 LAST_L1_CONTRACTS_DIR=""
 
+ecosystem_already_ready=false
 if ecosystem_contracts_ready; then
   # SYSCOIN: checkpoint repair/reruns can reach this step after L1 ecosystem
   # contracts were already deployed. Treat confirmed on-chain readiness as
   # idempotent success instead of rerunning one-time initialization.
   echo "gateway-launch: ecosystem contracts already present in configs/contracts.yaml and on-chain; skipping ecosystem init"
-  exit 0
+  ecosystem_already_ready=true
 fi
 
 set_retry_gas_price() {
@@ -684,32 +898,33 @@ set_retry_gas_price() {
   echo "gateway-launch: retry gas price set to ${gas_price_wei} wei (attempt ${attempt})"
 }
 
-attempt=1
-while true; do
-  echo "gateway-launch: ecosystem init attempt ${attempt}/${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}"
-  set_retry_gas_price "${attempt}"
-  tmp_log="$(mktemp)"
-  set +e
-  if [ "${attempt}" -gt 1 ] && [ -n "${LAST_L1_CONTRACTS_DIR}" ] && [ -d "${LAST_L1_CONTRACTS_DIR}" ]; then
-    echo "gateway-launch: retrying DeployL1CoreContracts with forge --resume from ${LAST_L1_CONTRACTS_DIR}"
-    run_ecosystem_init_resume "${LAST_L1_CONTRACTS_DIR}" 2>&1 | tee "${tmp_log}"
-  else
-    run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
-  fi
-  ec="${PIPESTATUS[0]}"
-  set -e
+if [ "${ecosystem_already_ready}" != true ]; then
+  attempt=1
+  while true; do
+    echo "gateway-launch: ecosystem init attempt ${attempt}/${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}"
+    set_retry_gas_price "${attempt}"
+    tmp_log="$(mktemp)"
+    set +e
+    if [ "${attempt}" -gt 1 ] && [ -n "${LAST_L1_CONTRACTS_DIR}" ] && [ -d "${LAST_L1_CONTRACTS_DIR}" ]; then
+      echo "gateway-launch: retrying DeployL1CoreContracts with forge --resume from ${LAST_L1_CONTRACTS_DIR}"
+      run_ecosystem_init_resume "${LAST_L1_CONTRACTS_DIR}" 2>&1 | tee "${tmp_log}"
+    else
+      run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
+    fi
+    ec="${PIPESTATUS[0]}"
+    set -e
 
-  current_l1_contracts_dir="$(extract_l1_contracts_dir_from_log "${tmp_log}" || true)"
-  if [ -n "${current_l1_contracts_dir}" ] && [ -d "${current_l1_contracts_dir}" ]; then
-    LAST_L1_CONTRACTS_DIR="${current_l1_contracts_dir}"
-  fi
+    current_l1_contracts_dir="$(extract_l1_contracts_dir_from_log "${tmp_log}" || true)"
+    if [ -n "${current_l1_contracts_dir}" ] && [ -d "${current_l1_contracts_dir}" ]; then
+      LAST_L1_CONTRACTS_DIR="${current_l1_contracts_dir}"
+    fi
 
-  if [ "${ec}" -eq 0 ]; then
-    rm -f "${tmp_log}"
-    break
-  fi
+    if [ "${ec}" -eq 0 ]; then
+      rm -f "${tmp_log}"
+      break
+    fi
 
-  if python3 - "${tmp_log}" <<'PY'
+    if python3 - "${tmp_log}" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1])
 t = p.read_text(encoding="utf-8", errors="ignore").lower()
@@ -722,23 +937,26 @@ retry_signals = (
 )
 sys.exit(0 if any(sig in t for sig in retry_signals) else 1)
 PY
-  then
-    rm -f "${tmp_log}"
-    if ecosystem_contracts_ready; then
-      echo "gateway-launch: ecosystem contracts already materialized on-chain despite retryable broadcast error; continuing"
-      break
+    then
+      rm -f "${tmp_log}"
+      if ecosystem_contracts_ready; then
+        echo "gateway-launch: ecosystem contracts already materialized on-chain despite retryable broadcast error; continuing"
+        break
+      fi
+      if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
+        echo "gateway-launch: ecosystem init failed after ${attempt} retryable/idempotent attempts" >&2
+        exit 1
+      fi
+      echo "gateway-launch: detected retryable/idempotent ecosystem init error; waiting for nonce sync before retry"
+      wait_for_deployer_nonce_sync
+      sleep 10
+      attempt=$((attempt + 1))
+      continue
     fi
-    if [ "${attempt}" -ge "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}" ]; then
-      echo "gateway-launch: ecosystem init failed after ${attempt} retryable/idempotent attempts" >&2
-      exit 1
-    fi
-    echo "gateway-launch: detected retryable/idempotent ecosystem init error; waiting for nonce sync before retry"
-    wait_for_deployer_nonce_sync
-    sleep 10
-    attempt=$((attempt + 1))
-    continue
-  fi
 
-  rm -f "${tmp_log}"
-  exit "${ec}"
-done
+    rm -f "${tmp_log}"
+    exit "${ec}"
+  done
+fi
+
+deploy_zksys_l1_registry_bridge
