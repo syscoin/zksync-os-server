@@ -611,7 +611,9 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_L2_DEPLOYER_ACCOUNT_NAME` / `ZKSYS_L2_DEPLOYER_KEYSTORE` / `ZKSYS_L2_DEPLOYER_PASSWORD_FILE` | Optional L2 bootstrap signer inputs for account or keystore modes; fall back to the matching deployer/funder values when unset |
 | `ZKSYS_L2_DEPLOYER_PRIVATE_KEY` | Local/disposable-network fallback for `ZKSYS_L2_DEPLOYER_SIGNER=private-key`; rejected on Tanenbaum/Mainnet unless `GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true` |
 | `ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS` | Optional L1 registry bridge address to wire into the L2 membership registry after deterministic deployment; defaults to zero and does not affect CREATE2 addresses |
-| `ZKSYS_L2_REGISTRY_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_SALT` / `ZKSYS_L2_ISSUER_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry, reward weight registry, and issuer deployments |
+| `ZKSYS_L2_REGISTRY_IMPL_SALT` / `ZKSYS_L2_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry implementation/proxy deployments; the proxy address is the operational registry address wired to the L1 bridge |
+| `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |
+| `ZKSYS_L2_ISSUER_IMPL_SALT` / `ZKSYS_L2_ISSUER_PROXY_SALT` | Optional bytes32 salts for deterministic L2 issuer implementation/proxy deployments; the proxy address receives the token minter role |
 | `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
