@@ -240,6 +240,154 @@ contract ZkSysIssuerTest is Test {
         assertEq(issuer.pendingRewards(bob), secondDistribution * 999 / 1000);
     }
 
+    function testStakeAfterBoundaryDoesNotEarnPreviousPeriod() public {
+        _depositStake(alice, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS + 1);
+        _depositStakePending(bob, 999 ether);
+
+        uint256 firstDistribution = issuer.distribute();
+
+        assertEq(firstDistribution, yearOneEmission() / PERIODS_PER_YEAR);
+        assertEq(issuer.pendingRewards(alice), firstDistribution);
+        assertEq(issuer.pendingRewards(bob), 0);
+    }
+
+    function testWithdrawBeforeBoundaryDoesNotEarnEndingPeriod() public {
+        _depositStake(alice, 1 ether);
+        _depositStake(bob, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS - 1);
+        _withdrawStake(alice, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        uint256 firstDistribution = issuer.distribute();
+
+        assertEq(firstDistribution, yearOneEmission() / PERIODS_PER_YEAR);
+        assertEq(issuer.pendingRewards(alice), 0);
+        assertEq(issuer.pendingRewards(bob), firstDistribution);
+    }
+
+    function testWithdrawAfterBoundaryEarnsCompletedPeriodThenStops() public {
+        _depositStake(alice, 1 ether);
+        _depositStake(bob, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS + 1);
+        _withdrawStake(alice, 1 ether);
+
+        uint256 firstDistribution = yearOneEmission() / PERIODS_PER_YEAR;
+        assertEq(issuer.pendingRewards(alice), firstDistribution / 2);
+        assertEq(issuer.pendingRewards(bob), firstDistribution / 2);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 secondDistribution = issuer.distribute();
+
+        assertEq(secondDistribution, issuer.cumulativeScheduledRewards(2) - issuer.cumulativeScheduledRewards(1));
+        assertEq(issuer.pendingRewards(alice), firstDistribution / 2);
+        assertEq(issuer.pendingRewards(bob), firstDistribution / 2 + secondDistribution);
+    }
+
+    function testActivatedStakeWithdrawBeforeNextBoundaryGetsNoPartialPeriodWindfall() public {
+        _depositStake(alice, 1 ether);
+        _depositStakePending(bob, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        _activateStake(bob);
+
+        assertEq(issuer.pendingRewards(alice), yearOneEmission() / PERIODS_PER_YEAR);
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS - 1);
+        _withdrawStake(bob, 1 ether);
+
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 secondDistribution = issuer.distribute();
+
+        assertEq(secondDistribution, issuer.cumulativeScheduledRewards(2) - issuer.cumulativeScheduledRewards(1));
+        assertEq(issuer.pendingRewards(alice), issuer.cumulativeScheduledRewards(2));
+        assertEq(issuer.pendingRewards(bob), 0);
+    }
+
+    function testActivatedStakeWithdrawAfterFullEpochGetsExactlyOneEpoch() public {
+        _depositStake(alice, 1 ether);
+        _depositStakePending(bob, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        _activateStake(bob);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS + 1);
+        _withdrawStake(bob, 1 ether);
+
+        uint256 firstDistribution = issuer.cumulativeScheduledRewards(1);
+        uint256 secondDistribution = issuer.cumulativeScheduledRewards(2) - issuer.cumulativeScheduledRewards(1);
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution / 2);
+        assertEq(issuer.pendingRewards(bob), secondDistribution / 2);
+
+        vm.warp(START_TIME + 3 * PERIOD_SECONDS);
+        uint256 thirdDistribution = issuer.distribute();
+
+        assertEq(thirdDistribution, issuer.cumulativeScheduledRewards(3) - issuer.cumulativeScheduledRewards(2));
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution / 2 + thirdDistribution);
+        assertEq(issuer.pendingRewards(bob), secondDistribution / 2);
+    }
+
+    function testSentryNodeAddBeforeBoundaryDoesNotEarnEndingPeriod() public {
+        _depositStake(alice, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS - 1);
+        _applyL1Update(bob, 1_000, 100_000 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        uint256 firstDistribution = issuer.distribute();
+
+        assertEq(issuer.pendingRewards(alice), firstDistribution);
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        registry.activatePendingWeightFor(bob);
+
+        assertEq(issuer.pendingRewards(alice), issuer.cumulativeScheduledRewards(2));
+        assertEq(issuer.pendingRewards(bob), 0);
+    }
+
+    function testSentryNodeSeniorityIncreaseBeforeBoundaryDoesNotEarnEndingPeriodAtHigherWeight() public {
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _activateStake(alice);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        uint256 firstDistribution = issuer.distribute();
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS - 1);
+        _applyL1Update(alice, 1_000, 200_000 ether);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 secondDistribution = issuer.distribute();
+
+        assertEq(secondDistribution, issuer.cumulativeScheduledRewards(2) - issuer.cumulativeScheduledRewards(1));
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution);
+
+        registry.activatePendingWeightFor(alice);
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution);
+    }
+
+    function testSentryNodeRemovalBeforeBoundaryIsExcludedImmediately() public {
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _applyL1Update(bob, 2_000, 100_000 ether);
+        _activateStake(alice);
+        _activateStake(bob);
+
+        vm.warp(START_TIME + PERIOD_SECONDS - 1);
+        _applyL1Update(alice, 0, 0);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        uint256 firstDistribution = issuer.distribute();
+
+        assertEq(issuer.pendingRewards(alice), 0);
+        assertEq(issuer.pendingRewards(bob), firstDistribution);
+    }
+
     function testInitializerRejectsScheduleThatIsNotOneYear() public {
         ZkSysIssuer implementation = new ZkSysIssuer();
 
@@ -319,6 +467,17 @@ contract ZkSysIssuerTest is Test {
     function _withdrawStake(address account, uint256 amount) private {
         vm.prank(account);
         stakingVault.withdraw(amount);
+    }
+
+    function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
+        ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
+        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
+            account: account,
+            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
+            sentryNodeWeight: sentryNodeWeight
+        });
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        membershipRegistry.applyL1SentryNodeUpdates(updates);
     }
 
     function _deployMembershipRegistry(address admin_, address l1RegistryBridge_) private returns (ZkSysMembershipRegistry) {
