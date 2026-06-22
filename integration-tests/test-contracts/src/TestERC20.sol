@@ -18,11 +18,7 @@ contract TestERC20 {
     event Transfer(address indexed from, address indexed to, uint256 value);
 
     // This generates a public event on the blockchain that will notify clients
-    event Approval(
-        address indexed _owner,
-        address indexed _spender,
-        uint256 _value
-    );
+    event Approval(address indexed _owner, address indexed _spender, uint256 _value);
 
     // This notifies clients about the amount burnt
     event Burn(address indexed from, uint256 value);
@@ -32,11 +28,7 @@ contract TestERC20 {
      *
      * Initializes contract with initial supply tokens to the creator of the contract
      */
-    constructor(
-        uint256 initialSupply,
-        string memory tokenName,
-        string memory tokenSymbol
-    ) {
+    constructor(uint256 initialSupply, string memory tokenName, string memory tokenSymbol) {
         totalSupply = initialSupply * 10 ** uint256(decimals); // Update total supply with the decimal amount
         balanceOf[msg.sender] = totalSupply; // Give the creator all initial tokens
         name = tokenName; // Set the name for display purposes
@@ -44,8 +36,25 @@ contract TestERC20 {
     }
 
     function mint(address to, uint256 amount) public {
-        totalSupply   += amount;
+        totalSupply += amount;
         balanceOf[to] += amount;
+    }
+
+    function burn(uint256 amount) public {
+        require(balanceOf[msg.sender] >= amount);
+        balanceOf[msg.sender] -= amount;
+        totalSupply -= amount;
+        emit Burn(msg.sender, amount);
+        emit Transfer(msg.sender, address(0), amount);
+    }
+
+    function burn(address from, uint256 amount) public returns (bool) {
+        require(balanceOf[from] >= amount);
+        balanceOf[from] -= amount;
+        totalSupply -= amount;
+        emit Burn(from, amount);
+        emit Transfer(from, address(0), amount);
+        return true;
     }
 
     /**
@@ -77,10 +86,7 @@ contract TestERC20 {
      * @param _to The address of the recipient
      * @param _value the amount to send
      */
-    function transfer(
-        address _to,
-        uint256 _value
-    ) public returns (bool success) {
+    function transfer(address _to, uint256 _value) public returns (bool success) {
         _transfer(msg.sender, _to, _value);
         return true;
     }
@@ -94,11 +100,7 @@ contract TestERC20 {
      * @param _to The address of the recipient
      * @param _value the amount to send
      */
-    function transferFrom(
-        address _from,
-        address _to,
-        uint256 _value
-    ) public returns (bool success) {
+    function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
         require(_value <= allowance[_from][msg.sender]); // Check allowance
         allowance[_from][msg.sender] -= _value;
         _transfer(_from, _to, _value);
@@ -113,10 +115,7 @@ contract TestERC20 {
      * @param _spender The address authorized to spend
      * @param _value the max amount they can spend
      */
-    function approve(
-        address _spender,
-        uint256 _value
-    ) public returns (bool success) {
+    function approve(address _spender, uint256 _value) public returns (bool success) {
         allowance[msg.sender][_spender] = _value;
         emit Approval(msg.sender, _spender, _value);
         return true;

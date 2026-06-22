@@ -1,0 +1,38 @@
+## Production Solidity Contracts
+
+This Foundry project contains deployable contracts for the zkSYS launch surface.
+Security review should treat these contracts as production code, not integration
+test fixtures.
+
+### Layout
+
+- `src/zksys/`: canonical L2 zkSYS token, issuer, NEVM membership fact
+  registry, reward weight registry, L1 registry bridge adapter, and proxy
+  deployment helpers.
+- `src/pali/`: Pali ERC-4337 smart account, validators, factory, verifier, and
+  fixed-rate zkSYS paymaster contracts.
+
+### Build
+
+```shell
+forge build
+```
+
+### SLH-DSA-SHA2-128-24 Verifier Status
+
+`src/pali/SLHDSASHA212824Verifier.sol` is a copied Solidity/Yul verifier for the
+NIST SP 800-230 `SLH-DSA-SHA2-128-24` parameter set. The intended security level
+is NIST category 1 / roughly 128-bit post-quantum security, subject to the scheme
+assumptions and per-key signing budget.
+
+The upstream SPHINCS- repository models this verifier in Verity / Lean 4, but
+that proof is an implementation-correctness result, not a machine-checked
+cryptographic EUF-CMA proof. The upstream theorem proves the hand-transcribed
+model refines its byte-level verifier spec under the stated trust surface.
+Remaining assumptions include the SHA-256 precompile/model bridge, an opaque
+SHA-256 primitive package, and source-to-model transcription fidelity.
+
+Local tests currently cover the Pali validator module integration, fail-closed
+behavior, malformed signature length, non-canonical public keys, rejection of an
+all-zero 3,856-byte signature, and one pinned valid signer vector. Keep the
+per-key signature-count policy outside this stateless verifier.

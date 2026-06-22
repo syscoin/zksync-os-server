@@ -3,7 +3,7 @@ pragma solidity ^0.8.26;
 
 import {MODULE_TYPE_EXECUTOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
-import {PaliGuardianRecoveryModule} from "../src/passkey/PaliGuardianRecoveryModule.sol";
+import {PaliGuardianRecoveryModule} from "contracts/src/pali/PaliGuardianRecoveryModule.sol";
 
 contract MockRecoveryAccount {
     address public recoveryModule;

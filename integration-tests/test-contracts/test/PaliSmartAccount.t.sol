@@ -8,9 +8,9 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
-import {PaliECDSAValidatorModule} from "../src/passkey/PaliECDSAValidatorModule.sol";
-import {PaliGuardianRecoveryModule} from "../src/passkey/PaliGuardianRecoveryModule.sol";
-import {PaliSmartAccount} from "../src/passkey/PaliSmartAccount.sol";
+import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
+import {PaliGuardianRecoveryModule} from "contracts/src/pali/PaliGuardianRecoveryModule.sol";
+import {PaliSmartAccount} from "contracts/src/pali/PaliSmartAccount.sol";
 
 contract MockHookModule {
     function isModuleType(uint256 moduleTypeId) external pure returns (bool) {

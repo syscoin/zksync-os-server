@@ -24,6 +24,10 @@
 #                           (required by ERC-4337 bundlers for storage-accessing paymasters)
 #   PAYMASTER_UNSTAKE_DELAY_SEC
 #                           unstake delay for PAYMASTER_STAKE_NATIVE, default: 86400
+#   PAYMASTER_GRANT_BURNER_ROLE
+#                           true by default; grants zkSYS BURNER_ROLE to the deployed paymaster
+#                           using the deployer signer. Set false only if role wiring is handled
+#                           separately before the paymaster is used.
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -34,7 +38,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-CONTRACTS_DIR="${REPO_ROOT}/integration-tests/test-contracts"
+CONTRACTS_DIR="${REPO_ROOT}/contracts"
 
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
@@ -44,6 +48,7 @@ VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
 PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
 PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
+PAYMASTER_GRANT_BURNER_ROLE="${PAYMASTER_GRANT_BURNER_ROLE:-true}"
 
 if [[ -z "${ZKSYS_TOKEN_ADDRESS:-}" ]]; then
   echo "error: ZKSYS_TOKEN_ADDRESS is required" >&2
@@ -90,6 +95,11 @@ if [[ -n "${DEPLOYER_PASSWORD_FILE:-}" ]]; then
   wallet_args+=(--password-file "${DEPLOYER_PASSWORD_FILE}")
 fi
 
+if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" != "true" && "${PAYMASTER_GRANT_BURNER_ROLE}" != "false" ]]; then
+  echo "error: PAYMASTER_GRANT_BURNER_ROLE must be true or false" >&2
+  exit 1
+fi
+
 verify_args=()
 if [[ "${VERIFY}" == "true" ]]; then
   verify_args+=(--verify --verifier blockscout --verifier-url "${EXPLORER_BASE%/}/api/")
@@ -105,7 +115,7 @@ echo
 
 output="$(
   cd "${CONTRACTS_DIR}"
-  forge create src/passkey/PaliFixedRateTokenPaymaster.sol:PaliFixedRateTokenPaymaster \
+  forge create src/pali/PaliFixedRateTokenPaymaster.sol:PaliFixedRateTokenPaymaster \
     --rpc-url "${RPC_URL}" \
     --chain "${CHAIN_ID}" \
     --broadcast \
@@ -122,6 +132,23 @@ paymaster_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | 
 if [[ -n "${paymaster_address}" ]]; then
   echo
   echo "PAYMASTER_ADDRESS=${paymaster_address}"
+
+  burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "BURNER_ROLE()(bytes32)" --rpc-url "${RPC_URL}")"
+  has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"
+  if [[ "${has_burner_role}" != "true" ]]; then
+    if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" == "true" ]]; then
+      echo
+      echo "Granting zkSYS BURNER_ROLE to paymaster ${paymaster_address}"
+      cast send "${ZKSYS_TOKEN_ADDRESS}" \
+        "grantRole(bytes32,address)" "${burner_role}" "${paymaster_address}" \
+        --rpc-url "${RPC_URL}" \
+        --chain "${CHAIN_ID}" \
+        "${wallet_args[@]}"
+    else
+      echo
+      echo "warning: paymaster ${paymaster_address} does not have zkSYS BURNER_ROLE; postOp burns will fail until the role is granted." >&2
+    fi
+  fi
 
   if [[ -n "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" ]]; then
     echo

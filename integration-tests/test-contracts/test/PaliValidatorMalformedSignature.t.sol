@@ -3,9 +3,9 @@ pragma solidity ^0.8.26;
 
 import {MODULE_TYPE_VALIDATOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
-import {PaliCompositeValidatorModule} from "../src/passkey/PaliCompositeValidatorModule.sol";
-import {PaliECDSAValidatorModule} from "../src/passkey/PaliECDSAValidatorModule.sol";
-import {PaliP256WebAuthnValidatorModule} from "../src/passkey/PaliP256WebAuthnValidatorModule.sol";
+import {PaliCompositeValidatorModule} from "contracts/src/pali/PaliCompositeValidatorModule.sol";
+import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
+import {PaliP256WebAuthnValidatorModule} from "contracts/src/pali/PaliP256WebAuthnValidatorModule.sol";
 
 contract MockP256Precompile {
     fallback() external {

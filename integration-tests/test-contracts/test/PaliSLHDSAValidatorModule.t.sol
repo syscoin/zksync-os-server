@@ -8,8 +8,8 @@ import {
     VALIDATION_SUCCESS
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
-import {ISLHDSAVerifier, PaliSLHDSAValidatorModule} from "../src/passkey/PaliSLHDSAValidatorModule.sol";
-import {SLHDSASHA212824Verifier} from "../src/passkey/SLHDSASHA212824Verifier.sol";
+import {ISLHDSAVerifier, PaliSLHDSAValidatorModule} from "contracts/src/pali/PaliSLHDSAValidatorModule.sol";
+import {SLHDSASHA212824Verifier} from "contracts/src/pali/SLHDSASHA212824Verifier.sol";
 
 contract MockSLHDSAVerifier is ISLHDSAVerifier {
     bool public shouldRevert;

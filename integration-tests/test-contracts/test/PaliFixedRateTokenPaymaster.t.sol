@@ -6,13 +6,14 @@ import {IEntryPoint, IPaymaster, PackedUserOperation} from "@openzeppelin/contra
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {PaymasterCore} from "@openzeppelin/community-contracts/account/paymaster/PaymasterCore.sol";
 import {Test} from "forge-std/Test.sol";
-import {PaliFixedRateTokenPaymaster} from "../src/passkey/PaliFixedRateTokenPaymaster.sol";
+import {IERC20Burnable, PaliFixedRateTokenPaymaster} from "contracts/src/pali/PaliFixedRateTokenPaymaster.sol";
 import {TestERC20} from "../src/TestERC20.sol";
 
 contract MockEntryPoint {
     mapping(address => uint256) public balanceOf;
     mapping(address => uint256) public stakeOf;
     mapping(address => uint32) public unstakeDelayOf;
+    mapping(address => bool) public stakeUnlocked;
 
     receive() external payable {}
 
@@ -32,6 +33,18 @@ contract MockEntryPoint {
         if (unstakeDelaySec > unstakeDelayOf[msg.sender]) {
             unstakeDelayOf[msg.sender] = unstakeDelaySec;
         }
+    }
+
+    function unlockStake() external {
+        require(stakeOf[msg.sender] != 0, "no stake");
+        stakeUnlocked[msg.sender] = true;
+    }
+
+    function withdrawStake(address payable withdrawAddress) external {
+        require(stakeUnlocked[msg.sender], "stake locked");
+        uint256 amount = stakeOf[msg.sender];
+        stakeOf[msg.sender] = 0;
+        withdrawAddress.transfer(amount);
     }
 
     function validate(PaliFixedRateTokenPaymaster paymaster, PackedUserOperation calldata userOp, uint256 maxCost)
@@ -63,7 +76,8 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     function setUp() public {
         entryPoint = new MockEntryPoint();
         token = new TestERC20(0, "zkSYS", "zkSYS");
-        paymaster = new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20(address(token)), owner);
+        paymaster =
+            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(token)), owner);
         token.mint(sender, 1_000 ether);
     }
 
@@ -86,7 +100,8 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost, actualFeePerGas);
 
         assertEq(token.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
-        assertEq(token.balanceOf(address(paymaster)), actualCost + postOpCost);
+        assertEq(token.balanceOf(address(paymaster)), 0);
+        assertEq(token.totalSupply(), 1_000 ether - actualCost - postOpCost);
     }
 
     function testValidateRejectsExcessivePostOpGasLimit() public {
@@ -161,16 +176,37 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(entryPoint.balanceOf(address(paymaster)), 2 ether);
     }
 
-    function testOwnerCanWithdrawEntryPointDeposit() public {
+    function testNativeDepositCannotBeWithdrawn() public {
         vm.deal(address(this), 2 ether);
         paymaster.deposit{value: 2 ether}();
 
-        uint256 beforeBalance = owner.balance;
         vm.prank(owner);
+        vm.expectRevert(PaliFixedRateTokenPaymaster.NativeWithdrawalsDisabled.selector);
         paymaster.withdrawDepositTo(payable(owner), 1 ether);
 
-        assertEq(owner.balance, beforeBalance + 1 ether);
-        assertEq(entryPoint.balanceOf(address(paymaster)), 1 ether);
+        vm.prank(owner);
+        vm.expectRevert(PaliFixedRateTokenPaymaster.NativeWithdrawalsDisabled.selector);
+        paymaster.withdraw(payable(owner), 1 ether);
+
+        assertEq(owner.balance, 0);
+        assertEq(entryPoint.balanceOf(address(paymaster)), 2 ether);
+    }
+
+    function testOwnerCanManageStakeBond() public {
+        vm.deal(owner, 2 ether);
+
+        vm.prank(owner);
+        paymaster.addStake{value: 2 ether}(1 days);
+
+        vm.prank(owner);
+        paymaster.unlockStake();
+
+        uint256 beforeBalance = owner.balance;
+        vm.prank(owner);
+        paymaster.withdrawStake(payable(owner));
+
+        assertEq(owner.balance, beforeBalance + 2 ether);
+        assertEq(entryPoint.stakeOf(address(paymaster)), 0);
     }
 
     function testOnlyOwnerCanAddStake() public {
@@ -188,14 +224,15 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(entryPoint.unstakeDelayOf(address(paymaster)), 1 days);
     }
 
-    function testOwnerCanWithdrawCollectedTokens() public {
+    function testCollectedTokensCannotBeWithdrawnByOwner() public {
         token.mint(address(paymaster), 5 ether);
 
         vm.prank(owner);
+        vm.expectRevert(PaliFixedRateTokenPaymaster.TokenWithdrawalsDisabled.selector);
         paymaster.withdrawTokens(IERC20(address(token)), owner, type(uint256).max);
 
-        assertEq(token.balanceOf(owner), 5 ether);
-        assertEq(token.balanceOf(address(paymaster)), 0);
+        assertEq(token.balanceOf(owner), 0);
+        assertEq(token.balanceOf(address(paymaster)), 5 ether);
     }
 
     function _userOp() private view returns (PackedUserOperation memory userOp) {

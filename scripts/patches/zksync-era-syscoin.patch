@@ -60,9 +60,15 @@ index 3403ec404..ab790d38d 100644
              Self::Unknown => panic!("Unknown chain ID"),
              Self::Test => panic!("Test chain ID"),
 diff --git a/zkstack_cli/crates/types/src/l1_network.rs b/zkstack_cli/crates/types/src/l1_network.rs
-index 1d6300f12..6ee8479bc 100644
+index 1d6300f12..b6de9c8a2 100644
 --- a/zkstack_cli/crates/types/src/l1_network.rs
 +++ b/zkstack_cli/crates/types/src/l1_network.rs
+@@ -1,4 +1,4 @@
+-use std::str::FromStr;
++use std::{env, str::FromStr};
+
+ use clap::ValueEnum;
+ use ethers::types::{Address, H256};
 @@ -25,6 +25,7 @@ pub enum L1Network {
      Localhost,
      Sepolia,
@@ -70,7 +76,7 @@ index 1d6300f12..6ee8479bc 100644
 +    Tanenbaum,
      Mainnet,
  }
- 
+
 @@ -35,7 +36,8 @@ impl L1Network {
              L1Network::Localhost => 9,
              L1Network::Sepolia => 11_155_111,
@@ -80,7 +86,7 @@ index 1d6300f12..6ee8479bc 100644
 +            L1Network::Mainnet => 57,
          }
      }
- 
+
 @@ -45,6 +47,7 @@ impl L1Network {
              L1Network::Sepolia | L1Network::Holesky => {
                  Some(Address::from_str("0x73d59fe232fce421d1365d6a5beec49acde3d0d9").unwrap())
@@ -89,39 +95,30 @@ index 1d6300f12..6ee8479bc 100644
              L1Network::Mainnet => None, // TODO: add mainnet address after it is known
          }
      }
-@@ -68,6 +71,7 @@ impl L1Network {
+@@ -52,6 +55,14 @@ impl L1Network {
+
+     pub fn zk_token_asset_id(&self) -> H256 {
++        if let Ok(value) = env::var("ZKSYS_ZK_TOKEN_ASSET_ID")
++            .or_else(|_| env::var("ZK_TOKEN_ASSET_ID"))
++        {
++            return H256::from_str(&value)
++                .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32");
++        }
++
+         match self {
+             L1Network::Localhost => {
+                 // When testing locally, we deploy the ZK token inside interop tests, so we need to derive its asset id
+@@ -68,8 +79,7 @@ impl L1Network {
              L1Network::Mainnet => {
-                 // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
-                 H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
-                     .unwrap()
+-                // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
+-                H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
+-                    .unwrap()
++                panic!("ZKSYS_ZK_TOKEN_ASSET_ID must be set for Syscoin mainnet CTM deployment")
              }
 -            L1Network::Holesky => H256::zero(),
 +            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
          }
      }
-diff --git a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-index 3d8fdfd9c..93faa309f 100644
---- a/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-+++ b/zkstack_cli/crates/config/src/forge_interface/deploy_ctm/input.rs
-@@ -1,3 +1,5 @@
-+use std::str::FromStr;
-+
- use ethers::types::{Address, H256};
- use serde::{Deserialize, Serialize};
- use zkstack_cli_types::{L1Network, VMOption};
-@@ -33,7 +35,11 @@ impl DeployCTMConfig {
-             is_zk_sync_os: vm_option.is_zksync_os(),
-             testnet_verifier,
-             owner_address: wallets_config.governor.address,
-             support_l2_legacy_shared_bridge_test,
--            zk_token_asset_id: l1_network.zk_token_asset_id(),
-+            zk_token_asset_id: std::env::var("ZK_TOKEN_ASSET_ID")
-+                .ok()
-+                .and_then(|value| H256::from_str(&value).ok())
-+                .unwrap_or_else(|| l1_network.zk_token_asset_id()),
-             contracts: ContractsDeployCTMConfig {
-                 create2_factory_addr: initial_deployment_config.create2_factory_addr,
-                 create2_factory_salt: initial_deployment_config.create2_factory_salt,
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
 index 707872ea0..9ae443887 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
@@ -145,11 +142,11 @@ index 37cad6768..0ae9fd838 100644
  };
 -use zkstack_cli_types::VMOption;
 +use zkstack_cli_types::{L1Network, VMOption};
- 
+
  use super::args::init::EcosystemInitArgsFinal;
  use crate::{
 @@ -75,6 +75,9 @@ pub async fn deploy_l1_core_contracts(
- 
+
      if broadcast {
          forge = forge.with_broadcast();
 +        if config.l1_network == L1Network::Localhost {
@@ -157,11 +154,11 @@ index 37cad6768..0ae9fd838 100644
 +        }
          check_the_balance(&forge).await?;
      }
- 
+
 @@ -121,6 +124,10 @@ pub async fn deploy_erc20(
          .with_rpc_url(l1_rpc_url)
          .with_broadcast();
- 
+
 +    if ecosystem_config.l1_network == L1Network::Localhost {
 +        forge = forge.with_slow();
 +    }
@@ -179,11 +176,11 @@ index 03451dd9e..d751d24f8 100644
  };
 -use zkstack_cli_types::{ProverMode, VMOption};
 +use zkstack_cli_types::{L1Network, ProverMode, VMOption};
- 
+
  use crate::{
      abi::IDEPLOYCTMABI_ABI,
 @@ -203,6 +203,9 @@ pub async fn deploy_new_ctm(
- 
+
      if broadcast {
          forge = forge.with_broadcast();
 +        if config.l1_network == L1Network::Localhost {
@@ -191,7 +188,7 @@ index 03451dd9e..d751d24f8 100644
 +        }
          check_the_balance(&forge).await?;
      }
- 
+
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
 index e667c383d..f7f70b107 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
@@ -203,10 +200,10 @@ index e667c383d..f7f70b107 100644
 -use zkstack_cli_types::VMOption;
 +use zkstack_cli_types::{L1Network, VMOption};
  use zksync_types::H160;
- 
+
  use crate::{
-@@ -112,6 +112,9 @@ pub async fn register_ctm_on_existing_bh(
- 
+@@ -112,4 +112,7 @@ pub async fn register_ctm_on_existing_bh(
+
      if !only_save_calldata {
          forge = forge.with_broadcast();
 +        if config.l1_network == L1Network::Localhost {
@@ -223,18 +220,18 @@ index de2718561..f8bb298b7 100644
      ZkStackConfigTrait,
  };
 +use zkstack_cli_types::L1Network;
- 
+
  use crate::{
      abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
 @@ -104,6 +105,9 @@ pub async fn register_chain(
- 
+
      if broadcast {
          forge = forge.with_broadcast();
 +        if chain_config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
      }
- 
+
      if let Some(address) = sender {
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
 index bec070eeb..3efce4fda 100644
@@ -246,23 +243,23 @@ index bec070eeb..3efce4fda 100644
  };
 +use zkstack_cli_types::L1Network;
  use zksync_basic_types::commitment::L1BatchCommitmentMode;
- 
+
  use crate::{
 @@ -354,6 +355,9 @@ async fn call_forge(
- 
+
      if with_broadcast {
          forge = forge.with_broadcast();
 +        if chain_config.l1_network == L1Network::Localhost {
 +            forge = forge.with_slow();
 +        }
      }
- 
+
      if let Some(signature) = signature {
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 index 3a65c7110..5d4d6a1cb 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-@@ -182,7 +182,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
+@@ -182,6 +182,6 @@ pub(crate) async fn get_migrate_to_gateway_context(
          validator: chain_secrets_config.operator.address,
          prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
          execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),
