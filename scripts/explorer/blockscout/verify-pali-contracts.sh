@@ -54,7 +54,7 @@ CONTRACTS=(
   "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
-  "0xa53b1341fc26a81722dd01915346d141f8a0be83|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
+  "0xe7f975a6141bc3e411e93f66b3fb1c6fb266ab38|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
 )
 
 is_verified() {
