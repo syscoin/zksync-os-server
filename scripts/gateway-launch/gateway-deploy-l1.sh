@@ -261,7 +261,7 @@ derive_and_export_zksys_zk_token_asset_id() {
     cast abi-encode \
       "constructor(uint256,address,address)" \
       "${GATEWAY_CHAIN_ID}" \
-      "0x0000000000000000000000000000000000008004" \
+      "0x0000000000000000000000000000000000010004" \
       "${token_address}"
   )"
   ZKSYS_ZK_TOKEN_ASSET_ID="$(cast keccak "${encoded_asset_id_inputs}")"
