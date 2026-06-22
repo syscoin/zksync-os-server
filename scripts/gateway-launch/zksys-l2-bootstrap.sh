@@ -12,6 +12,7 @@ gl_require ZKSYS_L2_RPC_URL
 gl_require ZKSYS_L2_DEPLOYER_PRIVATE_KEY
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 gl_require ZKSYS_ISSUER_START_TIME
+: "${ZKSYNC_ERA_PATH:=$(cd "${ZKSYNC_OS_SERVER_PATH}/.." && pwd)/zksync-era}"
 
 : "${ZKSYS_L2_CREATE2_DEPLOYER:=0x4e59b44847b379578588920cA78FbF26c0B4956C}"
 : "${ZKSYS_L2_TOKEN_NAME:=ZKSYS}"
@@ -24,11 +25,11 @@ gl_require ZKSYS_ISSUER_START_TIME
 
 normalize_address_env() {
   local name="${1:?name required}"
-  python3 - "${name}" <<'PY'
-import os, sys
+  python3 - "${name}" "${!name:-}" <<'PY'
+import sys
 
-name = sys.argv[1]
-addr = os.environ[name].strip()
+name, raw = sys.argv[1:]
+addr = raw.strip()
 if not addr.startswith(("0x", "0X")) or len(addr) != 42:
     raise SystemExit(f"{name} must be a 20-byte hex address")
 print("0x" + format(int(addr[2:], 16), "040x"))
@@ -104,6 +105,17 @@ send_l2() {
     "$@" >/dev/null
 }
 
+forge_inspect_bytecode() {
+  local contract="${1:?contract required}"
+  forge inspect "${contract}" bytecode \
+    --root "${inspect_dir}" \
+    -R "@openzeppelin/contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/" \
+    -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
+    -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \
+    -R "@openzeppelin/community-contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-community-contracts/contracts/" \
+    -R "forge-std/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/forge-std/src/"
+}
+
 ZKSYS_L2_CREATE2_DEPLOYER="$(normalize_nonzero_address_env ZKSYS_L2_CREATE2_DEPLOYER)"
 ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_nonzero_address_env ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
 ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="$(normalize_address_env ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS)"
@@ -148,9 +160,13 @@ ZKSYS_L2_WEIGHT_REGISTRY_SALT="$(normalize_bytes32_env ZKSYS_L2_WEIGHT_REGISTRY_
 ZKSYS_L2_ISSUER_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_SALT 0x7a6b7379732d6973737565720000000000000000000000000000000000000000)"
 
 inspect_dir="${ZKSYNC_OS_SERVER_PATH}/contracts"
+[ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
+  gl_die "missing OpenZeppelin v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
+[ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts" ] ||
+  gl_die "missing OpenZeppelin upgradeable v4 contracts under ZKSYNC_ERA_PATH=${ZKSYNC_ERA_PATH}"
 
 proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
-proxy_admin_init_code="$(forge inspect ZkSysProxyAdmin bytecode --root "${inspect_dir}")${proxy_admin_ctor_args#0x}"
+proxy_admin_init_code="$(forge_inspect_bytecode ZkSysProxyAdmin)${proxy_admin_ctor_args#0x}"
 ZKSYS_L2_PROXY_ADMIN_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -158,7 +174,7 @@ ZKSYS_L2_PROXY_ADMIN_ADDRESS="$(
     --init-code "${proxy_admin_init_code}"
 )"
 
-token_impl_init_code="$(forge inspect SyscoinZKSYSToken bytecode --root "${inspect_dir}")"
+token_impl_init_code="$(forge_inspect_bytecode SyscoinZKSYSToken)"
 ZKSYS_L2_TOKEN_IMPL_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -175,7 +191,7 @@ token_init_data="$(
     "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
 )"
 token_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${token_init_data}")"
-token_proxy_init_code="$(forge inspect ZkSysCreate2ProxyBytecode bytecode --root "${inspect_dir}")${token_proxy_ctor_args#0x}"
+token_proxy_init_code="$(forge_inspect_bytecode ZkSysCreate2ProxyBytecode)${token_proxy_ctor_args#0x}"
 ZKSYS_L2_TOKEN_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -189,7 +205,7 @@ registry_ctor_args="$(
     "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" \
     "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
 )"
-registry_init_code="$(forge inspect ZkSysMembershipRegistry bytecode --root "${inspect_dir}")${registry_ctor_args#0x}"
+registry_init_code="$(forge_inspect_bytecode ZkSysMembershipRegistry)${registry_ctor_args#0x}"
 ZKSYS_L2_REGISTRY_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -203,7 +219,7 @@ weight_registry_ctor_args="$(
     "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" \
     "${ZKSYS_L2_REGISTRY_ADDRESS}"
 )"
-weight_registry_init_code="$(forge inspect ZkSysRewardWeightRegistry bytecode --root "${inspect_dir}")${weight_registry_ctor_args#0x}"
+weight_registry_init_code="$(forge_inspect_bytecode ZkSysRewardWeightRegistry)${weight_registry_ctor_args#0x}"
 ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -221,7 +237,7 @@ issuer_ctor_args="$(
     "${ZKSYS_ISSUER_PERIOD_SECONDS}" \
     "${ZKSYS_ISSUER_PERIODS_PER_YEAR}"
 )"
-issuer_init_code="$(forge inspect ZkSysIssuer bytecode --root "${inspect_dir}")${issuer_ctor_args#0x}"
+issuer_init_code="$(forge_inspect_bytecode ZkSysIssuer)${issuer_ctor_args#0x}"
 ZKSYS_L2_ISSUER_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
