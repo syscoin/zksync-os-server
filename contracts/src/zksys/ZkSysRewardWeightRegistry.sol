@@ -81,11 +81,11 @@ contract ZkSysRewardWeightRegistry is Initializable, AccessControlUpgradeable, I
         }
     }
 
-    function onSentryNodeStatusChange(address account, uint32, uint32 newCollateralHeight) external {
+    function onSentryNodeStatusChange(address account, uint32, uint32, uint128, uint128 newSentryNodeWeight) external {
         if (msg.sender != address(membershipRegistry)) {
             revert UnauthorizedMembershipRegistry();
         }
-        _updateSentryNodeWeight(account, newCollateralHeight == 0 ? 0 : SENTRY_NODE_WEIGHT);
+        _updateSentryNodeWeight(account, newSentryNodeWeight);
     }
 
     function weightOf(address account) external view returns (uint256) {

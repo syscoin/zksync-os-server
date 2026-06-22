@@ -98,8 +98,26 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function testOnlyMembershipRegistryCanUpdateSentryNodeWeight() public {
+        address unauthorized = address(uint160(address(membershipRegistry)) + 1);
+        uint128 sentryNodeWeight = uint128(weightRegistry.SENTRY_NODE_WEIGHT());
+        vm.startPrank(unauthorized);
         vm.expectRevert(ZkSysRewardWeightRegistry.UnauthorizedMembershipRegistry.selector);
-        weightRegistry.onSentryNodeStatusChange(alice, 0, 1_000);
+        weightRegistry.onSentryNodeStatusChange(alice, 0, 1_000, 0, sentryNodeWeight);
+        vm.stopPrank();
+    }
+
+    function testL1SentryNodeSeniorityWeightUpdatesWithoutHeightChange() public {
+        vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _applyL1Update(alice, 1_000, 135_000 ether);
+        vm.stopPrank();
+
+        assertEq(weightRegistry.weightOf(alice), 135_000 ether);
+        assertEq(weightRegistry.totalWeight(), 135_000 ether);
+        assertEq(receiver.lastAccount(), alice);
+        assertEq(receiver.lastOldWeight(), 100_000 ether);
+        assertEq(receiver.lastNewWeight(), 135_000 ether);
+        assertEq(receiver.lastOldTotalWeight(), 100_000 ether);
     }
 
     function testOnlyStakeWeightUpdaterCanUpdateStakeWeight() public {
@@ -117,10 +135,19 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
+        _applyL1Update(
+            account,
+            sentryNodeCollateralHeight,
+            sentryNodeCollateralHeight == 0 ? 0 : uint128(weightRegistry.SENTRY_NODE_WEIGHT())
+        );
+    }
+
+    function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
             account: account,
-            sentryNodeCollateralHeight: sentryNodeCollateralHeight
+            sentryNodeCollateralHeight: sentryNodeCollateralHeight,
+            sentryNodeWeight: sentryNodeWeight
         });
         membershipRegistry.applyL1SentryNodeUpdates(updates);
     }
