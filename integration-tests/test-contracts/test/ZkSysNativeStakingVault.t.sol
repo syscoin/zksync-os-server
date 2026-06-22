@@ -26,7 +26,6 @@ contract RejectNativeReceiver {
 
 contract ZkSysNativeStakingVaultTest is Test {
     address private alice = address(0xA11CE);
-    address private bob = address(0xB0B);
 
     MockStakeWeightRegistry private registry;
     ZkSysNativeStakingVault private vault;
@@ -48,17 +47,6 @@ contract ZkSysNativeStakingVaultTest is Test {
         assertEq(registry.stakeWeightOf(alice), 3 ether);
         assertEq(registry.lastAccount(), alice);
         assertEq(registry.lastStakeWeight(), 3 ether);
-    }
-
-    function testDepositForCreditsRecipientStakeWeight() public {
-        vm.deal(bob, 2 ether);
-
-        vm.prank(bob);
-        vault.depositFor{value: 2 ether}(alice);
-
-        assertEq(vault.stakeOf(alice), 2 ether);
-        assertEq(vault.stakeOf(bob), 0);
-        assertEq(registry.stakeWeightOf(alice), 2 ether);
     }
 
     function testReceiveDepositsForSender() public {

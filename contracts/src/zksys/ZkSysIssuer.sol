@@ -79,6 +79,9 @@ contract ZkSysIssuer is Initializable, AccessControlUpgradeable, IZkSysWeightRec
         if (periodSeconds_ * periodsPerYear_ != SCHEDULE_YEAR_SECONDS) {
             revert InvalidSchedule();
         }
+        if (startTime_ <= block.timestamp) {
+            revert InvalidSchedule();
+        }
         if (token_.maxSupply() > type(uint256).max / REWARD_PRECISION) {
             revert InvalidSchedule();
         }

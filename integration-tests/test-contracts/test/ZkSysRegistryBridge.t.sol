@@ -180,6 +180,26 @@ contract ZkSysRegistryBridgeTest is Test {
         assertEq(bridge.sentryNodeWeight(collateralHeight, seniorityHeight2), 200_000 ether);
     }
 
+    function testConstructorRejectsSeniorityBpsAboveDenominator() public {
+        uint16 invalidBps = uint16(bridge.BPS_DENOMINATOR() + 1);
+
+        vm.expectRevert();
+        this.deployBridgeWithLevel2Bps(invalidBps);
+    }
+
+    function deployBridgeWithLevel2Bps(uint16 seniorityLevel2Bps_) external returns (ZkSysRegistryBridge) {
+        return new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            nevmStartBlock,
+            seniorityHeight1,
+            seniorityHeight2,
+            seniorityLevel1Bps,
+            seniorityLevel2Bps_
+        );
+    }
+
     function testPushUpdatesRejectsOverflowingNevmHeight() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;

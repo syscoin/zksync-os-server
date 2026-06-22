@@ -74,6 +74,7 @@ contract ZkSysRegistryBridge {
         if (
             nevmStartBlock_ == 0 || seniorityHeight1_ == 0 || seniorityHeight2_ <= seniorityHeight1_
                 || seniorityLevel2Bps_ < seniorityLevel1Bps_
+                || seniorityLevel1Bps_ > BPS_DENOMINATOR || seniorityLevel2Bps_ > BPS_DENOMINATOR
         ) {
             revert InvalidSeniorityConfig();
         }
