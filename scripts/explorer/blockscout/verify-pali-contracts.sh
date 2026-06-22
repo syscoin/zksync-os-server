@@ -35,26 +35,26 @@ EXPLORER_BASE="${1:-https://explorer-zk.tanenbaum.io}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_DIR="${SCRIPT_DIR}/pali-verification/standard-json"
 
-PALI_SOLC="v0.8.26+commit.8a97fa7a"
+PALI_SOLC="v0.8.28+commit.7893614a"
 SLH_DSA_SOLC="v0.8.28+commit.7893614a"
 ENTRYPOINT_SOLC="v0.8.28+commit.7893614a"
 
-# Factory constructor args: abi.encode(accountImplementation, entryPoint).
-FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000d8549b9a7ed189947d4cc34be0370b3ee8547b46000000000000000000000000433709009b8330fda32311df1c2afa402ed8d009"
+# Factory constructor args: abi.encode(accountImplementation).
+FACTORY_CONSTRUCTOR_ARGS="0x00000000000000000000000016f8c2aa6532929383e34d3c4d1c26aad1f93ae7"
 # SLH-DSA validator constructor args: abi.encode(verifier).
-SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000e0886beb95d4005c1de667351312b8dd68b8e8f4"
+SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000e34bba0c18b56ec29bbad1370458417c6c3c5176"
 
 # address|label|standard-json|compiler|constructor_args
 CONTRACTS=(
   "0x433709009B8330FDa32311DF1C2AFA402eD8D009|EntryPoint v0.9|entrypoint.json|${ENTRYPOINT_SOLC}|"
-  "0xD8549B9a7ED189947D4Cc34Be0370B3eE8547B46|Smart account implementation|pali-contracts.json|${PALI_SOLC}|"
-  "0xce2cBf654544db522187c5F4D1446016cF505093|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|"
-  "0x3B590190A11119dF42864efaCe0C6E3E0aF02ac8|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|"
-  "0xe0886Beb95D4005C1de667351312b8dD68b8E8f4|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|"
-  "0x827630cb1410448F2ADdB9277aEd3853e3CE5a46|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
-  "0xCf82A12c0296072C528A5957a67F63842100861A|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
-  "0x752dfc110cD2343E06b9eEDEc0B0dC833fB0A2cB|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
-  "0x1e399Ed1B391cAbC174ef5F708FAb225a22Dc726|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
+  "0x16f8c2aa6532929383e34d3c4d1c26aad1f93ae7|Smart account implementation|pali-contracts.json|${PALI_SOLC}|"
+  "0x3b5102122e368b7a643e8d55d56d2face1299b34|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|"
+  "0x6b802a0db05616768f233d4264edf8cccfd5443c|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|"
+  "0xe34bba0c18b56ec29bbad1370458417c6c3c5176|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|"
+  "0x684682edf65b9d91d559b70d503558c1ce4be1a2|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
+  "0xa343139fc7d2397ee000d40b26a2598ba4ffd3e3|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
+  "0x0c2afbdb0cbf5f8a9dad12f1937eb68ccb7ecf9e|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
+  "0xa4279b355923cfbdbb0bd2cc481c944c715db3ca|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
 )
 
 is_verified() {
