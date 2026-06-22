@@ -250,8 +250,6 @@ done
 [ "${ZKSYS_ISSUER_PERIODS_PER_YEAR}" != "0" ] || gl_die "ZKSYS_ISSUER_PERIODS_PER_YEAR must be non-zero"
 [ "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}" != "0" ] || gl_die "ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS must be non-zero"
 [ "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}" -le 7 ] || gl_die "ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS must be <= 7"
-current_unix_time="$(date +%s)"
-[ "${ZKSYS_ISSUER_START_TIME}" -gt "${current_unix_time}" ] || gl_die "ZKSYS_ISSUER_START_TIME must be in the future"
 python3 - "${ZKSYS_ISSUER_PERIOD_SECONDS}" "${ZKSYS_ISSUER_PERIODS_PER_YEAR}" <<'PY'
 import sys
 
