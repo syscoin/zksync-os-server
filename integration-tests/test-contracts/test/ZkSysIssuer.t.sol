@@ -13,6 +13,7 @@ contract ZkSysIssuerTest is Test {
     uint256 private constant START_TIME = 1_000;
     uint256 private constant PERIOD_SECONDS = 1 days;
     uint256 private constant PERIODS_PER_YEAR = 365;
+    uint256 private constant ACTIVATION_DELAY_PERIODS = 1;
 
     address private admin = address(0xAD);
     address private l1RegistryBridge = address(0xA11CE);
@@ -82,14 +83,22 @@ contract ZkSysIssuerTest is Test {
         vm.warp(START_TIME + PERIOD_SECONDS);
         uint256 firstDistribution = issuer.distribute();
 
-        _depositStake(bob, 1 ether);
+        _depositStakePending(bob, 1 ether);
 
         vm.warp(START_TIME + 2 * PERIOD_SECONDS);
-        uint256 secondDistribution = issuer.distribute();
+        _activateStake(bob);
+        uint256 secondDistribution = issuer.pendingRewards(alice) - firstDistribution;
 
         assertEq(secondDistribution, firstDistribution);
-        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution / 2);
-        assertEq(issuer.pendingRewards(bob), secondDistribution / 2);
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution);
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 3 * PERIOD_SECONDS);
+        uint256 thirdDistribution = issuer.distribute();
+
+        assertEq(thirdDistribution, firstDistribution);
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution + thirdDistribution / 2);
+        assertEq(issuer.pendingRewards(bob), thirdDistribution / 2);
     }
 
     function testLateWeightIncreaseDoesNotEarnUndistributedBacklog() public {
@@ -99,33 +108,44 @@ contract ZkSysIssuerTest is Test {
         uint256 firstDistribution = issuer.distribute();
 
         vm.warp(START_TIME + 3 * PERIOD_SECONDS);
-        _depositStake(bob, 1 ether);
+        _depositStakePending(bob, 1 ether);
 
         uint256 twoPeriodBacklog = issuer.cumulativeScheduledRewards(3) - issuer.cumulativeScheduledRewards(1);
-        assertEq(issuer.pendingRewards(alice), firstDistribution + twoPeriodBacklog);
+        assertEq(twoPeriodBacklog, 2 * firstDistribution);
+        assertEq(issuer.pendingRewards(alice), firstDistribution);
         assertEq(issuer.pendingRewards(bob), 0);
 
         vm.warp(START_TIME + 4 * PERIOD_SECONDS);
-        uint256 fourthPeriodDistribution = issuer.distribute();
+        _activateStake(bob);
+        uint256 delayedBacklog = issuer.cumulativeScheduledRewards(4) - issuer.cumulativeScheduledRewards(1);
 
-        assertEq(fourthPeriodDistribution, issuer.cumulativeScheduledRewards(4) - issuer.cumulativeScheduledRewards(3));
-        assertEq(issuer.pendingRewards(alice), firstDistribution + twoPeriodBacklog + fourthPeriodDistribution / 2);
-        assertEq(issuer.pendingRewards(bob), fourthPeriodDistribution / 2);
+        assertEq(delayedBacklog, issuer.cumulativeScheduledRewards(4) - issuer.cumulativeScheduledRewards(1));
+        assertEq(issuer.pendingRewards(alice), firstDistribution + delayedBacklog);
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 5 * PERIOD_SECONDS);
+        uint256 fifthPeriodDistribution = issuer.distribute();
+
+        assertEq(fifthPeriodDistribution, issuer.cumulativeScheduledRewards(5) - issuer.cumulativeScheduledRewards(4));
+        assertEq(issuer.pendingRewards(alice), firstDistribution + delayedBacklog + fifthPeriodDistribution / 2);
+        assertEq(issuer.pendingRewards(bob), fifthPeriodDistribution / 2);
     }
 
     function testFirstWeightAfterStartDoesNotEarnEmptyRegistryBacklog() public {
         vm.warp(START_TIME + 2 * PERIOD_SECONDS);
 
-        _depositStake(alice, 1 ether);
+        _depositStakePending(alice, 1 ether);
+        vm.warp(START_TIME + 3 * PERIOD_SECONDS);
+        _activateStake(alice);
 
         assertEq(issuer.pendingRewards(alice), 0);
-        assertEq(issuer.totalScheduledRewards(), 2 * yearOneEmission() / PERIODS_PER_YEAR);
+        assertEq(issuer.totalScheduledRewards(), 3 * yearOneEmission() / PERIODS_PER_YEAR);
         assertEq(issuer.scheduledUnclaimedRewards(), 0);
 
-        vm.warp(START_TIME + 3 * PERIOD_SECONDS);
+        vm.warp(START_TIME + 4 * PERIOD_SECONDS);
         uint256 distribution = issuer.distribute();
 
-        assertEq(distribution, yearOneEmission() / PERIODS_PER_YEAR);
+        assertEq(distribution, issuer.cumulativeScheduledRewards(4) - issuer.cumulativeScheduledRewards(3));
         assertEq(issuer.pendingRewards(alice), distribution);
     }
 
@@ -160,16 +180,22 @@ contract ZkSysIssuerTest is Test {
         assertEq(registry.totalWeight(), 0);
 
         vm.warp(START_TIME + 5 * PERIOD_SECONDS);
-        _depositStake(bob, 1 ether);
+        _depositStakePending(bob, 1 ether);
 
-        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(5));
+        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(3));
         assertEq(issuer.pendingRewards(bob), 0);
 
         vm.warp(START_TIME + 6 * PERIOD_SECONDS);
-        uint256 sixthPeriodDistribution = issuer.distribute();
+        _activateStake(bob);
 
-        assertEq(sixthPeriodDistribution, issuer.cumulativeScheduledRewards(6) - issuer.cumulativeScheduledRewards(5));
-        assertEq(issuer.pendingRewards(bob), sixthPeriodDistribution);
+        assertEq(issuer.totalScheduledRewards(), issuer.cumulativeScheduledRewards(6));
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        vm.warp(START_TIME + 7 * PERIOD_SECONDS);
+        uint256 seventhPeriodDistribution = issuer.distribute();
+
+        assertEq(seventhPeriodDistribution, issuer.cumulativeScheduledRewards(7) - issuer.cumulativeScheduledRewards(6));
+        assertEq(issuer.pendingRewards(bob), seventhPeriodDistribution);
     }
 
     function testOutOfRangeWeightIsRejectedBeforeSettlement() public {
@@ -192,6 +218,28 @@ contract ZkSysIssuerTest is Test {
         issuer.distribute();
     }
 
+    function testBoundaryStakeDoesNotEarnEndingPeriod() public {
+        _depositStake(alice, 1 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS - 1);
+        _depositStakePending(bob, 999 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        uint256 firstDistribution = issuer.distribute();
+
+        assertEq(issuer.pendingRewards(alice), firstDistribution);
+        assertEq(issuer.pendingRewards(bob), 0);
+
+        _activateStake(bob);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        uint256 secondDistribution = issuer.distribute();
+
+        assertEq(secondDistribution, firstDistribution);
+        assertEq(issuer.pendingRewards(alice), firstDistribution + secondDistribution / 1000);
+        assertEq(issuer.pendingRewards(bob), secondDistribution * 999 / 1000);
+    }
+
     function testInitializerRejectsScheduleThatIsNotOneYear() public {
         ZkSysIssuer implementation = new ZkSysIssuer();
 
@@ -201,6 +249,27 @@ contract ZkSysIssuerTest is Test {
             abi.encodeCall(
                 ZkSysIssuer.initialize,
                 (IZkSysMintableToken(address(token)), IZkSysRewardWeightSource(address(registry)), admin, START_TIME, 1 days, 364)
+            )
+        );
+    }
+
+    function testInitializerRejectsStartTimeThatIsNotFuture() public {
+        ZkSysIssuer implementation = new ZkSysIssuer();
+        vm.warp(START_TIME);
+
+        vm.expectRevert(ZkSysIssuer.InvalidSchedule.selector);
+        new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysIssuer.initialize,
+                (
+                    IZkSysMintableToken(address(token)),
+                    IZkSysRewardWeightSource(address(registry)),
+                    admin,
+                    START_TIME,
+                    PERIOD_SECONDS,
+                    PERIODS_PER_YEAR
+                )
             )
         );
     }
@@ -232,9 +301,19 @@ contract ZkSysIssuerTest is Test {
     }
 
     function _depositStake(address account, uint256 amount) private {
+        _depositStakePending(account, amount);
+        _activateStake(account);
+    }
+
+    function _depositStakePending(address account, uint256 amount) private {
         vm.deal(account, account.balance + amount);
         vm.prank(account);
         stakingVault.deposit{value: amount}();
+    }
+
+    function _activateStake(address account) private {
+        vm.prank(account);
+        registry.activatePendingWeight();
     }
 
     function _withdrawStake(address account, uint256 amount) private {
@@ -257,7 +336,7 @@ contract ZkSysIssuerTest is Test {
         ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
-            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS))
         );
         return ZkSysRewardWeightRegistry(address(proxy));
     }

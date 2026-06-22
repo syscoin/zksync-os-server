@@ -11,6 +11,12 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
     uint256 public lastOldWeight;
     uint256 public lastNewWeight;
     uint256 public lastOldTotalWeight;
+    uint256 public startTime = 1_000;
+    uint256 public currentPeriod;
+
+    function setCurrentPeriod(uint256 currentPeriod_) external {
+        currentPeriod = currentPeriod_;
+    }
 
     function onWeightChange(address account, uint256 oldWeight, uint256 newWeight, uint256 oldTotalWeight) external {
         lastAccount = account;
@@ -21,6 +27,9 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
 }
 
 contract ZkSysRewardWeightRegistryTest is Test {
+    uint256 private constant ACTIVATION_DELAY_PERIODS = 1;
+    uint128 private constant DEFAULT_SENTRY_NODE_WEIGHT = 100_000 ether;
+
     address private admin = address(0xAD);
     address private stakeWeightUpdater = address(0x57A7E);
     address private l1Bridge = address(0xB111D6E);
@@ -47,6 +56,13 @@ contract ZkSysRewardWeightRegistryTest is Test {
         vm.prank(stakeWeightUpdater);
         weightRegistry.updateStakeWeight(alice, 2);
 
+        assertEq(weightRegistry.weightOf(alice), 0);
+        assertEq(weightRegistry.totalWeight(), 0);
+
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
         assertEq(weightRegistry.weightOf(alice), 2);
         assertEq(weightRegistry.totalWeight(), 2);
         assertEq(receiver.lastAccount(), alice);
@@ -58,38 +74,65 @@ contract ZkSysRewardWeightRegistryTest is Test {
     function testL1SentryNodeFactAddsAndRemovesSentryNodeWeight() public {
         vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000);
-        assertEq(weightRegistry.weightOf(alice), weightRegistry.SENTRY_NODE_WEIGHT());
-        assertEq(weightRegistry.totalWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
+        vm.stopPrank();
 
+        assertEq(weightRegistry.weightOf(alice), 0);
+        assertEq(weightRegistry.totalWeight(), 0);
+
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), DEFAULT_SENTRY_NODE_WEIGHT);
+        assertEq(weightRegistry.totalWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
+
+        vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 0);
         vm.stopPrank();
 
         assertEq(weightRegistry.weightOf(alice), 0);
         assertEq(weightRegistry.totalWeight(), 0);
         assertEq(receiver.lastAccount(), alice);
-        assertEq(receiver.lastOldWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
+        assertEq(receiver.lastOldWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
         assertEq(receiver.lastNewWeight(), 0);
-        assertEq(receiver.lastOldTotalWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
+        assertEq(receiver.lastOldTotalWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
     }
 
     function testL1AddressChangeIsRemoveOldAndAddNewWeight() public {
         vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000);
         _applyL1Update(bob, 2_000);
-        _applyL1Update(alice, 0);
         vm.stopPrank();
 
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+        vm.prank(bob);
+        weightRegistry.activatePendingWeight();
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 0);
+
         assertEq(weightRegistry.weightOf(alice), 0);
-        assertEq(weightRegistry.weightOf(bob), weightRegistry.SENTRY_NODE_WEIGHT());
-        assertEq(weightRegistry.totalWeight(), weightRegistry.SENTRY_NODE_WEIGHT());
+        assertEq(weightRegistry.weightOf(bob), DEFAULT_SENTRY_NODE_WEIGHT);
+        assertEq(weightRegistry.totalWeight(), DEFAULT_SENTRY_NODE_WEIGHT);
     }
 
     function testStakeWeightSurvivesSentryNodeRemoval() public {
         vm.prank(stakeWeightUpdater);
         weightRegistry.updateStakeWeight(alice, 7);
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
 
         vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000);
+        vm.stopPrank();
+        receiver.setCurrentPeriod(2 * ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 0);
         vm.stopPrank();
 
@@ -99,7 +142,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
 
     function testOnlyMembershipRegistryCanUpdateSentryNodeWeight() public {
         address unauthorized = address(uint160(address(membershipRegistry)) + 1);
-        uint128 sentryNodeWeight = uint128(weightRegistry.SENTRY_NODE_WEIGHT());
+        uint128 sentryNodeWeight = DEFAULT_SENTRY_NODE_WEIGHT;
         vm.startPrank(unauthorized);
         vm.expectRevert(ZkSysRewardWeightRegistry.UnauthorizedMembershipRegistry.selector);
         weightRegistry.onSentryNodeStatusChange(alice, 0, 1_000, 0, sentryNodeWeight);
@@ -107,10 +150,20 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function testL1SentryNodeSeniorityWeightUpdatesWithoutHeightChange() public {
-        vm.startPrank(membershipRegistry.aliasedL1RegistryBridge());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000, 100_000 ether);
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
         _applyL1Update(alice, 1_000, 135_000 ether);
-        vm.stopPrank();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
+
+        receiver.setCurrentPeriod(2 * ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
 
         assertEq(weightRegistry.weightOf(alice), 135_000 ether);
         assertEq(weightRegistry.totalWeight(), 135_000 ether);
@@ -134,11 +187,96 @@ contract ZkSysRewardWeightRegistryTest is Test {
         weightRegistry.updateStakeWeight(alice, uint256(type(uint128).max) + 1);
     }
 
+    function testPendingWeightCannotActivateBeforeEffectivePeriod() public {
+        vm.warp(receiver.startTime());
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 2);
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector, ACTIVATION_DELAY_PERIODS, 0)
+        );
+        weightRegistry.activatePendingWeight();
+    }
+
+    function testDecreaseClearsPendingStakeIncreaseImmediately() public {
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 10);
+
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 0);
+
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        vm.expectRevert(ZkSysRewardWeightRegistry.NoPendingWeight.selector);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 0);
+        assertEq(weightRegistry.totalWeight(), 0);
+    }
+
+    function testSentryNodeRemovalDoesNotClearPendingStakeIncrease() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 10);
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 0);
+
+        assertEq(weightRegistry.weightOf(alice), 0);
+        assertEq(weightRegistry.totalWeight(), 0);
+
+        receiver.setCurrentPeriod(2);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 10);
+        assertEq(weightRegistry.totalWeight(), 10);
+    }
+
+    function testLaterSentryNodeIncreaseDelaysPendingStakeActivationUntilBothEffective() public {
+        vm.warp(receiver.startTime());
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+
+        receiver.setCurrentPeriod(1);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 10);
+
+        receiver.setCurrentPeriod(2);
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 135_000 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector, 3, 2));
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 100_000 ether);
+        assertEq(weightRegistry.totalWeight(), 100_000 ether);
+
+        receiver.setCurrentPeriod(3);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 135_000 ether + 10);
+        assertEq(weightRegistry.totalWeight(), 135_000 ether + 10);
+    }
+
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
         _applyL1Update(
             account,
             sentryNodeCollateralHeight,
-            sentryNodeCollateralHeight == 0 ? 0 : uint128(weightRegistry.SENTRY_NODE_WEIGHT())
+            sentryNodeCollateralHeight == 0 ? 0 : DEFAULT_SENTRY_NODE_WEIGHT
         );
     }
 
@@ -167,7 +305,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
         ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
-            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_))
+            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS))
         );
         return ZkSysRewardWeightRegistry(address(proxy));
     }

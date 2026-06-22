@@ -46,10 +46,6 @@ contract ZkSysNativeStakingVault is Initializable, ReentrancyGuardUpgradeable {
         _depositFor(msg.sender, msg.value);
     }
 
-    function depositFor(address account) external payable nonReentrant {
-        _depositFor(account, msg.value);
-    }
-
     function withdraw(uint256 amount) external nonReentrant {
         _withdrawTo(msg.sender, payable(msg.sender), amount);
     }

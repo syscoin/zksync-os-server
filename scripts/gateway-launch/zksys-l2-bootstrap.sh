@@ -21,6 +21,7 @@ gl_require ZKSYS_ISSUER_START_TIME
 : "${ZKSYS_L2_PAYMASTER_ADDRESS:=}"
 : "${ZKSYS_ISSUER_PERIOD_SECONDS:=86400}"
 : "${ZKSYS_ISSUER_PERIODS_PER_YEAR:=365}"
+: "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS:=1}"
 ZERO_ADDRESS="0x0000000000000000000000000000000000000000"
 
 normalize_address_env() {
@@ -142,6 +143,12 @@ assert_l2_bool_call() {
   [ "${actual}" = "${expected}" ] || gl_die "${target} ${signature} returned ${actual}, expected ${expected}"
 }
 
+assert_l2_uint_call() {
+  local target="${1:?target required}" signature="${2:?signature required}" expected="${3:?expected required}" actual
+  actual="$(call_l2 "${target}" "${signature}")"
+  [ "${actual}" = "${expected}" ] || gl_die "${target} ${signature} returned ${actual}, expected ${expected}"
+}
+
 forge_inspect_bytecode() {
   local contract="${1:?contract required}"
   forge inspect "${contract}" bytecode \
@@ -234,13 +241,17 @@ case "${ZKSYS_L2_TOKEN_DECIMALS}" in
 ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
 esac
 [ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 255 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 255"
-for schedule_var in ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR; do
+for schedule_var in ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
   case "${!schedule_var}" in
   ''|*[!0-9]*) gl_die "${schedule_var} must be a decimal uint256" ;;
   esac
 done
 [ "${ZKSYS_ISSUER_PERIOD_SECONDS}" != "0" ] || gl_die "ZKSYS_ISSUER_PERIOD_SECONDS must be non-zero"
 [ "${ZKSYS_ISSUER_PERIODS_PER_YEAR}" != "0" ] || gl_die "ZKSYS_ISSUER_PERIODS_PER_YEAR must be non-zero"
+[ "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}" != "0" ] || gl_die "ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS must be non-zero"
+[ "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}" -le 7 ] || gl_die "ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS must be <= 7"
+current_unix_time="$(date +%s)"
+[ "${ZKSYS_ISSUER_START_TIME}" -gt "${current_unix_time}" ] || gl_die "ZKSYS_ISSUER_START_TIME must be in the future"
 python3 - "${ZKSYS_ISSUER_PERIOD_SECONDS}" "${ZKSYS_ISSUER_PERIODS_PER_YEAR}" <<'PY'
 import sys
 
@@ -339,9 +350,10 @@ ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS="$(
 )"
 weight_registry_init_data="$(
   cast calldata \
-    "initialize(address,address)" \
+    "initialize(address,address,uint256)" \
     "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" \
-    "${ZKSYS_L2_REGISTRY_ADDRESS}"
+    "${ZKSYS_L2_REGISTRY_ADDRESS}" \
+    "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}"
 )"
 weight_registry_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${weight_registry_init_data}")"
 weight_registry_proxy_init_code="$(forge_inspect_bytecode ZkSysCreate2ProxyBytecode)${weight_registry_proxy_ctor_args#0x}"
@@ -433,6 +445,7 @@ fi
 echo "zksys-l2-bootstrap: verifying role and receiver wiring"
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
 assert_l2_bool_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${STAKE_WEIGHT_UPDATER_ROLE}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}"
+assert_l2_uint_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "activationDelayPeriods()(uint256)" "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS}"
 assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "weightReceiver()(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "sentryNodeReceiver()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
 assert_l2_address_call "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "weightRegistry()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
