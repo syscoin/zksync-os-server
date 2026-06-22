@@ -40,7 +40,7 @@ CONTRACTS=(
   "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule"
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
-  "0xe9f08a58ed246b85ca799a613406a4d4e9900781|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
+  "0xa53b1341fc26a81722dd01915346d141f8a0be83|Smart account factory|pali-contracts.json|${PALI_SOLC}|src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory"
 )
 
 match_status() {

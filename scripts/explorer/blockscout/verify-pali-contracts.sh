@@ -39,8 +39,8 @@ PALI_SOLC="v0.8.28+commit.7893614a"
 SLH_DSA_SOLC="v0.8.28+commit.7893614a"
 ENTRYPOINT_SOLC="v0.8.28+commit.7893614a"
 
-# Factory constructor args: abi.encode(accountImplementation).
-FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000f9cd389c3a980633fb75e9997d463923239aedc9"
+# Factory constructor args: abi.encode(accountImplementation, entryPoint).
+FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000f9cd389c3a980633fb75e9997d463923239aedc9000000000000000000000000433709009b8330fda32311df1c2afa402ed8d009"
 # SLH-DSA validator constructor args: abi.encode(verifier).
 SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000789d5ac3a14b543a46fc402eedcf31d8c8b93d4a31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
 
@@ -54,7 +54,7 @@ CONTRACTS=(
   "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
-  "0xe9f08a58ed246b85ca799a613406a4d4e9900781|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
+  "0xa53b1341fc26a81722dd01915346d141f8a0be83|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
 )
 
 is_verified() {
