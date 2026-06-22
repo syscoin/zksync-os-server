@@ -105,6 +105,26 @@ send_l2() {
     "$@" >/dev/null
 }
 
+call_l2() {
+  cast call \
+    --rpc-url "${ZKSYS_L2_RPC_URL}" \
+    "$@"
+}
+
+assert_l2_address_call() {
+  local target="${1:?target required}" signature="${2:?signature required}" expected="${3:?expected required}" actual
+  actual="$(call_l2 "${target}" "${signature}")"
+  [ "$(gl_to_lower "${actual}")" = "$(gl_to_lower "${expected}")" ] ||
+    gl_die "${target} ${signature} returned ${actual}, expected ${expected}"
+}
+
+assert_l2_bool_call() {
+  local target="${1:?target required}" signature="${2:?signature required}" expected="${3:?expected required}" actual
+  shift 3
+  actual="$(call_l2 "${target}" "${signature}" "$@")"
+  [ "${actual}" = "${expected}" ] || gl_die "${target} ${signature} returned ${actual}, expected ${expected}"
+}
+
 forge_inspect_bytecode() {
   local contract="${1:?contract required}"
   forge inspect "${contract}" bytecode \
@@ -328,6 +348,17 @@ fi
 if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
   echo "zksys-l2-bootstrap: wiring paymaster burner role"
   send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${BURNER_ROLE}" "${ZKSYS_L2_PAYMASTER_ADDRESS}"
+fi
+
+echo "zksys-l2-bootstrap: verifying role and receiver wiring"
+assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
+assert_l2_address_call "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "weightReceiver()(address)" "${ZKSYS_L2_ISSUER_ADDRESS}"
+assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "sentryNodeReceiver()(address)" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}"
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
+  assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "l1RegistryBridge()(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+fi
+if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
+  assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_PAYMASTER_ADDRESS}"
 fi
 
 cat <<EOF

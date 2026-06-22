@@ -33,8 +33,12 @@ interface IZkSysMembershipRegistryL2 {
 /// @notice L1/NEVM adapter that sends verified membership facts to the L2 zkSYS registry.
 contract ZkSysRegistryBridge {
     address private constant NEVM_ADDRESS_PRECOMPILE = address(0x62);
+    uint256 public constant MAX_BATCH_SIZE = 512;
 
+    error DuplicateAccount(address account);
+    error EmptyBatch();
     error InvalidAddress();
+    error InvalidBatchSize(uint256 batchSize);
     error NevmCollateralHeightOverflow(address account, uint256 collateralHeight);
     error NevmLookupFailed(address account);
 
@@ -60,6 +64,25 @@ contract ZkSysRegistryBridge {
         uint256 l2GasPerPubdataByteLimit,
         address refundRecipient
     ) external payable returns (bytes32 canonicalTxHash) {
+        if (accounts.length == 0) {
+            revert EmptyBatch();
+        }
+        if (accounts.length > MAX_BATCH_SIZE) {
+            revert InvalidBatchSize(accounts.length);
+        }
+
+        for (uint256 i = 0; i < accounts.length; ++i) {
+            address account = accounts[i];
+            if (account == address(0)) {
+                revert InvalidAddress();
+            }
+            for (uint256 j = 0; j < i; ++j) {
+                if (accounts[j] == account) {
+                    revert DuplicateAccount(account);
+                }
+            }
+        }
+
         IZkSysMembershipRegistryL2.SentryNodeUpdate[] memory updates =
             new IZkSysMembershipRegistryL2.SentryNodeUpdate[](accounts.length);
 

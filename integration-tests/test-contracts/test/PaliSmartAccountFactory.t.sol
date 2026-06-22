@@ -7,17 +7,26 @@ import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorMod
 import {PaliSmartAccount} from "contracts/src/pali/PaliSmartAccount.sol";
 import {PaliSmartAccountFactory} from "contracts/src/pali/PaliSmartAccountFactory.sol";
 
+contract MockEntryPoint {
+    address public immutable senderCreator;
+
+    constructor(address senderCreator_) {
+        senderCreator = senderCreator_;
+    }
+}
+
 contract PaliSmartAccountFactoryTest is Test {
     PaliECDSAValidatorModule private ecdsa;
     PaliSmartAccount private implementation;
     PaliSmartAccountFactory private factory;
 
     address private owner = address(0xA11CE);
+    address private senderCreator = address(0x4337);
 
     function setUp() public {
         ecdsa = new PaliECDSAValidatorModule();
         implementation = new PaliSmartAccount();
-        factory = new PaliSmartAccountFactory(address(implementation));
+        factory = new PaliSmartAccountFactory(address(implementation), address(new MockEntryPoint(senderCreator)));
     }
 
     function testCreateAccountDeploysDeterministicProxyAndInstallsInitialValidator() public {
@@ -26,6 +35,7 @@ contract PaliSmartAccountFactoryTest is Test {
         bytes memory initCode = factory.getInitData(address(ecdsa), initData);
         address predicted = factory.getAddress(salt, initCode);
 
+        vm.prank(senderCreator);
         address account = factory.createAccount(salt, initCode);
 
         assertEq(account, predicted);
@@ -39,12 +49,31 @@ contract PaliSmartAccountFactoryTest is Test {
         assertEq(ecdsa.threshold(account), 1);
     }
 
+    function testConstructorRejectsNonContractImplementation() public {
+        MockEntryPoint entryPoint = new MockEntryPoint(senderCreator);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliSmartAccountFactory.InvalidImplementation.selector, address(0xBADC0DE))
+        );
+        new PaliSmartAccountFactory(address(0xBADC0DE), address(entryPoint));
+    }
+
+    function testCreateAccountOnlyAllowsEntryPointSenderCreator() public {
+        bytes32 salt = keccak256("pali.account.factory.sender-creator");
+        bytes memory initCode = factory.getInitData(address(ecdsa), _ecdsaInitData(owner));
+
+        vm.expectRevert(abi.encodeWithSelector(PaliSmartAccountFactory.OnlySenderCreator.selector, address(this)));
+        factory.createAccount(salt, initCode);
+    }
+
     function testCreateAccountIsIdempotentForSameSaltAndInitCode() public {
         bytes32 salt = keccak256("pali.account.factory.idempotent");
         bytes memory initCode = factory.getInitData(address(ecdsa), _ecdsaInitData(owner));
 
+        vm.startPrank(senderCreator);
         address first = factory.createAccount(salt, initCode);
         address second = factory.createAccount(salt, initCode);
+        vm.stopPrank();
 
         assertEq(second, first);
         assertEq(second, factory.getAddress(salt, initCode));
@@ -74,6 +103,7 @@ contract PaliSmartAccountFactoryTest is Test {
         bytes memory initCode = factory.getInitData(validators, executors, fallbackHandler, hooks);
 
         vm.expectRevert(PaliSmartAccount.InvalidInitialValidator.selector);
+        vm.prank(senderCreator);
         factory.createAccount(salt, initCode);
     }
 

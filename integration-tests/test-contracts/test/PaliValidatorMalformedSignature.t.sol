@@ -57,7 +57,6 @@ contract PaliValidatorMalformedSignatureTest is Test {
                 PaliP256WebAuthnValidatorModule.AuthData({
                     publicKeyX: bytes32(uint256(1)),
                     publicKeyY: bytes32(uint256(2)),
-                    credentialIdHash: bytes32(uint256(3)),
                     rpIdHash: bytes32(uint256(4)),
                     originHash: bytes32(uint256(5)),
                     originLength: 1
@@ -141,9 +140,7 @@ contract PaliCompositeRevertingChildTest is Test {
         bytes[] memory childSignatures = new bytes[](2);
         childSignatures[0] = hex"deadbeef";
 
-        assertEq(
-            composite.isValidSignatureWithSender(address(this), hash, abi.encode(childSignatures)), EIP1271_FAILED
-        );
+        assertEq(composite.isValidSignatureWithSender(address(this), hash, abi.encode(childSignatures)), EIP1271_FAILED);
     }
 
     function isModuleInstalled(uint256, address, bytes calldata) external pure returns (bool) {

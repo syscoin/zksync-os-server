@@ -39,22 +39,22 @@ PALI_SOLC="v0.8.28+commit.7893614a"
 SLH_DSA_SOLC="v0.8.28+commit.7893614a"
 ENTRYPOINT_SOLC="v0.8.28+commit.7893614a"
 
-# Factory constructor args: abi.encode(accountImplementation).
-FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000f9cd389c3a980633fb75e9997d463923239aedc9"
+# Factory constructor args: abi.encode(accountImplementation, entryPoint).
+FACTORY_CONSTRUCTOR_ARGS="0x000000000000000000000000f9cd389c3a980633fb75e9997d463923239aedc9000000000000000000000000433709009b8330fda32311df1c2afa402ed8d009"
 # SLH-DSA validator constructor args: abi.encode(verifier).
-SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000789d5ac3a14b543a46fc402eedcf31d8c8b93d4a"
+SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000789d5ac3a14b543a46fc402eedcf31d8c8b93d4a31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
 
 # address|label|standard-json|compiler|constructor_args
 CONTRACTS=(
   "0x433709009B8330FDa32311DF1C2AFA402eD8D009|EntryPoint v0.9|entrypoint.json|${ENTRYPOINT_SOLC}|"
   "0xf9cd389c3a980633fb75e9997d463923239aedc9|Smart account implementation|pali-contracts.json|${PALI_SOLC}|"
   "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad|ECDSA validator module|pali-contracts.json|${PALI_SOLC}|"
-  "0x5e480b89c2089437ebe8f0ff6356d9ba2f07a53a|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|"
+  "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd|P-256 passkey validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a|SLH-DSA verifier|slh-dsa-contracts.json|${SLH_DSA_SOLC}|"
-  "0x0876d0c5a57bf31c1758c58d2c213fa47b8708db|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
+  "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module|slh-dsa-contracts.json|${SLH_DSA_SOLC}|${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module|pali-contracts.json|${PALI_SOLC}|"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module|pali-contracts.json|${PALI_SOLC}|"
-  "0xdb062bd34ed9b3b7c7a97fca895dd2ff59512370|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
+  "0xe7f975a6141bc3e411e93f66b3fb1c6fb266ab38|Smart account factory|pali-contracts.json|${PALI_SOLC}|${FACTORY_CONSTRUCTOR_ARGS}"
 )
 
 is_verified() {
