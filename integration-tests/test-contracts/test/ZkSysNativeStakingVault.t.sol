@@ -24,8 +24,31 @@ contract RejectNativeReceiver {
     }
 }
 
+contract ReenteringNativeReceiver {
+    ZkSysNativeStakingVault public immutable vault;
+    bool public attempted;
+    bool public reenteredSuccessfully;
+
+    constructor(ZkSysNativeStakingVault vault_) {
+        vault = vault_;
+    }
+
+    function stakeInVault() external payable {
+        vault.deposit{value: msg.value}();
+    }
+
+    receive() external payable {
+        if (attempted) {
+            return;
+        }
+        attempted = true;
+        (reenteredSuccessfully,) = address(vault).call(abi.encodeCall(ZkSysNativeStakingVault.withdraw, (1 wei)));
+    }
+}
+
 contract ZkSysNativeStakingVaultTest is Test {
     address private alice = address(0xA11CE);
+    address private bob = address(0xB0B);
 
     MockStakeWeightRegistry private registry;
     ZkSysNativeStakingVault private vault;
@@ -76,6 +99,21 @@ contract ZkSysNativeStakingVaultTest is Test {
         assertEq(registry.stakeWeightOf(alice), 3 ether);
     }
 
+    function testWithdrawToCanSendStakeToThirdParty() public {
+        vm.deal(alice, 2 ether);
+        vm.prank(alice);
+        vault.deposit{value: 2 ether}();
+
+        uint256 bobBalanceBefore = bob.balance;
+        vm.prank(alice);
+        vault.withdrawTo(payable(bob), 1 ether);
+
+        assertEq(bob.balance, bobBalanceBefore + 1 ether);
+        assertEq(vault.stakeOf(alice), 1 ether);
+        assertEq(vault.totalStaked(), 1 ether);
+        assertEq(registry.stakeWeightOf(alice), 1 ether);
+    }
+
     function testWithdrawToRejectsZeroReceiverAndFailedNativeTransfer() public {
         vm.deal(alice, 2 ether);
         vm.prank(alice);
@@ -91,6 +129,27 @@ contract ZkSysNativeStakingVaultTest is Test {
             abi.encodeWithSelector(ZkSysNativeStakingVault.NativeTransferFailed.selector, address(receiver), 1 ether)
         );
         vault.withdrawTo(payable(address(receiver)), 1 ether);
+    }
+
+    function testWithdrawToReentrantReceiverCannotWithdrawDuringNativeTransfer() public {
+        vm.deal(alice, 2 ether);
+        vm.prank(alice);
+        vault.deposit{value: 2 ether}();
+
+        ReenteringNativeReceiver receiver = new ReenteringNativeReceiver(vault);
+        vm.deal(address(receiver), 1 wei);
+        receiver.stakeInVault{value: 1 wei}();
+
+        vm.prank(alice);
+        vault.withdrawTo(payable(address(receiver)), 1 ether);
+
+        assertTrue(receiver.attempted());
+        assertFalse(receiver.reenteredSuccessfully());
+        assertEq(vault.stakeOf(alice), 1 ether);
+        assertEq(vault.stakeOf(address(receiver)), 1 wei);
+        assertEq(vault.totalStaked(), 1 ether + 1 wei);
+        assertEq(registry.stakeWeightOf(alice), 1 ether);
+        assertEq(registry.stakeWeightOf(address(receiver)), 1 wei);
     }
 
     function testRejectsZeroAmountAndOverWithdraw() public {

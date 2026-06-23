@@ -116,6 +116,48 @@ contract ZkSysMembershipRegistryTest is Test {
         assertEq(registry.activeSentryNodeAt(0), bob);
     }
 
+    function testBatchUpdateAppliesMultipleAccounts() public {
+        _wireReceiver();
+        ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](2);
+        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
+            account: alice,
+            sentryNodeCollateralHeight: 1_000,
+            sentryNodeWeight: 100_000 ether
+        });
+        updates[1] = ZkSysMembershipRegistry.SentryNodeUpdate({
+            account: bob,
+            sentryNodeCollateralHeight: 2_000,
+            sentryNodeWeight: 135_000 ether
+        });
+
+        vm.prank(registry.aliasedL1RegistryBridge());
+        registry.applyL1SentryNodeUpdates(updates);
+
+        ZkSysMembershipRegistry.Member memory aliceMember = registry.member(alice);
+        ZkSysMembershipRegistry.Member memory bobMember = registry.member(bob);
+        assertEq(aliceMember.sentryNodeCollateralHeight, 1_000);
+        assertEq(aliceMember.sentryNodeWeight, 100_000 ether);
+        assertEq(bobMember.sentryNodeCollateralHeight, 2_000);
+        assertEq(bobMember.sentryNodeWeight, 135_000 ether);
+        assertEq(registry.activeSentryNodeCount(), 2);
+        assertTrue(registry.isActiveSentryNode(alice));
+        assertTrue(registry.isActiveSentryNode(bob));
+    }
+
+    function testBatchUpdateRejectsZeroAccount() public {
+        _wireReceiver();
+        ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
+        updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
+            account: address(0),
+            sentryNodeCollateralHeight: 1_000,
+            sentryNodeWeight: 100_000 ether
+        });
+
+        vm.prank(registry.aliasedL1RegistryBridge());
+        vm.expectRevert(ZkSysMembershipRegistry.InvalidAddress.selector);
+        registry.applyL1SentryNodeUpdates(updates);
+    }
+
     function testChangedL1FactRequiresReceiver() public {
         vm.prank(registry.aliasedL1RegistryBridge());
         vm.expectRevert(ZkSysMembershipRegistry.SentryNodeReceiverNotSet.selector);
@@ -155,6 +197,23 @@ contract ZkSysMembershipRegistryTest is Test {
         assertEq(receiver.lastOldCollateralHeight(), 1_000);
         assertEq(receiver.lastNewCollateralHeight(), 1_000);
         assertEq(receiver.lastOldSentryNodeWeight(), 100_000 ether);
+        assertEq(receiver.lastNewSentryNodeWeight(), 135_000 ether);
+    }
+
+    function testNoOpReplayDoesNotNotifyReceiverAgain() public {
+        MockSentryNodeReceiver receiver = new MockSentryNodeReceiver();
+
+        vm.prank(admin);
+        registry.setSentryNodeReceiver(receiver);
+
+        vm.startPrank(registry.aliasedL1RegistryBridge());
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        _applyL1Update(bob, 2_000, 135_000 ether);
+        _applyL1Update(alice, 1_000, 100_000 ether);
+        vm.stopPrank();
+
+        assertEq(receiver.lastAccount(), bob);
+        assertEq(receiver.lastNewCollateralHeight(), 2_000);
         assertEq(receiver.lastNewSentryNodeWeight(), 135_000 ether);
     }
 

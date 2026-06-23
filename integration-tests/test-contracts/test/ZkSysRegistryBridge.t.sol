@@ -65,6 +65,14 @@ contract MockBridgehub is IL1BridgehubMinimal {
         return (update.account, update.sentryNodeCollateralHeight, update.sentryNodeWeight);
     }
 
+    function lastDecodedUpdates()
+        external
+        view
+        returns (IZkSysMembershipRegistryL2.SentryNodeUpdate[] memory updates)
+    {
+        updates = abi.decode(_withoutSelector(lastRequest.l2Calldata), (IZkSysMembershipRegistryL2.SentryNodeUpdate[]));
+    }
+
     function _withoutSelector(bytes memory data) private pure returns (bytes memory result) {
         result = new bytes(data.length - 4);
         for (uint256 i = 4; i < data.length; ++i) {
@@ -79,6 +87,7 @@ contract ZkSysRegistryBridgeTest is Test {
     uint256 private zksysChainId = 57;
     address private l2Registry = address(0x1234);
     address private alice = address(0xA11CE);
+    address private bob = address(0xB0B);
     uint32 private nevmStartBlock = 1_317_500;
     uint32 private seniorityHeight1 = 210_240;
     uint32 private seniorityHeight2 = 525_600;
@@ -157,6 +166,40 @@ contract ZkSysRegistryBridgeTest is Test {
         assertEq(sentryNodeWeight, 200_000 ether);
     }
 
+    function testPushUpdatesDefaultsRefundRecipientToCaller() public {
+        address caller = address(0xCA11);
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+
+        vm.mockCall(NEVM_ADDRESS_PRECOMPILE, abi.encodePacked(alice), abi.encode(uint256(1_000)));
+
+        vm.prank(caller);
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+
+        (,,,,,,, address refundRecipient) = bridgehub.lastRequestFields();
+        assertEq(refundRecipient, caller);
+    }
+
+    function testPushUpdatesEncodesMultipleDistinctAccounts() public {
+        address[] memory accounts = new address[](2);
+        accounts[0] = alice;
+        accounts[1] = bob;
+
+        vm.mockCall(NEVM_ADDRESS_PRECOMPILE, abi.encodePacked(alice), abi.encode(uint256(1_000)));
+        vm.mockCall(NEVM_ADDRESS_PRECOMPILE, abi.encodePacked(bob), abi.encode(uint256(0)));
+
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0xFEE));
+
+        IZkSysMembershipRegistryL2.SentryNodeUpdate[] memory updates = bridgehub.lastDecodedUpdates();
+        assertEq(updates.length, 2);
+        assertEq(updates[0].account, alice);
+        assertEq(updates[0].sentryNodeCollateralHeight, 1_000);
+        assertEq(updates[0].sentryNodeWeight, 200_000 ether);
+        assertEq(updates[1].account, bob);
+        assertEq(updates[1].sentryNodeCollateralHeight, 0);
+        assertEq(updates[1].sentryNodeWeight, 0);
+    }
+
     function testPushUpdatesUsesNevmFactInsteadOfCallerHeight() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
@@ -211,6 +254,66 @@ contract ZkSysRegistryBridgeTest is Test {
             abi.encodeWithSelector(ZkSysRegistryBridge.NevmCollateralHeightOverflow.selector, alice, overflowingHeight)
         );
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testPushUpdatesRejectsFailedNevmLookup() public {
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+
+        vm.mockCallRevert(NEVM_ADDRESS_PRECOMPILE, abi.encodePacked(alice), "nevm unavailable");
+
+        vm.expectRevert(abi.encodeWithSelector(ZkSysRegistryBridge.NevmLookupFailed.selector, alice));
+        bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function testConstructorRejectsInvalidSeniorityConfigs() public {
+        vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
+        new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            0,
+            seniorityHeight1,
+            seniorityHeight2,
+            seniorityLevel1Bps,
+            seniorityLevel2Bps
+        );
+
+        vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
+        new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            nevmStartBlock,
+            0,
+            seniorityHeight2,
+            seniorityLevel1Bps,
+            seniorityLevel2Bps
+        );
+
+        vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
+        new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            nevmStartBlock,
+            seniorityHeight1,
+            seniorityHeight1,
+            seniorityLevel1Bps,
+            seniorityLevel2Bps
+        );
+
+        vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
+        new ZkSysRegistryBridge(
+            bridgehub,
+            zksysChainId,
+            l2Registry,
+            nevmStartBlock,
+            seniorityHeight1,
+            seniorityHeight2,
+            seniorityLevel2Bps,
+            seniorityLevel1Bps
+        );
     }
 
     function testPushUpdatesRejectsEmptyBatch() public {

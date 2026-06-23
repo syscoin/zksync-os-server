@@ -227,12 +227,62 @@ contract ZkSysRewardWeightRegistryTest is Test {
         weightRegistry.updateStakeWeight(alice, 1);
     }
 
+    function testBatchUpdateRejectsMismatchedArrayLengths() public {
+        address[] memory accounts = new address[](2);
+        accounts[0] = alice;
+        accounts[1] = bob;
+        uint256[] memory stakeWeights = new uint256[](1);
+        stakeWeights[0] = 1;
+
+        vm.prank(stakeWeightUpdater);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysRewardWeightRegistry.InvalidWeight.selector, stakeWeights.length));
+        weightRegistry.updateStakeWeights(accounts, stakeWeights);
+    }
+
+    function testWeightReceiverMustBeSetBeforeIncreasingWeight() public {
+        ZkSysRewardWeightRegistry unwiredRegistry = _deployWeightRegistry(admin, membershipRegistry);
+        bytes32 updaterRole = unwiredRegistry.STAKE_WEIGHT_UPDATER_ROLE();
+
+        vm.prank(admin);
+        unwiredRegistry.grantRole(updaterRole, stakeWeightUpdater);
+
+        vm.prank(stakeWeightUpdater);
+        vm.expectRevert(ZkSysRewardWeightRegistry.WeightReceiverNotSet.selector);
+        unwiredRegistry.updateStakeWeight(alice, 1);
+    }
+
     function testWeightMustFitUint128() public {
         vm.expectRevert(
             abi.encodeWithSelector(ZkSysRewardWeightRegistry.InvalidWeight.selector, uint256(type(uint128).max) + 1)
         );
         vm.prank(stakeWeightUpdater);
         weightRegistry.updateStakeWeight(alice, uint256(type(uint128).max) + 1);
+    }
+
+    function testCombinedStakeAndSentryNodeWeightMustFitUint128() public {
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, type(uint128).max);
+
+        vm.prank(membershipRegistry.aliasedL1RegistryBridge());
+        vm.expectRevert(
+            abi.encodeWithSelector(ZkSysRewardWeightRegistry.InvalidWeight.selector, uint256(type(uint128).max) + 1)
+        );
+        _applyL1Update(alice, 1_000, 1);
+    }
+
+    function testPendingIncreaseBeforeReceiverStartCanActivateAtPeriodZero() public {
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 2);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.stakeWeight, 2);
+        assertEq(pending.stakeEffectivePeriod, 0);
+
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 2);
+        assertEq(weightRegistry.totalWeight(), 2);
     }
 
     function testPendingWeightCannotActivateBeforeEffectivePeriod() public {
@@ -242,7 +292,9 @@ contract ZkSysRewardWeightRegistryTest is Test {
 
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector, ACTIVATION_DELAY_PERIODS, 0)
+            abi.encodeWithSelector(
+                ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector, ACTIVATION_DELAY_PERIODS, 0
+            )
         );
         weightRegistry.activatePendingWeight();
     }
@@ -389,9 +441,7 @@ contract ZkSysRewardWeightRegistryTest is Test {
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight) private {
         _applyL1Update(
-            account,
-            sentryNodeCollateralHeight,
-            sentryNodeCollateralHeight == 0 ? 0 : DEFAULT_SENTRY_NODE_WEIGHT
+            account, sentryNodeCollateralHeight, sentryNodeCollateralHeight == 0 ? 0 : DEFAULT_SENTRY_NODE_WEIGHT
         );
     }
 
@@ -413,24 +463,23 @@ contract ZkSysRewardWeightRegistryTest is Test {
         return ZkSysMembershipRegistry(address(proxy));
     }
 
-    function _deployWeightRegistry(
-        address admin_,
-        ZkSysMembershipRegistry membershipRegistry_
-    ) private returns (ZkSysRewardWeightRegistry) {
+    function _deployWeightRegistry(address admin_, ZkSysMembershipRegistry membershipRegistry_)
+        private
+        returns (ZkSysRewardWeightRegistry)
+    {
         ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
-            abi.encodeCall(ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS))
+            abi.encodeCall(
+                ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS)
+            )
         );
         return ZkSysRewardWeightRegistry(address(proxy));
     }
 
     function _accessControlRevert(address account, bytes32 role) private pure returns (bytes memory) {
         return abi.encodePacked(
-            "AccessControl: account ",
-            _toLowerHexString(account),
-            " is missing role ",
-            _toLowerHexString(role)
+            "AccessControl: account ", _toLowerHexString(account), " is missing role ", _toLowerHexString(role)
         );
     }
 

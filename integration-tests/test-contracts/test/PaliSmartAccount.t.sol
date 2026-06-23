@@ -123,6 +123,29 @@ contract PaliSmartAccountTest is Test {
         assertEq(account.isValidSignature(hash, newSignature), EIP1271_SUCCESS);
     }
 
+    function testMultipleInitialValidatorsInstallAndLastValidatorBecomesActive() public {
+        PaliSmartAccount.ModuleInit[] memory validators = new PaliSmartAccount.ModuleInit[](2);
+        validators[0] = PaliSmartAccount.ModuleInit({module: address(ecdsa), data: _ecdsaInitData(owner)});
+        validators[1] = PaliSmartAccount.ModuleInit({module: address(secondEcdsa), data: _ecdsaInitData(secondOwner)});
+        PaliSmartAccount.ModuleInit[] memory executors = new PaliSmartAccount.ModuleInit[](0);
+        PaliSmartAccount.ModuleInit memory fallbackHandler;
+        PaliSmartAccount.ModuleInit[] memory hooks = new PaliSmartAccount.ModuleInit[](0);
+        PaliSmartAccount account = _deployProxy(abi.encode(validators, executors, fallbackHandler, hooks));
+        bytes32 hash = keccak256("pali");
+
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
+        assertTrue(account.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(secondEcdsa), ""));
+        assertEq(account.activeValidator(), address(secondEcdsa));
+
+        (uint8 oldV, bytes32 oldR, bytes32 oldS) = vm.sign(ownerPrivateKey, hash);
+        bytes memory oldSignature = abi.encodePacked(address(ecdsa), oldR, oldS, bytes1(oldV));
+        assertEq(account.isValidSignature(hash, oldSignature), EIP1271_FAILED);
+
+        (uint8 newV, bytes32 newR, bytes32 newS) = vm.sign(secondOwnerPrivateKey, hash);
+        bytes memory newSignature = abi.encodePacked(address(secondEcdsa), newR, newS, bytes1(newV));
+        assertEq(account.isValidSignature(hash, newSignature), EIP1271_SUCCESS);
+    }
+
     function testCannotUninstallActiveValidator() public {
         PaliSmartAccount account = _deployProxy(_initCodeWithExecutor());
 

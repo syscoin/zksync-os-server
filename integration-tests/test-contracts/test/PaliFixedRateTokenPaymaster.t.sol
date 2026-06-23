@@ -5,8 +5,10 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IEntryPoint, IPaymaster, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {PaymasterCore} from "@openzeppelin/community-contracts/account/paymaster/PaymasterCore.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {IERC20Burnable, PaliFixedRateTokenPaymaster} from "contracts/src/pali/PaliFixedRateTokenPaymaster.sol";
+import {SyscoinZKSYSToken} from "contracts/src/zksys/SyscoinZKSYSToken.sol";
 import {TestERC20} from "../src/TestERC20.sol";
 
 contract MockEntryPoint {
@@ -102,6 +104,59 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(token.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
         assertEq(token.balanceOf(address(paymaster)), 0);
         assertEq(token.totalSupply(), 1_000 ether - actualCost - postOpCost);
+    }
+
+    function testProductionZkSysTokenRequiresBurnerRoleForSettlement() public {
+        SyscoinZKSYSToken zkToken = _deployZkSysToken();
+        paymaster =
+            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(zkToken)), owner);
+        zkToken.grantRole(zkToken.MINTER_ROLE(), address(this));
+        zkToken.mint(sender, 1_000 ether);
+
+        uint256 maxCost = 10 ether;
+        PackedUserOperation memory userOp = _userOp();
+
+        vm.prank(sender);
+        zkToken.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+        assertEq(validationData, 0);
+        assertEq(zkToken.balanceOf(sender), 990 ether);
+        assertEq(zkToken.balanceOf(address(paymaster)), maxCost);
+
+        vm.expectRevert();
+        entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, 6 ether, 1 gwei);
+
+        assertEq(zkToken.balanceOf(sender), 990 ether);
+        assertEq(zkToken.balanceOf(address(paymaster)), maxCost);
+        assertEq(zkToken.totalSupply(), 1_000 ether);
+    }
+
+    function testProductionZkSysTokenBurnerRoleBurnsOnlyPaymasterBalanceOnSettlement() public {
+        SyscoinZKSYSToken zkToken = _deployZkSysToken();
+        paymaster =
+            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(zkToken)), owner);
+        zkToken.grantRole(zkToken.MINTER_ROLE(), address(this));
+        zkToken.grantRole(zkToken.BURNER_ROLE(), address(paymaster));
+        zkToken.mint(sender, 1_000 ether);
+
+        uint256 maxCost = 10 ether;
+        uint256 actualCost = 6 ether;
+        uint256 actualFeePerGas = 1 gwei;
+        uint256 postOpCost = 35_000 * actualFeePerGas;
+        PackedUserOperation memory userOp = _userOp();
+
+        vm.prank(sender);
+        zkToken.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+        assertEq(validationData, 0);
+
+        entryPoint.settle(paymaster, IPaymaster.PostOpMode.opSucceeded, context, actualCost, actualFeePerGas);
+
+        assertEq(zkToken.balanceOf(sender), 1_000 ether - actualCost - postOpCost);
+        assertEq(zkToken.balanceOf(address(paymaster)), 0);
+        assertEq(zkToken.totalSupply(), 1_000 ether - actualCost - postOpCost);
     }
 
     function testValidateRejectsExcessivePostOpGasLimit() public {
@@ -246,5 +301,14 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     {
         userOp.sender = sender;
         userOp.paymasterAndData = abi.encodePacked(address(paymaster), uint128(120_000), paymasterPostOpGasLimit);
+    }
+
+    function _deployZkSysToken() private returns (SyscoinZKSYSToken) {
+        SyscoinZKSYSToken implementation = new SyscoinZKSYSToken();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(SyscoinZKSYSToken.initialize, ("ZKSYS", "ZKSYS", uint8(18), address(this)))
+        );
+        return SyscoinZKSYSToken(address(proxy));
     }
 }
