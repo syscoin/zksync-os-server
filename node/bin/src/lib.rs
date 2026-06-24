@@ -1324,13 +1324,26 @@ fn from_block_hash_matches(
     Ok(match current_hash {
         Some(hash) if hash == from_block_hash => true,
         Some(hash) => {
-            tracing::info!(
-                from_block_number,
-                current_hash = ?hash,
-                ?from_block_hash,
-                "skipping startup rebuild/revert: from_block_hash changed (already ran)"
-            );
-            false
+            if replay_wal_is_linked_from(replay_storage, from_block_number) {
+                tracing::info!(
+                    from_block_number,
+                    current_hash = ?hash,
+                    ?from_block_hash,
+                    "skipping startup rebuild/revert: from_block_hash changed and replay WAL is linked from boundary"
+                );
+                false
+            } else {
+                // SYSCOIN: after a crash during a multi-block rebuild, the boundary block may
+                // already have a new hash while later replay records still point to the old chain.
+                // Keep the rebuild active so startup can finish rewriting the remaining WAL range.
+                tracing::warn!(
+                    from_block_number,
+                    current_hash = ?hash,
+                    ?from_block_hash,
+                    "keeping startup rebuild/revert: boundary hash changed but replay WAL is not linked from boundary"
+                );
+                true
+            }
         }
         None => {
             tracing::warn!(
@@ -1342,6 +1355,33 @@ fn from_block_hash_matches(
             false
         }
     })
+}
+
+fn replay_wal_is_linked_from(
+    replay_storage: &dyn ReadReplay,
+    from_block_number: BlockNumber,
+) -> bool {
+    let Some(mut previous_hash) = replay_storage.get_canonical_block_hash(from_block_number) else {
+        return false;
+    };
+
+    for block_number in (from_block_number + 1)..=replay_storage.latest_record() {
+        let Some(context) = replay_storage.get_context(block_number) else {
+            return false;
+        };
+        let Some(parent_hash) = context.block_hashes.0.last() else {
+            return false;
+        };
+        if BlockHash::from(*parent_hash) != previous_hash {
+            return false;
+        }
+        let Some(current_hash) = replay_storage.get_canonical_block_hash(block_number) else {
+            return false;
+        };
+        previous_hash = current_hash;
+    }
+
+    true
 }
 
 /// Fetches the L1 state, performing any configured startup L1 revert first, and returns the
