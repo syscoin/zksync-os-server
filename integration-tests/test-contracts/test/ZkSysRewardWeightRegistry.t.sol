@@ -337,6 +337,37 @@ contract ZkSysRewardWeightRegistryTest is Test {
         assertEq(weightRegistry.totalWeight(), 6);
     }
 
+    function testLargerLaterDepositDoesNotReuseMaturePendingEffectivePeriod() public {
+        vm.warp(receiver.startTime());
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 10);
+
+        receiver.setCurrentPeriod(ACTIVATION_DELAY_PERIODS);
+        vm.prank(stakeWeightUpdater);
+        weightRegistry.updateStakeWeight(alice, 20);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = weightRegistry.pendingWeightComponents(alice);
+        assertEq(pending.stakeWeight, 20);
+        assertEq(pending.stakeEffectivePeriod, 2 * ACTIVATION_DELAY_PERIODS);
+
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector,
+                2 * ACTIVATION_DELAY_PERIODS,
+                ACTIVATION_DELAY_PERIODS
+            )
+        );
+        weightRegistry.activatePendingWeight();
+
+        receiver.setCurrentPeriod(2 * ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        weightRegistry.activatePendingWeight();
+
+        assertEq(weightRegistry.weightOf(alice), 20);
+        assertEq(weightRegistry.totalWeight(), 20);
+    }
+
     function testSentryNodeRemovalDoesNotClearPendingStakeIncrease() public {
         vm.warp(receiver.startTime());
         vm.prank(membershipRegistry.aliasedL1RegistryBridge());
