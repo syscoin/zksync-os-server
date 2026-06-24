@@ -33,7 +33,7 @@ pub struct ConsensusNodeCommandSource<Replay> {
 
 #[derive(Debug, Clone)]
 pub struct RebuildOptions {
-    pub from_block: u64,
+    pub from_block_number: u64,
     pub blocks_to_empty: HashSet<u64>,
     pub reset_timestamps: bool,
 }
@@ -69,18 +69,18 @@ impl<Replay: ReadReplay> PipelineComponent for ConsensusNodeCommandSource<Replay
 
         let replay_until = if let Some(rebuild_options) = &self.rebuild_options {
             assert!(
-                rebuild_options.from_block >= self.starting_block,
-                "rebuild_from_block must be >= starting_block, got {} < {}",
-                rebuild_options.from_block,
+                rebuild_options.from_block_number >= self.starting_block,
+                "rebuild_from_block_number must be >= starting_block, got {} < {}",
+                rebuild_options.from_block_number,
                 self.starting_block
             );
             assert!(
-                rebuild_options.from_block <= last_block_in_wal,
-                "rebuild_from_block must be <= last_block_in_wal, got {} > {}",
-                rebuild_options.from_block,
+                rebuild_options.from_block_number <= last_block_in_wal,
+                "rebuild_from_block_number must be <= last_block_in_wal, got {} > {}",
+                rebuild_options.from_block_number,
                 last_block_in_wal
             );
-            rebuild_options.from_block - 1
+            rebuild_options.from_block_number - 1
         } else {
             last_block_in_wal
         };
@@ -129,7 +129,7 @@ impl<Replay: ReadReplay> ConsensusNodeCommandSource<Replay> {
     ) -> anyhow::Result<()> {
         let mut leadership = self.leadership.clone();
         let mut role = leadership.current_role();
-        let mut next_rebuild_block = rebuild_options.from_block;
+        let mut next_rebuild_block = rebuild_options.from_block_number;
 
         loop {
             loop {

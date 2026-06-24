@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 pub struct InternalConfig {
     /// Number of the failing block that node wants to empty (causing a reorg).
     pub failing_block: Option<u64>,
+    /// Hash of `failing_block` at the time it was recorded.
+    /// Used as the `from_block_hash` guard in the resulting `BlockRebuild` config, so the rebuild
+    /// is skipped automatically on the next restart if the block was already rebuilt.
+    pub failing_block_hash: Option<B256>,
     /// List of L2 signer addresses to blacklist (i.e. their transactions are rejected).
     /// To be merged with the external blacklist in the main config.
     #[serde(default)]
