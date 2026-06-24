@@ -468,37 +468,8 @@ contract ZkSysIssuerTest is Test {
         address carol = address(0xCA20);
         address dave = address(0xDA7E);
 
-        vm.warp(START_TIME);
-        _depositStakePending(carol, 116 ether);
-
-        vm.warp(START_TIME + PERIOD_SECONDS);
-        _activateStake(carol);
-        _depositStakePending(bob, 189 ether);
-
-        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
-        _activateStake(bob);
-
-        vm.warp(START_TIME + 4 * PERIOD_SECONDS);
-        _depositStakePending(alice, 271 ether);
-
-        vm.warp(START_TIME + 5 * PERIOD_SECONDS);
-        _depositStakePending(dave, 176 ether);
-        _depositStakePending(dave, 246 ether);
-
-        vm.warp(START_TIME + 6 * PERIOD_SECONDS);
-        _activateStake(alice);
-        _activateStake(dave);
-
-        vm.warp(START_TIME + 7 * PERIOD_SECONDS);
-        issuer.distribute();
-
-        uint256 alicePending = issuer.pendingRewards(alice);
-        uint256 bobPending = issuer.pendingRewards(bob);
-        uint256 carolPending = issuer.pendingRewards(carol);
-        uint256 davePending = issuer.pendingRewards(dave);
-        uint256 scheduledUnclaimed = issuer.scheduledUnclaimedRewards();
-
-        assertEq(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed + 1);
+        (uint256 alicePending, uint256 bobPending, uint256 carolPending, uint256 davePending) =
+            _prepareClaimDustOverAllocation(carol, dave);
 
         vm.prank(alice);
         assertEq(issuer.claim(alice), alicePending);
@@ -517,6 +488,50 @@ contract ZkSysIssuerTest is Test {
         uint256 daveRefilledPending = issuer.pendingRewards(dave);
         vm.prank(dave);
         assertEq(issuer.claim(dave), daveRefilledPending);
+    }
+
+    function testClaimCapAdversarialClaimOrdersNeverOvermint() public {
+        address carol = address(0xCA20);
+        address dave = address(0xDA7E);
+
+        (uint256 alicePending, uint256 bobPending, uint256 carolPending, uint256 davePending) =
+            _prepareClaimDustOverAllocation(carol, dave);
+        uint256 backedRewards = issuer.scheduledUnclaimedRewards();
+        uint256 scheduled = issuer.totalScheduledRewards();
+
+        vm.prank(dave);
+        assertEq(issuer.claim(dave), davePending);
+        vm.prank(carol);
+        assertEq(issuer.claim(carol), carolPending);
+        vm.prank(bob);
+        assertEq(issuer.claim(bob), bobPending);
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), alicePending - 1);
+
+        assertEq(token.totalSupply(), backedRewards);
+        assertLe(token.totalSupply(), scheduled);
+        assertEq(issuer.pendingRewards(alice), 0);
+    }
+
+    function testDelayedClaimAfterNextDistributionNeverExceedsTotalScheduledRewards() public {
+        address carol = address(0xCA20);
+        address dave = address(0xDA7E);
+
+        _prepareClaimDustOverAllocation(carol, dave);
+
+        vm.warp(START_TIME + 8 * PERIOD_SECONDS);
+        issuer.distribute();
+
+        vm.prank(alice);
+        issuer.claim(alice);
+        vm.prank(bob);
+        issuer.claim(bob);
+        vm.prank(carol);
+        issuer.claim(carol);
+        vm.prank(dave);
+        issuer.claim(dave);
+
+        assertLe(token.totalSupply(), issuer.totalScheduledRewards());
     }
 
     function testSentryNodeAddBeforeBoundaryDoesNotEarnEndingPeriod() public {
@@ -639,6 +654,43 @@ contract ZkSysIssuerTest is Test {
 
     function remainingAfter(uint256 scheduledRewards) private view returns (uint256) {
         return token.maxSupply() - scheduledRewards;
+    }
+
+    function _prepareClaimDustOverAllocation(address carol, address dave)
+        private
+        returns (uint256 alicePending, uint256 bobPending, uint256 carolPending, uint256 davePending)
+    {
+        vm.warp(START_TIME);
+        _depositStakePending(carol, 116 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        _activateStake(carol);
+        _depositStakePending(bob, 189 ether);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        _activateStake(bob);
+
+        vm.warp(START_TIME + 4 * PERIOD_SECONDS);
+        _depositStakePending(alice, 271 ether);
+
+        vm.warp(START_TIME + 5 * PERIOD_SECONDS);
+        _depositStakePending(dave, 176 ether);
+        _depositStakePending(dave, 246 ether);
+
+        vm.warp(START_TIME + 6 * PERIOD_SECONDS);
+        _activateStake(alice);
+        _activateStake(dave);
+
+        vm.warp(START_TIME + 7 * PERIOD_SECONDS);
+        issuer.distribute();
+
+        alicePending = issuer.pendingRewards(alice);
+        bobPending = issuer.pendingRewards(bob);
+        carolPending = issuer.pendingRewards(carol);
+        davePending = issuer.pendingRewards(dave);
+        uint256 scheduledUnclaimed = issuer.scheduledUnclaimedRewards();
+
+        assertEq(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed + 1);
     }
 
     function _depositStake(address account, uint256 amount) private {
