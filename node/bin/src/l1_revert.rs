@@ -18,26 +18,26 @@ struct RevertPlan {
 
 /// Derives `last_l1_batch_to_keep` from `from_block_number` by scanning committed-only batches on L1.
 ///
+/// Returns `Ok(None)` if the L1 frontier already no longer covers `from_block_number`.
+///
 /// Returns an error if:
-/// - there are no committed batches on L1,
 /// - all committed batches are already executed (finalized),
-/// - `from_block_number` is beyond the last committed block (no batch to revert), or
 /// - `from_block_number` lies within an executed (finalized) batch.
 async fn derive_last_l1_batch_to_keep(
     from_block_number: u64,
     l1_state: &L1State,
     max_blocks_to_process: u64,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<Option<u64>> {
     let last_committed_batch = l1_state.last_committed_batch;
     let last_executed_batch = l1_state.last_executed_batch;
-    anyhow::ensure!(
-        last_committed_batch > 0,
-        "no committed batches on L1; nothing to revert"
-    );
-    anyhow::ensure!(
-        last_committed_batch > last_executed_batch,
-        "all committed batches are already executed (finalized); nothing to revert"
-    );
+    if last_committed_batch == 0 {
+        // SYSCOIN: idempotent restart after reverting batch 1 but before local rebuild completion.
+        tracing::info!(
+            from_block_number,
+            "skipping DangerBlockRebuildWithL1Revert L1 step: no committed batches remain"
+        );
+        return Ok(None);
+    }
 
     let fetch_committed = |batch: u64| async move {
         fetch_batch(&l1_state.diamond_proxy_sl, batch, max_blocks_to_process)
@@ -45,20 +45,28 @@ async fn derive_last_l1_batch_to_keep(
             .with_context(|| format!("failed to fetch committed batch {batch} from L1"))
     };
 
-    // Precondition: from_block_number must not be past the tip of the last committed batch.
     let top = fetch_committed(last_committed_batch).await?;
+    if from_block_number > top.last_block_number() {
+        // SYSCOIN: the configured target block is already above the committed L1 frontier. This
+        // happens on retry after the L1 revert succeeded and before the local rebuild completed.
+        tracing::info!(
+            from_block_number,
+            last_committed_batch,
+            last_committed_block = top.last_block_number(),
+            "skipping DangerBlockRebuildWithL1Revert L1 step: target block is no longer committed on L1"
+        );
+        return Ok(None);
+    }
+
     anyhow::ensure!(
-        from_block_number <= top.last_block_number(),
-        "from_block_number ({from_block_number}) is beyond the last committed batch {last_committed_batch} \
-         (blocks {}..={}); nothing to revert",
-        top.first_block_number(),
-        top.last_block_number(),
+        last_committed_batch > last_executed_batch,
+        "all committed batches are already executed (finalized); nothing to revert"
     );
 
     // Fast path for the common revert case: `from_block_number` lies in the last committed batch
     // (reverting from a recent block).
     if top.first_block_number() <= from_block_number {
-        return Ok(last_committed_batch - 1);
+        return Ok(Some(last_committed_batch - 1));
     }
 
     // Binary-search the remaining committed-only batches.
@@ -77,7 +85,7 @@ async fn derive_last_l1_batch_to_keep(
     }
 
     match first_batch_to_revert {
-        Some(batch) => Ok(batch - 1),
+        Some(batch) => Ok(Some(batch - 1)),
         None => anyhow::bail!(
             "from_block_number ({from_block_number}) is at or before the first committed-only batch ({}); it \
              lies within an executed (finalized) batch and cannot be reverted",
@@ -181,13 +189,16 @@ async fn plan_l1_revert(
                 "DangerBlockRebuildWithL1Revert: deriving batch to revert from from_block_number"
             );
 
-            let last_l1_batch_to_keep = derive_last_l1_batch_to_keep(
+            let Some(last_l1_batch_to_keep) = derive_last_l1_batch_to_keep(
                 bounds.from_block_number,
                 l1_state,
                 max_blocks_to_process,
             )
             .await
-            .context("failed to derive last_l1_batch_to_keep")?;
+            .context("failed to derive last_l1_batch_to_keep")?
+            else {
+                return Ok(None);
+            };
 
             Ok(Some(RevertPlan {
                 last_l1_batch_to_keep,
