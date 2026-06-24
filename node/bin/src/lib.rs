@@ -1293,21 +1293,33 @@ fn from_block_hash_matches(
         .get_block_by_number(from_block_number)
         .with_context(|| format!("failed to read block {from_block_number} from local repository"))?
         .map(|b| b.hash());
-    let current_hash = match repository_hash {
-        Some(hash) => Some(hash),
-        None => {
-            // SYSCOIN: repository persistence can lag the canonical replay WAL on restart, so
-            // keep the rebuild/revert guard tied to the immutable replay source when available.
-            let replay_hash = replay_storage.get_canonical_block_hash(from_block_number);
-            if replay_hash.is_some() {
-                tracing::info!(
+    // SYSCOIN: repository persistence can lag the canonical replay WAL on restart, so keep the
+    // rebuild/revert guard tied to the immutable replay source when available.
+    let replay_hash = replay_storage.get_canonical_block_hash(from_block_number);
+    let current_hash = match (replay_hash, repository_hash) {
+        (Some(replay_hash), Some(repository_hash)) => {
+            if replay_hash != repository_hash {
+                tracing::warn!(
                     from_block_number,
                     ?from_block_hash,
-                    "repository is behind replay WAL; using replay canonical hash for startup rebuild/revert guard"
+                    ?replay_hash,
+                    ?repository_hash,
+                    "repository hash differs from replay WAL; using replay canonical hash for startup rebuild/revert guard"
                 );
             }
-            replay_hash
+            Some(replay_hash)
         }
+        (Some(replay_hash), None) => {
+            tracing::info!(
+                from_block_number,
+                ?from_block_hash,
+                ?replay_hash,
+                "repository is behind replay WAL; using replay canonical hash for startup rebuild/revert guard"
+            );
+            Some(replay_hash)
+        }
+        (None, Some(repository_hash)) => Some(repository_hash),
+        (None, None) => None,
     };
     Ok(match current_hash {
         Some(hash) if hash == from_block_hash => true,
