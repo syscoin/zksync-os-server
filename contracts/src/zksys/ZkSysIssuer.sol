@@ -204,11 +204,11 @@ contract ZkSysIssuer is Initializable, AccessControlUpgradeable, IZkSysWeightRec
 
         uint256 available = scheduledUnclaimedRewards;
         claimed = accrued > available ? available : accrued;
+        accruedRewardsOf[msg.sender] = 0;
         if (claimed == 0) {
             return 0;
         }
 
-        accruedRewardsOf[msg.sender] = accrued - claimed;
         scheduledUnclaimedRewards = available - claimed;
         require(token.mint(receiver, claimed), "issuer: mint failed");
 

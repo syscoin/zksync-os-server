@@ -464,7 +464,7 @@ contract ZkSysIssuerTest is Test {
         assertEq(issuer.pendingRewards(bob), secondDistribution / 2);
     }
 
-    function testChurnOverAllocationCarriesForwardDustInsteadOfReverting() public {
+    function testChurnOverAllocationDiscardsUnbackedDustInsteadOfReverting() public {
         address carol = address(0xCA20);
         address dave = address(0xDA7E);
 
@@ -509,7 +509,7 @@ contract ZkSysIssuerTest is Test {
 
         vm.prank(dave);
         assertEq(issuer.claim(dave), davePending - 1);
-        assertEq(issuer.pendingRewards(dave), 1);
+        assertEq(issuer.pendingRewards(dave), 0);
 
         vm.warp(START_TIME + 8 * PERIOD_SECONDS);
         issuer.distribute();
