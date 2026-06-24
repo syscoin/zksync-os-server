@@ -53,7 +53,7 @@ use crate::provider::{ProviderKind, build_node_provider};
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{Address, BlockNumber};
+use alloy::primitives::{Address, BlockHash, BlockNumber};
 use alloy::providers::Provider;
 use anyhow::Context;
 use jsonrpsee::http_client::HttpClient;
@@ -129,7 +129,7 @@ use zksync_os_types::{
     TransactionAcceptanceState,
 };
 
-const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
+pub const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
 const RAFT_DB_NAME: &str = "raft";
 const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
@@ -428,6 +428,16 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     )
     .await;
 
+    tracing::info!("Initializing BlockReplayStorage");
+    let (block_replay_storage, inserted_genesis_replay_record) = BlockReplayStorage::new(
+        &config
+            .general_config
+            .rocks_db_path
+            .join(BLOCK_REPLAY_WAL_DB_NAME),
+        &genesis,
+    )
+    .await;
+
     // Apply the `from_block_hash` idempotency guard once, up front, to derive the *effective*
     // rebuild config used for the rest of startup. If the configured rebuild already ran on a
     // prior startup (hash no longer matches), it is dropped here so BOTH the L1 revert (stage 1,
@@ -438,6 +448,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             Some(bounds)
                 if !from_block_hash_matches(
                     &repositories,
+                    &block_replay_storage,
                     bounds.from_block_number,
                     bounds.from_block_hash,
                 )
@@ -537,17 +548,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     }
 
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
-
-    tracing::info!("Initializing BlockReplayStorage");
-
-    let (block_replay_storage, inserted_genesis_replay_record) = BlockReplayStorage::new(
-        &config
-            .general_config
-            .rocks_db_path
-            .join(BLOCK_REPLAY_WAL_DB_NAME),
-        &genesis,
-    )
-    .await;
 
     tracing::info!("Initializing Tree RocksDB");
     let tree_db = TreeManager::load_or_initialize_tree(
@@ -1285,13 +1285,30 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 /// - hash changed: the rebuild/revert already ran on a previous startup (the expected case).
 fn from_block_hash_matches(
     repositories: &dyn ReadRepository,
+    replay_storage: &dyn ReadReplay,
     from_block_number: u64,
-    from_block_hash: alloy::primitives::BlockHash,
+    from_block_hash: BlockHash,
 ) -> anyhow::Result<bool> {
-    let current_hash = repositories
+    let repository_hash = repositories
         .get_block_by_number(from_block_number)
         .with_context(|| format!("failed to read block {from_block_number} from local repository"))?
         .map(|b| b.hash());
+    let current_hash = match repository_hash {
+        Some(hash) => Some(hash),
+        None => {
+            // SYSCOIN: repository persistence can lag the canonical replay WAL on restart, so
+            // keep the rebuild/revert guard tied to the immutable replay source when available.
+            let replay_hash = replay_storage.get_canonical_block_hash(from_block_number);
+            if replay_hash.is_some() {
+                tracing::info!(
+                    from_block_number,
+                    ?from_block_hash,
+                    "repository is behind replay WAL; using replay canonical hash for startup rebuild/revert guard"
+                );
+            }
+            replay_hash
+        }
+    };
     Ok(match current_hash {
         Some(hash) if hash == from_block_hash => true,
         Some(hash) => {
@@ -1307,8 +1324,8 @@ fn from_block_hash_matches(
             tracing::warn!(
                 from_block_number,
                 ?from_block_hash,
-                "skipping startup rebuild/revert: block `from_block_number` not found locally \
-                 (check `from_block_number` is correct — it may be a typo or beyond the local tip)"
+                "skipping startup rebuild/revert: block `from_block_number` not found in repository \
+                 or replay WAL (check `from_block_number` is correct — it may be a typo or beyond the local tip)"
             );
             false
         }

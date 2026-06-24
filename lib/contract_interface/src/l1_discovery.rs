@@ -268,6 +268,7 @@ impl L1State {
         gateway_provider: Option<NodeProvider>,
         bridgehub_address: Address,
         chain_id: u64,
+        // SYSCOIN: preserve the configured startup finalization wait used by the direct-v31 launch path.
         startup_sl_finalization_timeout: Duration,
     ) -> anyhow::Result<Self> {
         let this = Self::fetch(l1_provider, gateway_provider, bridgehub_address, chain_id).await?;

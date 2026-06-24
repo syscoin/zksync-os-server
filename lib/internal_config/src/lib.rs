@@ -63,6 +63,7 @@ impl InternalConfig {
     // blacklist entries.
     pub fn clear_revm_divergence_mitigation(&mut self) {
         self.failing_block = None;
+        self.failing_block_hash = None;
         for signer in self.revm_divergence_l2_signer_blacklist.drain() {
             self.l2_signer_blacklist.remove(&signer);
         }
@@ -125,6 +126,7 @@ mod tests {
 
         let mut config = InternalConfig {
             failing_block: Some(42),
+            failing_block_hash: Some(B256::repeat_byte(0x04)),
             l2_signer_blacklist: HashSet::from([pre_existing, temporary]),
             revm_divergence_l2_signer_blacklist: HashSet::from([temporary]),
             revm_divergence_l2_tx_blacklist: HashSet::from([B256::repeat_byte(0x03)]),
@@ -133,6 +135,7 @@ mod tests {
         config.clear_revm_divergence_mitigation();
 
         assert_eq!(config.failing_block, None);
+        assert_eq!(config.failing_block_hash, None);
         assert!(config.l2_signer_blacklist.contains(&pre_existing));
         assert!(!config.l2_signer_blacklist.contains(&temporary));
         assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
@@ -150,6 +153,7 @@ mod tests {
 
         let mut config = InternalConfig {
             failing_block: Some(42),
+            failing_block_hash: Some(B256::repeat_byte(0x04)),
             l2_signer_blacklist: HashSet::from([pre_existing]),
             revm_divergence_l2_signer_blacklist: HashSet::new(),
             revm_divergence_l2_tx_blacklist: HashSet::new(),
@@ -178,6 +182,7 @@ mod tests {
 
         let mut config = InternalConfig {
             failing_block: Some(42),
+            failing_block_hash: Some(B256::repeat_byte(0x04)),
             l2_signer_blacklist: HashSet::new(),
             revm_divergence_l2_signer_blacklist: HashSet::new(),
             revm_divergence_l2_tx_blacklist: HashSet::new(),
@@ -202,6 +207,7 @@ mod tests {
         .expect("legacy internal config should deserialize");
 
         assert_eq!(config.failing_block, Some(42));
+        assert_eq!(config.failing_block_hash, None);
         assert!(config.l2_signer_blacklist.is_empty());
         assert!(config.revm_divergence_l2_signer_blacklist.is_empty());
         assert!(config.revm_divergence_l2_tx_blacklist.is_empty());
