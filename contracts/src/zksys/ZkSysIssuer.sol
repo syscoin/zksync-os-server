@@ -197,13 +197,19 @@ contract ZkSysIssuer is Initializable, AccessControlUpgradeable, IZkSysWeightRec
         }
 
         _settle(msg.sender, registry.weightOf(msg.sender));
-        claimed = accruedRewardsOf[msg.sender];
+        uint256 accrued = accruedRewardsOf[msg.sender];
+        if (accrued == 0) {
+            return 0;
+        }
+
+        uint256 available = scheduledUnclaimedRewards;
+        claimed = accrued > available ? available : accrued;
+        accruedRewardsOf[msg.sender] = 0;
         if (claimed == 0) {
             return 0;
         }
 
-        accruedRewardsOf[msg.sender] = 0;
-        scheduledUnclaimedRewards -= claimed;
+        scheduledUnclaimedRewards = available - claimed;
         require(token.mint(receiver, claimed), "issuer: mint failed");
 
         emit RewardsClaimed(msg.sender, receiver, claimed);

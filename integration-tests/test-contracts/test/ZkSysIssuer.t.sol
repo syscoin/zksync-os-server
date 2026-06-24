@@ -464,6 +464,61 @@ contract ZkSysIssuerTest is Test {
         assertEq(issuer.pendingRewards(bob), secondDistribution / 2);
     }
 
+    function testChurnOverAllocationDiscardsUnbackedDustInsteadOfReverting() public {
+        address carol = address(0xCA20);
+        address dave = address(0xDA7E);
+
+        vm.warp(START_TIME);
+        _depositStakePending(carol, 116 ether);
+
+        vm.warp(START_TIME + PERIOD_SECONDS);
+        _activateStake(carol);
+        _depositStakePending(bob, 189 ether);
+
+        vm.warp(START_TIME + 2 * PERIOD_SECONDS);
+        _activateStake(bob);
+
+        vm.warp(START_TIME + 4 * PERIOD_SECONDS);
+        _depositStakePending(alice, 271 ether);
+
+        vm.warp(START_TIME + 5 * PERIOD_SECONDS);
+        _depositStakePending(dave, 176 ether);
+        _depositStakePending(dave, 246 ether);
+
+        vm.warp(START_TIME + 6 * PERIOD_SECONDS);
+        _activateStake(alice);
+        _activateStake(dave);
+
+        vm.warp(START_TIME + 7 * PERIOD_SECONDS);
+        issuer.distribute();
+
+        uint256 alicePending = issuer.pendingRewards(alice);
+        uint256 bobPending = issuer.pendingRewards(bob);
+        uint256 carolPending = issuer.pendingRewards(carol);
+        uint256 davePending = issuer.pendingRewards(dave);
+        uint256 scheduledUnclaimed = issuer.scheduledUnclaimedRewards();
+
+        assertEq(alicePending + bobPending + carolPending + davePending, scheduledUnclaimed + 1);
+
+        vm.prank(alice);
+        assertEq(issuer.claim(alice), alicePending);
+        vm.prank(bob);
+        assertEq(issuer.claim(bob), bobPending);
+        vm.prank(carol);
+        assertEq(issuer.claim(carol), carolPending);
+
+        vm.prank(dave);
+        assertEq(issuer.claim(dave), davePending - 1);
+        assertEq(issuer.pendingRewards(dave), 0);
+
+        vm.warp(START_TIME + 8 * PERIOD_SECONDS);
+        issuer.distribute();
+
+        uint256 daveRefilledPending = issuer.pendingRewards(dave);
+        vm.prank(dave);
+        assertEq(issuer.claim(dave), daveRefilledPending);
+    }
+
     function testSentryNodeAddBeforeBoundaryDoesNotEarnEndingPeriod() public {
         _depositStake(alice, 1 ether);
 
