@@ -125,6 +125,11 @@ pub struct RpcConfig {
 
     /// Rate limits for incoming requests.
     pub rate_limits: RateLimits,
+
+    /// List of disabled methods.
+    /// Some stateful methods like `eth_newFilter` don't make sense when running in a cluster behind a load-balancer.
+    /// They get rejected with -32601 "Method disabled".
+    pub method_filter: HashSet<String>,
 }
 
 impl RpcConfig {

@@ -1150,6 +1150,12 @@ pub struct RpcConfig {
     /// Rate limits for incoming JSON-RPC requests.
     #[config(nest)]
     pub rate_limits: RpcRateLimitsConfig,
+
+    /// List of disabled methods.
+    /// Some stateful methods like `eth_newFilter` don't make sense when running in a cluster behind a load-balancer.
+    /// They get rejected with -32601 "Method disabled".
+    #[config(default, with = Delimited::new(","))]
+    pub method_filter: HashSet<String>,
 }
 
 /// Rate-limit configuration for the JSON-RPC server.
@@ -2006,6 +2012,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             gas_price_scale_factor: c.gas_price_scale_factor,
             estimate_gas_pubdata_price_factor: c.estimate_gas_pubdata_price_factor,
             rate_limits: c.rate_limits.into(),
+            method_filter: c.method_filter,
         }
     }
 }
