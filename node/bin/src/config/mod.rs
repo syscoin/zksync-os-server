@@ -1446,7 +1446,6 @@ pub struct ForceTransactionResubmissionConfig {
 fn is_greater_than_one_f64(&val: &f64) -> bool {
     val > 1.0
 }
-}
 
 /// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
 /// currently settling on a Gateway (as discovered from the L1 settlement layer interval at
