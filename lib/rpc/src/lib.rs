@@ -2,7 +2,7 @@ mod call_fees;
 
 mod config;
 
-pub use config::{EdgeDaAdmissionConfig, RpcConfig, RpcRateLimit};
+pub use config::{EdgeDaAdmissionConfig, RateLimits, RpcConfig};
 use std::sync::Arc;
 use tokio::sync::{Semaphore, watch};
 
@@ -20,7 +20,9 @@ mod simulate;
 pub use rpc_storage::{ReadRpcStorage, RpcStorage};
 mod debug_impl;
 pub mod js_tracer;
+mod limits;
 mod log_proof_utils;
+mod method_filter_middleware;
 mod monitoring_middleware;
 mod net_impl;
 mod rate_limit_middleware;
@@ -39,10 +41,12 @@ use crate::debug_impl::DebugNamespace;
 use crate::eth_filter::EthFilterNamespace;
 use crate::eth_impl::EthNamespace;
 use crate::eth_pubsub_impl::EthPubsubNamespace;
+use crate::limits::{Limiter, LoggingLimiter};
+use crate::method_filter_middleware::MethodFiltering;
 use crate::monitoring_middleware::Monitoring;
 use crate::net_impl::NetNamespace;
 use crate::ots_impl::OtsNamespace;
-use crate::rate_limit_middleware::{RateLimiting, build_limiters};
+use crate::rate_limit_middleware::RateLimiting;
 use crate::txpool_impl::TxpoolNamespace;
 use crate::unstable_impl::UnstableNamespace;
 use crate::web3_impl::Web3Namespace;
@@ -164,8 +168,9 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
         config.max_concurrent_blocking_rpcs.max(1) as usize,
     ));
-    // Build once so all connections share the same token-bucket state.
-    let limiters = build_limiters(&config.rate_limits);
+    let limiter = LoggingLimiter::new(Limiter::new(config.rate_limits.clone().into_limits()));
+    let rate_limit_logging = LoggingLimiter::run(limiter.clone());
+    let method_filter = Arc::new(config.method_filter.clone());
     let rpc_middleware = RpcServiceBuilder::new()
         // Monitoring is outermost so rate-limited responses still appear in error metrics.
         .layer_fn(move |service| {
@@ -175,7 +180,8 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
                 blocking_rpcs_semaphore.clone(),
             )
         })
-        .layer_fn(move |service| RateLimiting::new(service, limiters.clone()));
+        .layer_fn(move |service| MethodFiltering::new(service, method_filter.clone()))
+        .layer_fn(move |service| RateLimiting::new(service, limiter.clone()));
 
     let server_config = ServerConfigBuilder::default()
         .max_connections(config.max_connections)
@@ -216,6 +222,9 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             // The stale-filter cleanup loop exited unexpectedly; this task also ends in that case.
             _ = eth_filter.watch_and_clear_stale_filters() => {
                 unreachable!("eth_filter.watch_and_clear_stale_filters() is an infinite loop")
+            }
+            _ = rate_limit_logging => {
+                unreachable!("LoggingLimiter::run is an infinite loop")
             }
             // Graceful shutdown was requested; stop accepting RPC traffic and wait for the server to exit.
             _guard = &mut shutdown => {
