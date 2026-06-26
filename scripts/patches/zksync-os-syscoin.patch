@@ -295,10 +295,21 @@ index 879e9dc5..50d48c38 100644
  use metadata::basic_metadata::{BasicMetadata, ZkSpecificPricingMetadata};
  use metadata::zk_metadata::TxLevelMetadata;
 -use ruint::aliases::U256;
-+use ruint::aliases::{B160, U256};
++use ruint::aliases::U256;
  use zk_ee::common_structs::system_hooks::HooksStorage;
  use zk_ee::execution_environment_type::ExecutionEnvironmentType;
  use zk_ee::system::errors::interface::InterfaceError;
+@@ -43,7 +43,10 @@ use zk_ee::{interface_error, internal_error, out_of_native_resources, wrap_error
+ use super::gas_helpers::check_enough_resources_for_pubdata;
+ 
+ pub mod process_l1_transaction;
++mod syscoin_edge_da;
+ mod validation_impl;
++
++use self::syscoin_edge_da::syscoin_compact_edge_da_commit_target;
+ 
+ pub struct ZkTransactionFlowOnlyEOA<S: EthereumLikeTypes> {
+     _marker: core::marker::PhantomData<S>,
 @@ -61,6 +61,8 @@ pub struct ZkTxResult<'a> {
      pub native_used: u64,
      pub pubdata_used: u64,
@@ -343,8 +354,8 @@ index 879e9dc5..50d48c38 100644
 +    // SYSCOIN: compact edge DA refs are settlement-critical, so the proven root
 +    // only follows child-chain commit transactions sent to the configured Gateway
 +    // validator timelock target.
-+    let target = system.metadata.syscoin_compact_edge_da_commit_target();
-+    if target == B160::ZERO || transaction.to() != Some(target) {
++    let target = syscoin_compact_edge_da_commit_target();
++    if transaction.to() != Some(target) {
 +        return false;
 +    }
 +

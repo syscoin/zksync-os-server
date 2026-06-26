@@ -125,8 +125,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
-    TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
+    PubdataMode, TransactionAcceptanceState,
 };
 
 pub const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -186,6 +186,39 @@ fn compact_edge_da_admission_required(pubdata_mode: Option<PubdataMode>) -> bool
         pubdata_mode,
         Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
     )
+}
+
+fn edge_da_admission_requested(config: &Config) -> bool {
+    let batcher = &config.batcher_config;
+    batcher
+        .bitcoin_da_rpc_url
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || batcher
+            .bitcoin_da_rpc_user
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
+        || batcher
+            .bitcoin_da_rpc_password
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn syscoin_edge_da_commit_target_required(
+    config: &Config,
+    node_role: NodeRole,
+    effective_pubdata_mode: Option<PubdataMode>,
+) -> bool {
+    let block_producer_uses_compact_da = node_role.is_main()
+        && block_production_enabled(config)
+        && edge_da_admission_requested(config)
+        && (compact_edge_da_admission_required(effective_pubdata_mode)
+            || compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode));
+
+    block_producer_uses_compact_da
+        || (config.batch_verification_config.client_enabled && edge_da_admission_requested(config))
 }
 
 fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
@@ -253,9 +286,7 @@ fn edge_da_admission_config(
         .as_ref()
         .map(|secret| secret.expose_secret())
         .filter(|value| !value.trim().is_empty());
-    let edge_da_admission_requested =
-        rpc_url.is_some() || rpc_user.is_some() || rpc_password.is_some();
-    if !edge_da_admission_requested {
+    if !edge_da_admission_requested(config) {
         return Ok(None);
     }
 
@@ -547,7 +578,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             _ => {}
         }
     }
-
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
     tracing::info!("Initializing Tree RocksDB");
@@ -910,6 +940,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     } else {
         &genesis.genesis_upgrade_tx().await.protocol_version
     };
+    let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
+        &l1_state,
+        current_protocol_version,
+        syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
+    );
 
     if config
         .sequencer_config
@@ -1182,6 +1217,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             verify_request_tx,
             verify_result_rx,
             settles_on_gateway,
+            syscoin_edge_da_commit_target,
             effective_pubdata_mode,
             replay_archiver,
         )
@@ -1202,6 +1238,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             stop_receiver.clone(),
             tx_acceptance_state_sender,
             chain_id,
+            syscoin_edge_da_commit_target,
             verify_batch_rx,
             outgoing_verify_results.clone(),
         )
@@ -1246,9 +1283,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not retrievable yet.
-    rpc_config.edge_da_admission =
-        edge_da_admission_config(&config, l1_state.validator_timelock_sl)
-            .expect("failed to build edge DA admission config");
+    rpc_config.edge_da_admission = edge_da_admission_config(&config, syscoin_edge_da_commit_target)
+        .expect("failed to build edge DA admission config");
     let rpc_policy_client = config
         .sequencer_config
         .tx_validator
@@ -1471,6 +1507,7 @@ async fn run_main_node_pipeline(
     verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
     settles_on_gateway: bool,
+    syscoin_edge_da_commit_target: Address,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
@@ -1698,7 +1735,7 @@ async fn run_main_node_pipeline(
             pubdata_mode,
             merkle_tree: tree,
             runtime: runtime.clone(),
-            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
+            compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             disabled: !config.prover_input_generator_config.enable_input_generation,
         })
         .pipe(Batcher {
@@ -1712,7 +1749,7 @@ async fn run_main_node_pipeline(
             chain_id,
             sl_chain_id: node_state_on_startup.l1_state.sl_chain_id,
             chain_address_sl: node_state_on_startup.l1_state.diamond_proxy_address_sl(),
-            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
+            compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,
@@ -1816,6 +1853,7 @@ async fn run_en_pipeline(
     stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
+    syscoin_edge_da_commit_target: Address,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
@@ -1882,6 +1920,7 @@ async fn run_en_pipeline(
             syscoin_da_verification_config(config),
             finality.clone(),
             node_state_on_startup.l1_state.clone(),
+            syscoin_edge_da_commit_target,
             state.clone(),
             verify_batch_rx,
             outgoing_verify_results,
@@ -2067,6 +2106,120 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
              Set them in the `{section}` config section."
         );
     }
+}
+
+fn resolve_syscoin_edge_da_commit_target(
+    l1_state: &L1State,
+    protocol_version: &ProtocolSemanticVersion,
+    required: bool,
+) -> Address {
+    let env_target = syscoin_edge_da_commit_target_from_env();
+    check_syscoin_edge_da_commit_target_versions_file(protocol_version, env_target);
+    let expected =
+        env_target.or_else(|| syscoin_edge_da_commit_target_from_versions(protocol_version));
+    let Some(expected) = expected else {
+        assert!(
+            !(required && protocol_version.is_post_v31()),
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET or embedded protocol versions.yaml target must be \
+             available for protocol {protocol_version} when compact edge DA is active"
+        );
+        return l1_state.validator_timelock_sl;
+    };
+    assert_ne!(
+        expected,
+        Address::ZERO,
+        "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
+    );
+    if l1_state.settles_on_gateway() {
+        assert_eq!(
+            l1_state.validator_timelock_sl, expected,
+            "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
+             but the protocol-versioned ZKsync OS target is {}",
+            l1_state.validator_timelock_sl, expected
+        );
+    }
+    expected
+}
+
+fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
+    std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
+        .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
+        .ok()
+        .map(|value| parse_syscoin_edge_da_commit_target(&value))
+}
+
+fn check_syscoin_edge_da_commit_target_versions_file(
+    protocol_version: &ProtocolSemanticVersion,
+    env_target: Option<Address>,
+) {
+    let Some(env_target) = env_target else {
+        return;
+    };
+    let versions_target = syscoin_edge_da_commit_target_from_versions(protocol_version);
+    if let Some(versions_target) = versions_target {
+        let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
+        assert_eq!(
+            env_target, versions_target,
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET ({env_target}) does not match \
+             local-chains/{local_chain_dir}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
+        );
+    }
+}
+
+fn syscoin_edge_da_commit_target_from_versions(
+    protocol_version: &ProtocolSemanticVersion,
+) -> Option<Address> {
+    let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
+    let versions_path = format!("local-chains/{local_chain_dir}/versions.yaml");
+    let versions_path = Path::new(&versions_path);
+    if versions_path.exists() {
+        let contents = std::fs::read_to_string(versions_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read {} for SYSCOIN edge DA target: {err}",
+                versions_path.display()
+            )
+        });
+        return syscoin_edge_da_commit_target_from_versions_yaml(
+            &contents,
+            &versions_path.display().to_string(),
+        );
+    }
+
+    let embedded = match local_chain_dir.as_str() {
+        "v31.0" => Some(include_str!("../../../local-chains/v31.0/versions.yaml")),
+        _ => None,
+    }?;
+    syscoin_edge_da_commit_target_from_versions_yaml(
+        embedded,
+        &format!("embedded local-chains/{local_chain_dir}/versions.yaml"),
+    )
+}
+
+fn syscoin_edge_da_commit_target_from_versions_yaml(
+    contents: &str,
+    source: &str,
+) -> Option<Address> {
+    let value: serde_yaml::Value = serde_yaml::from_str(contents).unwrap_or_else(|err| {
+        panic!(
+            "failed to parse {source} for SYSCOIN edge DA target: {err}",
+        )
+    });
+    value
+        .get("general")
+        .and_then(|value| value.get("syscoin_edge_da_commit_target"))
+        .and_then(|value| value.as_str())
+        .map(parse_syscoin_edge_da_commit_target)
+}
+
+fn local_chain_protocol_version_dir(protocol_version: &ProtocolSemanticVersion) -> String {
+    format!("v{}.{}", protocol_version.minor, protocol_version.patch)
+}
+
+fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
+    let value = value.trim();
+    value.parse::<Address>().unwrap_or_else(|err| {
+        panic!("invalid SYSCOIN_EDGE_DA_COMMIT_TARGET `{value}`: {err}");
+    })
 }
 
 async fn commit_proof_execute_block_numbers(

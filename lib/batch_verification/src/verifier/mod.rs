@@ -35,6 +35,7 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     chain_id: u64,
     diamond_proxy_sl: Address,
     l1_state: L1State,
+    syscoin_edge_da_commit_target: Address,
     signer: PrivateKeySigner,
     syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
     block_cache: BlockCache<Finality, TreeBlock>,
@@ -81,6 +82,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
         finality: Finality,
         l1_state: L1State,
+        syscoin_edge_da_commit_target: Address,
         read_state: ReadState,
         verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
         outgoing_verify_results: broadcast::Sender<PeerVerifyBatchResult>,
@@ -100,6 +102,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             chain_id,
             diamond_proxy_sl,
             l1_state,
+            syscoin_edge_da_commit_target,
             signer,
             syscoin_da_verification,
             block_cache: BlockCache::new(finality),
@@ -157,7 +160,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
-            Some(self.l1_state.validator_timelock_sl),
+            Some(self.syscoin_edge_da_commit_target),
             &last_replay_record.block_context.block_hashes.0,
         )
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
