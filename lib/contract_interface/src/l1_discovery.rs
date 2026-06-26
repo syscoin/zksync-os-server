@@ -363,33 +363,6 @@ impl L1State {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn batch_frontiers_allow_ordered_state() {
-        validate_batch_frontiers(10, 9, 8, 7).expect("ordered frontiers must be accepted");
-        validate_batch_frontiers(0, 0, 0, 0).expect("empty fresh-chain frontiers must be accepted");
-    }
-
-    #[test]
-    fn batch_frontiers_reject_finalized_ahead_of_latest() {
-        let err = validate_batch_frontiers(1, 1, 1, 2)
-            .expect_err("finalized executed cannot be ahead of latest executed");
-        assert!(
-            err.to_string().contains("finalized executed batch 2"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn batch_frontiers_reject_non_monotonic_latest_counters() {
-        assert!(validate_batch_frontiers(1, 1, 2, 1).is_err());
-        assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
-    }
-}
-
 async fn fetch_finalized_executed_batch(
     zk_chain_sl: &ZkChain<NodeProvider>,
 ) -> anyhow::Result<(u64, u64)> {
@@ -417,7 +390,7 @@ async fn fetch_finalized_executed_batch(
     .retry(retry_builder)
     .notify(|(), _| {
         retries = retries.saturating_add(1);
-        if retries == 1 || retries % 30 == 0 {
+        if retries == 1 || retries.is_multiple_of(30) {
             tracing::warn!(retries, "finalized SL block is not available yet; waiting");
         }
     })
@@ -564,5 +537,32 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
         Err((latest_block_number, last_value)) => Err(anyhow::anyhow!(
             "pending state finalization retry loop stopped unexpectedly at SL block {latest_block_number}; last value: {last_value:?}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_frontiers_allow_ordered_state() {
+        validate_batch_frontiers(10, 9, 8, 7).expect("ordered frontiers must be accepted");
+        validate_batch_frontiers(0, 0, 0, 0).expect("empty fresh-chain frontiers must be accepted");
+    }
+
+    #[test]
+    fn batch_frontiers_reject_finalized_ahead_of_latest() {
+        let err = validate_batch_frontiers(1, 1, 1, 2)
+            .expect_err("finalized executed cannot be ahead of latest executed");
+        assert!(
+            err.to_string().contains("finalized executed batch 2"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn batch_frontiers_reject_non_monotonic_latest_counters() {
+        assert!(validate_batch_frontiers(1, 1, 2, 1).is_err());
+        assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
     }
 }
