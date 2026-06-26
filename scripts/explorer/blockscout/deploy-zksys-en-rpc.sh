@@ -489,17 +489,23 @@ for instance in (public, debug):
     if instance["rate_limits"]:
         insert_at = lines.index("status_server:")
         # SYSCOIN: preserve the legacy method=rps input shape by mapping it to
-        # upstream's tagged Tiered config without adding a practical global cap.
+        # upstream's tagged Tiered config. A legacy "*=rps" remains the global cap;
+        # otherwise use a sentinel that avoids adding a practical global cap.
         max_rps = 2**32 - 1
+        custom_limits = {
+            method: rps for method, rps in instance["rate_limits"].items() if method != "*"
+        }
+        global_rps = instance["rate_limits"].get("*", max_rps)
         rate_lines = [
             "  rate_limits:",
             "    type: Tiered",
-            f"    global_rps: {max_rps}",
+            f"    global_rps: {global_rps}",
             f"    m_rps: {max_rps}",
-            "    custom_methods:",
         ]
-        for method, rps in instance["rate_limits"].items():
-            rate_lines.append(f"      {q(method)}: {rps}")
+        if custom_limits:
+            rate_lines.append("    custom_methods:")
+            for method, rps in custom_limits.items():
+                rate_lines.append(f"      {q(method)}: {rps}")
         lines[insert_at:insert_at] = rate_lines
     write_secret(config_path, "\n".join(lines) + "\n")
     write_start_script(
