@@ -81,6 +81,38 @@ impl Limiter {
     }
 }
 
+/// Wraps a [`Limiter`] with a rolling rejection counter, drained into a 1/s log line.
+pub struct LoggingLimiter {
+    inner: Limiter,
+    rejections: AtomicU64,
+}
+
+impl LoggingLimiter {
+    pub fn new(inner: Limiter) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            rejections: AtomicU64::new(0),
+        })
+    }
+
+    pub(crate) fn check(&self, method: &str) -> Option<u64> {
+        self.inner.check(method).inspect(|_| {
+            self.rejections.fetch_add(1, Ordering::Relaxed);
+        })
+    }
+
+    pub async fn run(this: Arc<Self>) -> Infallible {
+        let mut ticker = interval(Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            let count = this.rejections.swap(0, Ordering::Relaxed);
+            if count > 0 {
+                tracing::warn!(count, "rpc requests rate-limited in last 1s");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,37 +150,5 @@ mod tests {
 
         assert_eq!(limiter.check("method_b"), None);
         assert!(limiter.check("method_b").is_some());
-    }
-}
-
-/// Wraps a [`Limiter`] with a rolling rejection counter, drained into a 1/s log line.
-pub struct LoggingLimiter {
-    inner: Limiter,
-    rejections: AtomicU64,
-}
-
-impl LoggingLimiter {
-    pub fn new(inner: Limiter) -> Arc<Self> {
-        Arc::new(Self {
-            inner,
-            rejections: AtomicU64::new(0),
-        })
-    }
-
-    pub(crate) fn check(&self, method: &str) -> Option<u64> {
-        self.inner.check(method).inspect(|_| {
-            self.rejections.fetch_add(1, Ordering::Relaxed);
-        })
-    }
-
-    pub async fn run(this: Arc<Self>) -> Infallible {
-        let mut ticker = interval(Duration::from_secs(1));
-        loop {
-            ticker.tick().await;
-            let count = this.rejections.swap(0, Ordering::Relaxed);
-            if count > 0 {
-                tracing::warn!(count, "rpc requests rate-limited in last 1s");
-            }
-        }
     }
 }
