@@ -512,6 +512,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             &config.batch_verification_config,
             &l1_state.batch_verification,
         );
+        check_syscoin_edge_da_commit_target(&l1_state);
         if config.batcher_config.enabled {
             check_required_operator_keys(&config, settles_on_gateway);
         }
@@ -2067,6 +2068,38 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
              Set them in the `{section}` config section."
         );
     }
+}
+
+fn check_syscoin_edge_da_commit_target(l1_state: &L1State) {
+    if !l1_state.settles_on_gateway() {
+        return;
+    }
+
+    let expected = std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
+        .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
+        .expect(
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET must be set when settling on Gateway; \
+             it must match the protocol-versioned ZKsync OS edge DA commit target",
+        );
+    let expected = parse_syscoin_edge_da_commit_target(&expected);
+    assert_ne!(
+        expected,
+        Address::ZERO,
+        "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
+    );
+    assert_eq!(
+        l1_state.validator_timelock_sl, expected,
+        "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
+         but the protocol-versioned ZKsync OS target is {}",
+        l1_state.validator_timelock_sl, expected
+    );
+}
+
+fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
+    let value = value.trim();
+    value.parse::<Address>().unwrap_or_else(|err| {
+        panic!("invalid SYSCOIN_EDGE_DA_COMMIT_TARGET `{value}`: {err}");
+    })
 }
 
 async fn commit_proof_execute_block_numbers(

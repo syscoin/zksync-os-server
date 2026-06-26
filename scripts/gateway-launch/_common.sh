@@ -297,6 +297,27 @@ gl_zkstack_cli_sha_from_versions() {
   gl_sha_from_versions "zkstack-cli"
 }
 
+gl_syscoin_edge_da_commit_target_from_versions() {
+  gl_require PROTOCOL_VERSION
+  local vf="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
+  [ -f "$vf" ] || gl_die "missing ${vf}"
+  VERSIONS_YAML="$vf" python3 - <<'PY'
+import os, re
+
+text = open(os.environ["VERSIONS_YAML"], "r", encoding="utf-8").read()
+m = re.search(
+    r"(?m)^\s*syscoin_edge_da_commit_target:\s*['\"]?(0x[0-9a-fA-F]{40})['\"]?\s*$",
+    text,
+)
+if not m:
+    raise SystemExit("syscoin_edge_da_commit_target not found in versions.yaml")
+addr = m.group(1).lower()
+if addr == "0x" + "0" * 40:
+    raise SystemExit("syscoin_edge_da_commit_target must be nonzero")
+print(addr)
+PY
+}
+
 gl_assert_contracts_sha() {
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_CONTRACTS_SHA
