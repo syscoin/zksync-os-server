@@ -10,8 +10,7 @@ pub enum RateLimits {
     /// No rate limiting.
     #[default]
     None,
-    /// One global cap, plus per-method buckets: `m_rps` applied to each entry in
-    /// `m_methods`, and the explicit RPS in `custom_methods` for each entry there.
+    /// One global cap, plus a shared M-method bucket, plus per-method custom overrides.
     ///
     /// Production example:
     ///
@@ -60,11 +59,10 @@ impl RateLimits {
                 custom_methods,
             } => Limits {
                 global_rps: Some(global_rps),
-                methods: m_methods
-                    .into_iter()
-                    .map(|name| (name, m_rps))
-                    .chain(custom_methods)
-                    .collect(),
+                // SYSCOIN: keep `m_methods` grouped so `m_rps` is enforced as a shared bucket.
+                m_rps: Some(m_rps),
+                m_methods,
+                methods: custom_methods,
             },
         }
     }

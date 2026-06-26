@@ -1,6 +1,6 @@
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{DefaultDirectRateLimiter, NotUntil, Quota, RateLimiter};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -12,6 +12,9 @@ use tokio::time::interval;
 #[derive(Clone, Debug, Default)]
 pub struct Limits {
     pub global_rps: Option<NonZeroU32>,
+    // SYSCOIN: preserve upstream's advertised shared M-method bucket semantics.
+    pub m_rps: Option<NonZeroU32>,
+    pub m_methods: HashSet<String>,
     pub methods: HashMap<String, NonZeroU32>,
 }
 
@@ -32,18 +35,26 @@ fn retry_after(not_until: NotUntil<QuantaInstant>) -> u64 {
 /// per request to gate it.
 pub struct Limiter {
     global: Option<DefaultDirectRateLimiter>,
+    m: Option<DefaultDirectRateLimiter>,
+    m_methods: HashSet<String>,
     per_method: HashMap<String, DefaultDirectRateLimiter>,
 }
 
 impl Limiter {
     pub fn new(limits: Limits) -> Self {
         let global = limits.global_rps.map(bucket);
+        let m = limits.m_rps.map(bucket);
         let per_method = limits
             .methods
             .into_iter()
             .map(|(name, rps)| (name, bucket(rps)))
             .collect();
-        Self { global, per_method }
+        Self {
+            global,
+            m,
+            m_methods: limits.m_methods,
+            per_method,
+        }
     }
 
     fn check_global(&self) -> Option<u64> {
@@ -54,9 +65,19 @@ impl Limiter {
         self.per_method.get(name)?.check().err().map(retry_after)
     }
 
+    fn check_m_method(&self, name: &str) -> Option<u64> {
+        // SYSCOIN: custom methods are explicit overrides and should not also consume
+        // capacity from the shared M bucket.
+        if self.per_method.contains_key(name) || !self.m_methods.contains(name) {
+            return None;
+        }
+        self.m.as_ref()?.check().err().map(retry_after)
+    }
+
     pub fn check(&self, method: &str) -> Option<u64> {
         self.check_global()
             .or_else(|| self.check_per_method(method))
+            .or_else(|| self.check_m_method(method))
     }
 }
 
@@ -89,5 +110,45 @@ impl LoggingLimiter {
                 tracing::warn!(count, "rpc requests rate-limited in last 1s");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rps(value: u32) -> NonZeroU32 {
+        NonZeroU32::new(value).expect("test RPS is non-zero")
+    }
+
+    #[test]
+    fn m_methods_share_one_bucket() {
+        let limiter = Limiter::new(Limits {
+            m_rps: Some(rps(2)),
+            m_methods: ["method_a".to_owned(), "method_b".to_owned()].into(),
+            ..Limits::default()
+        });
+
+        assert_eq!(limiter.check("method_a"), None);
+        assert_eq!(limiter.check("method_b"), None);
+        assert!(limiter.check("method_a").is_some());
+        assert!(limiter.check("method_b").is_some());
+    }
+
+    #[test]
+    fn custom_method_overrides_shared_m_bucket() {
+        let limiter = Limiter::new(Limits {
+            m_rps: Some(rps(1)),
+            m_methods: ["method_a".to_owned(), "method_b".to_owned()].into(),
+            methods: [("method_a".to_owned(), rps(2))].into(),
+            ..Limits::default()
+        });
+
+        assert_eq!(limiter.check("method_a"), None);
+        assert_eq!(limiter.check("method_a"), None);
+        assert!(limiter.check("method_a").is_some());
+
+        assert_eq!(limiter.check("method_b"), None);
+        assert!(limiter.check("method_b").is_some());
     }
 }
