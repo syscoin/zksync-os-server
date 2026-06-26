@@ -180,7 +180,9 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
                 blocking_rpcs_semaphore.clone(),
             )
         })
-        .layer_fn(move |service| MethodFiltering::new(service, method_filter.clone()))
+        .layer_fn(move |service| {
+            MethodFiltering::new(service, method_filter.clone(), max_response_size_bytes)
+        })
         .layer_fn(move |service| RateLimiting::new(service, limiter.clone()));
 
     let server_config = ServerConfigBuilder::default()
