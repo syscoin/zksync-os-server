@@ -2200,9 +2200,7 @@ fn syscoin_edge_da_commit_target_from_versions_yaml(
     source: &str,
 ) -> Option<Address> {
     let value: serde_yaml::Value = serde_yaml::from_str(contents).unwrap_or_else(|err| {
-        panic!(
-            "failed to parse {source} for SYSCOIN edge DA target: {err}",
-        )
+        panic!("failed to parse {source} for SYSCOIN edge DA target: {err}",)
     });
     value
         .get("general")
