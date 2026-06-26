@@ -125,8 +125,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
-    TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
+    PubdataMode, TransactionAcceptanceState,
 };
 
 pub const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -560,16 +560,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             _ => {}
         }
     }
-    let syscoin_edge_da_commit_target = if syscoin_edge_da_commit_target_required(
-        &config,
-        node_role,
-        effective_pubdata_mode,
-    ) {
-        check_syscoin_edge_da_commit_target(&l1_state)
-    } else {
-        l1_state.validator_timelock_sl
-    };
-
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
     tracing::info!("Initializing Tree RocksDB");
@@ -932,6 +922,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     } else {
         &genesis.genesis_upgrade_tx().await.protocol_version
     };
+    let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
+        &l1_state,
+        current_protocol_version,
+        syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
+    );
 
     if config
         .sequencer_config
@@ -2095,14 +2090,20 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn check_syscoin_edge_da_commit_target(l1_state: &L1State) -> Address {
-    let expected = std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
-        .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
-        .expect(
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET must be set when settling on Gateway; \
-             it must match the protocol-versioned ZKsync OS edge DA commit target",
+fn resolve_syscoin_edge_da_commit_target(
+    l1_state: &L1State,
+    protocol_version: &ProtocolSemanticVersion,
+    required: bool,
+) -> Address {
+    let expected = syscoin_edge_da_commit_target_from_env_or_versions(protocol_version);
+    let Some(expected) = expected else {
+        assert!(
+            !(required && protocol_version.is_post_v31()),
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET or local-chains/{protocol_version}/versions.yaml \
+             syscoin_edge_da_commit_target must be set for protocol {protocol_version}"
         );
-    let expected = parse_syscoin_edge_da_commit_target(&expected);
+        return l1_state.validator_timelock_sl;
+    };
     assert_ne!(
         expected,
         Address::ZERO,
@@ -2117,6 +2118,50 @@ fn check_syscoin_edge_da_commit_target(l1_state: &L1State) -> Address {
         );
     }
     expected
+}
+
+fn syscoin_edge_da_commit_target_from_env_or_versions(
+    protocol_version: &ProtocolSemanticVersion,
+) -> Option<Address> {
+    let env_target = std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
+        .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
+        .ok()
+        .map(|value| parse_syscoin_edge_da_commit_target(&value));
+    let versions_target = syscoin_edge_da_commit_target_from_versions(protocol_version);
+    if let (Some(env_target), Some(versions_target)) = (env_target, versions_target) {
+        assert_eq!(
+            env_target, versions_target,
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET ({env_target}) does not match \
+             local-chains/{protocol_version}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
+        );
+    }
+    env_target.or(versions_target)
+}
+
+fn syscoin_edge_da_commit_target_from_versions(
+    protocol_version: &ProtocolSemanticVersion,
+) -> Option<Address> {
+    let versions_path = format!("local-chains/{protocol_version}/versions.yaml");
+    let versions_path = Path::new(&versions_path);
+    if !versions_path.exists() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(versions_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read {} for SYSCOIN edge DA target: {err}",
+            versions_path.display()
+        )
+    });
+    let value: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap_or_else(|err| {
+        panic!(
+            "failed to parse {} for SYSCOIN edge DA target: {err}",
+            versions_path.display()
+        )
+    });
+    value
+        .get("syscoin_edge_da_commit_target")
+        .and_then(|value| value.as_str())
+        .map(parse_syscoin_edge_da_commit_target)
 }
 
 fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
