@@ -488,9 +488,18 @@ for instance in (public, debug):
     ]
     if instance["rate_limits"]:
         insert_at = lines.index("status_server:")
-        rate_lines = ["  rate_limits:"]
+        # SYSCOIN: preserve the legacy method=rps input shape by mapping it to
+        # upstream's tagged Tiered config without adding a practical global cap.
+        max_rps = 2**32 - 1
+        rate_lines = [
+            "  rate_limits:",
+            "    type: Tiered",
+            f"    global_rps: {max_rps}",
+            f"    m_rps: {max_rps}",
+            "    custom_methods:",
+        ]
         for method, rps in instance["rate_limits"].items():
-            rate_lines.append(f"    {q(method)}: {rps}")
+            rate_lines.append(f"      {q(method)}: {rps}")
         lines[insert_at:insert_at] = rate_lines
     write_secret(config_path, "\n".join(lines) + "\n")
     write_start_script(

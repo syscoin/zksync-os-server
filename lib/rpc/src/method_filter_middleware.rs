@@ -65,7 +65,15 @@ where
         &self,
         n: Notification<'a>,
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
+        // SYSCOIN: notifications cannot return -32601, but filtered methods must not execute.
+        let rejected = self.filter.contains(n.method_name());
         let inner = self.inner.clone();
-        async move { inner.notification(n).await }
+        async move {
+            if rejected {
+                tracing::warn!(method = n.method_name(), "rpc notification rejected by filter");
+                return MethodResponse::notification();
+            }
+            inner.notification(n).await
+        }
     }
 }
