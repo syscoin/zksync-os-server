@@ -15,6 +15,8 @@ fn method_disabled_err() -> ErrorObject<'static> {
 pub(crate) struct MethodFiltering<S = RpcService> {
     inner: S,
     filter: Arc<HashSet<String>>,
+    // SYSCOIN: batch filtering builds responses locally, so carry the same limit
+    // jsonrpsee uses for normal batch responses.
     max_response_size_bytes: usize,
 }
 
