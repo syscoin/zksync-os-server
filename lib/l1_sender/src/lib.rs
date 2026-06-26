@@ -84,6 +84,7 @@ type PendingTx<Input> = (
 
 // SYSCOIN: non-fatal receipt wait result used to recover from L1 mempool eviction
 // and visible-but-stale transactions.
+#[allow(clippy::large_enum_variant)]
 enum ReceiptWaitOutcome {
     Confirmed(TransactionReceipt),
     Dropped,
@@ -440,6 +441,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
 }
 
 // SYSCOIN: common L1 tx submission path used by the normal loop and by dropped-tx recovery.
+#[allow(clippy::too_many_arguments)]
 async fn submit_l1_transaction<Input>(
     provider: &NodeProvider,
     operator_address: Address,
@@ -649,6 +651,7 @@ fn notify_commit_submitted_batch(
 
 /// Waits for all pending L1 transaction receipts, validates them, logs balance/nonce
 /// metrics, and forwards the completed commands downstream.
+#[allow(clippy::too_many_arguments)]
 async fn wait_for_txs_and_forward<Input>(
     pending_txs: Vec<PendingTx<Input>>,
     provider: &NodeProvider,
@@ -927,6 +930,7 @@ where
 // SYSCOIN: nonce-reuse rebroadcast errors mean the original nonce may already be occupied.
 // Keep looking for the same-nonce tx instead of resubmitting the command at a later nonce or
 // re-arming a waiter for the dropped hash.
+#[allow(clippy::too_many_arguments)]
 async fn recover_same_nonce_tx<Input>(
     provider: &NodeProvider,
     operator_address: Address,
@@ -1031,6 +1035,7 @@ where
 
 // SYSCOIN: standard-RPC fallback for providers that do not implement sender+nonce lookup.
 // Scan recent mined blocks and accept only a transaction with the same sender, nonce, and calldata.
+#[allow(clippy::too_many_arguments)]
 async fn find_matching_mined_sender_nonce_tx<Input>(
     provider: &NodeProvider,
     operator_address: Address,
@@ -1133,6 +1138,7 @@ enum SameNonceTx {
 
 // SYSCOIN: if a rebroadcast reports nonce reuse, try to discover the tx currently occupying the
 // original sender nonce and track it only if it carries the same command calldata.
+#[allow(clippy::too_many_arguments)]
 async fn find_matching_sender_nonce_tx<Input>(
     provider: &NodeProvider,
     operator_address: Address,
