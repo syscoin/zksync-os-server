@@ -2115,12 +2115,13 @@ fn resolve_syscoin_edge_da_commit_target(
 ) -> Address {
     let env_target = syscoin_edge_da_commit_target_from_env();
     check_syscoin_edge_da_commit_target_versions_file(protocol_version, env_target);
-    let expected = env_target;
+    let expected =
+        env_target.or_else(|| syscoin_edge_da_commit_target_from_versions(protocol_version));
     let Some(expected) = expected else {
         assert!(
             !(required && protocol_version.is_post_v31()),
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET must be set for protocol {protocol_version} \
-             when compact edge DA is active"
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET or embedded protocol versions.yaml target must be \
+             available for protocol {protocol_version} when compact edge DA is active"
         );
         return l1_state.validator_timelock_sl;
     };
@@ -2168,24 +2169,39 @@ fn check_syscoin_edge_da_commit_target_versions_file(
 fn syscoin_edge_da_commit_target_from_versions(
     protocol_version: &ProtocolSemanticVersion,
 ) -> Option<Address> {
-    let versions_path = format!(
-        "local-chains/{}/versions.yaml",
-        local_chain_protocol_version_dir(protocol_version)
-    );
+    let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
+    let versions_path = format!("local-chains/{local_chain_dir}/versions.yaml");
     let versions_path = Path::new(&versions_path);
-    if !versions_path.exists() {
-        return None;
+    if versions_path.exists() {
+        let contents = std::fs::read_to_string(versions_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read {} for SYSCOIN edge DA target: {err}",
+                versions_path.display()
+            )
+        });
+        return syscoin_edge_da_commit_target_from_versions_yaml(
+            &contents,
+            &versions_path.display().to_string(),
+        );
     }
-    let contents = std::fs::read_to_string(versions_path).unwrap_or_else(|err| {
+
+    let embedded = match local_chain_dir.as_str() {
+        "v31.0" => Some(include_str!("../../../local-chains/v31.0/versions.yaml")),
+        _ => None,
+    }?;
+    syscoin_edge_da_commit_target_from_versions_yaml(
+        embedded,
+        &format!("embedded local-chains/{local_chain_dir}/versions.yaml"),
+    )
+}
+
+fn syscoin_edge_da_commit_target_from_versions_yaml(
+    contents: &str,
+    source: &str,
+) -> Option<Address> {
+    let value: serde_yaml::Value = serde_yaml::from_str(contents).unwrap_or_else(|err| {
         panic!(
-            "failed to read {} for SYSCOIN edge DA target: {err}",
-            versions_path.display()
-        )
-    });
-    let value: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap_or_else(|err| {
-        panic!(
-            "failed to parse {} for SYSCOIN edge DA target: {err}",
-            versions_path.display()
+            "failed to parse {source} for SYSCOIN edge DA target: {err}",
         )
     });
     value
