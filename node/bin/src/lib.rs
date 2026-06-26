@@ -188,6 +188,19 @@ fn compact_edge_da_admission_required(pubdata_mode: Option<PubdataMode>) -> bool
     )
 }
 
+fn syscoin_edge_da_commit_target_required(
+    config: &Config,
+    node_role: NodeRole,
+    effective_pubdata_mode: Option<PubdataMode>,
+) -> bool {
+    let block_producer_uses_compact_da = node_role.is_main()
+        && block_production_enabled(config)
+        && (compact_edge_da_admission_required(effective_pubdata_mode)
+            || compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode));
+
+    block_producer_uses_compact_da || config.batch_verification_config.client_enabled
+}
+
 fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
     let batcher = &config.batcher_config;
     batcher
@@ -547,11 +560,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             _ => {}
         }
     }
-    let syscoin_edge_da_commit_target = if node_role.is_main()
-        && matches!(
-            effective_pubdata_mode,
-            Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
-        ) {
+    let syscoin_edge_da_commit_target = if syscoin_edge_da_commit_target_required(
+        &config,
+        node_role,
+        effective_pubdata_mode,
+    ) {
         check_syscoin_edge_da_commit_target(&l1_state)
     } else {
         l1_state.validator_timelock_sl
@@ -1212,6 +1225,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             stop_receiver.clone(),
             tx_acceptance_state_sender,
             chain_id,
+            syscoin_edge_da_commit_target,
             verify_batch_rx,
             outgoing_verify_results.clone(),
         )
@@ -1826,6 +1840,7 @@ async fn run_en_pipeline(
     stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
+    syscoin_edge_da_commit_target: Address,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
@@ -1892,6 +1907,7 @@ async fn run_en_pipeline(
             syscoin_da_verification_config(config),
             finality.clone(),
             node_state_on_startup.l1_state.clone(),
+            syscoin_edge_da_commit_target,
             state.clone(),
             verify_batch_rx,
             outgoing_verify_results,
