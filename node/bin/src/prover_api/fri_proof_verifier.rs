@@ -8,7 +8,7 @@ pub fn verify_real_fri_proof_bytes(
     proof_bytes: &[u8],
 ) -> Result<(), SubmitError> {
     let program_proof = bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-        .map_err(|err| SubmitError::DeserializationFailed(err))?
+        .map_err(SubmitError::DeserializationFailed)?
         .0;
 
     verify_fri_proof(previous_state_commitment, stored_batch_info, program_proof)

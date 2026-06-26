@@ -144,6 +144,14 @@ mod tests {
                 },
             )))
         }
+
+        fn prove_index(
+            &self,
+            _version: u64,
+            _index: u64,
+        ) -> anyhow::Result<Option<(BatchTreeProof, TreeBatchOutput)>> {
+            Ok(None)
+        }
     }
 
     #[test]

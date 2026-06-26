@@ -360,7 +360,7 @@ impl BitcoinDaFinalityGate {
             for edge_ref in edge_refs {
                 for version_hash in edge_ref.blob_version_hashes.chunks_exact(32) {
                     let version_hash = hex::encode(version_hash);
-                    self.wait_for_edge_ref_finality(&client, &version_hash)
+                    self.wait_for_edge_ref_finality(client, &version_hash)
                         .await?;
                 }
             }

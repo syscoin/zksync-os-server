@@ -1255,17 +1255,53 @@ pub struct RpcConfig {
     #[config(default_t = false)]
     pub enable_txpool_namespace: bool,
 
-    /// Per-method rate limits: map from RPC method name to max requests per second (across all
-    /// callers).  Use `"*"` for a global limit applied before per-method limits.  Methods absent
-    /// from the map are unrestricted.
-    ///
-    /// Accepts a JSON object or a comma-separated `method=rps` string, e.g.
-    /// `*=500,eth_call=100,debug_traceTransaction=5`.
-    #[config(default, with = Entries::WELL_KNOWN.delimited(",", "="), validate(
-        rate_limits_within_global,
-        "each per-method limit must not exceed the global `*` limit"
-    ))]
-    pub rate_limits: HashMap<String, NonZeroU32>,
+    /// Rate limits for incoming JSON-RPC requests.
+    #[config(nest)]
+    pub rate_limits: RpcRateLimitsConfig,
+
+    /// List of disabled methods.
+    /// Some stateful methods like `eth_newFilter` don't make sense when running in a cluster behind a load-balancer.
+    /// They get rejected with -32601 "Method disabled".
+    #[config(default, with = Delimited::new(","))]
+    pub method_filter: HashSet<String>,
+}
+
+/// Rate-limit configuration for the JSON-RPC server.
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
+#[config(tag = "type", derive(Default))]
+pub enum RpcRateLimitsConfig {
+    /// No rate limiting.
+    #[config(default)]
+    None,
+    /// One global cap, plus per-method buckets: `m_rps` applied to each entry in
+    /// `m_methods`, and the explicit RPS in `custom_methods` for each entry there.
+    Tiered {
+        global_rps: NonZeroU32,
+        m_rps: NonZeroU32,
+        #[config(default, with = Delimited::new(","))]
+        m_methods: HashSet<String>,
+        #[config(default, with = Entries::WELL_KNOWN.delimited(",", "="))]
+        custom_methods: HashMap<String, NonZeroU32>,
+    },
+}
+
+impl From<RpcRateLimitsConfig> for zksync_os_rpc::RateLimits {
+    fn from(c: RpcRateLimitsConfig) -> Self {
+        match c {
+            RpcRateLimitsConfig::None => Self::None,
+            RpcRateLimitsConfig::Tiered {
+                global_rps,
+                m_rps,
+                m_methods,
+                custom_methods,
+            } => Self::Tiered {
+                global_rps,
+                m_rps,
+                m_methods,
+                custom_methods,
+            },
+        }
+    }
 }
 
 /// L1 sender configuration. The signing key fields are only required on the Main Node
@@ -1409,16 +1445,6 @@ pub struct ForceTransactionResubmissionConfig {
 // replacement rules; merely positive values can still be underpriced replacements.
 fn is_greater_than_one_f64(&val: &f64) -> bool {
     val > 1.0
-}
-
-fn rate_limits_within_global(limits: &HashMap<String, NonZeroU32>) -> bool {
-    let Some(&global) = limits.get("*") else {
-        return true;
-    };
-    limits
-        .iter()
-        .filter(|(k, _)| k.as_str() != "*")
-        .all(|(_, &v)| v <= global)
 }
 
 /// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
@@ -2078,7 +2104,7 @@ pub struct BatchVerificationConfig {
     ))]
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
-    #[config(default_t = vec![], with = Delimited::new(","))]
+    #[config(default, with = Delimited::new(","))]
     // SYSCOIN
     #[config_validate(custom(
         |root: &Config, value: &Vec<String>| {
@@ -2327,7 +2353,8 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             enable_debug_namespace: c.enable_debug_namespace,
             enable_txpool_namespace: c.enable_txpool_namespace,
             edge_da_admission: None,
-            rate_limits: c.rate_limits.into_iter().map(Into::into).collect(),
+            rate_limits: c.rate_limits.into(),
+            method_filter: c.method_filter,
         }
     }
 }

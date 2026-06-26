@@ -591,7 +591,7 @@ mod tests {
     async fn proof_storage_for_test() -> anyhow::Result<ProofStorage> {
         let dir = TempDir::new()?;
         let config = ProofStorageConfig {
-            path: dir.into_path(),
+            path: dir.keep(),
             ..ProofStorageConfig::default()
         };
         ProofStorage::new(config).await

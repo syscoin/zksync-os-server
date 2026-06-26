@@ -100,19 +100,19 @@ impl SnarkProvingPipelineStep {
             return false;
         }
         // SYSCOIN
-        if let FriProof::Real(real) = &batch.data {
-            if let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
+        if let FriProof::Real(real) = &batch.data
+            && let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
                 batch.batch.previous_stored_batch_info.state_commitment,
                 local_stored_batch,
                 real.proof(),
-            ) {
-                tracing::warn!(
-                    batch_number = expected_batch_number,
-                    ?err,
-                    "skipping SNARK rehydration due to invalid stored FRI proof"
-                );
-                return false;
-            }
+            )
+        {
+            tracing::warn!(
+                batch_number = expected_batch_number,
+                ?err,
+                "skipping SNARK rehydration due to invalid stored FRI proof"
+            );
+            return false;
         }
 
         true
