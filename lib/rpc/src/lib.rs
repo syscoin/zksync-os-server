@@ -182,7 +182,11 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             )
         })
         .layer_fn(move |service| {
-            MethodFiltering::new(service, method_filter.clone(), max_response_size_bytes_usize)
+            MethodFiltering::new(
+                service,
+                method_filter.clone(),
+                max_response_size_bytes_usize,
+            )
         })
         .layer_fn(move |service| RateLimiting::new(service, limiter.clone()));
 
