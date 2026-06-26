@@ -66,6 +66,8 @@ where
     }
 
     fn batch<'a>(&self, batch: Batch<'a>) -> impl Future<Output = Self::BatchResponse> + Send + 'a {
+        // SYSCOIN: enforce filters for batch entries too, including notification entries that
+        // cannot return an error response but still must not execute stateful disabled methods.
         let mut batch_rp = BatchResponseBuilder::new_with_limit(self.max_response_size_bytes);
         let service = self.clone();
         async move {
