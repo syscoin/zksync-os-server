@@ -70,7 +70,10 @@ where
         let inner = self.inner.clone();
         async move {
             if rejected {
-                tracing::warn!(method = n.method_name(), "rpc notification rejected by filter");
+                tracing::warn!(
+                    method = n.method_name(),
+                    "rpc notification rejected by filter"
+                );
                 return MethodResponse::notification();
             }
             inner.notification(n).await
