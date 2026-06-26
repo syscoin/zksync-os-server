@@ -188,6 +188,24 @@ fn compact_edge_da_admission_required(pubdata_mode: Option<PubdataMode>) -> bool
     )
 }
 
+fn edge_da_admission_requested(config: &Config) -> bool {
+    let batcher = &config.batcher_config;
+    batcher
+        .bitcoin_da_rpc_url
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || batcher
+            .bitcoin_da_rpc_user
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
+        || batcher
+            .bitcoin_da_rpc_password
+            .as_ref()
+            .map(|secret| secret.expose_secret())
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 fn syscoin_edge_da_commit_target_required(
     config: &Config,
     node_role: NodeRole,
@@ -195,10 +213,12 @@ fn syscoin_edge_da_commit_target_required(
 ) -> bool {
     let block_producer_uses_compact_da = node_role.is_main()
         && block_production_enabled(config)
+        && edge_da_admission_requested(config)
         && (compact_edge_da_admission_required(effective_pubdata_mode)
             || compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode));
 
-    block_producer_uses_compact_da || config.batch_verification_config.client_enabled
+    block_producer_uses_compact_da
+        || (config.batch_verification_config.client_enabled && edge_da_admission_requested(config))
 }
 
 fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
@@ -266,9 +286,7 @@ fn edge_da_admission_config(
         .as_ref()
         .map(|secret| secret.expose_secret())
         .filter(|value| !value.trim().is_empty());
-    let edge_da_admission_requested =
-        rpc_url.is_some() || rpc_user.is_some() || rpc_password.is_some();
-    if !edge_da_admission_requested {
+    if !edge_da_admission_requested(config) {
         return Ok(None);
     }
 
@@ -2095,13 +2113,14 @@ fn resolve_syscoin_edge_da_commit_target(
     protocol_version: &ProtocolSemanticVersion,
     required: bool,
 ) -> Address {
-    let expected = syscoin_edge_da_commit_target_from_env_or_versions(protocol_version);
+    let env_target = syscoin_edge_da_commit_target_from_env();
+    check_syscoin_edge_da_commit_target_versions_file(protocol_version, env_target);
+    let expected = env_target;
     let Some(expected) = expected else {
-        let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
         assert!(
             !(required && protocol_version.is_post_v31()),
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET or local-chains/{local_chain_dir}/versions.yaml \
-             syscoin_edge_da_commit_target must be set for protocol {protocol_version}"
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET must be set for protocol {protocol_version} \
+             when compact edge DA is active"
         );
         return l1_state.validator_timelock_sl;
     };
@@ -2121,15 +2140,22 @@ fn resolve_syscoin_edge_da_commit_target(
     expected
 }
 
-fn syscoin_edge_da_commit_target_from_env_or_versions(
-    protocol_version: &ProtocolSemanticVersion,
-) -> Option<Address> {
-    let env_target = std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
+fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
+    std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
         .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
         .ok()
-        .map(|value| parse_syscoin_edge_da_commit_target(&value));
+        .map(|value| parse_syscoin_edge_da_commit_target(&value))
+}
+
+fn check_syscoin_edge_da_commit_target_versions_file(
+    protocol_version: &ProtocolSemanticVersion,
+    env_target: Option<Address>,
+) {
+    let Some(env_target) = env_target else {
+        return;
+    };
     let versions_target = syscoin_edge_da_commit_target_from_versions(protocol_version);
-    if let (Some(env_target), Some(versions_target)) = (env_target, versions_target) {
+    if let Some(versions_target) = versions_target {
         let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
         assert_eq!(
             env_target, versions_target,
@@ -2137,7 +2163,6 @@ fn syscoin_edge_da_commit_target_from_env_or_versions(
              local-chains/{local_chain_dir}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
         );
     }
-    env_target.or(versions_target)
 }
 
 fn syscoin_edge_da_commit_target_from_versions(
