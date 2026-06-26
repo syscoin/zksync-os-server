@@ -1,8 +1,8 @@
-use jsonrpsee::MethodResponse;
-use jsonrpsee::core::middleware::{Batch, Notification};
+use jsonrpsee::core::middleware::{Batch, BatchEntry, Notification};
 use jsonrpsee::server::middleware::rpc::{RpcService, RpcServiceT};
 use jsonrpsee::types::Request;
 use jsonrpsee::types::error::{ErrorObject, METHOD_NOT_FOUND_CODE};
+use jsonrpsee::{BatchResponseBuilder, MethodResponse};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -15,11 +15,20 @@ fn method_disabled_err() -> ErrorObject<'static> {
 pub(crate) struct MethodFiltering<S = RpcService> {
     inner: S,
     filter: Arc<HashSet<String>>,
+    max_response_size_bytes: usize,
 }
 
 impl<S> MethodFiltering<S> {
-    pub(crate) fn new(inner: S, filter: Arc<HashSet<String>>) -> Self {
-        Self { inner, filter }
+    pub(crate) fn new(
+        inner: S,
+        filter: Arc<HashSet<String>>,
+        max_response_size_bytes: usize,
+    ) -> Self {
+        Self {
+            inner,
+            filter,
+            max_response_size_bytes,
+        }
     }
 }
 
@@ -57,8 +66,38 @@ where
     }
 
     fn batch<'a>(&self, batch: Batch<'a>) -> impl Future<Output = Self::BatchResponse> + Send + 'a {
-        let inner = self.inner.clone();
-        async move { inner.batch(batch).await }
+        let mut batch_rp = BatchResponseBuilder::new_with_limit(self.max_response_size_bytes);
+        let service = self.clone();
+        async move {
+            let mut got_notification = false;
+            for batch_entry in batch.into_iter() {
+                match batch_entry {
+                    Ok(BatchEntry::Call(req)) => {
+                        let rp = service.call(req).await;
+                        if let Err(err) = batch_rp.append(rp) {
+                            return err;
+                        }
+                    }
+                    Ok(BatchEntry::Notification(n)) => {
+                        got_notification = true;
+                        service.notification(n).await;
+                    }
+                    Err(err) => {
+                        let (err, id) = err.into_parts();
+                        let rp = MethodResponse::error(id, err);
+                        if let Err(err) = batch_rp.append(rp) {
+                            return err;
+                        }
+                    }
+                }
+            }
+
+            if batch_rp.is_empty() && got_notification {
+                MethodResponse::notification()
+            } else {
+                MethodResponse::from_batch(batch_rp.finish())
+            }
+        }
     }
 
     fn notification<'a>(
