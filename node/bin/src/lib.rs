@@ -502,6 +502,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     tracing::info!(?l1_state, settles_on_gateway, "L1 state");
     l1_state.report_metrics();
+    let syscoin_edge_da_commit_target = if node_role.is_main() {
+        check_syscoin_edge_da_commit_target(&l1_state)
+    } else {
+        l1_state.validator_timelock_sl
+    };
     if node_role.is_main() {
         // SYSCOIN
         validate_batch_verification_startup_policy(
@@ -512,7 +517,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             &config.batch_verification_config,
             &l1_state.batch_verification,
         );
-        check_syscoin_edge_da_commit_target(&l1_state);
         if config.batcher_config.enabled {
             check_required_operator_keys(&config, settles_on_gateway);
         }
@@ -1247,9 +1251,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not retrievable yet.
-    rpc_config.edge_da_admission =
-        edge_da_admission_config(&config, l1_state.validator_timelock_sl)
-            .expect("failed to build edge DA admission config");
+    rpc_config.edge_da_admission = edge_da_admission_config(&config, syscoin_edge_da_commit_target)
+        .expect("failed to build edge DA admission config");
     let rpc_policy_client = config
         .sequencer_config
         .tx_validator
@@ -1699,7 +1702,7 @@ async fn run_main_node_pipeline(
             pubdata_mode,
             merkle_tree: tree,
             runtime: runtime.clone(),
-            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
+            compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             disabled: !config.prover_input_generator_config.enable_input_generation,
         })
         .pipe(Batcher {
@@ -1713,7 +1716,7 @@ async fn run_main_node_pipeline(
             chain_id,
             sl_chain_id: node_state_on_startup.l1_state.sl_chain_id,
             chain_address_sl: node_state_on_startup.l1_state.diamond_proxy_address_sl(),
-            compact_edge_da_commit_target: node_state_on_startup.l1_state.validator_timelock_sl,
+            compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,
@@ -2070,11 +2073,7 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn check_syscoin_edge_da_commit_target(l1_state: &L1State) {
-    if !l1_state.settles_on_gateway() {
-        return;
-    }
-
+fn check_syscoin_edge_da_commit_target(l1_state: &L1State) -> Address {
     let expected = std::env::var("SYSCOIN_EDGE_DA_COMMIT_TARGET")
         .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
         .expect(
@@ -2087,12 +2086,15 @@ fn check_syscoin_edge_da_commit_target(l1_state: &L1State) {
         Address::ZERO,
         "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
     );
-    assert_eq!(
-        l1_state.validator_timelock_sl, expected,
-        "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
-         but the protocol-versioned ZKsync OS target is {}",
-        l1_state.validator_timelock_sl, expected
-    );
+    if l1_state.settles_on_gateway() {
+        assert_eq!(
+            l1_state.validator_timelock_sl, expected,
+            "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
+             but the protocol-versioned ZKsync OS target is {}",
+            l1_state.validator_timelock_sl, expected
+        );
+    }
+    expected
 }
 
 fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {

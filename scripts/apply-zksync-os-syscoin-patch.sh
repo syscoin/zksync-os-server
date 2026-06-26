@@ -56,7 +56,18 @@ PY
 }
 
 write_syscoin_edge_da_commit_target() {
-  local target="${SYSCOIN_EDGE_DA_COMMIT_TARGET:-$(syscoin_edge_da_commit_target_from_versions)}"
+  local target var_name var_value var_value_lc
+  target="$(syscoin_edge_da_commit_target_from_versions)"
+  for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
+    var_value="${!var_name:-}"
+    if [ -n "${var_value}" ]; then
+      var_value_lc="$(printf '%s' "${var_value}" | tr '[:upper:]' '[:lower:]')"
+      if [ "${var_value_lc}" != "${target}" ]; then
+        echo "error: ${var_name}=${var_value} does not match versions.yaml syscoin_edge_da_commit_target=${target}" >&2
+        exit 1
+      fi
+    fi
+  done
   local out="${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs"
   TARGET="${target}" OUT="${out}" python3 - <<'PY'
 import os

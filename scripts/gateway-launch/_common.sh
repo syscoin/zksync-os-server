@@ -318,6 +318,20 @@ print(addr)
 PY
 }
 
+gl_export_syscoin_edge_da_commit_target_from_versions() {
+  local expected var_name var_value var_value_lc
+  expected="$(gl_syscoin_edge_da_commit_target_from_versions)"
+  for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
+    var_value="${!var_name:-}"
+    if [ -n "${var_value}" ]; then
+      var_value_lc="$(printf '%s' "${var_value}" | tr '[:upper:]' '[:lower:]')"
+      [ "${var_value_lc}" = "${expected}" ] ||
+        gl_die "${var_name}=${var_value} does not match versions.yaml syscoin_edge_da_commit_target=${expected}"
+    fi
+  done
+  export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
+}
+
 gl_assert_contracts_sha() {
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_CONTRACTS_SHA
