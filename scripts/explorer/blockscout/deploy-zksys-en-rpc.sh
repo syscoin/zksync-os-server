@@ -488,8 +488,8 @@ for instance in (public, debug):
     ]
     if instance["rate_limits"]:
         insert_at = lines.index("status_server:")
-        # SYSCOIN: preserve the legacy method=rps input shape by mapping it to
-        # upstream's tagged Tiered config. A legacy "*=rps" remains the global cap;
+        # SYSCOIN: preserve the existing method=rps env-var input by mapping it to
+        # upstream's tagged Tiered config. An input "*=rps" remains the global cap;
         # otherwise use a sentinel that avoids adding a practical global cap.
         max_rps = 2**32 - 1
         custom_limits = {
