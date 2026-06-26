@@ -502,11 +502,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     tracing::info!(?l1_state, settles_on_gateway, "L1 state");
     l1_state.report_metrics();
-    let syscoin_edge_da_commit_target = if node_role.is_main() {
-        check_syscoin_edge_da_commit_target(&l1_state)
-    } else {
-        l1_state.validator_timelock_sl
-    };
     if node_role.is_main() {
         // SYSCOIN
         validate_batch_verification_startup_policy(
@@ -552,6 +547,15 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             _ => {}
         }
     }
+    let syscoin_edge_da_commit_target = if node_role.is_main()
+        && matches!(
+            effective_pubdata_mode,
+            Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
+        ) {
+        check_syscoin_edge_da_commit_target(&l1_state)
+    } else {
+        l1_state.validator_timelock_sl
+    };
 
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
@@ -1187,6 +1191,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             verify_request_tx,
             verify_result_rx,
             settles_on_gateway,
+            syscoin_edge_da_commit_target,
             effective_pubdata_mode,
             replay_archiver,
         )
@@ -1475,6 +1480,7 @@ async fn run_main_node_pipeline(
     verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
     settles_on_gateway: bool,
+    syscoin_edge_da_commit_target: Address,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
 ) -> watch::Receiver<TransactionAcceptanceState> {
