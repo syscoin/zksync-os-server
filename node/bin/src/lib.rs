@@ -2097,9 +2097,10 @@ fn resolve_syscoin_edge_da_commit_target(
 ) -> Address {
     let expected = syscoin_edge_da_commit_target_from_env_or_versions(protocol_version);
     let Some(expected) = expected else {
+        let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
         assert!(
             !(required && protocol_version.is_post_v31()),
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET or local-chains/{protocol_version}/versions.yaml \
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET or local-chains/{local_chain_dir}/versions.yaml \
              syscoin_edge_da_commit_target must be set for protocol {protocol_version}"
         );
         return l1_state.validator_timelock_sl;
@@ -2129,10 +2130,11 @@ fn syscoin_edge_da_commit_target_from_env_or_versions(
         .map(|value| parse_syscoin_edge_da_commit_target(&value));
     let versions_target = syscoin_edge_da_commit_target_from_versions(protocol_version);
     if let (Some(env_target), Some(versions_target)) = (env_target, versions_target) {
+        let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
         assert_eq!(
             env_target, versions_target,
             "SYSCOIN_EDGE_DA_COMMIT_TARGET ({env_target}) does not match \
-             local-chains/{protocol_version}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
+             local-chains/{local_chain_dir}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
         );
     }
     env_target.or(versions_target)
@@ -2141,7 +2143,10 @@ fn syscoin_edge_da_commit_target_from_env_or_versions(
 fn syscoin_edge_da_commit_target_from_versions(
     protocol_version: &ProtocolSemanticVersion,
 ) -> Option<Address> {
-    let versions_path = format!("local-chains/{protocol_version}/versions.yaml");
+    let versions_path = format!(
+        "local-chains/{}/versions.yaml",
+        local_chain_protocol_version_dir(protocol_version)
+    );
     let versions_path = Path::new(&versions_path);
     if !versions_path.exists() {
         return None;
@@ -2159,9 +2164,14 @@ fn syscoin_edge_da_commit_target_from_versions(
         )
     });
     value
-        .get("syscoin_edge_da_commit_target")
+        .get("general")
+        .and_then(|value| value.get("syscoin_edge_da_commit_target"))
         .and_then(|value| value.as_str())
         .map(parse_syscoin_edge_da_commit_target)
+}
+
+fn local_chain_protocol_version_dir(protocol_version: &ProtocolSemanticVersion) -> String {
+    format!("v{}.{}", protocol_version.minor, protocol_version.patch)
 }
 
 fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
