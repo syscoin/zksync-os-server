@@ -2104,8 +2104,7 @@ pub struct BatchVerificationConfig {
     ))]
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
-    #[allow(clippy::redundant_closure)]
-    #[config(default_t = Vec::new(), with = Delimited::new(","))]
+    #[config(default, with = Delimited::new(","))]
     // SYSCOIN
     #[config_validate(custom(
         |root: &Config, value: &Vec<String>| {
