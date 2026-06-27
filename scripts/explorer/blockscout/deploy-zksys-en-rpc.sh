@@ -18,6 +18,9 @@ INSTALL_BUILD_DEPS="${INSTALL_BUILD_DEPS:-true}"
 DEFAULT_GATEWAY_RPC_URL="${DEFAULT_GATEWAY_RPC_URL:-https://rpc-gw.tanenbaum.io}"
 
 SOURCE_ZKSYS_CONFIG="${SOURCE_ZKSYS_CONFIG:-/home/ubuntu/gateway/os-server-configs/zksys/config.yaml}"
+SOURCE_GATEWAY_DIR="${SOURCE_GATEWAY_DIR:-/home/ubuntu/gateway}"
+GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
+SYSCOIN_EDGE_DA_COMMIT_TARGET="${SYSCOIN_EDGE_DA_COMMIT_TARGET:-${ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET:-}}"
 MAIN_NODE_ENODE="${MAIN_NODE_ENODE:-}"
 MAIN_NODE_RPC_URL="${MAIN_NODE_RPC_URL:-}"
 MAIN_NODE_RPC_PORT="${MAIN_NODE_RPC_PORT:-3050}"
@@ -75,6 +78,21 @@ EOF
   fi
   MAIN_NODE_RPC_URL="http://${SEQUENCER_REMOTE_HOST#*@}:${MAIN_NODE_RPC_PORT}"
 fi
+
+normalize_syscoin_edge_da_commit_target() {
+  TARGET="$1" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be a 20-byte hex address")
+if addr == "0x" + "0" * 40:
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero")
+print(addr)
+PY
+}
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
 if [[ -n "${SSH_KEY_PATH}" ]]; then
@@ -144,6 +162,37 @@ EOF
   exit 1
 fi
 
+if [[ -z "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" ]]; then
+  if [[ -z "${SEQUENCER_REMOTE_HOST}" ]]; then
+    cat >&2 <<'EOF'
+SYSCOIN_EDGE_DA_COMMIT_TARGET is required when SEQUENCER_REMOTE_HOST is not set.
+Set it to the Gateway validator_timelock_addr used by the patched zksync-os binary.
+EOF
+    exit 1
+  fi
+  SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
+    ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
+      "python3 - '${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml'" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid Gateway config: {path}")
+addr = data.get("validator_timelock_addr")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"missing validator_timelock_addr in {path}")
+print(addr.strip())
+PY
+  )"
+fi
+SYSCOIN_EDGE_DA_COMMIT_TARGET="$(normalize_syscoin_edge_da_commit_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
+
 provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
@@ -183,7 +232,8 @@ ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
   "${INSTALL_BUILD_DEPS}" \
   "${START_PUBLIC_SERVICE}" \
   "${START_DEBUG_SERVICE}" \
-  "${PUBLIC_RPC_RATE_LIMITS}" <<'REMOTE_SCRIPT'
+  "${PUBLIC_RPC_RATE_LIMITS}" \
+  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 PROVIDER_B64="$1"
@@ -211,6 +261,7 @@ INSTALL_BUILD_DEPS="${22}"
 START_PUBLIC_SERVICE="${23}"
 START_DEBUG_SERVICE="${24}"
 PUBLIC_RPC_RATE_LIMITS="${25}"
+SYSCOIN_EDGE_DA_COMMIT_TARGET="${26}"
 
 if [[ ! -d "${REMOTE_OS_SERVER_PATH}" ]]; then
   echo "missing remote zksync-os-server checkout: ${REMOTE_OS_SERVER_PATH}" >&2
@@ -318,7 +369,8 @@ python3 - \
   "${DEBUG_STATUS_PORT}" \
   "${DEBUG_PROMETHEUS_PORT}" \
   "${DEBUG_RPC_RATE_LIMITS}" \
-  "${PUBLIC_RPC_RATE_LIMITS}" <<'PY'
+  "${PUBLIC_RPC_RATE_LIMITS}" \
+  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" <<'PY'
 import base64
 import json
 import os
@@ -379,7 +431,15 @@ def provider_lines(name: str, provider: dict) -> list[str]:
     return lines
 
 
-def write_start_script(path: Path, repo: Path, gateway_dir: Path, workspace: str, config: Path, protocol: str) -> None:
+def write_start_script(
+    path: Path,
+    repo: Path,
+    gateway_dir: Path,
+    workspace: str,
+    config: Path,
+    protocol: str,
+    syscoin_edge_da_commit_target: str,
+) -> None:
     text = f"""#!/usr/bin/env bash
 set -euo pipefail
 : "${{OS_SERVER_NOFILE_TARGET:=1048576}}"
@@ -402,6 +462,7 @@ cd {q(str(repo))}
 export GATEWAY_DIR={q(str(gateway_dir))}
 export ZKSYNC_OS_SERVER_PATH={q(str(repo))}
 export PROTOCOL_VERSION={q(protocol)}
+export SYSCOIN_EDGE_DA_COMMIT_TARGET={q(syscoin_edge_da_commit_target)}
 exec bash {q(str(repo / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"))} {q(workspace)} -- run --release -- --config {q(str(config))}
 """
     path.write_text(text, encoding="utf-8")
@@ -415,6 +476,7 @@ main_node_enode = sys.argv[4]
 main_node_rpc_url = sys.argv[5]
 chain_id = sys.argv[6]
 protocol = sys.argv[7]
+syscoin_edge_da_commit_target = sys.argv[22]
 
 public = {
     "name": "zksys-public",
@@ -515,6 +577,7 @@ for instance in (public, debug):
         instance["name"],
         config_path,
         protocol,
+        syscoin_edge_da_commit_target,
     )
 PY
 

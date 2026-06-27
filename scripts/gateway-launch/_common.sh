@@ -327,13 +327,44 @@ print(addr)
 PY
 }
 
+gl_normalize_syscoin_edge_da_commit_target() {
+  local target="${1:?target required}"
+  TARGET="${target}" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be a 20-byte hex address")
+if addr == "0x" + "0" * 40:
+    raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero")
+print(addr)
+PY
+}
+
 gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
-  local expected var_name var_value var_value_lc
-  expected="$(gl_syscoin_edge_da_commit_target_from_gateway_config)"
+  local expected gateway_chain_name gateway_config var_name var_value var_value_lc
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  gateway_config="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml"
+  if [ -f "${gateway_config}" ]; then
+    expected="$(gl_syscoin_edge_da_commit_target_from_gateway_config)"
+  else
+    expected=""
+    for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
+      var_value="${!var_name:-}"
+      if [ -n "${var_value}" ]; then
+        expected="$(gl_normalize_syscoin_edge_da_commit_target "${var_value}")"
+        break
+      fi
+    done
+    [ -n "${expected}" ] ||
+      gl_die "missing Gateway config: ${gateway_config}; set SYSCOIN_EDGE_DA_COMMIT_TARGET for workspace-only launches"
+  fi
   for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
     var_value="${!var_name:-}"
     if [ -n "${var_value}" ]; then
-      var_value_lc="$(printf '%s' "${var_value}" | tr '[:upper:]' '[:lower:]')"
+      var_value_lc="$(gl_normalize_syscoin_edge_da_commit_target "${var_value}")"
       [ "${var_value_lc}" = "${expected}" ] ||
         gl_die "${var_name}=${var_value} does not match Gateway validator_timelock_addr=${expected}"
     fi
