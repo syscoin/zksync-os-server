@@ -21,17 +21,32 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     // EntryPoint charges a 10% unused-gas penalty when the 80k stipend leaves ~50k unused.
     uint256 private constant POST_OP_COST = 35_000;
+    // SYSCOIN: zkSYS-sponsored ops must not inflate ERC-4337 reimbursements beyond Pali's supported gas envelope.
+    uint256 private constant MAX_PAYMASTER_PRIORITY_FEE_PER_GAS = 0;
     uint256 private constant MIN_PAYMASTER_POST_OP_GAS_LIMIT = POST_OP_COST;
-    uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
 
+    event SponsoredGasPolicyUpdated(
+        uint256 maxPreVerificationGas,
+        uint256 maxVerificationGasLimit,
+        uint256 maxCallGasLimit,
+        uint256 maxPaymasterVerificationGasLimit,
+        uint256 maxPaymasterPostOpGasLimit
+    );
+
     error InvalidAddress();
+    error InvalidSponsoredGasPolicy();
     error NativeWithdrawalsDisabled();
     error TokenWithdrawalsDisabled();
 
     IEntryPoint private immutable _entryPoint;
     IERC20Burnable public immutable token;
+    uint256 public maxPreVerificationGas;
+    uint256 public maxVerificationGasLimit;
+    uint256 public maxCallGasLimit;
+    uint256 public maxPaymasterVerificationGasLimit;
+    uint256 public maxPaymasterPostOpGasLimit;
 
     constructor(IEntryPoint entryPoint_, IERC20Burnable token_, address owner_) Ownable(owner_) {
         if (
@@ -42,6 +57,7 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         }
         _entryPoint = entryPoint_;
         token = token_;
+        _setSponsoredGasPolicy(150_000, 2_000_000, 1_000_000, 120_000, 80_000);
     }
 
     receive() external payable {
@@ -68,23 +84,29 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         revert NativeWithdrawalsDisabled();
     }
 
+    function setSponsoredGasPolicy(
+        uint256 maxPreVerificationGas_,
+        uint256 maxVerificationGasLimit_,
+        uint256 maxCallGasLimit_,
+        uint256 maxPaymasterVerificationGasLimit_,
+        uint256 maxPaymasterPostOpGasLimit_
+    ) external onlyOwner {
+        _setSponsoredGasPolicy(
+            maxPreVerificationGas_,
+            maxVerificationGasLimit_,
+            maxCallGasLimit_,
+            maxPaymasterVerificationGasLimit_,
+            maxPaymasterPostOpGasLimit_
+        );
+    }
+
     function _fetchDetails(PackedUserOperation calldata userOp, bytes32)
         internal
         view
         override
         returns (uint256 validationData, IERC20 paymentToken, uint256 tokenPrice)
     {
-        if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
-            return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
-        }
-
-        uint128 paymasterPostOpGasLimit = uint128(
-            bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
-        );
-        if (
-            paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
-                || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT
-        ) {
+        if (!_isWithinSponsoredGasPolicy(userOp)) {
             return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
         }
 
@@ -103,20 +125,13 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         override
         returns (bool prefunded, uint256 prefundAmount, address prefunder, bytes memory prefundContext)
     {
-        if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
+        if (!_isWithinSponsoredGasPolicy(userOp)) {
             return (false, 0, prefunder_, "");
         }
 
         uint128 paymasterPostOpGasLimit = uint128(
             bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
         );
-        if (
-            paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
-                || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT
-        ) {
-            return (false, 0, prefunder_, "");
-        }
-
         uint256 reservedPostOpCost = paymasterPostOpGasLimit * userOp.maxFeePerGas();
         if (reservedPostOpCost > maxCost) {
             return (false, 0, prefunder_, "");
@@ -152,6 +167,68 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     function _postOpCost() internal pure override returns (uint256) {
         return POST_OP_COST;
+    }
+
+    function _setSponsoredGasPolicy(
+        uint256 maxPreVerificationGas_,
+        uint256 maxVerificationGasLimit_,
+        uint256 maxCallGasLimit_,
+        uint256 maxPaymasterVerificationGasLimit_,
+        uint256 maxPaymasterPostOpGasLimit_
+    ) private {
+        if (
+            maxPreVerificationGas_ == 0 || maxVerificationGasLimit_ == 0 || maxCallGasLimit_ == 0
+                || maxPaymasterVerificationGasLimit_ == 0 || maxPaymasterPostOpGasLimit_ < MIN_PAYMASTER_POST_OP_GAS_LIMIT
+        ) {
+            revert InvalidSponsoredGasPolicy();
+        }
+
+        maxPreVerificationGas = maxPreVerificationGas_;
+        maxVerificationGasLimit = maxVerificationGasLimit_;
+        maxCallGasLimit = maxCallGasLimit_;
+        maxPaymasterVerificationGasLimit = maxPaymasterVerificationGasLimit_;
+        maxPaymasterPostOpGasLimit = maxPaymasterPostOpGasLimit_;
+
+        emit SponsoredGasPolicyUpdated(
+            maxPreVerificationGas_,
+            maxVerificationGasLimit_,
+            maxCallGasLimit_,
+            maxPaymasterVerificationGasLimit_,
+            maxPaymasterPostOpGasLimit_
+        );
+    }
+
+    function _isWithinSponsoredGasPolicy(PackedUserOperation calldata userOp) private view returns (bool) {
+        if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
+            return false;
+        }
+        if (userOp.maxPriorityFeePerGas() > MAX_PAYMASTER_PRIORITY_FEE_PER_GAS) {
+            return false;
+        }
+        if (userOp.preVerificationGas > maxPreVerificationGas) {
+            return false;
+        }
+        if (userOp.verificationGasLimit() > maxVerificationGasLimit) {
+            return false;
+        }
+        if (userOp.callGasLimit() > maxCallGasLimit) {
+            return false;
+        }
+        if (userOp.paymasterVerificationGasLimit() > maxPaymasterVerificationGasLimit) {
+            return false;
+        }
+
+        uint128 paymasterPostOpGasLimit = uint128(
+            bytes16(userOp.paymasterAndData[PAYMASTER_POST_OP_GAS_LIMIT_OFFSET:PAYMASTER_POST_OP_GAS_LIMIT_END])
+        );
+        if (
+            paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
+                || paymasterPostOpGasLimit > maxPaymasterPostOpGasLimit
+        ) {
+            return false;
+        }
+
+        return true;
     }
 
     function _depositNativeBalance() private {
