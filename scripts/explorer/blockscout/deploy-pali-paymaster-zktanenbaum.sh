@@ -108,8 +108,8 @@ if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" != "true" && "${PAYMASTER_GRANT_BURNER_RO
   echo "error: PAYMASTER_GRANT_BURNER_ROLE must be true or false" >&2
   exit 1
 fi
-if [[ "${UPDATE_VERSIONS_FEE_COLLECTOR}" != "true" && "${UPDATE_VERSIONS_FEE_COLLECTOR}" != "false" ]]; then
-  echo "error: UPDATE_VERSIONS_FEE_COLLECTOR must be true or false" >&2
+if [[ "${UPDATE_CHAIN_FEE_COLLECTOR}" != "true" && "${UPDATE_CHAIN_FEE_COLLECTOR}" != "false" ]]; then
+  echo "error: UPDATE_CHAIN_FEE_COLLECTOR must be true or false" >&2
   exit 1
 fi
 
