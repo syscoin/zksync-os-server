@@ -746,6 +746,8 @@ if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
 fi
 cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
+export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
+export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
 export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
 exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
 """

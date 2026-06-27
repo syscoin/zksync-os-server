@@ -146,7 +146,55 @@ if [[ -n "${paymaster_address}" ]]; then
   echo
   echo "PAYMASTER_ADDRESS=${paymaster_address}"
 
+  burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "BURNER_ROLE()(bytes32)" --rpc-url "${RPC_URL}")"
+  has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"
+  if [[ "${has_burner_role}" != "true" ]]; then
+    if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" == "true" ]]; then
+      echo
+      echo "Granting zkSYS BURNER_ROLE to paymaster ${paymaster_address}"
+      cast send "${ZKSYS_TOKEN_ADDRESS}" \
+        "grantRole(bytes32,address)" "${burner_role}" "${paymaster_address}" \
+        --rpc-url "${RPC_URL}" \
+        --chain "${CHAIN_ID}" \
+        "${wallet_args[@]}"
+    else
+      echo
+      echo "warning: paymaster ${paymaster_address} does not have zkSYS BURNER_ROLE; postOp burns will fail until the role is granted." >&2
+    fi
+  fi
+
+  has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"
+
+  if [[ -n "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" ]]; then
+    echo
+    echo "Depositing ${PAYMASTER_INITIAL_DEPOSIT_NATIVE} native into EntryPoint for paymaster ${paymaster_address}"
+    cast send "${paymaster_address}" \
+      --rpc-url "${RPC_URL}" \
+      --chain "${CHAIN_ID}" \
+      --value "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" \
+      "${wallet_args[@]}"
+  fi
+
+  if [[ -n "${PAYMASTER_STAKE_NATIVE}" ]]; then
+    echo
+    echo "Staking ${PAYMASTER_STAKE_NATIVE} native for paymaster ${paymaster_address}"
+    cast send "${paymaster_address}" \
+      "addStake(uint32)" "${PAYMASTER_UNSTAKE_DELAY_SEC}" \
+      --rpc-url "${RPC_URL}" \
+      --chain "${CHAIN_ID}" \
+      --value "${PAYMASTER_STAKE_NATIVE}" \
+      "${wallet_args[@]}"
+  else
+    echo
+    echo "warning: PAYMASTER_STAKE_NATIVE was not set; ERC-4337 bundlers may reject this storage-accessing paymaster until addStake is called." >&2
+  fi
+
   if [[ "${UPDATE_CHAIN_FEE_COLLECTOR}" == "true" ]]; then
+    if [[ "${has_burner_role}" != "true" ]]; then
+      echo "error: refusing to write zksys fee collector; paymaster ${paymaster_address} lacks zkSYS BURNER_ROLE" >&2
+      exit 1
+    fi
+
     contracts_yaml="${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/contracts.yaml"
     if [[ ! -f "${contracts_yaml}" ]]; then
       contracts_yaml="${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/contracts_${CHAIN_ID}.yaml"
@@ -177,46 +225,5 @@ l2["zksys_fee_collector_addr"] = address
 path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 PY
     echo "Updated ${contracts_yaml}: l2.zksys_fee_collector_addr=${paymaster_address}"
-  fi
-
-  burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "BURNER_ROLE()(bytes32)" --rpc-url "${RPC_URL}")"
-  has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"
-  if [[ "${has_burner_role}" != "true" ]]; then
-    if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" == "true" ]]; then
-      echo
-      echo "Granting zkSYS BURNER_ROLE to paymaster ${paymaster_address}"
-      cast send "${ZKSYS_TOKEN_ADDRESS}" \
-        "grantRole(bytes32,address)" "${burner_role}" "${paymaster_address}" \
-        --rpc-url "${RPC_URL}" \
-        --chain "${CHAIN_ID}" \
-        "${wallet_args[@]}"
-    else
-      echo
-      echo "warning: paymaster ${paymaster_address} does not have zkSYS BURNER_ROLE; postOp burns will fail until the role is granted." >&2
-    fi
-  fi
-
-  if [[ -n "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" ]]; then
-    echo
-    echo "Depositing ${PAYMASTER_INITIAL_DEPOSIT_NATIVE} native into EntryPoint for paymaster ${paymaster_address}"
-    cast send "${paymaster_address}" \
-      --rpc-url "${RPC_URL}" \
-      --chain "${CHAIN_ID}" \
-      --value "${PAYMASTER_INITIAL_DEPOSIT_NATIVE}" \
-      "${wallet_args[@]}"
-  fi
-
-  if [[ -n "${PAYMASTER_STAKE_NATIVE}" ]]; then
-    echo
-    echo "Staking ${PAYMASTER_STAKE_NATIVE} native for paymaster ${paymaster_address}"
-    cast send "${paymaster_address}" \
-      "addStake(uint32)" "${PAYMASTER_UNSTAKE_DELAY_SEC}" \
-      --rpc-url "${RPC_URL}" \
-      --chain "${CHAIN_ID}" \
-      --value "${PAYMASTER_STAKE_NATIVE}" \
-      "${wallet_args[@]}"
-  else
-    echo
-    echo "warning: PAYMASTER_STAKE_NATIVE was not set; ERC-4337 bundlers may reject this storage-accessing paymaster until addStake is called." >&2
   fi
 fi
