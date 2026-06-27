@@ -4,6 +4,9 @@ general:
   # SYSCOIN: Gateway ValidatorTimelock proxy used by ZKsync OS to collect compact edge DA refs.
   # This value is consensus-critical for the patched OS binary.
   syscoin_edge_da_commit_target: "0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19"
+  # SYSCOIN: zksys L2 fee collector. Set to the deployed non-withdrawable
+  # PaliFixedRateTokenPaymaster before generating mainnet os-server configs.
+  zksys_fee_collector_address: "0x74fa493ae2106a93c5f73060b42fc8d96fb6dfc9"
 
 era-contracts:
   # TODO: remove branch and put tag and sha when the release is done

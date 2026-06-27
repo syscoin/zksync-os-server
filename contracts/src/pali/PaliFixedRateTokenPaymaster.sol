@@ -34,7 +34,10 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     IERC20Burnable public immutable token;
 
     constructor(IEntryPoint entryPoint_, IERC20Burnable token_, address owner_) Ownable(owner_) {
-        if (address(entryPoint_) == address(0) || address(token_) == address(0) || owner_ == address(0)) {
+        if (
+            address(entryPoint_) == address(0) || address(token_) == address(0) || owner_ == address(0)
+                || address(entryPoint_).code.length == 0 || address(token_).code.length == 0
+        ) {
             revert InvalidAddress();
         }
         _entryPoint = entryPoint_;
@@ -42,11 +45,15 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
     }
 
     receive() external payable {
-        deposit();
+        _depositNativeBalance();
     }
 
     function entryPoint() public view override returns (IEntryPoint) {
         return _entryPoint;
+    }
+
+    function deposit() public payable override {
+        _depositNativeBalance();
     }
 
     function withdrawDepositTo(address payable, uint256) external pure {
@@ -145,5 +152,12 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     function _postOpCost() internal pure override returns (uint256) {
         return POST_OP_COST;
+    }
+
+    function _depositNativeBalance() private {
+        uint256 amount = address(this).balance;
+        if (amount != 0) {
+            _entryPoint.depositTo{value: amount}(address(this));
+        }
     }
 }

@@ -230,6 +230,17 @@ def load_yaml(path: Path):
     return yaml.safe_load(path.read_text())
 
 
+def normalize_nonzero_address(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise SystemExit(f"{label} must be a 20-byte hex address")
+    address = value.strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+        raise SystemExit(f"{label} must be a 20-byte hex address")
+    if address == "0x" + "0" * 40:
+        raise SystemExit(f"{label} must be nonzero")
+    return address
+
+
 def write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -376,6 +387,14 @@ prover_api_nginx_enabled = bool(prover_api_auth_config_lines)
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
 bytecode_supplier = eco_contracts["zksync_os_ctm"]["l1_bytecodes_supplier_addr"]
+versions = load_yaml(server_root / "local-chains" / os.environ["PROTOCOL_VERSION"] / "versions.yaml")
+versions_general = versions.get("general") if isinstance(versions, dict) else None
+zksys_fee_collector_address = None
+if isinstance(versions_general, dict) and versions_general.get("zksys_fee_collector_address") is not None:
+    zksys_fee_collector_address = normalize_nonzero_address(
+        versions_general["zksys_fee_collector_address"],
+        "general.zksys_fee_collector_address",
+    )
 
 
 def nginx_prover_api_server_block(domain: str, prover_api_port: str) -> str:
@@ -467,6 +486,8 @@ def materialize_chain(
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
     fee_collector_address = wallets["fee_account"]["address"]
+    if chain_name == os.environ["EDGE_CHAIN_NAME"] and zksys_fee_collector_address is not None:
+        fee_collector_address = zksys_fee_collector_address
 
     config_lines = [
         "general:",

@@ -28,6 +28,10 @@
 #                           true by default; grants zkSYS BURNER_ROLE to the deployed paymaster
 #                           using the deployer signer. Set false only if role wiring is handled
 #                           separately before the paymaster is used.
+#   PROTOCOL_VERSION        default: v31.0; versions.yaml to update after deployment
+#   UPDATE_VERSIONS_FEE_COLLECTOR
+#                           true by default; writes deployed paymaster to
+#                           general.zksys_fee_collector_address
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -43,12 +47,14 @@ CONTRACTS_DIR="${REPO_ROOT}/contracts"
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
 CHAIN_ID="${CHAIN_ID:-57057}"
+PROTOCOL_VERSION="${PROTOCOL_VERSION:-v31.0}"
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
 PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
 PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
 PAYMASTER_GRANT_BURNER_ROLE="${PAYMASTER_GRANT_BURNER_ROLE:-true}"
+UPDATE_VERSIONS_FEE_COLLECTOR="${UPDATE_VERSIONS_FEE_COLLECTOR:-true}"
 
 if [[ -z "${ZKSYS_TOKEN_ADDRESS:-}" ]]; then
   echo "error: ZKSYS_TOKEN_ADDRESS is required" >&2
@@ -99,6 +105,10 @@ if [[ "${PAYMASTER_GRANT_BURNER_ROLE}" != "true" && "${PAYMASTER_GRANT_BURNER_RO
   echo "error: PAYMASTER_GRANT_BURNER_ROLE must be true or false" >&2
   exit 1
 fi
+if [[ "${UPDATE_VERSIONS_FEE_COLLECTOR}" != "true" && "${UPDATE_VERSIONS_FEE_COLLECTOR}" != "false" ]]; then
+  echo "error: UPDATE_VERSIONS_FEE_COLLECTOR must be true or false" >&2
+  exit 1
+fi
 
 verify_args=()
 if [[ "${VERIFY}" == "true" ]]; then
@@ -132,6 +142,41 @@ paymaster_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | 
 if [[ -n "${paymaster_address}" ]]; then
   echo
   echo "PAYMASTER_ADDRESS=${paymaster_address}"
+
+  if [[ "${UPDATE_VERSIONS_FEE_COLLECTOR}" == "true" ]]; then
+    versions_yaml="${REPO_ROOT}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
+    if [[ ! -f "${versions_yaml}" ]]; then
+      echo "error: missing versions file: ${versions_yaml}" >&2
+      exit 1
+    fi
+    python3 - "${versions_yaml}" "${paymaster_address}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+address = sys.argv[2].strip().lower()
+if not re.fullmatch(r"0x[0-9a-f]{40}", address) or address == "0x" + "0" * 40:
+    raise SystemExit("paymaster address must be a nonzero 20-byte hex address")
+
+text = path.read_text(encoding="utf-8")
+key_re = re.compile(
+    r'(?m)^(\s*)#?\s*zksys_fee_collector_address:\s*(["\']?)0x[0-9a-fA-F]{40}(["\']?)\s*$'
+)
+match = key_re.search(text)
+if match:
+    text = key_re.sub(rf'\1zksys_fee_collector_address: "{address}"', text, count=1)
+else:
+    general = re.search(r"(?m)^general:\s*$", text)
+    if not general:
+        raise SystemExit("versions.yaml missing general section")
+    insert_at = general.end()
+    text = text[:insert_at] + f'\n  zksys_fee_collector_address: "{address}"' + text[insert_at:]
+
+path.write_text(text, encoding="utf-8")
+PY
+    echo "Updated ${versions_yaml}: general.zksys_fee_collector_address=${paymaster_address}"
+  fi
 
   burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "BURNER_ROLE()(bytes32)" --rpc-url "${RPC_URL}")"
   has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"
