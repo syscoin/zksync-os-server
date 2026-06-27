@@ -297,36 +297,45 @@ gl_zkstack_cli_sha_from_versions() {
   gl_sha_from_versions "zkstack-cli"
 }
 
-gl_syscoin_edge_da_commit_target_from_versions() {
-  gl_require PROTOCOL_VERSION
-  local vf="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
-  [ -f "$vf" ] || gl_die "missing ${vf}"
-  VERSIONS_YAML="$vf" python3 - <<'PY'
-import os, re
+gl_syscoin_edge_da_commit_target_from_gateway_config() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  GATEWAY_CONFIG="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" python3 - <<'PY'
+import os
+from pathlib import Path
 
-text = open(os.environ["VERSIONS_YAML"], "r", encoding="utf-8").read()
-m = re.search(
-    r"(?m)^\s*syscoin_edge_da_commit_target:\s*['\"]?(0x[0-9a-fA-F]{40})['\"]?\s*$",
-    text,
-)
-if not m:
-    raise SystemExit("syscoin_edge_da_commit_target not found in versions.yaml")
-addr = m.group(1).lower()
+import yaml
+
+path = Path(os.environ["GATEWAY_CONFIG"])
+if not path.exists():
+    raise SystemExit(f"missing Gateway config: {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid Gateway config: {path}")
+addr = data.get("validator_timelock_addr")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"missing validator_timelock_addr in {path}")
+addr = addr.strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit(f"invalid validator_timelock_addr in {path}: {addr}")
 if addr == "0x" + "0" * 40:
-    raise SystemExit("syscoin_edge_da_commit_target must be nonzero")
+    raise SystemExit(f"validator_timelock_addr must be nonzero in {path}")
 print(addr)
 PY
 }
 
-gl_export_syscoin_edge_da_commit_target_from_versions() {
+gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
   local expected var_name var_value var_value_lc
-  expected="$(gl_syscoin_edge_da_commit_target_from_versions)"
+  expected="$(gl_syscoin_edge_da_commit_target_from_gateway_config)"
   for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
     var_value="${!var_name:-}"
     if [ -n "${var_value}" ]; then
       var_value_lc="$(printf '%s' "${var_value}" | tr '[:upper:]' '[:lower:]')"
       [ "${var_value_lc}" = "${expected}" ] ||
-        gl_die "${var_name}=${var_value} does not match versions.yaml syscoin_edge_da_commit_target=${expected}"
+        gl_die "${var_name}=${var_value} does not match Gateway validator_timelock_addr=${expected}"
     fi
   done
   export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
