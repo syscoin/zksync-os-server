@@ -65,9 +65,27 @@ contract MockEntryPoint {
     ) external {
         paymaster.postOp(mode, context, actualGasCost, actualUserOpFeePerGas);
     }
+
+    function settleGasUsed(
+        PaliFixedRateTokenPaymaster paymaster,
+        IPaymaster.PostOpMode mode,
+        bytes calldata context,
+        uint256 actualGasCost,
+        uint256 actualUserOpFeePerGas
+    ) external returns (uint256 gasUsed) {
+        uint256 beforeGas = gasleft();
+        paymaster.postOp(mode, context, actualGasCost, actualUserOpFeePerGas);
+        gasUsed = beforeGas - gasleft();
+    }
 }
 
 contract PaliFixedRateTokenPaymasterTest is Test {
+    uint256 private constant MAX_PRE_VERIFICATION_GAS = 150_000;
+    uint256 private constant MAX_VERIFICATION_GAS_LIMIT = 2_000_000;
+    uint256 private constant MAX_CALL_GAS_LIMIT = 1_000_000;
+    uint128 private constant MAX_PAYMASTER_VERIFICATION_GAS_LIMIT = 120_000;
+    uint128 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
+
     MockEntryPoint private entryPoint;
     PaliFixedRateTokenPaymaster private paymaster;
     TestERC20 private token;
@@ -81,6 +99,16 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         paymaster =
             new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(token)), owner);
         token.mint(sender, 1_000 ether);
+    }
+
+    function testConstructorRejectsEntryPointWithoutCode() public {
+        vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidAddress.selector);
+        new PaliFixedRateTokenPaymaster(IEntryPoint(address(0xE0A)), IERC20Burnable(address(token)), owner);
+    }
+
+    function testConstructorRejectsTokenWithoutCode() public {
+        vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidAddress.selector);
+        new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(0xE0A)), owner);
     }
 
     function testValidatePrechargesMaxCostAndPostOpRefundsExcess() public {
@@ -159,6 +187,62 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(zkToken.totalSupply(), 1_000 ether - actualCost - postOpCost);
     }
 
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimit() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opSucceeded, false, false, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWhenReverted() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opReverted, false, false, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithDelegatedSender() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opSucceeded, true, false, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithDelegatedSenderWhenReverted() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opReverted, true, false, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithDelegatedPaymaster() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opSucceeded, false, true, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithDelegatedPaymasterWhenReverted() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opReverted, false, true, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithDelegatedSenderAndPaymaster() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opSucceeded, true, true, false);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithRepeatedCheckpoints() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opSucceeded, true, true, true);
+    }
+
+    function testProductionZkSysPostOpGasEstimateFitsConfiguredLimitWithRepeatedCheckpointsWhenReverted() public {
+        _assertProductionZkSysPostOpGasFitsLimit(IPaymaster.PostOpMode.opReverted, true, true, true);
+    }
+
+    function _assertProductionZkSysPostOpGasFitsLimit(
+        IPaymaster.PostOpMode mode,
+        bool delegateSender,
+        bool delegatePaymaster,
+        bool repeatOperation
+    ) private {
+        (SyscoinZKSYSToken zkToken, bytes memory context, uint256 actualCost, uint256 actualFeePerGas) =
+            _validatedProductionZkSysUserOp(delegateSender, delegatePaymaster);
+
+        if (repeatOperation) {
+            entryPoint.settle(paymaster, mode, context, actualCost, actualFeePerGas);
+            (context, actualCost, actualFeePerGas) = _validateProductionZkSysUserOp(zkToken);
+        }
+
+        uint256 gasUsed = entryPoint.settleGasUsed(paymaster, mode, context, actualCost, actualFeePerGas);
+
+        assertLe(gasUsed, MAX_PAYMASTER_POST_OP_GAS_LIMIT);
+        assertEq(zkToken.balanceOf(address(paymaster)), 0);
+    }
+
     function testValidateRejectsExcessivePostOpGasLimit() public {
         _assertPostOpGasLimitRejected(80_001);
     }
@@ -168,7 +252,9 @@ contract PaliFixedRateTokenPaymasterTest is Test {
     }
 
     function testValidateAcceptsBoundedLargerPostOpGasLimit() public {
+        uint256 maxFeePerGas = 1 gwei;
         uint256 maxCost = 10 ether;
+        uint256 extraPostOpHeadroomCost = 45_000 * maxFeePerGas;
         PackedUserOperation memory userOp = _userOpWithPostOpGasLimit(80_000);
 
         vm.prank(sender);
@@ -178,8 +264,126 @@ contract PaliFixedRateTokenPaymasterTest is Test {
 
         assertEq(validationData, 0);
         assertGt(context.length, 0);
-        assertEq(token.balanceOf(sender), 990 ether);
-        assertEq(token.balanceOf(address(paymaster)), maxCost);
+        assertEq(token.balanceOf(sender), 1_000 ether - maxCost + extraPostOpHeadroomCost);
+        assertEq(token.balanceOf(address(paymaster)), maxCost - extraPostOpHeadroomCost);
+    }
+
+    function testValidateRejectsPriorityFee() public {
+        uint256 maxCost = 10 ether;
+        PackedUserOperation memory userOp = _userOp();
+        userOp.gasFees = bytes32(abi.encodePacked(uint128(1), uint128(1 gwei)));
+
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 1);
+        assertEq(context.length, 0);
+        assertEq(token.balanceOf(sender), 1_000 ether);
+        assertEq(token.balanceOf(address(paymaster)), 0);
+    }
+
+    function testValidateRejectsExcessivePreVerificationGas() public {
+        PackedUserOperation memory userOp = _userOp();
+        userOp.preVerificationGas = MAX_PRE_VERIFICATION_GAS + 1;
+
+        _assertUserOpRejected(userOp);
+    }
+
+    function testValidateRejectsExcessiveVerificationGasLimit() public {
+        PackedUserOperation memory userOp = _userOp();
+        userOp.accountGasLimits = _accountGasLimits(MAX_VERIFICATION_GAS_LIMIT + 1, 250_000);
+
+        _assertUserOpRejected(userOp);
+    }
+
+    function testValidateRejectsExcessiveCallGasLimit() public {
+        PackedUserOperation memory userOp = _userOp();
+        userOp.accountGasLimits = _accountGasLimits(200_000, MAX_CALL_GAS_LIMIT + 1);
+
+        _assertUserOpRejected(userOp);
+    }
+
+    function testValidateRejectsExcessivePaymasterVerificationGasLimit() public {
+        PackedUserOperation memory userOp =
+            _userOpWithPaymasterGasLimits(MAX_PAYMASTER_VERIFICATION_GAS_LIMIT + 1, 35_000);
+
+        _assertUserOpRejected(userOp);
+    }
+
+    function testValidateAcceptsSponsoredGasPolicyBoundaries() public {
+        uint256 maxCost = 10 ether;
+        PackedUserOperation memory userOp =
+            _userOpWithPaymasterGasLimits(MAX_PAYMASTER_VERIFICATION_GAS_LIMIT, MAX_PAYMASTER_POST_OP_GAS_LIMIT);
+        userOp.preVerificationGas = MAX_PRE_VERIFICATION_GAS;
+        userOp.accountGasLimits = _accountGasLimits(MAX_VERIFICATION_GAS_LIMIT, MAX_CALL_GAS_LIMIT);
+        userOp.gasFees = bytes32(abi.encodePacked(uint128(0), uint128(1 gwei)));
+
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 0);
+        assertGt(context.length, 0);
+        assertLt(token.balanceOf(sender), 1_000 ether);
+        assertGt(token.balanceOf(address(paymaster)), 0);
+    }
+
+    function testOwnerCanUpdateSponsoredGasPolicy() public {
+        PackedUserOperation memory userOp = _userOp();
+        userOp.accountGasLimits = _accountGasLimits(200_000, MAX_CALL_GAS_LIMIT + 1);
+
+        _assertUserOpRejected(userOp);
+
+        vm.prank(owner);
+        paymaster.setSponsoredGasPolicy(
+            MAX_PRE_VERIFICATION_GAS,
+            MAX_VERIFICATION_GAS_LIMIT,
+            MAX_CALL_GAS_LIMIT + 1,
+            MAX_PAYMASTER_VERIFICATION_GAS_LIMIT,
+            MAX_PAYMASTER_POST_OP_GAS_LIMIT
+        );
+
+        uint256 maxCost = 10 ether;
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 0);
+        assertGt(context.length, 0);
+    }
+
+    function testOnlyOwnerCanUpdateSponsoredGasPolicy() public {
+        vm.prank(sender);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, sender));
+        paymaster.setSponsoredGasPolicy(
+            MAX_PRE_VERIFICATION_GAS,
+            MAX_VERIFICATION_GAS_LIMIT,
+            MAX_CALL_GAS_LIMIT + 1,
+            MAX_PAYMASTER_VERIFICATION_GAS_LIMIT,
+            MAX_PAYMASTER_POST_OP_GAS_LIMIT
+        );
+    }
+
+    function testRejectsInvalidSponsoredGasPolicy() public {
+        vm.prank(owner);
+        vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidSponsoredGasPolicy.selector);
+        paymaster.setSponsoredGasPolicy(
+            MAX_PRE_VERIFICATION_GAS, MAX_VERIFICATION_GAS_LIMIT, MAX_CALL_GAS_LIMIT, 0, MAX_PAYMASTER_POST_OP_GAS_LIMIT
+        );
+
+        vm.prank(owner);
+        vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidSponsoredGasPolicy.selector);
+        paymaster.setSponsoredGasPolicy(
+            MAX_PRE_VERIFICATION_GAS,
+            MAX_VERIFICATION_GAS_LIMIT,
+            MAX_CALL_GAS_LIMIT,
+            MAX_PAYMASTER_VERIFICATION_GAS_LIMIT,
+            34_999
+        );
     }
 
     function testValidateDoesNotPrechargeExtraPostOpHeadroom() public {
@@ -215,6 +419,20 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         assertEq(token.balanceOf(address(paymaster)), 0);
     }
 
+    function _assertUserOpRejected(PackedUserOperation memory userOp) private {
+        uint256 maxCost = 10 ether;
+
+        vm.prank(sender);
+        token.approve(address(paymaster), maxCost);
+
+        (bytes memory context, uint256 validationData) = entryPoint.validate(paymaster, userOp, maxCost);
+
+        assertEq(validationData, 1);
+        assertEq(context.length, 0);
+        assertEq(token.balanceOf(sender), 1_000 ether);
+        assertEq(token.balanceOf(address(paymaster)), 0);
+    }
+
     function testValidateRejectsCallsOutsideEntryPoint() public {
         PackedUserOperation memory userOp = _userOp();
 
@@ -229,6 +447,15 @@ contract PaliFixedRateTokenPaymasterTest is Test {
 
         assertTrue(success);
         assertEq(entryPoint.balanceOf(address(paymaster)), 2 ether);
+    }
+
+    function testDepositSyncsDirectlyCreditedNativeBalanceToEntryPoint() public {
+        vm.deal(address(paymaster), 3 ether);
+
+        paymaster.deposit();
+
+        assertEq(address(paymaster).balance, 0);
+        assertEq(entryPoint.balanceOf(address(paymaster)), 3 ether);
     }
 
     function testNativeDepositCannotBeWithdrawn() public {
@@ -299,8 +526,24 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         view
         returns (PackedUserOperation memory userOp)
     {
+        userOp = _userOpWithPaymasterGasLimits(120_000, paymasterPostOpGasLimit);
+    }
+
+    function _userOpWithPaymasterGasLimits(uint128 paymasterVerificationGasLimit, uint128 paymasterPostOpGasLimit)
+        private
+        view
+        returns (PackedUserOperation memory userOp)
+    {
         userOp.sender = sender;
-        userOp.paymasterAndData = abi.encodePacked(address(paymaster), uint128(120_000), paymasterPostOpGasLimit);
+        userOp.preVerificationGas = 50_000;
+        userOp.accountGasLimits = _accountGasLimits(200_000, 250_000);
+        userOp.gasFees = bytes32(abi.encodePacked(uint128(0), uint128(1 gwei)));
+        userOp.paymasterAndData =
+            abi.encodePacked(address(paymaster), paymasterVerificationGasLimit, paymasterPostOpGasLimit);
+    }
+
+    function _accountGasLimits(uint256 verificationGasLimit, uint256 callGasLimit) private pure returns (bytes32) {
+        return bytes32(abi.encodePacked(uint128(verificationGasLimit), uint128(callGasLimit)));
     }
 
     function _deployZkSysToken() private returns (SyscoinZKSYSToken) {
@@ -310,5 +553,44 @@ contract PaliFixedRateTokenPaymasterTest is Test {
             abi.encodeCall(SyscoinZKSYSToken.initialize, ("ZKSYS", "ZKSYS", uint8(18), address(this)))
         );
         return SyscoinZKSYSToken(address(proxy));
+    }
+
+    function _validatedProductionZkSysUserOp(bool delegateSender, bool delegatePaymaster)
+        private
+        returns (SyscoinZKSYSToken zkToken, bytes memory context, uint256 actualCost, uint256 actualFeePerGas)
+    {
+        zkToken = _deployZkSysToken();
+        paymaster =
+            new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(zkToken)), owner);
+        zkToken.grantRole(zkToken.MINTER_ROLE(), address(this));
+        zkToken.grantRole(zkToken.BURNER_ROLE(), address(paymaster));
+        zkToken.mint(sender, 1_000 ether);
+
+        if (delegateSender) {
+            vm.prank(sender);
+            zkToken.delegate(sender);
+        }
+        if (delegatePaymaster) {
+            // Synthetic worst-case checkpoint setup: the paymaster has no production self-delegate hook.
+            vm.prank(address(paymaster));
+            zkToken.delegate(address(paymaster));
+        }
+
+        (context, actualCost, actualFeePerGas) = _validateProductionZkSysUserOp(zkToken);
+    }
+
+    function _validateProductionZkSysUserOp(SyscoinZKSYSToken zkToken)
+        private
+        returns (bytes memory context, uint256 actualCost, uint256 actualFeePerGas)
+    {
+        actualCost = 6 ether;
+        actualFeePerGas = 1 gwei;
+
+        vm.prank(sender);
+        zkToken.approve(address(paymaster), 10 ether);
+
+        uint256 validationData;
+        (context, validationData) = entryPoint.validate(paymaster, _userOp(), 10 ether);
+        assertEq(validationData, 0);
     }
 }

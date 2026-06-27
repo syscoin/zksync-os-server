@@ -62,7 +62,6 @@ use priority_tree_pipeline_step::PriorityTreePipelineStep;
 use reth_tasks::Runtime;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
@@ -942,7 +941,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
         &l1_state,
-        current_protocol_version,
         syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
     );
 
@@ -2108,37 +2106,31 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn resolve_syscoin_edge_da_commit_target(
-    l1_state: &L1State,
-    protocol_version: &ProtocolSemanticVersion,
-    required: bool,
-) -> Address {
-    let env_target = syscoin_edge_da_commit_target_from_env();
-    check_syscoin_edge_da_commit_target_versions_file(protocol_version, env_target);
-    let expected =
-        env_target.or_else(|| syscoin_edge_da_commit_target_from_versions(protocol_version));
-    let Some(expected) = expected else {
-        assert!(
-            !(required && protocol_version.is_post_v31()),
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET or embedded protocol versions.yaml target must be \
-             available for protocol {protocol_version} when compact edge DA is active"
-        );
-        return l1_state.validator_timelock_sl;
-    };
-    assert_ne!(
-        expected,
-        Address::ZERO,
-        "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
-    );
-    if l1_state.settles_on_gateway() {
-        assert_eq!(
-            l1_state.validator_timelock_sl, expected,
-            "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
-             but the protocol-versioned ZKsync OS target is {}",
-            l1_state.validator_timelock_sl, expected
+fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> Address {
+    let live_target = l1_state.validator_timelock_sl;
+    if required {
+        assert_ne!(
+            live_target,
+            Address::ZERO,
+            "Gateway ValidatorTimelock must be available when compact edge DA is active"
         );
     }
-    expected
+
+    if let Some(expected) = syscoin_edge_da_commit_target_from_env() {
+        assert_ne!(
+            expected,
+            Address::ZERO,
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
+        );
+        assert_eq!(
+            live_target, expected,
+            "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
+             but SYSCOIN_EDGE_DA_COMMIT_TARGET is {}",
+            live_target, expected
+        );
+    }
+
+    live_target
 }
 
 fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
@@ -2146,71 +2138,6 @@ fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
         .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
         .ok()
         .map(|value| parse_syscoin_edge_da_commit_target(&value))
-}
-
-fn check_syscoin_edge_da_commit_target_versions_file(
-    protocol_version: &ProtocolSemanticVersion,
-    env_target: Option<Address>,
-) {
-    let Some(env_target) = env_target else {
-        return;
-    };
-    let versions_target = syscoin_edge_da_commit_target_from_versions(protocol_version);
-    if let Some(versions_target) = versions_target {
-        let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
-        assert_eq!(
-            env_target, versions_target,
-            "SYSCOIN_EDGE_DA_COMMIT_TARGET ({env_target}) does not match \
-             local-chains/{local_chain_dir}/versions.yaml syscoin_edge_da_commit_target ({versions_target})"
-        );
-    }
-}
-
-fn syscoin_edge_da_commit_target_from_versions(
-    protocol_version: &ProtocolSemanticVersion,
-) -> Option<Address> {
-    let local_chain_dir = local_chain_protocol_version_dir(protocol_version);
-    let versions_path = format!("local-chains/{local_chain_dir}/versions.yaml");
-    let versions_path = Path::new(&versions_path);
-    if versions_path.exists() {
-        let contents = std::fs::read_to_string(versions_path).unwrap_or_else(|err| {
-            panic!(
-                "failed to read {} for SYSCOIN edge DA target: {err}",
-                versions_path.display()
-            )
-        });
-        return syscoin_edge_da_commit_target_from_versions_yaml(
-            &contents,
-            &versions_path.display().to_string(),
-        );
-    }
-
-    let embedded = match local_chain_dir.as_str() {
-        "v31.0" => Some(include_str!("../../../local-chains/v31.0/versions.yaml")),
-        _ => None,
-    }?;
-    syscoin_edge_da_commit_target_from_versions_yaml(
-        embedded,
-        &format!("embedded local-chains/{local_chain_dir}/versions.yaml"),
-    )
-}
-
-fn syscoin_edge_da_commit_target_from_versions_yaml(
-    contents: &str,
-    source: &str,
-) -> Option<Address> {
-    let value: serde_yaml::Value = serde_yaml::from_str(contents).unwrap_or_else(|err| {
-        panic!("failed to parse {source} for SYSCOIN edge DA target: {err}",)
-    });
-    value
-        .get("general")
-        .and_then(|value| value.get("syscoin_edge_da_commit_target"))
-        .and_then(|value| value.as_str())
-        .map(parse_syscoin_edge_da_commit_target)
-}
-
-fn local_chain_protocol_version_dir(protocol_version: &ProtocolSemanticVersion) -> String {
-    format!("v{}.{}", protocol_version.minor, protocol_version.patch)
 }
 
 fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {

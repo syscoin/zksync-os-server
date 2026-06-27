@@ -302,7 +302,7 @@ refresh_os_server_config_credentials() {
 refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
-  gl_export_syscoin_edge_da_commit_target_from_versions
+  gl_export_syscoin_edge_da_commit_target_from_gateway_config
   ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"

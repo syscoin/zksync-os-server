@@ -1,10 +1,6 @@
 general:
   protocol_version: "v31.0"
   verification_key: "0x6f837bbef255ebde36677f3accb456e16253fe43f4091b0e820bff0cf95a32a0"
-  # SYSCOIN: Gateway ValidatorTimelock proxy used by ZKsync OS to collect compact edge DA refs.
-  # This value is consensus-critical for the patched OS binary.
-  syscoin_edge_da_commit_target: "0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19"
-
 era-contracts:
   # TODO: remove branch and put tag and sha when the release is done
   #branch: "draft-v31-with-zksync-os"
