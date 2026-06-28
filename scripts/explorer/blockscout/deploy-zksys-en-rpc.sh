@@ -105,6 +105,16 @@ print(" ".join(shlex.quote(arg) for arg in sys.argv[1:]))
 PY
 }
 
+host_from_url() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+host = urlparse(sys.argv[1]).hostname
+print(host or "")
+PY
+}
+
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
 if [[ -n "${SSH_KEY_PATH}" ]]; then
   ssh_opts+=(-i "${SSH_KEY_PATH}")
@@ -199,7 +209,14 @@ PY
   else
     remote_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
     remote_gateway_config_cmd="python3 - $(shell_join "${remote_gateway_config}")"
-    gateway_config_host="${SEQUENCER_REMOTE_HOST:-${REMOTE_HOST}}"
+    gateway_config_host="${SEQUENCER_REMOTE_HOST:-}"
+    if [[ -z "${gateway_config_host}" && -n "${MAIN_NODE_RPC_URL}" ]]; then
+      main_node_rpc_host="$(host_from_url "${MAIN_NODE_RPC_URL}")"
+      if [[ -n "${main_node_rpc_host}" && "${main_node_rpc_host}" != "127.0.0.1" && "${main_node_rpc_host}" != "localhost" ]]; then
+        gateway_config_host="ubuntu@${main_node_rpc_host}"
+      fi
+    fi
+    gateway_config_host="${gateway_config_host:-${REMOTE_HOST}}"
     if [[ -z "${gateway_config_host}" ]]; then
       cat >&2 <<'EOF'
 SYSCOIN_EDGE_DA_COMMIT_TARGET is required when neither local SOURCE_GATEWAY_DIR nor a remote host can provide it.
