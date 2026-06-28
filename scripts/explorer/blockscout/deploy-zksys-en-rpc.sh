@@ -196,17 +196,19 @@ if not isinstance(addr, str) or not addr.strip():
 print(addr.strip())
 PY
     )"
-  elif [[ -z "${SEQUENCER_REMOTE_HOST}" ]]; then
-    cat >&2 <<'EOF'
-SYSCOIN_EDGE_DA_COMMIT_TARGET is required when neither SOURCE_GATEWAY_DIR nor SEQUENCER_REMOTE_HOST can provide it.
-Set it to the Gateway validator_timelock_addr used by the patched zksync-os binary.
-EOF
-    exit 1
   else
     remote_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
     remote_gateway_config_cmd="python3 - $(shell_join "${remote_gateway_config}")"
+    gateway_config_host="${SEQUENCER_REMOTE_HOST:-${REMOTE_HOST}}"
+    if [[ -z "${gateway_config_host}" ]]; then
+      cat >&2 <<'EOF'
+SYSCOIN_EDGE_DA_COMMIT_TARGET is required when neither local SOURCE_GATEWAY_DIR nor a remote host can provide it.
+Set it to the Gateway validator_timelock_addr used by the patched zksync-os binary.
+EOF
+      exit 1
+    fi
     SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
-      ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
+      ssh "${ssh_opts[@]}" "${gateway_config_host}" \
         "${remote_gateway_config_cmd}" <<'PY'
 import sys
 from pathlib import Path
