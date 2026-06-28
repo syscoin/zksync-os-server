@@ -178,7 +178,7 @@ fn checked_upgrade_tx_hash(
 }
 
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
-    keccak256(data).0
+    Blake2s256::digest(data).into()
 }
 
 fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -189,8 +189,8 @@ fn encoded_blob_chunks_from_pubdata(pubdata: &[u8]) -> anyhow::Result<Vec<Vec<u8
         SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES
     );
 
-    // Match the proving side blob commitment generator:
-    // prepend 31-byte length field prefix and hash each encoded blob chunk.
+    // Match the proving side blob commitment generator: prepend the 31-byte
+    // length prefix and hash each encoded blob chunk with Blake2s.
     let mut encoded = vec![0u8; BLOB_CHUNK_SIZE];
     encoded[0..8].copy_from_slice(&(pubdata.len() as u64).to_be_bytes());
     encoded.extend_from_slice(pubdata);
