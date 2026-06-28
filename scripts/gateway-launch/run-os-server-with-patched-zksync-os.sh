@@ -126,6 +126,9 @@ prepare_zksync_os_checkout() {
   locked_rev="$(extract_locked_rev "${os_git_url}" "${os_tag}")"
 
   if [ -n "${ZKSYNC_OS_DEV_PATH:-}" ]; then
+    if [ "${ALLOW_SHARED_ZKSYNC_OS_DEV_PATH:-false}" != "true" ]; then
+      gl_die "ZKSYNC_OS_DEV_PATH uses a shared mutable checkout; unset it for isolated workspace builds or set ALLOW_SHARED_ZKSYNC_OS_DEV_PATH=true for local development only"
+    fi
     os_path="${ZKSYNC_OS_DEV_PATH}"
     git -C "${os_path}" rev-parse --show-toplevel >/dev/null 2>&1 || \
       gl_die "ZKSYNC_OS_DEV_PATH is not a git repository root: ${os_path}"

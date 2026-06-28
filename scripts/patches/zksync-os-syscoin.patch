@@ -274,12 +274,13 @@ index 36d4187b..34b059cc 100644
                                          .upgrade_tx_recorder
                                          .add_upgrade_tx_hash(&tx_processing_result.tx_hash);
                                  }
-+                                if tx_processing_result.collects_syscoin_edge_da_refs {
++                                if status && tx_processing_result.collects_syscoin_edge_da_refs {
 +                                    // SYSCOIN: bind compact edge DA refs only to the accepted
 +                                    // Gateway commit transaction that is authorized by metadata.
 +                                    block_data
 +                                        .syscoin_compact_edge_da_ref_tx_numbers
-+                                        .push(block_data.current_transaction_number);
++                                        .try_push(block_data.current_transaction_number)
++                                        .map_err(|_| internal_error!("too many Syscoin edge DA ref txs"))?;
 +                                }
                                  block_data.current_transaction_number += 1;
 
@@ -588,7 +589,7 @@ index f7313c71..2b86b2f6 100644
 +    ) {
 +        // SYSCOIN: extend an existing ordered root with this block's authorized compact edge DA refs.
 +        for message in self.list.iter() {
-+            if !authorized_tx_numbers.contains(&message.tx_number) {
++            if authorized_tx_numbers.binary_search(&message.tx_number).is_err() {
 +                continue;
 +            }
 +            let GenericLogContentData::UserMsg(UserMsgData { data, .. }) = &message.data else {

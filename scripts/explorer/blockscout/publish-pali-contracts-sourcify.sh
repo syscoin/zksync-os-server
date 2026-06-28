@@ -20,6 +20,9 @@
 
 set -euo pipefail
 
+echo "error: publish-pali-contracts-sourcify.sh is stale for the SyscoinEntryPoint Pali stack; regenerate standard-json inputs and constructor args before using it." >&2
+exit 1
+
 SOURCIFY_SERVER="${1:-https://sourcify.dev/server}"
 CHAIN_ID="${2:-57057}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

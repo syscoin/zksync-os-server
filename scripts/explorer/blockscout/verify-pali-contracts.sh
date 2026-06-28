@@ -31,6 +31,9 @@
 
 set -euo pipefail
 
+echo "error: verify-pali-contracts.sh is stale for the SyscoinEntryPoint Pali stack; regenerate standard-json inputs and constructor args before using it." >&2
+exit 1
+
 EXPLORER_BASE="${1:-https://explorer-zk.tanenbaum.io}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JSON_DIR="${SCRIPT_DIR}/pali-verification/standard-json"
