@@ -942,6 +942,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
         &l1_state,
+        settles_on_gateway,
         syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
     );
 
@@ -2107,7 +2108,11 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> Address {
+fn resolve_syscoin_edge_da_commit_target(
+    l1_state: &L1State,
+    settles_on_gateway: bool,
+    required: bool,
+) -> Address {
     let live_target = l1_state.validator_timelock_sl;
     if required {
         assert_ne!(
@@ -2123,12 +2128,15 @@ fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> 
             Address::ZERO,
             "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
         );
-        assert_eq!(
-            live_target, expected,
-            "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
-             but SYSCOIN_EDGE_DA_COMMIT_TARGET is {}",
-            live_target, expected
-        );
+        if settles_on_gateway {
+            assert_eq!(
+                live_target, expected,
+                "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
+                 but SYSCOIN_EDGE_DA_COMMIT_TARGET is {}",
+                live_target, expected
+            );
+        }
+        return expected;
     }
 
     live_target
