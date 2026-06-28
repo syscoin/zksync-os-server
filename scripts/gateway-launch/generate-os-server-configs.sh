@@ -241,6 +241,15 @@ def normalize_nonzero_address(value: str, label: str) -> str:
     return address
 
 
+def normalize_address(value: str, label: str) -> str:
+    if not isinstance(value, str):
+        raise SystemExit(f"{label} must be a 20-byte hex address")
+    address = value.strip().lower()
+    if not re.fullmatch(r"0x[0-9a-f]{40}", address):
+        raise SystemExit(f"{label} must be a 20-byte hex address")
+    return address
+
+
 def write_text(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -482,15 +491,14 @@ def materialize_chain(
     expected_fee_recipient_address = "0x0000000000000000000000000000000000000000"
     if chain_name == os.environ["EDGE_CHAIN_NAME"]:
         l2_contracts = chain_contracts.get("l2") if isinstance(chain_contracts, dict) else None
-        if not isinstance(l2_contracts, dict) or l2_contracts.get("zksys_fee_collector_addr") is None:
-            raise ValueError(
-                f"{contracts_source}: l2.zksys_fee_collector_addr is required for {chain_name}"
+        if isinstance(l2_contracts, dict) and l2_contracts.get("zksys_fee_collector_addr") is not None:
+            zksys_fee_collector_address = normalize_address(
+                l2_contracts["zksys_fee_collector_addr"],
+                f"{contracts_source}: l2.zksys_fee_collector_addr",
             )
-        fee_collector_address = normalize_nonzero_address(
-            l2_contracts["zksys_fee_collector_addr"],
-            f"{contracts_source}: l2.zksys_fee_collector_addr",
-        )
-        expected_fee_recipient_address = fee_collector_address
+            if zksys_fee_collector_address != "0x0000000000000000000000000000000000000000":
+                fee_collector_address = zksys_fee_collector_address
+                expected_fee_recipient_address = zksys_fee_collector_address
 
     config_lines = [
         "general:",

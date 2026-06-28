@@ -143,7 +143,10 @@ prepare_zksync_os_checkout() {
     return 0
   fi
 
-  os_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
+  # SYSCOIN: syscoin_edge_da.rs is generated from workspace-specific launch
+  # inputs. Keep gateway and edge checkouts isolated so concurrent builds cannot
+  # race or reuse a binary compiled with the other workspace's generated constants.
+  os_root="${GATEWAY_DIR}/.gateway-launch/zksync-os/${WORKSPACE_NAME}"
   os_path="${os_root}/${os_tag}"
 
   if [ ! -d "${os_path}/.git" ]; then
