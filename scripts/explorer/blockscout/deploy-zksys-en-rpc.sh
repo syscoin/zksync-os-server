@@ -175,18 +175,10 @@ EOF
 fi
 
 if [[ -z "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" ]]; then
-  if [[ -z "${SEQUENCER_REMOTE_HOST}" ]]; then
-    cat >&2 <<'EOF'
-SYSCOIN_EDGE_DA_COMMIT_TARGET is required when SEQUENCER_REMOTE_HOST is not set.
-Set it to the Gateway validator_timelock_addr used by the patched zksync-os binary.
-EOF
-    exit 1
-  fi
-  remote_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
-  remote_gateway_config_cmd="python3 - $(shell_join "${remote_gateway_config}")"
-  SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
-    ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
-      "${remote_gateway_config_cmd}" <<'PY'
+  local_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
+  if [[ -f "${local_gateway_config}" ]]; then
+    SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
+      python3 - "${local_gateway_config}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -203,7 +195,37 @@ if not isinstance(addr, str) or not addr.strip():
     raise SystemExit(f"missing validator_timelock_addr in {path}")
 print(addr.strip())
 PY
-  )"
+    )"
+  elif [[ -z "${SEQUENCER_REMOTE_HOST}" ]]; then
+    cat >&2 <<'EOF'
+SYSCOIN_EDGE_DA_COMMIT_TARGET is required when neither SOURCE_GATEWAY_DIR nor SEQUENCER_REMOTE_HOST can provide it.
+Set it to the Gateway validator_timelock_addr used by the patched zksync-os binary.
+EOF
+    exit 1
+  else
+    remote_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
+    remote_gateway_config_cmd="python3 - $(shell_join "${remote_gateway_config}")"
+    SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
+      ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
+        "${remote_gateway_config_cmd}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid Gateway config: {path}")
+addr = data.get("validator_timelock_addr")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"missing validator_timelock_addr in {path}")
+print(addr.strip())
+PY
+    )"
+  fi
 fi
 SYSCOIN_EDGE_DA_COMMIT_TARGET="$(normalize_syscoin_edge_da_commit_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
 
