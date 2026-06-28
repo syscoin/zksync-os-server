@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
     IERC7579Validator,
     MODULE_TYPE_EXECUTOR,
@@ -21,16 +21,26 @@ contract PaliSmartAccount is AccountERC7579Hooked {
 
     error AlreadyInitialized();
     error CannotUninstallActiveValidator(address validator);
+    error InvalidEntryPoint();
     error InvalidInitialValidator();
     error TooManyInitialHooks();
 
     event ActiveValidatorChanged(address indexed validator);
 
     bool private _initialized;
+    IEntryPoint private immutable _entryPoint;
     address public activeValidator;
 
-    constructor() {
+    constructor(IEntryPoint entryPoint_) {
+        if (address(entryPoint_) == address(0)) {
+            revert InvalidEntryPoint();
+        }
         _initialized = true;
+        _entryPoint = entryPoint_;
+    }
+
+    function entryPoint() public view override returns (IEntryPoint) {
+        return _entryPoint;
     }
 
     function initializeAccount(bytes calldata initCode) external {

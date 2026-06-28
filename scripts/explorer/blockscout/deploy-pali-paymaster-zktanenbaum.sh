@@ -7,8 +7,9 @@
 # Optional:
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
-#   ENTRYPOINT_ADDRESS      existing SyscoinEntryPoint address; when unset, this
-#                           script deploys SyscoinEntryPoint before the paymaster
+#   ENTRYPOINT_ADDRESS      SyscoinEntryPoint used by the Pali account/factory stack.
+#                           It must be constructed with the paymaster address this
+#                           script will deploy from the current deployer nonce.
 #   PAYMASTER_OWNER         default: deployer address, if DEPLOYER_ADDRESS is set
 #   DEPLOYER_ADDRESS        used as default owner for hardware or keystore signers
 #   DEPLOYER_PRIVATE_KEY    raw private key signer
@@ -78,6 +79,14 @@ if [[ -z "${PAYMASTER_OWNER}" ]]; then
   echo "error: set PAYMASTER_OWNER, or set DEPLOYER_ADDRESS as its default" >&2
   exit 1
 fi
+if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
+  echo "error: ENTRYPOINT_ADDRESS is required and must be the SyscoinEntryPoint used by the Pali account/factory stack" >&2
+  exit 1
+fi
+if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
+  echo "error: DEPLOYER_ADDRESS is required so the paymaster address can be precomputed for SyscoinEntryPoint validation" >&2
+  exit 1
+fi
 
 wallet_args=()
 case "${DEPLOYER_SIGNER:-}" in
@@ -129,50 +138,15 @@ compute_create_address() {
   cast compute-address --nonce "${nonce}" "${deployer}" | awk '/Computed Address:/ {print $3}'
 }
 
-if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
-  if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
-    echo "error: DEPLOYER_ADDRESS is required when ENTRYPOINT_ADDRESS is not set, so SyscoinEntryPoint and paymaster addresses can be precomputed" >&2
-    exit 1
-  fi
-  deployer_nonce="$(cast nonce "${DEPLOYER_ADDRESS}" --rpc-url "${RPC_URL}")"
-  paymaster_nonce="$(NONCE="${deployer_nonce}" python3 - <<'PY'
-import os
-
-print(int(os.environ["NONCE"], 0) + 1)
-PY
-)"
-  predicted_entrypoint_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${deployer_nonce}")"
-  predicted_paymaster_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${paymaster_nonce}")"
-
-  echo "Deploying SyscoinEntryPoint"
-  echo "  rpc:       ${RPC_URL}"
-  echo "  chain:     ${CHAIN_ID}"
-  echo "  paymaster: ${predicted_paymaster_address}"
-  echo
-
-  entrypoint_output="$(
-    cd "${CONTRACTS_DIR}"
-    forge create src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint \
-      --rpc-url "${RPC_URL}" \
-      --chain "${CHAIN_ID}" \
-      --broadcast \
-      --optimize \
-      --optimizer-runs 200 \
-      "${verify_args[@]}" \
-      "${wallet_args[@]}" \
-      --constructor-args \
-        "${predicted_paymaster_address}"
-  )"
-  printf '%s\n' "${entrypoint_output}"
-  ENTRYPOINT_ADDRESS="$(printf '%s\n' "${entrypoint_output}" | sed -n 's/^Deployed to: //p' | tail -n 1)"
-  if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
-    echo "error: failed to parse deployed SyscoinEntryPoint address" >&2
-    exit 1
-  fi
-  if [[ "$(printf '%s' "${ENTRYPOINT_ADDRESS}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${predicted_entrypoint_address}" | tr '[:upper:]' '[:lower:]')" ]]; then
-    echo "error: deployed SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} != predicted ${predicted_entrypoint_address}" >&2
-    exit 1
-  fi
+deployer_nonce="$(cast nonce "${DEPLOYER_ADDRESS}" --rpc-url "${RPC_URL}")"
+predicted_paymaster_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${deployer_nonce}")"
+entrypoint_sponsored_paymaster="$(cast call "${ENTRYPOINT_ADDRESS}" \
+  "SYSCOIN_SPONSORED_PAYMASTER()(address)" \
+  --rpc-url "${RPC_URL}")"
+if [[ "$(printf '%s' "${entrypoint_sponsored_paymaster}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${predicted_paymaster_address}" | tr '[:upper:]' '[:lower:]')" ]]; then
+  echo "error: SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} sponsors ${entrypoint_sponsored_paymaster}, but next paymaster deployment is ${predicted_paymaster_address}" >&2
+  echo "       Deploy/reconfigure the Pali account stack and SyscoinEntryPoint for the same EntryPoint before deploying the paymaster." >&2
+  exit 1
 fi
 
 echo "Deploying PaliFixedRateTokenPaymaster"
