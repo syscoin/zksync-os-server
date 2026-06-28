@@ -125,7 +125,7 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProtocolSemanticVersion,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason,
     PubdataMode, TransactionAcceptanceState,
 };
 
