@@ -202,7 +202,7 @@ PY
 }
 
 gl_export_foundry_evm_version() {
-  : "${FOUNDRY_EVM_VERSION:=shanghai}"
+  : "${FOUNDRY_EVM_VERSION:=cancun}"
   export FOUNDRY_EVM_VERSION
 }
 
