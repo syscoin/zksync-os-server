@@ -18,6 +18,7 @@ contract PaliSmartAccountFactory {
     event AccountCreated(address indexed account, bytes32 indexed salt, bytes32 indexed initCodeHash);
 
     error AccountPrefundFailed(address account, uint256 amount);
+    error InvalidAccountEntryPoint(address accountEntryPoint, address factoryEntryPoint);
     error InvalidImplementation(address implementation);
     error OnlySenderCreator(address caller);
 
@@ -32,6 +33,10 @@ contract PaliSmartAccountFactory {
     constructor(address implementation_, address entryPoint_) {
         if (implementation_.code.length == 0) {
             revert InvalidImplementation(implementation_);
+        }
+        address accountEntryPoint = address(PaliSmartAccount(payable(implementation_)).entryPoint());
+        if (accountEntryPoint != entryPoint_) {
+            revert InvalidAccountEntryPoint(accountEntryPoint, entryPoint_);
         }
         implementation = implementation_;
         entryPoint = entryPoint_;
