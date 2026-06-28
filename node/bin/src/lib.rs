@@ -33,8 +33,8 @@ use crate::command_source::{
     ConsensusNodeCommandSource, ExternalNodeCommandSource, RebuildOptions,
 };
 use crate::config::{
-    Config, ProverApiConfig, RebuildConfig, base_token_price_updater_config, gas_adjuster_config,
-    report_static_config_metrics,
+    Config, ProverApiConfig, RebuildConfig, SequencerConfig, base_token_price_updater_config,
+    gas_adjuster_config, report_static_config_metrics,
 };
 use crate::en_remote_config::load_remote_config;
 use crate::init_tx_forwarder::{build_consensus_tx_forwarder, build_static_tx_forwarder};
@@ -125,8 +125,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason,
-    PubdataMode, TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
+    TransactionAcceptanceState,
 };
 
 pub const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
@@ -945,6 +945,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         settles_on_gateway,
         syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
     );
+    resolve_syscoin_expected_fee_recipient(&config.sequencer_config);
 
     if config
         .sequencer_config
@@ -1735,7 +1736,6 @@ async fn run_main_node_pipeline(
             pubdata_mode,
             merkle_tree: tree,
             runtime: runtime.clone(),
-            compact_edge_da_commit_target: syscoin_edge_da_commit_target,
             disabled: !config.prover_input_generator_config.enable_input_generation,
         })
         .pipe(Batcher {
@@ -2156,6 +2156,61 @@ fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
     })
 }
 
+fn resolve_syscoin_expected_fee_recipient(sequencer_config: &SequencerConfig) -> Address {
+    let configured = sequencer_config.expected_fee_recipient_address;
+    let env_expected = syscoin_expected_fee_recipient_from_env();
+    let expected = env_expected.unwrap_or(configured);
+    validate_syscoin_expected_fee_recipient(
+        sequencer_config.fee_collector_address,
+        configured,
+        expected,
+        env_expected.is_some(),
+    )
+}
+
+fn validate_syscoin_expected_fee_recipient(
+    fee_collector_address: Address,
+    configured: Address,
+    expected: Address,
+    env_enforced: bool,
+) -> Address {
+    if expected == Address::ZERO {
+        assert!(
+            !env_enforced,
+            "SYSCOIN_EXPECTED_FEE_RECIPIENT must be nonzero when set"
+        );
+        return Address::ZERO;
+    }
+
+    assert_eq!(
+        configured, expected,
+        "SYSCOIN expected fee recipient mismatch: sequencer.expected_fee_recipient_address is {}, \
+         but env expects {}",
+        configured, expected
+    );
+    assert_eq!(
+        fee_collector_address, expected,
+        "SYSCOIN fee recipient mismatch: sequencer.fee_collector_address is {}, \
+         but expected fee recipient is {}",
+        fee_collector_address, expected
+    );
+    expected
+}
+
+fn syscoin_expected_fee_recipient_from_env() -> Option<Address> {
+    std::env::var("SYSCOIN_EXPECTED_FEE_RECIPIENT")
+        .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT"))
+        .ok()
+        .map(|value| parse_syscoin_expected_fee_recipient(&value))
+}
+
+fn parse_syscoin_expected_fee_recipient(value: &str) -> Address {
+    let value = value.trim();
+    value.parse::<Address>().unwrap_or_else(|err| {
+        panic!("invalid SYSCOIN_EXPECTED_FEE_RECIPIENT `{value}`: {err}");
+    })
+}
+
 async fn commit_proof_execute_block_numbers(
     l1_state: &L1State,
     committed_batch_provider: &CommittedBatchProvider,
@@ -2419,10 +2474,10 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 mod tests {
     use super::{
         check_batch_verification_mismatch, initial_transaction_acceptance_state,
-        validate_batch_verification_startup_policy,
+        validate_batch_verification_startup_policy, validate_syscoin_expected_fee_recipient,
     };
     use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use alloy::primitives::{Address, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
@@ -2460,6 +2515,49 @@ mod tests {
             initial_transaction_acceptance_state(NodeRole::ExternalNode, Some(0), true),
             TransactionAcceptanceState::Accepting
         ));
+    }
+
+    #[test]
+    fn syscoin_expected_fee_recipient_zero_disables_check() {
+        let fee_collector = address!("0x0000000000000000000000000000000000000001");
+        assert_eq!(
+            validate_syscoin_expected_fee_recipient(
+                fee_collector,
+                Address::ZERO,
+                Address::ZERO,
+                false
+            ),
+            Address::ZERO
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SYSCOIN_EXPECTED_FEE_RECIPIENT must be nonzero when set")]
+    fn syscoin_expected_fee_recipient_rejects_explicit_zero_env() {
+        let fee_collector = address!("0x0000000000000000000000000000000000000001");
+        validate_syscoin_expected_fee_recipient(fee_collector, Address::ZERO, Address::ZERO, true);
+    }
+
+    #[test]
+    fn syscoin_expected_fee_recipient_accepts_matching_collector() {
+        let fee_recipient = address!("0x0000000000000000000000000000000000000002");
+        assert_eq!(
+            validate_syscoin_expected_fee_recipient(
+                fee_recipient,
+                fee_recipient,
+                fee_recipient,
+                true
+            ),
+            fee_recipient
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SYSCOIN fee recipient mismatch")]
+    fn syscoin_expected_fee_recipient_rejects_collector_mismatch() {
+        let fee_collector = address!("0x0000000000000000000000000000000000000001");
+        let expected = address!("0x0000000000000000000000000000000000000002");
+        validate_syscoin_expected_fee_recipient(fee_collector, expected, expected, true);
     }
 
     #[test]

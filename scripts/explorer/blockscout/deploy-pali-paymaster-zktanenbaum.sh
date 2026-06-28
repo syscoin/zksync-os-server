@@ -20,6 +20,9 @@
 #   PAYMASTER_INITIAL_DEPOSIT_NATIVE
 #                           optional native amount to send to paymaster after deployment
 #                           (for example: 1000ether)
+#   PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE
+#                           EntryPoint deposit cap before excess native is sent to the
+#                           Syscoin unspendable sink, default: 100000ether
 #   PAYMASTER_STAKE_NATIVE  optional native stake amount to add after deployment
 #                           (required by ERC-4337 bundlers for storage-accessing paymasters)
 #   PAYMASTER_UNSTAKE_DELAY_SEC
@@ -52,6 +55,7 @@ CHAIN_ID="${CHAIN_ID:-57057}"
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
+PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE="${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE:-100000ether}"
 PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
 PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
 PAYMASTER_GRANT_BURNER_ROLE="${PAYMASTER_GRANT_BURNER_ROLE:-true}"
@@ -124,6 +128,7 @@ echo "  chain:     ${CHAIN_ID}"
 echo "  entrypoint:${ENTRYPOINT_ADDRESS}"
 echo "  token:     ${ZKSYS_TOKEN_ADDRESS}"
 echo "  owner:     ${PAYMASTER_OWNER}"
+echo "  reserve:   ${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE}"
 echo
 
 output="$(
@@ -136,7 +141,11 @@ output="$(
     --optimizer-runs 200 \
     "${verify_args[@]}" \
     "${wallet_args[@]}" \
-    --constructor-args "${ENTRYPOINT_ADDRESS}" "${ZKSYS_TOKEN_ADDRESS}" "${PAYMASTER_OWNER}"
+    --constructor-args \
+      "${ENTRYPOINT_ADDRESS}" \
+      "${ZKSYS_TOKEN_ADDRESS}" \
+      "${PAYMASTER_OWNER}" \
+      "${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE}"
 )"
 
 printf '%s\n' "${output}"

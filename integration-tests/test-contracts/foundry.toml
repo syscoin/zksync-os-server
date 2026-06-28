@@ -16,6 +16,7 @@ remappings = [
     "@openzeppelin/contracts-v4/=../../../zksync-era/contracts/lib/openzeppelin-contracts-v4/contracts/",
     "@openzeppelin/contracts-upgradeable-v4/=../../../zksync-era/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/",
     "@openzeppelin/community-contracts/=lib/openzeppelin-community-contracts/contracts/",
+    "@account-abstraction/=lib/account-abstraction/contracts/",
     "contracts/=../../contracts/",
     "forge-std/=lib/forge-std/src/",
     "scripts/=../../scripts/",
