@@ -12,6 +12,11 @@ markers.bench
 lcov.info
 setup_compact.key
 
+contracts/cache/
+contracts/out/
+integration-tests/test-contracts/cache/
+integration-tests/test-contracts/out/
+
 scripts/explorer/blockscout/envs/*.secrets.env
 
 # Decompressed L1 state produced by integration-tests build.rs

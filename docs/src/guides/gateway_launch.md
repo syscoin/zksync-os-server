@@ -623,7 +623,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_ISSUER_START_TIME` | Required by L2 bootstrap; UNIX timestamp when algorithmic zkSYS issuance periods begin |
 | `ZKSYS_ISSUER_PERIOD_SECONDS` | Issuance period length; defaults to `86400`; must multiply with `ZKSYS_ISSUER_PERIODS_PER_YEAR` to exactly `365 days` |
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
-| `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `1` period and must be `1..7` |
+| `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `3` periods and must be `1..7` |
 | `ZKSYS_L2_PAYMASTER_ADDRESS` | Optional known deterministic Pali paymaster address granted the token burn role during L2 bootstrap |
 | `PAYMASTER_GRANT_BURNER_ROLE` | Pali paymaster deploy helper option; defaults to `true` and grants zkSYS `BURNER_ROLE` to the deployed paymaster, set `false` only if role wiring is handled separately before use |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |

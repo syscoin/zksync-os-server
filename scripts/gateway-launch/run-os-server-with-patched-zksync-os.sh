@@ -143,7 +143,10 @@ prepare_zksync_os_checkout() {
     return 0
   fi
 
-  os_root="${GATEWAY_DIR}/.gateway-launch/zksync-os"
+  # SYSCOIN: syscoin_edge_da.rs is generated from workspace-specific launch
+  # inputs. Keep gateway and edge checkouts isolated so concurrent builds cannot
+  # race or reuse a binary compiled with the other workspace's generated constants.
+  os_root="${GATEWAY_DIR}/.gateway-launch/zksync-os/${WORKSPACE_NAME}"
   os_path="${os_root}/${os_tag}"
 
   if [ ! -d "${os_path}/.git" ]; then
@@ -303,6 +306,14 @@ refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
   gl_export_syscoin_edge_da_commit_target_from_gateway_config
+  if [ "${WORKSPACE_NAME}" = "${EDGE_CHAIN_NAME:-zksys}" ]; then
+    gl_export_syscoin_expected_fee_recipient_from_edge_config
+  else
+    # SYSCOIN: fee-recipient enforcement is edge-chain specific. Gateway nodes
+    # using the same patched OS must keep the generated fee-recipient constant at
+    # zero, even if the parent shell exported the edge value.
+    unset SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT
+  fi
   ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"

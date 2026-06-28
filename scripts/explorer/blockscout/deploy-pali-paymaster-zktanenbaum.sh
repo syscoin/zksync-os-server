@@ -7,7 +7,9 @@
 # Optional:
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
-#   ENTRYPOINT_ADDRESS      default: 0x433709009B8330FDa32311DF1C2AFA402eD8D009
+#   ENTRYPOINT_ADDRESS      SyscoinEntryPoint used by the Pali account/factory stack.
+#                           It must be constructed with the paymaster address this
+#                           script will deploy from the current deployer nonce.
 #   PAYMASTER_OWNER         default: deployer address, if DEPLOYER_ADDRESS is set
 #   DEPLOYER_ADDRESS        used as default owner for hardware or keystore signers
 #   DEPLOYER_PRIVATE_KEY    raw private key signer
@@ -20,6 +22,9 @@
 #   PAYMASTER_INITIAL_DEPOSIT_NATIVE
 #                           optional native amount to send to paymaster after deployment
 #                           (for example: 1000ether)
+#   PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE
+#                           EntryPoint deposit cap before excess native is sent to the
+#                           Syscoin unspendable sink, default: 100000ether
 #   PAYMASTER_STAKE_NATIVE  optional native stake amount to add after deployment
 #                           (required by ERC-4337 bundlers for storage-accessing paymasters)
 #   PAYMASTER_UNSTAKE_DELAY_SEC
@@ -49,9 +54,10 @@ CONTRACTS_DIR="${REPO_ROOT}/contracts"
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
 CHAIN_ID="${CHAIN_ID:-57057}"
-ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
+ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
+PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE="${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE:-100000ether}"
 PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
 PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
 PAYMASTER_GRANT_BURNER_ROLE="${PAYMASTER_GRANT_BURNER_ROLE:-true}"
@@ -71,6 +77,14 @@ fi
 PAYMASTER_OWNER="${PAYMASTER_OWNER:-${DEPLOYER_ADDRESS:-}}"
 if [[ -z "${PAYMASTER_OWNER}" ]]; then
   echo "error: set PAYMASTER_OWNER, or set DEPLOYER_ADDRESS as its default" >&2
+  exit 1
+fi
+if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
+  echo "error: ENTRYPOINT_ADDRESS is required and must be the SyscoinEntryPoint used by the Pali account/factory stack" >&2
+  exit 1
+fi
+if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
+  echo "error: DEPLOYER_ADDRESS is required so the paymaster address can be precomputed for SyscoinEntryPoint validation" >&2
   exit 1
 fi
 
@@ -118,12 +132,30 @@ if [[ "${VERIFY}" == "true" ]]; then
   verify_args+=(--verify --verifier blockscout --verifier-url "${EXPLORER_BASE%/}/api/")
 fi
 
+compute_create_address() {
+  local deployer="${1:?deployer required}"
+  local nonce="${2:?nonce required}"
+  cast compute-address --nonce "${nonce}" "${deployer}" | awk '/Computed Address:/ {print $3}'
+}
+
+deployer_nonce="$(cast nonce "${DEPLOYER_ADDRESS}" --rpc-url "${RPC_URL}")"
+predicted_paymaster_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${deployer_nonce}")"
+entrypoint_sponsored_paymaster="$(cast call "${ENTRYPOINT_ADDRESS}" \
+  "SYSCOIN_SPONSORED_PAYMASTER()(address)" \
+  --rpc-url "${RPC_URL}")"
+if [[ "$(printf '%s' "${entrypoint_sponsored_paymaster}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${predicted_paymaster_address}" | tr '[:upper:]' '[:lower:]')" ]]; then
+  echo "error: SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} sponsors ${entrypoint_sponsored_paymaster}, but next paymaster deployment is ${predicted_paymaster_address}" >&2
+  echo "       Deploy/reconfigure the Pali account stack and SyscoinEntryPoint for the same EntryPoint before deploying the paymaster." >&2
+  exit 1
+fi
+
 echo "Deploying PaliFixedRateTokenPaymaster"
 echo "  rpc:       ${RPC_URL}"
 echo "  chain:     ${CHAIN_ID}"
 echo "  entrypoint:${ENTRYPOINT_ADDRESS}"
 echo "  token:     ${ZKSYS_TOKEN_ADDRESS}"
 echo "  owner:     ${PAYMASTER_OWNER}"
+echo "  reserve:   ${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE}"
 echo
 
 output="$(
@@ -136,7 +168,11 @@ output="$(
     --optimizer-runs 200 \
     "${verify_args[@]}" \
     "${wallet_args[@]}" \
-    --constructor-args "${ENTRYPOINT_ADDRESS}" "${ZKSYS_TOKEN_ADDRESS}" "${PAYMASTER_OWNER}"
+    --constructor-args \
+      "${ENTRYPOINT_ADDRESS}" \
+      "${ZKSYS_TOKEN_ADDRESS}" \
+      "${PAYMASTER_OWNER}" \
+      "${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE}"
 )"
 
 printf '%s\n' "${output}"

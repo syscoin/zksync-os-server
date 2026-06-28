@@ -2,7 +2,6 @@ use self::tree_adapter::TreeOutputAdapter;
 use self::tree_adapter::VersionedMerkleTree;
 use crate::config::PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY;
 use crate::prover_block::ProverBlock;
-use alloy::primitives::Address;
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -35,8 +34,6 @@ pub struct ProverInputGenerator<ReadState> {
     pub read_state: ReadState,
     pub pubdata_mode: PubdataMode,
     pub runtime: Runtime,
-    /// SYSCOIN: Gateway validator timelock authorized to emit compact edge DA refs.
-    pub compact_edge_da_commit_target: Address,
     pub merkle_tree: MerkleTree<RocksDBWrapper>,
     /// When true, skip all computation and emit `ProverInput::Fake` for every block.
     pub disabled: bool,
@@ -161,7 +158,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> ProverInputGenerator<
         let (result_tx, result_rx) = oneshot::channel();
         let read_state = self.read_state.clone();
         let enable_logging = self.enable_logging;
-        let compact_edge_da_commit_target = self.compact_edge_da_commit_target;
         let da_commitment_scheme = self
             .pubdata_mode
             .adapt_for_protocol_version(&replay_record.protocol_version)
@@ -184,7 +180,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> ProverInputGenerator<
                 versioned_tree,
                 da_commitment_scheme,
                 enable_logging,
-                compact_edge_da_commit_target,
             ));
             ProverBlock {
                 output: block_output,
@@ -220,7 +215,6 @@ fn compute_prover_input(
     versioned_tree: VersionedMerkleTree,
     da_commitment_scheme: DACommitmentScheme,
     enable_logging: bool,
-    compact_edge_da_commit_target: Address,
 ) -> Vec<u32> {
     let block_number = replay_record.block_context.block_number;
     let state_view = state_handle.state_view_at(block_number - 1).unwrap();
@@ -311,8 +305,6 @@ fn compute_prover_input(
                 );
             block_metadata.canonical_upgrade_tx_hash =
                 Bytes32::from_array(replay_record.canonical_upgrade_tx_hash.0);
-            block_metadata.syscoin_compact_edge_da_commit_target =
-                ruint::aliases::B160::from_be_bytes(compact_edge_da_commit_target.into_array());
             generate_proof_input_from_bytes(
                 bin_bytes,
                 block_metadata,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {MODULE_TYPE_VALIDATOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
 import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
@@ -19,14 +20,16 @@ contract PaliSmartAccountFactoryTest is Test {
     PaliECDSAValidatorModule private ecdsa;
     PaliSmartAccount private implementation;
     PaliSmartAccountFactory private factory;
+    MockEntryPoint private entryPoint;
 
     address private owner = address(0xA11CE);
     address private senderCreator = address(0x4337);
 
     function setUp() public {
         ecdsa = new PaliECDSAValidatorModule();
-        implementation = new PaliSmartAccount();
-        factory = new PaliSmartAccountFactory(address(implementation), address(new MockEntryPoint(senderCreator)));
+        entryPoint = new MockEntryPoint(senderCreator);
+        implementation = new PaliSmartAccount(IEntryPoint(address(entryPoint)));
+        factory = new PaliSmartAccountFactory(address(implementation), address(entryPoint));
     }
 
     function testCreateAccountDeploysDeterministicProxyAndInstallsInitialValidator() public {
@@ -50,12 +53,25 @@ contract PaliSmartAccountFactoryTest is Test {
     }
 
     function testConstructorRejectsNonContractImplementation() public {
-        MockEntryPoint entryPoint = new MockEntryPoint(senderCreator);
+        MockEntryPoint otherEntryPoint = new MockEntryPoint(senderCreator);
 
         vm.expectRevert(
             abi.encodeWithSelector(PaliSmartAccountFactory.InvalidImplementation.selector, address(0xBADC0DE))
         );
-        new PaliSmartAccountFactory(address(0xBADC0DE), address(entryPoint));
+        new PaliSmartAccountFactory(address(0xBADC0DE), address(otherEntryPoint));
+    }
+
+    function testConstructorRejectsMismatchedAccountEntryPoint() public {
+        MockEntryPoint otherEntryPoint = new MockEntryPoint(senderCreator);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PaliSmartAccountFactory.InvalidAccountEntryPoint.selector,
+                address(entryPoint),
+                address(otherEntryPoint)
+            )
+        );
+        new PaliSmartAccountFactory(address(implementation), address(otherEntryPoint));
     }
 
     function testCreateAccountOnlyAllowsEntryPointSenderCreator() public {

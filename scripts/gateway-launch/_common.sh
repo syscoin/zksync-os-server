@@ -372,6 +372,106 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
   export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
 }
 
+gl_zksys_fee_collector_from_edge_config() {
+  gl_require GATEWAY_DIR
+  local edge_chain_name
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  EDGE_CONFIG_DIR="${GATEWAY_DIR}/chains/${edge_chain_name}/configs" \
+  EDGE_CHAIN_ID_VALUE="${EDGE_CHAIN_ID:-}" \
+    python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+config_dir = Path(os.environ["EDGE_CONFIG_DIR"])
+paths = [config_dir / "contracts.yaml"]
+chain_id = os.environ.get("EDGE_CHAIN_ID_VALUE", "").strip()
+if chain_id:
+    paths.append(config_dir / f"contracts_{chain_id}.yaml")
+paths.extend(sorted(config_dir.glob("contracts_*.yaml")))
+for path in paths:
+    if path.exists():
+        break
+else:
+    raise SystemExit(f"missing edge contracts config under {config_dir}")
+
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid edge contracts config: {path}")
+l2 = data.get("l2")
+if not isinstance(l2, dict):
+    raise SystemExit(f"missing l2 section in {path}")
+addr = l2.get("zksys_fee_collector_addr")
+if isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"missing l2.zksys_fee_collector_addr in {path}")
+addr = addr.strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
+print(addr)
+PY
+}
+
+gl_normalize_syscoin_expected_fee_recipient() {
+  local target="${1:?target required}"
+  TARGET="${target}" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+if addr == "0x" + "0" * 40:
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be nonzero")
+print(addr)
+PY
+}
+
+gl_normalize_syscoin_expected_fee_recipient_optional() {
+  local target="${1:?target required}"
+  TARGET="${target}" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+print(addr)
+PY
+}
+
+gl_export_syscoin_expected_fee_recipient_from_edge_config() {
+  local expected var_name var_value var_value_lc
+  expected="$(gl_zksys_fee_collector_from_edge_config)"
+  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
+    for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
+      var_value="${!var_name:-}"
+      if [ -n "${var_value}" ]; then
+        var_value_lc="$(gl_normalize_syscoin_expected_fee_recipient_optional "${var_value}")"
+        [ "${var_value_lc}" = "${expected}" ] ||
+          gl_die "${var_name}=${var_value} is set but l2.zksys_fee_collector_addr is not configured"
+      fi
+    done
+    unset SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT
+    return 0
+  fi
+  for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
+    var_value="${!var_name:-}"
+    if [ -n "${var_value}" ]; then
+      var_value_lc="$(gl_normalize_syscoin_expected_fee_recipient "${var_value}")"
+      [ "${var_value_lc}" = "${expected}" ] ||
+        gl_die "${var_name}=${var_value} does not match l2.zksys_fee_collector_addr=${expected}"
+    fi
+  done
+  export SYSCOIN_EXPECTED_FEE_RECIPIENT="${expected}"
+}
+
 gl_assert_contracts_sha() {
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_CONTRACTS_SHA
@@ -742,6 +842,15 @@ if "testnet_paymaster_addr" not in l2:
     print(
         f"gateway-launch: patched {contracts_path} for {chain_name} "
         "(added l2.testnet_paymaster_addr=0x0000000000000000000000000000000000000000)"
+    )
+
+if "zksys_fee_collector_addr" not in l2:
+    # Optional for generic edge chains, required as nonzero by zksys config generation.
+    l2["zksys_fee_collector_addr"] = "0x0000000000000000000000000000000000000000"
+    updated = True
+    print(
+        f"gateway-launch: patched {contracts_path} for {chain_name} "
+        "(added l2.zksys_fee_collector_addr=0x0000000000000000000000000000000000000000)"
     )
 
 eco = data.get("ecosystem_contracts")

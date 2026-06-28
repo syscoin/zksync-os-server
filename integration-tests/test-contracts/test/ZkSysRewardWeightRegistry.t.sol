@@ -28,6 +28,7 @@ contract MockRewardWeightReceiver is IZkSysWeightReceiver {
 
 contract ZkSysRewardWeightRegistryTest is Test {
     uint256 private constant ACTIVATION_DELAY_PERIODS = 1;
+    uint256 private constant LAUNCH_ACTIVATION_DELAY_PERIODS = 3;
     uint128 private constant DEFAULT_SENTRY_NODE_WEIGHT = 100_000 ether;
 
     address private admin = address(0xAD);
@@ -299,6 +300,47 @@ contract ZkSysRewardWeightRegistryTest is Test {
         weightRegistry.activatePendingWeight();
     }
 
+    function testLaunchActivationDelayUsesThreePeriodsForStakeAndSentryIncreases() public {
+        ZkSysMembershipRegistry localMembership = _deployMembershipRegistry(admin, address(0xB111D7E));
+        ZkSysRewardWeightRegistry localRegistry =
+            _deployWeightRegistryWithDelay(admin, localMembership, LAUNCH_ACTIVATION_DELAY_PERIODS);
+        MockRewardWeightReceiver localReceiver = new MockRewardWeightReceiver();
+
+        vm.startPrank(admin);
+        localMembership.setSentryNodeReceiver(localRegistry);
+        localRegistry.setWeightReceiver(localReceiver);
+        localRegistry.grantRole(localRegistry.STAKE_WEIGHT_UPDATER_ROLE(), stakeWeightUpdater);
+        vm.stopPrank();
+
+        vm.warp(localReceiver.startTime());
+        vm.prank(stakeWeightUpdater);
+        localRegistry.updateStakeWeight(alice, 2);
+        vm.prank(localMembership.aliasedL1RegistryBridge());
+        _applyL1Update(localMembership, alice, 1_000, DEFAULT_SENTRY_NODE_WEIGHT);
+
+        ZkSysRewardWeightRegistry.PendingWeightView memory pending = localRegistry.pendingWeightComponents(alice);
+        assertEq(pending.stakeEffectivePeriod, LAUNCH_ACTIVATION_DELAY_PERIODS);
+        assertEq(pending.sentryNodeEffectivePeriod, LAUNCH_ACTIVATION_DELAY_PERIODS);
+
+        localReceiver.setCurrentPeriod(LAUNCH_ACTIVATION_DELAY_PERIODS - 1);
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ZkSysRewardWeightRegistry.PendingWeightNotEffective.selector,
+                LAUNCH_ACTIVATION_DELAY_PERIODS,
+                LAUNCH_ACTIVATION_DELAY_PERIODS - 1
+            )
+        );
+        localRegistry.activatePendingWeight();
+
+        localReceiver.setCurrentPeriod(LAUNCH_ACTIVATION_DELAY_PERIODS);
+        vm.prank(alice);
+        localRegistry.activatePendingWeight();
+
+        assertEq(localRegistry.weightOf(alice), DEFAULT_SENTRY_NODE_WEIGHT + 2);
+        assertEq(localRegistry.totalWeight(), DEFAULT_SENTRY_NODE_WEIGHT + 2);
+    }
+
     function testDecreaseClearsPendingStakeIncreaseImmediately() public {
         vm.prank(stakeWeightUpdater);
         weightRegistry.updateStakeWeight(alice, 10);
@@ -477,13 +519,22 @@ contract ZkSysRewardWeightRegistryTest is Test {
     }
 
     function _applyL1Update(address account, uint32 sentryNodeCollateralHeight, uint128 sentryNodeWeight) private {
+        _applyL1Update(membershipRegistry, account, sentryNodeCollateralHeight, sentryNodeWeight);
+    }
+
+    function _applyL1Update(
+        ZkSysMembershipRegistry registry,
+        address account,
+        uint32 sentryNodeCollateralHeight,
+        uint128 sentryNodeWeight
+    ) private {
         ZkSysMembershipRegistry.SentryNodeUpdate[] memory updates = new ZkSysMembershipRegistry.SentryNodeUpdate[](1);
         updates[0] = ZkSysMembershipRegistry.SentryNodeUpdate({
             account: account,
             sentryNodeCollateralHeight: sentryNodeCollateralHeight,
             sentryNodeWeight: sentryNodeWeight
         });
-        membershipRegistry.applyL1SentryNodeUpdates(updates);
+        registry.applyL1SentryNodeUpdates(updates);
     }
 
     function _deployMembershipRegistry(address admin_, address l1Bridge_) private returns (ZkSysMembershipRegistry) {
@@ -498,11 +549,19 @@ contract ZkSysRewardWeightRegistryTest is Test {
         private
         returns (ZkSysRewardWeightRegistry)
     {
+        return _deployWeightRegistryWithDelay(admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS);
+    }
+
+    function _deployWeightRegistryWithDelay(
+        address admin_,
+        ZkSysMembershipRegistry membershipRegistry_,
+        uint256 activationDelayPeriods_
+    ) private returns (ZkSysRewardWeightRegistry) {
         ZkSysRewardWeightRegistry implementation = new ZkSysRewardWeightRegistry();
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation),
             abi.encodeCall(
-                ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, ACTIVATION_DELAY_PERIODS)
+                ZkSysRewardWeightRegistry.initialize, (admin_, membershipRegistry_, activationDelayPeriods_)
             )
         );
         return ZkSysRewardWeightRegistry(address(proxy));

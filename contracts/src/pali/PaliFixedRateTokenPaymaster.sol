@@ -12,6 +12,10 @@ interface IERC20Burnable is IERC20 {
     function burn(address from, uint256 amount) external returns (bool);
 }
 
+interface ISyscoinEntryPoint {
+    function SYSCOIN_SPONSORED_PAYMASTER() external view returns (address);
+}
+
 /// @title PaliFixedRateTokenPaymaster
 /// @notice ERC-4337 paymaster that charges one ERC-20 token unit per one native gas unit.
 /// @dev Uses OZ Community Contracts' ERC-20 paymaster base and pins the token price to 1:1.
@@ -21,43 +25,49 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     // EntryPoint charges a 10% unused-gas penalty when the 80k stipend leaves ~50k unused.
     uint256 private constant POST_OP_COST = 35_000;
-    // SYSCOIN: zkSYS-sponsored ops must not inflate ERC-4337 reimbursements beyond Pali's supported gas envelope.
-    uint256 private constant MAX_PAYMASTER_PRIORITY_FEE_PER_GAS = 0;
     uint256 private constant MIN_PAYMASTER_POST_OP_GAS_LIMIT = POST_OP_COST;
+    uint256 private constant MAX_PAYMASTER_POST_OP_GAS_LIMIT = 80_000;
+    uint256 private constant MAX_PRE_VERIFICATION_GAS = 250_000;
+    uint256 private constant MAX_SYNTHETIC_SPONSORED_GAS = 1_000_000;
+    uint256 private constant UNUSED_GAS_PENALTY_DIVISOR = 10;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_OFFSET = 36;
     uint256 private constant PAYMASTER_POST_OP_GAS_LIMIT_END = 52;
-
-    event SponsoredGasPolicyUpdated(
-        uint256 maxPreVerificationGas,
-        uint256 maxVerificationGasLimit,
-        uint256 maxCallGasLimit,
-        uint256 maxPaymasterVerificationGasLimit,
-        uint256 maxPaymasterPostOpGasLimit
-    );
+    uint256 public constant MAX_SPONSORED_NATIVE_PREFUND = 10 ether;
+    address payable public constant SYSCOIN_UNSPENDABLE_NATIVE_SINK =
+        payable(0x0000000000000000000000000000000000005953);
 
     error InvalidAddress();
-    error InvalidSponsoredGasPolicy();
+    error InvalidEntryPointReserveCap();
     error NativeWithdrawalsDisabled();
     error TokenWithdrawalsDisabled();
 
     IEntryPoint private immutable _entryPoint;
     IERC20Burnable public immutable token;
-    uint256 public maxPreVerificationGas;
-    uint256 public maxVerificationGasLimit;
-    uint256 public maxCallGasLimit;
-    uint256 public maxPaymasterVerificationGasLimit;
-    uint256 public maxPaymasterPostOpGasLimit;
+    uint256 public immutable TARGET_ENTRY_POINT_RESERVE;
 
-    constructor(IEntryPoint entryPoint_, IERC20Burnable token_, address owner_) Ownable(owner_) {
+    constructor(IEntryPoint entryPoint_, IERC20Burnable token_, address owner_, uint256 targetEntryPointReserve_)
+        Ownable(owner_)
+    {
         if (
             address(entryPoint_) == address(0) || address(token_) == address(0) || owner_ == address(0)
                 || address(entryPoint_).code.length == 0 || address(token_).code.length == 0
         ) {
             revert InvalidAddress();
         }
+        if (targetEntryPointReserve_ == 0) {
+            revert InvalidEntryPointReserveCap();
+        }
+        try ISyscoinEntryPoint(address(entryPoint_)).SYSCOIN_SPONSORED_PAYMASTER() returns (address sponsoredPaymaster)
+        {
+            if (sponsoredPaymaster != address(this)) {
+                revert InvalidAddress();
+            }
+        } catch {
+            revert InvalidAddress();
+        }
         _entryPoint = entryPoint_;
         token = token_;
-        _setSponsoredGasPolicy(150_000, 2_000_000, 1_000_000, 120_000, 80_000);
+        TARGET_ENTRY_POINT_RESERVE = targetEntryPointReserve_;
     }
 
     receive() external payable {
@@ -82,22 +92,6 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     function withdraw(address payable, uint256) public pure override {
         revert NativeWithdrawalsDisabled();
-    }
-
-    function setSponsoredGasPolicy(
-        uint256 maxPreVerificationGas_,
-        uint256 maxVerificationGasLimit_,
-        uint256 maxCallGasLimit_,
-        uint256 maxPaymasterVerificationGasLimit_,
-        uint256 maxPaymasterPostOpGasLimit_
-    ) external onlyOwner {
-        _setSponsoredGasPolicy(
-            maxPreVerificationGas_,
-            maxVerificationGasLimit_,
-            maxCallGasLimit_,
-            maxPaymasterVerificationGasLimit_,
-            maxPaymasterPostOpGasLimit_
-        );
     }
 
     function _fetchDetails(PackedUserOperation calldata userOp, bytes32)
@@ -126,6 +120,9 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         returns (bool prefunded, uint256 prefundAmount, address prefunder, bytes memory prefundContext)
     {
         if (!_isWithinSponsoredGasPolicy(userOp)) {
+            return (false, 0, prefunder_, "");
+        }
+        if (maxCost > MAX_SPONSORED_NATIVE_PREFUND) {
             return (false, 0, prefunder_, "");
         }
 
@@ -169,52 +166,11 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         return POST_OP_COST;
     }
 
-    function _setSponsoredGasPolicy(
-        uint256 maxPreVerificationGas_,
-        uint256 maxVerificationGasLimit_,
-        uint256 maxCallGasLimit_,
-        uint256 maxPaymasterVerificationGasLimit_,
-        uint256 maxPaymasterPostOpGasLimit_
-    ) private {
-        if (
-            maxPreVerificationGas_ == 0 || maxVerificationGasLimit_ == 0 || maxCallGasLimit_ == 0
-                || maxPaymasterVerificationGasLimit_ == 0 || maxPaymasterPostOpGasLimit_ < MIN_PAYMASTER_POST_OP_GAS_LIMIT
-        ) {
-            revert InvalidSponsoredGasPolicy();
-        }
-
-        maxPreVerificationGas = maxPreVerificationGas_;
-        maxVerificationGasLimit = maxVerificationGasLimit_;
-        maxCallGasLimit = maxCallGasLimit_;
-        maxPaymasterVerificationGasLimit = maxPaymasterVerificationGasLimit_;
-        maxPaymasterPostOpGasLimit = maxPaymasterPostOpGasLimit_;
-
-        emit SponsoredGasPolicyUpdated(
-            maxPreVerificationGas_,
-            maxVerificationGasLimit_,
-            maxCallGasLimit_,
-            maxPaymasterVerificationGasLimit_,
-            maxPaymasterPostOpGasLimit_
-        );
-    }
-
-    function _isWithinSponsoredGasPolicy(PackedUserOperation calldata userOp) private view returns (bool) {
+    function _isWithinSponsoredGasPolicy(PackedUserOperation calldata userOp) private pure returns (bool) {
         if (userOp.paymasterAndData.length < PAYMASTER_POST_OP_GAS_LIMIT_END) {
             return false;
         }
-        if (userOp.maxPriorityFeePerGas() > MAX_PAYMASTER_PRIORITY_FEE_PER_GAS) {
-            return false;
-        }
-        if (userOp.preVerificationGas > maxPreVerificationGas) {
-            return false;
-        }
-        if (userOp.verificationGasLimit() > maxVerificationGasLimit) {
-            return false;
-        }
-        if (userOp.callGasLimit() > maxCallGasLimit) {
-            return false;
-        }
-        if (userOp.paymasterVerificationGasLimit() > maxPaymasterVerificationGasLimit) {
+        if (userOp.preVerificationGas > MAX_PRE_VERIFICATION_GAS) {
             return false;
         }
 
@@ -223,18 +179,35 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         );
         if (
             paymasterPostOpGasLimit < MIN_PAYMASTER_POST_OP_GAS_LIMIT
-                || paymasterPostOpGasLimit > maxPaymasterPostOpGasLimit
+                || paymasterPostOpGasLimit > MAX_PAYMASTER_POST_OP_GAS_LIMIT
         ) {
             return false;
         }
 
-        return true;
+        uint256 syntheticSponsoredGas = userOp.preVerificationGas + userOp.callGasLimit() / UNUSED_GAS_PENALTY_DIVISOR
+            + uint256(paymasterPostOpGasLimit) / UNUSED_GAS_PENALTY_DIVISOR;
+
+        return syntheticSponsoredGas <= MAX_SYNTHETIC_SPONSORED_GAS;
     }
 
     function _depositNativeBalance() private {
         uint256 amount = address(this).balance;
-        if (amount != 0) {
-            _entryPoint.depositTo{value: amount}(address(this));
+        if (amount == 0) {
+            return;
+        }
+
+        uint256 entryPointReserve = _entryPoint.balanceOf(address(this));
+        uint256 room =
+            TARGET_ENTRY_POINT_RESERVE > entryPointReserve ? TARGET_ENTRY_POINT_RESERVE - entryPointReserve : 0;
+        uint256 depositAmount = amount < room ? amount : room;
+        if (depositAmount != 0) {
+            _entryPoint.depositTo{value: depositAmount}(address(this));
+        }
+
+        uint256 excess = address(this).balance;
+        if (excess != 0) {
+            (bool success,) = SYSCOIN_UNSPENDABLE_NATIVE_SINK.call{value: excess}("");
+            require(success);
         }
     }
 }

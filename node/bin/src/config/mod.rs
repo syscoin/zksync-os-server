@@ -1021,6 +1021,11 @@ pub struct SequencerConfig {
     #[config(with = Serde![str], default_t = "0x36615Cf349d7F6344891B1e7CA7C72883F5dc049".parse().unwrap())]
     pub fee_collector_address: Address,
 
+    /// SYSCOIN: optional expected fee recipient enforced by patched zksync-os.
+    /// When nonzero, block execution must use the same address as `fee_collector_address`.
+    #[config(with = Serde![str], default_t = Address::ZERO)]
+    pub expected_fee_recipient_address: Address,
+
     /// Maximum number of blocks to produce.
     /// `None` means unlimited (default, standard operations),
     /// `Some(0)` means no new blocks (useful when only RPC/replay/batching functionality is needed),

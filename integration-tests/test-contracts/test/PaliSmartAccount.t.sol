@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_HOOK,
@@ -33,6 +34,7 @@ contract PaliSmartAccountTest is Test {
 
     uint256 private ownerPrivateKey = 0xA11CE;
     uint256 private secondOwnerPrivateKey = 0xB0B;
+    IEntryPoint private entryPoint = IEntryPoint(address(0x4337));
     address private owner;
     address private secondOwner;
 
@@ -40,7 +42,7 @@ contract PaliSmartAccountTest is Test {
         ecdsa = new PaliECDSAValidatorModule();
         secondEcdsa = new PaliECDSAValidatorModule();
         recovery = new PaliGuardianRecoveryModule();
-        implementation = new PaliSmartAccount();
+        implementation = new PaliSmartAccount(entryPoint);
         owner = vm.addr(ownerPrivateKey);
         secondOwner = vm.addr(secondOwnerPrivateKey);
     }
