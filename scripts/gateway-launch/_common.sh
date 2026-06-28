@@ -412,8 +412,6 @@ if not addr.startswith("0x") or len(addr) != 42:
     raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
 if any(c not in "0123456789abcdef" for c in addr[2:]):
     raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
-if addr == "0x" + "0" * 40:
-    raise SystemExit(f"l2.zksys_fee_collector_addr must be nonzero in {path}")
 print(addr)
 PY
 }
@@ -434,9 +432,35 @@ print(addr)
 PY
 }
 
+gl_normalize_syscoin_expected_fee_recipient_optional() {
+  local target="${1:?target required}"
+  TARGET="${target}" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+print(addr)
+PY
+}
+
 gl_export_syscoin_expected_fee_recipient_from_edge_config() {
   local expected var_name var_value var_value_lc
   expected="$(gl_zksys_fee_collector_from_edge_config)"
+  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
+    for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
+      var_value="${!var_name:-}"
+      if [ -n "${var_value}" ]; then
+        var_value_lc="$(gl_normalize_syscoin_expected_fee_recipient_optional "${var_value}")"
+        [ "${var_value_lc}" = "${expected}" ] ||
+          gl_die "${var_name}=${var_value} is set but l2.zksys_fee_collector_addr is not configured"
+      fi
+    done
+    unset SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT
+    return 0
+  fi
   for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
     var_value="${!var_name:-}"
     if [ -n "${var_value}" ]; then

@@ -7,7 +7,8 @@
 # Optional:
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
-#   ENTRYPOINT_ADDRESS      default: 0x433709009B8330FDa32311DF1C2AFA402eD8D009
+#   ENTRYPOINT_ADDRESS      existing SyscoinEntryPoint address; when unset, this
+#                           script deploys SyscoinEntryPoint before the paymaster
 #   PAYMASTER_OWNER         default: deployer address, if DEPLOYER_ADDRESS is set
 #   DEPLOYER_ADDRESS        used as default owner for hardware or keystore signers
 #   DEPLOYER_PRIVATE_KEY    raw private key signer
@@ -52,7 +53,7 @@ CONTRACTS_DIR="${REPO_ROOT}/contracts"
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
 CHAIN_ID="${CHAIN_ID:-57057}"
-ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
+ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
 PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE="${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE:-100000ether}"
@@ -120,6 +121,58 @@ fi
 verify_args=()
 if [[ "${VERIFY}" == "true" ]]; then
   verify_args+=(--verify --verifier blockscout --verifier-url "${EXPLORER_BASE%/}/api/")
+fi
+
+compute_create_address() {
+  local deployer="${1:?deployer required}"
+  local nonce="${2:?nonce required}"
+  cast compute-address --nonce "${nonce}" "${deployer}" | awk '/Computed Address:/ {print $3}'
+}
+
+if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
+  if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
+    echo "error: DEPLOYER_ADDRESS is required when ENTRYPOINT_ADDRESS is not set, so SyscoinEntryPoint and paymaster addresses can be precomputed" >&2
+    exit 1
+  fi
+  deployer_nonce="$(cast nonce "${DEPLOYER_ADDRESS}" --rpc-url "${RPC_URL}")"
+  paymaster_nonce="$(NONCE="${deployer_nonce}" python3 - <<'PY'
+import os
+
+print(int(os.environ["NONCE"], 0) + 1)
+PY
+)"
+  predicted_entrypoint_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${deployer_nonce}")"
+  predicted_paymaster_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${paymaster_nonce}")"
+
+  echo "Deploying SyscoinEntryPoint"
+  echo "  rpc:       ${RPC_URL}"
+  echo "  chain:     ${CHAIN_ID}"
+  echo "  paymaster: ${predicted_paymaster_address}"
+  echo
+
+  entrypoint_output="$(
+    cd "${CONTRACTS_DIR}"
+    forge create src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint \
+      --rpc-url "${RPC_URL}" \
+      --chain "${CHAIN_ID}" \
+      --broadcast \
+      --optimize \
+      --optimizer-runs 200 \
+      "${verify_args[@]}" \
+      "${wallet_args[@]}" \
+      --constructor-args \
+        "${predicted_paymaster_address}"
+  )"
+  printf '%s\n' "${entrypoint_output}"
+  ENTRYPOINT_ADDRESS="$(printf '%s\n' "${entrypoint_output}" | sed -n 's/^Deployed to: //p' | tail -n 1)"
+  if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
+    echo "error: failed to parse deployed SyscoinEntryPoint address" >&2
+    exit 1
+  fi
+  if [[ "$(printf '%s' "${ENTRYPOINT_ADDRESS}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${predicted_entrypoint_address}" | tr '[:upper:]' '[:lower:]')" ]]; then
+    echo "error: deployed SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} != predicted ${predicted_entrypoint_address}" >&2
+    exit 1
+  fi
 fi
 
 echo "Deploying PaliFixedRateTokenPaymaster"
