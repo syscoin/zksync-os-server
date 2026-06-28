@@ -94,6 +94,17 @@ print(addr)
 PY
 }
 
+shell_join() {
+  # SYSCOIN: quote env-derived arguments before embedding them in SSH remote
+  # command strings; OpenSSH remote commands are still parsed by a shell.
+  python3 - "$@" <<'PY'
+import shlex
+import sys
+
+print(" ".join(shlex.quote(arg) for arg in sys.argv[1:]))
+PY
+}
+
 ssh_opts=(-o StrictHostKeyChecking=accept-new)
 if [[ -n "${SSH_KEY_PATH}" ]]; then
   ssh_opts+=(-i "${SSH_KEY_PATH}")
@@ -114,9 +125,10 @@ print(json.dumps(provider, separators=(",", ":")))
 PY
   )"
 elif [[ -n "${SEQUENCER_REMOTE_HOST}" ]]; then
+  remote_provider_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONFIG}" "${DEFAULT_GATEWAY_RPC_URL}")"
   provider_json="$(
     ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
-      "python3 - '${SOURCE_ZKSYS_CONFIG}' '${DEFAULT_GATEWAY_RPC_URL}'" <<'PY'
+      "${remote_provider_cmd}" <<'PY'
 import json
 import sys
 from urllib.parse import urlparse
@@ -170,9 +182,11 @@ Set it to the Gateway validator_timelock_addr used by the patched zksync-os bina
 EOF
     exit 1
   fi
+  remote_gateway_config="${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml"
+  remote_gateway_config_cmd="python3 - $(shell_join "${remote_gateway_config}")"
   SYSCOIN_EDGE_DA_COMMIT_TARGET="$(
     ssh "${ssh_opts[@]}" "${SEQUENCER_REMOTE_HOST}" \
-      "python3 - '${SOURCE_GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/gateway.yaml'" <<'PY'
+      "${remote_gateway_config_cmd}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -197,6 +211,7 @@ provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
   echo "Uploading zksync-os-server tree to ${REMOTE_HOST}:${REMOTE_OS_SERVER_PATH}"
+  remote_os_server_path_q="$(shell_join "${REMOTE_OS_SERVER_PATH}")"
   tar \
     --exclude .git \
     --exclude target \
@@ -204,10 +219,10 @@ if [[ "${UPLOAD_REPO}" == "true" ]]; then
     --exclude build-artifacts \
     -C "${REPO_ROOT}" \
     -cf - . | ssh "${ssh_opts[@]}" "${REMOTE_HOST}" \
-      "set -euo pipefail; mkdir -p '${REMOTE_OS_SERVER_PATH}'; tar -C '${REMOTE_OS_SERVER_PATH}' -xf -"
+      "set -euo pipefail; mkdir -p ${remote_os_server_path_q}; tar -C ${remote_os_server_path_q} -xf -"
 fi
 
-ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
+remote_install_cmd="bash -s -- $(shell_join \
   "${provider_b64}" \
   "${REMOTE_BASE_DIR}" \
   "${REMOTE_OS_SERVER_PATH}" \
@@ -233,7 +248,9 @@ ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
   "${START_PUBLIC_SERVICE}" \
   "${START_DEBUG_SERVICE}" \
   "${PUBLIC_RPC_RATE_LIMITS}" \
-  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" <<'REMOTE_SCRIPT'
+  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
+
+ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_install_cmd}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 PROVIDER_B64="$1"
