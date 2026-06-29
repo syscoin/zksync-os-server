@@ -5,121 +5,11 @@ use jsonrpsee::core::middleware::{Batch, BatchEntry, Notification};
 use jsonrpsee::server::middleware::rpc::{RpcService, RpcServiceT};
 use jsonrpsee::types::Request;
 use jsonrpsee::{BatchResponseBuilder, MethodResponse};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-
-const UNKNOWN_METHOD_LABEL: &str = "unknown";
-
-// SYSCOIN: method names are client-controlled JSON-RPC input. Keep metric cardinality bounded
-// by mapping them to a static allowlist before indexing global metric families.
-fn normalize_method_label(method: &str) -> &'static str {
-    match method {
-        "batch" => "batch",
-        "debug_chainConfig" => "debug_chainConfig",
-        "debug_codeByHash" => "debug_codeByHash",
-        "debug_getRawBlock" => "debug_getRawBlock",
-        "debug_getRawHeader" => "debug_getRawHeader",
-        "debug_getRawReceipts" => "debug_getRawReceipts",
-        "debug_getRawTransaction" => "debug_getRawTransaction",
-        "debug_getRawTransactions" => "debug_getRawTransactions",
-        "debug_traceBlock" => "debug_traceBlock",
-        "debug_traceBlockByHash" => "debug_traceBlockByHash",
-        "debug_traceBlockByNumber" => "debug_traceBlockByNumber",
-        "debug_traceCall" => "debug_traceCall",
-        "debug_traceCallMany" => "debug_traceCallMany",
-        "debug_traceTransaction" => "debug_traceTransaction",
-        "erigon_getHeaderByNumber" => "erigon_getHeaderByNumber",
-        "eth_accounts" => "eth_accounts",
-        "eth_blobBaseFee" => "eth_blobBaseFee",
-        "eth_blockNumber" => "eth_blockNumber",
-        "eth_call" => "eth_call",
-        "eth_callMany" => "eth_callMany",
-        "eth_chainId" => "eth_chainId",
-        "eth_coinbase" => "eth_coinbase",
-        "eth_createAccessList" => "eth_createAccessList",
-        "eth_estimateGas" => "eth_estimateGas",
-        "eth_feeHistory" => "eth_feeHistory",
-        "eth_gasPrice" => "eth_gasPrice",
-        "eth_getAccount" => "eth_getAccount",
-        "eth_getAccountInfo" => "eth_getAccountInfo",
-        "eth_getBalance" => "eth_getBalance",
-        "eth_getBlockByHash" => "eth_getBlockByHash",
-        "eth_getBlockByNumber" => "eth_getBlockByNumber",
-        "eth_getBlockReceipts" => "eth_getBlockReceipts",
-        "eth_getBlockTransactionCountByHash" => "eth_getBlockTransactionCountByHash",
-        "eth_getBlockTransactionCountByNumber" => "eth_getBlockTransactionCountByNumber",
-        "eth_getCode" => "eth_getCode",
-        "eth_getFilterChanges" => "eth_getFilterChanges",
-        "eth_getFilterLogs" => "eth_getFilterLogs",
-        "eth_getHeaderByHash" => "eth_getHeaderByHash",
-        "eth_getHeaderByNumber" => "eth_getHeaderByNumber",
-        "eth_getLogs" => "eth_getLogs",
-        "eth_getProof" => "eth_getProof",
-        "eth_getRawTransactionByBlockHashAndIndex" => "eth_getRawTransactionByBlockHashAndIndex",
-        "eth_getRawTransactionByBlockNumberAndIndex" => {
-            "eth_getRawTransactionByBlockNumberAndIndex"
-        }
-        "eth_getRawTransactionByHash" => "eth_getRawTransactionByHash",
-        "eth_getStorageAt" => "eth_getStorageAt",
-        "eth_getTransactionByBlockHashAndIndex" => "eth_getTransactionByBlockHashAndIndex",
-        "eth_getTransactionByBlockNumberAndIndex" => "eth_getTransactionByBlockNumberAndIndex",
-        "eth_getTransactionByHash" => "eth_getTransactionByHash",
-        "eth_getTransactionBySenderAndNonce" => "eth_getTransactionBySenderAndNonce",
-        "eth_getTransactionCount" => "eth_getTransactionCount",
-        "eth_getTransactionReceipt" => "eth_getTransactionReceipt",
-        "eth_getUncleByBlockHashAndIndex" => "eth_getUncleByBlockHashAndIndex",
-        "eth_getUncleByBlockNumberAndIndex" => "eth_getUncleByBlockNumberAndIndex",
-        "eth_getUncleCountByBlockHash" => "eth_getUncleCountByBlockHash",
-        "eth_getUncleCountByBlockNumber" => "eth_getUncleCountByBlockNumber",
-        "eth_maxPriorityFeePerGas" => "eth_maxPriorityFeePerGas",
-        "eth_newBlockFilter" => "eth_newBlockFilter",
-        "eth_newFilter" => "eth_newFilter",
-        "eth_newPendingTransactionFilter" => "eth_newPendingTransactionFilter",
-        "eth_protocolVersion" => "eth_protocolVersion",
-        "eth_sendRawTransaction" => "eth_sendRawTransaction",
-        "eth_sendRawTransactionSync" => "eth_sendRawTransactionSync",
-        "eth_sendTransaction" => "eth_sendTransaction",
-        "eth_sign" => "eth_sign",
-        "eth_signTransaction" => "eth_signTransaction",
-        "eth_signTypedData" => "eth_signTypedData",
-        "eth_simulateV1" => "eth_simulateV1",
-        "eth_subscribe" => "eth_subscribe",
-        "eth_syncing" => "eth_syncing",
-        "eth_uninstallFilter" => "eth_uninstallFilter",
-        "eth_unsubscribe" => "eth_unsubscribe",
-        "net_version" => "net_version",
-        "ots_getApiLevel" => "ots_getApiLevel",
-        "ots_getBlockDetails" => "ots_getBlockDetails",
-        "ots_getBlockDetailsByHash" => "ots_getBlockDetailsByHash",
-        "ots_getBlockTransactions" => "ots_getBlockTransactions",
-        "ots_getContractCreator" => "ots_getContractCreator",
-        "ots_getHeaderByNumber" => "ots_getHeaderByNumber",
-        "ots_getInternalOperations" => "ots_getInternalOperations",
-        "ots_getTransactionBySenderAndNonce" => "ots_getTransactionBySenderAndNonce",
-        "ots_getTransactionError" => "ots_getTransactionError",
-        "ots_hasCode" => "ots_hasCode",
-        "ots_searchTransactionsAfter" => "ots_searchTransactionsAfter",
-        "ots_searchTransactionsBefore" => "ots_searchTransactionsBefore",
-        "ots_traceTransaction" => "ots_traceTransaction",
-        "txpool_content" => "txpool_content",
-        "txpool_inspect" => "txpool_inspect",
-        "txpool_status" => "txpool_status",
-        "unstable_getBatchByBlockNumber" => "unstable_getBatchByBlockNumber",
-        "unstable_getLocalRoot" => "unstable_getLocalRoot",
-        "web3_clientVersion" => "web3_clientVersion",
-        "web3_sha3" => "web3_sha3",
-        "zks_getBlockMetadataByNumber" => "zks_getBlockMetadataByNumber",
-        "zks_getBridgehubContract" => "zks_getBridgehubContract",
-        "zks_getBytecodeSupplierContract" => "zks_getBytecodeSupplierContract",
-        "zks_getGenesis" => "zks_getGenesis",
-        "zks_getL2ToL1LogProof" => "zks_getL2ToL1LogProof",
-        "zks_getProof" => "zks_getProof",
-        _ => UNKNOWN_METHOD_LABEL,
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallKind {
@@ -127,11 +17,17 @@ pub enum CallKind {
     Notification,
 }
 
+/// Metric label for any method name that isn't registered on the server. Folding all such names
+/// into one label bounds metric cardinality, so a client can't spawn unbounded time series by
+/// sending requests for arbitrary nonexistent methods.
+const UNKNOWN_METHOD: &str = "<unknown>";
+
 #[derive(Clone)]
 pub struct Monitoring<S = RpcService> {
     inner: S,
     max_response_size_bytes: usize,
     blocking_rpcs_semaphore: Arc<Semaphore>,
+    known_methods: Arc<HashSet<&'static str>>,
 }
 
 impl<S> Monitoring<S> {
@@ -139,13 +35,21 @@ impl<S> Monitoring<S> {
         inner: S,
         max_response_size_bytes: u32,
         blocking_rpcs_semaphore: Arc<Semaphore>,
+        known_methods: Arc<HashSet<&'static str>>,
     ) -> Self {
         Self {
             inner,
             max_response_size_bytes: max_response_size_bytes as usize,
             blocking_rpcs_semaphore,
+            known_methods,
         }
     }
+}
+
+/// Maps a method name to a bounded metric label: the registered name (a `'static` string, so no
+/// per-request allocation) or [`UNKNOWN_METHOD`].
+fn method_label(known_methods: &HashSet<&'static str>, method: &str) -> &'static str {
+    known_methods.get(method).copied().unwrap_or(UNKNOWN_METHOD)
 }
 
 // SYSCOIN: jsonrpsee runs `blocking` methods on Tokio's blocking pool. Gate the
@@ -320,7 +224,7 @@ where
         &self,
         request: Request<'a>,
     ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
-        let method = normalize_method_label(request.method_name());
+        let method = method_label(&self.known_methods, request.method_name());
         let request_size = request.params.as_ref().map_or(0, |p| p.get().len());
         let inner = self.inner.clone();
         let blocking_rpcs_semaphore = self.blocking_rpcs_semaphore.clone();
@@ -368,7 +272,7 @@ where
             .iter()
             .filter_map(|x| {
                 if let Ok(req) = x {
-                    Some(normalize_method_label(req.method_name()))
+                    Some(method_label(&self.known_methods, req.method_name()))
                 } else {
                     None
                 }
@@ -423,7 +327,7 @@ where
         n: Notification<'a>,
     ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
         let request_size = n.params.as_ref().map_or(0, |p| p.get().len());
-        let method = normalize_method_label(n.method_name());
+        let method = method_label(&self.known_methods, n.method_name());
         let inner = self.inner.clone();
 
         async move {
@@ -437,31 +341,26 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{UNKNOWN_METHOD_LABEL, is_heavy_rpc_method, normalize_method_label};
+    use super::{UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    use std::collections::HashSet;
 
     #[test]
-    fn known_methods_keep_specific_labels() {
-        assert_eq!(normalize_method_label("eth_call"), "eth_call");
-        assert_eq!(
-            normalize_method_label("debug_traceTransaction"),
-            "debug_traceTransaction"
-        );
-        assert_eq!(
-            normalize_method_label("zks_getBridgehubContract"),
-            "zks_getBridgehubContract"
-        );
-    }
+    fn registered_methods_pass_through_unknown_methods_collapse() {
+        let known: HashSet<&'static str> = ["eth_call", "eth_getBlockByHash"].into_iter().collect();
 
-    #[test]
-    fn unknown_methods_share_one_bounded_label() {
+        // Registered methods are reported verbatim.
+        assert_eq!(method_label(&known, "eth_call"), "eth_call");
         assert_eq!(
-            normalize_method_label("attacker_unique_1"),
-            UNKNOWN_METHOD_LABEL
+            method_label(&known, "eth_getBlockByHash"),
+            "eth_getBlockByHash"
         );
-        assert_eq!(
-            normalize_method_label(&"attacker_unique_2".repeat(1024)),
-            UNKNOWN_METHOD_LABEL
-        );
+
+        // Anything unregistered — including arbitrarily long junk used to pollute metrics —
+        // collapses to a single bounded label instead of minting a new time series.
+        assert_eq!(method_label(&known, "eth_does_not_exist"), UNKNOWN_METHOD);
+        assert_eq!(method_label(&known, ""), UNKNOWN_METHOD);
+        let junk = format!("eth_{}", "a".repeat(1_000_000));
+        assert_eq!(method_label(&known, &junk), UNKNOWN_METHOD);
     }
 
     #[test]
@@ -473,6 +372,6 @@ mod tests {
         assert!(is_heavy_rpc_method("zks_getProof"));
         assert!(is_heavy_rpc_method("unstable_getLocalRoot"));
         assert!(!is_heavy_rpc_method("eth_blockNumber"));
-        assert!(!is_heavy_rpc_method(UNKNOWN_METHOD_LABEL));
+        assert!(!is_heavy_rpc_method(UNKNOWN_METHOD));
     }
 }
