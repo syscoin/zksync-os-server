@@ -220,7 +220,10 @@ payload = json.dumps(
 req = urllib.request.Request(
     rpc_url,
     data=payload,
-    headers={"Content-Type": "application/json"},
+    headers={
+        "Content-Type": "application/json",
+        "User-Agent": "zksync-os-server-gateway-launch/1.0",
+    },
     method="POST",
 )
 with urllib.request.urlopen(req, timeout=3) as resp:
