@@ -50,12 +50,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 
-SYSCOIN_ENTRYPOINT_ADDRESS="0x4337724c89B1Df0cA99FE53640123f0444dcE0F3"
+SYSCOIN_ENTRYPOINT_ADDRESS="0x43378ADCd7Cf9A6dcb3fd898696f9496A9aE0462"
 CREATE2_DEPLOYER_ADDRESS="0x4e59b44847b379578588920cA78FbF26c0B4956C"
 # Standard CREATE2 deployer 0x4e59... with salt
-# 0x86742974a9d36dfe84b04d60f1eff027ad9e0a70240b79ec7a05c56af9a3bfad.
+# 0x174161820935ccc4f163b30ef684ee916fad0e1eeaa843542e9e16248a15a4a2.
 # The salt is chosen so the Syscoin EntryPoint keeps the upstream-style 0x4337 prefix.
-SYSCOIN_ENTRYPOINT_SALT="0x86742974a9d36dfe84b04d60f1eff027ad9e0a70240b79ec7a05c56af9a3bfad"
+SYSCOIN_ENTRYPOINT_SALT="0x174161820935ccc4f163b30ef684ee916fad0e1eeaa843542e9e16248a15a4a2"
 
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
@@ -89,6 +89,9 @@ if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
   echo "error: ENTRYPOINT_ADDRESS is required and must be the SyscoinEntryPoint used by the Pali account/factory stack" >&2
   exit 1
 fi
+
+export FOUNDRY_BYTECODE_HASH=none
+export FOUNDRY_CBOR_METADATA=false
 
 wallet_args=()
 case "${DEPLOYER_SIGNER:-}" in
@@ -153,7 +156,7 @@ deploy_syscoin_entrypoint_if_missing() {
 
   entrypoint_init_code="$(
     cd "${CONTRACTS_DIR}"
-    forge inspect src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint bytecode
+    forge inspect --no-metadata src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint bytecode
   )"
   computed_entrypoint="$(
     cast create2 \
