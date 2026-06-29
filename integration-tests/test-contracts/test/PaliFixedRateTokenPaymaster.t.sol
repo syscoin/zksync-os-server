@@ -135,21 +135,6 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         );
     }
 
-    function testValidateRejectsUnboundSyscoinEntryPoint() public {
-        entryPoint.setIgnoreBind(true);
-        paymaster = _deployPaymasterWithoutBinding(address(token), TARGET_ENTRY_POINT_RESERVE);
-
-        _assertUserOpRejected(_userOp());
-    }
-
-    function testValidateRejectsEntryPointWithDifferentSponsoredPaymaster() public {
-        entryPoint.setIgnoreBind(true);
-        paymaster = _deployPaymasterWithoutBinding(address(token), TARGET_ENTRY_POINT_RESERVE);
-        entryPoint.setSyscoinSponsoredPaymaster(address(0xBAD));
-
-        _assertUserOpRejected(_userOp());
-    }
-
     function testConstructorRejectsZeroEntryPointReserveCap() public {
         vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidEntryPointReserveCap.selector);
         new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(token)), owner, 0);

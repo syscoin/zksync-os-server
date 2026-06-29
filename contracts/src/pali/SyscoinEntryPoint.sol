@@ -5,10 +5,6 @@ import {EntryPoint} from "@account-abstraction/core/EntryPoint.sol";
 import {IAggregator} from "@account-abstraction/interfaces/IAggregator.sol";
 import {PackedUserOperation} from "@account-abstraction/interfaces/PackedUserOperation.sol";
 
-interface IPaliEntryPointBoundPaymaster {
-    function entryPoint() external view returns (address);
-}
-
 /// @title SyscoinEntryPoint
 /// @notice ERC-4337 EntryPoint v0.9 with Syscoin-specific routing for canonical Pali-sponsored ops.
 /// @dev SYSCOIN: do not edit upstream EntryPoint. Keep the routing delta isolated here.
@@ -28,18 +24,11 @@ contract SyscoinEntryPoint is EntryPoint {
             revert InvalidSyscoinSponsoredPaymaster();
         }
 
-        if (syscoinSponsoredPaymaster_.code.length == 0) {
-            if (msg.sender != syscoinSponsoredPaymaster_) {
-                revert InvalidSyscoinSponsoredPaymaster();
-            }
-        } else {
-            try IPaliEntryPointBoundPaymaster(syscoinSponsoredPaymaster_).entryPoint() returns (address entryPoint_) {
-                if (entryPoint_ != address(this)) {
-                    revert InvalidSyscoinSponsoredPaymaster();
-                }
-            } catch {
-                revert InvalidSyscoinSponsoredPaymaster();
-            }
+        if (
+            syscoinSponsoredPaymaster_.code.length != 0 || msg.sender != syscoinSponsoredPaymaster_
+                || msg.sender == tx.origin
+        ) {
+            revert InvalidSyscoinSponsoredPaymaster();
         }
 
         SYSCOIN_SPONSORED_PAYMASTER = syscoinSponsoredPaymaster_;
@@ -141,8 +130,7 @@ contract SyscoinEntryPoint is EntryPoint {
     }
 
     function _isSyscoinSponsoredOp(UserOpInfo memory opInfo) internal view virtual returns (bool) {
-        address sponsoredPaymaster = SYSCOIN_SPONSORED_PAYMASTER;
-        return sponsoredPaymaster != address(0) && opInfo.mUserOp.paymaster == sponsoredPaymaster;
+        return opInfo.mUserOp.paymaster == SYSCOIN_SPONSORED_PAYMASTER;
     }
 
     function _routeCompensation(
@@ -153,12 +141,7 @@ contract SyscoinEntryPoint is EntryPoint {
         // SYSCOIN: canonical Pali-sponsored reimbursement is routed back into the
         // paymaster's EntryPoint deposit instead of to the bundler beneficiary.
         if (syscoinSponsoredCollected != 0) {
-            address sponsoredPaymaster = SYSCOIN_SPONSORED_PAYMASTER;
-            if (sponsoredPaymaster == address(0)) {
-                beneficiaryCollected += syscoinSponsoredCollected;
-            } else {
-                _incrementDeposit(sponsoredPaymaster, syscoinSponsoredCollected);
-            }
+            _incrementDeposit(SYSCOIN_SPONSORED_PAYMASTER, syscoinSponsoredCollected);
         }
         _compensate(beneficiary, beneficiaryCollected);
     }

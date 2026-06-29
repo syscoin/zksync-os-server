@@ -80,9 +80,18 @@ contract SyscoinEntryPointTest is Test {
         entryPoint.bindSyscoinSponsoredPaymaster(address(0xAA));
     }
 
-    function testBindRejectsMismatchedPaymasterEntryPoint() public {
+    function testBindRejectsEoaSelfBind() public {
         SyscoinEntryPointHarness entryPoint = new SyscoinEntryPointHarness();
-        MockEntryPointBoundPaymaster paymaster = new MockEntryPointBoundPaymaster(address(0xBAD));
+        address eoa = address(0xAA);
+
+        vm.expectRevert(SyscoinEntryPoint.InvalidSyscoinSponsoredPaymaster.selector);
+        vm.prank(eoa, eoa);
+        entryPoint.bindSyscoinSponsoredPaymaster(eoa);
+    }
+
+    function testBindRejectsDeployedPaymaster() public {
+        SyscoinEntryPointHarness entryPoint = new SyscoinEntryPointHarness();
+        MockEntryPointBoundPaymaster paymaster = new MockEntryPointBoundPaymaster(address(entryPoint));
 
         vm.expectRevert(SyscoinEntryPoint.InvalidSyscoinSponsoredPaymaster.selector);
         entryPoint.bindSyscoinSponsoredPaymaster(address(paymaster));
@@ -106,13 +115,12 @@ contract SyscoinEntryPointTest is Test {
         assertEq(paymaster.entryPoint(), address(entryPoint));
     }
 
-    function testFakePaymasterCanBindFirstIfEntryPointLeftUnbound() public {
+    function testFakeDeployedPaymasterCannotBindFirstIfEntryPointLeftUnbound() public {
         SyscoinEntryPointHarness entryPoint = new SyscoinEntryPointHarness();
         MockEntryPointBoundPaymaster fakePaymaster = new MockEntryPointBoundPaymaster(address(entryPoint));
 
+        vm.expectRevert(SyscoinEntryPoint.InvalidSyscoinSponsoredPaymaster.selector);
         entryPoint.bindSyscoinSponsoredPaymaster(address(fakePaymaster));
-
-        assertEq(entryPoint.SYSCOIN_SPONSORED_PAYMASTER(), address(fakePaymaster));
     }
 
     function testRoutesSyscoinSponsoredCompensationBackToPaymasterDeposit() public {
@@ -197,28 +205,12 @@ contract SyscoinEntryPointTest is Test {
         assertEq(address(entryPoint).balance, 0);
     }
 
-    function testHandleOpsBeforeBindPaysBeneficiaryForZeroPaymasterOp() public {
-        SyscoinEntryPointHarness entryPoint = new SyscoinEntryPointHarness();
-        vm.deal(address(entryPoint), 2 ether);
-
-        PackedUserOperation[] memory ops = new PackedUserOperation[](1);
-        ops[0] = _userOp(address(0), 2 ether);
-
-        vm.prank(bundler, bundler);
-        entryPoint.handleOps(ops, beneficiary);
-
-        assertEq(beneficiary.balance, 2 ether);
-        assertEq(entryPoint.balanceOf(address(0)), 0);
-        assertEq(address(entryPoint).balance, 0);
-    }
-
     function _userOp(address opPaymaster, uint256 collected) private pure returns (PackedUserOperation memory userOp) {
         userOp.nonce = collected;
         userOp.paymasterAndData = abi.encodePacked(opPaymaster);
     }
 
     function _bindPaymaster(SyscoinEntryPointHarness entryPoint) private returns (address paymaster) {
-        paymaster = address(new MockEntryPointBoundPaymaster(address(entryPoint)));
-        entryPoint.bindSyscoinSponsoredPaymaster(paymaster);
+        paymaster = address(new ConstructorBoundPaymaster(entryPoint));
     }
 }

@@ -13,7 +13,6 @@ interface IERC20Burnable is IERC20 {
 }
 
 interface ISyscoinEntryPoint {
-    function SYSCOIN_SPONSORED_PAYMASTER() external view returns (address);
     function bindSyscoinSponsoredPaymaster(address syscoinSponsoredPaymaster_) external;
 }
 
@@ -94,7 +93,7 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         override
         returns (uint256 validationData, IERC20 paymentToken, uint256 tokenPrice)
     {
-        if (!_isBoundToSyscoinEntryPoint() || !_isWithinSponsoredGasPolicy(userOp)) {
+        if (!_isWithinSponsoredGasPolicy(userOp)) {
             return (ERC4337Utils.SIG_VALIDATION_FAILED, IERC20(address(0)), 0);
         }
 
@@ -113,7 +112,7 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         override
         returns (bool prefunded, uint256 prefundAmount, address prefunder, bytes memory prefundContext)
     {
-        if (!_isBoundToSyscoinEntryPoint() || !_isWithinSponsoredGasPolicy(userOp)) {
+        if (!_isWithinSponsoredGasPolicy(userOp)) {
             return (false, 0, prefunder_, "");
         }
         if (maxCost > MAX_SPONSORED_NATIVE_PREFUND) {
@@ -158,14 +157,6 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
 
     function _postOpCost() internal pure override returns (uint256) {
         return POST_OP_COST;
-    }
-
-    function _isBoundToSyscoinEntryPoint() private view returns (bool) {
-        try ISyscoinEntryPoint(address(_entryPoint)).SYSCOIN_SPONSORED_PAYMASTER() returns (address sponsoredPaymaster) {
-            return sponsoredPaymaster == address(this);
-        } catch {
-            return false;
-        }
     }
 
     function _isWithinSponsoredGasPolicy(PackedUserOperation calldata userOp) private pure returns (bool) {
