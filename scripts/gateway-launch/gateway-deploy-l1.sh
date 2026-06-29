@@ -357,6 +357,9 @@ import yaml
 path = Path(sys.argv[1])
 data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 addr = data.get("core_ecosystem_contracts", {}).get("bridgehub_proxy_addr", "")
+if isinstance(addr, int):
+    print("0x" + format(addr & ((1 << 160) - 1), "040x"))
+    raise SystemExit(0)
 if not isinstance(addr, str) or not addr.startswith(("0x", "0X")) or len(addr) != 42:
     raise SystemExit(f"missing core_ecosystem_contracts.bridgehub_proxy_addr in {path}")
 print("0x" + format(int(addr[2:], 16), "040x"))
@@ -373,6 +376,9 @@ import yaml
 path = Path(sys.argv[1])
 data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 addr = data.get("zksys", {}).get("l1_registry_bridge_addr", "")
+if isinstance(addr, int):
+    print("0x" + format(addr & ((1 << 160) - 1), "040x"))
+    raise SystemExit(0)
 if isinstance(addr, str) and addr.startswith(("0x", "0X")) and len(addr) == 42:
     print("0x" + format(int(addr[2:], 16), "040x"))
 PY
@@ -412,6 +418,9 @@ import tempfile
 from pathlib import Path
 
 import yaml
+
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(0)
 
 path = Path(sys.argv[1])
 address = sys.argv[2]
@@ -603,6 +612,12 @@ deploy_zksys_l1_registry_bridge() {
   actual_seniority_height2="$(cast call "${expected_address}" "seniorityHeight2()(uint32)" --rpc-url "${L1_RPC_URL}")"
   actual_seniority_level1_bps="$(cast call "${expected_address}" "seniorityLevel1Bps()(uint16)" --rpc-url "${L1_RPC_URL}")"
   actual_seniority_level2_bps="$(cast call "${expected_address}" "seniorityLevel2Bps()(uint16)" --rpc-url "${L1_RPC_URL}")"
+  actual_chain_id="${actual_chain_id%% *}"
+  actual_nevm_start_block="${actual_nevm_start_block%% *}"
+  actual_seniority_height1="${actual_seniority_height1%% *}"
+  actual_seniority_height2="${actual_seniority_height2%% *}"
+  actual_seniority_level1_bps="${actual_seniority_level1_bps%% *}"
+  actual_seniority_level2_bps="${actual_seniority_level2_bps%% *}"
 
   [ "$(gl_to_lower "${actual_bridgehub}")" = "$(gl_to_lower "${bridgehub}")" ] ||
     gl_die "zkSYS L1 registry bridge bridgehub mismatch: ${actual_bridgehub} != ${bridgehub}"
