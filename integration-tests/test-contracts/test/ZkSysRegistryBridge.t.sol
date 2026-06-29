@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {TransparentUpgradeableProxy} from "@openzeppelin/contracts-v4/proxy/transparent/TransparentUpgradeableProxy.sol";
 import {Test} from "forge-std/Test.sol";
 import {
     IL1BridgehubMinimal,
@@ -99,7 +100,7 @@ contract ZkSysRegistryBridgeTest is Test {
 
     function setUp() public {
         bridgehub = new MockBridgehub();
-        bridge = new ZkSysRegistryBridge(
+        bridge = _deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -223,7 +224,7 @@ contract ZkSysRegistryBridgeTest is Test {
         assertEq(bridge.sentryNodeWeight(collateralHeight, seniorityHeight2), 200_000 ether);
     }
 
-    function testConstructorRejectsSeniorityBpsAboveDenominator() public {
+    function testInitializeRejectsSeniorityBpsAboveDenominator() public {
         uint16 invalidBps = uint16(bridge.BPS_DENOMINATOR() + 1);
 
         vm.expectRevert();
@@ -231,7 +232,7 @@ contract ZkSysRegistryBridgeTest is Test {
     }
 
     function deployBridgeWithLevel2Bps(uint16 seniorityLevel2Bps_) external returns (ZkSysRegistryBridge) {
-        return new ZkSysRegistryBridge(
+        return _deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -266,9 +267,9 @@ contract ZkSysRegistryBridgeTest is Test {
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
     }
 
-    function testConstructorRejectsInvalidSeniorityConfigs() public {
+    function testInitializeRejectsInvalidSeniorityConfigs() public {
         vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
-        new ZkSysRegistryBridge(
+        this.deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -280,7 +281,7 @@ contract ZkSysRegistryBridgeTest is Test {
         );
 
         vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
-        new ZkSysRegistryBridge(
+        this.deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -292,7 +293,7 @@ contract ZkSysRegistryBridgeTest is Test {
         );
 
         vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
-        new ZkSysRegistryBridge(
+        this.deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -304,7 +305,7 @@ contract ZkSysRegistryBridgeTest is Test {
         );
 
         vm.expectRevert(ZkSysRegistryBridge.InvalidSeniorityConfig.selector);
-        new ZkSysRegistryBridge(
+        this.deployBridge(
             bridgehub,
             zksysChainId,
             l2Registry,
@@ -345,5 +346,56 @@ contract ZkSysRegistryBridgeTest is Test {
 
         vm.expectRevert(abi.encodeWithSelector(ZkSysRegistryBridge.DuplicateAccount.selector, alice));
         bridge.pushSentryNodeUpdates(accounts, 1_000_000, 800, address(0));
+    }
+
+    function deployBridge(
+        IL1BridgehubMinimal bridgehub_,
+        uint256 zksysChainId_,
+        address l2Registry_,
+        uint32 nevmStartBlock_,
+        uint32 seniorityHeight1_,
+        uint32 seniorityHeight2_,
+        uint16 seniorityLevel1Bps_,
+        uint16 seniorityLevel2Bps_
+    ) external returns (ZkSysRegistryBridge) {
+        return _deployBridge(
+            bridgehub_,
+            zksysChainId_,
+            l2Registry_,
+            nevmStartBlock_,
+            seniorityHeight1_,
+            seniorityHeight2_,
+            seniorityLevel1Bps_,
+            seniorityLevel2Bps_
+        );
+    }
+
+    function _deployBridge(
+        IL1BridgehubMinimal bridgehub_,
+        uint256 zksysChainId_,
+        address l2Registry_,
+        uint32 nevmStartBlock_,
+        uint32 seniorityHeight1_,
+        uint32 seniorityHeight2_,
+        uint16 seniorityLevel1Bps_,
+        uint16 seniorityLevel2Bps_
+    ) private returns (ZkSysRegistryBridge) {
+        ZkSysRegistryBridge implementation = new ZkSysRegistryBridge();
+        bytes memory initData = abi.encodeCall(
+            ZkSysRegistryBridge.initialize,
+            (
+                bridgehub_,
+                zksysChainId_,
+                l2Registry_,
+                nevmStartBlock_,
+                seniorityHeight1_,
+                seniorityHeight2_,
+                seniorityLevel1Bps_,
+                seniorityLevel2Bps_
+            )
+        );
+        TransparentUpgradeableProxy proxy =
+            new TransparentUpgradeableProxy(address(implementation), address(0xA9), initData);
+        return ZkSysRegistryBridge(address(proxy));
     }
 }

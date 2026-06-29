@@ -603,7 +603,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `PROTOCOL_VERSION` | Default `v31.0` |
 | `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
 | `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
-| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet and whenever `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE=true`; initial token role admin and owner of the deterministic zkSYS `ProxyAdmin`; also used during L1 launch to derive deterministic zkSYS L2 addresses and the v31 `zk_token_asset_id` for canonical L2 zkSYS |
+| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet and whenever `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE=true`; initial token role admin and default owner of deterministic zkSYS `ProxyAdmin` contracts; also used during L1 launch to derive deterministic zkSYS L2 addresses and the v31 `zk_token_asset_id` for canonical L2 zkSYS |
 | `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |
 | `ZKSYS_L2_TOKEN_IMPL_SALT` / `ZKSYS_L2_TOKEN_PROXY_SALT` | Optional bytes32 salts for deriving the canonical L2 zkSYS implementation/proxy addresses |
 | `ZKSYS_L2_RPC_URL` | Required by `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the L2 zkSYS suite after the chain is live |
@@ -611,10 +611,11 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_L2_DEPLOYER_ACCOUNT_NAME` / `ZKSYS_L2_DEPLOYER_KEYSTORE` / `ZKSYS_L2_DEPLOYER_PASSWORD_FILE` | Optional L2 bootstrap signer inputs for account or keystore modes; fall back to the matching deployer/funder values when unset |
 | `ZKSYS_L2_DEPLOYER_PRIVATE_KEY` | Local/disposable-network fallback for `ZKSYS_L2_DEPLOYER_SIGNER=private-key`; rejected on Tanenbaum/Mainnet unless `GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true` |
 | `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE` | Deploy the L1/NEVM registry bridge during `gateway-deploy-l1.sh`; defaults to `true` |
-| `ZKSYS_L1_REGISTRY_BRIDGE_SALT` | Optional bytes32 salt for deterministic L1 `ZkSysRegistryBridge` deployment through the L1 CREATE2 factory |
+| `ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS` | Optional owner for the L1 registry bridge `ProxyAdmin`; defaults to `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` |
+| `ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_SALT` / `ZKSYS_L1_REGISTRY_BRIDGE_IMPL_SALT` / `ZKSYS_L1_REGISTRY_BRIDGE_PROXY_SALT` | Optional bytes32 salts for deterministic L1 registry bridge proxy admin, implementation, and proxy deployments through the L1 CREATE2 factory |
 | `ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK` | Syscoin `nNEVMStartBlock` used to convert absolute UTXO collateral heights into NEVM-local seniority age; defaults to `1317500` |
 | `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2` | Effective post-NEVM seniority thresholds; default `210240` / `525600` |
-| `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS` | Seniority bonuses in basis points; default `3500` / `10000` |
+| `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS` / `ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS` | Seniority bonuses in basis points; default `0` / `0` for first-year launch without seniority multiplier |
 | `ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS` | Optional L1 registry bridge address override for the L2 bootstrap. If unset/zero, `zksys-l2-bootstrap.sh` reads the address persisted by `gateway-deploy-l1.sh` in `configs/contracts.yaml` |
 | `ZKSYS_L2_REGISTRY_IMPL_SALT` / `ZKSYS_L2_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 membership fact registry implementation/proxy deployments; the proxy address is the operational registry address wired to the L1 bridge |
 | `ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT` / `ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT` | Optional bytes32 salts for deterministic L2 reward weight registry implementation/proxy deployments; the proxy address is wired as the membership registry receiver |

@@ -399,9 +399,19 @@ deploy_zksys_l1_registry_bridge() {
   gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   local bridgehub zksys_chain_id l2_registry nevm_start_block seniority_height1 seniority_height2
-  local seniority_level1_bps seniority_level2_bps salt ctor_args init_code expected_address code
+  local seniority_level1_bps seniority_level2_bps proxy_admin_owner
+  local proxy_admin_salt bridge_impl_salt bridge_proxy_salt
+  local proxy_admin_ctor_args proxy_admin_init_code proxy_admin_address
+  local bridge_impl_init_code bridge_impl_address bridge_init_data bridge_proxy_ctor_args bridge_proxy_init_code
+  local expected_address code
+  local actual_proxy_admin_owner actual_bridge_proxy_admin actual_bridge_impl
   local actual_bridgehub actual_chain_id actual_l2_registry actual_nevm_start_block
   local actual_seniority_height1 actual_seniority_height2 actual_seniority_level1_bps actual_seniority_level2_bps
+
+  ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
+  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
+    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
+  export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   bridgehub="$(get_l1_bridgehub_proxy_addr)"
   zksys_chain_id="$(normalize_zksys_uint_var EDGE_CHAIN_ID "${EDGE_CHAIN_ID:-57057}" 18446744073709551615)"
@@ -409,18 +419,43 @@ deploy_zksys_l1_registry_bridge() {
   nevm_start_block="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK 1317500 4294967295)"
   seniority_height1="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1 210240 4294967295)"
   seniority_height2="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2 525600 4294967295)"
-  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 3500 65535)"
-  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 10000 65535)"
+  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 0 65535)"
+  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 0 65535)"
+  proxy_admin_owner="${ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS:-${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}}"
+  export ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS="${proxy_admin_owner}"
+  proxy_admin_owner="$(normalize_zksys_address_var ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS)"
+  [ "${proxy_admin_owner}" != "0x0000000000000000000000000000000000000000" ] ||
+    gl_die "ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS must not be zero"
 
   if [ "${seniority_height1}" = "0" ] || [ "${seniority_height2}" -le "${seniority_height1}" ] ||
     [ "${seniority_level2_bps}" -lt "${seniority_level1_bps}" ]; then
     gl_die "invalid zkSYS L1 registry bridge seniority config"
   fi
 
-  salt="$(normalize_zksys_bytes32_var ZKSYS_L1_REGISTRY_BRIDGE_SALT 0x7a6b7379732d6c312d72656769737472792d627269646765000000000000000000)"
-  ctor_args="$(
-    cast abi-encode \
-      "constructor(address,uint256,address,uint32,uint32,uint32,uint16,uint16)" \
+  proxy_admin_salt="$(normalize_zksys_bytes32_var ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_SALT 0x7a6b7379732d6c312d72656769737472792d6272696467652d61646d696e0000)"
+  bridge_impl_salt="$(normalize_zksys_bytes32_var ZKSYS_L1_REGISTRY_BRIDGE_IMPL_SALT 0x7a6b7379732d6c312d72656769737472792d6272696467652d696d706c000000)"
+  bridge_proxy_salt="$(normalize_zksys_bytes32_var ZKSYS_L1_REGISTRY_BRIDGE_PROXY_SALT 0x7a6b7379732d6c312d72656769737472792d6272696467652d70726f78790000)"
+
+  proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${proxy_admin_owner}")"
+  proxy_admin_init_code="$(forge_inspect_zksys_bytecode ZkSysProxyAdmin)${proxy_admin_ctor_args#0x}"
+  proxy_admin_address="$(
+    cast create2 \
+      --deployer "${CREATE2_FACTORY_ADDR}" \
+      --salt "${proxy_admin_salt}" \
+      --init-code "${proxy_admin_init_code}"
+  )"
+
+  bridge_impl_init_code="$(forge_inspect_zksys_bytecode ZkSysRegistryBridge)"
+  bridge_impl_address="$(
+    cast create2 \
+      --deployer "${CREATE2_FACTORY_ADDR}" \
+      --salt "${bridge_impl_salt}" \
+      --init-code "${bridge_impl_init_code}"
+  )"
+
+  bridge_init_data="$(
+    cast calldata \
+      "initialize(address,uint256,address,uint32,uint32,uint32,uint16,uint16)" \
       "${bridgehub}" \
       "${zksys_chain_id}" \
       "${l2_registry}" \
@@ -430,27 +465,68 @@ deploy_zksys_l1_registry_bridge() {
       "${seniority_level1_bps}" \
       "${seniority_level2_bps}"
   )"
-  init_code="$(forge_inspect_zksys_bytecode ZkSysRegistryBridge)${ctor_args#0x}"
+  bridge_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${bridge_impl_address}" "${proxy_admin_address}" "${bridge_init_data}")"
+  bridge_proxy_init_code="$(forge_inspect_zksys_bytecode ZkSysCreate2ProxyBytecode)${bridge_proxy_ctor_args#0x}"
   expected_address="$(
     cast create2 \
       --deployer "${CREATE2_FACTORY_ADDR}" \
-      --salt "${salt}" \
-      --init-code "${init_code}"
+      --salt "${bridge_proxy_salt}" \
+      --init-code "${bridge_proxy_init_code}"
   )"
 
-  code="$(cast_code_or_die "${expected_address}")"
+  code="$(cast_code_or_die "${proxy_admin_address}")"
   if [ "${code}" = "0x" ]; then
-    echo "gateway-launch: deploying zkSYS L1 registry bridge to ${expected_address}"
+    echo "gateway-launch: deploying zkSYS L1 registry bridge proxy admin to ${proxy_admin_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
       "${DEPLOYER_CAST_WALLET_ARGS[@]}" \
       "${CREATE2_FACTORY_ADDR}" \
-      "${salt}${init_code#0x}" >/dev/null
-    code="$(cast_code_or_die "${expected_address}")"
-    [ "${code}" != "0x" ] || gl_die "zkSYS L1 registry bridge deployment did not create code at ${expected_address}"
+      "${proxy_admin_salt}${proxy_admin_init_code#0x}" >/dev/null
+    code="$(cast_code_or_die "${proxy_admin_address}")"
+    [ "${code}" != "0x" ] || gl_die "zkSYS L1 registry bridge proxy admin deployment did not create code at ${proxy_admin_address}"
   else
-    echo "gateway-launch: zkSYS L1 registry bridge already deployed at ${expected_address}"
+    echo "gateway-launch: zkSYS L1 registry bridge proxy admin already deployed at ${proxy_admin_address}"
   fi
+
+  code="$(cast_code_or_die "${bridge_impl_address}")"
+  if [ "${code}" = "0x" ]; then
+    echo "gateway-launch: deploying zkSYS L1 registry bridge implementation to ${bridge_impl_address}"
+    cast send \
+      --rpc-url "${L1_RPC_URL}" \
+      "${DEPLOYER_CAST_WALLET_ARGS[@]}" \
+      "${CREATE2_FACTORY_ADDR}" \
+      "${bridge_impl_salt}${bridge_impl_init_code#0x}" >/dev/null
+    code="$(cast_code_or_die "${bridge_impl_address}")"
+    [ "${code}" != "0x" ] || gl_die "zkSYS L1 registry bridge implementation deployment did not create code at ${bridge_impl_address}"
+  else
+    echo "gateway-launch: zkSYS L1 registry bridge implementation already deployed at ${bridge_impl_address}"
+  fi
+
+  code="$(cast_code_or_die "${expected_address}")"
+  if [ "${code}" = "0x" ]; then
+    echo "gateway-launch: deploying zkSYS L1 registry bridge proxy to ${expected_address}"
+    cast send \
+      --rpc-url "${L1_RPC_URL}" \
+      "${DEPLOYER_CAST_WALLET_ARGS[@]}" \
+      "${CREATE2_FACTORY_ADDR}" \
+      "${bridge_proxy_salt}${bridge_proxy_init_code#0x}" >/dev/null
+    code="$(cast_code_or_die "${expected_address}")"
+    [ "${code}" != "0x" ] || gl_die "zkSYS L1 registry bridge proxy deployment did not create code at ${expected_address}"
+  else
+    echo "gateway-launch: zkSYS L1 registry bridge proxy already deployed at ${expected_address}"
+  fi
+
+  actual_proxy_admin_owner="$(cast call "${proxy_admin_address}" "owner()(address)" --rpc-url "${L1_RPC_URL}")"
+  [ "$(gl_to_lower "${actual_proxy_admin_owner}")" = "$(gl_to_lower "${proxy_admin_owner}")" ] ||
+    gl_die "zkSYS L1 registry bridge proxy admin owner mismatch: ${actual_proxy_admin_owner} != ${proxy_admin_owner}"
+
+  actual_bridge_proxy_admin="$(cast call "${proxy_admin_address}" "getProxyAdmin(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
+  [ "$(gl_to_lower "${actual_bridge_proxy_admin}")" = "$(gl_to_lower "${proxy_admin_address}")" ] ||
+    gl_die "zkSYS L1 registry bridge proxy admin mismatch: ${actual_bridge_proxy_admin} != ${proxy_admin_address}"
+
+  actual_bridge_impl="$(cast call "${proxy_admin_address}" "getProxyImplementation(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
+  [ "$(gl_to_lower "${actual_bridge_impl}")" = "$(gl_to_lower "${bridge_impl_address}")" ] ||
+    gl_die "zkSYS L1 registry bridge implementation mismatch: ${actual_bridge_impl} != ${bridge_impl_address}"
 
   actual_bridgehub="$(cast call "${expected_address}" "bridgehub()(address)" --rpc-url "${L1_RPC_URL}")"
   actual_chain_id="$(cast call "${expected_address}" "zksysChainId()(uint256)" --rpc-url "${L1_RPC_URL}")"
@@ -481,6 +557,8 @@ deploy_zksys_l1_registry_bridge() {
   ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${expected_address}"
   export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
   persist_zksys_l1_registry_bridge_address "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  echo "gateway-launch: zkSYS L1 registry bridge proxy admin: ${proxy_admin_address} owner=${proxy_admin_owner}"
+  echo "gateway-launch: zkSYS L1 registry bridge implementation: ${bridge_impl_address}"
   echo "gateway-launch: zkSYS L1 registry bridge ready at ${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
   echo "gateway-launch: zkSYS L1 registry bridge params: chain=${zksys_chain_id}, l2Registry=${l2_registry}, nevmStartBlock=${nevm_start_block}, seniority=${seniority_height1}/${seniority_height2}, bps=${seniority_level1_bps}/${seniority_level2_bps}"
 }
