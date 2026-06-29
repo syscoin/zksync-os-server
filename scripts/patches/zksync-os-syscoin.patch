@@ -690,55 +690,16 @@ index 2ebf44bf..a565e805 100644
 +        + <B160 as UsizeDeserializable>::USIZE_LEN
 +        + <Bytes32 as UsizeSerializable>::USIZE_LEN;
 
-     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
-         ExactSizeChain::new(
-@@ -239,28 +253,37 @@ impl UsizeSerializable for BlockMetadataFromOracle {
-                                         ExactSizeChain::new(
-                                             ExactSizeChain::new(
-                                                 ExactSizeChain::new(
--                                                    UsizeSerializable::iter(&self.eip1559_basefee),
--                                                    UsizeSerializable::iter(&self.pubdata_price),
-+                                                    ExactSizeChain::new(
-+                                                        UsizeSerializable::iter(
-+                                                            &self.eip1559_basefee,
-+                                                        ),
-+                                                        UsizeSerializable::iter(
-+                                                            &self.pubdata_price,
-+                                                        ),
-+                                                    ),
-+                                                    UsizeSerializable::iter(&self.native_price),
-                                                 ),
--                                                UsizeSerializable::iter(&self.native_price),
-+                                                UsizeSerializable::iter(&self.block_number),
-                                             ),
--                                            UsizeSerializable::iter(&self.block_number),
-+                                            UsizeSerializable::iter(&self.timestamp),
-                                         ),
--                                        UsizeSerializable::iter(&self.timestamp),
-+                                        UsizeSerializable::iter(&self.chain_id),
-                                     ),
--                                    UsizeSerializable::iter(&self.chain_id),
-+                                    UsizeSerializable::iter(&self.gas_limit),
-                                 ),
--                                UsizeSerializable::iter(&self.gas_limit),
-+                                UsizeSerializable::iter(&self.pubdata_limit),
-                             ),
--                            UsizeSerializable::iter(&self.pubdata_limit),
-+                            UsizeSerializable::iter(&self.coinbase),
-                         ),
--                        UsizeSerializable::iter(&self.coinbase),
-+                        UsizeSerializable::iter(&self.block_hashes),
-                     ),
--                    UsizeSerializable::iter(&self.block_hashes),
-+                    UsizeSerializable::iter(&self.mix_hash),
+    fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
+@@ -268,7 +281,10 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+                     UsizeSerializable::iter(&self.mix_hash),
                  ),
--                UsizeSerializable::iter(&self.mix_hash),
-+                ExactSizeChain::new(
-+                    UsizeSerializable::iter(&self.blob_fee),
-+                    UsizeSerializable::iter(&self.canonical_upgrade_tx_hash),
-+                ),
              ),
 -            UsizeSerializable::iter(&self.blob_fee),
++            ExactSizeChain::new(
++                UsizeSerializable::iter(&self.blob_fee),
++                UsizeSerializable::iter(&self.canonical_upgrade_tx_hash),
++            ),
          )
      }
  }
