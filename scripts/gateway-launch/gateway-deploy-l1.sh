@@ -363,6 +363,21 @@ print("0x" + format(int(addr[2:], 16), "040x"))
 PY
 }
 
+load_zksys_l1_registry_bridge_address() {
+  python3 - "${GATEWAY_DIR}/configs/contracts.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+addr = data.get("zksys", {}).get("l1_registry_bridge_addr", "")
+if isinstance(addr, str) and addr.startswith(("0x", "0X")) and len(addr) == 42:
+    print("0x" + format(int(addr[2:], 16), "040x"))
+PY
+}
+
 persist_zksys_l1_registry_bridge_address() {
   local address="${1:?address required}"
   python3 - "${GATEWAY_DIR}/configs/contracts.yaml" "${address}" <<'PY'
@@ -403,7 +418,7 @@ deploy_zksys_l1_registry_bridge() {
   local proxy_admin_salt bridge_impl_salt bridge_proxy_salt
   local proxy_admin_ctor_args proxy_admin_init_code proxy_admin_address
   local bridge_impl_init_code bridge_impl_address bridge_init_data bridge_proxy_ctor_args bridge_proxy_init_code
-  local expected_address code
+  local derived_proxy_address persisted_bridge_address expected_address code
   local actual_proxy_admin_owner actual_bridge_proxy_admin actual_bridge_impl
   local actual_bridgehub actual_chain_id actual_l2_registry actual_nevm_start_block
   local actual_seniority_height1 actual_seniority_height2 actual_seniority_level1_bps actual_seniority_level2_bps
@@ -467,12 +482,22 @@ deploy_zksys_l1_registry_bridge() {
   )"
   bridge_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${bridge_impl_address}" "${proxy_admin_address}" "${bridge_init_data}")"
   bridge_proxy_init_code="$(forge_inspect_zksys_bytecode ZkSysCreate2ProxyBytecode)${bridge_proxy_ctor_args#0x}"
-  expected_address="$(
+  derived_proxy_address="$(
     cast create2 \
       --deployer "${CREATE2_FACTORY_ADDR}" \
       --salt "${bridge_proxy_salt}" \
       --init-code "${bridge_proxy_init_code}"
   )"
+  persisted_bridge_address="$(load_zksys_l1_registry_bridge_address)"
+  if [ -n "${persisted_bridge_address}" ] &&
+    [ "${persisted_bridge_address}" != "0x0000000000000000000000000000000000000000" ]; then
+    expected_address="${persisted_bridge_address}"
+    if [ "$(gl_to_lower "${expected_address}")" != "$(gl_to_lower "${derived_proxy_address}")" ]; then
+      echo "gateway-launch: reusing persisted zkSYS L1 registry bridge proxy ${expected_address}; current deployment preimage derives ${derived_proxy_address}"
+    fi
+  else
+    expected_address="${derived_proxy_address}"
+  fi
 
   code="$(cast_code_or_die "${proxy_admin_address}")"
   if [ "${code}" = "0x" ]; then
@@ -504,6 +529,8 @@ deploy_zksys_l1_registry_bridge() {
 
   code="$(cast_code_or_die "${expected_address}")"
   if [ "${code}" = "0x" ]; then
+    [ "$(gl_to_lower "${expected_address}")" = "$(gl_to_lower "${derived_proxy_address}")" ] ||
+      gl_die "persisted zkSYS L1 registry bridge proxy ${expected_address} is not deployed; current deployment preimage derives ${derived_proxy_address}"
     echo "gateway-launch: deploying zkSYS L1 registry bridge proxy to ${expected_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
@@ -525,8 +552,17 @@ deploy_zksys_l1_registry_bridge() {
     gl_die "zkSYS L1 registry bridge proxy admin mismatch: ${actual_bridge_proxy_admin} != ${proxy_admin_address}"
 
   actual_bridge_impl="$(cast call "${proxy_admin_address}" "getProxyImplementation(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
-  [ "$(gl_to_lower "${actual_bridge_impl}")" = "$(gl_to_lower "${bridge_impl_address}")" ] ||
-    gl_die "zkSYS L1 registry bridge implementation mismatch: ${actual_bridge_impl} != ${bridge_impl_address}"
+  if [ "$(gl_to_lower "${actual_bridge_impl}")" != "$(gl_to_lower "${bridge_impl_address}")" ]; then
+    echo "gateway-launch: upgrading zkSYS L1 registry bridge implementation ${actual_bridge_impl} -> ${bridge_impl_address}"
+    cast send \
+      --rpc-url "${L1_RPC_URL}" \
+      "${DEPLOYER_CAST_WALLET_ARGS[@]}" \
+      "${proxy_admin_address}" \
+      "upgrade(address,address)" "${expected_address}" "${bridge_impl_address}" >/dev/null
+    actual_bridge_impl="$(cast call "${proxy_admin_address}" "getProxyImplementation(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
+    [ "$(gl_to_lower "${actual_bridge_impl}")" = "$(gl_to_lower "${bridge_impl_address}")" ] ||
+      gl_die "zkSYS L1 registry bridge implementation mismatch after upgrade: ${actual_bridge_impl} != ${bridge_impl_address}"
+  fi
 
   actual_bridgehub="$(cast call "${expected_address}" "bridgehub()(address)" --rpc-url "${L1_RPC_URL}")"
   actual_chain_id="$(cast call "${expected_address}" "zksysChainId()(uint256)" --rpc-url "${L1_RPC_URL}")"
