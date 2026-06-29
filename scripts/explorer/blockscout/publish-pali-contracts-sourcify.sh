@@ -10,7 +10,7 @@
 # Idempotent: contracts that Sourcify already has a match for are skipped.
 #
 # Usage:
-#   PAYMASTER_ADDRESS=0x... ./publish-pali-contracts-sourcify.sh [SOURCIFY_SERVER] [CHAIN_ID]
+#   PAYMASTER_ADDRESS=0x... PAYMASTER_OWNER=0x... ./publish-pali-contracts-sourcify.sh [SOURCIFY_SERVER] [CHAIN_ID]
 # Defaults to the public Sourcify server and zkTanenbaum (57057).
 
 set -euo pipefail
@@ -28,6 +28,7 @@ PALI_CREATE2_DEPLOYER_ADDRESS="${PALI_CREATE2_DEPLOYER_ADDRESS:-0x4e59b44847b379
 PALI_INFRASTRUCTURE_VERSION="PALI_SMART_ACCOUNT_ERC7579_V1"
 
 : "${PAYMASTER_ADDRESS:?PAYMASTER_ADDRESS is required}"
+: "${PAYMASTER_OWNER:?PAYMASTER_OWNER is required and must be the deployment-time paymaster owner}"
 
 # SLH-DSA validator constructor args: abi.encode(verifier).
 SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000789d5ac3a14b543a46fc402eedcf31d8c8b93d4a31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
@@ -121,7 +122,6 @@ factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
 
 paymaster_entrypoint="$(cast call "${PAYMASTER_ADDRESS}" "entryPoint()(address)" --rpc-url "${RPC_URL}")"
 paymaster_token="$(cast call "${PAYMASTER_ADDRESS}" "token()(address)" --rpc-url "${RPC_URL}")"
-paymaster_owner="$(cast call "${PAYMASTER_ADDRESS}" "owner()(address)" --rpc-url "${RPC_URL}")"
 paymaster_reserve="$(cast call "${PAYMASTER_ADDRESS}" "TARGET_ENTRY_POINT_RESERVE()(uint256)" --rpc-url "${RPC_URL}")"
 if [[ "$(lower "${paymaster_entrypoint}")" != "$(lower "${ENTRYPOINT_ADDRESS}")" ]]; then
   echo "error: paymaster entryPoint()=${paymaster_entrypoint}, expected ${ENTRYPOINT_ADDRESS}" >&2
@@ -132,7 +132,7 @@ paymaster_ctor="$(
     "constructor(address,address,address,uint256)" \
     "${ENTRYPOINT_ADDRESS}" \
     "${paymaster_token}" \
-    "${paymaster_owner}" \
+    "${PAYMASTER_OWNER}" \
     "${paymaster_reserve}"
 )"
 
@@ -145,7 +145,7 @@ echo "  account impl:   ${account_implementation_address}"
 echo "  factory:        ${factory_address}"
 echo "  paymaster:      ${PAYMASTER_ADDRESS}"
 echo "  paymaster token:${paymaster_token}"
-echo "  paymaster owner:${paymaster_owner}"
+echo "  paymaster owner:${PAYMASTER_OWNER}"
 echo "  reserve:        ${paymaster_reserve}"
 echo
 
