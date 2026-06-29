@@ -22,6 +22,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 
 PALI_SOLC="v0.8.28+commit.7893614a"
+PALI_SOLC_VERSION="${PALI_SOLC_VERSION:-0.8.28}"
 RPC_URL="${ZKTANENBAUM_RPC_URL:-${RPC_URL:-https://rpc-zk.tanenbaum.io}}"
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x43378ADCd7Cf9A6dcb3fd898696f9496A9aE0462}"
 PALI_CREATE2_DEPLOYER_ADDRESS="${PALI_CREATE2_DEPLOYER_ADDRESS:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
@@ -43,7 +44,7 @@ lower() {
 forge_inspect_bytecode() {
   (
     cd "${CONTRACTS_DIR}"
-    forge inspect --no-metadata "$1" bytecode
+    forge inspect --use "${PALI_SOLC_VERSION}" --no-auto-detect --no-metadata "$1" bytecode
   )
 }
 
@@ -126,6 +127,7 @@ factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
 paymaster_entrypoint="$(cast call "${PAYMASTER_ADDRESS}" "entryPoint()(address)" --rpc-url "${RPC_URL}")"
 paymaster_token="$(cast call "${PAYMASTER_ADDRESS}" "token()(address)" --rpc-url "${RPC_URL}")"
 paymaster_reserve="$(cast call "${PAYMASTER_ADDRESS}" "TARGET_ENTRY_POINT_RESERVE()(uint256)" --rpc-url "${RPC_URL}")"
+paymaster_reserve="${paymaster_reserve%% *}"
 if [[ "$(lower "${paymaster_entrypoint}")" != "$(lower "${ENTRYPOINT_ADDRESS}")" ]]; then
   echo "error: paymaster entryPoint()=${paymaster_entrypoint}, expected ${ENTRYPOINT_ADDRESS}" >&2
   exit 1
