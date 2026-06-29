@@ -661,7 +661,7 @@ create2_factory_salt = "${CREATE2_FACTORY_SALT}"
 create2_factory_addr = "${CREATE2_FACTORY_ADDR}"
 EOF
 
-if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ]; then
+if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || [ "$(gl_to_lower "${L1_NETWORK:-}")" = "tanenbaum" ]; then
   cat > script-config/config-deploy-erc20.toml <<'EOF'
 # ZKSYS is canonical on L2. L1 representation is created by the native bridge
 # when L2-origin zkSYS exits to L1, so no canonical L1 ERC20 is deployed here.
@@ -799,7 +799,7 @@ print(m.group(1))
 PY
 }
 
-if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ]; then
+if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || [ "$(gl_to_lower "${L1_NETWORK:-}")" = "tanenbaum" ]; then
   echo "gateway-launch: zkSYS is canonical on L2; skipping L1 DeployErc20"
 else
   : "${GATEWAY_DEPLOY_ERC20_TIMEOUT:=1800}"
