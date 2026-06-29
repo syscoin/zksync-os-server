@@ -32,6 +32,7 @@
 #                           true by default; grants zkSYS BURNER_ROLE to the deployed paymaster
 #                           using the deployer signer. Set false only if role wiring is handled
 #                           separately before the paymaster is used.
+#   PALI_SOLC_VERSION       solc version for deterministic Pali bytecode, default: 0.8.28
 #   GATEWAY_DIR             default: ~/gateway; chain config to update after deployment
 #   EDGE_CHAIN_NAME         default: zksys; chain config to update after deployment
 #   UPDATE_CHAIN_FEE_COLLECTOR
@@ -67,6 +68,7 @@ PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE="${PAYMASTER_TARGET_ENTRYPOINT_RESERV
 PAYMASTER_STAKE_NATIVE="${PAYMASTER_STAKE_NATIVE:-}"
 PAYMASTER_UNSTAKE_DELAY_SEC="${PAYMASTER_UNSTAKE_DELAY_SEC:-86400}"
 PAYMASTER_GRANT_BURNER_ROLE="${PAYMASTER_GRANT_BURNER_ROLE:-true}"
+PALI_SOLC_VERSION="${PALI_SOLC_VERSION:-0.8.28}"
 GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 UPDATE_CHAIN_FEE_COLLECTOR="${UPDATE_CHAIN_FEE_COLLECTOR:-true}"
@@ -92,6 +94,7 @@ fi
 
 export FOUNDRY_BYTECODE_HASH=none
 export FOUNDRY_CBOR_METADATA=false
+pali_forge_args=(--use "${PALI_SOLC_VERSION}" --no-auto-detect)
 
 wallet_args=()
 case "${DEPLOYER_SIGNER:-}" in
@@ -156,7 +159,7 @@ deploy_syscoin_entrypoint_if_missing() {
 
   entrypoint_init_code="$(
     cd "${CONTRACTS_DIR}"
-    forge inspect --no-metadata src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint bytecode
+    forge inspect "${pali_forge_args[@]}" --no-metadata src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint bytecode
   )"
   computed_entrypoint="$(
     cast create2 \
@@ -217,6 +220,7 @@ output="$(
     --rpc-url "${RPC_URL}" \
     --chain "${CHAIN_ID}" \
     --broadcast \
+    "${pali_forge_args[@]}" \
     --optimize \
     --optimizer-runs 200 \
     "${verify_args[@]}" \
