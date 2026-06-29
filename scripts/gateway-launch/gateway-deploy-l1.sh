@@ -553,6 +553,8 @@ deploy_zksys_l1_registry_bridge() {
 
   actual_bridge_impl="$(cast call "${proxy_admin_address}" "getProxyImplementation(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
   if [ "$(gl_to_lower "${actual_bridge_impl}")" != "$(gl_to_lower "${bridge_impl_address}")" ]; then
+    [ "$(gl_to_lower "${DEPLOYER_ADDRESS}")" = "$(gl_to_lower "${actual_proxy_admin_owner}")" ] ||
+      gl_die "zkSYS L1 registry bridge upgrade requires ProxyAdmin owner signer ${actual_proxy_admin_owner}; active deployer signer is ${DEPLOYER_ADDRESS}"
     echo "gateway-launch: upgrading zkSYS L1 registry bridge implementation ${actual_bridge_impl} -> ${bridge_impl_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
