@@ -448,9 +448,13 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/metadata_op.rs b/basi
  use zk_ee::internal_error;
  use zk_ee::oracle::query_ids::BLOCK_METADATA_QUERY_ID;
  use zk_ee::oracle::IOOracle;
-@@ -30,5 +31,14 @@ impl<S: SystemTypes<Metadata = zk_ee::system::metadata::zk_metadata::ZkMetadata>>
+@@ -27,10 +28,19 @@ impl<S: SystemTypes<Metadata = zk_ee::system::metadata::zk_metadata::ZkMetadata>>
+         if metadata.block_gas_limit() > MAX_BLOCK_GAS_LIMIT
+             || metadata.individual_tx_gas_limit() > MAX_TX_GAS_LIMIT
+         {
              return Err(internal_error!("block or tx gas limit is too high"));
          }
+ 
 +        let expected_fee_recipient = syscoin_expected_fee_recipient();
 +        if expected_fee_recipient != ruint::aliases::B160::ZERO
 +            && metadata.block_level.coinbase != expected_fee_recipient
@@ -464,13 +468,13 @@ diff --git a/basic_bootloader/src/bootloader/block_flow/zk/metadata_op.rs b/basi
      }
  }
 diff --git a/forward_system/src/run/convert.rs b/forward_system/src/run/convert.rs
-index 60472a37..45a485f4 100644
 --- a/forward_system/src/run/convert.rs
 +++ b/forward_system/src/run/convert.rs
-@@ -1,10 +1,11 @@
- use crate::run::convert_alloy::{FromAlloy, IntoAlloy};
+@@ -1,12 +1,13 @@
+ use crate::run::convert_alloy::IntoAlloy;
  use alloy::consensus::{Header, Sealed};
  use alloy::primitives::Log;
+ use basic_bootloader::bootloader::block_header::BlockHeader;
  use zk_ee::common_structs::GenericEventContent;
  use zk_ee::system::evm::EvmError as ZkEvmError;
  use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
@@ -479,6 +483,7 @@ index 60472a37..45a485f4 100644
  use zksync_os_evm_errors::EvmError as InterfaceEvmError;
  use zksync_os_interface::error::InvalidTransaction;
  use zksync_os_interface::traits::AnyBlockContext;
+ use zksync_os_interface::types::L2ToL1Log;
 @@ -94,6 +95,7 @@ impl<B: AnyBlockContext> FromInterface<B> for BlockMetadataFromOracle {
              pubdata_limit: value.pubdata_limit(),
              mix_hash: value.mix_hash(),
