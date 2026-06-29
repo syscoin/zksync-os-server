@@ -9,17 +9,30 @@ import {PackedUserOperation} from "@account-abstraction/interfaces/PackedUserOpe
 /// @notice ERC-4337 EntryPoint v0.9 with Syscoin-specific routing for canonical Pali-sponsored ops.
 /// @dev SYSCOIN: do not edit upstream EntryPoint. Keep the routing delta isolated here.
 contract SyscoinEntryPoint is EntryPoint {
-    address public immutable SYSCOIN_SPONSORED_PAYMASTER;
+    address public SYSCOIN_SPONSORED_PAYMASTER;
 
-    event SyscoinSponsoredCompensationRouted(address indexed paymaster, uint256 amount);
+    event SyscoinSponsoredPaymasterBound(address indexed paymaster);
 
     error InvalidSyscoinSponsoredPaymaster();
+    error SyscoinSponsoredPaymasterAlreadyBound(address paymaster);
 
-    constructor(address syscoinSponsoredPaymaster_) {
+    function bindSyscoinSponsoredPaymaster(address syscoinSponsoredPaymaster_) external {
+        if (SYSCOIN_SPONSORED_PAYMASTER != address(0)) {
+            revert SyscoinSponsoredPaymasterAlreadyBound(SYSCOIN_SPONSORED_PAYMASTER);
+        }
         if (syscoinSponsoredPaymaster_ == address(0)) {
             revert InvalidSyscoinSponsoredPaymaster();
         }
+
+        if (
+            syscoinSponsoredPaymaster_.code.length != 0 || msg.sender != syscoinSponsoredPaymaster_
+                || msg.sender == tx.origin
+        ) {
+            revert InvalidSyscoinSponsoredPaymaster();
+        }
+
         SYSCOIN_SPONSORED_PAYMASTER = syscoinSponsoredPaymaster_;
+        emit SyscoinSponsoredPaymasterBound(syscoinSponsoredPaymaster_);
     }
 
     /// @inheritdoc EntryPoint
@@ -129,7 +142,6 @@ contract SyscoinEntryPoint is EntryPoint {
         // paymaster's EntryPoint deposit instead of to the bundler beneficiary.
         if (syscoinSponsoredCollected != 0) {
             _incrementDeposit(SYSCOIN_SPONSORED_PAYMASTER, syscoinSponsoredCollected);
-            emit SyscoinSponsoredCompensationRouted(SYSCOIN_SPONSORED_PAYMASTER, syscoinSponsoredCollected);
         }
         _compensate(beneficiary, beneficiaryCollected);
     }

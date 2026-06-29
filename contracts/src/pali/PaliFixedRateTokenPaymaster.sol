@@ -13,7 +13,7 @@ interface IERC20Burnable is IERC20 {
 }
 
 interface ISyscoinEntryPoint {
-    function SYSCOIN_SPONSORED_PAYMASTER() external view returns (address);
+    function bindSyscoinSponsoredPaymaster(address syscoinSponsoredPaymaster_) external;
 }
 
 /// @title PaliFixedRateTokenPaymaster
@@ -57,17 +57,10 @@ contract PaliFixedRateTokenPaymaster is PaymasterERC20, Ownable {
         if (targetEntryPointReserve_ == 0) {
             revert InvalidEntryPointReserveCap();
         }
-        try ISyscoinEntryPoint(address(entryPoint_)).SYSCOIN_SPONSORED_PAYMASTER() returns (address sponsoredPaymaster)
-        {
-            if (sponsoredPaymaster != address(this)) {
-                revert InvalidAddress();
-            }
-        } catch {
-            revert InvalidAddress();
-        }
         _entryPoint = entryPoint_;
         token = token_;
         TARGET_ENTRY_POINT_RESERVE = targetEntryPointReserve_;
+        ISyscoinEntryPoint(address(entryPoint_)).bindSyscoinSponsoredPaymaster(address(this));
     }
 
     receive() external payable {

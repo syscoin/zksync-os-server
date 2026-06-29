@@ -527,7 +527,7 @@ def materialize_chain(
             f"  expected_fee_recipient_address: '{expected_fee_recipient_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
-                if chain_name == "zksys"
+                if chain_name == os.environ["EDGE_CHAIN_NAME"]
                 else []
             ),
             "l1_sender:",
@@ -589,7 +589,7 @@ def materialize_chain(
                     f"  native_per_gas: {os.environ['EDGE_NATIVE_PER_GAS']}",
                     f"  native_price_usd: {os.environ['EDGE_NATIVE_PRICE_USD']}",
                 ]
-                if chain_name == "zksys"
+                if chain_name == os.environ["EDGE_CHAIN_NAME"]
                 else []
             ),
             "rpc:",

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy and verify the Pali fixed-rate zkSYS ERC-4337 paymaster on zkTanenbaum.
+# Deploy and verify the zkSYS Pali ERC-4337 EntryPoint/paymaster stack on zkTanenbaum.
 #
 # Required:
 #   ZKSYS_TOKEN_ADDRESS      zkSYS ERC-20 token address on zkTanenbaum
@@ -7,9 +7,8 @@
 # Optional:
 #   ZKTANENBAUM_RPC_URL     default: https://rpc-zk.tanenbaum.io
 #   EXPLORER_BASE           default: https://explorer-zk.tanenbaum.io
-#   ENTRYPOINT_ADDRESS      SyscoinEntryPoint used by the Pali account/factory stack.
-#                           It must be constructed with the paymaster address this
-#                           script will deploy from the current deployer nonce.
+#   ENTRYPOINT_ADDRESS      deterministic SyscoinEntryPoint used by the Pali account/factory stack.
+#                           Deployed by this script when missing.
 #   PAYMASTER_OWNER         default: deployer address, if DEPLOYER_ADDRESS is set
 #   DEPLOYER_ADDRESS        used as default owner for hardware or keystore signers
 #   DEPLOYER_PRIVATE_KEY    raw private key signer
@@ -51,10 +50,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
 
+SYSCOIN_ENTRYPOINT_ADDRESS="0x43378ADCd7Cf9A6dcb3fd898696f9496A9aE0462"
+CREATE2_DEPLOYER_ADDRESS="0x4e59b44847b379578588920cA78FbF26c0B4956C"
+# Standard CREATE2 deployer 0x4e59... with salt
+# 0x174161820935ccc4f163b30ef684ee916fad0e1eeaa843542e9e16248a15a4a2.
+# The salt is chosen so the Syscoin EntryPoint keeps the upstream-style 0x4337 prefix.
+SYSCOIN_ENTRYPOINT_SALT="0x174161820935ccc4f163b30ef684ee916fad0e1eeaa843542e9e16248a15a4a2"
+
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
 CHAIN_ID="${CHAIN_ID:-57057}"
-ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-}"
+ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-${SYSCOIN_ENTRYPOINT_ADDRESS}}"
 VERIFY="${VERIFY:-true}"
 PAYMASTER_INITIAL_DEPOSIT_NATIVE="${PAYMASTER_INITIAL_DEPOSIT_NATIVE:-}"
 PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE="${PAYMASTER_TARGET_ENTRYPOINT_RESERVE_NATIVE:-100000ether}"
@@ -83,10 +89,9 @@ if [[ -z "${ENTRYPOINT_ADDRESS}" ]]; then
   echo "error: ENTRYPOINT_ADDRESS is required and must be the SyscoinEntryPoint used by the Pali account/factory stack" >&2
   exit 1
 fi
-if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
-  echo "error: DEPLOYER_ADDRESS is required so the paymaster address can be precomputed for SyscoinEntryPoint validation" >&2
-  exit 1
-fi
+
+export FOUNDRY_BYTECODE_HASH=none
+export FOUNDRY_CBOR_METADATA=false
 
 wallet_args=()
 case "${DEPLOYER_SIGNER:-}" in
@@ -132,20 +137,68 @@ if [[ "${VERIFY}" == "true" ]]; then
   verify_args+=(--verify --verifier blockscout --verifier-url "${EXPLORER_BASE%/}/api/")
 fi
 
-compute_create_address() {
-  local deployer="${1:?deployer required}"
-  local nonce="${2:?nonce required}"
-  cast compute-address --nonce "${nonce}" "${deployer}" | awk '/Computed Address:/ {print $3}'
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
-deployer_nonce="$(cast nonce "${DEPLOYER_ADDRESS}" --rpc-url "${RPC_URL}")"
-predicted_paymaster_address="$(compute_create_address "${DEPLOYER_ADDRESS}" "${deployer_nonce}")"
+rpc_code() {
+  cast code --rpc-url "${RPC_URL}" "${1:?address required}"
+}
+
+deploy_syscoin_entrypoint_if_missing() {
+  local create2_code entrypoint_code entrypoint_init_code computed_entrypoint
+
+  create2_code="$(rpc_code "${CREATE2_DEPLOYER_ADDRESS}")"
+  if [[ "${create2_code}" == "0x" ]]; then
+    echo "error: canonical CREATE2 deployer has no code at ${CREATE2_DEPLOYER_ADDRESS}" >&2
+    exit 1
+  fi
+
+  entrypoint_init_code="$(
+    cd "${CONTRACTS_DIR}"
+    forge inspect --no-metadata src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint bytecode
+  )"
+  computed_entrypoint="$(
+    cast create2 \
+      --deployer "${CREATE2_DEPLOYER_ADDRESS}" \
+      --salt "${SYSCOIN_ENTRYPOINT_SALT}" \
+      --init-code "${entrypoint_init_code}"
+  )"
+  if [[ "$(lower "${computed_entrypoint}")" != "$(lower "${ENTRYPOINT_ADDRESS}")" ]]; then
+    echo "error: SyscoinEntryPoint CREATE2 address ${computed_entrypoint} does not match ENTRYPOINT_ADDRESS=${ENTRYPOINT_ADDRESS}" >&2
+    exit 1
+  fi
+
+  entrypoint_code="$(rpc_code "${ENTRYPOINT_ADDRESS}")"
+  if [[ "${entrypoint_code}" != "0x" ]]; then
+    echo "SyscoinEntryPoint already deployed at ${ENTRYPOINT_ADDRESS}"
+    return
+  fi
+
+  echo "Deploying SyscoinEntryPoint"
+  echo "  address:  ${ENTRYPOINT_ADDRESS}"
+  echo "  create2:  ${CREATE2_DEPLOYER_ADDRESS}"
+  echo "  salt:     ${SYSCOIN_ENTRYPOINT_SALT}"
+  cast send "${CREATE2_DEPLOYER_ADDRESS}" \
+    "${SYSCOIN_ENTRYPOINT_SALT}${entrypoint_init_code#0x}" \
+    --rpc-url "${RPC_URL}" \
+    --chain "${CHAIN_ID}" \
+    "${wallet_args[@]}" >/dev/null
+
+  entrypoint_code="$(rpc_code "${ENTRYPOINT_ADDRESS}")"
+  if [[ "${entrypoint_code}" == "0x" ]]; then
+    echo "error: SyscoinEntryPoint deployment did not create code at ${ENTRYPOINT_ADDRESS}" >&2
+    exit 1
+  fi
+}
+
+deploy_syscoin_entrypoint_if_missing
+
 entrypoint_sponsored_paymaster="$(cast call "${ENTRYPOINT_ADDRESS}" \
   "SYSCOIN_SPONSORED_PAYMASTER()(address)" \
   --rpc-url "${RPC_URL}")"
-if [[ "$(printf '%s' "${entrypoint_sponsored_paymaster}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${predicted_paymaster_address}" | tr '[:upper:]' '[:lower:]')" ]]; then
-  echo "error: SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} sponsors ${entrypoint_sponsored_paymaster}, but next paymaster deployment is ${predicted_paymaster_address}" >&2
-  echo "       Deploy/reconfigure the Pali account stack and SyscoinEntryPoint for the same EntryPoint before deploying the paymaster." >&2
+if [[ "$(lower "${entrypoint_sponsored_paymaster}")" != "0x0000000000000000000000000000000000000000" ]]; then
+  echo "error: SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} is already bound to ${entrypoint_sponsored_paymaster}" >&2
   exit 1
 fi
 
@@ -181,6 +234,20 @@ paymaster_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | 
 if [[ -n "${paymaster_address}" ]]; then
   echo
   echo "PAYMASTER_ADDRESS=${paymaster_address}"
+
+  paymaster_entrypoint="$(cast call "${paymaster_address}" "entryPoint()(address)" --rpc-url "${RPC_URL}")"
+  if [[ "$(lower "${paymaster_entrypoint}")" != "$(lower "${ENTRYPOINT_ADDRESS}")" ]]; then
+    echo "error: deployed paymaster entryPoint()=${paymaster_entrypoint}, expected ${ENTRYPOINT_ADDRESS}" >&2
+    exit 1
+  fi
+
+  entrypoint_sponsored_paymaster="$(cast call "${ENTRYPOINT_ADDRESS}" \
+    "SYSCOIN_SPONSORED_PAYMASTER()(address)" \
+    --rpc-url "${RPC_URL}")"
+  if [[ "$(lower "${entrypoint_sponsored_paymaster}")" != "$(lower "${paymaster_address}")" ]]; then
+    echo "error: SyscoinEntryPoint ${ENTRYPOINT_ADDRESS} sponsors ${entrypoint_sponsored_paymaster}, expected ${paymaster_address}" >&2
+    exit 1
+  fi
 
   burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "BURNER_ROLE()(bytes32)" --rpc-url "${RPC_URL}")"
   has_burner_role="$(cast call "${ZKSYS_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "${burner_role}" "${paymaster_address}" --rpc-url "${RPC_URL}")"

@@ -17,11 +17,22 @@ contract MockEntryPoint {
     mapping(address => uint32) public unstakeDelayOf;
     mapping(address => bool) public stakeUnlocked;
     address public SYSCOIN_SPONSORED_PAYMASTER;
+    bool public ignoreBind;
 
     receive() external payable {}
 
     function setSyscoinSponsoredPaymaster(address paymaster) external {
         SYSCOIN_SPONSORED_PAYMASTER = paymaster;
+    }
+
+    function setIgnoreBind(bool ignoreBind_) external {
+        ignoreBind = ignoreBind_;
+    }
+
+    function bindSyscoinSponsoredPaymaster(address paymaster) external {
+        if (!ignoreBind) {
+            SYSCOIN_SPONSORED_PAYMASTER = paymaster;
+        }
     }
 
     function depositTo(address account) external payable {
@@ -124,18 +135,7 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         );
     }
 
-    function testConstructorRejectsEntryPointWithDifferentSponsoredPaymaster() public {
-        entryPoint.setSyscoinSponsoredPaymaster(address(0xBAD));
-
-        vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidAddress.selector);
-        new PaliFixedRateTokenPaymaster(
-            IEntryPoint(address(entryPoint)), IERC20Burnable(address(token)), owner, TARGET_ENTRY_POINT_RESERVE
-        );
-    }
-
     function testConstructorRejectsZeroEntryPointReserveCap() public {
-        entryPoint.setSyscoinSponsoredPaymaster(vm.computeCreateAddress(address(this), vm.getNonce(address(this))));
-
         vm.expectRevert(PaliFixedRateTokenPaymaster.InvalidEntryPointReserveCap.selector);
         new PaliFixedRateTokenPaymaster(IEntryPoint(address(entryPoint)), IERC20Burnable(address(token)), owner, 0);
     }
@@ -638,7 +638,13 @@ contract PaliFixedRateTokenPaymasterTest is Test {
         private
         returns (PaliFixedRateTokenPaymaster)
     {
-        entryPoint.setSyscoinSponsoredPaymaster(vm.computeCreateAddress(address(this), vm.getNonce(address(this))));
+        return _deployPaymasterWithoutBinding(burnableToken, targetEntryPointReserve);
+    }
+
+    function _deployPaymasterWithoutBinding(address burnableToken, uint256 targetEntryPointReserve)
+        private
+        returns (PaliFixedRateTokenPaymaster)
+    {
         return new PaliFixedRateTokenPaymaster(
             IEntryPoint(address(entryPoint)), IERC20Burnable(burnableToken), owner, targetEntryPointReserve
         );
