@@ -395,7 +395,11 @@ if not word.startswith(("0x", "0X")) or len(word) != 66:
     raise SystemExit(f"invalid EIP-1967 admin slot for {proxy}: {raw}")
 value = int(word[2:], 16)
 if value == 0 or value >= 1 << 160:
-    raise SystemExit(f"invalid EIP-1967 admin address for {proxy}: {raw}")
+    raise SystemExit(
+        f"persisted zkSYS L1 registry bridge {proxy} is not an EIP-1967 proxy "
+        f"(admin slot {raw}); clear zksys.l1_registry_bridge_addr and redeploy "
+        "before wiring the L2 registry"
+    )
 print("0x" + format(value, "040x"))
 PY
 }
