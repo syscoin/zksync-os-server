@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {Initializable} from "@openzeppelin/contracts-upgradeable-v4/proxy/utils/Initializable.sol";
+
 interface IL1BridgehubMinimal {
     struct L2TransactionRequestDirect {
         uint256 chainId;
@@ -32,7 +34,7 @@ interface IZkSysMembershipRegistryL2 {
 
 /// @title ZkSysRegistryBridge
 /// @notice L1/NEVM adapter that sends verified membership facts to the L2 zkSYS registry.
-contract ZkSysRegistryBridge {
+contract ZkSysRegistryBridge is Initializable {
     address private constant NEVM_ADDRESS_PRECOMPILE = address(0x62);
     uint256 public constant MAX_BATCH_SIZE = 512;
     uint256 public constant SENTRY_NODE_BASE_WEIGHT = 100_000 ether;
@@ -47,18 +49,23 @@ contract ZkSysRegistryBridge {
     error InvalidSeniorityConfig();
     error SentryNodeWeightOverflow(uint256 weight);
 
-    IL1BridgehubMinimal public immutable bridgehub;
-    uint256 public immutable zksysChainId;
-    address public immutable l2Registry;
-    uint32 public immutable nevmStartBlock;
-    uint32 public immutable seniorityHeight1;
-    uint32 public immutable seniorityHeight2;
-    uint16 public immutable seniorityLevel1Bps;
-    uint16 public immutable seniorityLevel2Bps;
+    IL1BridgehubMinimal public bridgehub;
+    uint256 public zksysChainId;
+    address public l2Registry;
+    uint32 public nevmStartBlock;
+    uint32 public seniorityHeight1;
+    uint32 public seniorityHeight2;
+    uint16 public seniorityLevel1Bps;
+    uint16 public seniorityLevel2Bps;
+    uint256[44] private __gap;
 
     event RegistryUpdatesRequested(bytes32 indexed canonicalTxHash, uint256 updateCount);
 
-    constructor(
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         IL1BridgehubMinimal bridgehub_,
         uint256 zksysChainId_,
         address l2Registry_,
@@ -67,14 +74,14 @@ contract ZkSysRegistryBridge {
         uint32 seniorityHeight2_,
         uint16 seniorityLevel1Bps_,
         uint16 seniorityLevel2Bps_
-    ) {
+    ) external initializer {
         if (address(bridgehub_) == address(0) || zksysChainId_ == 0 || l2Registry_ == address(0)) {
             revert InvalidAddress();
         }
         if (
             nevmStartBlock_ == 0 || seniorityHeight1_ == 0 || seniorityHeight2_ <= seniorityHeight1_
-                || seniorityLevel2Bps_ < seniorityLevel1Bps_
-                || seniorityLevel1Bps_ > BPS_DENOMINATOR || seniorityLevel2Bps_ > BPS_DENOMINATOR
+                || seniorityLevel2Bps_ < seniorityLevel1Bps_ || seniorityLevel1Bps_ > BPS_DENOMINATOR
+                || seniorityLevel2Bps_ > BPS_DENOMINATOR
         ) {
             revert InvalidSeniorityConfig();
         }

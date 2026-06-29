@@ -307,7 +307,7 @@ contract ZkSysIssuerTest is Test {
         );
         IssuerBridgehubMock bridgehub = new IssuerBridgehubMock();
         ZkSysRegistryBridge bridge =
-            new ZkSysRegistryBridge(bridgehub, 57, address(localMembership), 1_317_500, 210_240, 525_600, 3_500, 10_000);
+            _deployRegistryBridge(bridgehub, 57, address(localMembership), 1_317_500, 210_240, 525_600, 3_500, 10_000);
 
         vm.startPrank(admin);
         localMembership.setL1RegistryBridge(address(bridge));
@@ -782,5 +782,35 @@ contract ZkSysIssuerTest is Test {
             )
         );
         return ZkSysIssuer(address(proxy));
+    }
+
+    function _deployRegistryBridge(
+        IL1BridgehubMinimal bridgehub_,
+        uint256 zksysChainId_,
+        address l2Registry_,
+        uint32 nevmStartBlock_,
+        uint32 seniorityHeight1_,
+        uint32 seniorityHeight2_,
+        uint16 seniorityLevel1Bps_,
+        uint16 seniorityLevel2Bps_
+    ) private returns (ZkSysRegistryBridge) {
+        ZkSysRegistryBridge implementation = new ZkSysRegistryBridge();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(implementation),
+            abi.encodeCall(
+                ZkSysRegistryBridge.initialize,
+                (
+                    bridgehub_,
+                    zksysChainId_,
+                    l2Registry_,
+                    nevmStartBlock_,
+                    seniorityHeight1_,
+                    seniorityHeight2_,
+                    seniorityLevel1Bps_,
+                    seniorityLevel2Bps_
+                )
+            )
+        );
+        return ZkSysRegistryBridge(address(proxy));
     }
 }

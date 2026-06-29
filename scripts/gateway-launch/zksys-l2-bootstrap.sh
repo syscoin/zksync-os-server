@@ -149,6 +149,29 @@ assert_l2_uint_call() {
   [ "${actual}" = "${expected}" ] || gl_die "${target} ${signature} returned ${actual}, expected ${expected}"
 }
 
+assert_proxy_admin_owner() {
+  local proxy_admin="${1:?proxy admin required}" expected_owner="${2:?expected owner required}" actual_owner
+  actual_owner="$(call_l2 "${proxy_admin}" "owner()(address)")"
+  [ "$(gl_to_lower "${actual_owner}")" = "$(gl_to_lower "${expected_owner}")" ] ||
+    gl_die "${proxy_admin} owner()(address) returned ${actual_owner}, expected ${expected_owner}"
+}
+
+assert_proxy_wiring() {
+  local label="${1:?label required}"
+  local proxy_admin="${2:?proxy admin required}"
+  local proxy="${3:?proxy required}"
+  local expected_implementation="${4:?expected implementation required}"
+  local actual_admin actual_implementation
+
+  actual_admin="$(call_l2 "${proxy_admin}" "getProxyAdmin(address)(address)" "${proxy}")"
+  [ "$(gl_to_lower "${actual_admin}")" = "$(gl_to_lower "${proxy_admin}")" ] ||
+    gl_die "${label} proxy admin mismatch: ${actual_admin} != ${proxy_admin}"
+
+  actual_implementation="$(call_l2 "${proxy_admin}" "getProxyImplementation(address)(address)" "${proxy}")"
+  [ "$(gl_to_lower "${actual_implementation}")" = "$(gl_to_lower "${expected_implementation}")" ] ||
+    gl_die "${label} proxy implementation mismatch: ${actual_implementation} != ${expected_implementation}"
+}
+
 forge_inspect_bytecode() {
   local contract="${1:?contract required}"
   forge inspect "${contract}" bytecode \
@@ -421,6 +444,14 @@ deploy_create2 "zkSYS issuer implementation" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}" "
 deploy_create2 "zkSYS issuer proxy" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_PROXY_SALT}" "${issuer_proxy_init_code}"
 deploy_create2 "zkSYS native staking vault implementation" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_IMPL_SALT}" "${staking_vault_impl_init_code}"
 deploy_create2 "zkSYS native staking vault proxy" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_PROXY_SALT}" "${staking_vault_proxy_init_code}"
+
+echo "zksys-l2-bootstrap: verifying proxy admin and implementation wiring"
+assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
+assert_proxy_wiring "zkSYS token" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}"
+assert_proxy_wiring "zkSYS membership registry" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_REGISTRY_ADDRESS}" "${ZKSYS_L2_REGISTRY_IMPL_ADDRESS}"
+assert_proxy_wiring "zkSYS reward weight registry" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS}" "${ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS}"
+assert_proxy_wiring "zkSYS issuer" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}"
+assert_proxy_wiring "zkSYS native staking vault" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}"
 
 MINTER_ROLE="$(cast keccak "$(cast from-ascii MINTER_ROLE)")"
 BURNER_ROLE="$(cast keccak "$(cast from-ascii BURNER_ROLE)")"
