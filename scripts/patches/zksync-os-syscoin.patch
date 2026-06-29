@@ -689,11 +689,10 @@ index 2ebf44bf..a565e805 100644
 -        + <B160 as UsizeDeserializable>::USIZE_LEN;
 +        + <B160 as UsizeDeserializable>::USIZE_LEN
 +        + <Bytes32 as UsizeSerializable>::USIZE_LEN;
-
-    fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
-@@ -268,7 +281,10 @@ impl UsizeSerializable for BlockMetadataFromOracle {
-                     UsizeSerializable::iter(&self.mix_hash),
-                 ),
+ 
+     fn iter(&self) -> impl ExactSizeIterator<Item = usize> {
+@@ -261,7 +274,10 @@ impl UsizeSerializable for BlockMetadataFromOracle {
+                 UsizeSerializable::iter(&self.mix_hash),
              ),
 -            UsizeSerializable::iter(&self.blob_fee),
 +            ExactSizeChain::new(

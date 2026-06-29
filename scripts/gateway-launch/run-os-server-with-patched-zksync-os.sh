@@ -173,7 +173,8 @@ prepare_run_workspace() {
   local run_path="$1"
   local os_path="$2"
   local os_tag="$3"
-  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${os_path}" "${os_tag}" <<'PY'
+  local os_rev="$4"
+  python3 - "${ZKSYNC_OS_SERVER_PATH}" "${run_path}" "${os_path}" "${os_tag}" "${os_rev}" <<'PY'
 import re
 import shutil
 import sys
@@ -183,6 +184,7 @@ source = Path(sys.argv[1]).resolve()
 target = Path(sys.argv[2]).resolve()
 os_path = Path(sys.argv[3]).resolve()
 os_tag = sys.argv[4]
+os_rev = sys.argv[5]
 os_git_url = os_path.as_uri()
 
 if target.exists():
@@ -253,6 +255,20 @@ if (count_forward, count_ee, count_basic, count_api, count_evm_interpreter) != (
     raise SystemExit("failed to rewrite current zksync-os dependencies in Cargo.toml")
 
 cargo_toml.write_text(text, encoding="utf-8")
+
+cargo_lock = target / "Cargo.lock"
+if cargo_lock.exists():
+    lock_text = cargo_lock.read_text(encoding="utf-8")
+    source_re = re.compile(
+        r"git\+[^\"#\s]+\?tag=" + re.escape(os_tag) + r"#[0-9a-f]{40}"
+    )
+    lock_text, count = source_re.subn(
+        f"git+{os_git_url}?tag={os_tag}#{os_rev}",
+        lock_text,
+    )
+    if count == 0:
+        raise SystemExit("failed to rewrite current zksync-os dependencies in Cargo.lock")
+    cargo_lock.write_text(lock_text, encoding="utf-8")
 PY
 }
 
@@ -319,9 +335,10 @@ if protocol_uses_dev_patch; then
   fi
   ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
+  ZKSYNC_OS_PATCHED_REV="$(git -C "${ZKSYNC_OS_PATCHED_PATH}" rev-parse HEAD)"
   RUN_PATH="${GATEWAY_DIR}/.gateway-launch/zksync-os-server/${WORKSPACE_NAME}"
   TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
-  prepare_run_workspace "${RUN_PATH}" "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}"
+  prepare_run_workspace "${RUN_PATH}" "${ZKSYNC_OS_PATCHED_PATH}" "${ZKSYNC_OS_TAG}" "${ZKSYNC_OS_PATCHED_REV}"
   clear_multivm_build_script_cache "${TARGET_DIR}"
   cd "${RUN_PATH}"
   export CARGO_TARGET_DIR="${TARGET_DIR}"
