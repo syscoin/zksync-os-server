@@ -378,6 +378,28 @@ if isinstance(addr, str) and addr.startswith(("0x", "0X")) and len(addr) == 42:
 PY
 }
 
+read_eip1967_proxy_admin() {
+  local proxy="${1:?proxy required}" storage_word
+  storage_word="$(
+    cast storage \
+      --rpc-url "${L1_RPC_URL}" \
+      "${proxy}" \
+      "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
+  )"
+  python3 - "${proxy}" "${storage_word}" <<'PY'
+import sys
+
+proxy, raw = sys.argv[1:]
+word = raw.strip()
+if not word.startswith(("0x", "0X")) or len(word) != 66:
+    raise SystemExit(f"invalid EIP-1967 admin slot for {proxy}: {raw}")
+value = int(word[2:], 16)
+if value == 0 or value >= 1 << 160:
+    raise SystemExit(f"invalid EIP-1967 admin address for {proxy}: {raw}")
+print("0x" + format(value, "040x"))
+PY
+}
+
 persist_zksys_l1_registry_bridge_address() {
   local address="${1:?address required}"
   python3 - "${GATEWAY_DIR}/configs/contracts.yaml" "${address}" <<'PY'
@@ -492,9 +514,14 @@ deploy_zksys_l1_registry_bridge() {
   if [ -n "${persisted_bridge_address}" ] &&
     [ "${persisted_bridge_address}" != "0x0000000000000000000000000000000000000000" ]; then
     expected_address="${persisted_bridge_address}"
+    code="$(cast_code_or_die "${expected_address}")"
+    [ "${code}" != "0x" ] ||
+      gl_die "persisted zkSYS L1 registry bridge proxy ${expected_address} is not deployed; current deployment preimage derives ${derived_proxy_address}"
+    proxy_admin_address="$(read_eip1967_proxy_admin "${expected_address}")"
     if [ "$(gl_to_lower "${expected_address}")" != "$(gl_to_lower "${derived_proxy_address}")" ]; then
       echo "gateway-launch: reusing persisted zkSYS L1 registry bridge proxy ${expected_address}; current deployment preimage derives ${derived_proxy_address}"
     fi
+    echo "gateway-launch: reusing zkSYS L1 registry bridge proxy admin ${proxy_admin_address} from ${expected_address}"
   else
     expected_address="${derived_proxy_address}"
   fi
@@ -529,8 +556,6 @@ deploy_zksys_l1_registry_bridge() {
 
   code="$(cast_code_or_die "${expected_address}")"
   if [ "${code}" = "0x" ]; then
-    [ "$(gl_to_lower "${expected_address}")" = "$(gl_to_lower "${derived_proxy_address}")" ] ||
-      gl_die "persisted zkSYS L1 registry bridge proxy ${expected_address} is not deployed; current deployment preimage derives ${derived_proxy_address}"
     echo "gateway-launch: deploying zkSYS L1 registry bridge proxy to ${expected_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
