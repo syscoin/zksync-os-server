@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish deployed zkSYS L2 tokenomics contracts and the L1 registry bridge to Sourcify.
+# Verify deployed zkSYS L2 tokenomics contracts and the L1 registry bridge on Blockscout.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,14 +9,13 @@ CONTRACTS_DIR="${REPO_ROOT}/contracts"
 ZKSYS_SOLC="${ZKSYS_SOLC:-v0.8.33+commit.64118f21}"
 ZKSYS_TOKEN_SOLC="${ZKSYS_TOKEN_SOLC:-v0.8.28+commit.7893614a}"
 ZKSYS_ADMIN="${ZKSYS_ADMIN:-0x622a54Ea3a123127cA5fe8B98DE90E957471093A}"
-SOURCIFY_SERVER="${SOURCIFY_SERVER:-https://sourcify.dev/server}"
 
 ZKSYS_L2_RPC_URL="${ZKSYS_L2_RPC_URL:-https://rpc-zk.tanenbaum.io}"
-ZKSYS_L2_EXPLORER_BASE="${ZKSYS_L2_EXPLORER_BASE:-${SOURCIFY_SERVER}}"
+ZKSYS_L2_EXPLORER_BASE="${ZKSYS_L2_EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
 ZKSYS_L2_CHAIN_ID="${ZKSYS_L2_CHAIN_ID:-57057}"
 
 L1_RPC_URL="${L1_RPC_URL:-https://rpc.tanenbaum.io}"
-L1_EXPLORER_BASE="${L1_EXPLORER_BASE:-${SOURCIFY_SERVER}}"
+L1_EXPLORER_BASE="${L1_EXPLORER_BASE:-https://explorer.tanenbaum.io}"
 L1_CHAIN_ID="${L1_CHAIN_ID:-5700}"
 
 L2_PROXY_ADMIN="${L2_PROXY_ADMIN:-0xAbb78Fba301FA86Ac40440e663CeB3f640348AC8}"
@@ -45,8 +44,8 @@ export FOUNDRY_BYTECODE_HASH=none
 export FOUNDRY_CBOR_METADATA=false
 
 is_verified() {
-  local explorer_base="${1:?explorer base required}" chain_id="${2:?chain id required}" address="${3:?address required}"
-  curl -fsS "${explorer_base%/}/v2/contract/${chain_id}/${address}" 2>/dev/null | grep -Eq '"match":"(exact_match|match)"'
+  local explorer_base="${1:?explorer base required}" address="${2:?address required}"
+  curl -fsS "${explorer_base%/}/api/v2/smart-contracts/${address}" 2>/dev/null | grep -q '"is_verified":true'
 }
 
 runtime_code() {
@@ -80,8 +79,8 @@ verify_contract() {
   local ctor="${8:-}"
 
   require_code "${rpc_url}" "${label}" "${address}"
-  if is_verified "${explorer_base}" "${chain_id}" "${address}"; then
-    echo "skip   ${label} (${address}) already on Sourcify"
+  if is_verified "${explorer_base}" "${address}"; then
+    echo "skip   ${label} (${address}) already verified"
     return
   fi
 
@@ -94,11 +93,12 @@ verify_contract() {
       "${contract}"
       --chain "${chain_id}"
       --rpc-url "${rpc_url}"
-      --verifier sourcify
-      --verifier-url "${explorer_base%/}"
+      --verifier blockscout
+      --verifier-url "${explorer_base%/}/api/"
       --compiler-version "${compiler_version}"
       --num-of-optimizations 200
       --via-ir
+      --skip-is-verified-check
       --watch
     )
     if [ -n "${ctor}" ]; then
@@ -173,4 +173,4 @@ verify_contract "${L1_RPC_URL}" "${L1_EXPLORER_BASE}" "${L1_CHAIN_ID}" "${ZKSYS_
   "${L1_BRIDGE_PROXY}" "zkSYS L1 registry bridge proxy" "src/zksys/ZkSysCreate2ProxyBytecode.sol:ZkSysCreate2ProxyBytecode" \
   "$(proxy_ctor "${L1_BRIDGE_IMPL}" "${L1_BRIDGE_PROXY_ADMIN}" "${l1_bridge_init_data}")"
 
-echo "zkSYS Sourcify submissions complete."
+echo "zkSYS Blockscout verification submissions complete."
