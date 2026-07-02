@@ -509,7 +509,21 @@ EOF
 
 # SYSCOIN: persist the gas-tank address so config generation and the patched
 # OS build (SYSCOIN_GAS_TANK_ADDRESS) can pick it up from the chain config.
-zksys_contracts_yaml="${GATEWAY_DIR:-${HOME}/gateway}/chains/${EDGE_CHAIN_NAME:-zksys}/configs/contracts.yaml"
+# Resolve the target file with the same priority as the reader
+# (gl_zksys_gas_tank_from_edge_config): canonical contracts.yaml first, then
+# the zkstack-emitted contracts_<chain-id>.yaml layout.
+zksys_configs_dir="${GATEWAY_DIR:-${HOME}/gateway}/chains/${EDGE_CHAIN_NAME:-zksys}/configs"
+zksys_contracts_yaml="${zksys_configs_dir}/contracts.yaml"
+if [ ! -f "${zksys_contracts_yaml}" ] && [ -n "${EDGE_CHAIN_ID:-}" ] && [ -f "${zksys_configs_dir}/contracts_${EDGE_CHAIN_ID}.yaml" ]; then
+  zksys_contracts_yaml="${zksys_configs_dir}/contracts_${EDGE_CHAIN_ID}.yaml"
+fi
+if [ ! -f "${zksys_contracts_yaml}" ]; then
+  for candidate in "${zksys_configs_dir}"/contracts_*.yaml; do
+    [ -f "${candidate}" ] || continue
+    zksys_contracts_yaml="${candidate}"
+    break
+  done
+fi
 if [ -f "${zksys_contracts_yaml}" ]; then
   python3 - "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}" <<'PY'
 import re
