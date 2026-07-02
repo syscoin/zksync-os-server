@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Verify the zkSYS Pali ERC-4337 contracts on a Blockscout instance.
 #
-# This is reproducible and idempotent: it verifies the controlled zkSYS
-# SyscoinEntryPoint, the deterministic Pali smart-account infrastructure, and
-# the deployed fixed-rate paymaster.
+# This is reproducible and idempotent: it verifies the canonical ERC-4337
+# EntryPoint v0.9 singleton and the deterministic Pali smart-account
+# infrastructure. There is no paymaster; zkSYS gas payment is native to the
+# chain via the ZkSysGasTank.
 #
 # Prerequisites on the target Blockscout instance (already wired in
 # docker-compose.yml): the smart-contract-verifier microservice must be running
@@ -14,7 +15,7 @@
 # 0x4e59...4956C deployer with the PALI_SMART_ACCOUNT_ERC7579_V1 salts.
 #
 # Usage:
-#   PAYMASTER_ADDRESS=0x... PAYMASTER_OWNER=0x... ./verify-pali-contracts.sh [EXPLORER_BASE_URL]
+#   ./verify-pali-contracts.sh [EXPLORER_BASE_URL]
 # Defaults to the zkTanenbaum public explorer.
 
 set -euo pipefail
@@ -23,17 +24,16 @@ EXPLORER_BASE="${1:-https://explorer-zk.tanenbaum.io}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONTRACTS_DIR="${REPO_ROOT}/contracts"
+AA_DIR="${REPO_ROOT}/integration-tests/test-contracts/lib/account-abstraction"
 
 PALI_SOLC="v0.8.28+commit.7893614a"
 PALI_SOLC_VERSION="${PALI_SOLC_VERSION:-0.8.28}"
 CHAIN_ID="${CHAIN_ID:-57057}"
 RPC_URL="${ZKTANENBAUM_RPC_URL:-${RPC_URL:-https://rpc-zk.tanenbaum.io}}"
-ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x43378ADCd7Cf9A6dcb3fd898696f9496A9aE0462}"
+# Canonical ERC-4337 EntryPoint v0.9 singleton.
+ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 PALI_CREATE2_DEPLOYER_ADDRESS="${PALI_CREATE2_DEPLOYER_ADDRESS:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
 PALI_INFRASTRUCTURE_VERSION="PALI_SMART_ACCOUNT_ERC7579_V1"
-
-: "${PAYMASTER_ADDRESS:?PAYMASTER_ADDRESS is required}"
-: "${PAYMASTER_OWNER:?PAYMASTER_OWNER is required and must be the deployment-time paymaster owner}"
 
 export FOUNDRY_BYTECODE_HASH=none
 export FOUNDRY_CBOR_METADATA=false
@@ -127,22 +127,38 @@ factory_ctor="$(abi_encode "constructor(address,address)" "${account_implementat
 factory_init_code="${factory_bytecode}${factory_ctor#0x}"
 factory_address="$(create2_address "$(salt "factory")" "${factory_init_code}")"
 
-paymaster_entrypoint="$(cast call "${PAYMASTER_ADDRESS}" "entryPoint()(address)" --rpc-url "${RPC_URL}")"
-paymaster_token="$(cast call "${PAYMASTER_ADDRESS}" "token()(address)" --rpc-url "${RPC_URL}")"
-paymaster_reserve="$(cast call "${PAYMASTER_ADDRESS}" "TARGET_ENTRY_POINT_RESERVE()(uint256)" --rpc-url "${RPC_URL}")"
-paymaster_reserve="${paymaster_reserve%% *}"
-if [[ "$(lower "${paymaster_entrypoint}")" != "$(lower "${ENTRYPOINT_ADDRESS}")" ]]; then
-  echo "error: paymaster entryPoint()=${paymaster_entrypoint}, expected ${ENTRYPOINT_ADDRESS}" >&2
-  exit 1
-fi
-paymaster_ctor="$(
-  abi_encode \
-    "constructor(address,address,address,uint256)" \
-    "${ENTRYPOINT_ADDRESS}" \
-    "${paymaster_token}" \
-    "${PAYMASTER_OWNER}" \
-    "${paymaster_reserve}"
-)"
+# The canonical EntryPoint v0.9 is built with the official account-abstraction
+# release settings (optimizer runs 1,000,000, via-ir, default metadata), not
+# the Pali profile, so it gets a dedicated verification path from the vendored
+# v0.9.0 checkout.
+verify_entrypoint() {
+  if [[ "$(runtime_code "${ENTRYPOINT_ADDRESS}")" == "0x" ]]; then
+    echo "missing EntryPoint v0.9 (${ENTRYPOINT_ADDRESS}); skipping verification because no code is deployed" >&2
+    return
+  fi
+
+  if is_verified "${ENTRYPOINT_ADDRESS}"; then
+    echo "skip   EntryPoint v0.9 (${ENTRYPOINT_ADDRESS}) already verified"
+    return
+  fi
+
+  echo "submit EntryPoint v0.9 (${ENTRYPOINT_ADDRESS})"
+  (
+    cd "${AA_DIR}"
+    env -u FOUNDRY_BYTECODE_HASH -u FOUNDRY_CBOR_METADATA \
+      forge verify-contract \
+      "${ENTRYPOINT_ADDRESS}" \
+      contracts/core/EntryPoint.sol:EntryPoint \
+      --chain "${CHAIN_ID}" \
+      --rpc-url "${RPC_URL}" \
+      --verifier blockscout \
+      --verifier-url "${EXPLORER_BASE%/}/api/" \
+      --compiler-version "${PALI_SOLC}" \
+      --num-of-optimizations 1000000 \
+      --via-ir \
+      --watch
+  )
+}
 
 echo "Verifying zkSYS Pali stack"
 echo "  explorer:       ${EXPLORER_BASE}"
@@ -151,13 +167,9 @@ echo "  chain:          ${CHAIN_ID}"
 echo "  entrypoint:     ${ENTRYPOINT_ADDRESS}"
 echo "  account impl:   ${account_implementation_address}"
 echo "  factory:        ${factory_address}"
-echo "  paymaster:      ${PAYMASTER_ADDRESS}"
-echo "  paymaster token:${paymaster_token}"
-echo "  paymaster owner:${PAYMASTER_OWNER}"
-echo "  reserve:        ${paymaster_reserve}"
 echo
 
-verify_contract "${ENTRYPOINT_ADDRESS}" "SyscoinEntryPoint" "src/pali/SyscoinEntryPoint.sol:SyscoinEntryPoint"
+verify_entrypoint
 verify_contract "${account_implementation_address}" "Pali smart account implementation" "src/pali/PaliSmartAccount.sol:PaliSmartAccount" "${account_implementation_ctor}"
 verify_contract "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
 verify_contract "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
@@ -166,7 +178,6 @@ verify_contract "0x3fe7586e106eb90988dc2385a5987b7040da06f3" "SLH-DSA validator 
 verify_contract "0xb455eb25bcab13f003a0db5dec5e195ab634afda" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
 verify_contract "0x6b4e0a92e1cee54b93ede57f7b839a423960b913" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
 verify_contract "${factory_address}" "Pali smart account factory" "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory" "${factory_ctor}"
-verify_contract "${PAYMASTER_ADDRESS}" "Pali fixed-rate token paymaster" "src/pali/PaliFixedRateTokenPaymaster.sol:PaliFixedRateTokenPaymaster" "${paymaster_ctor}"
 
 echo "Waiting for verification results..."
 for _ in $(seq 1 30); do
@@ -180,8 +191,7 @@ for _ in $(seq 1 30); do
     "0x3fe7586e106eb90988dc2385a5987b7040da06f3" \
     "0xb455eb25bcab13f003a0db5dec5e195ab634afda" \
     "0x6b4e0a92e1cee54b93ede57f7b839a423960b913" \
-    "${factory_address}" \
-    "${PAYMASTER_ADDRESS}"; do
+    "${factory_address}"; do
     if [[ "$(runtime_code "${addr}")" == "0x" ]]; then
       continue
     fi
@@ -199,7 +209,7 @@ echo
 echo "Final status:"
 unverified=0
 CONTRACTS=(
-  "${ENTRYPOINT_ADDRESS}|SyscoinEntryPoint"
+  "${ENTRYPOINT_ADDRESS}|EntryPoint v0.9"
   "${account_implementation_address}|Pali smart account implementation"
   "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad|ECDSA validator module"
   "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd|P-256 passkey validator module"
@@ -208,7 +218,6 @@ CONTRACTS=(
   "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module"
   "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module"
   "${factory_address}|Pali smart account factory"
-  "${PAYMASTER_ADDRESS}|Pali fixed-rate token paymaster"
 )
 for entry in "${CONTRACTS[@]}"; do
   IFS='|' read -r addr label <<< "${entry}"

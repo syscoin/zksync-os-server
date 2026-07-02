@@ -18,7 +18,6 @@ gl_require ZKSYS_ISSUER_START_TIME
 : "${ZKSYS_L2_TOKEN_SYMBOL:=ZKSYS}"
 : "${ZKSYS_L2_TOKEN_DECIMALS:=18}"
 : "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS:=0x0000000000000000000000000000000000000000}"
-: "${ZKSYS_L2_PAYMASTER_ADDRESS:=}"
 : "${ZKSYS_ISSUER_PERIOD_SECONDS:=86400}"
 : "${ZKSYS_ISSUER_PERIODS_PER_YEAR:=365}"
 : "${ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS:=3}"
@@ -252,13 +251,9 @@ if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${ZERO_ADDRESS}" ]; then
   fi
 fi
 ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="$(normalize_address_env ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS)"
-if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
-  ZKSYS_L2_PAYMASTER_ADDRESS="$(normalize_nonzero_address_env ZKSYS_L2_PAYMASTER_ADDRESS)"
-fi
 export ZKSYS_L2_CREATE2_DEPLOYER
 export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
-export ZKSYS_L2_PAYMASTER_ADDRESS
 
 case "${ZKSYS_L2_TOKEN_DECIMALS}" in
 ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
@@ -299,6 +294,7 @@ ZKSYS_L2_ISSUER_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_IMPL_SALT 0x7
 ZKSYS_L2_ISSUER_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_PROXY_SALT 0x7a6b7379732d6973737565722d70726f78790000000000000000000000000000)"
 ZKSYS_L2_STAKING_VAULT_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_IMPL_SALT 0x7a6b7379732d7374616b696e672d7661756c742d696d706c0000000000000000)"
 ZKSYS_L2_STAKING_VAULT_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_PROXY_SALT 0x7a6b7379732d7374616b696e672d7661756c742d70726f787900000000000000)"
+ZKSYS_L2_GAS_TANK_SALT="$(normalize_bytes32_env ZKSYS_L2_GAS_TANK_SALT 0x7a6b7379732d6761732d74616e6b000000000000000000000000000000000000)"
 
 inspect_dir="${ZKSYNC_OS_SERVER_PATH}/contracts"
 [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
@@ -432,6 +428,18 @@ ZKSYS_L2_STAKING_VAULT_ADDRESS="$(
     --init-code "${staking_vault_proxy_init_code}"
 )"
 
+# SYSCOIN: prepaid zkSYS gas ledger debited by the patched ZKsync OS
+# bootloader. Non-upgradeable and atomic by construction: the constructor
+# pins the token; the only wiring is the BURNER_ROLE grant for burnSurplus().
+gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
+gas_tank_init_code="$(forge_inspect_bytecode ZkSysGasTank)${gas_tank_ctor_args#0x}"
+ZKSYS_L2_GAS_TANK_ADDRESS="$(
+  cast create2 \
+    --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
+    --init-code "${gas_tank_init_code}"
+)"
+
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
 deploy_create2 "zkSYS token implementation" "${ZKSYS_L2_TOKEN_IMPL_ADDRESS}" "${ZKSYS_L2_TOKEN_IMPL_SALT}" "${token_impl_init_code}"
@@ -444,6 +452,7 @@ deploy_create2 "zkSYS issuer implementation" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}" "
 deploy_create2 "zkSYS issuer proxy" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_PROXY_SALT}" "${issuer_proxy_init_code}"
 deploy_create2 "zkSYS native staking vault implementation" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_IMPL_SALT}" "${staking_vault_impl_init_code}"
 deploy_create2 "zkSYS native staking vault proxy" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_PROXY_SALT}" "${staking_vault_proxy_init_code}"
+deploy_create2 "zkSYS gas tank" "${ZKSYS_L2_GAS_TANK_ADDRESS}" "${ZKSYS_L2_GAS_TANK_SALT}" "${gas_tank_init_code}"
 
 echo "zksys-l2-bootstrap: verifying proxy admin and implementation wiring"
 assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
@@ -466,10 +475,8 @@ if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
   send_l2 "${ZKSYS_L2_REGISTRY_ADDRESS}" "setL1RegistryBridge(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
 fi
 
-if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
-  echo "zksys-l2-bootstrap: wiring paymaster burner role"
-  send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${BURNER_ROLE}" "${ZKSYS_L2_PAYMASTER_ADDRESS}"
-fi
+echo "zksys-l2-bootstrap: wiring gas tank burner role"
+send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${BURNER_ROLE}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
 
 echo "zksys-l2-bootstrap: verifying role and receiver wiring"
 assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${MINTER_ROLE}" "${ZKSYS_L2_ISSUER_ADDRESS}"
@@ -481,9 +488,8 @@ assert_l2_address_call "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "weightRegistry()(add
 if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" != "${ZERO_ADDRESS}" ]; then
   assert_l2_address_call "${ZKSYS_L2_REGISTRY_ADDRESS}" "l1RegistryBridge()(address)" "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
 fi
-if [ -n "${ZKSYS_L2_PAYMASTER_ADDRESS}" ]; then
-  assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_PAYMASTER_ADDRESS}"
-fi
+assert_l2_address_call "${ZKSYS_L2_GAS_TANK_ADDRESS}" "token()(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
+assert_l2_bool_call "${ZKSYS_L2_TOKEN_ADDRESS}" "hasRole(bytes32,address)(bool)" "true" "${BURNER_ROLE}" "${ZKSYS_L2_GAS_TANK_ADDRESS}"
 
 cat <<EOF
 zksys-l2-bootstrap: complete
@@ -498,4 +504,38 @@ zksys-l2-bootstrap: complete
   issuerProxy         = ${ZKSYS_L2_ISSUER_ADDRESS}
   stakingVaultImpl    = ${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}
   stakingVaultProxy   = ${ZKSYS_L2_STAKING_VAULT_ADDRESS}
+  gasTank             = ${ZKSYS_L2_GAS_TANK_ADDRESS}
 EOF
+
+# SYSCOIN: persist the gas-tank address so config generation and the patched
+# OS build (SYSCOIN_GAS_TANK_ADDRESS) can pick it up from the chain config.
+zksys_contracts_yaml="${GATEWAY_DIR:-${HOME}/gateway}/chains/${EDGE_CHAIN_NAME:-zksys}/configs/contracts.yaml"
+if [ -f "${zksys_contracts_yaml}" ]; then
+  python3 - "${zksys_contracts_yaml}" "${ZKSYS_L2_GAS_TANK_ADDRESS}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+address = sys.argv[2].strip().lower()
+if not re.fullmatch(r"0x[0-9a-f]{40}", address) or address == "0x" + "0" * 40:
+    raise SystemExit("gas tank address must be a nonzero 20-byte hex address")
+if int(address[2:], 16) < 1 << 16:
+    raise SystemExit("gas tank address must not be in the reserved system address space")
+
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {path}")
+l2 = data.setdefault("l2", {})
+if not isinstance(l2, dict):
+    raise SystemExit(f"invalid l2 section in {path}")
+l2["zksys_gas_tank_addr"] = address
+path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+PY
+  echo "zksys-l2-bootstrap: updated ${zksys_contracts_yaml}: l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS}"
+  echo "zksys-l2-bootstrap: NOTE: rebuild the patched ZKsync OS with SYSCOIN_GAS_TANK_ADDRESS=${ZKSYS_L2_GAS_TANK_ADDRESS}"
+else
+  echo "zksys-l2-bootstrap: warning: ${zksys_contracts_yaml} not found; set l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS} manually" >&2
+fi

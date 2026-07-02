@@ -488,17 +488,6 @@ def materialize_chain(
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
     fee_collector_address = wallets["fee_account"]["address"]
-    expected_fee_recipient_address = "0x0000000000000000000000000000000000000000"
-    if chain_name == os.environ["EDGE_CHAIN_NAME"]:
-        l2_contracts = chain_contracts.get("l2") if isinstance(chain_contracts, dict) else None
-        if isinstance(l2_contracts, dict) and l2_contracts.get("zksys_fee_collector_addr") is not None:
-            zksys_fee_collector_address = normalize_address(
-                l2_contracts["zksys_fee_collector_addr"],
-                f"{contracts_source}: l2.zksys_fee_collector_addr",
-            )
-            if zksys_fee_collector_address != "0x0000000000000000000000000000000000000000":
-                fee_collector_address = zksys_fee_collector_address
-                expected_fee_recipient_address = zksys_fee_collector_address
 
     config_lines = [
         "general:",
@@ -524,7 +513,6 @@ def materialize_chain(
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
             f"  fee_collector_address: '{fee_collector_address}'",
-            f"  expected_fee_recipient_address: '{expected_fee_recipient_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
                 if chain_name == os.environ["EDGE_CHAIN_NAME"]
