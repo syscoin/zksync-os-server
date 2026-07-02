@@ -121,6 +121,15 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             B256::new([0u8; 32])
         };
         let root = keccak256([local_root.0, multichain_root.0].concat());
+        // SYSCOIN: We need to check if the root is the same as the committed root.
+        if root != batch.batch_info.l2_to_l1_logs_root_hash {
+            return Err(anyhow::anyhow!(
+                "reconstructed L2->L1 logs root {root:?} does not match committed root {:?} for batch #{}",
+                batch.batch_info.l2_to_l1_logs_root_hash,
+                batch_number
+            )
+            .into());
+        }
 
         let log_leaf_proof = proof
             .into_iter()
