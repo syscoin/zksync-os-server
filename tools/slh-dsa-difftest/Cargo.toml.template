@@ -1,0 +1,24 @@
+# Template for Cargo.toml; run.sh substitutes @ZKSYNC_OS_PATH@ with the
+# absolute path of a zksync-os checkout that has the Syscoin patch applied.
+[package]
+name = "slh-dsa-difftest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Differential tests for the Syscoin SLH-DSA-SHA2-128-24 precompile against the shared KAT/mutation vectors used by the Solidity fallback verifier tests."
+
+# Standalone: intentionally not a member of the zksync-os-server workspace,
+# because it depends on a *patched* zksync-os checkout (see run.sh).
+[workspace]
+
+[dev-dependencies]
+basic_system = { path = "@ZKSYNC_OS_PATH@/basic_system" }
+zk_ee = { path = "@ZKSYNC_OS_PATH@/zk_ee" }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The sweep performs hundreds of full verifications (~1600 SHA-256 calls each);
+# always optimize.
+[profile.test]
+opt-level = 3
