@@ -192,12 +192,12 @@ index 0ff5891c..ddef4775 100644
 +        let canonical_upgrade_tx_hash = metadata.block_level.canonical_upgrade_tx_hash;
 +        // SYSCOIN: canonical metadata may only replace an empty recorder hash
 +        // (patch-only upgrade) or the same hash that execution recorded.
-+        assert!(
-+            canonical_upgrade_tx_hash == Bytes32::ZERO
-+                || recorded_upgrade_tx_hash == Bytes32::ZERO
-+                || recorded_upgrade_tx_hash == canonical_upgrade_tx_hash,
-+            "canonical upgrade tx hash mismatch"
-+        );
++        if canonical_upgrade_tx_hash != Bytes32::ZERO
++            && recorded_upgrade_tx_hash != Bytes32::ZERO
++            && recorded_upgrade_tx_hash != canonical_upgrade_tx_hash
++        {
++            return Err(zk_ee::internal_error!("canonical upgrade tx hash mismatch").into());
++        }
 +        let upgrade_tx_hash = if canonical_upgrade_tx_hash == Bytes32::ZERO {
 +            recorded_upgrade_tx_hash
 +        } else {
@@ -219,12 +219,12 @@ index 2c21c201..edd7fbae 100644
 +        let canonical_upgrade_tx_hash = metadata.block_level.canonical_upgrade_tx_hash;
 +        // SYSCOIN: canonical metadata may only replace an empty recorder hash
 +        // (patch-only upgrade) or the same hash that execution recorded.
-+        assert!(
-+            canonical_upgrade_tx_hash == Bytes32::ZERO
-+                || recorded_upgrade_tx_hash == Bytes32::ZERO
-+                || recorded_upgrade_tx_hash == canonical_upgrade_tx_hash,
-+            "canonical upgrade tx hash mismatch"
-+        );
++        if canonical_upgrade_tx_hash != Bytes32::ZERO
++            && recorded_upgrade_tx_hash != Bytes32::ZERO
++            && recorded_upgrade_tx_hash != canonical_upgrade_tx_hash
++        {
++            return Err(zk_ee::internal_error!("canonical upgrade tx hash mismatch").into());
++        }
 +        let upgrade_tx_hash = if canonical_upgrade_tx_hash == Bytes32::ZERO {
 +            recorded_upgrade_tx_hash
 +        } else {
