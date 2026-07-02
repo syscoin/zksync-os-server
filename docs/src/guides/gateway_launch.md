@@ -558,6 +558,10 @@ cd scripts/explorer/blockscout
 REMOTE_HOST="<ssh-user>@<explorer-host>" ./deploy-remote.sh zksys
 REMOTE_HOST="<ssh-user>@<explorer-host>" ./deploy-remote.sh gateway
 
+# Optional: enable Blockscout sensitive API endpoints, such as token metadata imports.
+API_SENSITIVE_ENDPOINTS_KEY="<random-secret>" \
+REMOTE_HOST="<ssh-user>@<explorer-host>" ./deploy-remote.sh zksys
+
 # Install RPC vhosts on the node host after rpc-zk/rpc-gw DNS points there.
 RPC_NGINX_REMOTE_HOST="<ssh-user>@<node-host>" \
 GATEWAY_RPC_ALLOWLIST="<blockscout-ip-or-cidr>,<admin-ip-or-cidr>" \

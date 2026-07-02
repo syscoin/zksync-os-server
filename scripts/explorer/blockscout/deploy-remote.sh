@@ -13,6 +13,7 @@ SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/gateway/ui/blockscout}"
 PROJECT_NAME="blockscout-${INSTANCE}"
 REMOTE_DIR_B64="$(printf '%s' "${REMOTE_DIR}" | base64 | tr -d '\n')"
+API_SENSITIVE_ENDPOINTS_KEY_B64="$(printf '%s' "${API_SENSITIVE_ENDPOINTS_KEY:-}" | base64 | tr -d '\n')"
 
 if [[ -z "${REMOTE_HOST}" ]]; then
   echo "REMOTE_HOST is required, for example ubuntu@explorer-host" >&2
@@ -49,12 +50,13 @@ cp \"\${tmp_dir}/envs/\${instance}.env\" \"\${remote_dir}/envs/\${instance}.env\
 '"
 
 ssh "${ssh_opts[@]}" "${REMOTE_HOST}" bash -s -- \
-  "${REMOTE_DIR}" "${INSTANCE}" "${PROJECT_NAME}" <<'REMOTE_SCRIPT'
+  "${REMOTE_DIR}" "${INSTANCE}" "${PROJECT_NAME}" "${API_SENSITIVE_ENDPOINTS_KEY_B64}" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 remote_dir="$1"
 instance="$2"
 project_name="$3"
+api_sensitive_endpoints_key="$(printf '%s' "$4" | base64 -d)"
 
 cd "${remote_dir}"
 
@@ -71,6 +73,23 @@ if [[ ! -f "${secrets_file}" ]]; then
     printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -base64 24 | tr '/+' '_-' | tr -d '\n')"
     printf 'SECRET_KEY_BASE=%s\n' "$(openssl rand -base64 48 | tr '/+' '_-' | tr -d '\n')"
   } > "${secrets_file}"
+fi
+chmod 600 "${secrets_file}"
+
+upsert_secret_env() {
+  local key="$1" value="$2" tmp_file
+  tmp_file="$(mktemp)"
+  chmod 600 "${tmp_file}"
+  if [[ -f "${secrets_file}" ]]; then
+    grep -v -E "^${key}=" "${secrets_file}" > "${tmp_file}" || true
+  fi
+  printf '%s=%s\n' "${key}" "${value}" >> "${tmp_file}"
+  mv "${tmp_file}" "${secrets_file}"
+  chmod 600 "${secrets_file}"
+}
+
+if [[ -n "${api_sensitive_endpoints_key}" ]]; then
+  upsert_secret_env "API_SENSITIVE_ENDPOINTS_KEY" "${api_sensitive_endpoints_key}"
 fi
 
 # Profile activation (e.g. user-ops) is declared per instance via
