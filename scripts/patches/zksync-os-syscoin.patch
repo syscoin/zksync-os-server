@@ -334,7 +334,7 @@ index d0074e88..47d893a0 100644
  }
  
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
-index 879e9dc5..25f34a87 100644
+index 879e9dc5..72558d9c 100644
 --- a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
 +++ b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
 @@ -28,6 +28,7 @@ use zk_ee::execution_environment_type::ExecutionEnvironmentType;
@@ -495,31 +495,27 @@ index 879e9dc5..25f34a87 100644
          }
  
          // Next we pay the operator
-@@ -493,16 +544,18 @@ where
+@@ -493,9 +544,17 @@ where
          // 2. Transfer actual payment to operator after execution (here)
          // This ensures sender has sufficient funds before execution begins
  
 -        // EIP-1559 compatibility: When burn_base_fee is enabled, only priority fees
--        // go to the operator. Base fees are effectively "burned" (not transferred anywhere).
++        // EIP-1559 compatibility: when `burn_base_fee` is enabled, only priority fees
+         // go to the operator. Base fees are effectively "burned" (not transferred anywhere).
 -        let gas_price_for_operator = if cfg!(feature = "burn_base_fee") {
-+        // SYSCOIN: EIP-1559 semantics are always on for this chain. The base
-+        // fee is burned (never credited to anyone) and only the priority fee
-+        // goes to the operator, regardless of whether the fee was paid in
-+        // native SYS or from the zkSYS gas tank. For tank payments the burned
-+        // portion shrinks `totalCredits`, leaving surplus zkSYS in the tank
-+        // contract for the permissionless `burnSurplus()` to destroy.
-+        let gas_price_for_operator = {
++        // SYSCOIN: gas-tank payments always use tip-only operator pricing even though
++        // native SYS payments keep the upstream full-gas-price operator payment behavior.
++        // The tank ledger stays solvent either way (settlement burns whatever was
++        // neither refunded nor tipped), but burning the zkSYS base-fee portion is the
++        // designed economics: it feeds the surplus that the tank contract's
++        // permissionless `burnSurplus()` destroys.
++        let gas_price_for_operator = if context.fee_paid_from_gas_tank
++            || cfg!(feature = "burn_base_fee")
++        {
              let base_fee = system.get_eip1559_basefee();
              // We use saturating arithmetic to allow the caller of this method to
              // allow gas_price < base_fee. This can be used, for example, for
-             // transaction simulation
-             context.gas_price.saturating_sub(base_fee)
--        } else {
--            context.gas_price
-         };
- 
-         system_log!(
-@@ -516,6 +569,33 @@ where
+@@ -516,6 +575,33 @@ where
              .ok_or(internal_error!("gu*gpfo"))?;
  
          let coinbase = system.get_coinbase();
@@ -553,7 +549,7 @@ index 879e9dc5..25f34a87 100644
          // Operator payment native is precharged by the intrinsic formula too.
          context
              .intrinsic_resources
-@@ -583,6 +663,9 @@ where
+@@ -583,6 +669,9 @@ where
          #[cfg(feature = "verify_intrinsic_native")]
          Self::verify_intrinsic_native(system, &context);
  
@@ -563,7 +559,7 @@ index 879e9dc5..25f34a87 100644
          ZkTxResult {
              result,
              tx_hash: context.tx_hash,
-@@ -595,6 +678,7 @@ where
+@@ -595,6 +684,7 @@ where
              computational_native_used,
              pubdata_used: context.total_pubdata,
              blob_gas_used,
@@ -571,7 +567,7 @@ index 879e9dc5..25f34a87 100644
          }
      }
  
-@@ -624,6 +708,30 @@ where
+@@ -624,6 +714,30 @@ where
      }
  }
  
