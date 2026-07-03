@@ -19,30 +19,50 @@ EOF
 log() { printf '[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
+validate_inputs() {
+  # SYSCOIN: this value can come from workflow_dispatch input. Keep it Docker
+  # tag compatible and reject JSON metacharacters before using the DTrack API key.
+  [[ "${PROJECT_VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || \
+    die "PROJECT_VERSION must be a Docker/tag-safe identifier"
+
+  [[ "${PARENT_UUID}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || \
+    die "PARENT_UUID must be a UUID"
+}
+
+project_payload() {
+  jq -n \
+    --arg name "${PROJECT_NAME}" \
+    --arg version "${PROJECT_VERSION}" \
+    --arg parent_uuid "${PARENT_UUID}" \
+    '{
+      name: $name,
+      version: $version,
+      classifier: "APPLICATION",
+      active: true,
+      isLatest: true,
+      collectionLogic: "AGGREGATE_LATEST_VERSION_CHILDREN",
+      parent: {uuid: $parent_uuid}
+    }'
+}
+
 main() {
   : "${DT_BASE_URL:?Set DT_BASE_URL (e.g. https://dtrack.example.com)}"
   : "${DT_API_KEY:?Set DT_API_KEY}"
   : "${PROJECT_NAME:?Set PROJECT_NAME}"
   : "${PROJECT_VERSION:?Set PROJECT_VERSION}"
   : "${PARENT_UUID:?Set PARENT_UUID}"
+  validate_inputs
 
   log "Creating collection project '${PROJECT_NAME}' ${PROJECT_VERSION} under parent ${PARENT_UUID}..."
 
-  local http_response http_status response_body uuid
+  local http_response http_status payload response_body uuid
+  payload="$(project_payload)"
 
   http_response=$(curl -s -w "\n%{http_code}" \
     -X PUT "${DT_BASE_URL}/api/v1/project" \
     -H "X-Api-Key: ${DT_API_KEY}" \
     -H "Content-Type: application/json" \
-    -d '{
-      "name":            "'"${PROJECT_NAME}"'",
-      "version":         "'"${PROJECT_VERSION}"'",
-      "classifier":      "APPLICATION",
-      "active":          true,
-      "isLatest":        true,
-      "collectionLogic": "AGGREGATE_LATEST_VERSION_CHILDREN",
-      "parent":          {"uuid": "'"${PARENT_UUID}"'"}
-    }')
+    -d "${payload}")
 
   http_status=$(printf '%s' "${http_response}" | tail -n1)
   response_body=$(printf '%s' "${http_response}" | head -n-1)
@@ -60,7 +80,7 @@ main() {
       --data-urlencode "version=${PROJECT_VERSION}" \
       "${DT_BASE_URL}/api/v1/project/lookup" \
       -H "X-Api-Key: ${DT_API_KEY}")
-    uuid=$(printf '%s' "${existing}" | jq -r '.uuid')
+    uuid=$(printf '%s' "${existing}" | jq -r '.uuid // empty')
     [[ -z "${uuid}" ]] && die "Could not locate existing project '${PROJECT_NAME}' ${PROJECT_VERSION}"
   else
     log "Unexpected HTTP ${http_status}:"
