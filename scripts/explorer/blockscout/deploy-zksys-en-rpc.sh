@@ -111,13 +111,24 @@ PY
 }
 
 read_zksys_gas_tank_address_from_contracts() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$2" <<'PY'
 import sys
 from pathlib import Path
 
 import yaml
 
 path = Path(sys.argv[1])
+chain_id = sys.argv[2].strip()
+paths = [path]
+if chain_id:
+    paths.append(path.with_name(f"contracts_{chain_id}.yaml"))
+paths.extend(sorted(path.parent.glob("contracts_*.yaml")))
+for candidate in paths:
+    if candidate.exists():
+        path = candidate
+        break
+else:
+    raise SystemExit(f"missing zksys contracts config near {path}")
 data = yaml.safe_load(path.read_text(encoding="utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid zksys contracts config: {path}")
@@ -295,10 +306,10 @@ fi
 SYSCOIN_EDGE_DA_COMMIT_TARGET="$(normalize_syscoin_edge_da_commit_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
 
 if [[ -z "${ZKSYS_GAS_TANK_ADDRESS}" ]]; then
-  if [[ -f "${SOURCE_ZKSYS_CONTRACTS}" ]]; then
-    ZKSYS_GAS_TANK_ADDRESS="$(read_zksys_gas_tank_address_from_contracts "${SOURCE_ZKSYS_CONTRACTS}")"
+  if [[ -f "${SOURCE_ZKSYS_CONTRACTS}" || -d "$(dirname "${SOURCE_ZKSYS_CONTRACTS}")" ]]; then
+    ZKSYS_GAS_TANK_ADDRESS="$(read_zksys_gas_tank_address_from_contracts "${SOURCE_ZKSYS_CONTRACTS}" "${CHAIN_ID}")"
   else
-    source_contracts_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONTRACTS}")"
+    source_contracts_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONTRACTS}" "${CHAIN_ID}")"
     source_contracts_host="${SEQUENCER_REMOTE_HOST:-}"
     if [[ -z "${source_contracts_host}" && -n "${MAIN_NODE_RPC_URL}" ]]; then
       main_node_rpc_host="$(host_from_url "${MAIN_NODE_RPC_URL}")"
@@ -324,6 +335,17 @@ from pathlib import Path
 import yaml
 
 path = Path(sys.argv[1])
+chain_id = sys.argv[2].strip()
+paths = [path]
+if chain_id:
+    paths.append(path.with_name(f"contracts_{chain_id}.yaml"))
+paths.extend(sorted(path.parent.glob("contracts_*.yaml")))
+for candidate in paths:
+    if candidate.exists():
+        path = candidate
+        break
+else:
+    raise SystemExit(f"missing zksys contracts config near {path}")
 data = yaml.safe_load(path.read_text(encoding="utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid zksys contracts config: {path}")
