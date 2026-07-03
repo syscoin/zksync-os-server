@@ -140,7 +140,8 @@ canonical_upgrade_fix_applied() {
 gas_tank_patch_applied() {
   has_text "pub fn try_precharge_from_gas_tank" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs" \
     && has_text "fee_paid_from_gas_tank" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs" \
-    && has_text "SYSCOIN_GAS_TANK_INTRINSIC_PUBDATA" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/constants.rs"
+    && has_text "SYSCOIN_GAS_TANK_INTRINSIC_PUBDATA" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/constants.rs" \
+    && has_text "native SYS payments keep the upstream full-gas-price operator payment behavior" "${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs"
 }
 
 slh_dsa_precompile_applied() {

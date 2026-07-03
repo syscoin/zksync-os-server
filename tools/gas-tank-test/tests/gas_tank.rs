@@ -10,7 +10,7 @@
 //! - operator tip credited to the coinbase's tank balance
 //! - base fee burned: totalCredits shrinks by exactly gas_used * base_fee
 //! - insufficient credit falls back to the pre-verified native path, where
-//!   the base fee is burned natively and the coinbase receives only the tip
+//!   fee settlement follows the upstream `burn_base_fee` feature behavior
 //! - solvency across the precharge window: totalCredits is NOT reduced by
 //!   the precharge mid-execution (it keeps backing the pending refund/tip,
 //!   so a mid-tx burnSurplus() can never overburn), and is reduced exactly
@@ -171,14 +171,19 @@ fn insufficient_tank_credit_falls_back_to_native() {
     );
     assert_eq!(slot_u256(&mut tester, credit_key(COINBASE)), U256::ZERO);
 
-    // Native path: fee charged natively; base fee burned; coinbase gets tip.
+    // Native path: fee charged natively; upstream feature flags decide whether
+    // the base fee is burned. The gas-tank patch must not force that behavior.
     let fee_charged = gas_used * U256::from(GAS_PRICE);
     assert_eq!(tester.get_balance(&sender), initial_native - fee_charged);
-    let tip = gas_used * U256::from(GAS_PRICE - BASE_FEE);
+    let expected_operator_price = if cfg!(feature = "burn_base_fee") {
+        GAS_PRICE - BASE_FEE
+    } else {
+        GAS_PRICE
+    };
     assert_eq!(
         tester.get_balance(&COINBASE),
-        tip,
-        "coinbase must receive only the tip; the base fee is burned"
+        gas_used * U256::from(expected_operator_price),
+        "native fallback must preserve upstream base-fee burn behavior"
     );
 }
 
@@ -319,4 +324,13 @@ fn zero_credit_account_behaves_like_upstream() {
         initial_native - fee_charged - U256::from(777u64)
     );
     assert_eq!(tester.get_balance(&recipient), U256::from(777u64));
+    let expected_operator_price = if cfg!(feature = "burn_base_fee") {
+        GAS_PRICE - BASE_FEE
+    } else {
+        GAS_PRICE
+    };
+    assert_eq!(
+        tester.get_balance(&COINBASE),
+        gas_used * U256::from(expected_operator_price)
+    );
 }

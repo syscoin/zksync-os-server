@@ -20,7 +20,10 @@ DEFAULT_GATEWAY_RPC_URL="${DEFAULT_GATEWAY_RPC_URL:-https://rpc-gw.tanenbaum.io}
 SOURCE_ZKSYS_CONFIG="${SOURCE_ZKSYS_CONFIG:-/home/ubuntu/gateway/os-server-configs/zksys/config.yaml}"
 SOURCE_GATEWAY_DIR="${SOURCE_GATEWAY_DIR:-/home/ubuntu/gateway}"
 GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
+EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
+SOURCE_ZKSYS_CONTRACTS="${SOURCE_ZKSYS_CONTRACTS:-${SOURCE_GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/contracts.yaml}"
 SYSCOIN_EDGE_DA_COMMIT_TARGET="${SYSCOIN_EDGE_DA_COMMIT_TARGET:-${ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET:-}}"
+ZKSYS_GAS_TANK_ADDRESS="${ZKSYS_GAS_TANK_ADDRESS:-${SYSCOIN_GAS_TANK_ADDRESS:-${ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS:-}}}"
 MAIN_NODE_ENODE="${MAIN_NODE_ENODE:-}"
 MAIN_NODE_RPC_URL="${MAIN_NODE_RPC_URL:-}"
 MAIN_NODE_RPC_PORT="${MAIN_NODE_RPC_PORT:-3050}"
@@ -90,6 +93,60 @@ if any(c not in "0123456789abcdef" for c in addr[2:]):
     raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be a 20-byte hex address")
 if addr == "0x" + "0" * 40:
     raise SystemExit("SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero")
+print(addr)
+PY
+}
+
+normalize_zksys_gas_tank_address() {
+  TARGET="$1" python3 - <<'PY'
+import os
+
+addr = os.environ["TARGET"].strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit("ZKSYS_GAS_TANK_ADDRESS must be a 20-byte hex address")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit("ZKSYS_GAS_TANK_ADDRESS must be a 20-byte hex address")
+print(addr)
+PY
+}
+
+read_zksys_gas_tank_address_from_contracts() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+chain_id = sys.argv[2].strip()
+paths = [path]
+if chain_id:
+    paths.append(path.with_name(f"contracts_{chain_id}.yaml"))
+paths.extend(sorted(path.parent.glob("contracts_*.yaml")))
+for candidate in paths:
+    if candidate.exists():
+        path = candidate
+        break
+else:
+    raise SystemExit(f"missing zksys contracts config near {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid zksys contracts config: {path}")
+l2 = data.get("l2")
+if not isinstance(l2, dict):
+    raise SystemExit(f"missing l2 section in {path}")
+addr = l2.get("zksys_gas_tank_addr")
+if addr is None:
+    addr = "0x" + "0" * 40
+elif isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}")
+addr = addr.strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
 print(addr)
 PY
 }
@@ -248,6 +305,72 @@ PY
 fi
 SYSCOIN_EDGE_DA_COMMIT_TARGET="$(normalize_syscoin_edge_da_commit_target "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
 
+if [[ -z "${ZKSYS_GAS_TANK_ADDRESS}" ]]; then
+  if [[ -f "${SOURCE_ZKSYS_CONTRACTS}" || -d "$(dirname "${SOURCE_ZKSYS_CONTRACTS}")" ]]; then
+    ZKSYS_GAS_TANK_ADDRESS="$(read_zksys_gas_tank_address_from_contracts "${SOURCE_ZKSYS_CONTRACTS}" "${CHAIN_ID}")"
+  else
+    source_contracts_cmd="python3 - $(shell_join "${SOURCE_ZKSYS_CONTRACTS}" "${CHAIN_ID}")"
+    source_contracts_host="${SEQUENCER_REMOTE_HOST:-}"
+    if [[ -z "${source_contracts_host}" && -n "${MAIN_NODE_RPC_URL}" ]]; then
+      main_node_rpc_host="$(host_from_url "${MAIN_NODE_RPC_URL}")"
+      if [[ -n "${main_node_rpc_host}" && "${main_node_rpc_host}" != "127.0.0.1" && "${main_node_rpc_host}" != "localhost" ]]; then
+        source_contracts_host="ubuntu@${main_node_rpc_host}"
+      fi
+    fi
+    if [[ -z "${source_contracts_host}" ]]; then
+      cat >&2 <<'EOF'
+ZKSYS_GAS_TANK_ADDRESS or SOURCE_ZKSYS_CONTRACTS is required.
+Set ZKSYS_GAS_TANK_ADDRESS explicitly, or provide SEQUENCER_REMOTE_HOST /
+MAIN_NODE_RPC_URL so this script can read l2.zksys_gas_tank_addr from the
+sequencer's zksys contracts.yaml.
+EOF
+      exit 1
+    fi
+    ZKSYS_GAS_TANK_ADDRESS="$(
+      ssh "${ssh_opts[@]}" "${source_contracts_host}" \
+        "${source_contracts_cmd}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+chain_id = sys.argv[2].strip()
+paths = [path]
+if chain_id:
+    paths.append(path.with_name(f"contracts_{chain_id}.yaml"))
+paths.extend(sorted(path.parent.glob("contracts_*.yaml")))
+for candidate in paths:
+    if candidate.exists():
+        path = candidate
+        break
+else:
+    raise SystemExit(f"missing zksys contracts config near {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid zksys contracts config: {path}")
+l2 = data.get("l2")
+if not isinstance(l2, dict):
+    raise SystemExit(f"missing l2 section in {path}")
+addr = l2.get("zksys_gas_tank_addr")
+if addr is None:
+    addr = "0x" + "0" * 40
+elif isinstance(addr, int):
+    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+if not isinstance(addr, str) or not addr.strip():
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}")
+addr = addr.strip().lower()
+if not addr.startswith("0x") or len(addr) != 42:
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
+if any(c not in "0123456789abcdef" for c in addr[2:]):
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
+print(addr)
+PY
+    )"
+  fi
+fi
+ZKSYS_GAS_TANK_ADDRESS="$(normalize_zksys_gas_tank_address "${ZKSYS_GAS_TANK_ADDRESS}")"
+
 provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
@@ -289,7 +412,8 @@ remote_install_cmd="bash -s -- $(shell_join \
   "${START_PUBLIC_SERVICE}" \
   "${START_DEBUG_SERVICE}" \
   "${PUBLIC_RPC_RATE_LIMITS}" \
-  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}")"
+  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" \
+  "${ZKSYS_GAS_TANK_ADDRESS}")"
 
 ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "${remote_install_cmd}" <<'REMOTE_SCRIPT'
 set -euo pipefail
@@ -320,6 +444,7 @@ START_PUBLIC_SERVICE="${23}"
 START_DEBUG_SERVICE="${24}"
 PUBLIC_RPC_RATE_LIMITS="${25}"
 SYSCOIN_EDGE_DA_COMMIT_TARGET="${26}"
+ZKSYS_GAS_TANK_ADDRESS="${27}"
 
 if [[ ! -d "${REMOTE_OS_SERVER_PATH}" ]]; then
   echo "missing remote zksync-os-server checkout: ${REMOTE_OS_SERVER_PATH}" >&2
@@ -428,7 +553,8 @@ python3 - \
   "${DEBUG_PROMETHEUS_PORT}" \
   "${DEBUG_RPC_RATE_LIMITS}" \
   "${PUBLIC_RPC_RATE_LIMITS}" \
-  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" <<'PY'
+  "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" \
+  "${ZKSYS_GAS_TANK_ADDRESS}" <<'PY'
 import base64
 import json
 import os
@@ -462,6 +588,13 @@ def write_secret(path: Path, text: str) -> None:
     tmp.chmod(0o600)
     tmp.replace(path)
     path.chmod(0o600)
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
 
 
 def read_or_create_key(path: Path) -> str:
@@ -535,6 +668,7 @@ main_node_rpc_url = sys.argv[5]
 chain_id = sys.argv[6]
 protocol = sys.argv[7]
 syscoin_edge_da_commit_target = sys.argv[22]
+zksys_gas_tank_address = sys.argv[23]
 
 public = {
     "name": "zksys-public",
@@ -584,6 +718,7 @@ for instance in (public, debug):
         "consensus:",
         "  enabled: false",
         "sequencer:",
+        "  revm_consistency_checker_enabled: false",
         "  revm_consistency_checker_allow_bootstrap_skip: true",
         "batcher:",
         "  enabled: false",
@@ -628,6 +763,11 @@ for instance in (public, debug):
                 rate_lines.append(f"      {q(method)}: {rps}")
         lines[insert_at:insert_at] = rate_lines
     write_secret(config_path, "\n".join(lines) + "\n")
+    write_text(
+        out_dir / "chains" / "zksys" / "configs" / "contracts.yaml",
+        "l2:\n"
+        f"  zksys_gas_tank_addr: {zksys_gas_tank_address}\n",
+    )
     write_start_script(
         out_dir / "start-node.sh",
         repo,

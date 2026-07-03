@@ -325,14 +325,17 @@ refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
   gl_export_syscoin_edge_da_commit_target_from_gateway_config
-  if [ "${WORKSPACE_NAME}" = "${EDGE_CHAIN_NAME:-zksys}" ]; then
+  case "${WORKSPACE_NAME}" in
+  "${EDGE_CHAIN_NAME:-zksys}" | "${EDGE_CHAIN_NAME:-zksys}"-*)
     gl_export_syscoin_gas_tank_address_from_edge_config
-  else
+    ;;
+  *)
     # SYSCOIN: the zkSYS gas tank is edge-chain specific. Gateway nodes using
     # the same patched OS must keep the generated gas-tank constant at zero,
     # even if the parent shell exported the edge value.
     unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-  fi
+    ;;
+  esac
   ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
   ZKSYNC_OS_PATCHED_REV="$(git -C "${ZKSYNC_OS_PATCHED_PATH}" rev-parse HEAD)"
