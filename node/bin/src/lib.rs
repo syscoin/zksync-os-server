@@ -900,7 +900,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 config.l1_watcher_config.clone().into(),
                 node_startup_state.l1_state.diamond_proxy_sl.clone(),
                 node_startup_state.l1_state.sl_block_number,
+                // SYSCOIN: the revert watcher follows the active settlement layer, just like
+                // commit/execute watchers, so validate against the SL provider chain ID.
+                node_startup_state.l1_state.sl_chain_id,
             )
+            .await
+            .expect("failed to start L1 revert watcher")
             .run(),
         );
     }

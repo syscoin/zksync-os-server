@@ -18,6 +18,23 @@ enum BlockBoundary {
 type ResolveStartFn<S, P> =
     Box<dyn FnOnce(S) -> BoxFuture<'static, anyhow::Result<(BlockNumber, P)>> + Send + Sync>;
 
+/// Resolves the confirmation depth for a confirmed-boundary watcher.
+async fn resolve_confirmations(
+    provider: &NodeProvider,
+    expected_chain_id: u64,
+    config: &L1WatcherConfig,
+) -> anyhow::Result<BlockNumber> {
+    // SYSCOIN: the confirmation lag must apply to the chain being watched. Callers
+    // pass the expected provider chain ID so gateway/SL watchers keep the same reorg
+    // protection instead of silently falling back to latest-block processing.
+    let provider_chain_id = provider.get_chain_id().await?;
+    anyhow::ensure!(
+        provider_chain_id == expected_chain_id,
+        "L1 watcher provider chain ID mismatch: expected {expected_chain_id}, got {provider_chain_id}"
+    );
+    Ok(config.confirmations)
+}
+
 /// Deferred constructor for an [`L1Watcher`]: holds the watcher's static dependencies and turns
 /// a starting point `S` into a ready-to-run watcher once that starting point is finally known.
 ///
@@ -44,29 +61,20 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
         provider: NodeProvider,
         address: ValueOrArray<Address>,
         end_block: Option<BlockNumber>,
-        l1_chain_id: u64,
+        expected_chain_id: u64,
         resolve_start: impl FnOnce(S) -> Fut + Send + Sync + 'static,
     ) -> anyhow::Result<Self>
     where
         Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
     {
-        // SYSCOIN: the confirmation lag must apply to the chain being watched. Callers
-        // pass the expected provider chain ID so gateway/SL watchers keep the same reorg
-        // protection instead of silently falling back to latest-block processing.
-        let provider_chain_id = provider.get_chain_id().await?;
-        anyhow::ensure!(
-            provider_chain_id == l1_chain_id,
-            "L1 watcher provider chain ID mismatch: expected {l1_chain_id}, got {provider_chain_id}"
-        );
+        let confirmations = resolve_confirmations(&provider, expected_chain_id, &config).await?;
 
         Ok(Self {
             provider,
             address,
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
-            block_boundary: BlockBoundary::Confirmed {
-                confirmations: config.confirmations,
-            },
+            block_boundary: BlockBoundary::Confirmed { confirmations },
             poll_interval: config.poll_interval,
             resolve_start: Box::new(move |start| Box::pin(resolve_start(start))),
         })
@@ -182,6 +190,31 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             poll_interval: config.poll_interval,
             processor,
         }
+    }
+
+    /// Builds a watcher for a single pre-resolved segment, tailing the confirmed boundary
+    /// (`latest - confirmations`). Unlike [`new_finalized`](Self::new_finalized), it reacts to an
+    /// event within `confirmations` blocks instead of waiting out finality.
+    pub(crate) async fn new_confirmed(
+        config: L1WatcherConfig,
+        provider: NodeProvider,
+        address: ValueOrArray<Address>,
+        next_block: BlockNumber,
+        end_block: Option<BlockNumber>,
+        expected_chain_id: u64,
+        processor: P,
+    ) -> anyhow::Result<Self> {
+        let confirmations = resolve_confirmations(&provider, expected_chain_id, &config).await?;
+        Ok(Self {
+            provider,
+            address,
+            next_block,
+            end_block,
+            max_blocks_to_process: config.max_blocks_to_process,
+            block_boundary: BlockBoundary::Confirmed { confirmations },
+            poll_interval: config.poll_interval,
+            processor,
+        })
     }
 
     /// Polls for new events.
