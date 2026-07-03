@@ -11,7 +11,11 @@ description = "End-to-end forward-run tests for the Syscoin zkSYS gas-tank fee f
 # because it depends on a *patched* zksync-os checkout (see run.sh).
 [workspace]
 
+[features]
+burn_base_fee = ["basic_bootloader/burn_base_fee"]
+
 [dev-dependencies]
+basic_bootloader = { path = "@ZKSYNC_OS_PATH@/basic_bootloader" }
 rig = { path = "@ZKSYNC_OS_PATH@/tests/rig", features = ["for_tests"] }
 zksync_os_tests_common = { path = "@ZKSYNC_OS_PATH@/tests/common" }
 
