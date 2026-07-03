@@ -53,11 +53,14 @@ main() {
   elif [[ "${http_status}" == "409" ]]; then
     log "Project already exists, fetching existing project..."
     local existing
+    # SYSCOIN: avoid the paginated project-list endpoint here; exact lookup by
+    # name and version prevents matching a child project that shares the version.
     existing=$(curl -sf --get \
       --data-urlencode "name=${PROJECT_NAME}" \
-      "${DT_BASE_URL}/api/v1/project" \
+      --data-urlencode "version=${PROJECT_VERSION}" \
+      "${DT_BASE_URL}/api/v1/project/lookup" \
       -H "X-Api-Key: ${DT_API_KEY}")
-    uuid=$(printf '%s' "${existing}" | jq -r --arg v "${PROJECT_VERSION}" '.[] | select(.version == $v) | .uuid')
+    uuid=$(printf '%s' "${existing}" | jq -r '.uuid')
     [[ -z "${uuid}" ]] && die "Could not locate existing project '${PROJECT_NAME}' ${PROJECT_VERSION}"
   else
     log "Unexpected HTTP ${http_status}:"
