@@ -50,24 +50,31 @@ contract ZkSysGasTankTest is Test {
         return keccak256(abi.encode(account, CREDIT_MAPPING_SLOT));
     }
 
-    /// Emulate the bootloader's fee precharge: debit credit and totalCredits
-    /// via raw storage writes, exactly as the STF does.
-    function _stfDebit(address account, uint256 amount) private {
+    /// Emulate the bootloader's fee precharge: debit only the sender's credit
+    /// via a raw storage write, exactly as the STF does. `totalCredits` is
+    /// intentionally untouched so the pending refund/tip stays backed and the
+    /// precharge never appears as burnable surplus mid-transaction.
+    function _stfPrecharge(address account, uint256 amount) private {
         bytes32 creditSlot = _creditSlot(account);
         uint256 credit = uint256(vm.load(address(tank), creditSlot));
-        uint256 total = uint256(vm.load(address(tank), bytes32(TOTAL_CREDITS_SLOT)));
-        require(credit >= amount && total >= amount, "stf debit underflow");
+        require(credit >= amount, "stf precharge underflow");
         vm.store(address(tank), creditSlot, bytes32(credit - amount));
-        vm.store(address(tank), bytes32(TOTAL_CREDITS_SLOT), bytes32(total - amount));
     }
 
-    /// Emulate the bootloader's refund/tip: credit account and totalCredits.
-    function _stfCredit(address account, uint256 amount) private {
+    /// Emulate the bootloader's refund/tip: credit the account's ledger entry
+    /// only, without touching totalCredits.
+    function _stfCreditAccountOnly(address account, uint256 amount) private {
         bytes32 creditSlot = _creditSlot(account);
         uint256 credit = uint256(vm.load(address(tank), creditSlot));
-        uint256 total = uint256(vm.load(address(tank), bytes32(TOTAL_CREDITS_SLOT)));
         vm.store(address(tank), creditSlot, bytes32(credit + amount));
-        vm.store(address(tank), bytes32(TOTAL_CREDITS_SLOT), bytes32(total + amount));
+    }
+
+    /// Emulate the bootloader's settlement burn: reduce totalCredits by the
+    /// burned portion of the fee (precharge minus refund minus tip).
+    function _stfDebitTotalCredits(uint256 amount) private {
+        uint256 total = uint256(vm.load(address(tank), bytes32(TOTAL_CREDITS_SLOT)));
+        require(total >= amount, "stf totalCredits underflow");
+        vm.store(address(tank), bytes32(TOTAL_CREDITS_SLOT), bytes32(total - amount));
     }
 
     // ---- storage layout pinning (consensus-critical) ----
@@ -168,17 +175,19 @@ contract ZkSysGasTankTest is Test {
         tank.fund(100 ether);
         vm.stopPrank();
 
-        // Bootloader precharges the full fee, refunds the unused part to the
-        // sender, and tips the operator; the base-fee portion is never
-        // credited back and becomes surplus.
+        // Bootloader precharges the full fee (sender credit only), then after
+        // execution refunds the unused part to the sender, tips the operator,
+        // and reduces totalCredits by the burned portion, which becomes
+        // surplus.
         uint256 fee = 10 ether;
         uint256 refund = 4 ether;
         uint256 tip = 1 ether;
-        _stfDebit(alice, fee);
-        _stfCredit(alice, refund);
-        _stfCredit(coinbase, tip);
-
         uint256 burned = fee - refund - tip;
+        _stfPrecharge(alice, fee);
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
+
         assertEq(tank.creditOf(alice), 100 ether - fee + refund);
         assertEq(tank.creditOf(coinbase), tip);
         assertEq(tank.totalCredits(), 100 ether - burned);
@@ -208,18 +217,21 @@ contract ZkSysGasTankTest is Test {
     /// Adversarial ordering: the sender tries to double-spend precharged
     /// credit by withdrawing mid-transaction (between the bootloader's
     /// precharge debit and the refund credit). The precharge already
-    /// decremented the ledger, so only the remainder is withdrawable and the
-    /// tank stays solvent (token balance >= totalCredits) at every step.
+    /// decremented her credit entry, so only the remainder is withdrawable and
+    /// the tank stays solvent (token balance >= totalCredits) at every step.
     function test_MidTxWithdrawCannotDoubleSpendPrechargedFee() public {
         vm.startPrank(alice);
         token.approve(address(tank), 100 ether);
         tank.fund(100 ether);
         vm.stopPrank();
 
-        // Bootloader precharges the full fee before execution starts.
+        // Bootloader precharges the full fee before execution starts. Only
+        // the sender's credit drops; totalCredits keeps backing the pending
+        // refund/tip.
         uint256 fee = 10 ether;
-        _stfDebit(alice, fee);
+        _stfPrecharge(alice, fee);
         assertEq(tank.creditOf(alice), 90 ether);
+        assertEq(tank.totalCredits(), 100 ether);
 
         // Mid-execution, alice tries to pull the precharged fee too.
         vm.prank(alice);
@@ -231,25 +243,89 @@ contract ZkSysGasTankTest is Test {
         tank.withdraw(90 ether);
         assertEq(token.balanceOf(alice), 990 ether);
         assertEq(tank.creditOf(alice), 0);
-        assertEq(tank.totalCredits(), 0);
-        // The precharged fee still backs the pending refund/tip.
+        // The in-flight precharge still counts toward totalCredits, fully
+        // backed by the tokens it left in the tank.
+        assertEq(tank.totalCredits(), fee);
         assertEq(token.balanceOf(address(tank)), fee);
+        assertEq(tank.surplus(), 0);
 
-        // Post-execution the bootloader refunds unused gas and tips the
-        // operator; both stay fully backed, the rest is burnable surplus.
+        // Post-execution the bootloader refunds unused gas, tips the
+        // operator, and burns the rest out of totalCredits; refund and tip
+        // stay fully backed, the burned part is surplus.
         uint256 refund = 4 ether;
         uint256 tip = 1 ether;
-        _stfCredit(alice, refund);
-        _stfCredit(coinbase, tip);
+        uint256 burned = fee - refund - tip;
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
         assertEq(tank.totalCredits(), refund + tip);
         assertGe(token.balanceOf(address(tank)), tank.totalCredits());
-        assertEq(tank.surplus(), fee - refund - tip);
+        assertEq(tank.surplus(), burned);
 
         vm.prank(alice);
         tank.withdraw(refund);
         vm.prank(coinbase);
         tank.withdraw(tip);
         tank.burnSurplus();
+        assertEq(token.balanceOf(address(tank)), 0);
+        assertEq(tank.totalCredits(), 0);
+    }
+
+    /// Regression for the release-blocker found in review: a tank-paid tx
+    /// calling burnSurplus() mid-execution (after the precharge, before
+    /// refund/tip settlement) must not be able to burn the tokens backing the
+    /// pending refund and tip. Because the precharge leaves totalCredits
+    /// untouched, the precharge is never visible as surplus and the tank
+    /// remains solvent (token balance >= totalCredits) throughout.
+    function test_MidTxBurnSurplusCannotOverburnPendingRefundAndTip() public {
+        vm.startPrank(alice);
+        token.approve(address(tank), 100 ether);
+        tank.fund(100 ether);
+        vm.stopPrank();
+
+        uint256 fee = 10 ether;
+        uint256 refund = 4 ether;
+        uint256 tip = 1 ether;
+        uint256 burned = fee - refund - tip;
+
+        // Precharge debits the sender credit only, not totalCredits.
+        _stfPrecharge(alice, fee);
+        assertEq(tank.creditOf(alice), 90 ether);
+        assertEq(tank.totalCredits(), 100 ether);
+
+        // The precharge must NOT appear as burnable surplus during execution.
+        assertEq(tank.surplus(), 0);
+        vm.expectRevert(ZkSysGasTank.NoSurplus.selector);
+        tank.burnSurplus();
+
+        // Even combined with a mid-tx withdrawal of everything else, nothing
+        // becomes burnable and the tank stays solvent.
+        vm.prank(alice);
+        tank.withdraw(90 ether);
+        assertEq(tank.surplus(), 0);
+        vm.expectRevert(ZkSysGasTank.NoSurplus.selector);
+        tank.burnSurplus();
+        assertGe(token.balanceOf(address(tank)), tank.totalCredits());
+
+        // Settlement restores totalCredits == sum of credits; only the truly
+        // burned portion becomes surplus.
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
+
+        assertEq(tank.totalCredits(), refund + tip);
+        assertEq(token.balanceOf(address(tank)), fee);
+        assertEq(tank.surplus(), burned);
+
+        tank.burnSurplus();
+
+        // Remaining credits are exactly backed; everyone can exit.
+        assertEq(token.balanceOf(address(tank)), refund + tip);
+        assertEq(tank.totalCredits(), refund + tip);
+        vm.prank(alice);
+        tank.withdraw(refund);
+        vm.prank(coinbase);
+        tank.withdraw(tip);
         assertEq(token.balanceOf(address(tank)), 0);
         assertEq(tank.totalCredits(), 0);
     }

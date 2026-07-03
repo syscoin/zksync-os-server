@@ -630,6 +630,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
 | `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `3` periods and must be `1..7` |
 | `ZKSYS_L2_GAS_TANK_SALT` | Optional bytes32 salt for the deterministic L2 zkSYS gas tank deployment; the tank is granted the token burn role and its address is written to `l2.zksys_gas_tank_addr` |
+| `SYSCOIN_REQUIRE_GAS_TANK` | Optional launch gate for edge-chain OS builds; when `1`, a missing/zero `l2.zksys_gas_tank_addr` fails the patched OS build instead of silently baking a native-only (tank-disabled) VK. Leave unset for the first boot before `zksys-l2-bootstrap.sh` has deployed the tank; set for production rebuilds |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
 | `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |

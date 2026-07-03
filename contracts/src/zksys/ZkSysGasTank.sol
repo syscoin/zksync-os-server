@@ -15,12 +15,15 @@ interface IZkSysGasToken {
 //
 // Funding the tank is the opt-in for paying L2 fees in zkSYS: whenever the
 // sender's credit covers the full fee prepayment of a transaction, the
-// bootloader debits `credit[sender]` (and `totalCredits`) 1:1 instead of the
-// native SYS balance. Gas refunds and the operator tip are credited back to
-// the same ledger by the bootloader. The burned base-fee portion permanently
-// reduces `totalCredits` while the backing zkSYS stays in this contract, so
-// `token.balanceOf(this) - totalCredits` accumulates as surplus that anyone
-// can destroy via `burnSurplus()`.
+// bootloader debits `credit[sender]` 1:1 instead of the native SYS balance.
+// `totalCredits` is intentionally NOT reduced by the precharge: it still backs
+// the pending refund and operator tip while the transaction executes, so the
+// precharge can never appear as burnable surplus mid-transaction. After
+// execution the bootloader credits the gas refund and the operator tip to
+// their `credit` entries and reduces `totalCredits` exactly once, by the
+// burned portion of the fee (precharge minus refund minus tip). The backing
+// zkSYS stays in this contract, so `token.balanceOf(this) - totalCredits`
+// accumulates as surplus that anyone can destroy via `burnSurplus()`.
 //
 // STORAGE LAYOUT IS CONSENSUS-CRITICAL. The bootloader hardcodes:
 //   slot 0: mapping(address => uint256) credit

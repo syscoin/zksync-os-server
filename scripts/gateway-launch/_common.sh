@@ -453,6 +453,16 @@ gl_export_syscoin_gas_tank_address_from_edge_config() {
     fi
   done
   if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
+    # A zero address disables tank-paid fees in the baked OS. This is expected
+    # on the very first boot (the tank is deployed by zksys-l2-bootstrap.sh
+    # against the running chain, then the OS is rebuilt), but must never ship
+    # in a production launch: set SYSCOIN_REQUIRE_GAS_TANK=1 there so a
+    # missing/zero l2.zksys_gas_tank_addr fails the build instead of silently
+    # producing a native-only VK.
+    if [ "${SYSCOIN_REQUIRE_GAS_TANK:-0}" = "1" ]; then
+      gl_die "SYSCOIN_REQUIRE_GAS_TANK=1 but l2.zksys_gas_tank_addr is missing/zero; deploy the gas tank (zksys-l2-bootstrap.sh) before building the OS"
+    fi
+    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; building the patched OS with the zkSYS gas tank DISABLED" >&2
     unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
     return 0
   fi

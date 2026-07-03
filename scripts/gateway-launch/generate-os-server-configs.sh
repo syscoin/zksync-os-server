@@ -489,6 +489,30 @@ def materialize_chain(
     operator_execute_sk = wallets["execute_operator"]["private_key"]
     fee_collector_address = wallets["fee_account"]["address"]
 
+    # SYSCOIN: for tank-paid transactions the operator tip is credited to
+    # credit[coinbase] inside the zkSYS gas tank. A zero coinbase would strand
+    # tips as unspendable credit, and a coinbase equal to the tank itself
+    # would credit the tank's own ledger entry, which nothing can withdraw.
+    # Refuse to generate such a config.
+    def _addr_int(value):
+        if isinstance(value, int):
+            return value & ((1 << 160) - 1)
+        return int(str(value).strip(), 16)
+
+    if _addr_int(fee_collector_address) == 0:
+        raise ValueError(
+            f"fee_account address is zero for chain {chain_name}; "
+            "tank-paid operator tips would be stranded"
+        )
+    gas_tank_addr = (chain_contracts.get("l2") or {}).get("zksys_gas_tank_addr")
+    if gas_tank_addr is not None and _addr_int(gas_tank_addr) != 0 and _addr_int(
+        fee_collector_address
+    ) == _addr_int(gas_tank_addr):
+        raise ValueError(
+            f"fee_collector_address equals the zkSYS gas tank address for chain "
+            f"{chain_name}; operator tips would be credited to the tank itself"
+        )
+
     config_lines = [
         "general:",
         f"  rocks_db_path: {out_dir / 'db'}",

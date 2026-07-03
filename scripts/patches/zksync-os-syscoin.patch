@@ -334,7 +334,7 @@ index d0074e88..47d893a0 100644
  }
  
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
-index 879e9dc5..70f1e43d 100644
+index 879e9dc5..25f34a87 100644
 --- a/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
 +++ b/basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs
 @@ -28,6 +28,7 @@ use zk_ee::execution_environment_type::ExecutionEnvironmentType;
@@ -419,7 +419,7 @@ index 879e9dc5..70f1e43d 100644
          // ARCHITECTURE NOTE: Fee payment is split into two phases:
          // 1. Deduct full fee from sender at transaction start (here)
          // 2. Transfer actual payment to operator after execution (in refund_transaction_and_pay_operator)
-@@ -457,34 +495,40 @@ where
+@@ -457,34 +495,47 @@ where
              let token_to_refund =
                  context.gas_price * U256::from(context.tx_gas_limit - context.gas_used); // can not overflow
  
@@ -453,8 +453,15 @@ index 879e9dc5..70f1e43d 100644
 -                })?;
 +            if context.fee_paid_from_gas_tank {
 +                // SYSCOIN: the fee was precharged from the zkSYS gas tank, so
-+                // the unused portion is refunded to the same ledger.
-+                syscoin_gas_tank::credit_gas_tank(system, &refund_recipient, &token_to_refund)?;
++                // the unused portion is refunded to the same ledger. Only the
++                // sender's credit is updated; `totalCredits` (untouched by the
++                // precharge) is reduced once during operator settlement below,
++                // by the burned fee.
++                syscoin_gas_tank::credit_gas_tank_account_only(
++                    system,
++                    &refund_recipient,
++                    &token_to_refund,
++                )?;
 +            } else {
 +                // First refund the sender. Routed through `intrinsic_resources` so
 +                // the native charge (precharged by the intrinsic formula) can be
@@ -488,7 +495,7 @@ index 879e9dc5..70f1e43d 100644
          }
  
          // Next we pay the operator
-@@ -493,16 +537,18 @@ where
+@@ -493,16 +544,18 @@ where
          // 2. Transfer actual payment to operator after execution (here)
          // This ensures sender has sufficient funds before execution begins
  
@@ -512,20 +519,41 @@ index 879e9dc5..70f1e43d 100644
          };
  
          system_log!(
-@@ -516,6 +562,12 @@ where
+@@ -516,6 +569,33 @@ where
              .ok_or(internal_error!("gu*gpfo"))?;
  
          let coinbase = system.get_coinbase();
 +        if context.fee_paid_from_gas_tank {
 +            // SYSCOIN: the tip is paid in-kind: the operator receives zkSYS
 +            // gas-tank credit and can withdraw it to zkSYS at any time.
-+            syscoin_gas_tank::credit_gas_tank(system, &coinbase, &token_to_pay_operator)?;
++            syscoin_gas_tank::credit_gas_tank_account_only(
++                system,
++                &coinbase,
++                &token_to_pay_operator,
++            )?;
++            // Settle the tank-paid fee: reduce `totalCredits` exactly once, by
++            // the burned portion of the precharge (everything that was neither
++            // refunded to the sender nor tipped to the operator; this covers
++            // the base fee and any blob-gas fee). The precharge intentionally
++            // left `totalCredits` untouched so the pending refund/tip can
++            // never appear as burnable surplus while the transaction executes
++            // (e.g. via a mid-tx `burnSurplus()`); computing the burn as
++            // precharge minus refund minus tip keeps `totalCredits` equal to
++            // the sum of account credits by construction.
++            let token_refunded = context.gas_price
++                * U256::from(context.tx_gas_limit.saturating_sub(context.gas_used)); // can not overflow
++            let burned_fee = context
++                .fee_to_prepay
++                .checked_sub(token_refunded)
++                .and_then(|v| v.checked_sub(token_to_pay_operator))
++                .ok_or(internal_error!("gas tank burned fee underflow"))?;
++            syscoin_gas_tank::debit_gas_tank_total_credits(system, &burned_fee)?;
 +            return Ok(());
 +        }
          // Operator payment native is precharged by the intrinsic formula too.
          context
              .intrinsic_resources
-@@ -583,6 +635,9 @@ where
+@@ -583,6 +663,9 @@ where
          #[cfg(feature = "verify_intrinsic_native")]
          Self::verify_intrinsic_native(system, &context);
  
@@ -535,7 +563,7 @@ index 879e9dc5..70f1e43d 100644
          ZkTxResult {
              result,
              tx_hash: context.tx_hash,
-@@ -595,6 +650,7 @@ where
+@@ -595,6 +678,7 @@ where
              computational_native_used,
              pubdata_used: context.total_pubdata,
              blob_gas_used,
@@ -543,7 +571,7 @@ index 879e9dc5..70f1e43d 100644
          }
      }
  
-@@ -624,6 +680,30 @@ where
+@@ -624,6 +708,30 @@ where
      }
  }
  
@@ -588,10 +616,10 @@ index b7c88baa..25a3cfb4 100644
  
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs
 new file mode 100644
-index 00000000..f501546f
+index 00000000..2e5f3099
 --- /dev/null
 +++ b/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,219 @@
 +//! SYSCOIN: protocol gas-tank support for paying L2 fees in zkSYS.
 +//!
 +//! Accounts prepay gas by depositing zkSYS into the `ZkSysGasTank` contract
@@ -604,6 +632,17 @@ index 00000000..f501546f
 +//! anyone, so it reduces `totalCredits` while the backing zkSYS stays in the
 +//! tank contract, accumulating as surplus that `burnSurplus()` destroys
 +//! permissionlessly.
++//!
++//! Ledger accounting is ordered so the tank is never transiently insolvent:
++//! precharge debits only the sender's `credit` and leaves `totalCredits`
++//! untouched; post-execution settlement credits the refund and operator tip
++//! to their accounts and then reduces `totalCredits` exactly once by the
++//! burned portion (precharge minus refund minus tip). Because `totalCredits`
++//! is never transiently lowered by the full precharge,
++//! `token.balanceOf(tank) - totalCredits` cannot expose the pending
++//! refund/tip as burnable surplus mid-transaction (e.g. a tank-paid tx that
++//! calls `burnSurplus()` during its own execution), which preserves the
++//! solvency invariant `totalCredits <= token.balanceOf(tank)`.
 +//!
 +//! Native admission checks (node mempool and bootloader validation) are
 +//! intentionally unchanged: senders must always hold SYS covering
@@ -667,9 +706,9 @@ index 00000000..f501546f
 +    // resulting storage diffs are budgeted by the intrinsic pubdata formula
 +    // (see `SYSCOIN_GAS_TANK_INTRINSIC_PUBDATA`). The computational native
 +    // cost runs on a local unmetered pool: it is a small constant per
-+    // transaction (at most six slot accesses and two keccaks across
-+    // precharge, refund and tip) and is offset by the intrinsic-native budget
-+    // of the native-balance fee updates that tank payment skips.
++    // transaction (at most nine slot accesses and three keccaks across
++    // precharge, refund and settlement) and is offset by the intrinsic-native
++    // budget of the native-balance fee updates that tank payment skips.
 +    let mut inf_resources = <S as SystemTypes>::Resources::FORMAL_INFINITE;
 +    let value = system.io.storage_read::<false>(
 +        ExecutionEnvironmentType::NoEE,
@@ -700,10 +739,16 @@ index 00000000..f501546f
 +
 +/// Attempt to charge `fee` from the sender's gas-tank credit.
 +///
-+/// Returns `Ok(true)` and debits the tank (both the sender credit and
++/// Returns `Ok(true)` and debits only the sender's `credit` (never
 +/// `totalCredits`) iff the credit covers the full fee. Otherwise leaves the
 +/// tank untouched and returns `Ok(false)` so the caller falls back to the
 +/// (pre-verified) native fee path.
++///
++/// `totalCredits` is deliberately left unchanged here: the full precharge is
++/// not yet known to be burned (the refund and operator tip are settled after
++/// execution), so lowering `totalCredits` now would transiently expose the
++/// pending refund/tip as burnable surplus. Settlement reduces `totalCredits`
++/// once, by the burned fee, in `debit_gas_tank_total_credits`.
 +pub fn try_precharge_from_gas_tank<S: EthereumLikeTypes>(
 +    system: &mut System<S>,
 +    from: &B160,
@@ -723,22 +768,25 @@ index 00000000..f501546f
 +    };
 +
 +    // `totalCredits >= credit[account]` is an invariant of the canonical tank
-+    // contract; an underflow here means the configured address does not hold
-+    // the canonical contract, which is a deployment defect.
-+    let total_key = total_credits_key();
-+    let total = read_tank_slot(system, &total_key)?;
-+    let new_total = total
-+        .checked_sub(*fee)
-+        .ok_or(zk_ee::internal_error!("gas tank totalCredits underflow"))?;
++    // contract. A violation means the configured address does not hold the
++    // canonical contract, which is a deployment defect.
++    let total = read_tank_slot(system, &total_credits_key())?;
++    if total < credit {
++        return Err(zk_ee::internal_error!("gas tank totalCredits below account credit").into());
++    }
 +
 +    write_tank_slot(system, &credit_key, &new_credit)?;
-+    write_tank_slot(system, &total_key, &new_total)?;
 +    Ok(true)
 +}
 +
-+/// Credit `amount` to `account`'s tank balance (gas refund or operator tip),
-+/// increasing `totalCredits` accordingly.
-+pub fn credit_gas_tank<S: EthereumLikeTypes>(
++/// Credit `amount` to `account`'s tank balance (gas refund or operator tip)
++/// without touching `totalCredits`.
++///
++/// The matching `totalCredits` bookkeeping is a single burn in
++/// `debit_gas_tank_total_credits`; keeping the two apart is what preserves the
++/// solvency invariant across the precharge/settlement window (see the module
++/// docs).
++pub fn credit_gas_tank_account_only<S: EthereumLikeTypes>(
 +    system: &mut System<S>,
 +    account: &B160,
 +    amount: &U256,
@@ -758,13 +806,36 @@ index 00000000..f501546f
 +        .checked_add(*amount)
 +        .ok_or(zk_ee::internal_error!("gas tank credit overflow"))?;
 +
++    write_tank_slot(system, &credit_key, &new_credit)?;
++    Ok(())
++}
++
++/// Reduce `totalCredits` by `amount` (the burned portion of a tank-paid fee:
++/// precharge minus refund minus operator tip).
++///
++/// This is the only place `totalCredits` shrinks for tank payments. The
++/// backing zkSYS stays in the tank contract, so the burned amount becomes
++/// surplus (`token.balanceOf(tank) - totalCredits`) that `burnSurplus()`
++/// destroys permissionlessly.
++pub fn debit_gas_tank_total_credits<S: EthereumLikeTypes>(
++    system: &mut System<S>,
++    amount: &U256,
++) -> Result<(), SystemError>
++where
++    S::IO: IOSubsystemExt,
++{
++    if amount.is_zero() {
++        return Ok(());
++    }
++
 +    let total_key = total_credits_key();
 +    let total = read_tank_slot(system, &total_key)?;
++    // Unreachable under the canonical contract: the in-flight precharge keeps
++    // `totalCredits >= fee_to_prepay >= burned fee` until settlement.
 +    let new_total = total
-+        .checked_add(*amount)
-+        .ok_or(zk_ee::internal_error!("gas tank totalCredits overflow"))?;
++        .checked_sub(*amount)
++        .ok_or(zk_ee::internal_error!("gas tank totalCredits burn underflow"))?;
 +
-+    write_tank_slot(system, &credit_key, &new_credit)?;
 +    write_tank_slot(system, &total_key, &new_total)?;
 +    Ok(())
 +}

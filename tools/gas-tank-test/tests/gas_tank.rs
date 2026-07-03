@@ -11,6 +11,10 @@
 //! - base fee burned: totalCredits shrinks by exactly gas_used * base_fee
 //! - insufficient credit falls back to the pre-verified native path, where
 //!   the base fee is burned natively and the coinbase receives only the tip
+//! - solvency across the precharge window: totalCredits is NOT reduced by
+//!   the precharge mid-execution (it keeps backing the pending refund/tip,
+//!   so a mid-tx burnSurplus() can never overburn), and is reduced exactly
+//!   once at settlement by the burned base fee
 
 use rig::alloy::primitives::{address, keccak256, Address, TxKind};
 use rig::alloy::rpc::types::TransactionRequest;
@@ -219,6 +223,73 @@ fn reverted_execution_still_charges_the_tank() {
     assert_eq!(
         slot_u256(&mut tester, U256::from(TOTAL_CREDITS_KEY)),
         initial_credit - burned
+    );
+}
+
+/// Regression for the review release-blocker: mid-execution, `totalCredits`
+/// must still include the in-flight precharge (the bootloader debits only the
+/// sender's credit), so the pending refund/tip can never be exposed as
+/// burnable surplus to a mid-tx `burnSurplus()`. Settlement then reduces
+/// `totalCredits` exactly once, by the burned base fee.
+///
+/// The probe deploys bytecode at the tank address that snapshots slot 1
+/// (`totalCredits`) into scratch slot 2 when called, giving us the value the
+/// tank contract itself would see during the transaction's execution.
+#[test]
+fn total_credits_not_reduced_mid_execution() {
+    let mut tester = TestingFramework::new();
+    let (sender, tx) = simple_transfer_tx(&mut tester, TANK, 0);
+
+    let initial_native = U256::from(1_000_000_000_000_000_u64);
+    let initial_credit = U256::from(300_000_000_000_u64);
+
+    tester = tester
+        // PUSH1 1 SLOAD PUSH1 2 SSTORE STOP: copy totalCredits into slot 2.
+        .with_evm_contract(TANK, &[0x60, 0x01, 0x54, 0x60, 0x02, 0x55, 0x00])
+        .with_balance(sender, initial_native)
+        .with_storage_slot(TANK, credit_key(sender), b256(initial_credit))
+        .with_storage_slot(TANK, U256::from(TOTAL_CREDITS_KEY), b256(initial_credit))
+        .with_block_context(BlockContext {
+            coinbase: B160::from_alloy(COINBASE),
+            ..Default::default()
+        })
+        .without_revm_consistency_check();
+
+    let output = tester.execute_block(vec![tx]);
+    let tx_output = output.tx_results[0].as_ref().expect("tx must not error");
+    assert!(tx_output.is_success(), "probe call must succeed");
+    let gas_used = U256::from(tx_output.gas_used);
+
+    // The mid-execution snapshot must show totalCredits still at its full
+    // pre-tx value: the precharge debits the sender credit only. (Under the
+    // vulnerable accounting this snapshot would read
+    // initial_credit - gas_limit * gas_price instead.)
+    assert_eq!(
+        slot_u256(&mut tester, U256::from(2u64)),
+        initial_credit,
+        "totalCredits must not be reduced by the precharge mid-execution"
+    );
+
+    // Final ledger: sender paid the actual fee, coinbase got the tip, and
+    // totalCredits shrank by exactly the burned base fee at settlement.
+    let fee_charged = gas_used * U256::from(GAS_PRICE);
+    assert_eq!(
+        slot_u256(&mut tester, credit_key(sender)),
+        initial_credit - fee_charged
+    );
+    let tip = gas_used * U256::from(GAS_PRICE - BASE_FEE);
+    assert_eq!(slot_u256(&mut tester, credit_key(COINBASE)), tip);
+    let burned = gas_used * U256::from(BASE_FEE);
+    assert_eq!(
+        slot_u256(&mut tester, U256::from(TOTAL_CREDITS_KEY)),
+        initial_credit - burned
+    );
+    // Ledger conservation: totalCredits == sum of credit entries, so every
+    // credit is exactly backed and nothing burnable is left un-accounted.
+    assert_eq!(
+        slot_u256(&mut tester, U256::from(TOTAL_CREDITS_KEY)),
+        slot_u256(&mut tester, credit_key(sender)) + slot_u256(&mut tester, credit_key(COINBASE)),
+        "totalCredits must equal the sum of account credits after settlement"
     );
 }
 
