@@ -330,6 +330,114 @@ contract ZkSysGasTankTest is Test {
         assertEq(tank.totalCredits(), 0);
     }
 
+    /// A surplus accumulated by earlier, fully settled transactions must stay
+    /// burnable mid-transaction, while the in-flight precharge remains
+    /// protected: a mid-tx burnSurplus() burns exactly the old surplus and
+    /// nothing of the pending refund/tip backing.
+    function test_MidTxBurnSurplusBurnsOnlyPreexistingSurplus() public {
+        vm.startPrank(alice);
+        token.approve(address(tank), 100 ether);
+        tank.fund(100 ether);
+        vm.stopPrank();
+
+        // A prior tank-paid tx settles completely, leaving 5 zkSYS of
+        // unburned surplus in the tank.
+        uint256 oldBurned = 5 ether;
+        _stfPrecharge(alice, 10 ether);
+        _stfCreditAccountOnly(alice, 4 ether);
+        _stfCreditAccountOnly(coinbase, 1 ether);
+        _stfDebitTotalCredits(oldBurned);
+        assertEq(tank.surplus(), oldBurned);
+
+        // A new tank-paid tx precharges; the precharge must not enlarge the
+        // burnable surplus.
+        uint256 fee = 20 ether;
+        uint256 refund = 8 ether;
+        uint256 tip = 2 ether;
+        uint256 burned = fee - refund - tip;
+        _stfPrecharge(alice, fee);
+        assertEq(tank.surplus(), oldBurned);
+
+        // Mid-execution, burnSurplus() destroys exactly the old surplus.
+        uint256 supplyBefore = token.totalSupply();
+        uint256 burnedOut = tank.burnSurplus();
+        assertEq(burnedOut, oldBurned);
+        assertEq(token.totalSupply(), supplyBefore - oldBurned);
+        assertEq(tank.surplus(), 0);
+        assertGe(token.balanceOf(address(tank)), tank.totalCredits());
+
+        // Nothing further is burnable until the tx settles.
+        vm.expectRevert(ZkSysGasTank.NoSurplus.selector);
+        tank.burnSurplus();
+
+        // Settlement exposes exactly the new burned portion as surplus and
+        // keeps totalCredits equal to the sum of account credits.
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
+        assertEq(tank.surplus(), burned);
+        assertEq(tank.totalCredits(), tank.creditOf(alice) + tank.creditOf(coinbase));
+
+        // Full exit stays solvent to the last wei.
+        tank.burnSurplus();
+        uint256 aliceCredit = tank.creditOf(alice);
+        uint256 coinbaseCredit = tank.creditOf(coinbase);
+        vm.prank(alice);
+        tank.withdraw(aliceCredit);
+        vm.prank(coinbase);
+        tank.withdraw(coinbaseCredit);
+        assertEq(token.balanceOf(address(tank)), 0);
+        assertEq(tank.totalCredits(), 0);
+    }
+
+    /// Regression pinning why settlement burns `fee_to_prepay - refund - tip`
+    /// rather than `gas_used * gas_price - tip`: the precharge
+    /// (`fee_to_prepay`) can include a blob/pubdata fee component that is
+    /// neither refunded to the sender nor tipped to the operator. That
+    /// component must also leave totalCredits at settlement, or it would stay
+    /// stranded there forever (overstating totalCredits and understating the
+    /// burnable surplus).
+    function test_BlobFeeComponentIsBurnedFromTotalCredits() public {
+        vm.startPrank(alice);
+        token.approve(address(tank), 100 ether);
+        tank.fund(100 ether);
+        vm.stopPrank();
+
+        uint256 gasFee = 10 ether;
+        uint256 blobFee = 3 ether;
+        uint256 fee = gasFee + blobFee; // fee_to_prepay
+        uint256 refund = 4 ether; // gas portion only
+        uint256 tip = 1 ether; // gas portion only
+        uint256 baseBurn = gasFee - refund - tip;
+        uint256 burned = fee - refund - tip; // includes the blob component
+
+        _stfPrecharge(alice, fee);
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
+
+        // totalCredits dropped by the blob component on top of the base burn,
+        // and stays equal to the sum of account credits.
+        assertEq(tank.totalCredits(), 100 ether - baseBurn - blobFee);
+        assertEq(tank.totalCredits(), tank.creditOf(alice) + tank.creditOf(coinbase));
+
+        // The surplus is the base burn plus the blob burn, all destroyable.
+        assertEq(tank.surplus(), baseBurn + blobFee);
+        uint256 burnedOut = tank.burnSurplus();
+        assertEq(burnedOut, baseBurn + blobFee);
+        assertEq(token.balanceOf(address(tank)), tank.totalCredits());
+
+        // Full exit stays solvent to the last wei.
+        uint256 aliceCredit = tank.creditOf(alice);
+        uint256 coinbaseCredit = tank.creditOf(coinbase);
+        vm.prank(alice);
+        tank.withdraw(aliceCredit);
+        vm.prank(coinbase);
+        tank.withdraw(coinbaseCredit);
+        assertEq(token.balanceOf(address(tank)), 0);
+        assertEq(tank.totalCredits(), 0);
+    }
+
     function test_BurnSurplusRevertsWithoutSurplus() public {
         vm.startPrank(alice);
         token.approve(address(tank), 5 ether);
