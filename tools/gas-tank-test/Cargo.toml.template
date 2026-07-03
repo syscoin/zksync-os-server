@@ -1,0 +1,19 @@
+# Template for Cargo.toml; run.sh substitutes @ZKSYNC_OS_PATH@ with the
+# absolute path of a zksync-os checkout that has the Syscoin patch applied.
+[package]
+name = "gas-tank-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "End-to-end forward-run tests for the Syscoin zkSYS gas-tank fee flow (bootloader tank debit, refund/tip in credit, base-fee burn, native fallback)."
+
+# Standalone: intentionally not a member of the zksync-os-server workspace,
+# because it depends on a *patched* zksync-os checkout (see run.sh).
+[workspace]
+
+[dev-dependencies]
+rig = { path = "@ZKSYNC_OS_PATH@/tests/rig", features = ["for_tests"] }
+zksync_os_tests_common = { path = "@ZKSYNC_OS_PATH@/tests/common" }
+
+[profile.test]
+opt-level = 2

@@ -375,7 +375,9 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
   export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
 }
 
-gl_zksys_fee_collector_from_edge_config() {
+# SYSCOIN: optional zkSYS gas-tank address from the edge chain's contracts
+# config. Missing key or zero means the tank is disabled (native-only fees).
+gl_zksys_gas_tank_from_edge_config() {
   gl_require GATEWAY_DIR
   local edge_chain_name
   edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
@@ -405,74 +407,66 @@ if not isinstance(data, dict):
 l2 = data.get("l2")
 if not isinstance(l2, dict):
     raise SystemExit(f"missing l2 section in {path}")
-addr = l2.get("zksys_fee_collector_addr")
+addr = l2.get("zksys_gas_tank_addr")
+if addr is None:
+    print("0x" + "0" * 40)
+    raise SystemExit(0)
 if isinstance(addr, int):
     addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
 if not isinstance(addr, str) or not addr.strip():
-    raise SystemExit(f"missing l2.zksys_fee_collector_addr in {path}")
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}")
 addr = addr.strip().lower()
 if not addr.startswith("0x") or len(addr) != 42:
-    raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
 if any(c not in "0123456789abcdef" for c in addr[2:]):
-    raise SystemExit(f"invalid l2.zksys_fee_collector_addr in {path}: {addr}")
+    raise SystemExit(f"invalid l2.zksys_gas_tank_addr in {path}: {addr}")
 print(addr)
 PY
 }
 
-gl_normalize_syscoin_expected_fee_recipient() {
+gl_normalize_syscoin_gas_tank_address() {
   local target="${1:?target required}"
   TARGET="${target}" python3 - <<'PY'
 import os
 
 addr = os.environ["TARGET"].strip().lower()
 if not addr.startswith("0x") or len(addr) != 42:
-    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
+    raise SystemExit("SYSCOIN_GAS_TANK_ADDRESS must be a 20-byte hex address")
 if any(c not in "0123456789abcdef" for c in addr[2:]):
-    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
-if addr == "0x" + "0" * 40:
-    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be nonzero")
+    raise SystemExit("SYSCOIN_GAS_TANK_ADDRESS must be a 20-byte hex address")
 print(addr)
 PY
 }
 
-gl_normalize_syscoin_expected_fee_recipient_optional() {
-  local target="${1:?target required}"
-  TARGET="${target}" python3 - <<'PY'
-import os
-
-addr = os.environ["TARGET"].strip().lower()
-if not addr.startswith("0x") or len(addr) != 42:
-    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
-if any(c not in "0123456789abcdef" for c in addr[2:]):
-    raise SystemExit("SYSCOIN_EXPECTED_FEE_RECIPIENT must be a 20-byte hex address")
-print(addr)
-PY
-}
-
-gl_export_syscoin_expected_fee_recipient_from_edge_config() {
+# SYSCOIN: bake the edge chain's gas-tank address into the patched OS build.
+# Consistency-checks any pre-set env against the chain config to avoid
+# building a VK that disagrees with the deployed chain.
+gl_export_syscoin_gas_tank_address_from_edge_config() {
   local expected var_name var_value var_value_lc
-  expected="$(gl_zksys_fee_collector_from_edge_config)"
-  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
-    for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
-      var_value="${!var_name:-}"
-      if [ -n "${var_value}" ]; then
-        var_value_lc="$(gl_normalize_syscoin_expected_fee_recipient_optional "${var_value}")"
-        [ "${var_value_lc}" = "${expected}" ] ||
-          gl_die "${var_name}=${var_value} is set but l2.zksys_fee_collector_addr is not configured"
-      fi
-    done
-    unset SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT
-    return 0
-  fi
-  for var_name in SYSCOIN_EXPECTED_FEE_RECIPIENT ZKSYNC_OS_SYSCOIN_EXPECTED_FEE_RECIPIENT; do
+  expected="$(gl_zksys_gas_tank_from_edge_config)"
+  for var_name in SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS; do
     var_value="${!var_name:-}"
     if [ -n "${var_value}" ]; then
-      var_value_lc="$(gl_normalize_syscoin_expected_fee_recipient "${var_value}")"
+      var_value_lc="$(gl_normalize_syscoin_gas_tank_address "${var_value}")"
       [ "${var_value_lc}" = "${expected}" ] ||
-        gl_die "${var_name}=${var_value} does not match l2.zksys_fee_collector_addr=${expected}"
+        gl_die "${var_name}=${var_value} does not match l2.zksys_gas_tank_addr=${expected}"
     fi
   done
-  export SYSCOIN_EXPECTED_FEE_RECIPIENT="${expected}"
+  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
+    # A zero address disables tank-paid fees in the baked OS. This is expected
+    # on the very first boot (the tank is deployed by zksys-l2-bootstrap.sh
+    # against the running chain, then the OS is rebuilt), but must never ship
+    # in a production launch: set SYSCOIN_REQUIRE_GAS_TANK=1 there so a
+    # missing/zero l2.zksys_gas_tank_addr fails the build instead of silently
+    # producing a native-only VK.
+    if [ "${SYSCOIN_REQUIRE_GAS_TANK:-0}" = "1" ]; then
+      gl_die "SYSCOIN_REQUIRE_GAS_TANK=1 but l2.zksys_gas_tank_addr is missing/zero; deploy the gas tank (zksys-l2-bootstrap.sh) before building the OS"
+    fi
+    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; building the patched OS with the zkSYS gas tank DISABLED" >&2
+    unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
+    return 0
+  fi
+  export SYSCOIN_GAS_TANK_ADDRESS="${expected}"
 }
 
 gl_assert_contracts_sha() {
@@ -847,13 +841,13 @@ if "testnet_paymaster_addr" not in l2:
         "(added l2.testnet_paymaster_addr=0x0000000000000000000000000000000000000000)"
     )
 
-if "zksys_fee_collector_addr" not in l2:
-    # Optional for generic edge chains, required as nonzero by zksys config generation.
-    l2["zksys_fee_collector_addr"] = "0x0000000000000000000000000000000000000000"
+if "zksys_gas_tank_addr" not in l2:
+    # Optional: zero disables zkSYS gas-tank fee payment for the chain.
+    l2["zksys_gas_tank_addr"] = "0x0000000000000000000000000000000000000000"
     updated = True
     print(
         f"gateway-launch: patched {contracts_path} for {chain_name} "
-        "(added l2.zksys_fee_collector_addr=0x0000000000000000000000000000000000000000)"
+        "(added l2.zksys_gas_tank_addr=0x0000000000000000000000000000000000000000)"
     )
 
 eco = data.get("ecosystem_contracts")

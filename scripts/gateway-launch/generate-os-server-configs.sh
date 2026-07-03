@@ -488,17 +488,30 @@ def materialize_chain(
     operator_prove_sk = wallets["prove_operator"]["private_key"]
     operator_execute_sk = wallets["execute_operator"]["private_key"]
     fee_collector_address = wallets["fee_account"]["address"]
-    expected_fee_recipient_address = "0x0000000000000000000000000000000000000000"
-    if chain_name == os.environ["EDGE_CHAIN_NAME"]:
-        l2_contracts = chain_contracts.get("l2") if isinstance(chain_contracts, dict) else None
-        if isinstance(l2_contracts, dict) and l2_contracts.get("zksys_fee_collector_addr") is not None:
-            zksys_fee_collector_address = normalize_address(
-                l2_contracts["zksys_fee_collector_addr"],
-                f"{contracts_source}: l2.zksys_fee_collector_addr",
-            )
-            if zksys_fee_collector_address != "0x0000000000000000000000000000000000000000":
-                fee_collector_address = zksys_fee_collector_address
-                expected_fee_recipient_address = zksys_fee_collector_address
+
+    # SYSCOIN: for tank-paid transactions the operator tip is credited to
+    # credit[coinbase] inside the zkSYS gas tank. A zero coinbase would strand
+    # tips as unspendable credit, and a coinbase equal to the tank itself
+    # would credit the tank's own ledger entry, which nothing can withdraw.
+    # Refuse to generate such a config.
+    def _addr_int(value):
+        if isinstance(value, int):
+            return value & ((1 << 160) - 1)
+        return int(str(value).strip(), 16)
+
+    if _addr_int(fee_collector_address) == 0:
+        raise ValueError(
+            f"fee_account address is zero for chain {chain_name}; "
+            "tank-paid operator tips would be stranded"
+        )
+    gas_tank_addr = (chain_contracts.get("l2") or {}).get("zksys_gas_tank_addr")
+    if gas_tank_addr is not None and _addr_int(gas_tank_addr) != 0 and _addr_int(
+        fee_collector_address
+    ) == _addr_int(gas_tank_addr):
+        raise ValueError(
+            f"fee_collector_address equals the zkSYS gas tank address for chain "
+            f"{chain_name}; operator tips would be credited to the tank itself"
+        )
 
     config_lines = [
         "general:",
@@ -524,7 +537,6 @@ def materialize_chain(
             "  revm_consistency_checker_enabled: false",
             f"  block_pubdata_limit_bytes: {block_pubdata_limit_bytes}",
             f"  fee_collector_address: '{fee_collector_address}'",
-            f"  expected_fee_recipient_address: '{expected_fee_recipient_address}'",
             *(
                 [f"  block_time: {os.environ['EDGE_BLOCK_TIME']}"]
                 if chain_name == os.environ["EDGE_CHAIN_NAME"]
