@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::runtime::Handle;
+use tokio::{net::TcpListener, runtime::Handle};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 use zksync_os_alloy_ext::network::Zksync;
@@ -314,11 +314,19 @@ pub struct StoppedTester {
     l1: AnvilL1,
     config: Config,
     previous_bound_ports: ServerPorts,
+    http_port_reservations: HttpPortReservations,
     tempdir: Arc<tempfile::TempDir>,
     log_state: NodeLogState,
     chain_layout: ChainLayout<'static>,
     owned_supporting_nodes: Vec<SupportingNode>,
     bitcoin_da_mock: Option<BitcoinDaMock>,
+}
+
+#[derive(Debug)]
+struct HttpPortReservations {
+    _rpc: TcpListener,
+    _status: Option<TcpListener>,
+    _prover_api: Option<TcpListener>,
 }
 
 #[derive(Debug)]
@@ -523,6 +531,7 @@ impl Tester {
         // `restart()` works for `NEXT_TO_GATEWAY` topology.  They are only torn down in
         // `StoppedTester::shutdown()` or when `StoppedTester` is dropped.
         shutdown_runtime(runtime).await?;
+        let http_port_reservations = HttpPortReservations::reserve(&config, bound_ports).await?;
         Ok(StoppedTester {
             l1,
             tempdir,
@@ -530,6 +539,7 @@ impl Tester {
             chain_layout,
             config,
             previous_bound_ports: bound_ports,
+            http_port_reservations,
             owned_supporting_nodes,
             bitcoin_da_mock,
         })
@@ -809,6 +819,7 @@ impl StoppedTester {
             owned_supporting_nodes,
             bitcoin_da_mock,
             previous_bound_ports,
+            http_port_reservations,
             config: _,
             ..
         } = self;
@@ -818,6 +829,7 @@ impl StoppedTester {
             None => maybe_start_bitcoin_da_mock(&mut config).await,
         };
         preserve_http_ports_on_restart(&mut config, previous_bound_ports)?;
+        drop(http_port_reservations);
         let mut tester = Tester::launch_node_inner(
             l1,
             config,
@@ -842,6 +854,33 @@ impl StoppedTester {
     }
 }
 
+impl HttpPortReservations {
+    async fn reserve(config: &Config, previous_bound_ports: ServerPorts) -> anyhow::Result<Self> {
+        Ok(Self {
+            _rpc: reserve_socket_address(
+                &config.rpc_config.address,
+                previous_bound_ports.rpc,
+                "RPC",
+            )
+            .await?,
+            _status: match previous_bound_ports.status {
+                Some(port) => Some(
+                    reserve_socket_address(&config.status_server_config.address, port, "status")
+                        .await?,
+                ),
+                None => None,
+            },
+            _prover_api: match previous_bound_ports.prover_api {
+                Some(port) => Some(
+                    reserve_socket_address(&config.prover_api_config.address, port, "prover API")
+                        .await?,
+                ),
+                None => None,
+            },
+        })
+    }
+}
+
 fn preserve_http_ports_on_restart(
     config: &mut Config,
     previous_bound_ports: ServerPorts,
@@ -857,6 +896,20 @@ fn preserve_http_ports_on_restart(
             socket_address_with_port(&config.prover_api_config.address, prover_api_port)?;
     }
     Ok(())
+}
+
+async fn reserve_socket_address(
+    address: &str,
+    port: u16,
+    service: &str,
+) -> anyhow::Result<TcpListener> {
+    let address = socket_address_with_port(address, port)?;
+    let address: SocketAddr = address
+        .parse()
+        .with_context(|| format!("failed to parse {service} socket address {address:?}"))?;
+    TcpListener::bind(address)
+        .await
+        .with_context(|| format!("failed to reserve {service} port {port} for test restart"))
 }
 
 fn socket_address_with_port(address: &str, port: u16) -> anyhow::Result<String> {
