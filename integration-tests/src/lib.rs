@@ -800,7 +800,7 @@ impl StoppedTester {
         self.start_with_config(config).await
     }
 
-    pub async fn start_with_config(self, mut config: Config) -> anyhow::Result<Tester> {
+    pub async fn start_with_config(self, config: Config) -> anyhow::Result<Tester> {
         let Self {
             l1,
             tempdir,
