@@ -4,7 +4,7 @@
 //! and proof storage.
 mod v1;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use crate::prover_api::{
     fri_job_manager::FriJobManager, proof_storage::ProofStorage, prover_server::v1::v1_routes,
@@ -62,13 +62,12 @@ async fn require_basic_auth(
     next.run(request).await
 }
 
-/// Entry point for prover API server.
-/// Starts an HTTP server listening on the specified bind address.
+/// Runs the prover API HTTP server on a pre-bound listener.
 pub async fn run(
     fri_job_manager: Arc<FriJobManager>,
     snark_job_manager: Arc<SnarkJobManager>,
     proof_storage: ProofStorage,
-    bind_address: String,
+    listener: TcpListener,
     basic_auth_header: Option<String>,
     shutdown: GracefulShutdown,
 ) {
@@ -97,12 +96,11 @@ pub async fn run(
         // remote provers do not need to pull multi-megabyte JSON payloads uncompressed.
         .layer(CompressionLayer::new());
 
-    let bind_address: SocketAddr = bind_address.parse().expect("failed to parse bind address");
-    tracing::info!("starting proof data server on {bind_address}");
+    let addr = listener
+        .local_addr()
+        .expect("failed to get prover server local addr");
+    tracing::info!("prover API server listening on {addr}");
 
-    let listener = TcpListener::bind(bind_address)
-        .await
-        .expect("failed to bind");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown.ignore_guard())
         .await
