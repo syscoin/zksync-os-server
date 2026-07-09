@@ -3,9 +3,9 @@
 //! Runs the exact same known-answer vector and deterministic mutation sweep as
 //! the Solidity fallback verifier test in
 //! `contracts/test/SLHDSASHA212824Differential.t.sol`. Both sides must accept
-//! the valid vector and reject every mutated/random vector, so the Rust
-//! precompile and the Solidity assembly verifier cannot silently diverge on
-//! these inputs.
+//! the valid vector and reject every mutated/random vector, detecting
+//! divergence on this finite corpus. This is regression coverage, not
+//! coverage-guided fuzzing or a general equivalence proof.
 //!
 //! Keep `MUTATION_MASKS`, `SIG_BOUNDARY_OFFSETS`, `MUTATION_STRIDE`,
 //! `RANDOM_VECTORS`, and `RANDOM_SEED` in sync with the Solidity test.

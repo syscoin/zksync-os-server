@@ -334,3 +334,48 @@ fn zero_credit_account_behaves_like_upstream() {
         gas_used * U256::from(expected_operator_price)
     );
 }
+
+#[test]
+fn exact_credit_with_sender_as_coinbase_preserves_ledger_conservation() {
+    let mut tester = TestingFramework::new();
+    let recipient = address!("00000000000000000000000000000000000000bb");
+    let (sender, tx) = simple_transfer_tx(&mut tester, recipient, 0);
+
+    // Exercise two accounting boundaries together:
+    // - precharge consumes the sender's entire credit before the refund;
+    // - the sender and coinbase refund/tip writes target the same mapping slot.
+    let initial_native = U256::from(1_000_000_000_000_000_u64);
+    let initial_credit = U256::from(GAS_LIMIT) * U256::from(GAS_PRICE);
+    tester = tester
+        .with_balance(sender, initial_native)
+        .with_storage_slot(TANK, credit_key(sender), b256(initial_credit))
+        .with_storage_slot(TANK, U256::from(TOTAL_CREDITS_KEY), b256(initial_credit))
+        .with_block_context(BlockContext {
+            coinbase: B160::from_alloy(sender),
+            ..Default::default()
+        })
+        .without_revm_consistency_check();
+
+    let output = tester.execute_block(vec![tx]);
+    let tx_output = output.tx_results[0].as_ref().expect("tx must not error");
+    assert!(tx_output.is_success());
+    let gas_used = U256::from(tx_output.gas_used);
+
+    let burned = gas_used * U256::from(BASE_FEE);
+    let expected_credit = initial_credit - burned;
+    assert_eq!(
+        slot_u256(&mut tester, credit_key(sender)),
+        expected_credit,
+        "sender must receive its refund and operator tip in the same credit slot"
+    );
+    assert_eq!(
+        slot_u256(&mut tester, U256::from(TOTAL_CREDITS_KEY)),
+        expected_credit,
+        "totalCredits must remain equal to the sole account credit"
+    );
+    assert_eq!(
+        tester.get_balance(&sender),
+        initial_native,
+        "tank-paid fees must not touch the sender/coinbase native balance"
+    );
+}

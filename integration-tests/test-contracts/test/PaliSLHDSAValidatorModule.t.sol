@@ -62,6 +62,30 @@ contract EmptySLHDSAPrecompile {
     fallback() external {}
 }
 
+contract RevertingSLHDSAPrecompile {
+    fallback() external {
+        revert("precompile revert");
+    }
+}
+
+contract ShortResultSLHDSAPrecompile {
+    fallback() external {
+        assembly {
+            mstore8(0x00, 1)
+            return(0x00, 0x01)
+        }
+    }
+}
+
+contract NonBooleanSLHDSAPrecompile {
+    fallback() external {
+        assembly {
+            mstore(0x00, 2)
+            return(0x00, 0x20)
+        }
+    }
+}
+
 contract PaliSLHDSAValidatorModuleTest is Test {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
@@ -172,6 +196,24 @@ contract PaliSLHDSAValidatorModuleTest is Test {
         vm.etch(address(0x101), address(new EmptySLHDSAPrecompile()).code);
 
         assertTrue(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
+    }
+
+    function testRealVerifierFallsBackWhenPrecompileReverts() public {
+        vm.etch(address(0x101), address(new RevertingSLHDSAPrecompile()).code);
+
+        assertTrue(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
+    }
+
+    function testRealVerifierFallsBackWhenPrecompileReturnsShortResult() public {
+        vm.etch(address(0x101), address(new ShortResultSLHDSAPrecompile()).code);
+
+        assertTrue(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
+    }
+
+    function testRealVerifierRejectsNonBooleanPrecompileResult() public {
+        vm.etch(address(0x101), address(new NonBooleanSLHDSAPrecompile()).code);
+
+        assertFalse(new SLHDSASHA212824Verifier().verify(KAT_PK_SEED, KAT_PK_ROOT, KAT_HASH, _knownAnswerSignature()));
     }
 
     function testRealModuleAcceptsPinnedKnownAnswerVector() public {

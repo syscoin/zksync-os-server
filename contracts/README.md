@@ -9,8 +9,9 @@ test fixtures.
 - `src/zksys/`: canonical L2 zkSYS token, issuer, NEVM membership fact
   registry, reward weight registry, L1 registry bridge adapter, and proxy
   deployment helpers.
-- `src/pali/`: Pali ERC-4337 smart account, validators, factory, verifier, and
-  fixed-rate zkSYS paymaster contracts.
+- `src/pali/`: Pali ERC-4337 smart account, validators, factory, and verifier.
+  Pali does not use an ERC-4337 paymaster; zkSYS fee payment is implemented by
+  the patched ZKsync OS bootloader and `src/zksys/ZkSysGasTank.sol`.
 
 ### Build
 
@@ -34,5 +35,8 @@ SHA-256 primitive package, and source-to-model transcription fidelity.
 
 Local tests currently cover the Pali validator module integration, fail-closed
 behavior, malformed signature length, non-canonical public keys, rejection of an
-all-zero 3,856-byte signature, and one pinned valid signer vector. Keep the
-per-key signature-count policy outside this stateless verifier.
+all-zero 3,856-byte signature, one pinned valid signer vector, and a
+deterministic Rust/Solidity mutation sweep. The mutation sweep is regression
+coverage, not coverage-guided fuzzing or a substitute for a broader
+independently generated conformance corpus. Keep the per-key signature-count
+policy outside this stateless verifier.

@@ -7,11 +7,11 @@ import {SLHDSASHA212824Verifier} from "../src/pali/SLHDSASHA212824Verifier.sol";
 /// @title SLH-DSA-SHA2-128-24 differential test (Solidity side)
 /// @notice Runs the exact same known-answer vector and deterministic mutation
 /// sweep as the Rust precompile harness in
-/// `tools/slh-dsa-difftest/slh_dsa_difftest.rs`. Both sides must accept the
-/// valid vector and reject every mutated/random vector, so the ZKsync OS
-/// precompile at 0x101 and this Solidity fallback verifier cannot silently
-/// diverge on these inputs. Keep the mutation constants in sync with the Rust
-/// harness.
+/// `tools/slh-dsa-difftest/tests/differential.rs`. Both sides must accept the
+/// valid vector and reject every mutated/random vector, detecting divergence
+/// on this finite corpus. This is regression coverage, not coverage-guided
+/// fuzzing or a general equivalence proof. Keep the mutation constants in sync
+/// with the Rust harness.
 contract SLHDSASHA212824DifferentialTest is Test {
     uint256 internal constant SIGNATURE_LENGTH = 3856;
     // Mutation scheme shared with the Rust harness.
