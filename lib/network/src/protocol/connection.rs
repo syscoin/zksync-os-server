@@ -51,14 +51,14 @@ impl From<BytesMut> for OutboundMessage {
 /// Wraps an mpsc receiver fed by a background Tokio task (`run_mn_connection()` or
 /// `run_en_connection()`) that owns the actual protocol logic. Dropping this struct aborts the
 /// background task, unregisters the peer, emits `ProtocolEvent::Closed`, and releases the
-/// connection permit.
+/// connection permit (if any; trusted peers hold none).
 pub struct ZksConnection {
     pub(crate) outbound_rx: mpsc::Receiver<OutboundMessage>,
     pub(crate) task: tokio::task::JoinHandle<()>,
     pub(crate) events_sender: mpsc::UnboundedSender<ProtocolEvent>,
     pub(crate) peer_id: PeerId,
     pub(crate) connection_registry: ConnectionRegistry,
-    pub(crate) _permit: OwnedSemaphorePermit,
+    pub(crate) _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Drop for ZksConnection {

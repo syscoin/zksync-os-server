@@ -7,7 +7,7 @@ use reth_network_peers::PeerId;
 use reth_provider::test_utils::MockEthProvider;
 use reth_provider::{BlockReader, HeaderProvider};
 use secrecy::{ExposeSecret, SecretString};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use test_casing::test_casing;
@@ -129,6 +129,7 @@ trait PeerExt {
         mpsc::Receiver<ReplayRecord>,
     );
 
+    #[allow(clippy::too_many_arguments)]
     fn add_zks_sub_protocol_with_test_handles<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
@@ -137,6 +138,7 @@ trait PeerExt {
         max_active_connections: usize,
         verifier_signing_key: Option<SecretString>,
         trusted_main_node_peers: Vec<PeerId>,
+        trusted_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles;
 }
 
@@ -167,10 +169,12 @@ where
             max_active_connections,
             verifier_enabled.then(default_verifier_signing_key),
             trusted_main_node_peers,
+            HashSet::new(),
         );
         (protocol_rx, replay_rx)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_zks_sub_protocol_with_test_handles<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
@@ -179,6 +183,7 @@ where
         max_active_connections: usize,
         verifier_signing_key: Option<SecretString>,
         trusted_main_node_peers: Vec<PeerId>,
+        trusted_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles {
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let (replay_tx, replay_rx) = mpsc::channel(8);
@@ -197,7 +202,7 @@ where
             } else {
                 (None, None)
             };
-        let state = HandlerSharedState::new(protocol_tx, max_active_connections);
+        let state = HandlerSharedState::new(protocol_tx, max_active_connections, trusted_peers);
         let connection_registry = Arc::new(RwLock::new(HashMap::new()));
         let (handler, verify_result_rx) = if node_role.is_main() {
             let (verify_result_tx, verify_result_rx) = mpsc::channel(8);
@@ -648,6 +653,7 @@ async fn emits_verifier_unauthorized_before_replay() {
         100,
         None,
         vec![],
+        HashSet::new(),
     );
     let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -656,6 +662,7 @@ async fn emits_verifier_unauthorized_before_replay() {
         100,
         Some(alternate_verifier_signing_key()),
         vec![main_peer_id],
+        HashSet::new(),
     );
 
     let handle = net.spawn();
@@ -726,6 +733,7 @@ async fn forwards_verify_batch_result_to_main_node() {
         100,
         None,
         vec![],
+        HashSet::new(),
     );
     let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
         NodeRole::ExternalNode,
@@ -734,6 +742,7 @@ async fn forwards_verify_batch_result_to_main_node() {
         100,
         Some(default_verifier_signing_key()),
         vec![main_peer_id],
+        HashSet::new(),
     );
 
     let handle = net.spawn();
@@ -946,4 +955,40 @@ async fn max_active_connections() {
             other => panic!("unexpected protocol event: {other:?}"),
         }
     }
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn trusted_peer_bypasses_max_active_connections() {
+    // peer0 (main node) allows zero active connections, so only a trusted peer can connect. Its
+    // outgoing dial to trusted peer1 is admitted regardless of the cap.
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let peer1_id = net.peers_mut()[1].peer_id();
+
+    let mut from_peer0 = net.peers_mut()[0]
+        .add_zks_sub_protocol_with_test_handles::<ZksProtocolV1>(
+            NodeRole::MainNode,
+            1,
+            [],
+            0,
+            None,
+            vec![],
+            HashSet::from([peer1_id]),
+        )
+        .protocol_rx;
+    let peer1_addr = net.peers_mut()[1].local_addr();
+    net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV1>(
+        NodeRole::ExternalNode,
+        1,
+        [],
+        100,
+        false,
+        vec![],
+    );
+
+    let handle = net.spawn();
+    handle.peers()[0].network().add_peer(peer1_id, peer1_addr);
+
+    assert_matches!(from_peer0.recv().await, Some(ProtocolEvent::Established { peer_id, .. }) => {
+        assert_eq!(peer_id, peer1_id);
+    });
 }

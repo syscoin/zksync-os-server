@@ -359,6 +359,13 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         let range = Input::display_range(&commands); // Only for logging
         tracing::info!(command_name, range, "sending L1 transactions");
         L1_SENDER_METRICS.parallel_transactions[&command_name].set(commands.len() as u64);
+        // One pending-count read per cycle. The account is quiescent here because the previous
+        // cycle's transactions are confirmed; use the same baseline for simulation and sends.
+        let base_nonce = provider
+            .get_transaction_count(operator_address)
+            .pending()
+            .await
+            .context("get pending nonce for L1 sender cycle")?;
         let sim_fee_params = resolve_fee_params(
             &provider,
             config.fee_config,
@@ -372,6 +379,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
             &commands,
             operator_address,
             sim_fee_params,
+            base_nonce,
         )
         .await?;
         tracing::info!(
@@ -387,11 +395,7 @@ pub async fn run_l1_sender<Input: SendToL1 + Send + 'static>(
         // SYSCOIN: sign locally while preserving Alloy's nonce-reservation invariant for the
         // drained batch. A single pending nonce read seeds a local cursor, then each command gets
         // the next nonce before any receipt is awaited.
-        let mut next_tx_nonce = provider
-            .get_transaction_count(operator_address)
-            .pending()
-            .await
-            .context("get pending operator nonce before signing L1 transaction batch")?;
+        let mut next_tx_nonce = base_nonce;
         let mut pending_txs = Vec::with_capacity(commands.len());
         for (mut cmd, gas_limit_override) in commands.drain(..).zip(gas_limit_overrides) {
             let tx_nonce = next_tx_nonce;
@@ -493,8 +497,8 @@ where
         }
         tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
 
-        // Fusaka is active on all real chains, so send the EIP-7594 blob format by default.
-        // Anvil does not support EIP-7594 yet, so fall back to EIP-4844 there.
+        // Send the EIP-7594 blob format when the chain's active fork accepts it (probed via
+        // `eth_config`, with provider fallbacks). Pre-Fusaka chains and Anvil use EIP-4844.
         let blob_sidecar = if provider.capabilities().supports_eip7594 {
             BlobTransactionSidecarVariant::Eip7594(
                 blob_sidecar.try_into_7594(EnvKzgSettings::Default.get())?,
@@ -526,10 +530,29 @@ where
     // SYSCOIN: sign explicitly so dropped-tx recovery can rebroadcast the exact same bytes.
     let (raw_tx, tx_nonce) = sign_l1_transaction(provider, operator_address, tx_request).await?;
     let admission_retry_started = Instant::now();
+    let mut nonce_error_attempt = 1;
     let (pending_tx, submitted_l1_block) = loop {
         let submission_baseline_block = provider.get_block_number().await?;
         match provider.send_raw_transaction(&raw_tx).await {
             Ok(pending_tx) => break (pending_tx, submission_baseline_block),
+            // SYSCOIN: preserve the upstream bounded nonce-error retry while submitting our
+            // locally signed bytes. Retrying the identical raw transaction keeps the nonce and
+            // dropped-transaction recovery identity stable.
+            Err(err)
+                if is_nonce_error(&err)
+                    && nonce_error_attempt < config.nonce_error_max_attempts =>
+            {
+                tracing::warn!(
+                    command_name,
+                    tx_range,
+                    nonce_error_attempt,
+                    error = %err,
+                    retry_in = ?config.nonce_error_retry_backoff,
+                    "L1 node rejected the transaction with a nonce error; retrying"
+                );
+                tokio::time::sleep(config.nonce_error_retry_backoff).await;
+                nonce_error_attempt += 1;
+            }
             Err(err)
                 if gateway
                     && Input::COMPONENT_ID == ComponentId::L1SenderCommit
@@ -1093,6 +1116,19 @@ fn is_benign_rebroadcast_error(err: &TransportError) -> bool {
             message.contains("already known")
                 || message.contains("already imported")
                 || message.trim_start().starts_with("known transaction")
+        }
+        _ => false,
+    }
+}
+
+/// Nonce-class `eth_sendRawTransaction` rejections.
+fn is_nonce_error(err: &TransportError) -> bool {
+    match err {
+        TransportError::ErrorResp(payload) => {
+            let message = payload.message.to_lowercase();
+            message.contains("nonce too low")
+                || message.contains("nonce too high")
+                || message.contains("nonce gap")
         }
         _ => false,
     }
@@ -1689,15 +1725,11 @@ async fn estimate_gas_limits<Input>(
     commands: &[Input],
     operator_address: Address,
     fee_params: FeeParams,
+    starting_nonce: u64,
 ) -> anyhow::Result<Vec<Option<u64>>>
 where
     Input: SendToL1,
 {
-    let starting_nonce = provider
-        .get_transaction_count(operator_address)
-        .pending()
-        .await
-        .context("get pending nonce for L1 sender gas estimation")?;
     const SIM_GAS_LIMIT: u64 = 30_000_000;
     let balance_override = StateOverridesBuilder::default()
         .append(
@@ -1726,8 +1758,8 @@ where
         );
     }
     let sim_gas_limit = SIM_GAS_LIMIT.min(block_gas_limit);
-    // Mirror the submission path: EIP-7594 by default, EIP-4844 only on Anvil. Only consumed
-    // by `build_l1_simulation_request` when a command actually carries a blob sidecar.
+    // Mirror the submission path: EIP-7594 if the chain's active fork accepts it, EIP-4844
+    // otherwise. Only consumed when a command actually carries a blob sidecar.
     let use_eip7594_sidecar = provider.capabilities().supports_eip7594;
     let block_state_calls = commands
         .iter()
@@ -2019,14 +2051,47 @@ mod tests {
     use super::{
         FeeParams, L1_SIM_GAS_LIMIT, L1SenderFeeConfig, apply_fee_caps,
         build_l1_simulation_request, fallback_gas_limit_for_reverted_call, fallback_gas_limits,
-        is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
+        is_nonce_error, is_retryable_gateway_da_admission_message, notify_commit_submitted_batch,
     };
     use crate::config::SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI;
     use alloy::network::TransactionBuilder;
     use alloy::primitives::{Address, Bytes};
     use alloy::providers::utils::Eip1559Estimation;
+    use alloy::rpc::json_rpc::ErrorPayload;
     use alloy::rpc::types::TransactionRequest;
+    use alloy::transports::{TransportError, TransportErrorKind};
     use tokio::sync::watch;
+
+    #[test]
+    fn nonce_error_classification() {
+        let resp = |message: &str| {
+            TransportError::ErrorResp(ErrorPayload {
+                code: -32000,
+                message: message.to_string().into(),
+                data: None,
+            })
+        };
+
+        assert!(is_nonce_error(&resp("nonce too high")));
+        assert!(is_nonce_error(&resp(
+            "nonce too high: tx nonce 7, gapped nonce 5"
+        )));
+        assert!(is_nonce_error(&resp(
+            "nonce too low: next nonce 5, tx nonce 3"
+        )));
+        assert!(is_nonce_error(&resp("Nonce too high")));
+        assert!(is_nonce_error(&resp("nonce gap for sender")));
+
+        assert!(!is_nonce_error(&resp(
+            "insufficient funds for gas * price + value"
+        )));
+        assert!(!is_nonce_error(&resp(
+            "replacement transaction underpriced"
+        )));
+        assert!(!is_nonce_error(&TransportErrorKind::custom_str(
+            "error sending request"
+        )));
+    }
 
     #[test]
     fn commit_submitted_marker_advances_to_recovered_batch() {
