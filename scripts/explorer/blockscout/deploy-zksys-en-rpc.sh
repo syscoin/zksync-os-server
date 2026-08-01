@@ -534,16 +534,9 @@ install -d -m 0755 "${REMOTE_BASE_DIR}"
 # Invalidate the prior deployment before replacing generated configuration.
 # Existing processes keep running, but a later restart cannot accept an old
 # binary against partially updated deployment state if generation/build fails.
-case "${PROTOCOL_VERSION}" in
-v31.* | v32.*)
-  for instance in zksys-public zksys-debug; do
-    rm -f "${REMOTE_BASE_DIR}/${instance}/.gateway-launch/target/${instance}/release/zksync-os-server.sha256"
-  done
-  ;;
-*)
-  rm -f "${REMOTE_OS_SERVER_PATH}/target/release/zksync-os-server.sha256"
-  ;;
-esac
+for instance in zksys-public zksys-debug; do
+  rm -f "${REMOTE_BASE_DIR}/${instance}/.gateway-launch/target/${instance}/release/zksync-os-server.sha256"
+done
 
 python3 - \
   "${PROVIDER_B64}" \
