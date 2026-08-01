@@ -9,9 +9,10 @@ usage() {
   cat <<'EOF' >&2
 Usage:
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- <cargo args...>
+  run-os-server-with-patched-zksync-os.sh <workspace-name> -- build-prebuilt
   run-os-server-with-patched-zksync-os.sh <workspace-name> -- exec-prebuilt -- <binary args...>
 Examples:
-  run-os-server-with-patched-zksync-os.sh gateway -- build --release --bin zksync-os-server
+  run-os-server-with-patched-zksync-os.sh gateway -- build-prebuilt
   run-os-server-with-patched-zksync-os.sh gateway -- run --release -- --config /path/to/config.yaml
   run-os-server-with-patched-zksync-os.sh gateway -- exec-prebuilt -- --config /path/to/config.yaml
 EOF
@@ -35,6 +36,41 @@ protocol_uses_dev_patch() {
   v31.* | v32.*) return 0 ;;
   *) return 1 ;;
   esac
+}
+
+prebuilt_binary_path() {
+  if protocol_uses_dev_patch; then
+    printf '%s\n' "${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
+  else
+    printf '%s\n' "${ZKSYNC_OS_SERVER_PATH}/target/release/zksync-os-server"
+  fi
+}
+
+configure_build_context() {
+  protocol_uses_dev_patch || return 0
+  gl_export_syscoin_edge_da_commit_target_from_gateway_config
+  case "${WORKSPACE_NAME}" in
+  "${EDGE_CHAIN_NAME:-zksys}" | "${EDGE_CHAIN_NAME:-zksys}"-*)
+    gl_export_syscoin_gas_tank_address_from_edge_config
+    ;;
+  *)
+    # SYSCOIN: the zkSYS gas tank is edge-chain specific. Gateway nodes using
+    # the same patched OS must keep the generated gas-tank constant at zero.
+    unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
+    ;;
+  esac
+}
+
+prebuilt_digest() {
+  local binary="$1" binary_sha256
+  binary_sha256="$(sha256sum "${binary}" | awk '{print $1}')"
+  printf '%s\0%s\0%s\0%s\0%s\0' \
+    "${binary_sha256}" \
+    "${WORKSPACE_NAME}" \
+    "${PROTOCOL_VERSION}" \
+    "${SYSCOIN_EDGE_DA_COMMIT_TARGET:-}" \
+    "${SYSCOIN_GAS_TANK_ADDRESS:-}" |
+    sha256sum | awk '{print $1}'
 }
 
 extract_zksync_os_tag() {
@@ -332,31 +368,40 @@ if [ "${1:-}" = "exec-prebuilt" ]; then
   [ $# -gt 0 ] || usage
 
   refresh_os_server_config_credentials -- "$@"
-  if protocol_uses_dev_patch; then
-    PREBUILT_BINARY="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
-  else
-    PREBUILT_BINARY="${ZKSYNC_OS_SERVER_PATH}/target/release/zksync-os-server"
-  fi
+  configure_build_context
+  PREBUILT_BINARY="$(prebuilt_binary_path)"
+  PREBUILT_STAMP="${PREBUILT_BINARY}.sha256"
   [ -x "${PREBUILT_BINARY}" ] || \
     gl_die "prebuilt zksync-os-server binary is missing or not executable: ${PREBUILT_BINARY}; run the deployment build step first"
+  [ -f "${PREBUILT_STAMP}" ] || \
+    gl_die "prebuilt zksync-os-server build stamp is missing: ${PREBUILT_STAMP}; run the deployment build step first"
+  IFS= read -r STAMPED_DIGEST < "${PREBUILT_STAMP}"
+  [[ "${STAMPED_DIGEST}" =~ ^[0-9a-f]{64}$ ]] || \
+    gl_die "prebuilt zksync-os-server build stamp is malformed: ${PREBUILT_STAMP}"
+  CURRENT_DIGEST="$(prebuilt_digest "${PREBUILT_BINARY}")"
+  [ "${CURRENT_DIGEST}" = "${STAMPED_DIGEST}" ] || \
+    gl_die "prebuilt zksync-os-server binary or build context does not match its stamp; run the deployment build step first"
   exec "${PREBUILT_BINARY}" "$@"
+fi
+
+BUILD_PREBUILT=false
+if [ "${1:-}" = "build-prebuilt" ]; then
+  shift
+  [ $# -eq 0 ] || usage
+  BUILD_PREBUILT=true
+  PREBUILT_BINARY="$(prebuilt_binary_path)"
+  PREBUILT_STAMP="${PREBUILT_BINARY}.sha256"
+  # Invalidate the prior release before any checkout, rewrite, or compilation
+  # can fail. The currently running process keeps its open executable, while a
+  # later restart fails closed until this build publishes a new stamp.
+  rm -f "${PREBUILT_STAMP}"
+  set -- build --release --bin zksync-os-server
 fi
 
 refresh_os_server_config_credentials "$@"
 
 if protocol_uses_dev_patch; then
-  gl_export_syscoin_edge_da_commit_target_from_gateway_config
-  case "${WORKSPACE_NAME}" in
-  "${EDGE_CHAIN_NAME:-zksys}" | "${EDGE_CHAIN_NAME:-zksys}"-*)
-    gl_export_syscoin_gas_tank_address_from_edge_config
-    ;;
-  *)
-    # SYSCOIN: the zkSYS gas tank is edge-chain specific. Gateway nodes using
-    # the same patched OS must keep the generated gas-tank constant at zero,
-    # even if the parent shell exported the edge value.
-    unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-    ;;
-  esac
+  configure_build_context
   ZKSYNC_OS_TAG="$(extract_zksync_os_tag)"
   ZKSYNC_OS_PATCHED_PATH="$(prepare_zksync_os_checkout "${ZKSYNC_OS_TAG}")"
   ZKSYNC_OS_PATCHED_REV="$(git -C "${ZKSYNC_OS_PATCHED_PATH}" rev-parse HEAD)"
@@ -368,6 +413,16 @@ if protocol_uses_dev_patch; then
   export CARGO_TARGET_DIR="${TARGET_DIR}"
 else
   cd "${ZKSYNC_OS_SERVER_PATH}"
+fi
+
+if [ "${BUILD_PREBUILT}" = true ]; then
+  cargo "$@"
+  [ -x "${PREBUILT_BINARY}" ] || \
+    gl_die "cargo build completed without an executable zksync-os-server binary: ${PREBUILT_BINARY}"
+  PREBUILT_STAMP_TMP="${PREBUILT_STAMP}.tmp.$$"
+  prebuilt_digest "${PREBUILT_BINARY}" > "${PREBUILT_STAMP_TMP}"
+  mv "${PREBUILT_STAMP_TMP}" "${PREBUILT_STAMP}"
+  exit 0
 fi
 
 cargo "$@"
