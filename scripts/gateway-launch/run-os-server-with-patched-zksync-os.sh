@@ -39,11 +39,7 @@ protocol_uses_dev_patch() {
 }
 
 prebuilt_binary_path() {
-  if protocol_uses_dev_patch; then
-    printf '%s\n' "${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
-  else
-    printf '%s\n' "${ZKSYNC_OS_SERVER_PATH}/target/release/zksync-os-server"
-  fi
+  printf '%s\n' "${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
 }
 
 configure_build_context() {
@@ -413,6 +409,10 @@ if protocol_uses_dev_patch; then
   export CARGO_TARGET_DIR="${TARGET_DIR}"
 else
   cd "${ZKSYNC_OS_SERVER_PATH}"
+  if [ "${BUILD_PREBUILT}" = true ]; then
+    TARGET_DIR="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}"
+    export CARGO_TARGET_DIR="${TARGET_DIR}"
+  fi
 fi
 
 if [ "${BUILD_PREBUILT}" = true ]; then
