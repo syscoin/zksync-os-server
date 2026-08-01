@@ -7,9 +7,13 @@ source "${SCRIPT_DIR}/_common.sh"
 
 usage() {
   cat <<'EOF' >&2
-Usage: run-os-server-with-patched-zksync-os.sh <workspace-name> -- <cargo args...>
-Example:
+Usage:
+  run-os-server-with-patched-zksync-os.sh <workspace-name> -- <cargo args...>
+  run-os-server-with-patched-zksync-os.sh <workspace-name> -- exec-prebuilt -- <binary args...>
+Examples:
+  run-os-server-with-patched-zksync-os.sh gateway -- build --release --bin zksync-os-server
   run-os-server-with-patched-zksync-os.sh gateway -- run --release -- --config /path/to/config.yaml
+  run-os-server-with-patched-zksync-os.sh gateway -- exec-prebuilt -- --config /path/to/config.yaml
 EOF
   exit 1
 }
@@ -320,6 +324,23 @@ refresh_os_server_config_credentials() {
     done < <(printf '%s\n' "${config_entry}" | tr ':' '\n')
   done
 }
+
+if [ "${1:-}" = "exec-prebuilt" ]; then
+  shift
+  [ "${1:-}" = "--" ] || usage
+  shift
+  [ $# -gt 0 ] || usage
+
+  refresh_os_server_config_credentials -- "$@"
+  if protocol_uses_dev_patch; then
+    PREBUILT_BINARY="${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
+  else
+    PREBUILT_BINARY="${ZKSYNC_OS_SERVER_PATH}/target/release/zksync-os-server"
+  fi
+  [ -x "${PREBUILT_BINARY}" ] || \
+    gl_die "prebuilt zksync-os-server binary is missing or not executable: ${PREBUILT_BINARY}; run the deployment build step first"
+  exec "${PREBUILT_BINARY}" "$@"
+fi
 
 refresh_os_server_config_credentials "$@"
 
