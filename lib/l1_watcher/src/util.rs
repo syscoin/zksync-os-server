@@ -1,6 +1,6 @@
 use crate::watcher::L1WatcherError;
 use alloy::consensus::Transaction;
-use alloy::primitives::{B256, BlockNumber, Log, TxHash, U256};
+use alloy::primitives::{Address, B256, BlockNumber, Log, TxHash, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
@@ -11,6 +11,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use zksync_os_batch_types::{CommittedBatchInfo, DiscoveredCommittedBatch};
+use zksync_os_contract_interface::IChainAssetHandler;
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::is_method_missing;
@@ -833,4 +834,5 @@ mod tests {
         );
     }
 }
+
 

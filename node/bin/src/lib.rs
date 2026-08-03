@@ -513,6 +513,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         node_role,
         rebuild_config.as_ref(),
         &l1_provider,
+        gateway_provider.as_ref(),
         bridgehub_address,
         chain_id,
     )
@@ -573,7 +574,10 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         };
     if let (Some(pubdata_mode), true) = (effective_pubdata_mode, node_role.is_main()) {
         match (pubdata_mode, l1_state.da_input_mode) {
-            (PubdataMode::Calldata | PubdataMode::Blobs, BatchDaInputMode::Validium)
+            (
+                PubdataMode::Calldata | PubdataMode::Blobs | PubdataMode::RelayedL2Calldata,
+                BatchDaInputMode::Validium,
+            )
             | (PubdataMode::Validium, BatchDaInputMode::Rollup) => {
                 panic!(
                     "Pubdata mode doesn't correspond to pricing mode from the l1. \
@@ -927,6 +931,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                 // commit/execute watchers, so validate against the SL provider chain ID.
                 node_startup_state.l1_state.sl_chain_id,
             )
+            .await
+            .expect("failed to start L1 revert watcher")
             .run(),
         );
     }
@@ -1119,6 +1125,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         zksync_os_mempool::Config {
             node_role,
             chain_id,
+            gateway_chain_id: config.general_config.gateway_chain_id,
             interop_roots_per_tx: config.sequencer_config.interop_roots_per_tx,
             bytecode_supplier_address,
             // SYSCOIN: use the archive-capable L1 lookup chain for startup cursor resolution.
@@ -1336,6 +1343,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         combined_acceptance_rx,
         last_constructed_block_ctx_receiver,
         tx_forwarder,
+        gateway_provider.map(|p| p.erased()),
         rpc_policy_client,
         runtime,
         wait_for_db,
@@ -1468,6 +1476,7 @@ async fn fetch_l1_state_with_startup_revert(
     node_role: NodeRole,
     rebuild: Option<&RebuildConfig>,
     l1_provider: &NodeProvider,
+    gateway_provider: Option<&NodeProvider>,
     bridgehub_address: Address,
     chain_id: u64,
 ) -> anyhow::Result<L1State> {
@@ -1480,6 +1489,7 @@ async fn fetch_l1_state_with_startup_revert(
     let l1_state = L1State::fetch_with_finality(
         use_finalized,
         l1_provider.clone(),
+        gateway_provider.cloned(),
         bridgehub_address,
         chain_id,
         config.general_config.startup_sl_finalization_timeout,
@@ -1500,6 +1510,7 @@ async fn fetch_l1_state_with_startup_revert(
             return L1State::fetch_with_finality(
                 use_finalized,
                 l1_provider.clone(),
+                gateway_provider.cloned(),
                 bridgehub_address,
                 chain_id,
                 config.general_config.startup_sl_finalization_timeout,
@@ -1817,7 +1828,7 @@ async fn run_main_node_pipeline(
             batch_verification_l1_config: node_state_on_startup.l1_state.batch_verification.clone(),
         })
         .pipe(UpgradeGatekeeper::new(
-            node_state_on_startup.l1_state.diamond_proxy_l1.clone(),
+            node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
         // SYSCOIN
         .pipe(BitcoinDaFinalityGate::new(
@@ -1831,9 +1842,10 @@ async fn run_main_node_pipeline(
         .pipe(L1Sender::<CommitCommand> {
             provider: l1_provider.clone(),
             config: commit_sender_config,
-            to_address: node_state_on_startup.l1_state.validator_timelock,
+            to_address: node_state_on_startup.l1_state.validator_timelock_sl,
+            gateway: false,
             commit_submitted_tx: Some(commit_submitted_tx),
-            l1_block_number: node_state_on_startup.l1_state.l1_block_number,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         // SYSCOIN
         .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
@@ -1844,9 +1856,10 @@ async fn run_main_node_pipeline(
         .pipe(L1Sender::<ProofCommand> {
             provider: l1_provider.clone(),
             config: prove_sender_config,
-            to_address: node_state_on_startup.l1_state.validator_timelock,
+            to_address: node_state_on_startup.l1_state.validator_timelock_sl,
+            gateway: false,
             commit_submitted_tx: None,
-            l1_block_number: node_state_on_startup.l1_state.l1_block_number,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         .pipe(
             PriorityTreePipelineStep::new(
@@ -1860,9 +1873,10 @@ async fn run_main_node_pipeline(
         .pipe(L1Sender {
             provider: l1_provider,
             config: execute_sender_config,
-            to_address: node_state_on_startup.l1_state.validator_timelock,
+            to_address: node_state_on_startup.l1_state.validator_timelock_sl,
+            gateway: false,
             commit_submitted_tx: None,
-            l1_block_number: node_state_on_startup.l1_state.l1_block_number,
+            sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
         .pipe(BatchSink::new(internal_config_manager));
 
@@ -2586,4 +2600,5 @@ mod tests {
         validate_batch_verification_startup_policy(&server_config, &l1_config);
     }
 }
+
 

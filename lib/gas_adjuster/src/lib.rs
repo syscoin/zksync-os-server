@@ -300,6 +300,7 @@ impl GasAdjuster {
                 U256::from(self.gas_price()).saturating_mul(U256::from(L1_GAS_PER_PUBDATA_BYTE))
             }
             PubdataMode::Validium => U256::from(0u32),
+            PubdataMode::RelayedL2Calldata => self.gw_pubdata_price_statistics.median(),
         };
 
         if price <= U256::from(u128::MAX) {
@@ -839,4 +840,5 @@ mod tests {
         ));
     }
 }
+
 

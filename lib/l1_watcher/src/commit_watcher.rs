@@ -9,7 +9,7 @@ use zksync_os_contract_interface::ZkChain;
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::WriteFinality;
 
-/// Watches L1 commit events and advances the committed finality frontier.
+/// Watches settlement-layer commit events and advances the committed finality frontier.
 ///
 /// This component reads `ReportCommittedBatchRangeZKsyncOS` events, resolves the committed batch
 /// payload from L1 calldata, updates `WriteFinality`, and inserts the discovered batch into
@@ -23,7 +23,7 @@ use zksync_os_storage_api::WriteFinality;
 pub struct L1CommitWatcher<Finality> {
     next_batch_number: u64,
     // SL tip used for finality initialization. Used to identify historical events during catch-up.
-    l1_block_initial_finality_init_at: u64,
+    sl_block_initial_finality_init_at: u64,
     // Last committed batch as of startup. Historical commits above this value are stale.
     startup_last_committed_batch: u64,
     committed_batch_provider: CommittedBatchProvider,
@@ -44,7 +44,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
         commit_submitted_rx: Option<watch::Receiver<u64>>,
     ) -> anyhow::Result<StartResolver<(), Self>> {
         tracing::info!(
-            l1_block_initial_finality_init_at,
+            sl_block_initial_finality_init_at,
             config.max_blocks_to_process,
             ?config.poll_interval,
             zk_chain_address = ?zk_chain.address(),
@@ -75,7 +75,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
 
             let processor = Self {
                 next_batch_number: last_committed_batch + 1,
-                l1_block_initial_finality_init_at,
+                sl_block_initial_finality_init_at,
                 startup_last_committed_batch: last_committed_batch,
                 committed_batch_provider,
                 finality,
@@ -108,7 +108,7 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
         // Startup-only guard: skip historical commits that are above the startup committed frontier.
         // This handles batches that were committed and reverted before the node started.
         if should_skip_historical_commit(
-            self.l1_block_initial_finality_init_at,
+            self.sl_block_initial_finality_init_at,
             self.startup_last_committed_batch,
             batch_number,
             log.block_number,
@@ -116,7 +116,7 @@ impl<Finality: WriteFinality> ProcessL1Event for L1CommitWatcher<Finality> {
             tracing::warn!(
                 batch_number,
                 log_block_number = ?log.block_number,
-                l1_block_initial_finality_init_at = self.l1_block_initial_finality_init_at,
+                sl_block_initial_finality_init_at = self.sl_block_initial_finality_init_at,
                 startup_last_committed_batch = self.startup_last_committed_batch,
                 "skipping historical committed batch above startup frontier; likely reverted before startup",
             );
@@ -173,13 +173,13 @@ fn should_restart_for_unexpected_commit(
 /// Returns true if the commit event belongs to startup catch-up range and is above the startup
 /// committed frontier.
 fn should_skip_historical_commit(
-    l1_block_initial_finality_init_at: u64,
+    sl_block_initial_finality_init_at: u64,
     startup_last_committed_batch: u64,
     batch_number: u64,
     log_block_number: Option<u64>,
 ) -> bool {
     log_block_number.is_some_and(|log_block_number| {
-        log_block_number <= l1_block_initial_finality_init_at
+        log_block_number <= sl_block_initial_finality_init_at
             && batch_number > startup_last_committed_batch
     })
 }
@@ -242,4 +242,5 @@ mod tests {
         assert!(!should_restart_for_unexpected_commit(6, Some(&rx)));
     }
 }
+
 

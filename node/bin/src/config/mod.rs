@@ -30,7 +30,7 @@ use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_l1_sender::config::{
     DEFAULT_NONCE_ERROR_MAX_ATTEMPTS, DEFAULT_NONCE_ERROR_RETRY_BACKOFF,
-    DEFAULT_REQUIRED_CONFIRMATIONS_L1,
+    DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY, DEFAULT_REQUIRED_CONFIRMATIONS_L1,
 };
 use zksync_os_mempool::SubPoolLimit;
 use zksync_os_network::{NodeRecord, PeerId, SecretKey};
@@ -76,6 +76,8 @@ pub struct Config {
     pub sequencer_config: SequencerConfig,
     #[config_validate(async_validate(Self::validate_operator_signers))]
     pub l1_sender_config: L1SenderConfig,
+    #[config_validate(async_validate(Self::validate_gw_operator_signers))]
+    pub gateway_sender_config: GatewaySenderConfig,
     pub l1_watcher_config: L1WatcherConfig,
     pub batcher_config: BatcherConfig,
     pub prover_input_generator_config: ProverInputGeneratorConfig,
@@ -232,6 +234,9 @@ impl Config {
             .insert(&L1SenderConfig::DESCRIPTION, "l1_sender")
             .expect("Failed to insert l1_sender config");
         schema
+            .insert(&GatewaySenderConfig::DESCRIPTION, "gateway_sender")
+            .expect("Failed to insert gateway_sender config");
+        schema
             .insert(&L1WatcherConfig::DESCRIPTION, "l1_watcher")
             .expect("Failed to insert l1_watcher config");
         schema
@@ -359,6 +364,78 @@ impl Config {
 
         Ok(())
     }
+
+    async fn validate_gw_operator_signers(
+        root: &Self,
+        gateway_sender_config: &GatewaySenderConfig,
+        errors: &mut Vec<ValidationError>,
+    ) -> anyhow::Result<()> {
+        if !root.general_config.node_role.is_main() {
+            return Ok(());
+        }
+
+        // gateway_sender operator keys are optional at config-validation time; their presence is
+        // enforced at runtime when the chain is discovered to be settling on Gateway. Skip the
+        // uniqueness check unless all three are configured.
+        let Some(commit) = &gateway_sender_config.operator_commit_sk else {
+            return Ok(());
+        };
+        let Some(prove) = &gateway_sender_config.operator_prove_sk else {
+            return Ok(());
+        };
+        let Some(execute) = &gateway_sender_config.operator_execute_sk else {
+            return Ok(());
+        };
+
+        let commit_addr = match commit.address().await {
+            Ok(address) => Some(address),
+            Err(err) => {
+                errors.push(ValidationError::new(
+                    "gateway_sender.operator_commit_sk",
+                    format!("failed to resolve signer address: {err}"),
+                ));
+                None
+            }
+        };
+        let prove_addr = match prove.address().await {
+            Ok(address) => Some(address),
+            Err(err) => {
+                errors.push(ValidationError::new(
+                    "gateway_sender.operator_prove_sk",
+                    format!("failed to resolve signer address: {err}"),
+                ));
+                None
+            }
+        };
+        let execute_addr = match execute.address().await {
+            Ok(address) => Some(address),
+            Err(err) => {
+                errors.push(ValidationError::new(
+                    "gateway_sender.operator_execute_sk",
+                    format!("failed to resolve signer address: {err}"),
+                ));
+                None
+            }
+        };
+
+        if let (Some(commit_addr), Some(prove_addr), Some(execute_addr)) =
+            (commit_addr, prove_addr, execute_addr)
+            && (commit_addr == prove_addr
+                || prove_addr == execute_addr
+                || execute_addr == commit_addr)
+        {
+            errors.push(ValidationError::new(
+                "gateway_sender.operator_commit_sk",
+                format!(
+                    "must be different from `gateway_sender.operator_prove_sk` and \
+                     `gateway_sender.operator_execute_sk`; got commit={commit_addr}, \
+                     prove={prove_addr}, execute={execute_addr}"
+                ),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 fn log_all_errors(errors: ParseErrors) -> anyhow::Error {
@@ -479,7 +556,7 @@ pub struct GeneralConfig {
     pub ephemeral_state: Option<PathBuf>,
 }
 
-/// Config for the L1 provider
+/// Config for L1 or Gateway provider
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 pub struct ProviderConfig {
     /// JSON RPC API URL.
@@ -1261,7 +1338,10 @@ pub struct L1SenderConfig {
     /// Signer to commit batches to L1.
     /// Must be consistent with the operator key set on the contract (permissioned!)
     /// Not required for External Nodes, which do not send L1 transactions.
-    /// Required at runtime on the Main Node; presence is enforced at startup rather than here.
+    /// On a Main Node, required at runtime only when the chain is discovered to be settling on
+    /// L1 (otherwise `gateway_sender.operator_commit_sk` is used). Whether the chain settles on L1 or
+    /// Gateway is determined from on-chain state at startup, which is why presence is not
+    /// enforced here.
     #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
     pub operator_commit_sk: Option<SignerConfig>,
 
@@ -1354,8 +1434,10 @@ pub struct L1SenderConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// Pubdata mode used by block-producing components on the Main Node. Required at runtime on
-    /// Main Nodes; External Nodes never produce blocks and may leave it unset.
+    /// Pubdata mode used by block-producing components on the Main Node. Only read from config
+    /// when the chain settles on L1; when settling on Gateway, the effective mode is derived
+    /// from the gateway's DA input mode and this value is ignored. Required at runtime only
+    /// for Main Nodes settling on L1; External Nodes never produce blocks and may leave it unset.
     #[config(with = Serde![str])]
     pub pubdata_mode: Option<PubdataMode>,
 
@@ -1468,6 +1550,73 @@ pub struct GatewaySenderConfig {
     /// rejection.
     #[config(default_t = 30 * TimeUnit::Seconds)]
     pub gateway_da_admission_retry_interval: Duration,
+
+    /// Gateway blocks (inclusive of the inclusion block) before a transaction is confirmed.
+    #[config(default_t = DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY)]
+    pub required_confirmations: u64,
+
+    /// Max submission attempts per Gateway transaction when the Gateway node rejects it with
+    /// a nonce-class error.
+    #[config(default_t = DEFAULT_NONCE_ERROR_MAX_ATTEMPTS)]
+    pub nonce_error_max_attempts: usize,
+
+    /// Backoff between attempts after a nonce-class rejection. Gives the Gateway node time
+    /// to settle its pool/state view after a block import.
+    #[config(default_t = DEFAULT_NONCE_ERROR_RETRY_BACKOFF)]
+    pub nonce_error_retry_backoff: Duration,
+}
+
+/// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
+/// currently settling on a Gateway (as discovered from the L1 settlement layer interval at
+/// startup). When the chain is settling on L1 directly, this config is ignored and
+/// [`L1SenderConfig`] is used instead.
+///
+/// Operator keys here must be funded on the Gateway chain. They are optional at config-validation
+/// time; their presence is enforced at runtime once the settlement layer is discovered.
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
+#[config(derive(Default))]
+pub struct GatewaySenderConfig {
+    /// Signer to commit batches to the Gateway.
+    /// Must be consistent with the operator key set on the Gateway chain admin (permissioned!).
+    /// Required at runtime when the chain settles on Gateway.
+    #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
+    pub operator_commit_sk: Option<SignerConfig>,
+
+    /// Signer to submit proofs to the Gateway.
+    /// Can be an arbitrary funded address — proof submission is permissionless.
+    /// Required at runtime when the chain settles on Gateway.
+    #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
+    pub operator_prove_sk: Option<SignerConfig>,
+
+    /// Signer to execute batches on the Gateway.
+    /// Can be an arbitrary funded address — execute submission is permissionless.
+    /// Required at runtime when the chain settles on Gateway.
+    #[config(secret, alias = "operator_execute_pk", with = SignerConfigDeserializer)]
+    pub operator_execute_sk: Option<SignerConfig>,
+
+    /// Max fee per gas (in Gateway base token wei) we are willing to spend.
+    #[config(default_t = 200 * EtherUnit::Gwei)]
+    pub max_fee_per_gas: EtherAmount,
+
+    /// Max priority fee per gas (in Gateway base token wei) we are willing to spend.
+    #[config(default_t = 1 * EtherUnit::Gwei)]
+    pub max_priority_fee_per_gas: EtherAmount,
+
+    /// Force transaction resubmission options.
+    #[config(nest, default)]
+    pub force_transaction_resubmission: ForceTransactionResubmissionConfig,
+
+    /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
+    #[config(default_t = 16)]
+    pub command_limit: usize,
+
+    /// How often to poll the Gateway for new blocks.
+    #[config(default_t = 1 * TimeUnit::Seconds)]
+    pub poll_interval: Duration,
+
+    /// Maximum time to wait for a Gateway transaction to be included.
+    #[config(default_t = 600 * TimeUnit::Seconds)]
+    pub transaction_timeout: Duration,
 
     /// Gateway blocks (inclusive of the inclusion block) before a transaction is confirmed.
     #[config(default_t = DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY)]
@@ -2167,6 +2316,8 @@ pub struct BaseTokenPriceUpdaterConfig {
     pub base_token_addr_override: Option<Address>,
     /// Override for decimals of the base token.
     pub base_token_decimals_override: Option<u8>,
+    /// Override for address of the gateway base token address used to calculate ETH<->GatewayBaseToken ratio on gateway using chains.
+    pub gateway_base_token_addr_override: Option<Address>,
     /// Signer to update base token price on L1.
     /// Must be consistent with the key set on the chain admin contract.
     /// Not used for chains with ETH as base token; expected to be set for all other chains.
@@ -2680,6 +2831,7 @@ pub fn base_token_price_updater_config(
         price_fetching_max_attempts: c.price_fetching_max_attempts,
         base_token_addr_override: c.base_token_addr_override,
         base_token_decimals_override: c.base_token_decimals_override,
+        gateway_base_token_addr_override: c.gateway_base_token_addr_override,
         token_multiplier_setter_signer,
         max_fee_per_gas_wei: l1_sender_config.max_fee_per_gas.0,
         max_priority_fee_per_gas_wei: l1_sender_config.max_priority_fee_per_gas.0,
@@ -3101,6 +3253,7 @@ mod tests {
                 pubdata_mode: Some(PubdataMode::Blobs),
                 max_batch_diff_to_upstream: None,
             },
+            gateway_sender_config: GatewaySenderConfig::default(),
             l1_watcher_config: L1WatcherConfig::default(),
             batcher_config: BatcherConfig::default(),
             prover_input_generator_config: ProverInputGeneratorConfig::default(),
@@ -3343,6 +3496,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn main_node_can_omit_l1_sender_operator_keys_when_gateway_sender_keys_set() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.l1_sender_config.operator_commit_sk = None;
+        config.l1_sender_config.operator_prove_sk = None;
+        config.l1_sender_config.operator_execute_sk = None;
+        config.gateway_sender_config.operator_commit_sk = Some(local_signer(0x44));
+        config.gateway_sender_config.operator_prove_sk = Some(local_signer(0x55));
+        config.gateway_sender_config.operator_execute_sk = Some(local_signer(0x66));
+
+        config.validate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn main_node_validation_rejects_duplicate_gateway_sender_addresses() {
+        let mut config = base_config(NodeRole::MainNode);
+        let signer = local_signer(0x77);
+        config.gateway_sender_config.operator_commit_sk = Some(signer.clone());
+        config.gateway_sender_config.operator_prove_sk = Some(signer);
+        config.gateway_sender_config.operator_execute_sk = Some(local_signer(0x88));
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains("`gateway_sender.operator_commit_sk`"));
+        assert!(err.contains("must be different"));
+    }
+
+    #[tokio::test]
     async fn batch_verification_requires_networking() {
         let mut config = base_config(NodeRole::MainNode);
         config.batch_verification_config.server_enabled = true;
@@ -3455,4 +3635,5 @@ mod tests {
         );
     }
 }
+
 

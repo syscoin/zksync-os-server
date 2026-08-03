@@ -33,7 +33,7 @@ type VerificationInput = TreeBlock;
 /// Batch verification responder that consumes requests from the network.
 pub struct BatchVerificationResponder<Finality, ReadState> {
     chain_id: u64,
-    diamond_proxy: Address,
+    diamond_proxy_sl: Address,
     l1_state: L1State,
     syscoin_edge_da_commit_target: Address,
     signer: PrivateKeySigner,
@@ -77,7 +77,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         chain_id: u64,
-        diamond_proxy: Address,
+        diamond_proxy_sl: Address,
         private_key: SecretString,
         syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
         finality: Finality,
@@ -100,7 +100,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
 
         Self {
             chain_id,
-            diamond_proxy,
+            diamond_proxy_sl,
             l1_state,
             syscoin_edge_da_commit_target,
             signer,
@@ -156,7 +156,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
             self.chain_id,
             request.batch_number,
             request.pubdata_mode,
-            self.l1_state.l1_chain_id,
+            self.l1_state.sl_chain_id,
             multichain_root,
             &blocks.first().unwrap().1.protocol_version,
             expected_upgrade_tx_hash,
@@ -181,9 +181,9 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         let signature = BatchSignature::sign_batch(
             &request.prev_commit_data,
             &batch_info.commit_info,
-            self.diamond_proxy,
-            self.l1_state.l1_chain_id,
-            self.l1_state.validator_timelock,
+            self.diamond_proxy_sl,
+            self.l1_state.sl_chain_id,
+            self.l1_state.validator_timelock_sl,
             &blocks.first().unwrap().1.protocol_version,
             &self.signer,
         )

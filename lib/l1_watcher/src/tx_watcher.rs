@@ -2,6 +2,7 @@ use crate::watcher::{L1WatcherError, StartResolver};
 use crate::{EventSink, L1WatcherConfig, ProcessL1Event, util};
 use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::primitives::BlockNumber;
+use alloy::providers::Provider;
 use alloy::rpc::types::Log;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,11 +14,11 @@ use zksync_os_types::L1PriorityEnvelope;
 /// Watches L1 priority transaction events and feeds them into the L1 transaction subpool.
 ///
 /// This component reads `NewPriorityRequest` events from the L1 mailbox, waits until the same
-/// priority request is visible at the latest L1 block, and then inserts the corresponding
+/// priority request is visible from the settlement layer, and then inserts the corresponding
 /// `L1PriorityEnvelope` into its sink.
 pub struct L1TxWatcher {
     next_l1_priority_id: u64,
-    zk_chain: ZkChain<NodeProvider>,
+    zk_chain_sl: ZkChain<NodeProvider>,
     cached_total_priority_ops_resp: Option<u64>,
     sink: Box<dyn EventSink<Arc<L1PriorityEnvelope>>>,
 }
@@ -33,12 +34,14 @@ impl L1TxWatcher {
         tracing::info!(
             config.max_blocks_to_process,
             ?config.poll_interval,
-            zk_chain_address = ?zk_chain.address(),
+            zk_chain_address_l1 = ?zk_chain_l1.address(),
+            zk_chain_address_sl = ?zk_chain_sl.address(),
             "initializing L1 transaction watcher"
         );
 
-        let provider = zk_chain.provider().clone();
-        let address = (*zk_chain.address()).into();
+        let provider = zk_chain_l1.provider().clone();
+        let address = (*zk_chain_l1.address()).into();
+        let l1_chain_id = provider.get_chain_id().await?;
 
         let resolve_start = move |next_l1_priority_id: u64| async move {
             // SYSCOIN: Resolve the startup cursor through the archive-capable
@@ -53,20 +56,14 @@ impl L1TxWatcher {
             tracing::info!(next_l1_block, "resolved on L1");
             let processor = Self {
                 next_l1_priority_id,
-                zk_chain,
+                zk_chain_sl,
                 cached_total_priority_ops_resp: None,
                 sink: Box::new(sink),
             };
             Ok((next_l1_block, processor))
         };
 
-        Ok(StartResolver::new(
-            config,
-            provider,
-            address,
-            None,
-            resolve_start,
-        ))
+        StartResolver::new(config, provider, address, None, l1_chain_id, resolve_start).await
     }
 }
 
@@ -111,18 +108,18 @@ impl ProcessL1Event for L1TxWatcher {
             if let Some(total_priority_ops) = self.cached_total_priority_ops_resp
                 && total_priority_ops > tx.priority_id()
             {
-                // tx is visible at the latest L1 block, we can proceed with inserting it to subpool
+                // tx is processed on SL, we can proceed with inserting it to subpool
             } else {
                 tracing::debug!(
                     priority_id = tx.priority_id(),
                     hash = ?tx.hash(),
-                    "waiting for tx to be visible at the latest L1 block"
+                    "waiting for tx to be processed on SL"
                 );
                 let mut timer = tokio::time::interval(Duration::from_secs(10));
                 loop {
                     timer.tick().await;
                     let total_priority_ops = self
-                        .zk_chain
+                        .zk_chain_sl
                         .get_total_priority_txs_at_block(BlockId::Number(BlockNumberOrTag::Latest))
                         .await?;
                     self.cached_total_priority_ops_resp = Some(total_priority_ops);
@@ -142,4 +139,5 @@ impl ProcessL1Event for L1TxWatcher {
         Ok(())
     }
 }
+
 

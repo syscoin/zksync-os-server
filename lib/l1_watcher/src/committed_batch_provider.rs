@@ -483,8 +483,8 @@ pub async fn fetch_batch(
     diamond_proxy_sl: &ZkChain<NodeProvider>,
     batch_number: u64,
 ) -> anyhow::Result<(DiscoveredCommittedBatch, TxHash)> {
-    let (l1_block_with_commit, live_hash) =
-        util::find_l1_commit_block_by_batch_number(diamond_proxy, batch_number)
+    let (sl_block_with_commit, live_hash) =
+        util::find_l1_commit_block_by_batch_number(diamond_proxy_sl, batch_number)
             .await
             .with_context(|| {
                 format!("failed to find live L1 commit block for batch {batch_number}")
@@ -985,4 +985,5 @@ mod tests {
         }
     }
 }
+
 

@@ -20,7 +20,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     prev_batch_info: StoredBatchInfo,
     batch_number: u64,
     chain_id: u64,
-    chain_address: Address,
+    chain_address_sl: Address,
     pubdata_mode: PubdataMode,
     sl_chain_id: u64,
     compact_edge_da_commit_target: Address,
@@ -92,6 +92,9 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     // Detect any `SetSLChainId` system transaction across all blocks in the batch.
     // Excludes the sentinel value `u64::MAX` which is used during protocol upgrades and is
     // unrelated to gateway migrations.
+    // Detect any `SetSLChainId` system transaction across all blocks in the batch.
+    // Excludes the sentinel value `u64::MAX` which is used during protocol upgrades and is
+    // unrelated to gateway migrations.
     let set_sl_chain_id_migration_number = blocks.iter().find_map(|(_, replay_record, _, _)| {
         replay_record.transactions.iter().find_map(|tx| {
             if let ZkEnvelope::System(system_tx) = tx.envelope()
@@ -109,7 +112,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         BatchMetadata {
             previous_stored_batch_info: prev_batch_info,
             batch_info,
-            chain_address,
+            chain_address: chain_address_sl,
             blob_sidecar,
             first_block_number: block_number_from,
             last_block_number: block_number_to,

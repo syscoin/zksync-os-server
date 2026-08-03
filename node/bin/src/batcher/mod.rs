@@ -457,7 +457,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             prev_batch_info.clone(),
             batch_number,
             self.chain_id,
-            self.chain_address,
+            self.chain_address_sl,
             // Assume pubdata mode does not change
             self.pubdata_mode,
             self.sl_chain_id,
@@ -683,4 +683,5 @@ mod tests {
         ));
     }
 }
+
 

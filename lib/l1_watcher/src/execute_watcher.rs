@@ -7,7 +7,7 @@ use zksync_os_contract_interface::ZkChain;
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::WriteFinality;
 
-/// Watches L1 execution events and advances the executed finality frontier.
+/// Watches settlement-layer execution events and advances the executed finality frontier.
 ///
 /// This component reads `BlockExecution` events, waits until the corresponding committed batch is
 /// available in `CommittedBatchProvider`, and then updates `WriteFinality` with the latest
@@ -261,4 +261,5 @@ impl<Finality: WriteFinality> ProcessL1Event for L1FinalizedExecuteWatcher<Final
             .await
     }
 }
+
 
