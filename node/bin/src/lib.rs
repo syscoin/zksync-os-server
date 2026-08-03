@@ -89,6 +89,7 @@ use zksync_os_l1_watcher::{
     CommittedBatchProvider, L1CommitWatcher, L1ExecuteWatcher, L1FinalizedExecuteWatcher,
     L1RevertWatcher,
 };
+use zksync_os_mempool::LocalEthCall;
 use zksync_os_mempool::Pool;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
@@ -1062,7 +1063,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             &config.batcher_config,
         );
         let gas_adjuster = GasAdjuster::new(
-            l1_provider.clone().erased(),
+            sl_provider.clone().erased(),
             gas_adjuster_config,
             pubdata_price_sender,
             blob_fill_ratio_sender,
@@ -1118,6 +1119,18 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         tree_for_rpc,
     );
 
+    // Mini-component capable of doing local `eth_call` without going through RPC. Needed for
+    // interop fee updater so it can query the current interop fee.
+    let local_eth_call = Box::new(EthCallHandler::new(
+        config.rpc_config.clone().into(),
+        rpc_storage.clone(),
+        chain_id,
+        last_constructed_block_ctx_receiver.clone(),
+        // Interop fee updater runs inside the node and is not a user-facing
+        // RPC surface, so the admit boundary doesn't apply.
+        None,
+    )) as Box<dyn LocalEthCall>;
+
     let pool = Pool::new(
         runtime.clone(),
         genesis.clone(),
@@ -1133,6 +1146,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             l1_watcher_config: config.l1_watcher_config.clone().into(),
             interop_fee_updater_config: config.interop_fee_updater_config.clone().into(),
         },
+        local_eth_call,
+        base_token_price_handle.clone(),
         // todo: eventually this should be initialized inside `Pool::new`
         l2_subpool.clone(),
     )
@@ -1153,6 +1168,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
             interop_roots_per_block: config.batcher_config.interop_roots_per_batch_limit,
         },
+        &node_startup_state.l1_state.settlement_layer_intervals,
         last_constructed_block_ctx_sender,
         last_block_seed,
     );
@@ -1163,14 +1179,17 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // need persistence.
     runtime.spawn_critical_task("l1 batch persist watcher", {
         let config = config.l1_watcher_config.clone();
-        let diamond_proxy_l1 = node_startup_state.l1_state.diamond_proxy_l1.clone();
+        let settlement_layer_intervals = node_startup_state
+            .l1_state
+            .settlement_layer_intervals
+            .clone();
         let persistent_batch_storage = persistent_batch_storage.clone();
         // SYSCOIN: archive provider for startup-only historical cursor lookups.
         let archive_l1_provider = l1_archive_provider.clone();
         async move {
             L1PersistBatchWatcher::create_watcher(
                 config.into(),
-                diamond_proxy_l1,
+                settlement_layer_intervals,
                 persistent_batch_storage,
                 archive_l1_provider,
             )
@@ -1213,7 +1232,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     } = if node_role.is_main() {
         run_main_node_pipeline(
             &config,
-            l1_provider.clone(),
+            sl_provider.clone(),
             node_startup_state,
             archiving_block_replay_storage,
             runtime,
@@ -1500,7 +1519,15 @@ async fn fetch_l1_state_with_startup_revert(
     if node_role.is_main()
         && let Some(rebuild) = rebuild
     {
-        let l1_revert_ran = revert_l1_on_startup(rebuild, config, &l1_state, l1_provider)
+        let sl_provider = if l1_state.l1_chain_id == l1_state.sl_chain_id {
+            l1_provider.clone()
+        } else {
+            gateway_provider
+                .cloned()
+                .context("chain settles on Gateway but no gateway RPC provider is configured")?
+        };
+
+        let l1_revert_ran = revert_l1_on_startup(rebuild, config, &l1_state, &sl_provider)
             .await
             .context("startup l1 revert failed")?;
 
@@ -1536,7 +1563,7 @@ struct PipelineHandles {
 #[allow(clippy::too_many_arguments)]
 async fn run_main_node_pipeline(
     config: &Config,
-    l1_provider: NodeProvider,
+    sl_provider: NodeProvider,
     node_state_on_startup: NodeStateOnStartup,
     block_replay_storage: impl WriteReplay + Clone,
     runtime: &Runtime,
@@ -1768,11 +1795,23 @@ async fn run_main_node_pipeline(
     // when it is, gateway_sender operator keys and fee caps are used; otherwise the L1-targeted
     // l1_sender config is used.
     let commit_sender_config: zksync_os_l1_sender::config::L1SenderConfig<CommitCommand> =
-        config.l1_sender_config.clone().into();
+        if settles_on_gateway {
+            config.gateway_sender_config.clone().into()
+        } else {
+            config.l1_sender_config.clone().into()
+        };
     let prove_sender_config: zksync_os_l1_sender::config::L1SenderConfig<ProofCommand> =
-        config.l1_sender_config.clone().into();
+        if settles_on_gateway {
+            config.gateway_sender_config.clone().into()
+        } else {
+            config.l1_sender_config.clone().into()
+        };
     let execute_sender_config: zksync_os_l1_sender::config::L1SenderConfig<ExecuteCommand> =
-        config.l1_sender_config.clone().into();
+        if settles_on_gateway {
+            config.gateway_sender_config.clone().into()
+        } else {
+            config.l1_sender_config.clone().into()
+        };
 
     // SYSCOIN
     let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
@@ -1840,10 +1879,10 @@ async fn run_main_node_pipeline(
             ReplayArchiveGateComponent::new(replay_archiver, block_replay_storage.clone())
         }))
         .pipe(L1Sender::<CommitCommand> {
-            provider: l1_provider.clone(),
+            provider: sl_provider.clone(),
             config: commit_sender_config,
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: false,
+            gateway: settles_on_gateway,
             commit_submitted_tx: Some(commit_submitted_tx),
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1854,10 +1893,10 @@ async fn run_main_node_pipeline(
             node_state_on_startup.l1_state.last_executed_batch + 1,
         ))
         .pipe(L1Sender::<ProofCommand> {
-            provider: l1_provider.clone(),
+            provider: sl_provider.clone(),
             config: prove_sender_config,
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: false,
+            gateway: settles_on_gateway,
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -1871,10 +1910,10 @@ async fn run_main_node_pipeline(
             .unwrap(),
         )
         .pipe(L1Sender {
-            provider: l1_provider,
+            provider: sl_provider,
             config: execute_sender_config,
             to_address: node_state_on_startup.l1_state.validator_timelock_sl,
-            gateway: false,
+            gateway: settles_on_gateway,
             commit_submitted_tx: None,
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
@@ -2125,30 +2164,48 @@ fn effective_main_node_pubdata_mode(
     }
 }
 
-/// Validates that the `l1_sender.operator_*_sk` keys required for the L1Sender pipeline are
-/// present in config. Reports all missing keys at once via panic so the operator can fix them in
-/// a single restart.
-fn check_required_operator_keys(config: &Config) {
-    let l1 = &config.l1_sender_config;
-    let mut missing = vec![];
-    if l1.operator_commit_sk.is_none() {
-        missing.push("operator_commit_sk");
-    }
-    if l1.operator_prove_sk.is_none() {
-        missing.push("operator_prove_sk");
-    }
-    if l1.operator_execute_sk.is_none() {
-        missing.push("operator_execute_sk");
-    }
+/// Validates that the operator keys required for the L1Sender pipeline are present in config,
+/// based on the settlement layer discovered at startup. When settling on L1, `l1_sender.operator_*_sk`
+/// are required; when settling on Gateway, `gateway_sender.operator_*_sk` are required. Reports all
+/// missing keys at once via panic so the operator can fix them in a single restart.
+fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
+    let (section, missing): (&str, Vec<&str>) = if settles_on_gateway {
+        let gw = &config.gateway_sender_config;
+        let mut missing = vec![];
+        if gw.operator_commit_sk.is_none() {
+            missing.push("operator_commit_sk");
+        }
+        if gw.operator_prove_sk.is_none() {
+            missing.push("operator_prove_sk");
+        }
+        if gw.operator_execute_sk.is_none() {
+            missing.push("operator_execute_sk");
+        }
+        ("gateway_sender", missing)
+    } else {
+        let l1 = &config.l1_sender_config;
+        let mut missing = vec![];
+        if l1.operator_commit_sk.is_none() {
+            missing.push("operator_commit_sk");
+        }
+        if l1.operator_prove_sk.is_none() {
+            missing.push("operator_prove_sk");
+        }
+        if l1.operator_execute_sk.is_none() {
+            missing.push("operator_execute_sk");
+        }
+        ("l1_sender", missing)
+    };
     if !missing.is_empty() {
+        let target = if settles_on_gateway { "Gateway" } else { "L1" };
         let formatted = missing
             .iter()
-            .map(|k| format!("`l1_sender.{k}`"))
+            .map(|k| format!("`{section}.{k}`"))
             .collect::<Vec<_>>()
             .join(", ");
         panic!(
-            "missing operator keys required for settling on L1: {formatted}. \
-             Set them in the `l1_sender` config section."
+            "missing operator keys required for settling on {target}: {formatted}. \
+             Set them in the `{section}` config section."
         );
     }
 }
@@ -2600,5 +2657,6 @@ mod tests {
         validate_batch_verification_startup_policy(&server_config, &l1_config);
     }
 }
+
 
 

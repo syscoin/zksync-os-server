@@ -43,8 +43,9 @@ const WAIT_FOR_BATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone)]
 pub struct CommittedBatchProvider {
     inner: Arc<RwLock<Inner>>,
-    /// L1 diamond proxy used to look up committed batches.
-    diamond_proxy_l1: ZkChain<NodeProvider>,
+    /// Intervals used to route batch lookups to the diamond proxy of the SL the batch was
+    /// committed to.
+    intervals: SettlementLayerIntervals,
 }
 
 #[derive(Debug, Default)]
@@ -104,7 +105,7 @@ impl CommittedBatchProvider {
     {
         let provider = Self {
             inner: Arc::new(RwLock::new(Inner::default())),
-            diamond_proxy_l1: l1_state.diamond_proxy_l1.clone(),
+            intervals: l1_state.settlement_layer_intervals.clone(),
         };
         // Special case for genesis
         if l1_state.last_executed_batch == 0 {
@@ -985,5 +986,6 @@ mod tests {
         }
     }
 }
+
 
 

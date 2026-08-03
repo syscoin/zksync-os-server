@@ -8,7 +8,7 @@ pub mod subpools;
 pub use subpools::rate_limited_l2::gas_rate_limit_retry_after;
 
 mod interop_fee_updater;
-pub use interop_fee_updater::{InteropFeeUpdater, InteropFeeUpdaterConfig, LocalEthCall};
+pub use interop_fee_updater::{InteropFeeUpdaterConfig, LocalEthCall};
 
 mod pool;
 pub use pool::{Config, MarkingTxStream, Pool};

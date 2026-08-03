@@ -1,4 +1,4 @@
-use crate::interop_fee_updater::InteropFeeUpdaterConfig;
+use crate::interop_fee_updater::{InteropFeeUpdater, InteropFeeUpdaterConfig, LocalEthCall};
 use crate::metrics::TRANSACTION_POOL_METRICS;
 use crate::subpools::interop_fee::InteropFeeSubpool;
 use crate::subpools::interop_roots::InteropRootsSubpool;
@@ -8,6 +8,7 @@ use crate::subpools::sl_chain_id::SlChainIdSubpool;
 use crate::subpools::upgrade::{UpgradeSubpool, UpgradeTransactionsStream};
 use alloy::consensus::{Header, Sealed};
 use alloy::primitives::{Address, ChainId, TxHash};
+use alloy::providers::Provider;
 use anyhow::Context;
 use futures::stream::{BoxStream, PollNext};
 use futures::{Stream, StreamExt};
@@ -78,6 +79,8 @@ impl<T: L2Subpool> Pool<T> {
         genesis: Genesis,
         l1_state: &L1State,
         config: Config,
+        eth_call: Box<dyn LocalEthCall>,
+        base_token_price: BaseTokenPriceHandle,
         l2_subpool: T,
     ) -> anyhow::Result<Self> {
         let upgrade_subpool = UpgradeSubpool::default();
@@ -85,6 +88,19 @@ impl<T: L2Subpool> Pool<T> {
         let interop_fee_subpool = InteropFeeSubpool::default();
         let interop_roots_subpool = InteropRootsSubpool::new(config.interop_roots_per_tx);
         let l1_subpool = L1Subpool::new(10);
+
+        // The interop fee updater only runs on the main node and only when it is settling on Gateway.
+        let interop_fee_updater = if config.node_role.is_main() && l1_state.settles_on_gateway() {
+            Some(InteropFeeUpdater::new(
+                eth_call,
+                l1_state.diamond_proxy_sl.provider().clone().erased(),
+                base_token_price,
+                interop_fee_subpool.clone(),
+                config.interop_fee_updater_config.clone(),
+            ))
+        } else {
+            None
+        };
 
         let upgrade_watcher = L1UpgradeTxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -99,6 +115,14 @@ impl<T: L2Subpool> Pool<T> {
         )
         .await
         .context("failed to start L1 upgrade transaction watcher")?;
+
+        let interop_watcher = InteropWatcher::create_watcher(
+            l1_state.settlement_layer_intervals.clone(),
+            config.l1_watcher_config.clone(),
+            config.chain_id,
+            interop_roots_subpool.clone(),
+        )
+        .context("failed to create interop roots watcher")?;
 
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -525,5 +549,6 @@ impl<'a> MarkingTxStream<'a> {
         }
     }
 }
+
 
 

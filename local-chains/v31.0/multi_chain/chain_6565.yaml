@@ -13,3 +13,4 @@ gateway_sender:
   operator_execute_sk: '0x2210856d3f6042923ef2eccf74ae23659d6b59784878df9e0169bdf80f9985eb'
 rpc:
   address: 0.0.0.0:3050
+

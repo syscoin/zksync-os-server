@@ -11,6 +11,21 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     config.prover_input_generator_config.logging_enabled = true;
     let tester = env.launch(config).await?;
 
+    if matches!(test_case.settlement_layer, SettlementLayer::Gateway) {
+        // Gateway comes with a pre-baked state and some batches are already fake-proven there.
+        // So we expect the next batch to be proven with real flow.
+        let last_proven_batch = tester.owned_supporting_nodes()[0]
+            .prover_tester
+            .last_proven_batch()
+            .await?;
+        // We expect that first supporting node is gateway node.
+        // Wait for the first batch to be proven on gateway node as well.
+        tester.owned_supporting_nodes()[0]
+            .prover_tester
+            .wait_for_batch_proven(last_proven_batch + 1)
+            .await?;
+    }
+
     // Test environment comes with some L1 transactions by default, so one batch should be provable
     // without any new transactions inside the test.
     tester.prover_tester.wait_for_batch_proven(1).await?;
@@ -20,3 +35,4 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
 
     Ok(())
 }
+

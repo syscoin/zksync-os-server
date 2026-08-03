@@ -7,6 +7,9 @@ use alloy::primitives::{Address, B256, BlockHash, TxHash, U256};
 use anyhow::Context as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{sync::watch, time::Instant};
+use zksync_os_contract_interface::settlement_layer_intervals::{
+    IntervalSettlementLayer, SettlementLayerIntervals,
+};
 use zksync_os_genesis::genesis_header;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{MarkingTxStream, Pool};
@@ -70,6 +73,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         fee_provider: FeeProvider,
         pool: Pool<Subpool>,
         config: Config,
+        intervals: &SettlementLayerIntervals,
         last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
         last_block_seed: Option<LastBlockSeed>,
     ) -> Self {
@@ -761,5 +765,6 @@ mod tests {
         );
     }
 }
+
 
 

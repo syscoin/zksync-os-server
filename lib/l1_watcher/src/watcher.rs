@@ -154,7 +154,8 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
 ///
 /// Produced by [`StartResolver::resolve`] once the starting point has been resolved into a
 /// concrete `next_block` and processor. May be run unbounded (live tail) or bounded by
-/// `end_block`.
+/// `end_block` (used by [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) to scan a closed segment
+/// to completion).
 pub struct L1Watcher<P> {
     provider: NodeProvider,
     address: ValueOrArray<Address>,
@@ -168,8 +169,30 @@ pub struct L1Watcher<P> {
 }
 
 impl<P: ProcessRawEvents> L1Watcher<P> {
+    /// Builds a watcher for a single pre-resolved segment, tailing the finalized boundary
+    /// (closed segments are dominated by `end_block`, so the boundary mode only matters for the
+    /// open-ended segment).
+    pub(crate) fn new_finalized(
+        config: L1WatcherConfig,
+        provider: NodeProvider,
+        address: ValueOrArray<Address>,
+        next_block: BlockNumber,
+        end_block: Option<BlockNumber>,
+        processor: P,
+    ) -> Self {
+        Self {
+            provider,
+            address,
+            next_block,
+            end_block,
+            max_blocks_to_process: config.max_blocks_to_process,
+            block_boundary: BlockBoundary::Finalized,
+            processor,
+        }
+    }
+
     /// Builds a watcher for a single pre-resolved segment, tailing the confirmed boundary
-    /// (`latest - confirmations`). Unlike a finalized-boundary watcher, it reacts to an
+    /// (`latest - confirmations`). Unlike [`new_finalized`](Self::new_finalized), it reacts to an
     /// event within `confirmations` blocks instead of waiting out finality.
     pub(crate) async fn new_confirmed(
         config: L1WatcherConfig,
@@ -391,5 +414,6 @@ pub enum L1WatcherError {
     #[error("output has been closed")]
     OutputClosed,
 }
+
 
 
