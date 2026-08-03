@@ -22,7 +22,6 @@ pub use rpc_storage::{ReadRpcStorage, RpcStorage};
 mod debug_impl;
 pub mod js_tracer;
 mod limits;
-mod log_proof_utils;
 mod method_filter_middleware;
 mod monitoring_middleware;
 mod net_impl;
@@ -53,11 +52,10 @@ use crate::unstable_impl::UnstableNamespace;
 use crate::web3_impl::Web3Namespace;
 use crate::zks_impl::ZksNamespace;
 use alloy::primitives::Address;
-use alloy::providers::DynProvider;
 use anyhow::Context;
 use hyper::Method;
 use jsonrpsee::RpcModule;
-use jsonrpsee::server::{ServerBuilder, ServerConfigBuilder};
+use jsonrpsee::server::{BatchRequestConfig, ServerBuilder, ServerConfigBuilder};
 use jsonrpsee::ws_client::RpcServiceBuilder;
 use reth_rpc_eth_types::EthSubscriptionIdProvider;
 use reth_tasks::Runtime;
@@ -91,7 +89,6 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     tx_forwarder: Option<TxForwarder>,
-    gateway_provider: Option<DynProvider>,
     policy_client: Option<PolicyClient>,
     runtime: &Runtime,
     wait_for_db: impl Future<Output = ()> + Send + 'static,
@@ -131,8 +128,6 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             bytecode_supplier_address,
             storage.clone(),
             genesis_input_source,
-            chain_id,
-            gateway_provider,
         )
         .into_rpc(),
     )?;
@@ -202,6 +197,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
         .max_subscriptions_per_connection(config.max_subscriptions_per_connection)
         .max_request_body_size(config.max_request_size_bytes())
         .max_response_body_size(config.max_response_size_bytes())
+        .set_batch_request_config(BatchRequestConfig::Limit(config.max_batch_size))
         // `IdProvider` that generates hex-encoded numeric ids as expected in Ethereum
         .set_id_provider(EthSubscriptionIdProvider::default())
         .build();
@@ -261,3 +257,4 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
 
     Ok(())
 }
+

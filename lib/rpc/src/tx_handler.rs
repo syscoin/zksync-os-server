@@ -21,7 +21,7 @@ use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
-use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
+use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind, gas_rate_limit_retry_after};
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
 use zksync_os_storage_api::BlockContext;
 use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient};
@@ -178,7 +178,17 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         }
         {
             let _guard = MempoolLatencyGuard::new();
-            self.mempool.add_l2_transaction(l2_tx).await?;
+            // The gas rate limiter (when enabled) gates admission inside the mempool itself, so
+            // every insertion path — this one and, once consensus lands, gossip — is covered by
+            // the same gate. Its rejection is carried through `PoolError` and unpacked here into
+            // the dedicated variant so `retryAfterMs` still reaches the caller.
+            self.mempool
+                .add_l2_transaction(l2_tx)
+                .await
+                .map_err(|err| match gas_rate_limit_retry_after(&err) {
+                    Some(retry_after) => EthSendRawTransactionError::GasRateLimited { retry_after },
+                    None => EthSendRawTransactionError::PoolError(err),
+                })?;
         }
         Ok(hash)
     }
@@ -1065,3 +1075,4 @@ mod tests {
         assert!(forwarding_error_should_rollback_local_tx(&null_response));
     }
 }
+

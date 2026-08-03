@@ -8,14 +8,9 @@ pub const SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI: u128 = 20_000;
 
 /// Default confirmations required when settling directly on L1.
 pub const DEFAULT_REQUIRED_CONFIRMATIONS_L1: u64 = 3;
-/// Default confirmations required when settling on a Gateway.
-///
-/// Kept low because a Gateway with a single connected chain may not produce enough blocks to reach
-/// the L1 default.
-pub const DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY: u64 = 1;
 /// Default max submission attempts per L1 transaction when the node rejects it with a
 /// nonce-class error.
-pub const DEFAULT_NONCE_ERROR_MAX_ATTEMPTS: usize = 5;
+pub const DEFAULT_NONCE_ERROR_MAX_ATTEMPTS: usize = 10;
 /// Default backoff between attempts after a nonce-class rejection.
 pub const DEFAULT_NONCE_ERROR_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 

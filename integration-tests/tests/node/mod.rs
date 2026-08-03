@@ -6,3 +6,4 @@ mod mempool;
 mod rebuild;
 mod replay_archive;
 mod restart;
+mod revm_checker;

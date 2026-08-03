@@ -103,3 +103,4 @@ mod tests {
         assert!(!should_restart_for_revert(100, None));
     }
 }
+

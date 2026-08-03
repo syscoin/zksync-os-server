@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zksync_os_interface::traits::ReadStorage;
 use zksync_os_storage_api::BlockContext;
-use zksync_os_types::{BlockOutput, ZkTransaction};
+use zksync_os_types::{BlockOutput, Eip2718, ZkTransaction};
 
 /// [`ReadStorage`] wrapper that tracks read storage slots.
 #[derive(Debug)]
@@ -190,9 +190,11 @@ pub(crate) fn hash_block_output(block_output: &BlockOutput) -> B256 {
     keccak256(preimage)
 }
 
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlockDump {
     pub ctx: BlockContext,
+    #[serde_as(as = "Vec<Eip2718>")]
     pub txs: Vec<ZkTransaction>,
     pub error: String,
 }
@@ -209,3 +211,4 @@ pub(crate) fn save_dump(path: PathBuf, dump: BlockDump) -> anyhow::Result<()> {
 
     Ok(())
 }
+

@@ -56,14 +56,14 @@ pub struct StartResolver<S, P> {
 }
 
 impl<S, P: ProcessRawEvents> StartResolver<S, P> {
-    pub(crate) async fn new<Fut>(
+    pub(crate) fn new<Fut>(
         config: L1WatcherConfig,
         provider: NodeProvider,
         address: ValueOrArray<Address>,
         end_block: Option<BlockNumber>,
         expected_chain_id: u64,
         resolve_start: impl FnOnce(S) -> Fut + Send + Sync + 'static,
-    ) -> anyhow::Result<Self>
+    ) -> Self
     where
         Fut: Future<Output = anyhow::Result<(BlockNumber, P)>> + Send + 'static,
     {
@@ -77,7 +77,7 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
             block_boundary: BlockBoundary::Confirmed { confirmations },
             poll_interval: config.poll_interval,
             resolve_start: Box::new(move |start| Box::pin(resolve_start(start))),
-        })
+        }
     }
 
     /// Like [`new`](Self::new), but tails the finalized boundary so the produced watcher only
@@ -154,8 +154,7 @@ impl<S, P: ProcessRawEvents> StartResolver<S, P> {
 ///
 /// Produced by [`StartResolver::resolve`] once the starting point has been resolved into a
 /// concrete `next_block` and processor. May be run unbounded (live tail) or bounded by
-/// `end_block` (used by [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) to scan a closed segment
-/// to completion).
+/// `end_block`.
 pub struct L1Watcher<P> {
     provider: NodeProvider,
     address: ValueOrArray<Address>,
@@ -169,10 +168,10 @@ pub struct L1Watcher<P> {
 }
 
 impl<P: ProcessRawEvents> L1Watcher<P> {
-    /// Builds a watcher for a single pre-resolved segment, tailing the finalized boundary
-    /// (closed segments are dominated by `end_block`, so the boundary mode only matters for the
-    /// open-ended segment).
-    pub(crate) fn new_finalized(
+    /// Builds a watcher for a single pre-resolved segment, tailing the confirmed boundary
+    /// (`latest - confirmations`). Unlike a finalized-boundary watcher, it reacts to an
+    /// event within `confirmations` blocks instead of waiting out finality.
+    pub(crate) fn new_confirmed(
         config: L1WatcherConfig,
         provider: NodeProvider,
         address: ValueOrArray<Address>,
@@ -390,3 +389,4 @@ pub enum L1WatcherError {
     #[error("output has been closed")]
     OutputClosed,
 }
+

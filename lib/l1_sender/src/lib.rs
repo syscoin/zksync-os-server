@@ -2331,3 +2331,4 @@ mod tests {
         assert!(fee_config.validate_syscoin_fee_caps().is_err());
     }
 }
+

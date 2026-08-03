@@ -4,7 +4,6 @@ use super::config::MainNodeProtocolConfig;
 use super::connection::OutboundMessage;
 use crate::service::PeerVerifyBatchResult;
 use crate::version::ZksProtocolVersionSpec;
-use crate::wire::auth::recover_verifier_signer;
 use crate::wire::message::ZksMessage;
 use alloy::primitives::B256;
 use futures::{FutureExt, Stream, StreamExt};
@@ -29,7 +28,6 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
     events_sender: mpsc::UnboundedSender<ProtocolEvent>,
     peer_id: PeerId,
     replay: Replay,
-    config: MainNodeProtocolConfig,
 ) {
     let MainNodeProtocolConfig {
         accepted_verifier_signers,
@@ -100,6 +98,7 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
             }
             None => return,
         }
+        None => return,
     };
     events_sender
         .send(ProtocolEvent::ReplayRequested {
@@ -116,7 +115,7 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
     // Stream records to the EN indefinitely.
     let mut stream = replay
         .clone()
-        .stream_from_forever(request.starting_block, HashMap::new());
+        .stream_from_forever(request.starting_block, db_key_overrides);
     loop {
         tokio::select! {
             // Biased because first branch always leads to early return. Makes sense to check it
@@ -125,19 +124,6 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
 
             msg = conn.next() => {
                 match msg {
-                    Some(ZksMessage::VerifyBatchResult(result)) => {
-                        if verify_result_tx
-                            .send(PeerVerifyBatchResult {
-                                peer_id,
-                                message: result,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            tracing::info!("verify result channel is closed; terminating");
-                            return;
-                        }
-                    }
                     Some(msg) => {
                         tracing::info!(?msg, "received unexpected message from peer; terminating");
                         return;
@@ -200,3 +186,4 @@ pub(super) async fn run_mn_connection<P: ZksProtocolVersionSpec, Replay: ReadRep
         }
     }
 }
+

@@ -30,7 +30,7 @@ use zksync_os_l1_sender::commands::execute::ExecuteCommand;
 use zksync_os_l1_sender::commands::prove::ProofCommand;
 use zksync_os_l1_sender::config::{
     DEFAULT_NONCE_ERROR_MAX_ATTEMPTS, DEFAULT_NONCE_ERROR_RETRY_BACKOFF,
-    DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY, DEFAULT_REQUIRED_CONFIRMATIONS_L1,
+    DEFAULT_REQUIRED_CONFIRMATIONS_L1,
 };
 use zksync_os_mempool::SubPoolLimit;
 use zksync_os_network::{NodeRecord, PeerId, SecretKey};
@@ -76,8 +76,6 @@ pub struct Config {
     pub sequencer_config: SequencerConfig,
     #[config_validate(async_validate(Self::validate_operator_signers))]
     pub l1_sender_config: L1SenderConfig,
-    #[config_validate(async_validate(Self::validate_gw_operator_signers))]
-    pub gateway_sender_config: GatewaySenderConfig,
     pub l1_watcher_config: L1WatcherConfig,
     pub batcher_config: BatcherConfig,
     pub prover_input_generator_config: ProverInputGeneratorConfig,
@@ -234,9 +232,6 @@ impl Config {
             .insert(&L1SenderConfig::DESCRIPTION, "l1_sender")
             .expect("Failed to insert l1_sender config");
         schema
-            .insert(&GatewaySenderConfig::DESCRIPTION, "gateway_sender")
-            .expect("Failed to insert gateway_sender config");
-        schema
             .insert(&L1WatcherConfig::DESCRIPTION, "l1_watcher")
             .expect("Failed to insert l1_watcher config");
         schema
@@ -364,78 +359,6 @@ impl Config {
 
         Ok(())
     }
-
-    async fn validate_gw_operator_signers(
-        root: &Self,
-        gateway_sender_config: &GatewaySenderConfig,
-        errors: &mut Vec<ValidationError>,
-    ) -> anyhow::Result<()> {
-        if !root.general_config.node_role.is_main() {
-            return Ok(());
-        }
-
-        // gateway_sender operator keys are optional at config-validation time; their presence is
-        // enforced at runtime when the chain is discovered to be settling on Gateway. Skip the
-        // uniqueness check unless all three are configured.
-        let Some(commit) = &gateway_sender_config.operator_commit_sk else {
-            return Ok(());
-        };
-        let Some(prove) = &gateway_sender_config.operator_prove_sk else {
-            return Ok(());
-        };
-        let Some(execute) = &gateway_sender_config.operator_execute_sk else {
-            return Ok(());
-        };
-
-        let commit_addr = match commit.address().await {
-            Ok(address) => Some(address),
-            Err(err) => {
-                errors.push(ValidationError::new(
-                    "gateway_sender.operator_commit_sk",
-                    format!("failed to resolve signer address: {err}"),
-                ));
-                None
-            }
-        };
-        let prove_addr = match prove.address().await {
-            Ok(address) => Some(address),
-            Err(err) => {
-                errors.push(ValidationError::new(
-                    "gateway_sender.operator_prove_sk",
-                    format!("failed to resolve signer address: {err}"),
-                ));
-                None
-            }
-        };
-        let execute_addr = match execute.address().await {
-            Ok(address) => Some(address),
-            Err(err) => {
-                errors.push(ValidationError::new(
-                    "gateway_sender.operator_execute_sk",
-                    format!("failed to resolve signer address: {err}"),
-                ));
-                None
-            }
-        };
-
-        if let (Some(commit_addr), Some(prove_addr), Some(execute_addr)) =
-            (commit_addr, prove_addr, execute_addr)
-            && (commit_addr == prove_addr
-                || prove_addr == execute_addr
-                || execute_addr == commit_addr)
-        {
-            errors.push(ValidationError::new(
-                "gateway_sender.operator_commit_sk",
-                format!(
-                    "must be different from `gateway_sender.operator_prove_sk` and \
-                     `gateway_sender.operator_execute_sk`; got commit={commit_addr}, \
-                     prove={prove_addr}, execute={execute_addr}"
-                ),
-            ));
-        }
-
-        Ok(())
-    }
 }
 
 fn log_all_errors(errors: ParseErrors) -> anyhow::Error {
@@ -556,7 +479,7 @@ pub struct GeneralConfig {
     pub ephemeral_state: Option<PathBuf>,
 }
 
-/// Config for L1 or Gateway provider
+/// Config for the L1 provider
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 pub struct ProviderConfig {
     /// JSON RPC API URL.
@@ -1212,6 +1135,19 @@ pub struct RpcConfig {
     #[config(default_t = 24)]
     pub max_response_size: u32,
 
+    /// Limits the work admitted by one JSON-RPC batch. The server rejects larger batches before
+    /// dispatching any entry, so one request cannot create an unbounded work queue.
+    #[config(default_t = 1000)]
+    pub max_batch_size: u32,
+
+    /// Allows entries in one JSON-RPC batch to run concurrently, with a per-batch limit.
+    ///
+    /// Responses stay in request order, but execution does not. For example, a transaction and a
+    /// read that depends on it may race when sent in the same batch. Keep this disabled for clients
+    /// that rely on sequential batch execution.
+    #[config(default_t = false)]
+    pub parallel_batches: bool,
+
     /// Maximum number of blocks that could be scanned per filter
     #[config(default_t = 10_000)]
     pub max_blocks_per_filter: u64,
@@ -1265,6 +1201,11 @@ pub struct RpcConfig {
     #[config(nest)]
     pub rate_limits: RpcRateLimitsConfig,
 
+    /// Rate limiter for incoming L2 transactions based on executed gas throughput.
+    /// Disabled by default; set `enabled = true` to turn it on.
+    #[config(nest, default)]
+    pub tx_gas_rate_limit: TxGasRateLimitConfig,
+
     /// List of disabled methods.
     /// Some stateful methods like `eth_newFilter` don't make sense when running in a cluster behind a load-balancer.
     /// They get rejected with -32601 "Method disabled".
@@ -1312,22 +1253,20 @@ impl From<RpcRateLimitsConfig> for zksync_os_rpc::RateLimits {
 /// L1 sender configuration. The signing key fields are only required on the Main Node
 /// when the batcher is enabled; External Nodes do not send L1 transactions and may omit them.
 ///
-/// Each operator accepts either a hex private key string (backward-compatible) or a GCP KMS
-/// resource object: `{"type": "gcp_kms", "resource": "projects/.../cryptoKeyVersions/N"}`.
+/// Each operator accepts either a hex private key string (backward-compatible) or a cloud KMS
+/// object: `{"type": "gcp_kms", "resource": "projects/.../cryptoKeyVersions/N"}` or
+/// `{"type": "azure_kms", "key_id": "https://{vault}.vault.azure.net/keys/{name}/{version}"}`.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 pub struct L1SenderConfig {
     /// Signer to commit batches to L1.
     /// Must be consistent with the operator key set on the contract (permissioned!)
     /// Not required for External Nodes, which do not send L1 transactions.
-    /// On a Main Node, required at runtime only when the chain is discovered to be settling on
-    /// L1 (otherwise `gateway_sender.operator_commit_sk` is used). Whether the chain settles on L1 or
-    /// Gateway is determined from on-chain state at startup, which is why presence is not
-    /// enforced here.
+    /// Required at runtime on the Main Node; presence is enforced at startup rather than here.
     #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
     pub operator_commit_sk: Option<SignerConfig>,
 
     /// Signer to submit proofs to L1.
-    /// Can be arbitrary funded address - proof submission is permissionless.
+    /// Must hold `PROVER_ROLE` for the chain on the ValidatorTimelock (permissioned).
     /// Not required for External Nodes, which do not send L1 transactions.
     /// On a Main Node, required at runtime only when settling on L1 (see `operator_commit_sk`).
     #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
@@ -1415,10 +1354,8 @@ pub struct L1SenderConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// Pubdata mode used by block-producing components on the Main Node. Only read from config
-    /// when the chain settles on L1; when settling on Gateway, the effective mode is derived
-    /// from the gateway's DA input mode and this value is ignored. Required at runtime only
-    /// for Main Nodes settling on L1; External Nodes never produce blocks and may leave it unset.
+    /// Pubdata mode used by block-producing components on the Main Node. Required at runtime on
+    /// Main Nodes; External Nodes never produce blocks and may leave it unset.
     #[config(with = Serde![str])]
     pub pubdata_mode: Option<PubdataMode>,
 
@@ -1936,6 +1873,14 @@ pub enum ReplayArchiveConfig {
         #[config(nest, default)]
         encryption: ReplayArchiveEncryptionConfig,
     },
+    /// GCS backend using Application Default Credentials. This supports GKE Workload Identity,
+    /// external workload identity federation, and local ADC.
+    Gcs {
+        /// Name of the GCS bucket.
+        bucket_base_url: String,
+        #[config(nest, default)]
+        encryption: ReplayArchiveEncryptionConfig,
+    },
 }
 
 /// Replay archive encryption applied before data is written to cold storage.
@@ -1947,6 +1892,15 @@ pub enum ReplayArchiveEncryptionConfig {
     AgeX25519 {
         /// age X25519 recipient public key. The node only needs this public key.
         recipient: String,
+    },
+    /// GCP KMS encryption using Application Default Credentials. This supports GKE Workload
+    /// Identity, external workload identity federation, and local ADC.
+    GcpKms {
+        /// KMS key version, full resource name
+        /// `projects/{project}/locations/{location}/keyRings/{key_ring}/cryptoKeys/{key}/cryptoKeyVersions/{version}`.
+        /// Purpose `ASYMMETRIC_DECRYPT` with an `RSA_DECRYPT_OAEP_*_SHA256` algorithm. The node only
+        /// reads the public key to encrypt locally, so it needs no decrypt permission.
+        kms_key_version: String,
     },
 }
 
@@ -1979,6 +1933,22 @@ impl From<ReplayArchiveConfig> for zksync_os_replay_archive::ReplayArchiveConfig
                 },
                 encryption: encryption.into(),
             },
+            #[cfg(feature = "gcp")]
+            ReplayArchiveConfig::Gcs {
+                bucket_base_url,
+                encryption,
+            } => zksync_os_replay_archive::ReplayArchiveConfig::Gcs {
+                config: zksync_os_replay_archive::GcsReplayArchiveConfig {
+                    bucket_base_url,
+                    auth_mode: zksync_os_replay_archive::GcsReplayArchiveAuthMode::Authenticated,
+                },
+                encryption: encryption.into(),
+            },
+            #[cfg(not(feature = "gcp"))]
+            ReplayArchiveConfig::Gcs { .. } => panic!(
+                "this build was compiled without the `gcp` feature; rebuild with \
+                 `--features gcp` to use the GCS replay archive backend"
+            ),
         }
     }
 }
@@ -1994,6 +1964,19 @@ impl From<ReplayArchiveEncryptionConfig>
             ReplayArchiveEncryptionConfig::AgeX25519 { recipient } => {
                 zksync_os_replay_archive::ReplayArchiveEncryptionConfig::AgeX25519 { recipient }
             }
+            #[cfg(feature = "gcp")]
+            ReplayArchiveEncryptionConfig::GcpKms { kms_key_version } => {
+                zksync_os_replay_archive::ReplayArchiveEncryptionConfig::GcpKms {
+                    config: zksync_os_replay_archive::GcpKmsConfig {
+                        key_version: kms_key_version,
+                    },
+                }
+            }
+            #[cfg(not(feature = "gcp"))]
+            ReplayArchiveEncryptionConfig::GcpKms { .. } => panic!(
+                "this build was compiled without the `gcp` feature; rebuild with \
+                 `--features gcp` to use the GCP KMS replay archive encryption"
+            ),
         }
     }
 }
@@ -2184,8 +2167,6 @@ pub struct BaseTokenPriceUpdaterConfig {
     pub base_token_addr_override: Option<Address>,
     /// Override for decimals of the base token.
     pub base_token_decimals_override: Option<u8>,
-    /// Override for address of the gateway base token address used to calculate ETH<->GatewayBaseToken ratio on gateway using chains.
-    pub gateway_base_token_addr_override: Option<Address>,
     /// Signer to update base token price on L1.
     /// Must be consistent with the key set on the chain admin contract.
     /// Not used for chains with ETH as base token; expected to be set for all other chains.
@@ -2367,6 +2348,8 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
             max_subscriptions_per_connection: c.max_subscriptions_per_connection,
             max_request_size: c.max_request_size,
             max_response_size: c.max_response_size,
+            max_batch_size: c.max_batch_size,
+            parallel_batches: c.parallel_batches,
             max_blocks_per_filter: c.max_blocks_per_filter,
             max_logs_per_response: c.max_logs_per_response,
             l2_signer_blacklist: c.l2_signer_blacklist,
@@ -2697,7 +2680,6 @@ pub fn base_token_price_updater_config(
         price_fetching_max_attempts: c.price_fetching_max_attempts,
         base_token_addr_override: c.base_token_addr_override,
         base_token_decimals_override: c.base_token_decimals_override,
-        gateway_base_token_addr_override: c.gateway_base_token_addr_override,
         token_multiplier_setter_signer,
         max_fee_per_gas_wei: l1_sender_config.max_fee_per_gas.0,
         max_priority_fee_per_gas_wei: l1_sender_config.max_priority_fee_per_gas.0,
@@ -2845,10 +2827,7 @@ mod tests {
                 assert_eq!(root_path, PathBuf::from("/tmp/replay-archive"));
                 assert!(matches!(encryption, ReplayArchiveEncryptionConfig::Noop));
             }
-            ReplayArchiveConfig::Noop => panic!("expected file system replay archive config"),
-            ReplayArchiveConfig::S3WithCredentialFile { .. } => {
-                panic!("expected file system replay archive config")
-            }
+            _ => panic!("expected file system replay archive config"),
         }
     }
 
@@ -2882,9 +2861,26 @@ mod tests {
                 assert_eq!(region.as_deref(), Some("us-east-2"));
                 assert!(matches!(encryption, ReplayArchiveEncryptionConfig::Noop));
             }
-            ReplayArchiveConfig::Noop | ReplayArchiveConfig::FileSystem { .. } => {
-                panic!("expected S3 replay archive config")
+            _ => panic!("expected S3 replay archive config"),
+        }
+    }
+
+    #[test]
+    fn replay_archive_config_parses_gcs_backend() {
+        let config = parse_replay_archive_config([
+            ("REPLAY_ARCHIVE_TYPE", "Gcs"),
+            ("REPLAY_ARCHIVE_BUCKET_BASE_URL", "replay-archive"),
+        ]);
+
+        match config {
+            ReplayArchiveConfig::Gcs {
+                bucket_base_url,
+                encryption,
+            } => {
+                assert_eq!(bucket_base_url, "replay-archive");
+                assert!(matches!(encryption, ReplayArchiveEncryptionConfig::Noop));
             }
+            _ => panic!("expected GCS replay archive config"),
         }
     }
 
@@ -2902,14 +2898,35 @@ mod tests {
                 ReplayArchiveEncryptionConfig::AgeX25519 { recipient } => {
                     assert_eq!(recipient, "age1recipient");
                 }
-                ReplayArchiveEncryptionConfig::Noop => {
-                    panic!("expected age X25519 replay archive encryption")
-                }
+                _ => panic!("expected age X25519 replay archive encryption"),
             },
-            ReplayArchiveConfig::Noop => panic!("expected file system replay archive config"),
-            ReplayArchiveConfig::S3WithCredentialFile { .. } => {
-                panic!("expected file system replay archive config")
-            }
+            _ => panic!("expected file system replay archive config"),
+        }
+    }
+
+    #[test]
+    fn replay_archive_config_parses_gcp_kms_encryption() {
+        let config = parse_replay_archive_config([
+            ("REPLAY_ARCHIVE_TYPE", "FileSystem"),
+            ("REPLAY_ARCHIVE_ROOT_PATH", "/tmp/replay-archive"),
+            ("REPLAY_ARCHIVE_ENCRYPTION_TYPE", "GcpKms"),
+            (
+                "REPLAY_ARCHIVE_ENCRYPTION_KMS_KEY_VERSION",
+                "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+            ),
+        ]);
+
+        match config {
+            ReplayArchiveConfig::FileSystem { encryption, .. } => match encryption {
+                ReplayArchiveEncryptionConfig::GcpKms { kms_key_version } => {
+                    assert_eq!(
+                        kms_key_version,
+                        "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1"
+                    );
+                }
+                _ => panic!("expected GCP KMS replay archive encryption"),
+            },
+            _ => panic!("expected file system replay archive config"),
         }
     }
 
@@ -3084,7 +3101,6 @@ mod tests {
                 pubdata_mode: Some(PubdataMode::Blobs),
                 max_batch_diff_to_upstream: None,
             },
-            gateway_sender_config: GatewaySenderConfig::default(),
             l1_watcher_config: L1WatcherConfig::default(),
             batcher_config: BatcherConfig::default(),
             prover_input_generator_config: ProverInputGeneratorConfig::default(),
@@ -3327,33 +3343,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_node_can_omit_l1_sender_operator_keys_when_gateway_sender_keys_set() {
-        let mut config = base_config(NodeRole::MainNode);
-        config.l1_sender_config.operator_commit_sk = None;
-        config.l1_sender_config.operator_prove_sk = None;
-        config.l1_sender_config.operator_execute_sk = None;
-        config.gateway_sender_config.operator_commit_sk = Some(local_signer(0x44));
-        config.gateway_sender_config.operator_prove_sk = Some(local_signer(0x55));
-        config.gateway_sender_config.operator_execute_sk = Some(local_signer(0x66));
-
-        config.validate().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn main_node_validation_rejects_duplicate_gateway_sender_addresses() {
-        let mut config = base_config(NodeRole::MainNode);
-        let signer = local_signer(0x77);
-        config.gateway_sender_config.operator_commit_sk = Some(signer.clone());
-        config.gateway_sender_config.operator_prove_sk = Some(signer);
-        config.gateway_sender_config.operator_execute_sk = Some(local_signer(0x88));
-
-        let err = config.validate().await.unwrap_err().to_string();
-
-        assert!(err.contains("`gateway_sender.operator_commit_sk`"));
-        assert!(err.contains("must be different"));
-    }
-
-    #[tokio::test]
     async fn batch_verification_requires_networking() {
         let mut config = base_config(NodeRole::MainNode);
         config.batch_verification_config.server_enabled = true;
@@ -3466,3 +3455,4 @@ mod tests {
         );
     }
 }
+

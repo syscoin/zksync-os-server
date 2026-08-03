@@ -2,10 +2,7 @@ use super::connection::OutboundMessage;
 use alloy::primitives::{Address, B256, BlockNumber};
 use reth_network::Direction;
 use reth_network_peers::PeerId;
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
-use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub enum ProtocolEvent {
@@ -84,3 +81,4 @@ pub struct PeerConnectionHandle {
 
 /// Registry of currently connected peers and their live protocol send handles.
 pub(crate) type ConnectionRegistry = Arc<RwLock<HashMap<PeerId, PeerConnectionHandle>>>;
+

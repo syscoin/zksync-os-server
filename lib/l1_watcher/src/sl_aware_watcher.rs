@@ -167,3 +167,4 @@ async fn run_segment<P: ProcessRawEvents>(
     watcher.run_inner().await;
     watcher.processor
 }
+

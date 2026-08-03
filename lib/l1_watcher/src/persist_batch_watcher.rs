@@ -1,7 +1,6 @@
-use crate::sl_aware_watcher::SegmentResolver;
 use crate::traits::ProcessRawEvents;
-use crate::watcher::L1WatcherError;
-use crate::{L1WatcherConfig, SegmentSpec, util};
+use crate::watcher::{L1WatcherError, StartResolver};
+use crate::{L1WatcherConfig, util};
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
 use anyhow::Context;
@@ -36,36 +35,29 @@ pub struct L1PersistBatchWatcher<BatchStorage> {
 }
 
 impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
-    /// Builds an [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) that walks every settlement-layer
-    /// interval still relevant to persistence, in order. Per-segment block resolution happens
-    /// here; event scanning happens lazily inside the watcher's `run()` loop.
-    ///
-    /// The migration contract requires `totalBatchesCommitted == totalBatchesExecuted` before a
-    /// chain can migrate off an SL (`Migrator.sol`), so each closed interval is self-contained:
-    /// every commit on that SL has a matching execute on the same SL, and the in-memory
-    /// `committed_batches` map is empty at interval boundaries.
+    /// Builds a finalized-boundary [`L1Watcher`](crate::L1Watcher) tailing the L1 diamond proxy.
+    /// Block resolution happens lazily inside the resolver so the starting
+    /// `last_persisted_batch` is read only once the watcher actually starts.
     pub fn create_watcher(
         config: L1WatcherConfig,
-        intervals: SettlementLayerIntervals,
+        zk_chain: ZkChain<NodeProvider>,
         batch_storage: BatchStorage,
         archive_l1_provider: Option<NodeProvider>,
     ) -> SegmentResolver<(), Self> {
         tracing::info!(
-            num_intervals = intervals.intervals().len(),
             config.max_blocks_to_process,
             ?config.poll_interval,
             "initializing L1 persist batch watcher"
         );
 
-        let max_blocks_to_process = config.max_blocks_to_process;
+        let provider = zk_chain.provider().clone();
+        let address = (*zk_chain.address()).into();
 
-        // Per-segment block resolution (and the starting `last_persisted_batch`) are deferred to
-        // the watcher's `run()`; only static dependencies are captured here.
-        let resolve_segments = move |()| async move {
+        let resolve_start = move |()| async move {
             let last_persisted_batch = batch_storage.latest_batch();
             tracing::info!(
                 last_persisted_batch,
-                "resolving L1 persist batch watcher segments"
+                "resolving L1 persist batch watcher start block"
             );
 
             // Build segment specs from the relevant intervals. The first non-skipped segment
@@ -172,10 +164,10 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
                 last_processed_commit_batch: last_persisted_batch,
                 last_persisted_batch_on_start: last_persisted_batch,
             };
-            Ok((segments, processor))
+            Ok((start_block, processor))
         };
 
-        SegmentResolver::new(config, resolve_segments)
+        StartResolver::new_finalized(config, provider, address, None, resolve_start)
     }
 
     async fn parse_committed_batch(
@@ -336,3 +328,4 @@ impl<BatchStorage: WriteBatch> ProcessRawEvents for L1PersistBatchWatcher<BatchS
         Ok(())
     }
 }
+

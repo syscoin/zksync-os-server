@@ -3,20 +3,16 @@ use super::config::{ExternalNodeProtocolConfig, ExternalNodeVerifierConfig};
 use super::connection::OutboundMessage;
 use crate::service::{PeerVerifyBatch, PeerVerifyBatchResult};
 use crate::version::ZksProtocolVersionSpec;
-use crate::wire::auth::{VerifierAuth, verifier_auth_prehash};
-use crate::wire::message::{ZksMessage, ZksMessageId};
+use crate::wire::message::ZksMessage;
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
 use alloy::primitives::BlockNumber;
 use alloy::signers::{SignerSync, local::PrivateKeySigner};
 use futures::{Stream, StreamExt};
-use reth_network_peers::PeerId;
-use secrecy::ExposeSecret;
-use std::str::FromStr;
 use std::sync::{Arc, RwLock};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use zksync_os_storage_api::ReplayRecord;
 
-/// Background task that drives an external-node side of a connection.
+/// Background task that drives the external-node side of a `zks` connection.
 ///
 /// Sends a `GetBlockReplays` request immediately, then forwards each received `BlockReplays`
 /// record to the local sequencer via `replay_sender` and advances `starting_block`.
@@ -32,7 +28,7 @@ pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
         max_blocks_per_message,
         trusted_main_node_peers,
         replay_sender,
-        verification: verifier,
+        verification: _,
     } = config;
     // SYSCOIN: Only the configured main-node enode is allowed to feed replay records to an EN.
     if !trusted_main_node_peers.contains(&peer_id) {
@@ -143,9 +139,9 @@ async fn send_replay_request<P: ZksProtocolVersionSpec>(
 ) -> Result<(), ()> {
     let next_block = *starting_block.read().unwrap();
     tracing::info!(next_block, "requesting block replays from main node");
-    let max_blocks_per_message = P::VERSION
-        .supports_message(ZksMessageId::VerifierRoleRequest)
-        .then_some(max_blocks_per_message.clamp(1, MAX_BLOCKS_PER_MESSAGE));
+    // The field remains optional to preserve the published `zks/5` request encoding. `None` is
+    // valid on the wire and makes the main node fall back to one record per response.
+    let max_blocks_per_message = Some(max_blocks_per_message.clamp(1, MAX_BLOCKS_PER_MESSAGE));
     let msg =
         ZksMessage::<P>::get_block_replays(next_block, max_blocks_per_message, record_overrides);
     outbound_tx
@@ -154,74 +150,16 @@ async fn send_replay_request<P: ZksProtocolVersionSpec>(
         .map_err(|_| ())
 }
 
-async fn receive_replay_and_verification<P: ZksProtocolVersionSpec>(
+async fn receive_replays<P: ZksProtocolVersionSpec>(
     mut conn: impl Stream<Item = ZksMessage<P>> + Unpin,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     starting_block: Arc<RwLock<BlockNumber>>,
     replay_sender: mpsc::Sender<ReplayRecord>,
-    peer_id: PeerId,
-    verifier: Option<ExternalNodeVerifierConfig>,
 ) {
-    let mut outgoing_verify_results = verifier
-        .as_ref()
-        .map(|verifier| verifier.outgoing_verify_results.subscribe());
-    loop {
-        tokio::select! {
-            msg = conn.next() => {
-                let Some(msg) = msg else {
-                    break;
-                };
-                match msg {
-                    ZksMessage::GetBlockReplays(_) => {
-                        tracing::info!("ignoring request as local node is also waiting for records");
-                    }
-                    ZksMessage::VerifyBatch(request) => {
-                        let Some(verifier) = &verifier else {
-                            tracing::info!("ignoring verify batch request; verifier transport not configured");
-                            continue;
-                        };
-                        if verifier
-                            .verify_batch_tx
-                            .send(PeerVerifyBatch {
-                                peer_id,
-                                message: request,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            tracing::info!("verify batch channel is closed; terminating");
-                            break;
-                        }
-                    }
-                    ZksMessage::BlockReplays(response) => {
-                        for record in response.records {
-                            let block_number = record.block_number();
-                            tracing::debug!(block_number, "received block replay");
-                            let record: ReplayRecord = match record.try_into() {
-                                Ok(record) => record,
-                                Err(error) => {
-                                    tracing::info!(%error, "failed to recover replay block");
-                                    return;
-                                }
-                            };
-
-                            let expected_next_block = *starting_block.read().unwrap();
-                            assert_eq!(block_number, expected_next_block);
-
-                            if replay_sender.send(record).await.is_err() {
-                                tracing::trace!("network replay channel is closed");
-                                return;
-                            }
-                            *starting_block.write().unwrap() += 1;
-                        }
-                    }
-                    other => {
-                        tracing::info!(
-                            ?other,
-                            "ignoring unsupported message while waiting for replay"
-                        );
-                    }
-                }
+    while let Some(msg) = conn.next().await {
+        match msg {
+            ZksMessage::GetBlockReplays(_) => {
+                tracing::info!("ignoring request as local node is also waiting for records");
             }
             result = recv_outgoing_verify_result(&mut outgoing_verify_results) => {
                 let Some(result) = result else {
@@ -244,23 +182,3 @@ async fn receive_replay_and_verification<P: ZksProtocolVersionSpec>(
     }
 }
 
-async fn recv_outgoing_verify_result(
-    receiver: &mut Option<broadcast::Receiver<PeerVerifyBatchResult>>,
-) -> Option<PeerVerifyBatchResult> {
-    let receiver = match receiver {
-        Some(receiver) => receiver,
-        None => {
-            std::future::pending::<()>().await;
-            unreachable!();
-        }
-    };
-    loop {
-        match receiver.recv().await {
-            Ok(result) => return Some(result),
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(skipped, "lagged on outgoing verify results broadcast");
-            }
-            Err(broadcast::error::RecvError::Closed) => return None,
-        }
-    }
-}

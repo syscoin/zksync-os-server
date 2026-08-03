@@ -426,3 +426,4 @@ mod tests {
         assert_eq!(syscoin_revm_prevrandao(), B256::from(U256::ONE));
     }
 }
+

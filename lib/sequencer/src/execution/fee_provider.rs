@@ -6,7 +6,7 @@ use num::{BigUint, ToPrimitive};
 use tokio::sync::watch;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
 use zksync_os_storage_api::ReplayRecord;
-use zksync_os_types::{PubdataMode, TokenPricesForFees};
+use zksync_os_types::{FeeParams, PubdataMode, TokenPricesForFees};
 
 /// Fee-related configuration.
 #[derive(Debug, Clone)]
@@ -422,3 +422,4 @@ mod tests {
         assert_eq!(price, BigUint::from(1_500u32));
     }
 }
+

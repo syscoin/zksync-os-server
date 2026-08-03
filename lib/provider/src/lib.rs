@@ -1,7 +1,7 @@
 //! The node's canonical Ethereum-network provider.
 //!
 //! [`NodeProvider`] is an object-safe, wallet-capable wrapper over
-//! [`alloy::providers::Provider<Ethereum>`] used everywhere the node talks to an L1, Gateway, or L2
+//! [`alloy::providers::Provider<Ethereum>`] used everywhere the node talks to an L1 or L2
 //! RPC. On top of the plain provider it caches per-address contract deployment blocks (see
 //! [`NodeProvider::deployment_block`]), so the many startup binary searches over L1 history can use
 //! a tight lower bound without each rediscovering it.
@@ -298,7 +298,9 @@ fn is_unsupported_finalized_tag_error(err: &alloy::transports::TransportError) -
 /// at most once. Each address gets its own [`OnceCell`] so concurrent lookups for the same address
 /// run the binary search exactly once and the rest await its result.
 type DeploymentBlockCache = Arc<Mutex<HashMap<Address, Arc<OnceCell<u64>>>>>;
-type HeaderWatcher = Arc<OnceCell<watch::Sender<<Ethereum as Network>::HeaderResponse>>>;
+// Holds a `Receiver` (not the `Sender`) so the poller task owns the only sender: if the task
+// ever dies, the channel closes and subscribers observe it instead of waiting forever.
+type HeaderWatcher = Arc<OnceCell<watch::Receiver<<Ethereum as Network>::HeaderResponse>>>;
 
 /// A version of `DynProvider` that exposes `wallet()` and `wallet_mut()` as defined in
 /// `EthWalletProvider`. Also uses `Box` instead of `Arc` to make sure the wallets are mutable.
@@ -372,7 +374,7 @@ impl NodeProvider {
                     .await
             })
             .await
-            .subscribe()
+            .clone()
     }
 
     /// Returns a shared watcher for the finalized block header via
@@ -408,8 +410,10 @@ impl NodeProvider {
     /// `WeakClient` shutdown. That preserves the client's transport/request layers, but it
     /// intentionally bypasses provider-level fillers/layers.
     ///
-    /// The shutdown is not tied to reth-tasks, it is only tied to the Provider. But it should be
-    /// fine because the task does not own any resources. This is similar to how alloy pollers work.
+    /// The shutdown is not tied to reth-tasks, it is only tied to the Provider, similar to how
+    /// alloy pollers work. The task must own the only `watch::Sender`: transient poll failures
+    /// are retried at the next tick, and if the task exits or panics for any other reason, the
+    /// channel closes so subscribers observe the failure instead of a silently frozen stream.
     async fn build_header_watcher(
         &self,
         block: BlockNumberOrTag,
@@ -436,8 +440,9 @@ impl NodeProvider {
         };
         let (tx, _) = watch::channel(initial_header);
         let weak_client = self.weak_client();
-        let tx_task = tx.clone();
 
+        // The task owns the only sender: if it exits or panics, subscribers see the channel
+        // close rather than a silently frozen stream.
         tokio::spawn(async move {
             let mut timer = tokio::time::interval(poll_interval);
             loop {
@@ -475,7 +480,7 @@ impl NodeProvider {
             }
         });
 
-        tx
+        rx
     }
 
     /// Returns the optional features the underlying provider was detected to support.
@@ -1379,3 +1384,4 @@ mod tests {
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 }
+

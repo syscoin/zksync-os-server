@@ -1,14 +1,12 @@
-use crate::interop_fee_updater::{InteropFeeUpdater, InteropFeeUpdaterConfig, LocalEthCall};
+use crate::interop_fee_updater::InteropFeeUpdaterConfig;
 use crate::metrics::TRANSACTION_POOL_METRICS;
 use crate::subpools::interop_fee::InteropFeeSubpool;
 use crate::subpools::interop_roots::InteropRootsSubpool;
 use crate::subpools::l1::L1Subpool;
 use crate::subpools::l2::{L2Subpool, L2TransactionsStreamMarker};
-use crate::subpools::sl_chain_id::SlChainIdSubpool;
 use crate::subpools::upgrade::{UpgradeSubpool, UpgradeTransactionsStream};
 use alloy::consensus::{Header, Sealed};
 use alloy::primitives::{Address, ChainId, TxHash};
-use alloy::providers::Provider;
 use anyhow::Context;
 use futures::stream::{BoxStream, PollNext};
 use futures::{Stream, StreamExt};
@@ -30,8 +28,8 @@ use zksync_os_l1_watcher::{
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{
-    L1TxSerialId, NodeRole, ProtocolSemanticVersion, SystemTxType, UpgradeInfo, UpgradeMetadata,
-    ZkEnvelope, ZkTransaction,
+    FeeParams, L1TxSerialId, NodeRole, ProtocolSemanticVersion, SystemTxType, UpgradeInfo,
+    UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
 
 /// General pool that provides unified access to all transaction sources in the system.
@@ -41,7 +39,6 @@ pub struct Pool<T> {
     runtime: Runtime,
     genesis: Genesis,
     upgrade_subpool: UpgradeSubpool,
-    sl_chain_id_subpool: SlChainIdSubpool,
     interop_fee_subpool: InteropFeeSubpool,
     interop_roots_subpool: InteropRootsSubpool,
     l1_subpool: L1Subpool,
@@ -63,7 +60,6 @@ struct Subcomponents {
 pub struct Config {
     pub node_role: NodeRole,
     pub chain_id: ChainId,
-    pub gateway_chain_id: ChainId,
     pub interop_roots_per_tx: usize,
     pub bytecode_supplier_address: Address,
     // SYSCOIN: startup cursor resolution may need an archive L1 provider while live watchers keep
@@ -79,28 +75,12 @@ impl<T: L2Subpool> Pool<T> {
         genesis: Genesis,
         l1_state: &L1State,
         config: Config,
-        eth_call: Box<dyn LocalEthCall>,
-        base_token_price: BaseTokenPriceHandle,
         l2_subpool: T,
     ) -> anyhow::Result<Self> {
         let upgrade_subpool = UpgradeSubpool::default();
-        let sl_chain_id_subpool = SlChainIdSubpool::default();
         let interop_fee_subpool = InteropFeeSubpool::default();
         let interop_roots_subpool = InteropRootsSubpool::new(config.interop_roots_per_tx);
         let l1_subpool = L1Subpool::new(10);
-
-        // The interop fee updater only runs on the main node and only when it is settling on Gateway.
-        let interop_fee_updater = if config.node_role.is_main() && l1_state.settles_on_gateway() {
-            Some(InteropFeeUpdater::new(
-                eth_call,
-                l1_state.diamond_proxy_sl.provider().clone().erased(),
-                base_token_price,
-                interop_fee_subpool.clone(),
-                config.interop_fee_updater_config.clone(),
-            ))
-        } else {
-            None
-        };
 
         let upgrade_watcher = L1UpgradeTxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -115,14 +95,6 @@ impl<T: L2Subpool> Pool<T> {
         )
         .await
         .context("failed to start L1 upgrade transaction watcher")?;
-
-        let interop_watcher = InteropWatcher::create_watcher(
-            l1_state.settlement_layer_intervals.clone(),
-            config.l1_watcher_config.clone(),
-            config.chain_id,
-            interop_roots_subpool.clone(),
-        )
-        .context("failed to create interop roots watcher")?;
 
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -145,7 +117,6 @@ impl<T: L2Subpool> Pool<T> {
             runtime,
             genesis,
             upgrade_subpool,
-            sl_chain_id_subpool,
             interop_fee_subpool,
             interop_roots_subpool,
             l1_subpool,
@@ -219,9 +190,8 @@ impl<T: L2Subpool> Pool<T> {
     /// Also provides upgrade information is there is one (which is not necessarily accompanied by
     /// an upgrade transaction).
     ///
-    /// `include_interop_traffic` should be `false` whenever the chain currently settles on L1 --
-    /// in that case interop-root and interop-fee system txs are not valid downstream (they only
-    /// flow through Gateway settlement) and must not be included in produced blocks.
+    /// `include_interop_traffic` is currently always `false`: interop-root and interop-fee
+    /// system txs have no producer until the upcoming L1-based interop re-enables them.
     ///
     /// Returns `None` if all transaction sources are closed.
     // SYSCOIN: Stream selection only needs shared access. Keeping this borrow immutable lets the
@@ -239,9 +209,6 @@ impl<T: L2Subpool> Pool<T> {
                 .await,
         );
 
-        let mut sl_chain_id_stream = tokio_stream::StreamExt::peekable(
-            self.sl_chain_id_subpool.best_transactions_stream().await,
-        );
         let interop_fee_stream = tokio_stream::StreamExt::peekable(
             self.interop_fee_subpool.best_transactions_stream().await,
         );
@@ -354,13 +321,14 @@ impl<T: L2Subpool> Pool<T> {
 
     pub fn update_pending_block_fees(
         &self,
-        pending_block_base_fee: u64,
+        fee_params: FeeParams,
         pending_block_blob_fee: Option<u128>,
     ) {
         let mut block_info = self.l2_subpool.block_info();
-        block_info.pending_basefee = pending_block_base_fee;
+        block_info.pending_basefee = fee_params.eip1559_basefee.saturating_to();
         block_info.pending_blob_fee = pending_block_blob_fee;
         self.l2_subpool.set_block_info(block_info);
+        self.l2_subpool.update_pending_fee_params(fee_params);
     }
 
     pub async fn on_canonical_state_change(
@@ -373,7 +341,6 @@ impl<T: L2Subpool> Pool<T> {
         let mut upgrade_txs = Vec::new();
         let mut interop_txs = Vec::new();
         let mut interop_fee_txs = Vec::new();
-        let mut sl_chain_id_txs = Vec::new();
         let mut l1_transactions = Vec::new();
         let mut l2_transactions = Vec::new();
         for tx in &replay_record.transactions {
@@ -385,9 +352,10 @@ impl<T: L2Subpool> Pool<T> {
                     SystemTxType::SetInteropFee(_) => {
                         interop_fee_txs.push(system_tx);
                     }
-                    SystemTxType::SetSLChainId(_, _) => {
-                        sl_chain_id_txs.push(system_tx);
-                    }
+                    // The only `SetSLChainId` txs in (replayed) block history are the v31
+                    // upgrade placeholders (migration_number == u64::MAX); nothing tracks
+                    // them anymore, so they are deliberately ignored.
+                    SystemTxType::SetSLChainId(_, _) => {}
                 },
                 ZkEnvelope::L1(l1_tx) => {
                     l1_transactions.push(l1_tx);
@@ -446,8 +414,6 @@ impl<T: L2Subpool> Pool<T> {
         Ok(StateChangeOutcome {
             last_interop_log_id,
             last_l1_priority_id,
-            last_migration_number: sl_chain_id_outcome.map(|o| o.last_migration_number),
-            last_sl_chain_id_target: sl_chain_id_outcome.map(|o| o.last_sl_chain_id_target),
             last_interop_fee_number,
         })
     }
@@ -471,11 +437,6 @@ pub struct StateChangeOutcome {
     pub last_interop_log_id: Option<u64>,
     /// Last L1 priority ID that was executed after canonical state change.
     pub last_l1_priority_id: Option<L1TxSerialId>,
-    /// Last migration number that was executed after canonical state change.
-    pub last_migration_number: Option<u64>,
-    /// Target settlement-layer chain id of the last `SetSLChainId` system tx applied in the
-    /// block (excluding the `u64::MAX` upgrade placeholder).
-    pub last_sl_chain_id_target: Option<ChainId>,
     /// Last interop fee update number that was executed after canonical state change.
     pub last_interop_fee_number: Option<u64>,
 }
@@ -536,3 +497,4 @@ impl<'a> MarkingTxStream<'a> {
         }
     }
 }
+
