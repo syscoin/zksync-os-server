@@ -16,9 +16,8 @@ pub use config::{
     ExternalNodeProtocolConfig, ExternalNodeVerifierConfig, MainNodeProtocolConfig,
     ZksProtocolConfig,
 };
-pub use connection::{OutboundMessage, ZksConnection};
-pub(crate) use events::ConnectionRegistry;
-pub use events::{PeerConnectionHandle, ProtocolEvent};
+pub use connection::ZksConnection;
+pub use events::ProtocolEvent;
 pub use handler::{ZksProtocolConnectionHandler, ZksProtocolHandler};
 pub use handler_shared_state::HandlerSharedState;
 

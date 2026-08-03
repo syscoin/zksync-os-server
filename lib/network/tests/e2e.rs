@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes};
+use alloy::primitives::{Address, B256, BlockNumber, Bytes};
 use alloy::signers::local::PrivateKeySigner;
 use assert_matches::assert_matches;
 use futures::StreamExt;
@@ -63,12 +63,6 @@ impl ReadReplay for InMemReplay {
         }
     }
 
-    fn get_canonical_block_hash(&self, _block_number: BlockNumber) -> Option<BlockHash> {
-        // SYSCOIN: This in-memory test replay store is only used for network replay payload tests,
-        // which do not exercise canonical block hash lookups.
-        None
-    }
-
     fn latest_record(&self) -> BlockNumber {
         self.canonical.keys().last().copied().unwrap_or_default()
     }
@@ -92,7 +86,6 @@ fn dummy_record<P: ZksProtocolVersionSpec>(block_number: BlockNumber) -> ReplayR
         ProtocolSemanticVersion::new(4, 5, 6),
         B256::random(),
         vec![],
-        B256::ZERO,
         BlockStartCursors {
             l1_priority_id: 42,
             interop_root_id: 0,
@@ -144,22 +137,17 @@ trait PeerExt {
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
-        verifier_enabled: bool,
-        trusted_main_node_peers: Vec<PeerId>,
     ) -> (
         mpsc::UnboundedReceiver<ProtocolEvent>,
         mpsc::Receiver<ReplayRecord>,
     );
 
-    #[allow(clippy::too_many_arguments)]
     fn add_zks_sub_protocol_with_test_handles<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
-        verifier_signing_key: Option<SecretString>,
-        trusted_main_node_peers: Vec<PeerId>,
         trusted_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles;
 
@@ -197,8 +185,6 @@ where
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
-        verifier_enabled: bool,
-        trusted_main_node_peers: Vec<PeerId>,
     ) -> (
         mpsc::UnboundedReceiver<ProtocolEvent>,
         mpsc::Receiver<ReplayRecord>,
@@ -212,22 +198,36 @@ where
             starting_block,
             replays,
             max_active_connections,
-            verifier_enabled.then(default_verifier_signing_key),
-            trusted_main_node_peers,
             HashSet::new(),
         );
         (protocol_rx, replay_rx)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_zks_sub_protocol_with_test_handles<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
         max_active_connections: usize,
-        verifier_signing_key: Option<SecretString>,
-        trusted_main_node_peers: Vec<PeerId>,
+        trusted_peers: HashSet<PeerId>,
+    ) -> TestPeerProtocolHandles {
+        self.add_zks_sub_protocol_with_storage::<P>(
+            node_role,
+            starting_block,
+            InMemReplay::new(replays),
+            vec![],
+            max_active_connections,
+            trusted_peers,
+        )
+    }
+
+    fn add_zks_sub_protocol_with_storage<P: ZksProtocolVersionSpec>(
+        &mut self,
+        node_role: NodeRole,
+        starting_block: BlockNumber,
+        replays: InMemReplay,
+        record_overrides: Vec<RecordOverride>,
+        max_active_connections: usize,
         trusted_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles {
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
@@ -236,21 +236,16 @@ where
         let handler = if node_role.is_main() {
             ZksProtocolHandler::<P, _>::for_main_node(replays, state)
         } else {
-            (
-                ZksProtocolHandler::<P, _>::for_external_node(
-                    InMemReplay(HashMap::from_iter(replays)),
-                    ExternalNodeProtocolConfig {
-                        starting_block: Arc::new(RwLock::new(starting_block)),
-                        record_overrides: vec![],
-                        max_blocks_per_message: 64,
-                        trusted_main_node_peers,
-                        replay_sender: replay_tx,
-                        verification,
-                    },
-                    state,
-                    connection_registry.clone(),
-                ),
-                None,
+            ZksProtocolHandler::<P, _>::for_external_node(
+                replays,
+                ExternalNodeProtocolConfig {
+                    starting_block: Arc::new(RwLock::new(starting_block)),
+                    record_overrides,
+                    max_blocks_per_message: 64,
+                    replay_sender: replay_tx,
+                    verification: None,
+                },
+                state,
             )
         };
         self.add_rlpx_sub_protocol(handler);
@@ -331,39 +326,25 @@ where
     }
 }
 
-#[test_casing(
-    4,
-    [
-        ZksVersion::Zks1,
-        ZksVersion::Zks2,
-        ZksVersion::Zks3,
-        ZksVersion::Zks4
-    ]
-)]
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn send_replay_record_matching_version() {
     // Run two peers that both communicate on exactly one matching zks protocol and successfully
     // transfer one replay record from peer0 to peer1.
-    async fn test_inner<P: ZksProtocolVersionSpec>() {
-        let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-        let record1 = dummy_record::<P>(1);
-        let main_peer_id = net.peers_mut()[0].peer_id();
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let record1 = dummy_record::<ZksProtocolV5>(1);
 
-        let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<P>(
-            NodeRole::MainNode,
-            0,
-            [(1, record1.clone())],
-            100,
-            false,
-            vec![],
-        );
-        let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<P>(
+    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV5>(
+        NodeRole::MainNode,
+        0,
+        [(1, record1.clone())],
+        100,
+    );
+    let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1]
+        .add_zks_sub_protocol::<ZksProtocolV5>(
             NodeRole::ExternalNode,
             1,
             [(1, record1.clone())],
             100,
-            false,
-            vec![main_peer_id],
         );
 
     let handle = net.spawn();
@@ -383,24 +364,19 @@ async fn send_replay_record_matching_version() {
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn emits_replay_session_events() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
+    let record1 = dummy_record::<ZksProtocolV5>(1);
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV5>(
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
         100,
-        false,
-        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV5>(
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone())],
         100,
-        false,
-        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -454,68 +430,17 @@ async fn emits_replay_session_events() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn external_node_rejects_replay_from_untrusted_peer() {
+async fn serves_overridden_replay_records() {
+    // Regression test for the reverted-block debugging flow (#657): an EN that requests record
+    // overrides must be served the rows stored under the overridden db keys instead of the
+    // canonical ones.
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let external_peer_id = net.peers_mut()[1].peer_id();
-
-    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
-        NodeRole::MainNode,
-        0,
-        [(1, record1)],
-        100,
-        false,
-        vec![],
-    );
-    let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
-        NodeRole::ExternalNode,
-        1,
-        [],
-        100,
-        false,
-        vec![external_peer_id],
-    );
-
-    let handle = net.spawn();
-    handle.connect_peers().await;
-
-    assert_matches!(from_peer0.recv().await, Some(ProtocolEvent::Established { peer_id, .. }) => {
-        assert_eq!(peer_id, *handle.peers()[1].peer_id());
-    });
-    let forbidden_replay_event =
-        tokio::time::timeout(std::time::Duration::from_millis(250), async {
-            loop {
-                match from_peer0.recv().await {
-                    Some(
-                        event @ (ProtocolEvent::ReplayRequested { .. }
-                        | ProtocolEvent::ReplayBlockSent { .. }),
-                    ) => return event,
-                    Some(_) => {}
-                    None => panic!("protocol event stream closed unexpectedly"),
-                }
-            }
-        })
-        .await;
-    assert!(
-        forbidden_replay_event.is_err(),
-        "untrusted peer must not receive a replay request or send replay records"
-    );
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            replay_rx_peer1.recv()
-        )
-        .await
-        .is_err()
-    );
-}
-
-#[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn batches_multiple_replay_records_on_zks3() {
-    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let record2 = dummy_record::<ZksProtocolV3>(2);
-    let main_peer_id = net.peers_mut()[0].peer_id();
+    let record1 = dummy_record::<ZksProtocolV5>(1);
+    let canonical2 = dummy_record::<ZksProtocolV5>(2);
+    let reverted2 = dummy_record::<ZksProtocolV5>(2);
+    assert_ne!(canonical2, reverted2);
+    // Opaque to the protocol; in production this is the reverted block's hash.
+    let db_key = vec![0xAB; 32];
 
     net.peers_mut()[0].add_zks_sub_protocol_with_storage::<ZksProtocolV5>(
         NodeRole::MainNode,
@@ -556,16 +481,12 @@ async fn batches_multiple_replay_records() {
         0,
         [(1, record1.clone()), (2, record2.clone())],
         100,
-        false,
-        vec![],
     );
     let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV5>(
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone()), (2, record2.clone())],
         100,
-        false,
-        vec![main_peer_id],
     );
 
     let handle = net.spawn();
@@ -612,359 +533,30 @@ async fn send_replay_record_different_versions() {
     // Peer 0 advertises `zks/0` and `zks/5`, while peer 1 advertises only `zks/0`. They must select
     // `zks/0`, whose replay record preserves only the block number.
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
-
-    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
+    let record1 = dummy_record::<ZksProtocolV5>(1);
+    let (_, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV5>(
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
         100,
-        false,
-        vec![],
     );
-    let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
-        NodeRole::ExternalNode,
-        1,
-        [(1, record1.clone())],
-        100,
-        true,
-        vec![main_peer_id],
-    );
-
-    let handle = net.spawn();
-    handle.connect_peers().await;
-
-    let peer1_id = *handle.peers()[1].peer_id();
-    let mut saw_verifier_role_requested = false;
-    let mut saw_replay_requested = false;
-
-    while !(saw_verifier_role_requested && saw_replay_requested) {
-        match from_peer0.recv().await {
-            Some(ProtocolEvent::VerifierRoleRequested { peer_id }) => {
-                assert_eq!(peer_id, peer1_id);
-                saw_verifier_role_requested = true;
-            }
-            Some(ProtocolEvent::ReplayRequested {
-                peer_id,
-                starting_block,
-            }) => {
-                assert_eq!(peer_id, peer1_id);
-                assert_eq!(starting_block, 1);
-                saw_replay_requested = true;
-            }
-            Some(ProtocolEvent::Established { .. } | ProtocolEvent::ReplayBlockSent { .. }) => {}
-            Some(
-                ProtocolEvent::VerifierChallengeSent { .. }
-                | ProtocolEvent::VerifierAuthorized { .. }
-                | ProtocolEvent::VerifierUnauthorized { .. },
-            ) => {}
-            Some(ProtocolEvent::Closed { .. }) => {}
-            Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
-                panic!("unexpected max active connections event")
-            }
-            None => panic!("protocol event stream closed before verifier role event was observed"),
-        }
-    }
-
-    let received_replay_record = replay_rx_peer1.recv().await.unwrap();
-    assert_eq!(received_replay_record, record1);
-}
-
-#[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn authorizes_verifier_before_replay() {
-    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
-    let expected_signer = PrivateKeySigner::from_str(
-        "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110",
-    )
-    .unwrap()
-    .address();
-
-    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV3>(
+    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV0>(
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
         100,
-        false,
-        vec![],
-    );
-    let (_, mut replay_rx_peer1) = net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV3>(
-        NodeRole::ExternalNode,
-        1,
-        [(1, record1.clone())],
-        100,
-        true,
-        vec![main_peer_id],
     );
 
-    let handle = net.spawn();
-    handle.connect_peers().await;
-
-    let peer1_id = *handle.peers()[1].peer_id();
-    let mut saw_verifier_role_requested = false;
-    let mut saw_verifier_challenge_sent = false;
-    let mut saw_verifier_authorized = false;
-    let mut saw_replay_requested = false;
-
-    while !(saw_verifier_role_requested
-        && saw_verifier_challenge_sent
-        && saw_verifier_authorized
-        && saw_replay_requested)
-    {
-        match from_peer0.recv().await {
-            Some(ProtocolEvent::VerifierRoleRequested { peer_id }) => {
-                assert_eq!(peer_id, peer1_id);
-                saw_verifier_role_requested = true;
-            }
-            Some(ProtocolEvent::VerifierChallengeSent { peer_id, .. }) => {
-                assert_eq!(peer_id, peer1_id);
-                saw_verifier_challenge_sent = true;
-            }
-            Some(ProtocolEvent::VerifierAuthorized { peer_id, signer }) => {
-                assert_eq!(peer_id, peer1_id);
-                assert_eq!(signer, expected_signer);
-                saw_verifier_authorized = true;
-            }
-            Some(ProtocolEvent::ReplayRequested {
-                peer_id,
-                starting_block,
-            }) => {
-                assert_eq!(peer_id, peer1_id);
-                assert_eq!(starting_block, 1);
-                saw_replay_requested = true;
-            }
-            Some(ProtocolEvent::Established { .. } | ProtocolEvent::ReplayBlockSent { .. }) => {}
-            Some(ProtocolEvent::VerifierUnauthorized { signer, .. }) => {
-                panic!("unexpected verifier unauthorized event: {signer:?}")
-            }
-            Some(ProtocolEvent::Closed { .. }) => {}
-            Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
-                panic!("unexpected max active connections event")
-            }
-            None => panic!("protocol event stream closed before verifier auth flow was observed"),
-        }
-    }
-
-    let received_replay_record = replay_rx_peer1.recv().await.unwrap();
-    assert_eq!(received_replay_record, record1);
-}
-
-#[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn emits_verifier_unauthorized_before_replay() {
-    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
-
-    let mut main = net.peers_mut()[0].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
-        NodeRole::MainNode,
-        0,
-        [(1, record1.clone())],
-        100,
-        None,
-        vec![],
-        HashSet::new(),
-    );
-    let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
-        NodeRole::ExternalNode,
-        1,
-        [(1, record1.clone())],
-        100,
-        Some(alternate_verifier_signing_key()),
-        vec![main_peer_id],
-        HashSet::new(),
-    );
-
-    let handle = net.spawn();
-    handle.connect_peers().await;
-
-    let peer1_id = *handle.peers()[1].peer_id();
-    let mut saw_verifier_role_requested = false;
-    let mut saw_verifier_challenge_sent = false;
-    let mut saw_verifier_unauthorized = false;
-    let mut saw_replay_requested = false;
-
-    while !(saw_verifier_role_requested
-        && saw_verifier_challenge_sent
-        && saw_verifier_unauthorized
-        && saw_replay_requested)
-    {
-        match main.protocol_rx.recv().await {
-            Some(ProtocolEvent::VerifierRoleRequested { peer_id }) => {
-                assert_eq!(peer_id, peer1_id);
-                saw_verifier_role_requested = true;
-            }
-            Some(ProtocolEvent::VerifierChallengeSent { peer_id, .. }) => {
-                assert_eq!(peer_id, peer1_id);
-                saw_verifier_challenge_sent = true;
-            }
-            Some(ProtocolEvent::VerifierUnauthorized { peer_id, signer }) => {
-                assert_eq!(peer_id, peer1_id);
-                assert!(signer.is_some());
-                saw_verifier_unauthorized = true;
-            }
-            Some(ProtocolEvent::ReplayRequested {
-                peer_id,
-                starting_block,
-            }) => {
-                assert_eq!(peer_id, peer1_id);
-                assert_eq!(starting_block, 1);
-                assert!(saw_verifier_unauthorized);
-                saw_replay_requested = true;
-            }
-            Some(ProtocolEvent::Established { .. } | ProtocolEvent::ReplayBlockSent { .. }) => {}
-            Some(ProtocolEvent::VerifierAuthorized { signer, .. }) => {
-                panic!("unexpected verifier authorized event: {signer:?}")
-            }
-            Some(ProtocolEvent::Closed { .. }) => {}
-            Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
-                panic!("unexpected max active connections event")
-            }
-            None => {
-                panic!("protocol event stream closed before verifier auth failure was observed")
-            }
-        }
-    }
-
-    let received_replay_record = external.replay_rx.recv().await.unwrap();
-    assert_eq!(received_replay_record, record1);
-}
-
-#[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn forwards_verify_batch_result_to_main_node() {
-    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let record1 = dummy_record::<ZksProtocolV3>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
-
-    let mut main = net.peers_mut()[0].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
-        NodeRole::MainNode,
-        0,
-        [(1, record1.clone())],
-        100,
-        None,
-        vec![],
-        HashSet::new(),
-    );
-    let mut external = net.peers_mut()[1].add_zks_sub_protocol_with_test_handles::<ZksProtocolV3>(
-        NodeRole::ExternalNode,
-        1,
-        [(1, record1.clone())],
-        100,
-        Some(default_verifier_signing_key()),
-        vec![main_peer_id],
-        HashSet::new(),
-    );
-
-    let handle = net.spawn();
-    handle.connect_peers().await;
-
-    let main_peer_id = *handle.peers()[0].peer_id();
-    let external_peer_id = *handle.peers()[1].peer_id();
-    let mut saw_verifier_authorized = false;
-    let mut saw_replay_requested = false;
-
-    while !(saw_verifier_authorized && saw_replay_requested) {
-        match main.protocol_rx.recv().await {
-            Some(ProtocolEvent::VerifierAuthorized { peer_id, .. }) => {
-                assert_eq!(peer_id, external_peer_id);
-                saw_verifier_authorized = true;
-            }
-            Some(ProtocolEvent::ReplayRequested {
-                peer_id,
-                starting_block,
-            }) => {
-                assert_eq!(peer_id, external_peer_id);
-                assert_eq!(starting_block, 1);
-                saw_replay_requested = true;
-            }
-            Some(
-                ProtocolEvent::Established { .. }
-                | ProtocolEvent::ReplayBlockSent { .. }
-                | ProtocolEvent::VerifierRoleRequested { .. }
-                | ProtocolEvent::VerifierChallengeSent { .. },
-            ) => {}
-            Some(ProtocolEvent::VerifierUnauthorized { signer, .. }) => {
-                panic!("unexpected verifier unauthorized event: {signer:?}")
-            }
-            Some(ProtocolEvent::Closed { .. }) => {}
-            Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
-                panic!("unexpected max active connections event")
-            }
-            None => panic!("protocol event stream closed before verifier auth flow was observed"),
-        }
-    }
-
-    let received_replay_record = external.replay_rx.recv().await.unwrap();
-    assert_eq!(received_replay_record, record1);
-
-    let result = dummy_verify_batch_result();
-    external
-        .outgoing_verify_results_tx
-        .as_ref()
-        .unwrap()
-        .send(PeerVerifyBatchResult {
-            peer_id: main_peer_id,
-            message: result.clone(),
-        })
-        .unwrap();
-
-    let forwarded = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        main.verify_result_rx.as_mut().unwrap().recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(forwarded.peer_id, external_peer_id);
-    assert_eq!(forwarded.message, result);
-}
-
-#[test_casing(
-    4,
-    [
-        ZksVersion::Zks1,
-        ZksVersion::Zks2,
-        ZksVersion::Zks3,
-        ZksVersion::Zks4
-    ]
-)]
-#[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn send_replay_record_different_versions(version: ZksVersion) {
-    // Run two peers where peer0 can communicate on zks protocol v0 AND v1, while peer1 can only
-    // communicate on v0. Test expects that they agree to communicate using v0 and manage to transfer
-    // one replay record where all fields except block number are stripped (v0 only keeps block number
-    // in tact).
-    async fn test_inner<P: ZksProtocolVersionSpec>() {
-        let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-        let record1 = dummy_record::<P>(1);
-        let main_peer_id = net.peers_mut()[0].peer_id();
-        let (_, _) = net.peers_mut()[0].add_zks_sub_protocol::<P>(
-            NodeRole::MainNode,
-            0,
+    let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1]
+        .add_zks_sub_protocol::<ZksProtocolV0>(
+            NodeRole::ExternalNode,
+            1,
             [(1, record1.clone())],
             100,
-            false,
-            vec![],
-        );
-        let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV0>(
-            NodeRole::MainNode,
-            0,
-            [(1, record1.clone())],
-            100,
-            false,
-            vec![],
         );
 
-        let (mut from_peer1, mut replay_rx_peer1) = net.peers_mut()[1]
-            .add_zks_sub_protocol::<ZksProtocolV0>(
-                NodeRole::ExternalNode,
-                1,
-                [(1, record1.clone())],
-                100,
-                false,
-                vec![main_peer_id],
-            );
+    let handle = net.spawn();
+    handle.connect_peers().await;
 
     assert_matches!(from_peer0.recv().await, Some(ProtocolEvent::Established { peer_id, .. }) => {
         assert_eq!(peer_id, *handle.peers()[1].peer_id());
@@ -1039,40 +631,19 @@ async fn max_active_connections() {
     // successfully connected first while peer2 is expected to error out with
     // `MaxActiveConnectionsExceeded`.
     let mut net = Testnet::create_with(3, MockEthProvider::default()).await;
-    let main_peer_id = net.peers_mut()[0].peer_id();
 
-    let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV1>(
-        NodeRole::MainNode,
-        1,
-        [],
-        1,
-        false,
-        vec![],
-    );
+    let (mut from_peer0, _) =
+        net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV5>(NodeRole::MainNode, 1, [], 1);
 
     let peer1 = &mut net.peers_mut()[1];
     let peer1_id = peer1.peer_id();
     let peer1_addr = peer1.local_addr();
-    let (_, _) = peer1.add_zks_sub_protocol::<ZksProtocolV1>(
-        NodeRole::ExternalNode,
-        1,
-        [],
-        100,
-        false,
-        vec![main_peer_id],
-    );
+    let (_, _) = peer1.add_zks_sub_protocol::<ZksProtocolV5>(NodeRole::ExternalNode, 1, [], 100);
 
     let peer2 = &mut net.peers_mut()[2];
     let peer2_id = peer2.peer_id();
     let peer2_addr = peer2.local_addr();
-    let (_, _) = peer2.add_zks_sub_protocol::<ZksProtocolV1>(
-        NodeRole::ExternalNode,
-        1,
-        [],
-        100,
-        false,
-        vec![main_peer_id],
-    );
+    let (_, _) = peer2.add_zks_sub_protocol::<ZksProtocolV5>(NodeRole::ExternalNode, 1, [], 100);
 
     let handle = net.spawn();
 
@@ -1117,20 +688,11 @@ async fn trusted_peer_bypasses_max_active_connections() {
             1,
             [],
             0,
-            None,
-            vec![],
             HashSet::from([peer1_id]),
         )
         .protocol_rx;
     let peer1_addr = net.peers_mut()[1].local_addr();
-    net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV1>(
-        NodeRole::ExternalNode,
-        1,
-        [],
-        100,
-        false,
-        vec![],
-    );
+    net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV5>(NodeRole::ExternalNode, 1, [], 100);
 
     let handle = net.spawn();
     handle.peers()[0].network().add_peer(peer1_id, peer1_addr);

@@ -1,4 +1,3 @@
-use super::connection::OutboundMessage;
 use alloy::primitives::{Address, B256, BlockNumber};
 use reth_network::Direction;
 use reth_network_peers::PeerId;
@@ -66,19 +65,4 @@ pub enum ProtocolEvent {
         max_connections: usize,
     },
 }
-
-/// Handle for sending messages to a currently connected peer.
-#[derive(Debug, Clone)]
-pub struct PeerConnectionHandle {
-    /// Negotiated `zks` protocol version for this live connection.
-    pub version: crate::version::ZksVersion,
-    /// Channel used to queue encoded protocol frames to the peer.
-    ///
-    /// SYSCOIN: The message wrapper carries replay-only flow-control permits without reducing the
-    /// existing control-message queue capacity.
-    pub outbound_tx: mpsc::Sender<OutboundMessage>,
-}
-
-/// Registry of currently connected peers and their live protocol send handles.
-pub(crate) type ConnectionRegistry = Arc<RwLock<HashMap<PeerId, PeerConnectionHandle>>>;
 

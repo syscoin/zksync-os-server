@@ -5,7 +5,6 @@
 
 pub mod v0;
 pub mod v3;
-pub mod v4;
 
 mod impls;
 
@@ -73,3 +72,4 @@ pub trait WireReplayRecord:
     /// Returns the record's block number without converting the full payload.
     fn block_number(&self) -> BlockNumber;
 }
+

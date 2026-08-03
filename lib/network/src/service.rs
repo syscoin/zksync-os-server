@@ -1,12 +1,15 @@
 use crate::config::NetworkConfig;
 use crate::protocol::{
-    ConnectionRegistry, ExternalNodeProtocolConfig, HandlerSharedState, MainNodeProtocolConfig,
-    OutboundMessage, ProtocolEvent, ZksProtocolConfig, ZksProtocolHandler,
+    ExternalNodeProtocolConfig, HandlerSharedState, MainNodeProtocolConfig, ProtocolEvent,
+    ZksProtocolConfig, ZksProtocolHandler,
 };
 use crate::raft::protocol::RaftProtocolHandler;
 use crate::session::PeerSessionStore;
-use crate::version::ZksProtocolV4;
-use crate::wire::message::ZksMessage;
+use crate::twofa::wire::Zks2faMessage;
+use crate::twofa::{
+    ExternalNode2faConfig, MainNode2faConfig, Zks2faConnectionRegistry, Zks2faProtocolHandler,
+};
+use crate::version::ZksProtocolV5;
 use crate::{VerifyBatch, VerifyBatchResult};
 use alloy::eips::eip2124::Head;
 use backon::{ConstantBuilder, Retryable};
@@ -485,13 +488,13 @@ impl NetworkService {
         let twofa_state =
             HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS, trusted_peers);
         builder
-            // SYSCOIN: Syscoin starts production networking at v31, so only advertise the
-            // non-lossy zks/4 replay protocol. Older replay formats cannot carry all start cursors.
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV4, _>::for_main_node(
-                replay,
-                protocol,
-                state,
-                connection_registry,
+            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV5, _>::for_main_node(
+                replay, state,
+            ))
+            .add_rlpx_sub_protocol(Zks2faProtocolHandler::for_main_node(
+                twofa_config,
+                twofa_state,
+                zks_2fa_registry,
             ))
     }
 
@@ -503,15 +506,35 @@ impl NetworkService {
         zks_2fa_registry: Zks2faConnectionRegistry,
         trusted_peers: HashSet<PeerId>,
     ) -> NetworkConfigBuilder {
-        let state = HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS, trusted_peers);
-        builder
-            // SYSCOIN: Match main-node policy and avoid downgrade/truncation of replay cursors.
-            .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV4, _>::for_external_node(
-                replay,
-                protocol,
-                state,
-                connection_registry,
-            ))
+        let state = HandlerSharedState::new(
+            protocol_tx.clone(),
+            MAX_ACTIVE_CONNECTIONS,
+            trusted_peers.clone(),
+        );
+        // Only verifier ENs advertise `zks_2fa`; replay-only ENs leave `verification` unset.
+        let twofa_config = protocol
+            .verification
+            .clone()
+            .map(|verifier| ExternalNode2faConfig {
+                signing_key: verifier.signing_key,
+                verify_batch_tx: verifier.verify_batch_tx,
+                outgoing_verify_results: verifier.outgoing_verify_results,
+            });
+        let builder = builder.add_rlpx_sub_protocol(
+            ZksProtocolHandler::<ZksProtocolV5, _>::for_external_node(replay, protocol, state),
+        );
+        match twofa_config {
+            Some(twofa_config) => {
+                let twofa_state =
+                    HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS, trusted_peers);
+                builder.add_rlpx_sub_protocol(Zks2faProtocolHandler::for_external_node(
+                    twofa_config,
+                    twofa_state,
+                    zks_2fa_registry,
+                ))
+            }
+            None => builder,
+        }
     }
 
     /// Consume the service by registering it as the set of long-running tasks that drive p2p
@@ -684,24 +707,8 @@ async fn dispatch_verify_batch(
             );
             continue;
         };
-        if connection.version < crate::version::ZksVersion::Zks3 {
-            tracing::warn!(
-                peer_id = %peer_id,
-                request_id = request.request_id,
-                batch_number = request.batch_number,
-                version = ?connection.version,
-                "skipping verify request: peer is not on zks/3"
-            );
-            continue;
-        }
-        // SYSCOIN: Only zks/4 is registered for production networking.
-        let encoded = ZksMessage::<ZksProtocolV4>::VerifyBatch(request.clone()).encoded();
-        if connection
-            .outbound_tx
-            .send(OutboundMessage::control(encoded))
-            .await
-            .is_err()
-        {
+        let encoded = Zks2faMessage::VerifyBatch(request.clone()).encoded();
+        if outbound_tx.send(encoded).await.is_err() {
             tracing::warn!(
                 peer_id = %peer_id,
                 request_id = request.request_id,
