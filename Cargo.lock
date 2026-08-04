@@ -16868,6 +16868,7 @@ dependencies = [
  "aws-config",
  "aws-runtime",
  "aws-sdk-s3",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "futures",

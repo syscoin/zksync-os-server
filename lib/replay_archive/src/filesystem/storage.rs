@@ -1,8 +1,8 @@
 use crate::{
-    ReplayArchiveSession, ReplayArchiveStorage, ReplayArchiver, ReplayRecordArchiver,
-    format_block_hash,
+    PublishedObjectIdentities, ReplayArchiveSession, ReplayArchiveStorage, ReplayArchiver,
+    ReplayRecordArchiver, ensure_published_identity_matches, format_block_hash,
 };
-use alloy::primitives::{BlockHash, BlockNumber};
+use alloy::primitives::{B256, BlockHash, BlockNumber, keccak256};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,7 @@ const TEMP_FILE_CREATE_ATTEMPTS: usize = 1024;
 pub struct FileSystemReplayArchiveStorage {
     root_path: PathBuf,
     session: ReplayArchiveSession,
+    published_digests: PublishedObjectIdentities<B256>,
 }
 
 impl FileSystemReplayArchiveStorage {
@@ -131,7 +132,11 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
                 )
             })?;
         sync_directory(&root_path).await?;
-        Ok(Self { root_path, session })
+        Ok(Self {
+            root_path,
+            session,
+            published_digests: PublishedObjectIdentities::default(),
+        })
     }
 
     async fn append_object(
@@ -140,6 +145,7 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
         block_hash: BlockHash,
         object: Vec<u8>,
     ) -> anyhow::Result<()> {
+        let object_digest = keccak256(&object);
         let block_dir_path = self.block_dir_path(block_number);
         tokio::fs::create_dir_all(&block_dir_path)
             .await
@@ -210,7 +216,8 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
             let _ = tokio::fs::remove_file(&temporary_object_path).await;
         }
         publish_result?;
-        Ok(())
+        self.published_digests
+            .record(block_number, block_hash, object_digest)
     }
 
     async fn contains_object(
@@ -218,13 +225,32 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
         block_number: BlockNumber,
         block_hash: BlockHash,
     ) -> anyhow::Result<bool> {
+        let Some(expected_digest) = self.published_digests.get(block_number, block_hash) else {
+            return Ok(false);
+        };
         let object_path = self.object_path(block_number, block_hash);
-        match tokio::fs::metadata(&object_path).await {
-            Ok(metadata) => Ok(metadata.is_file()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        match tokio::fs::read(&object_path).await {
+            Ok(object) => {
+                let stored_digest = keccak256(object);
+                // SYSCOIN: A path inside our random session can still be replaced by another
+                // holder of the filesystem credentials. Bind the gate to the bytes we published.
+                ensure_published_identity_matches(
+                    &object_path.display().to_string(),
+                    &expected_digest,
+                    Some(&stored_digest),
+                )?;
+                self.published_digests.remove(block_number, block_hash)?;
+                Ok(true)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "locally published replay archive object disappeared from {}",
+                    object_path.display()
+                )
+            }
             Err(err) => Err(err).with_context(|| {
                 format!(
-                    "failed to read replay archive object metadata {}",
+                    "failed to verify replay archive object {}",
                     object_path.display()
                 )
             }),
@@ -367,6 +393,12 @@ mod tests {
                 .unwrap(),
             object
         );
+        assert!(
+            !storage
+                .contains_object(block_number, block_hash)
+                .await
+                .unwrap()
+        );
         let mut entries = tokio::fs::read_dir(storage.block_dir_path(block_number))
             .await
             .unwrap();
@@ -377,5 +409,38 @@ mod tests {
                 entry.path()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn contains_object_rejects_replaced_payload() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let storage =
+            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
+                .await
+                .unwrap();
+        let block_number = 7;
+        let block_hash = BlockHash::with_last_byte(1);
+
+        storage
+            .append_object(block_number, block_hash, b"locally published".to_vec())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            storage.object_path(block_number, block_hash),
+            b"credentialed writer replacement",
+        )
+        .await
+        .unwrap();
+
+        let error = storage
+            .contains_object(block_number, block_hash)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no longer matches the locally published object"),
+            "{error:#}"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
-    ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession, ReplayArchiveStorage,
-    ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
+    PublishedObjectIdentities, ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession,
+    ReplayArchiveStorage, ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
+    ensure_published_identity_matches,
 };
 use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
@@ -12,7 +13,10 @@ use aws_sdk_s3::{
     error::{ProvideErrorMetadata as _, SdkError},
     operation::put_object::PutObjectError,
     primitives::ByteStream,
+    types::ChecksumMode,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 
 /// Object metadata key recording which node archived the object; forensic only.
@@ -72,6 +76,7 @@ pub struct S3ReplayArchiveStorage {
     config: S3ReplayArchiveConfig,
     session: ReplayArchiveSession,
     client: Client,
+    published_checksums: PublishedObjectIdentities<String>,
 }
 
 impl S3ReplayArchiveStorage {
@@ -91,8 +96,9 @@ impl S3ReplayArchiveStorage {
         format!("{}/{}", self.session, SESSION_MARKER_FILE_NAME)
     }
 
-    async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<()> {
+    async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<String> {
         let upload_token = crate::new_upload_token();
+        let checksum = STANDARD.encode(Sha256::digest(&object));
         let result = self
             .client
             .put_object()
@@ -100,17 +106,26 @@ impl S3ReplayArchiveStorage {
             .key(key)
             .metadata(ARCHIVED_BY_METADATA_KEY, self.session.node_id())
             .metadata(UPLOAD_TOKEN_METADATA_KEY, &upload_token)
+            .checksum_sha256(&checksum)
             .if_none_match("*")
             .body(ByteStream::from(object))
             .send()
             .await;
         match result {
-            Ok(_) => Ok(()),
+            Ok(output) => {
+                ensure_published_identity_matches(
+                    &format!("s3://{}/{}", self.config.bucket_base_url, key),
+                    checksum.as_str(),
+                    output.checksum_sha256(),
+                )?;
+                Ok(checksum)
+            }
             // SYSCOIN: a conditional PUT may have succeeded before its response was lost. Accept
             // the retry conflict only when the stored unguessable token belongs to this request;
             // a first-writer object from any other request still fails closed.
             Err(err) if is_precondition_failed(&err) => {
-                self.verify_upload_token(key, &upload_token).await
+                self.verify_upload(key, &upload_token, &checksum).await?;
+                Ok(checksum)
             }
             Err(err) => Err(err).with_context(|| {
                 format!(
@@ -121,12 +136,18 @@ impl S3ReplayArchiveStorage {
         }
     }
 
-    async fn verify_upload_token(&self, key: &str, expected_token: &str) -> anyhow::Result<()> {
+    async fn verify_upload(
+        &self,
+        key: &str,
+        expected_token: &str,
+        expected_checksum: &str,
+    ) -> anyhow::Result<()> {
         let object = self
             .client
             .head_object()
             .bucket(&self.config.bucket_base_url)
             .key(key)
+            .checksum_mode(ChecksumMode::Enabled)
             .send()
             .await
             .with_context(|| {
@@ -139,11 +160,9 @@ impl S3ReplayArchiveStorage {
             .metadata()
             .and_then(|metadata| metadata.get(UPLOAD_TOKEN_METADATA_KEY))
             .map(String::as_str);
-        crate::ensure_upload_token_matches(
-            &format!("s3://{}/{}", self.config.bucket_base_url, key),
-            expected_token,
-            stored_token,
-        )
+        let location = format!("s3://{}/{}", self.config.bucket_base_url, key);
+        crate::ensure_upload_token_matches(&location, expected_token, stored_token)?;
+        ensure_published_identity_matches(&location, expected_checksum, object.checksum_sha256())
     }
 }
 
@@ -170,6 +189,7 @@ impl ReplayArchiveStorage for S3ReplayArchiveStorage {
             config,
             session,
             client,
+            published_checksums: PublishedObjectIdentities::default(),
         };
         storage
             .put_new_object(&storage.session_marker_key(), Vec::new())
@@ -189,8 +209,11 @@ impl ReplayArchiveStorage for S3ReplayArchiveStorage {
         block_hash: BlockHash,
         object: Vec<u8>,
     ) -> anyhow::Result<()> {
-        self.put_new_object(&self.object_key(block_number, block_hash), object)
-            .await
+        let checksum = self
+            .put_new_object(&self.object_key(block_number, block_hash), object)
+            .await?;
+        self.published_checksums
+            .record(block_number, block_hash, checksum)
     }
 
     async fn contains_object(
@@ -198,18 +221,36 @@ impl ReplayArchiveStorage for S3ReplayArchiveStorage {
         block_number: BlockNumber,
         block_hash: BlockHash,
     ) -> anyhow::Result<bool> {
+        let Some(expected_checksum) = self.published_checksums.get(block_number, block_hash) else {
+            return Ok(false);
+        };
         let key = self.object_key(block_number, block_hash);
         match self
             .client
             .head_object()
             .bucket(&self.config.bucket_base_url)
             .key(&key)
+            .checksum_mode(ChecksumMode::Enabled)
             .send()
             .await
         {
-            Ok(_) => Ok(true),
+            Ok(object) => {
+                // SYSCOIN: S3 validates this SHA-256 during PUT, so checking it here binds the
+                // commit gate to the exact bytes this process successfully published.
+                ensure_published_identity_matches(
+                    &format!("s3://{}/{}", self.config.bucket_base_url, key),
+                    expected_checksum.as_str(),
+                    object.checksum_sha256(),
+                )?;
+                self.published_checksums.remove(block_number, block_hash)?;
+                Ok(true)
+            }
             Err(err) if matches!(err.as_service_error(), Some(err) if err.is_not_found()) => {
-                Ok(false)
+                anyhow::bail!(
+                    "locally published replay archive object disappeared from s3://{}/{}",
+                    self.config.bucket_base_url,
+                    key
+                )
             }
             Err(err) => Err(err).with_context(|| {
                 format!(

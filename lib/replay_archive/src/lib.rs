@@ -1,8 +1,9 @@
 use alloy::primitives::{BlockHash, BlockNumber};
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use zksync_os_storage_api::ReplayRecord;
 
 mod age_encrypted;
@@ -69,6 +70,96 @@ fn ensure_upload_token_matches(
     anyhow::ensure!(
         stored_token == Some(expected_token),
         "append-only replay archive object already exists with a different upload token at {location}"
+    );
+    Ok(())
+}
+
+/// Process-local identities returned by successful backend writes.
+///
+/// SYSCOIN: A session prefix only prevents first-writer collisions. The archive gate also needs a
+/// backend-authenticated identity for the exact object this process published so an overwrite by
+/// another credentialed writer cannot satisfy the gate.
+#[derive(Debug)]
+struct PublishedObjectIdentities<Identity> {
+    inner: Arc<RwLock<HashMap<(BlockNumber, BlockHash), Identity>>>,
+}
+
+impl<Identity> Default for PublishedObjectIdentities<Identity> {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+impl<Identity> Clone for PublishedObjectIdentities<Identity> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl<Identity> PublishedObjectIdentities<Identity>
+where
+    Identity: Clone,
+{
+    fn record(
+        &self,
+        block_number: BlockNumber,
+        block_hash: BlockHash,
+        identity: Identity,
+    ) -> anyhow::Result<()> {
+        let mut identities = self
+            .inner
+            .write()
+            .expect("published replay archive identity lock is poisoned");
+        match identities.entry((block_number, block_hash)) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(identity);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(_) => anyhow::bail!(
+                "replay archive object identity was already recorded for block #{block_number}, {block_hash}"
+            ),
+        }
+    }
+
+    fn get(&self, block_number: BlockNumber, block_hash: BlockHash) -> Option<Identity> {
+        self.inner
+            .read()
+            .expect("published replay archive identity lock is poisoned")
+            .get(&(block_number, block_hash))
+            .cloned()
+    }
+
+    fn remove(&self, block_number: BlockNumber, block_hash: BlockHash) -> anyhow::Result<()> {
+        // SYSCOIN: The gate consumes each block once; discard its receipt after verification so a
+        // long-lived sequencer retains only the uncommitted backlog.
+        let removed = self
+            .inner
+            .write()
+            .expect("published replay archive identity lock is poisoned")
+            .remove(&(block_number, block_hash));
+        anyhow::ensure!(
+            removed.is_some(),
+            "locally published replay archive identity disappeared for block #{block_number}, {block_hash}"
+        );
+        Ok(())
+    }
+}
+
+fn ensure_published_identity_matches<Identity>(
+    location: &str,
+    expected: &Identity,
+    stored: Option<&Identity>,
+) -> anyhow::Result<()>
+where
+    Identity: PartialEq + ?Sized,
+{
+    anyhow::ensure!(
+        stored == Some(expected),
+        "replay archive object no longer matches the locally published object at {location}"
     );
     Ok(())
 }
@@ -305,7 +396,10 @@ pub trait ReplayArchiveStorage: Sized + Send + Sync + 'static {
         object: Vec<u8>,
     ) -> anyhow::Result<()>;
 
-    /// Checks whether an object exists in this storage session.
+    /// Verifies the exact object successfully published by this process is still stored.
+    ///
+    /// Returns `false` until the local append succeeds. A successful verification consumes the
+    /// process-local identity; the single archive gate must verify each block exactly once.
     async fn contains_object(
         &self,
         block_number: BlockNumber,
@@ -323,7 +417,7 @@ pub trait ReplayArchiver: Send + Sync + 'static {
         replay_record: ReplayRecord,
     ) -> anyhow::Result<()>;
 
-    /// Checks whether this writer's session contains the archived object.
+    /// Verifies this writer's exact locally published object and consumes its local identity.
     async fn contains_replay_record(
         &self,
         block_number: BlockNumber,
@@ -444,6 +538,13 @@ mod tests {
         ensure_upload_token_matches("archive/key", "ours", Some("ours")).unwrap();
         ensure_upload_token_matches("archive/key", "ours", Some("theirs")).unwrap_err();
         ensure_upload_token_matches("archive/key", "ours", None).unwrap_err();
+    }
+
+    #[test]
+    fn gate_identity_rejects_replaced_object() {
+        ensure_published_identity_matches("archive/key", &7, Some(&7)).unwrap();
+        ensure_published_identity_matches("archive/key", &7, Some(&8)).unwrap_err();
+        ensure_published_identity_matches("archive/key", &7, None).unwrap_err();
     }
 
     #[tokio::test]

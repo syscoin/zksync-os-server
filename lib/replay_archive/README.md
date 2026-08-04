@@ -37,7 +37,9 @@ or extra archive metadata in the object body.
 Implementations of `ReplayArchiveStorage` must provide isolated, append-only writes:
 
 - `init` must create a fresh random session and fail if that session already exists.
-- `contains_object` checks only the current writer's session.
+- `contains_object` checks the exact object identity published by this process in its current
+  session. Its successful result consumes the process-local identity because the single L1 commit
+  gate checks each block once.
 - `append_object` creates a missing key and fails if the key already exists.
 - Existing archive data must never be accepted as this writer's successful append.
 
@@ -72,6 +74,11 @@ local writer rather than on unverified presence created by another writer.
 > conditional-create conflict is accepted only when the stored token matches that exact request,
 > which handles an SDK retry after a lost success response without accepting another writer's
 > object.
+
+> **SYSCOIN:** The L1 commit gate also revalidates the locally published object identity. S3 uses
+> the service-validated SHA-256 checksum returned by `PutObject`, GCS uses the immutable object
+> generation, and the filesystem backend hashes the current bytes. An overwrite by another holder
+> of the archive credentials therefore fails closed instead of satisfying the gate.
 
 ## Implementations
 
@@ -316,6 +323,11 @@ The S3 backend follows the old object-store initialization path: credentials are
 configured credentials file, `endpoint` overrides S3 API endpoint for S3-compatible
 providers, and `region` is used as the first region provider before falling back to the SDK
 defaults and then `auto`.
+
+> **SYSCOIN rollout:** An S3-compatible endpoint must support SHA-256 checksums on `PutObject` and
+> checksum mode on `HeadObject`. When bucket-level SSE-KMS is enabled, grant the node the KMS
+> permissions required by the provider to retrieve object checksums; AWS S3 general-purpose
+> buckets require `kms:Decrypt`.
 
 GCS archive with GCP KMS encryption (the primary mode for our deployments):
 
