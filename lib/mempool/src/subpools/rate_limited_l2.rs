@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Receiver;
+use zksync_os_types::L2Transaction;
 use zksync_os_types::{FeeParams, ProtocolSemanticVersion};
 
 /// Rate limiter for incoming L2 transactions, gating admission based on the sequencer's
@@ -174,9 +175,9 @@ pub fn gas_rate_limit_retry_after(err: &PoolError) -> Option<Duration> {
 pub(crate) struct RateLimitedL2Subpool<T> {
     inner: T,
     limiter: Option<Arc<TxGasRateLimiter>>,
-    /// None until `arm_gas_rate_limiter` runs — skip draining until then, since replay/
+    /// Empty until `arm_gas_rate_limiter` runs — skip draining until then, since replay/
     /// catch-up blocks arrive at replay speed. Shared across clones so arming one arms all.
-    started_at: Arc<std::sync::OnceLock<u64>>,
+    armed: Arc<std::sync::OnceLock<()>>,
 }
 
 impl<T> RateLimitedL2Subpool<T> {
@@ -184,7 +185,7 @@ impl<T> RateLimitedL2Subpool<T> {
         Self {
             inner,
             limiter,
-            started_at: Arc::new(std::sync::OnceLock::new()),
+            armed: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -192,12 +193,8 @@ impl<T> RateLimitedL2Subpool<T> {
     /// without needing a real (or fake) `TransactionPool` to construct one.
     fn arm(&self) {
         if self.limiter.is_some() {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
             // Only the first arm call sets it; harmless if called more than once.
-            let _ = self.started_at.set(now);
+            let _ = self.armed.set(());
         }
     }
 
@@ -210,16 +207,19 @@ impl<T> RateLimitedL2Subpool<T> {
         limiter.try_admit().err()
     }
 
-    /// The limiter to drain against a block with this timestamp, if armed and the block
-    /// postdates arming.
-    fn limiter_to_drain(&self, block_timestamp: u64) -> Option<&TxGasRateLimiter> {
+    /// The limiter to drain against post-startup blocks, if armed.
+    fn limiter_to_drain(&self) -> Option<&TxGasRateLimiter> {
         let limiter = self.limiter.as_ref()?;
-        let &started_at = self.started_at.get()?;
-        (block_timestamp >= started_at).then_some(limiter.as_ref())
+        self.armed.get()?;
+        Some(limiter.as_ref())
     }
 }
 
 impl<T: L2Subpool> L2Subpool for RateLimitedL2Subpool<T> {
+    async fn validate_l2_transaction(&self, transaction: L2Transaction) -> PoolResult<()> {
+        self.inner.validate_l2_transaction(transaction).await
+    }
+
     fn arm_gas_rate_limiter(&self) {
         self.arm();
     }
@@ -594,7 +594,7 @@ impl<T: TransactionPoolExt> TransactionPoolExt for RateLimitedL2Subpool<T> {
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        if let Some(limiter) = self.limiter_to_drain(update.new_tip.header().timestamp()) {
+        if let Some(limiter) = self.limiter_to_drain() {
             limiter.on_block(update.new_tip.header().gas_used());
         }
         self.inner.on_canonical_state_change(update);
@@ -751,18 +751,14 @@ mod tests {
             pool.gas_rate_limit_rejection(Address::repeat_byte(0xbb))
                 .is_none()
         );
-        assert!(pool.limiter_to_drain(u64::MAX).is_none());
+        assert!(pool.limiter_to_drain().is_none());
     }
 
     #[test]
-    fn drain_applies_only_to_blocks_sealed_after_arming() {
+    fn drain_applies_only_after_arming() {
         let pool = RateLimitedL2Subpool::new((), Some(Arc::new(limiter())));
-        // Not armed yet: even a block far in the "future" must not drain.
-        assert!(pool.limiter_to_drain(u64::MAX).is_none());
+        assert!(pool.limiter_to_drain().is_none());
         pool.arm();
-        // Armed: a block sealed after arming drains...
-        assert!(pool.limiter_to_drain(u64::MAX).is_some());
-        // ...but one that predates arming (WAL replay, EN catch-up) must not.
-        assert!(pool.limiter_to_drain(0).is_none());
+        assert!(pool.limiter_to_drain().is_some());
     }
 }

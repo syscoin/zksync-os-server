@@ -29,6 +29,7 @@ use zksync_os_server::config::{RebuildBounds, RebuildConfig};
 const BLOCKS_TO_MINE_BEFORE_REBUILD: u64 = 10;
 const BLOCKS_FROM_TIP_TO_EMPTY: u64 = 4;
 const TRANSACTION_SEND_INTERVAL: Duration = Duration::from_millis(5);
+const DELAYED_BATCH_SEAL_TIMEOUT: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60);
 
 /// Fetches committed batch `batch_number` from L1, returning `(batch_hash, first_block, last_block)`.
 async fn fetch_committed_batch(
@@ -178,7 +179,9 @@ async fn rebuild_after_emptying_historical_block_preserves_unrelated_l2_txs(
 ) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     {
-        config.batcher_config.enabled = false;
+        // Keep block production enabled while ensuring these local rebuild fixtures cannot race
+        // an L1 commit. Disabled-batcher Syscoin nodes are intentionally replay-only.
+        config.batcher_config.batch_timeout = DELAYED_BATCH_SEAL_TIMEOUT;
         config.sequencer_config.block_time = Duration::from_millis(50);
     }
     let tester = env.launch(config).await?;
@@ -382,7 +385,7 @@ async fn rebuild_panics_if_from_block_is_already_committed(
 /// restarts after it has already run.
 ///
 /// Scenario:
-///   1. Start a node (batcher disabled) and mine a few blocks.
+///   1. Start a node with delayed batch sealing and mine a few blocks.
 ///   2. Snapshot block 1's hash; configure `BlockRebuild` with `reset_timestamps: true` so the
 ///      rebuilt block gets a new hash, making the guard detectable on the second restart.
 ///   3. First restart: hash matches → rebuild runs; block 1 gets a new hash.
@@ -393,7 +396,7 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
     env: TestEnvironment,
 ) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
-    config.batcher_config.enabled = false;
+    config.batcher_config.batch_timeout = DELAYED_BATCH_SEAL_TIMEOUT;
     config.sequencer_config.block_time = Duration::from_millis(50);
     let tester = env.launch(config).await?;
 
@@ -664,10 +667,10 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
 ///
 /// Scenario:
 ///   1. Commit a batch on L1.
-///   2. First restart: `rebuild.mode = l1_revert`, `from_batch_number = 1`, batcher disabled so nothing
-///      re-commits; `last_committed_batch` drops to 0.
+///   2. First restart: `rebuild.mode = l1_revert`, `from_batch_number = 1`, batcher disabled so
+///      nothing re-commits; `last_committed_batch` drops to 0.
 ///   3. Second restart: same config; `last_committed_batch (0) < from_batch_number (1)` → graceful skip.
-///   4. Assert the node starts cleanly and processes new L2 transactions.
+///   4. Assert the replay-only node starts cleanly and serves RPC.
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
 async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
@@ -694,7 +697,7 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
     let mut revert_config = stopped.config().clone();
-    // Disable the batcher so last_committed_batch stays at 0 after the revert, giving the
+    // Keep the node replay-only so last_committed_batch stays at 0 after the revert, giving the
     // idempotency test a stable condition to exercise the graceful-skip path.
     revert_config.batcher_config.enabled = false;
     // Revert batch 1 and above; L1Revert mode means no local block rebuild runs.
@@ -717,8 +720,9 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     let stopped2 = first_reverted.stop().await?;
     let second = stopped2.start_with_config(revert_config).await?;
 
-    // Confirm the node started cleanly and is alive.
-    send_throwaway_tx(&second).await?;
+    // Confirm the replay-only node started cleanly and serves RPC. Transaction production is
+    // intentionally disabled together with its batcher.
+    second.l2_provider.get_block_number().await?;
 
     Ok(())
 }

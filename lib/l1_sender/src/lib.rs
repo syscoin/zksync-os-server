@@ -35,7 +35,7 @@ use tokio::sync::{mpsc, watch};
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState, StateLabel};
 use zksync_os_operator_signer::SignerConfig;
-use zksync_os_pipeline::{ComponentId, PeekableReceiver, SendAndRecordExt};
+use zksync_os_pipeline::{ComponentId, HasBlockRangeEnd, PeekableReceiver};
 use zksync_os_provider::{EthWalletProvider, NodeProvider};
 
 /// Component-specific state for the L1 sender.
@@ -514,7 +514,13 @@ where
     } else {
         // SYSCOIN: recovery resubmissions are outside the normal pre-simulated batch,
         // so keep the existing padded `eth_estimateGas` path for those one-off txs.
-        apply_l1_gas_limit(provider, &mut tx_request).await?;
+        apply_l1_gas_limit(provider, &mut tx_request)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to estimate gas for {command_name} {tx_range} to {to_address} (gateway={gateway})"
+                )
+            })?;
     }
 
     let execution_balance_required = tx_request.max_fee_per_gas.unwrap_or_default()
@@ -944,9 +950,27 @@ where
     for command in completed_commands {
         for mut output_envelope in command.into() {
             output_envelope.set_stage(Input::MINED_STAGE);
-            outbound.send_and_record(output_envelope, state_reporter)?;
+            send_output_with_backpressure(outbound, output_envelope, state_reporter).await?;
         }
     }
+    Ok(())
+}
+
+// SYSCOIN: One L1 command may complete several envelopes at once, while the next pipeline stage
+// deliberately has a small channel. Treat that burst as normal backpressure instead of a crash.
+async fn send_output_with_backpressure(
+    outbound: &mpsc::Sender<SignedBatchEnvelope<FriProof>>,
+    output: SignedBatchEnvelope<FriProof>,
+    state_reporter: &ComponentStateReporter,
+) -> anyhow::Result<()> {
+    let block_number = output.block_number();
+    let block_timestamp = output.block_timestamp();
+    let batch_number = output.batch_number();
+    outbound
+        .send(output)
+        .await
+        .map_err(|_| anyhow::anyhow!("L1 sender downstream channel closed"))?;
+    state_reporter.record_processed(block_number, block_timestamp, Some(batch_number));
     Ok(())
 }
 
@@ -1513,10 +1537,12 @@ async fn process_prepending_passthrough_commands<Input: SendToL1 + Send + 'stati
                             batch_number = batch.batch_number(),
                             "Not actually sending to L1, just passing through"
                         );
-                        outbound.send_and_record(
+                        send_output_with_backpressure(
+                            outbound,
                             (*batch).with_stage(Input::PASSTHROUGH_STAGE),
                             state_reporter,
-                        )?;
+                        )
+                        .await?;
                     }
                 }
             }
@@ -2331,5 +2357,3 @@ mod tests {
         assert!(fee_config.validate_syscoin_fee_caps().is_err());
     }
 }
-
-

@@ -566,6 +566,3 @@ mod tests {
         assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
     }
 }
-
-
-

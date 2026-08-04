@@ -396,7 +396,7 @@ impl NodeProvider {
                     .await
             })
             .await
-            .subscribe())
+            .clone())
     }
 
     /// Returns whether this provider can query finalized/safe block tags.
@@ -418,7 +418,7 @@ impl NodeProvider {
         &self,
         block: BlockNumberOrTag,
         poll_interval: Duration,
-    ) -> watch::Sender<<Ethereum as Network>::HeaderResponse> {
+    ) -> watch::Receiver<<Ethereum as Network>::HeaderResponse> {
         // SYSCOIN: transient transport errors must not take the node down, and some
         // Syscoin/Gateway startup windows may not expose a finalized block yet — wait for the
         // first header instead of panicking.
@@ -438,7 +438,7 @@ impl NodeProvider {
             }
             tokio::time::sleep(poll_interval).await;
         };
-        let (tx, _) = watch::channel(initial_header);
+        let (tx, rx) = watch::channel(initial_header);
         let weak_client = self.weak_client();
 
         // The task owns the only sender: if it exits or panics, subscribers see the channel
@@ -469,7 +469,7 @@ impl NodeProvider {
                     tracing::debug!(?block, "header watcher RPC returned no block; retrying");
                     continue;
                 };
-                tx_task.send_if_modified(|current: &mut <Ethereum as Network>::HeaderResponse| {
+                tx.send_if_modified(|current: &mut <Ethereum as Network>::HeaderResponse| {
                     if current.hash() == header.hash() {
                         false
                     } else {
@@ -1384,4 +1384,3 @@ mod tests {
         assert!(asserter.read_q().is_empty(), "all responses consumed");
     }
 }
-

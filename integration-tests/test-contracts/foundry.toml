@@ -8,10 +8,13 @@ via_ir = true
 fs_permissions = [{ access = "read", path = "./test/fixtures" }]
 allow_paths = [
     "../..",
+    "../../../zksync-era/contracts",
     "../../../zksync-era/contracts/lib/openzeppelin-contracts-v4",
     "../../../zksync-era/contracts/lib/openzeppelin-contracts-upgradeable-v4",
 ]
 remappings = [
+    "@zksync-era/=../../../zksync-era/contracts/",
+    "system-contracts/=../../../zksync-era/contracts/system-contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-v4/=../../../zksync-era/contracts/lib/openzeppelin-contracts-v4/contracts/",
     "@openzeppelin/contracts-upgradeable-v4/=../../../zksync-era/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/",

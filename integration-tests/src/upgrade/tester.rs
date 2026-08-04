@@ -15,9 +15,10 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::utils::Eip1559Estimator;
-use alloy::providers::{PendingTransactionBuilder, Provider};
+use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider};
 use alloy::rpc::types::{TransactionInput, TransactionReceipt, TransactionRequest};
 use anyhow::Context;
+use zksync_os_alloy_ext::network::Zksync;
 use zksync_os_alloy_ext::provider::ZksyncApi as _;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
 use zksync_os_contract_interface::l1_discovery::L1State;
@@ -70,6 +71,129 @@ pub struct UpgradeTester<'a> {
     pub settles_to_gateway: bool,
 }
 
+/// Sends an impersonated L1 priority transaction to a locally running Gateway.
+///
+/// This is intentionally test-only: Anvil impersonation lets fixtures exercise the same
+/// L1-to-Gateway authorization path without embedding governance private keys.
+pub(crate) async fn send_l1_to_gateway_request(
+    l1_provider: &NodeProvider,
+    gateway_provider: &NodeProvider,
+    gateway_zk_provider: &DynProvider<Zksync>,
+    bridgehub_l1_address: Address,
+    from: Address,
+    to: Address,
+    tx_input: impl Into<TransactionInput>,
+) -> anyhow::Result<()> {
+    async fn prepare_impersonated_account(
+        provider: &NodeProvider,
+        address: Address,
+    ) -> anyhow::Result<()> {
+        provider.anvil_impersonate_account(address).await?;
+        provider.anvil_set_balance(address, U256::MAX).await?;
+        Ok(())
+    }
+
+    async fn send_impersonated_transaction(
+        provider: &NodeProvider,
+        tx: TransactionRequest,
+    ) -> anyhow::Result<TransactionReceipt> {
+        let _ = provider.estimate_gas(tx.clone()).await?;
+        let hash = provider.anvil_send_impersonated_transaction(tx).await?;
+        Ok(
+            PendingTransactionBuilder::new(provider.root().clone(), hash)
+                .expect_successful_receipt()
+                .await?,
+        )
+    }
+
+    let tx_input = tx_input.into();
+    let gateway_chain_id = gateway_provider.get_chain_id().await?;
+    let bridgehub_l1_for_gateway = zksync_os_contract_interface::Bridgehub::new(
+        bridgehub_l1_address,
+        l1_provider.clone(),
+        gateway_chain_id,
+    );
+    let gateway_chain_l1 = interfaces::ZkChain::new(
+        *bridgehub_l1_for_gateway.zk_chain().await?.address(),
+        l1_provider.clone(),
+    );
+    let filterer = interfaces::GatewayTransactionFilterer::new(
+        gateway_chain_l1.getTransactionFilterer().call().await?,
+        l1_provider.clone(),
+    );
+
+    prepare_impersonated_account(l1_provider, from).await?;
+    if !filterer.whitelistedSenders(from).call().await? {
+        let owner = filterer.owner().call().await?;
+        prepare_impersonated_account(l1_provider, owner).await?;
+        send_impersonated_transaction(
+            l1_provider,
+            filterer
+                .grantWhitelist(from)
+                .from(owner)
+                .into_transaction_request(),
+        )
+        .await?;
+    }
+
+    let max_priority_fee_per_gas = l1_provider.get_max_priority_fee_per_gas().await?;
+    let base_l1_fees = l1_provider
+        .estimate_eip1559_fees_with(Eip1559Estimator::new(|base_fee_per_gas, _| {
+            alloy::eips::eip1559::Eip1559Estimation {
+                max_fee_per_gas: base_fee_per_gas * 3 / 2,
+                max_priority_fee_per_gas: 0,
+            }
+        }))
+        .await?;
+    let max_fee_per_gas = base_l1_fees.max_fee_per_gas + max_priority_fee_per_gas;
+    let gas_limit = gateway_provider
+        .estimate_gas(
+            TransactionRequest::default()
+                .transaction_type(L1PriorityTxType::TX_TYPE)
+                .from(from)
+                .to(to)
+                .input(tx_input.clone()),
+        )
+        .await?
+        * 2;
+    let tx_base_cost = bridgehub_l1_for_gateway
+        .l2_transaction_base_cost(
+            max_fee_per_gas + max_priority_fee_per_gas,
+            gas_limit,
+            REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+        )
+        .await?;
+    let request = bridgehub_l1_for_gateway
+        .request_l2_transaction_direct(
+            tx_base_cost,
+            to,
+            U256::ZERO,
+            tx_input.into_input().unwrap().to_vec(),
+            gas_limit,
+            REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+            from,
+        )
+        .value(tx_base_cost)
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(max_priority_fee_per_gas)
+        .from(from)
+        .into_transaction_request();
+    let l1_receipt = send_impersonated_transaction(l1_provider, request).await?;
+    let l2_tx_hash = l1_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| log.log_decode::<NewPriorityRequest>().ok())
+        .next()
+        .context("no L1-to-Gateway transaction log produced")?
+        .inner
+        .txHash;
+
+    PendingTransactionBuilder::new(gateway_zk_provider.root().clone(), l2_tx_hash)
+        .expect_successful_receipt()
+        .await?;
+    Ok(())
+}
+
 impl<'a> UpgradeTester<'a> {
     /// Prepares tester for the default upgrade scenario.
     pub async fn for_default_upgrade(tester: &'a Tester) -> anyhow::Result<Self> {
@@ -87,6 +211,7 @@ impl<'a> UpgradeTester<'a> {
         upgrade_timestamp: U256,
         patch_only: bool,
         facet_cuts: Vec<FacetCut>,
+        da_validator_pair: Option<(Address, interfaces::L2DACommitmentScheme)>,
     ) -> anyhow::Result<()> {
         // Deploy the upgrade contract on SL.
         let upgrade_contract =
@@ -150,6 +275,12 @@ impl<'a> UpgradeTester<'a> {
 
         self.upgrade_chain(upgrade_data).await?;
         tracing::info!("Upgrade tx is executed on SL");
+
+        if let Some((validator, commitment_scheme)) = da_validator_pair {
+            self.set_da_validator_pair(validator, commitment_scheme)
+                .await?;
+            tracing::info!("Post-upgrade DA validator pair is installed on SL");
+        }
 
         if patch_only {
             // For patch upgrades, we need to trigger a transaction finalization, since there is no upgrade tx.
@@ -321,13 +452,7 @@ impl<'a> UpgradeTester<'a> {
                 .await?;
             self.tester
                 .l1_provider()
-                .send_transaction(
-                    TransactionRequest::default()
-                        .with_to(addr)
-                        .with_value(U256::from(10).pow(U256::from(18u64))), // 1 ETH
-                )
-                .await?
-                .expect_successful_receipt()
+                .anvil_set_balance(addr, U256::from(10).pow(U256::from(18u64)))
                 .await?;
         }
         Ok(())
@@ -639,6 +764,34 @@ impl<'a> UpgradeTester<'a> {
         Ok(())
     }
 
+    async fn set_da_validator_pair(
+        &self,
+        validator: Address,
+        commitment_scheme: interfaces::L2DACommitmentScheme,
+    ) -> anyhow::Result<()> {
+        let calldata = self
+            .diamond_proxy_sl
+            .setDAValidatorPair(validator, commitment_scheme)
+            .calldata()
+            .clone();
+        if self.settles_to_gateway {
+            self.send_l1_to_gateway(
+                self.diamond_proxy_admin_sl,
+                *self.diamond_proxy_sl.address(),
+                calldata,
+            )
+            .await?;
+        } else {
+            let tx = self
+                .diamond_proxy_sl
+                .setDAValidatorPair(validator, commitment_scheme)
+                .into_transaction_request()
+                .with_from(self.diamond_proxy_admin_sl);
+            self.send_impersonated_transaction(tx).await?;
+        }
+        Ok(())
+    }
+
     /// Sends a transaction without a signature, expecting the account to be impersonated.
     /// Expects the transaction to succeed.
     async fn send_impersonated_transaction(
@@ -668,101 +821,20 @@ impl<'a> UpgradeTester<'a> {
         to: Address,
         tx_input: impl Into<TransactionInput>,
     ) -> anyhow::Result<()> {
-        let tx_input = tx_input.into();
-        let bridgehub_l1_for_gw = zksync_os_contract_interface::Bridgehub::new(
-            *self.bridgehub_l1.address(),
-            self.bridgehub_l1.provider().clone(),
-            self.tester.sl_provider.get_chain_id().await?,
-        );
-        let gw_zk_chain_on_l1 = interfaces::ZkChain::new(
-            *bridgehub_l1_for_gw.zk_chain().await?.address(),
-            self.bridgehub_l1.provider().clone(),
-        );
-        let gw_filterer = gw_zk_chain_on_l1.getTransactionFilterer().call().await?;
-        let gw_filterer = interfaces::GatewayTransactionFilterer::new(
-            gw_filterer,
-            self.bridgehub_l1.provider().clone(),
-        );
-
-        // Whitelist sender if it's not already whitelisted.
-        if !gw_filterer.whitelistedSenders(from).call().await? {
-            let owner = gw_filterer.owner().call().await?;
-            tracing::info!(
-                "Sender {from} is not whitelisted on the gateway, whitelisting it with owner {owner}"
-            );
-            let whitelist_tx = gw_filterer
-                .grantWhitelist(from)
-                .from(owner)
-                .into_transaction_request();
-            self.send_impersonated_transaction(whitelist_tx).await?;
-        }
-
-        let l1_provider = self.tester.l1_provider();
-        let max_priority_fee_per_gas = l1_provider.get_max_priority_fee_per_gas().await?;
-        let base_l1_fees = l1_provider
-            .estimate_eip1559_fees_with(Eip1559Estimator::new(|base_fee_per_gas, _| {
-                alloy::eips::eip1559::Eip1559Estimation {
-                    max_fee_per_gas: base_fee_per_gas * 3 / 2,
-                    max_priority_fee_per_gas: 0,
-                }
-            }))
-            .await?;
-        let max_fee_per_gas = base_l1_fees.max_fee_per_gas + max_priority_fee_per_gas;
-        let gas_limit = self
+        let gateway_zk_provider = self
             .tester
-            .sl_provider()
-            .estimate_gas(
-                TransactionRequest::default()
-                    .transaction_type(L1PriorityTxType::TX_TYPE)
-                    .from(from)
-                    .to(to)
-                    .input(tx_input.clone()),
-            )
+            .gateway_provider()
             .await?
-            * 2;
-        let tx_base_cost = bridgehub_l1_for_gw
-            .l2_transaction_base_cost(
-                max_fee_per_gas + max_priority_fee_per_gas,
-                gas_limit,
-                REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
-            )
-            .await?;
-
-        let request = bridgehub_l1_for_gw
-            .request_l2_transaction_direct(
-                tx_base_cost,
-                to,
-                U256::ZERO,
-                tx_input.into_input().unwrap().to_vec(),
-                gas_limit,
-                REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
-                from,
-            )
-            .value(tx_base_cost)
-            .max_fee_per_gas(max_fee_per_gas)
-            .max_priority_fee_per_gas(max_priority_fee_per_gas)
-            .from(from)
-            .into_transaction_request();
-        let l1_receipt = self.send_impersonated_transaction(request).await?;
-        let l1_to_l2_tx_log = l1_receipt
-            .logs()
-            .iter()
-            .filter_map(|log| log.log_decode::<NewPriorityRequest>().ok())
-            .next()
-            .expect("no L1->L2 logs produced by funding tx");
-        let l2_tx_hash = l1_to_l2_tx_log.inner.txHash;
-
-        PendingTransactionBuilder::new(
-            self.tester
-                .gateway_provider()
-                .await?
-                .unwrap()
-                .root()
-                .clone(),
-            l2_tx_hash,
+            .context("Gateway provider is missing")?;
+        send_l1_to_gateway_request(
+            self.tester.l1_provider(),
+            self.tester.sl_provider(),
+            &gateway_zk_provider,
+            *self.bridgehub_l1.address(),
+            from,
+            to,
+            tx_input,
         )
-        .expect_successful_receipt()
-        .await?;
-        Ok(())
+        .await
     }
 }

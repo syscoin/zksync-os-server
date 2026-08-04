@@ -10,23 +10,21 @@ use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, test_multisetu
 
 const TRANSACTIONS_TO_SEND_BEFORE_RESTART: usize = 5;
 
-/// Verifies that a node running with the batcher disabled can be restarted in normal mode and
-/// will commit all previously-accumulated blocks to L1.
+/// Verifies that a node with delayed batch sealing can be restarted in normal mode and will
+/// commit all previously-accumulated blocks to L1.
 ///
 /// Scenario:
-///   1. Start with `batcher.enabled = false` — blocks execute and are stored locally but
-///      nothing is batched or submitted to L1.
+///   1. Start with a long batch timeout — blocks execute and are stored locally but nothing is
+///      sealed or submitted to L1.
 ///   2. Mine several blocks and confirm that L1 commitment count did not move.
-///   3. Restart with overrides that re-enable the batcher.
+///   3. Restart with the normal short batch timeout.
 ///   4. Wait for the last pre-restart block to be finalized (= executed on L1), proving the
-///      node settled all pending blocks after re-enabling the batcher.
+///      node settled all pending blocks after restarting the batch pipeline.
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
-async fn uncommitted_blocks_are_settled_after_batcher_reenabled(
-    env: TestEnvironment,
-) -> anyhow::Result<()> {
+async fn uncommitted_blocks_are_settled_after_restart(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
-    config.batcher_config.enabled = false;
+    config.batcher_config.batch_timeout = Duration::from_secs(60 * 60);
     config.sequencer_config.block_time = Duration::from_millis(50);
     let tester = env.launch(config).await?;
 
@@ -47,16 +45,16 @@ async fn uncommitted_blocks_are_settled_after_batcher_reenabled(
     }
     let last_pre_restart_block = tester.l2_provider.get_block_number().await?;
 
-    // Batcher was disabled — the committed batch count must not have changed.
-    let committed_with_batcher_off = fetch_l1_state(&tester).await?.last_committed_batch;
+    // No batch reached a seal criterion — the committed batch count must not have changed.
+    let committed_before_restart = fetch_l1_state(&tester).await?.last_committed_batch;
     assert_eq!(
-        committed_with_batcher_off, initial_committed,
-        "no new batches should be committed while the batcher is disabled"
+        committed_before_restart, initial_committed,
+        "no new batches should be committed before the delayed batch is sealed"
     );
 
-    // Plain restart preserves config, so explicitly re-enable the batcher on restart.
+    // Plain restart preserves config, so explicitly restore a short seal timeout.
     let mut restarted_config = tester.config().clone();
-    restarted_config.batcher_config.enabled = true;
+    restarted_config.batcher_config.batch_timeout = Duration::from_millis(100);
     let restarted = tester.restart_with_config(restarted_config).await?;
 
     // The restarted node must pick up all pending uncommitted blocks and settle them on L1.
@@ -70,7 +68,7 @@ async fn uncommitted_blocks_are_settled_after_batcher_reenabled(
     let l1_state_after = fetch_l1_state(&restarted).await?;
     assert!(
         l1_state_after.last_committed_batch > initial_committed,
-        "expected new batches to be committed after re-enabling the batcher, \
+        "expected new batches to be committed after restarting the batch pipeline, \
          but committed batch count did not increase ({initial_committed} -> {})",
         l1_state_after.last_committed_batch,
     );

@@ -63,6 +63,27 @@ alloy::sol!(
     "test-contracts/out/Counter.sol/Counter.json"
 );
 
+alloy::sol!(
+    /// Anvil-only replacement for the stock v31 EIP-4844 validator.
+    #[sol(rpc)]
+    SyscoinBlobsL1DAValidatorTest,
+    "test-contracts/out/SyscoinBlobsL1DAValidatorTest.sol/SyscoinBlobsL1DAValidatorTest.json"
+);
+
+alloy::sol!(
+    /// Syscoin-patched committer installed over the older facet in the v31 Anvil fixture.
+    #[sol(rpc)]
+    SyscoinCommitterFacetTest,
+    "test-contracts/out/SyscoinCommitterFacetTest.sol/SyscoinCommitterFacetTest.json"
+);
+
+alloy::sol!(
+    /// Direct-L1 v31 fixture shim retaining legacy asset-router deposits.
+    #[sol(rpc)]
+    LegacyDepositTransactionFiltererTest,
+    "test-contracts/out/LegacyDepositTransactionFiltererTest.sol/LegacyDepositTransactionFiltererTest.json"
+);
+
 alloy::sol! {
     #[sol(rpc)]
     interface IBaseToken {

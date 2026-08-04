@@ -135,6 +135,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let last_block_ctx = *self.last_constructed_block_context.borrow();
             let storage = self.storage.clone();
             let chain_id = self.chain_id;
+            let block_timestamp_offset_seconds = self.config.block_timestamp_offset_seconds;
             let zk_tx: ZkTransaction = l2_tx.clone().into();
             let policy_client = policy_client.clone();
             // `spawn_blocking`: the body has blocking I/O and VM execution.
@@ -149,7 +150,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let sim = tokio::task::spawn_blocking(move || {
                 let block_context = match last_block_ctx {
                     Some(block_context) => block_context,
-                    None => build_pending_block_context(&storage, chain_id)?,
+                    None => build_pending_block_context(
+                        &storage,
+                        chain_id,
+                        block_timestamp_offset_seconds,
+                    )?,
                 };
                 let storage_view =
                     storage.state_at_block_number_or_latest(block_context.block_number)?;
@@ -655,6 +660,12 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    /// The executed-gas rate limiter is exhausted; retriable.
+    #[error(
+        "transaction gas rate limit exceeded: node is at capacity, retry in ~{}ms",
+        .retry_after.as_millis()
+    )]
+    GasRateLimited { retry_after: Duration },
     /// Policy service rejected the transaction.
     #[error("transaction denied by policy service")]
     PolicyDenied,
@@ -674,6 +685,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
             EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
             EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::GasRateLimited { .. } => Self::GasRateLimited,
             EthSendRawTransactionError::ForwardError(err) => match err {
                 TxForwardError::Rpc(RpcError::ErrorResp(_)) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,
@@ -1075,4 +1087,3 @@ mod tests {
         assert!(forwarding_error_should_rollback_local_tx(&null_response));
     }
 }
-

@@ -53,6 +53,7 @@ impl<Finality: WriteFinality> L1CommitWatcher<Finality> {
 
         let provider = zk_chain.provider().clone();
         let address = (*zk_chain.address()).into();
+        let max_blocks_to_process = config.max_blocks_to_process;
 
         let resolve_start = move |()| async move {
             let last_committed_batch = finality.get_finality_status().last_committed_batch;
@@ -242,5 +243,3 @@ mod tests {
         assert!(!should_restart_for_unexpected_commit(6, Some(&rx)));
     }
 }
-
-

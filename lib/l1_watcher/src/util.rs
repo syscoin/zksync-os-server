@@ -1,6 +1,6 @@
 use crate::watcher::L1WatcherError;
 use alloy::consensus::Transaction;
-use alloy::primitives::{Address, B256, BlockNumber, Log, TxHash, U256};
+use alloy::primitives::{Address, BlockNumber, Log, TxHash, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
@@ -273,61 +273,29 @@ const STALE_L1_HEIGHT_RETRY_ATTEMPTS: usize = 10;
 /// Binary-searches `[start_block_number, latest]` for the first block at which `predicate` returns
 /// `true`. The predicate must be monotonic over the search range (caller's responsibility).
 ///
-/// Postcondition relied upon by callers: `predicate(result) == true`, and either
-/// `predicate(result - 1) == false` or `result == start_block_number`.
-///
 /// **Caller must ensure `start_block_number >= contract.deployment_block`** — the predicate is
 /// invoked without a code-presence guard, so calling it at blocks where the contract is not yet
 /// deployed will produce undefined results (typically an RPC error or a `false`-returning revert).
 pub async fn find_l1_block_by_predicate<Fut: Future<Output = anyhow::Result<bool>>>(
-    provider: &NodeProvider,
+    zk_chain: Arc<ZkChain<NodeProvider>>,
     start_block_number: BlockNumber,
-    predicate: impl Fn(BlockNumber) -> Fut,
+    predicate: impl Fn(Arc<ZkChain<NodeProvider>>, u64) -> Fut,
 ) -> anyhow::Result<BlockNumber> {
-    let latest = provider.get_block_number().await?;
+    let latest = zk_chain.provider().get_block_number().await?;
 
     // Ensure the predicate is true by the upper bound, or bail early.
-    if !predicate(latest).await? {
+    if !predicate(zk_chain.clone(), latest).await? {
         anyhow::bail!(
             "Condition not satisfied up to latest block: contract not deployed yet \
              or target not reached.",
         );
     }
 
-    find_first_true_block(start_block_number, latest, predicate).await
-}
-
-/// Core of [`find_l1_block_by_predicate`]: gallop from the tip, then binary-search the bracket.
-///
-/// Requires `predicate(latest) == true` (checked by the caller). Far-from-tip transitions cost up
-/// to ~log2(range / initial distance) extra probes over a plain binary search.
-async fn find_first_true_block<Fut: Future<Output = anyhow::Result<bool>>>(
-    start_block_number: BlockNumber,
-    latest: BlockNumber,
-    predicate: impl Fn(BlockNumber) -> Fut,
-) -> anyhow::Result<BlockNumber> {
-    // Gallop: probe latest-d, latest-2d, latest-4d, ... until the predicate is false or the
-    // probe clamps at `start_block_number`.
+    // Binary search on [start_block_number, latest] for the first block where predicate is true.
     let (mut lo, mut hi) = (start_block_number, latest);
-    let mut distance = GALLOP_INITIAL_DISTANCE;
     while lo < hi {
-        let probe = latest.saturating_sub(distance).max(lo);
-        if predicate(probe).await? {
-            hi = probe;
-            if probe == lo {
-                break;
-            }
-            distance = distance.saturating_mul(2);
-        } else {
-            lo = probe + 1;
-            break;
-        }
-    }
-
-    // Binary search on [lo, hi] for the first block where the predicate is true.
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if predicate(mid).await? {
+        let mid = (lo + hi) / 2;
+        if predicate(zk_chain.clone(), mid).await? {
             hi = mid;
         } else {
             lo = mid + 1;
@@ -495,59 +463,121 @@ fn event_scan_block_count(
 /// and has affected batch `batch_number`. Returns latest L1 block that contains such an event or `None`
 /// if there is not any.
 ///
-/// Every commit writes `storedBatchHashes[batch_number] = hash(StoredBatchInfo)`; re-commits
-/// overwrite it and reverts do not clear it — hence the guard that the batch is currently
-/// committed. Under that guard, `storedBatchHash(batch_number, block) == <live hash>` is a
-/// monotonic predicate whose first `true` block is the live commit block, so no `BlocksRevert`
-/// scanning is needed.
-///
-/// Works for batch 0 too: its stored hash is written at contract initialization, so the result
-/// is the deployment block (genesis has no commit event or transaction).
-pub(crate) async fn find_l1_commit_block_by_batch_number(
+/// Batch `batch_number` MUST have been committed before `start_block_number`.
+async fn find_latest_l1_revert(
     zk_chain: &ZkChain<NodeProvider>,
     batch_number: u64,
-) -> anyhow::Result<(BlockNumber, B256)> {
-    let latest = zk_chain.provider().get_block_number().await?;
-    let total_committed = zk_chain.get_total_batches_committed(latest.into()).await?;
-    anyhow::ensure!(
-        total_committed >= batch_number,
-        "batch {batch_number} is not committed on L1 \
-         (batches committed as of block {latest}: {total_committed})",
-    );
-    let live_hash = zk_chain
-        .stored_batch_hash(batch_number, latest.into())
-        .await?;
-
-    let deployment_block = zk_chain.deployment_block().await?;
-    let live_commit_block = find_l1_block_by_predicate(
+    start_block_number: BlockNumber,
+    max_blocks_to_scan: u64,
+) -> anyhow::Result<Option<BlockNumber>> {
+    find_last_matching_event::<IExecutor::BlocksRevert>(
+        *zk_chain.address(),
         zk_chain.provider(),
+        start_block_number,
+        max_blocks_to_scan,
+        |e| e.totalBatchesCommitted < batch_number,
+    )
+    .await
+}
+
+/// Finds first L1 block that contains **non-reverted** batch commitment event on L1 matching
+/// requested batch.
+///
+/// Returns latest L1 block is there is none.
+///
+/// For any batch `B` that was reverted in tx `T` belonging to L1 block `b` the following MUST hold:
+/// `b` CAN contain commit event for `B` that happened either before `T` or after `T` but MUST NOT
+/// contain both. See comments inside the implementation for more details.
+pub async fn find_l1_commit_block_by_batch_number(
+    zk_chain: ZkChain<NodeProvider>,
+    batch_number: u64,
+    max_l1_blocks_to_scan: u64,
+) -> anyhow::Result<BlockNumber> {
+    let is_batch_committed = move |zk: Arc<ZkChain<NodeProvider>>, block: BlockNumber| async move {
+        let res = zk.get_total_batches_committed(block.into()).await?;
+        Ok(res >= batch_number)
+    };
+    let deployment_block = zk_chain.deployment_block().await?;
+    // This predicate is not monotonic because committed batches can be reverted. Even then, this
+    // binary search will find **some** L1 block that commits our batch. If revert and another commit
+    // happen after the found L1 block, then we will find them as handled by logic in the rest of the
+    // function. If there are none, then we will not find anything and return this L1 block as a
+    // result.
+    let l1_block_with_commit = find_l1_block_by_predicate(
+        Arc::new(zk_chain.clone()),
         deployment_block,
-        move |block| async move {
-            Ok(zk_chain
-                .stored_batch_hash(batch_number, block.into())
-                .await?
-                == live_hash)
-        },
+        is_batch_committed,
     )
     .await?;
-    Ok((live_commit_block, live_hash))
+    tracing::debug!(
+        batch_number,
+        l1_block_with_commit,
+        "found first L1 block containing batch commitment"
+    );
+
+    let last_l1_block_with_revert = find_latest_l1_revert(
+        &zk_chain,
+        batch_number,
+        // Start from next block as current block might contain unrelated reverts. Note that our
+        // batch was observed as committed at the END of block `l1_block_with_commit` so any
+        // preceding reverts are irrelevant.
+        l1_block_with_commit + 1,
+        max_l1_blocks_to_scan,
+    )
+    .await?;
+    match last_l1_block_with_revert {
+        Some(last_l1_block_with_revert) => {
+            tracing::info!(
+                batch_number,
+                last_l1_block_with_revert,
+                "looking for batch commitment after last revert"
+            );
+            // Run binary search one more time but start from `last_l1_block_with_revert` now.
+            // `last_l1_block_with_revert` might contain EITHER commit event for our batch that
+            // happened BEFORE revert or AFTER revert. But it cannot contain both, otherwise L1
+            // Watcher will index reverted commit first. To mitigate this, we can make L1 Watcher
+            // interactively resistant to reverts that happened in the same block (it would watch
+            // for both `BlockCommit` and `BlocksRevert`). This scenario should not happen in the
+            // current implementation, however, and hence can be safely ignored for now.
+            let l1_block_with_commit = find_l1_block_by_predicate(
+                Arc::new(zk_chain),
+                last_l1_block_with_revert,
+                is_batch_committed,
+            )
+            .await?;
+            tracing::info!(
+                batch_number,
+                l1_block_with_commit,
+                "found non-reverted batch commitment on L1"
+            );
+            Ok(l1_block_with_commit)
+        }
+        None => {
+            tracing::info!(
+                batch_number,
+                l1_block_with_commit,
+                "no batch reverts found on L1"
+            );
+            Ok(l1_block_with_commit)
+        }
+    }
 }
 
 /// Finds first L1 block that contains batch execution event on L1 matching requested batch.
 ///
 /// Returns latest L1 block is there is none.
 pub async fn find_l1_execute_block_by_batch_number(
-    zk_chain: &ZkChain<NodeProvider>,
+    zk_chain: ZkChain<NodeProvider>,
     batch_number: u64,
 ) -> anyhow::Result<BlockNumber> {
-    // Execution cannot be reverted, so a plain total-count predicate is safe here, unlike for
-    // commits (see `find_l1_commit_block_by_batch_number`).
+    // Execution cannot be reverted, so unlike in `find_l1_commit_block_by_batch_number`, we do not need
+    // to take L1 reverts into account here.
     let deployment_block = zk_chain.deployment_block().await?;
     find_l1_block_by_predicate(
-        zk_chain.provider(),
+        Arc::new(zk_chain),
         deployment_block,
-        move |block| async move {
-            let res = zk_chain.get_total_batches_executed(block.into()).await?;
+        move |zk, block| async move {
+            let res = zk.get_total_batches_executed(block.into()).await?;
             Ok(res >= batch_number)
         },
     )
@@ -647,8 +677,8 @@ fn should_fallback_to_genesis_log_scan(err: &anyhow::Error) -> bool {
 }
 
 /// Fetches and decodes stored batch data for batch `batch_number` that is expected to have been
-/// committed in `l1_block_number`, returning it together with the commit transaction hash.
-/// Returns `None` if requested batch has not been committed in the given L1 block.
+/// committed in `l1_block_number`, together with the transaction that committed it. Returns
+/// `None` if the requested batch was not committed in that block.
 pub async fn fetch_stored_batch_data(
     zk_chain: &ZkChain<NodeProvider>,
     l1_block_number: BlockNumber,
@@ -690,8 +720,8 @@ pub(crate) async fn find_commit_log(
                 .to_block(l1_block_number),
         )
         .await?;
-    // Take the *last* matching log in the block: if the batch was committed, reverted and
-    // re-committed within a single L1 block, only the latest commit is the live one.
+    // Take the last matching log: a batch may be committed, reverted, and recommitted in one L1
+    // block, in which case only the final commit can match the block's resulting stored batch hash.
     Ok(logs
         .into_iter()
         .filter_map(|log| {
@@ -773,7 +803,7 @@ pub async fn fetch_committed_batch_data(
                     ))
                 })
         })
-        .retry(COMMIT_DATA_RETRY_POLICY)
+        .retry(retry_policy())
         .await
     };
 
@@ -834,6 +864,3 @@ mod tests {
         );
     }
 }
-
-
-

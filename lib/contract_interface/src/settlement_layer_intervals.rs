@@ -214,7 +214,7 @@ async fn find_settlement_layer_intervals(
             .map_err(|e| anyhow::anyhow!("migrationNumber overflow: {e}"))?,
         // Pre-V31 `ChainAssetHandler` does not expose `migrationNumber`. In that era Gateway
         // migrations are not possible, so the chain has always committed to L1.
-        Err(e) if is_method_missing(&e) => {
+        Err(e) if is_pre_v31_migration_number_error(&e) => {
             tracing::debug!(
                 "ChainAssetHandler does not expose migrationNumber; assuming pre-V31 protocol \
                  with no Gateway migrations: {e}"
@@ -303,4 +303,23 @@ async fn find_settlement_layer_intervals(
     Ok(intervals)
 }
 
-
+// SYSCOIN: Anvil reports an unknown selector against the pre-V31 ChainAssetHandler as an empty
+// EVM revert instead of returning empty call data. Keep this compatibility exception local to the
+// read-only migration counter; the generic method-missing check deliberately propagates transport
+// errors so privileged upgrade-data calls cannot silently fall back after a real contract revert.
+fn is_pre_v31_migration_number_error(err: &alloy::contract::Error) -> bool {
+    if is_method_missing(err) {
+        return true;
+    }
+    let alloy::contract::Error::TransportError(err) = err else {
+        return false;
+    };
+    err.as_error_resp().is_some_and(|response| {
+        response.code == 3
+            && response.message == "execution reverted"
+            && response
+                .data
+                .as_ref()
+                .is_some_and(|data| data.get() == "\"0x\"")
+    })
+}

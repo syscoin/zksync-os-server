@@ -51,6 +51,10 @@ impl FileSystemReplayArchiveReader {
             if !object_entry.file_type().await?.is_file() {
                 continue;
             }
+            // SYSCOIN: atomic archive publication uses hidden temp files before final publish.
+            if is_temporary_archive_object(&object_entry) {
+                continue;
+            }
             let file_name = object_entry.file_name();
             let Some(file_name) = file_name.to_str() else {
                 continue;
@@ -107,54 +111,15 @@ impl ReplayArchiveStorageReader for FileSystemReplayArchiveReader {
                 continue;
             };
 
-            let block_number = parse_block_number_entry(&block_entry)?;
-            let mut object_entries =
-                tokio::fs::read_dir(block_entry.path())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to read replay archive block directory {}",
-                            block_entry.path().display()
-                        )
-                    })?;
-            while let Some(object_entry) = object_entries.next_entry().await.with_context(|| {
-                format!(
-                    "failed to read replay archive object entry {}",
-                    block_entry.path().display()
-                )
-            })? {
-                let object_metadata = object_entry.metadata().await.with_context(|| {
-                    format!(
-                        "failed to read replay archive object metadata {}",
-                        object_entry.path().display()
-                    )
-                })?;
-                if !object_metadata.is_file() {
-                    continue;
-                }
-                // SYSCOIN: atomic archive publication uses hidden temp files before final publish.
-                if is_temporary_archive_object(&object_entry) {
-                    continue;
-                }
-
-                let block_hash = parse_block_hash_entry(&object_entry)?;
-                let key = ReplayArchiveKey::new(session.clone(), block_number, block_hash);
-                let bytes = tokio::fs::read(object_entry.path())
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to read replay archive object {}",
-                            object_entry.path().display()
-                        )
-                    })?;
-                if sender
-                    .send(Ok(ReplayArchiveObject { key, bytes }))
-                    .await
-                    .is_err()
-                {
-                    return Ok(());
-                }
-            }
+            let Ok(block_number) = dir_name.parse::<BlockNumber>() else {
+                tracing::warn!(
+                    path = %root_entry.path().display(),
+                    "Skipping replay archive root entry that is not a block number"
+                );
+                continue;
+            };
+            self.list_block_dir_objects(&root_entry.path(), block_number, &mut keys)
+                .await?;
         }
 
         Ok(ReplayArchiveKeyPage {
@@ -180,16 +145,14 @@ fn is_temporary_archive_object(entry: &tokio::fs::DirEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ReplayArchiveKey, format_block_hash};
+    use crate::format_block_hash;
 
     #[tokio::test]
-    async fn list_objects_ignores_temporary_archive_files() {
+    async fn list_keys_ignores_temporary_archive_files() {
         let tempdir = tempfile::tempdir().unwrap();
-        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
         let block_number = 7;
         let block_hash = BlockHash::with_last_byte(1);
-        let session_path = tempdir.path().join(session.folder_name());
-        let block_path = session_path.join(block_number.to_string());
+        let block_path = tempdir.path().join(block_number.to_string());
         tokio::fs::create_dir_all(&block_path).await.unwrap();
         tokio::fs::write(
             block_path.join(format!(".{}.999.1.tmp", format_block_hash(block_hash))),
@@ -202,21 +165,12 @@ mod tests {
             .unwrap();
 
         let reader = FileSystemReplayArchiveReader::new(tempdir.path().to_path_buf());
-        let objects = reader
-            .list_objects()
-            .await
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<anyhow::Result<Vec<_>>>()
-            .unwrap();
+        let page = reader.list_keys_page(None).await.unwrap();
 
-        assert_eq!(objects.len(), 1);
+        assert_eq!(page.keys, [ReplayArchiveKey::new(block_number, block_hash)]);
         assert_eq!(
-            objects[0].key,
-            ReplayArchiveKey::new(session, block_number, block_hash)
+            reader.fetch_object(&page.keys[0]).await.unwrap(),
+            b"complete"
         );
-        assert_eq!(objects[0].bytes, b"complete");
     }
 }
-

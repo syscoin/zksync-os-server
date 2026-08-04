@@ -29,6 +29,9 @@ async fn batch_verification_works(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     config.batch_verification_config.server_enabled = true;
     config.batch_verification_config.threshold = 1;
+    // Do not rely on an incidental follow-up block to seal the batch under test; the production
+    // timeout is longer than this integration test's finalization deadline.
+    config.batcher_config.batch_timeout = Duration::from_millis(100);
     let main_node = env.launch(config).await?;
 
     let _en1 = launch_en(&main_node, |config: &mut Config| {
@@ -271,4 +274,3 @@ async fn forward_transactions(main_node: Tester) -> anyhow::Result<()> {
 
     Ok(())
 }
-

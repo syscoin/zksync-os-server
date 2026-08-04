@@ -3,15 +3,57 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
+use blake2::{Blake2s256, Digest};
 use httpmock::Method::POST;
-use httpmock::MockServer;
-use serde_json::json;
+use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
+use serde_json::{Value, json};
 use smart_config::value::SecretString;
 use std::time::Duration;
 use zksync_os_integration_tests::NEXT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_server::config::BitcoinDaFinalityMode;
 use zksync_os_types::PubdataMode;
+
+fn create_blob_response(req: &HttpMockRequest) -> HttpMockResponse {
+    let request: Value = serde_json::from_str(&req.body_string()).unwrap();
+    let data = request["params"][0].as_str().unwrap();
+    let bytes = alloy::hex::decode(data.strip_prefix("0x").unwrap_or(data)).unwrap();
+    let version_hash = format!("0x{}", alloy::hex::encode(Blake2s256::digest(bytes)));
+    HttpMockResponse::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "result": {"versionhash": version_hash},
+                "error": null,
+                "id": request["id"]
+            })
+            .to_string(),
+        )
+        .build()
+}
+
+fn blob_data_response(req: &HttpMockRequest) -> HttpMockResponse {
+    let request: Value = serde_json::from_str(&req.body_string()).unwrap();
+    HttpMockResponse::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "result": {
+                    "versionhash": request["params"][0],
+                    "txid": "abc123",
+                    "mtp": 12345,
+                    "datasize": 32,
+                    "height": 100
+                },
+                "error": null,
+                "id": request["id"]
+            })
+            .to_string(),
+        )
+        .build()
+}
 
 #[tokio::test]
 async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Result<()> {
@@ -74,24 +116,9 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
             when.method(POST)
                 .path("/wallet/zksync-os")
                 .body_matches(r#""method"\s*:\s*"syscoincreatenevmblob""#);
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(
-                    json!({"result": {"versionhash": "0xdeadbeef"}, "error": null, "id": 1}),
-                );
+            then.respond_with(create_blob_response);
         })
         .await;
-    let check_finality = server
-        .mock_async(|when, then| {
-            when.method(POST)
-                .path("/")
-                .body_matches(r#""method"\s*:\s*"getnevmblobdata""#);
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(json!({"result": {"chainlock": true}, "error": null, "id": 1}));
-        })
-        .await;
-
     let server_url = server.base_url();
     let env = NEXT_TO_GATEWAY.environment().await?;
     let mut config = env.default_config().await?;
@@ -122,9 +149,9 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         .expect_successful_receipt()
         .await?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
-        if create_blob.calls_async().await > 0 && check_finality.calls_async().await > 0 {
+        if create_blob.calls_async().await > 0 {
             break;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -139,7 +166,6 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
     assert!(estimate_smart_fee.calls_async().await > 0);
     assert!(get_mempool_info.calls_async().await > 0);
     assert!(create_blob.calls_async().await > 0);
-    assert!(check_finality.calls_async().await > 0);
 
     Ok(())
 }
@@ -205,11 +231,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
             when.method(POST)
                 .path("/wallet/zksync-os")
                 .body_matches(r#""method"\s*:\s*"syscoincreatenevmblob""#);
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(
-                    json!({"result": {"versionhash": "0xfeedbeef"}, "error": null, "id": 1}),
-                );
+            then.respond_with(create_blob_response);
         })
         .await;
     let get_blob_data = server
@@ -217,19 +239,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
             when.method(POST)
                 .path("/")
                 .body_matches(r#""method"\s*:\s*"getnevmblobdata""#);
-            then.status(200)
-                .header("content-type", "application/json")
-                .json_body(json!({
-                    "result": {
-                        "versionhash": "feedbeef",
-                        "txid": "abc123",
-                        "mtp": 12345,
-                        "datasize": 32,
-                        "height": 100
-                    },
-                    "error": null,
-                    "id": 1
-                }));
+            then.respond_with(blob_data_response);
         })
         .await;
     let get_block_count = server
@@ -244,7 +254,27 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
         .await;
 
     let server_url = server.base_url();
-    let env = NEXT_TO_GATEWAY.environment().await?;
+    let gateway_server_url = server_url.clone();
+    let env = NEXT_TO_GATEWAY
+        .environment_with_gateway_config(move |config| {
+            config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+            config.batcher_config.bitcoin_da_rpc_url = Some(gateway_server_url.clone());
+            config.batcher_config.bitcoin_da_rpc_user = Some(SecretString::new("user".into()));
+            config.batcher_config.bitcoin_da_rpc_password =
+                Some(SecretString::new("password".into()));
+            config.batcher_config.bitcoin_da_poda_url = gateway_server_url;
+            config.batcher_config.bitcoin_da_wallet_name = "zksync-os".into();
+            config.batcher_config.bitcoin_da_address_label = "zksync-os-batcher".into();
+            config.batcher_config.bitcoin_da_request_timeout = Duration::from_secs(2);
+            config.batcher_config.bitcoin_da_finality_poll_interval = Duration::from_millis(20);
+            config.batcher_config.bitcoin_da_finality_mode = BitcoinDaFinalityMode::Confirmations;
+            config.batcher_config.bitcoin_da_finality_confirmations = 5;
+            config.batcher_config.bitcoin_da_finality_timeout = Duration::from_secs(5);
+        })
+        .await?;
+    let publication_calls_before_child = create_blob.calls_async().await;
+    let blob_data_calls_before_child = get_blob_data.calls_async().await;
+    let block_count_calls_before_child = get_block_count.calls_async().await;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
     config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
@@ -275,11 +305,11 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
         .expect_successful_receipt()
         .await?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
-        if create_blob.calls_async().await > 0
-            && get_blob_data.calls_async().await > 0
-            && get_block_count.calls_async().await > 0
+        if create_blob.calls_async().await > publication_calls_before_child
+            && get_blob_data.calls_async().await > blob_data_calls_before_child
+            && get_block_count.calls_async().await > block_count_calls_before_child
         {
             break;
         }

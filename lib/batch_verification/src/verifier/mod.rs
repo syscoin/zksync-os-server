@@ -146,23 +146,61 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         let expected_upgrade_tx_hash = Self::expected_upgrade_tx_hash_from_replay_records(&blocks)?;
         let (_, last_replay_record, _) = blocks.last().unwrap();
 
-        let (batch_info, _) = PendingBatchInfo::build(
+        let protocol_version = &blocks.first().unwrap().1.protocol_version;
+        let batch_blocks = || {
             blocks
                 .iter()
                 .map(|(block_output, replay_record, tree)| {
                     (*block_output, replay_record.transactions.as_slice(), tree)
                 })
-                .collect(),
+                .collect()
+        };
+        let build_args = (
             self.chain_id,
             request.batch_number,
             request.pubdata_mode,
             self.l1_state.sl_chain_id,
             multichain_root,
-            &blocks.first().unwrap().1.protocol_version,
+            protocol_version,
             expected_upgrade_tx_hash,
             Some(self.syscoin_edge_da_commit_target),
             &last_replay_record.block_context.block_hashes.0,
-        )
+        );
+        // SYSCOIN: Verifiers must reconstruct the same pre-Syscoin DA commitment selected by the
+        // batcher for historical blob-mode batches; v31+ uses the current Syscoin blob IDs.
+        let use_legacy_pre_syscoin_da = protocol_version.minor < 31
+            && matches!(
+                request.pubdata_mode,
+                zksync_os_types::PubdataMode::Blobs
+                    | zksync_os_types::PubdataMode::RelayedL2Calldata
+            );
+        let (batch_info, _) = if use_legacy_pre_syscoin_da {
+            PendingBatchInfo::build_legacy_pre_syscoin_da(
+                batch_blocks(),
+                build_args.0,
+                build_args.1,
+                build_args.2,
+                build_args.3,
+                build_args.4,
+                build_args.5,
+                build_args.6,
+                build_args.7,
+                build_args.8,
+            )
+        } else {
+            PendingBatchInfo::build(
+                batch_blocks(),
+                build_args.0,
+                build_args.1,
+                build_args.2,
+                build_args.3,
+                build_args.4,
+                build_args.5,
+                build_args.6,
+                build_args.7,
+                build_args.8,
+            )
+        }
         .map_err(|err| BatchVerificationError::BatchBuild(err.to_string()))?;
         if batch_info.upgrade_tx_hash.is_some() && expected_upgrade_tx_hash.is_none() {
             return Err(BatchVerificationError::MissingCanonicalUpgradeTxHash);
@@ -175,8 +213,12 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory>
         if expected_commit_data != request.commit_data {
             return Err(BatchVerificationError::BatchDataMismatch);
         }
-        self.verify_syscoin_da_before_signing(&expected_commit_data)
-            .await?;
+        // SYSCOIN: Pre-v31 blob commitments refer to EIP-4844 sidecars, not Syscoin blob IDs.
+        // Their availability cannot be checked through the Syscoin DA client.
+        if !use_legacy_pre_syscoin_da {
+            self.verify_syscoin_da_before_signing(&expected_commit_data)
+                .await?;
+        }
 
         let signature = BatchSignature::sign_batch(
             &request.prev_commit_data,

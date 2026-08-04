@@ -29,6 +29,14 @@ alloy::sol! {
         Remove
     }
 
+    enum L2DACommitmentScheme {
+        NONE,
+        EMPTY_NO_DA,
+        PUBDATA_KECCAK256,
+        BLOBS_AND_PUBDATA_KECCAK256,
+        BLOBS_ZKSYNC_OS
+    }
+
     struct Facet {
         address addr;
         bytes4[] selectors;
@@ -101,8 +109,13 @@ alloy::sol! {
         function facets() external view returns (Facet[] memory);
         function getVerifier() external view returns (address);
         function getTransactionFilterer() external view returns (address);
+        function getChainTypeManager() external view returns (address);
+        function getDAValidatorPair() external view returns (address, L2DACommitmentScheme);
+        function isFunctionFreezable(bytes4 _selector) external view returns (bool);
 
         // Admin facet
+        function setDAValidatorPair(address _l1DAValidator, L2DACommitmentScheme _l2DACommitmentScheme) external;
+        function executeUpgrade(DiamondCutData calldata _diamondCut) external;
         function upgradeChainFromVersion(
             address, // _chainAddress (unused in this specific implementation)
             uint256 _oldProtocolVersion,

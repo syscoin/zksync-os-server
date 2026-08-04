@@ -128,4 +128,3 @@ done
 
 echo ""
 echo "🎉 All configs passed successfully"
-

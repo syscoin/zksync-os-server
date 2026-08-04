@@ -32,9 +32,8 @@ sol! {
     }
 }
 
-fn disable_commits_config(config: &mut Config) {
-    config.prover_api_config.fake_fri_provers.enabled = false;
-    config.prover_api_config.fake_snark_provers.enabled = false;
+fn disable_batching_config(config: &mut Config) {
+    config.batcher_config.enabled = false;
 }
 
 fn configure_failing_block(config: &Config, failing_block: u64) {
@@ -226,7 +225,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart_v30() -> anyhow::Resul
     .await?;
 
     let mut restarted_config = stopped.config().clone();
-    disable_commits_config(&mut restarted_config);
+    disable_batching_config(&mut restarted_config);
     let restarted = stopped.start_with_config(restarted_config).await?;
     let safe_after_revert =
         block_number_by_id(&restarted, BlockId::Number(BlockNumberOrTag::Safe)).await?;
@@ -251,6 +250,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart_v30() -> anyhow::Resul
     }
 
     let mut restarted_config = restarted.config().clone();
+    restarted_config.batcher_config.enabled = true;
     make_full_pipeline_config(&mut restarted_config);
     let restarted = restarted.restart_with_config(restarted_config).await?;
     // The initial L1->L2 deposit was in the reverted batch, so the wallet balance is 0 after
@@ -305,7 +305,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart_v30() -> anyhow::Resul
 ///   4. Revert all committed batches on L1 while the EN is running.
 ///   5. The EN's revert watcher observes the (finalized) `BlocksRevert` and panics its critical
 ///      task with `L1WatcherError::L1Reverted`; assert the fatal error surfaces accordingly.
-///   6. Restart the EN and confirm it re-syncs fresh L2 blocks from the (still healthy) main node.
+///   6. Restart the EN, re-enable the main-node batcher, and confirm the EN re-syncs fresh blocks.
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     let env = CURRENT_TO_L1.environment().await?;
@@ -370,11 +370,17 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
         "expected the external node to crash via the L1 revert watcher, got: {err_text}"
     );
 
-    // The watcher crashed the EN precisely so an orchestrator can restart and re-sync it. Restart
-    // it (reusing the same DB) and confirm it recovers: its revert watcher now initializes a
-    // startup SL block above the revert event (so it does not re-fire on it), and the EN keeps
-    // syncing fresh L2 blocks from the main node.
-    let en = en.restart().await?;
+    // The watcher crashed the EN precisely so an orchestrator can restart and re-sync it. Preserve
+    // its DB while the main node restarts; the EN connection settings are refreshed below because
+    // runtime-assigned endpoints may change across a restart.
+    let stopped_en = en.stop().await?;
+
+    // Re-enable batching and block production after the revert window. Disabled-batcher Syscoin
+    // main nodes are intentionally replay-only.
+    let main_node = main_node
+        .restart_with_overrides(|config| config.batcher_config.enabled = true)
+        .await?;
+    let en = main_node.restart_external_node(stopped_en).await?;
 
     let receipt = main_node
         .l2_provider

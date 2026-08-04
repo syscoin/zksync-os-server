@@ -30,7 +30,7 @@ pub struct ExternalNodeProtocolConfig {
     pub record_overrides: Vec<RecordOverride>,
     /// Maximum replay records requested per `BlockReplays` response message.
     pub max_blocks_per_message: u64,
-    // SYSCOIN: EN replay sync must only trust the configured main-node peer identity.
+    /// SYSCOIN: RLPx-authenticated boot-node identities are the only permitted replay sources.
     pub trusted_main_node_peers: Vec<PeerId>,
     /// Channel used to forward replay records into the local sequencer.
     pub replay_sender: mpsc::Sender<ReplayRecord>,

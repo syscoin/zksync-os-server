@@ -87,6 +87,11 @@ pub struct RpcConfig {
     /// Gas limit of transactions executed via eth_call
     pub eth_call_gas: usize,
 
+    /// Offset applied to wall-clock timestamps for synthesized pending blocks.
+    /// This must match the sequencer's timestamp offset so RPC simulation uses the same clock as
+    /// block production.
+    pub block_timestamp_offset_seconds: i64,
+
     /// Maximum execution time of a single JS tracer run
     pub js_tracer_timeout: Duration,
 

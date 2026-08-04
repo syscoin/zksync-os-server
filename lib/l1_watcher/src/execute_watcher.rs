@@ -261,5 +261,3 @@ impl<Finality: WriteFinality> ProcessL1Event for L1FinalizedExecuteWatcher<Final
             .await
     }
 }
-
-

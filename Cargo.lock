@@ -8188,7 +8188,7 @@ dependencies = [
  "hyper-util",
  "log",
  "pin-project-lite",
- "rand 0.9.2",
+ "rand 0.9.5",
  "regex",
  "serde_json",
  "serde_urlencoded",

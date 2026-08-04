@@ -164,6 +164,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let middleware = tower::ServiceBuilder::new().layer(cors);
 
     let max_response_size_bytes = config.max_response_size_bytes();
+    let parallel_batches = config.parallel_batches;
     // SYSCOIN: MethodFiltering now decomposes batches to enforce filtered notifications,
     // so it needs the same response-size limit as jsonrpsee's batch builder.
     let max_response_size_bytes_usize = max_response_size_bytes as usize;
@@ -186,6 +187,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
                 max_response_size_bytes,
                 blocking_rpcs_semaphore.clone(),
                 known_methods.clone(),
+                parallel_batches,
             )
         })
         .layer_fn(move |service| {
@@ -262,4 +264,3 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
 
     Ok(())
 }
-

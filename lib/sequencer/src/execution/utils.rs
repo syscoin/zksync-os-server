@@ -1,6 +1,7 @@
 use alloy::primitives::{B256, keccak256};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -211,4 +212,3 @@ pub(crate) fn save_dump(path: PathBuf, dump: BlockDump) -> anyhow::Result<()> {
 
     Ok(())
 }
-

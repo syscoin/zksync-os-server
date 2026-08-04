@@ -68,17 +68,15 @@ impl L1TxWatcher {
 }
 
 async fn find_l1_block_by_priority_id(
-    zk_chain: &ZkChain<NodeProvider>,
+    zk_chain: ZkChain<NodeProvider>,
     next_l1_priority_id: u64,
 ) -> anyhow::Result<BlockNumber> {
     let deployment_block = zk_chain.deployment_block().await?;
     util::find_l1_block_by_predicate(
-        zk_chain.provider(),
+        Arc::new(zk_chain),
         deployment_block,
-        move |block| async move {
-            let res = zk_chain
-                .get_total_priority_txs_at_block(block.into())
-                .await?;
+        move |zk, block| async move {
+            let res = zk.get_total_priority_txs_at_block(block.into()).await?;
             Ok(res >= next_l1_priority_id)
         },
     )
@@ -139,5 +137,3 @@ impl ProcessL1Event for L1TxWatcher {
         Ok(())
     }
 }
-
-

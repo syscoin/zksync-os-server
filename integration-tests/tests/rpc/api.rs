@@ -436,4 +436,3 @@ async fn get_storage_proof(tester: Tester) -> anyhow::Result<()> {
 
     Ok(())
 }
-

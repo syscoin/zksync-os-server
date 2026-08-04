@@ -27,7 +27,7 @@ use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::ReadStateHistory;
 use zksync_os_types::PubdataMode;
 
@@ -225,12 +225,31 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             );
 
             if let Some(sidecar) = batch_envelope.batch.blob_sidecar.clone() {
-                self.sidecar_sender
-                    .send(sidecar)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to send sidecar: {e}"))?;
+                // SYSCOIN: Blob sidecars only feed gas-adjuster fill-ratio statistics. Keep this
+                // path lossy so a full stats channel cannot backpressure sealed batch output.
+                match self.sidecar_sender.try_send(sidecar) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        tracing::debug!(
+                            batch_number = batch_envelope.batch_number(),
+                            "Dropping blob sidecar gas-adjuster sample because the channel is full"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            batch_number = batch_envelope.batch_number(),
+                            "Dropping blob sidecar gas-adjuster sample because the receiver is closed"
+                        );
+                    }
+                }
             }
-            output.send_and_record(batch_envelope, &state_reporter)?;
+            let last_block_number = batch_envelope.batch.last_block_number;
+            let batch_number = batch_envelope.batch_number();
+            output
+                .send(batch_envelope)
+                .await
+                .context("batcher downstream channel closed")?;
+            state_reporter.record_processed(last_block_number, None, Some(batch_number));
         }
     }
 }
@@ -352,6 +371,16 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         let pubdata_mode = self
             .pubdata_mode
             .adapt_for_protocol_version(protocol_version);
+        let uses_syscoin_da = protocol_version.minor >= 31
+            && matches!(
+                pubdata_mode,
+                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+            );
+        let legacy_pre_syscoin_da = !uses_syscoin_da
+            && matches!(
+                pubdata_mode,
+                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+            );
 
         /* ---------- seal the batch ---------- */
         let mut batch_envelope = batch_builder::seal_batch(
@@ -364,14 +393,12 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.sl_chain_id,
             self.compact_edge_da_commit_target,
             self.expected_upgrade_tx_hash_for_batch(batch_number),
+            legacy_pre_syscoin_da,
             &self.read_state,
         )?;
         // SYSCOIN: `RelayedL2Calldata` is a compact edge-DA reference mode when settling to
         // Gateway; it uses the same Bitcoin DA publication and hash-array commitment as blobs.
-        if matches!(
-            pubdata_mode,
-            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-        ) {
+        if uses_syscoin_da {
             let total_pubdata: Vec<u8> = blocks
                 .iter()
                 .flat_map(|(block_output, _, _, _)| block_output.pubdata.iter().copied())
@@ -452,7 +479,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         );
 
         // Rebuild the batch from blocks
-        let rebuilt_batch = batch_builder::seal_batch(
+        let mut rebuilt_batch = batch_builder::seal_batch(
             &blocks,
             prev_batch_info.clone(),
             batch_number,
@@ -463,12 +490,48 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.sl_chain_id,
             self.compact_edge_da_commit_target,
             self.expected_upgrade_tx_hash_for_batch(batch_number),
+            false,
             &self.read_state,
         )?;
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes
         if self.batcher_config.assert_rebuilt_batch_hashes {
-            let rebuilt_stored_batch_info = rebuilt_batch.batch.batch_info.clone().into_stored();
+            let mut rebuilt_stored_batch_info =
+                rebuilt_batch.batch.batch_info.clone().into_stored();
+
+            // Before Syscoin DA, Blobs used KZG versioned hashes and RelayedL2Calldata used
+            // calldata DA fields; both omitted the trailing edge-ref root. Accept that layout
+            // only when it reproduces the exact on-chain commitment.
+            if rebuilt_stored_batch_info.hash() != existing_batch.batch_info.hash()
+                && matches!(
+                    self.pubdata_mode,
+                    PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+                )
+            {
+                let legacy_rebuilt_batch = batch_builder::seal_batch(
+                    &blocks,
+                    prev_batch_info.clone(),
+                    batch_number,
+                    self.chain_id,
+                    self.chain_address_sl,
+                    self.pubdata_mode,
+                    self.sl_chain_id,
+                    self.compact_edge_da_commit_target,
+                    self.expected_upgrade_tx_hash_for_batch(batch_number),
+                    true,
+                    &self.read_state,
+                )?;
+                let legacy_stored_batch_info =
+                    legacy_rebuilt_batch.batch.batch_info.clone().into_stored();
+                if legacy_stored_batch_info.hash() == existing_batch.batch_info.hash() {
+                    tracing::info!(
+                        batch_number,
+                        "Recreated batch with pre-Syscoin DA semantics"
+                    );
+                    rebuilt_batch = legacy_rebuilt_batch;
+                    rebuilt_stored_batch_info = legacy_stored_batch_info;
+                }
+            }
 
             anyhow::ensure!(
                 rebuilt_stored_batch_info.hash() == existing_batch.batch_info.hash(),
@@ -683,5 +746,3 @@ mod tests {
         ));
     }
 }
-
-

@@ -29,12 +29,15 @@ connections.
 
 ## Supported versions
 
-- `zks/5` — the only production version registered by the network service. It carries
-  `GetBlockReplays` (0x00) and `BlockReplays` (0x01), using the v3 replay record encoding.
+- `zks/5` — the only production version registered by the Syscoin network service. It keeps
+  upstream's replay-only message surface (`GetBlockReplays` 0x00 and `BlockReplays` 0x01), but
+  uses the v4 replay record encoding so v31's canonical upgrade transaction hash is preserved.
 - `zks/0` — a bare-bones version kept in-tree for tests only. Its replay records carry just the
   block number, and the network service never registers it.
 - `zks/1`–`zks/4` are retired and no longer accepted. `zks/3` and `zks/4` carried the verifier
-  messages inline at message IDs 0x02–0x06; those IDs must not be reused in `zks/5`.
+  messages inline at message IDs 0x02–0x06; those IDs are not reused in replay-only `zks/5`.
+  Their frozen `wire/replays/v*.rs` sources remain in-tree unchanged as protocol history, but the
+  production service does not register those protocol versions.
 - `zks_2fa/1` — hosts the verifier handshake (`VerifierRoleRequest` 0x00, `VerifierChallenge`
   0x01, `VerifierAuth` 0x02) and batch verification (`VerifyBatch` 0x03, `VerifyBatchResult`
   0x04). Only verifier-configured ENs advertise it; the main node always does.
@@ -58,9 +61,15 @@ Deployed peers negotiate a specific `zks/N` capability, so versions must evolve 
    speaks the newer version. It is never done as a side effect of another change.
 4. **Retired version numbers and message IDs are never reused.**
 
-History: `zks/1` (initial replay) through `zks/4` followed this lifecycle — `zks/3`/`zks/4`
-carried the verifier messages inline until they moved to `zks_2fa/1`, after which replay-only
-`zks/5` was added alongside them (v0.20.12) and versions 1–4 were removed in a later release.
+History: upstream `zks/1` through `zks/4` carried replay, with verifier messages inline in
+`zks/3`/`zks/4`. Upstream moved verifier traffic to `zks_2fa/1` and defined replay-only `zks/5`
+with the v3 record encoding. No Syscoin release or third-party-operated network used that `zks/5` wire
+shape, so SYSCOIN binds `zks/5` to the existing immutable v4 replay record required by v31. The
+operator-controlled v31 testnet moves from `zks/4` to `zks/5` as a coordinated stop-the-world
+upgrade; mixed `zks/4` and `zks/5` nodes cannot replay from one another, and stock upstream
+`zks/5` nodes are wire-incompatible with Syscoin `zks/5`. The rollout reuses the existing node
+databases and pinned v31 chain configuration: stop every node, deploy the same upgraded binary to
+the full fleet, start the trusted main/boot nodes, and then start the external nodes.
 
 ## Module split
 
@@ -90,12 +99,14 @@ Replay is the `zks` protocol's sole responsibility.
 
 1. The EN negotiates a `zks/<version>` capability over devp2p.
 2. The EN sends `GetBlockReplays`, including how many records the MN may batch per response.
-3. The MN streams `BlockReplays`, batching up to the requested number of records per message (and
-   never more than the server-side limit of 64).
+3. The MN streams `BlockReplays`. Syscoin currently emits one record per frame even when the EN
+   requests more, keeping large transaction and preimage payloads under replay-specific
+   backpressure without shrinking the control-message queue.
 4. The EN forwards received replay records into its local pipeline.
 
 Replay record encoding is versioned separately from the protocol version (`wire/replays/v*.rs`);
-`zks/5` pins the v3 record encoding.
+Syscoin `zks/5` pins the v4 record encoding so the canonical upgrade transaction hash is carried
+unchanged. This intentionally differs from stock upstream `zks/5`, which pins v3.
 
 ## Batch verification flow
 

@@ -63,4 +63,3 @@ async fn eip2930(tester: Tester) -> anyhow::Result<()> {
 
     Ok(())
 }
-

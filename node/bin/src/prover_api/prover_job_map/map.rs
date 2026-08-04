@@ -566,8 +566,31 @@ mod tests {
         create_test_batch_envelope_with_upgrade(batch_number, None)
     }
 
+    fn create_test_batch_envelope_with_protocol_version(
+        batch_number: u64,
+        protocol_version: ProtocolSemanticVersion,
+    ) -> SignedBatchEnvelope<Vec<u8>> {
+        create_test_batch_envelope_with_protocol_version_and_upgrade(
+            batch_number,
+            protocol_version,
+            None,
+        )
+    }
+
     fn create_test_batch_envelope_with_upgrade(
         batch_number: u64,
+        upgrade_tx_hash: Option<B256>,
+    ) -> SignedBatchEnvelope<Vec<u8>> {
+        create_test_batch_envelope_with_protocol_version_and_upgrade(
+            batch_number,
+            ProtocolSemanticVersion::legacy_genesis_version(),
+            upgrade_tx_hash,
+        )
+    }
+
+    fn create_test_batch_envelope_with_protocol_version_and_upgrade(
+        batch_number: u64,
+        protocol_version: ProtocolSemanticVersion,
         upgrade_tx_hash: Option<B256>,
     ) -> SignedBatchEnvelope<Vec<u8>> {
         let batch = BatchMetadata {
@@ -605,8 +628,9 @@ mod tests {
                     edge_da_refs_root: B256::ZERO,
                     sl_chain_id: 2,
                 },
-                protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
+                protocol_version,
                 upgrade_tx_hash,
+                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
             blob_sidecar: None,
@@ -954,4 +978,3 @@ mod tests {
         assert!(result2.is_none());
     }
 }
-

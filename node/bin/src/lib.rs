@@ -611,7 +611,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let committed_batch_provider = CommittedBatchProvider::new(
         runtime,
         &l1_state,
-        config.l1_watcher_config.max_blocks_to_process,
         persistent_batch_storage.clone(),
         l1_archive_provider.clone(),
         || async {
@@ -1059,6 +1058,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         let gas_adjuster_config = gas_adjuster_config(
             config.gas_adjuster_config.clone(),
             pubdata_mode,
+            current_protocol_version.minor >= 31,
             max_priority_fee_per_gas,
             &config.batcher_config,
         );
@@ -1121,8 +1121,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // Mini-component capable of doing local `eth_call` without going through RPC. Needed for
     // interop fee updater so it can query the current interop fee.
+    let mut local_rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
+    local_rpc_config.block_timestamp_offset_seconds =
+        config.sequencer_config.block_timestamp_offset_seconds;
     let local_eth_call = Box::new(EthCallHandler::new(
-        config.rpc_config.clone().into(),
+        local_rpc_config,
         rpc_storage.clone(),
         chain_id,
         last_constructed_block_ctx_receiver.clone(),
@@ -1163,6 +1166,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             pubdata_limit: config.sequencer_config.block_pubdata_limit_bytes,
             fee_collector_address: config.sequencer_config.fee_collector_address,
             block_time: config.sequencer_config.block_time,
+            block_timestamp_offset_seconds: config.sequencer_config.block_timestamp_offset_seconds,
             service_block_delay: config.sequencer_config.service_block_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
@@ -1341,6 +1345,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         let _ = rpc_ready.set(());
     };
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
+    rpc_config.block_timestamp_offset_seconds =
+        config.sequencer_config.block_timestamp_offset_seconds;
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not retrievable yet.
     rpc_config.edge_da_admission = edge_da_admission_config(&config, syscoin_edge_da_commit_target)
@@ -1778,11 +1784,9 @@ async fn run_main_node_pipeline(
 
     if !config.prover_input_generator_config.enable_input_generation {
         assert!(
-            config.prover_api_config.fake_fri_provers.enabled
-                && config.prover_api_config.fake_snark_provers.enabled,
-            "prover_input_generator_config.enable_input_generation=false requires both \
-             prover_api_config.fake_fri_provers.enabled and \
-             prover_api_config.fake_snark_provers.enabled to be true"
+            config.prover_api_config.fake_fri_provers.enabled,
+            "prover_input_generator_config.enable_input_generation=false requires \
+             prover_api_config.fake_fri_provers.enabled=true"
         );
     }
 
@@ -2005,7 +2009,10 @@ async fn run_en_pipeline(
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() });
+        .pipe(TreeManager {
+            tree: tree.clone(),
+            runtime: runtime.clone(),
+        });
 
     // SYSCOIN: construct the batch-verification responder only when this EN is
     // explicitly configured to sign batches. Our default signing key is empty
@@ -2657,6 +2664,3 @@ mod tests {
         validate_batch_verification_startup_policy(&server_config, &l1_config);
     }
 }
-
-
-

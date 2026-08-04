@@ -65,4 +65,3 @@ pub enum ProtocolEvent {
         max_connections: usize,
     },
 }
-

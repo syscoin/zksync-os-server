@@ -293,6 +293,7 @@ alloy::sol! {
         function getTotalPriorityTxs() external view returns (uint256);
         function getPubdataPricingMode() external view returns (PubdataPricingMode);
         function getAdmin() external view returns (address);
+        function getTransactionFilterer() external view returns (address);
         function getChainTypeManager() external view returns (address);
         function getProtocolVersion() external view returns (uint256);
         function baseTokenGasPriceMultiplierNominator() external view returns (uint128);
@@ -898,6 +899,15 @@ impl<P: Provider> ZkChain<P> {
             .call()
             .await
             .enrich("getAdmin", None)
+    }
+
+    /// Returns the L1-to-L2 transaction filter configured for the chain.
+    pub async fn get_transaction_filterer(&self) -> Result<Address> {
+        self.instance
+            .getTransactionFilterer()
+            .call()
+            .await
+            .enrich("getTransactionFilterer", None)
     }
 
     /// Returns the current CTM for the chain.

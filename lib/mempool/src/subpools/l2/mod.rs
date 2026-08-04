@@ -1,6 +1,6 @@
 mod validator;
 
-use crate::metrics::ViseRecorder;
+use crate::metrics::{TRANSACTION_POOL_METRICS, ViseRecorder};
 use crate::subpools::rate_limited_l2::{RateLimitedL2Subpool, TxGasRateLimiter};
 use crate::{L2PooledTransaction, TxGasRateLimitConfig, TxValidatorConfig};
 use alloy::consensus::transaction::Recovered;
@@ -12,10 +12,10 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::blobstore::NoopBlobStore;
 use reth_transaction_pool::error::{InvalidPoolTransactionError, PoolError};
-use reth_transaction_pool::validate::EthTransactionValidatorBuilder;
+use reth_transaction_pool::validate::{EthTransactionValidatorBuilder, TransactionValidator};
 use reth_transaction_pool::{
     AddedTransactionOutcome, CoinbaseTipOrdering, Pool, PoolConfig, PoolResult, PoolTransaction,
-    TransactionListenerKind, TransactionOrigin, TransactionPoolExt,
+    TransactionListenerKind, TransactionOrigin, TransactionPoolExt, TransactionValidationOutcome,
 };
 use reth_transaction_pool::{BestTransactions, ValidPoolTransaction};
 use std::fmt::Debug;
@@ -62,6 +62,22 @@ pub trait L2Subpool:
         )
     }
 
+    /// Validates an RPC transaction before external admission hooks run, without making it
+    /// visible to block production.
+    fn validate_l2_transaction(
+        &self,
+        transaction: L2Transaction,
+    ) -> impl Future<Output = PoolResult<()>> + Send;
+
+    // RPC forwarding rollbacks operate directly on the L2 subpool rather than the aggregate
+    // pool, so the metric must be recorded at this abstraction.
+    fn remove_forwarding_rollback_transactions(&self, tx_hashes: Vec<TxHash>) {
+        TRANSACTION_POOL_METRICS
+            .forwarding_rollback_transactions
+            .inc_by(tx_hashes.len() as u64);
+        self.remove_transactions(tx_hashes);
+    }
+
     /// Arms the (optional) executed-gas rate limiter: from this moment on, canonical blocks
     /// drain its bank. Call once the node is caught up and about to start serving live
     /// traffic — never before, since blocks committed during WAL replay / EN catch-up arrive
@@ -85,6 +101,21 @@ pub trait L2Subpool:
 impl<State: ReadStateHistory + Clone, Repository: ReadRepository + Clone> L2Subpool
     for RethPool<State, Repository>
 {
+    async fn validate_l2_transaction(&self, transaction: L2Transaction) -> PoolResult<()> {
+        let transaction = L2PooledTransaction::from_pooled(transaction);
+        match self
+            .validator()
+            .validate_transaction(TransactionOrigin::Local, transaction)
+            .await
+        {
+            TransactionValidationOutcome::Valid { .. } => Ok(()),
+            TransactionValidationOutcome::Invalid(tx, err) => Err(PoolError::new(*tx.hash(), err)),
+            TransactionValidationOutcome::Error(tx_hash, err) => {
+                Err(PoolError::other(tx_hash, err))
+            }
+        }
+    }
+
     fn update_pending_fee_params(&self, fee_params: FeeParams) {
         self.validator().update_fee_params(fee_params);
     }
@@ -193,4 +224,3 @@ pub fn in_memory(
         gas_rate_limit.map(|config| Arc::new(TxGasRateLimiter::new(&config))),
     )
 }
-

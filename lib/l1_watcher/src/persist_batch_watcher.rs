@@ -57,8 +57,7 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
             "initializing L1 persist batch watcher"
         );
 
-        let provider = zk_chain.provider().clone();
-        let address = (*zk_chain.address()).into();
+        let max_blocks_to_process = config.max_blocks_to_process;
 
         // Per-segment block resolution (and the starting `last_persisted_batch`) are deferred to
         // the watcher's `run()`; only static dependencies are captured here.
@@ -337,5 +336,3 @@ impl<BatchStorage: WriteBatch> ProcessRawEvents for L1PersistBatchWatcher<BatchS
         Ok(())
     }
 }
-
-

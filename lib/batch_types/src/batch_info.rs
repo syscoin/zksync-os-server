@@ -1,4 +1,4 @@
-use alloy::consensus::BlobTransactionSidecar;
+use alloy::consensus::{BlobTransactionSidecar, SidecarBuilder, SimpleCoder};
 use alloy::primitives::{Address, B256, BlockNumber, U256, keccak256};
 use alloy::sol_types::{SolCall, SolValue};
 use anyhow::ensure;
@@ -223,6 +223,11 @@ pub struct PendingBatchInfo {
     /// majority of batches.
     pub upgrade_tx_hash: Option<B256>,
     pub protocol_version: ProtocolSemanticVersion,
+    /// Reproduces commitments made before blob modes were assigned Syscoin DA semantics.
+    /// This is set only after a rebuilt committed batch matches the historical layout exactly.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub use_legacy_v31_commitment: bool,
 }
 
 impl PendingBatchInfo {
@@ -238,6 +243,70 @@ impl PendingBatchInfo {
         expected_upgrade_tx_hash: Option<B256>,
         compact_edge_da_commit_target: Option<Address>,
         last_256_block_hashes: &[U256; 256],
+    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
+        Self::build_with_compatibility(
+            blocks,
+            chain_id,
+            batch_number,
+            pubdata_mode,
+            sl_chain_id,
+            multichain_root,
+            protocol_version,
+            expected_upgrade_tx_hash,
+            compact_edge_da_commit_target,
+            last_256_block_hashes,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_legacy_pre_syscoin_da(
+        blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
+        chain_id: u64,
+        batch_number: u64,
+        pubdata_mode: PubdataMode,
+        sl_chain_id: u64,
+        multichain_root: B256,
+        protocol_version: &ProtocolSemanticVersion,
+        expected_upgrade_tx_hash: Option<B256>,
+        compact_edge_da_commit_target: Option<Address>,
+        last_256_block_hashes: &[U256; 256],
+    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
+        ensure!(
+            matches!(
+                pubdata_mode,
+                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+            ),
+            "legacy pre-Syscoin DA compatibility requires Blobs or RelayedL2Calldata"
+        );
+        Self::build_with_compatibility(
+            blocks,
+            chain_id,
+            batch_number,
+            pubdata_mode,
+            sl_chain_id,
+            multichain_root,
+            protocol_version,
+            expected_upgrade_tx_hash,
+            compact_edge_da_commit_target,
+            last_256_block_hashes,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_with_compatibility(
+        blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
+        chain_id: u64,
+        batch_number: u64,
+        pubdata_mode: PubdataMode,
+        sl_chain_id: u64,
+        multichain_root: B256,
+        protocol_version: &ProtocolSemanticVersion,
+        expected_upgrade_tx_hash: Option<B256>,
+        compact_edge_da_commit_target: Option<Address>,
+        last_256_block_hashes: &[U256; 256],
+        use_legacy_v31_commitment: bool,
     ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
         let mut priority_operations_hash = keccak256([]);
         let mut number_of_layer1_txs = 0;
@@ -345,7 +414,11 @@ impl PendingBatchInfo {
         };
 
         /* ---------- operator DA input ---------- */
-        let da_fields = calculate_da_fields(&total_pubdata, pubdata_mode)?;
+        let da_fields = calculate_da_fields_with_compatibility(
+            &total_pubdata,
+            pubdata_mode,
+            use_legacy_v31_commitment,
+        )?;
 
         /* ---------- new state commitment ---------- */
         // FIXME: extract to a type common batch types?
@@ -397,6 +470,7 @@ impl PendingBatchInfo {
                 commit_info,
                 protocol_version: protocol_version.clone(),
                 upgrade_tx_hash,
+                use_legacy_v31_commitment,
             },
             da_fields.blob_sidecar,
         ))
@@ -407,8 +481,8 @@ impl PendingBatchInfo {
         let commit_info = &self.commit_info;
         let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
         match self.protocol_version.minor {
-            // v30 and v31 use different packed layouts for batch output hash:
-            // v31 inserts number_of_layer2_txs between L1 tx count and priority_operations_hash.
+            // v31 inserts the L2 transaction count and settlement-layer chain ID. Syscoin's
+            // current layout additionally binds the compact edge DA references below.
             30 => B256::from(keccak256(
                 (
                     U256::from(commit_info.chain_id),
@@ -421,6 +495,23 @@ impl PendingBatchInfo {
                     commit_info.l2_to_l1_logs_root_hash,
                     upgrade_tx_hash,
                     commit_info.dependency_roots_rolling_hash,
+                )
+                    .abi_encode_packed(),
+            )),
+            31 | 32 if self.use_legacy_v31_commitment => B256::from(keccak256(
+                (
+                    U256::from(commit_info.chain_id),
+                    commit_info.first_block_timestamp,
+                    commit_info.last_block_timestamp,
+                    U256::from(commit_info.l2_da_commitment_scheme as u8),
+                    commit_info.da_commitment,
+                    U256::from(commit_info.number_of_layer1_txs),
+                    U256::from(commit_info.number_of_layer2_txs),
+                    commit_info.priority_operations_hash,
+                    commit_info.l2_to_l1_logs_root_hash,
+                    upgrade_tx_hash,
+                    commit_info.dependency_roots_rolling_hash,
+                    U256::from(commit_info.sl_chain_id),
                 )
                     .abi_encode_packed(),
             )),
@@ -508,9 +599,38 @@ struct DAFields {
     pub blob_sidecar: Option<BlobTransactionSidecar>,
 }
 
+#[cfg(test)]
 fn calculate_da_fields(pubdata: &[u8], pubdata_mode: PubdataMode) -> anyhow::Result<DAFields> {
-    let (da_commitment, operator_da_input, blob_sidecar) = match pubdata_mode {
-        PubdataMode::Calldata | PubdataMode::RelayedL2Calldata => {
+    calculate_da_fields_with_compatibility(pubdata, pubdata_mode, false)
+}
+
+fn calculate_da_fields_with_compatibility(
+    pubdata: &[u8],
+    pubdata_mode: PubdataMode,
+    legacy_pre_syscoin_da: bool,
+) -> anyhow::Result<DAFields> {
+    if legacy_pre_syscoin_da && pubdata_mode == PubdataMode::Blobs {
+        let blob_sidecar: BlobTransactionSidecar =
+            SidecarBuilder::<SimpleCoder>::from_slice(pubdata).build()?;
+        let versioned_hashes: Vec<u8> = blob_sidecar
+            .versioned_hashes()
+            .flat_map(|hash| hash.0.to_vec())
+            .collect();
+        return Ok(DAFields {
+            da_commitment: keccak256(&versioned_hashes),
+            operator_da_input: vec![0u8; versioned_hashes.len()],
+            blob_sidecar: Some(blob_sidecar),
+        });
+    }
+
+    let da_fields_mode = if legacy_pre_syscoin_da && pubdata_mode == PubdataMode::RelayedL2Calldata
+    {
+        PubdataMode::Calldata
+    } else {
+        pubdata_mode
+    };
+    let (da_commitment, operator_da_input, blob_sidecar) = match da_fields_mode {
+        PubdataMode::Calldata => {
             let mut operator_da_input = Vec::with_capacity(32 * 3 + 1 + pubdata.len() + 1 + 32);
 
             // reference for this header is taken from zk_ee: https://github.com/matter-labs/zk_ee/blob/ad-aggregation-program/aggregator/src/aggregation/da_commitment.rs#L27

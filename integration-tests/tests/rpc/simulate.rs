@@ -11,7 +11,7 @@ use alloy::providers::utils::Eip1559Estimator;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::simulate::{SimBlock, SimulatePayload};
 use alloy::rpc::types::state::{AccountOverride, StateOverridesBuilder};
-use alloy::sol_types::{SolCall, SolEvent, SolValue};
+use alloy::sol_types::{SolEvent, SolValue};
 use zksync_os_integration_tests::contracts::EventEmitter::TestEvent;
 use zksync_os_integration_tests::contracts::{Counter, EventEmitter};
 use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_L1, Tester, test_multisetup};
@@ -249,4 +249,3 @@ fn settlement_sender_simulate_payload(
         ..Default::default()
     }
 }
-

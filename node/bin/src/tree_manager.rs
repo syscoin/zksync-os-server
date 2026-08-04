@@ -141,7 +141,7 @@ impl PipelineComponent for TreeManager {
 
             // Forward each block downstream.
             for tree_block in tree_blocks {
-                output.send_and_record(tree_block, &state_reporter)?;
+                output.send_and_record(tree_block, &state_reporter).await?;
             }
         }
     }

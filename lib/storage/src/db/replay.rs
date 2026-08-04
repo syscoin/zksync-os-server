@@ -332,6 +332,101 @@ impl BlockReplayStorage {
                 )
             })
     }
+
+    /// Reconstructs the 256 previous block hashes for the block stored under `key` from the
+    /// `CanonicalHash` CF. The hash of block `M` lands at index `M + 256 - block_number` (most
+    /// recent last); slots before genesis stay zero, mirroring how the genesis context is
+    /// initialized.
+    ///
+    /// Entries can only be missing for blocks appended before `CanonicalHash` was introduced;
+    /// those slots are taken from the hashes embedded in the row's legacy copy.
+    fn read_block_hashes(&self, block_number: BlockNumber, key: &[u8]) -> BlockHashes {
+        let mut hashes = [U256::ZERO; 256];
+        let first = block_number.saturating_sub(256);
+        let keys = (first..block_number)
+            .map(|number| number.to_be_bytes())
+            .collect::<Vec<_>>();
+        let results = self
+            .db
+            .multi_get_cf(BlockReplayColumnFamily::CanonicalHash, keys.iter());
+        let mut embedded = None;
+        for (number, result) in (first..block_number).zip(results) {
+            let index = (number + 256 - block_number) as usize;
+            hashes[index] = match result.expect("Failed to read from CanonicalHash DB") {
+                Some(bytes) => U256::from_be_slice(&bytes),
+                None => {
+                    let embedded = embedded.get_or_insert_with(|| {
+                        // Only expected for blocks appended before `CanonicalHash` was
+                        // introduced, i.e. only on chains that haven't produced a block since.
+                        tracing::warn!(
+                            block_number,
+                            oldest_missing_entry = number,
+                            "missing CanonicalHash entries; falling back to embedded block hashes"
+                        );
+                        self.get_legacy_context(key)
+                            .expect("canonical rows are dual-written; legacy copy must exist")
+                            .block_hashes
+                    });
+                    embedded.0[index]
+                }
+            };
+        }
+        BlockHashes(hashes)
+    }
+
+    fn get_stored_context_v2(&self, key: &[u8]) -> Option<StoredBlockContextV2> {
+        self.db
+            .get_cf(BlockReplayColumnFamily::ContextV2, key)
+            .expect("Cannot read from DB")
+            .map(|bytes| {
+                bincode::decode_from_slice(&bytes, bincode::config::standard())
+                    .expect("Failed to deserialize stripped context")
+                    .0
+            })
+    }
+
+    fn get_legacy_context(&self, key: &[u8]) -> Option<BlockContext> {
+        self.db
+            .get_cf(BlockReplayColumnFamily::Context, key)
+            .expect("Cannot read from DB")
+            .map(|bytes| {
+                bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+                    .expect("Failed to deserialize context")
+                    .0
+            })
+    }
+
+    fn get_context_by_key(&self, block_number: BlockNumber, key: &[u8]) -> Option<BlockContext> {
+        // Prefer the stripped row: its block hashes are reconstructed from `CanonicalHash`, so
+        // nothing depends on the copy embedded in the legacy row anymore.
+        if let Some(stored) = self.get_stored_context_v2(key) {
+            assert_eq!(
+                stored.block_number, block_number,
+                "block number mismatch when reading context"
+            );
+            return Some(
+                stored.into_context(self.chain_id, self.read_block_hashes(block_number, key)),
+            );
+        }
+        // No stripped row: either a canonical row written before `ContextV2` existed (or by an
+        // older binary during a rollback), or a non-canonical (hash-keyed) row holding a
+        // reverted block. Both are served as stored: for the former the embedded hashes are
+        // just as correct, and for the latter they are authoritative — `CanonicalHash` entries
+        // for a reverted block's ancestors may have been overwritten by the new canonical chain.
+        self.get_legacy_context(key)
+    }
+
+    /// Cheaper than [`ReadReplay::get_context`] when only the timestamp is needed: skips
+    /// reconstructing the 256 block hashes (and, for stripped rows, decoding them).
+    fn get_block_timestamp(&self, block_number: BlockNumber) -> Option<u64> {
+        let key = block_number.to_be_bytes();
+        self.get_stored_context_v2(&key)
+            .map(|context| context.timestamp)
+            .or_else(|| {
+                self.get_legacy_context(&key)
+                    .map(|context| context.timestamp)
+            })
+    }
 }
 
 impl ReadReplay for BlockReplayStorage {
@@ -489,7 +584,7 @@ impl BlockReplayStorage {
         // SYSCOIN
         let canonical_upgrade_tx_hash = self
             .db
-            .get_cf(BlockReplayColumnFamily::CanonicalUpgradeTxHash, &key)
+            .get_cf(BlockReplayColumnFamily::CanonicalUpgradeTxHash, key)
             .expect("Failed to read from CanonicalUpgradeTxHash CF")
             .map(|hash| B256::from_slice(&hash))
             .unwrap_or(B256::ZERO);
@@ -790,6 +885,7 @@ mod tests {
                 protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
                 block_output_hash: B256::from(U256::from(0xB0_0000 + number)),
                 force_preimages: vec![],
+                canonical_upgrade_tx_hash: B256::ZERO,
                 starting_cursors: BlockStartCursors::default(),
             };
             chain.push(Sealed::new_unchecked(record, fake_hash(number)));
@@ -1015,4 +1111,3 @@ mod tests {
         assert_eq!(storage.get_replay_record(4), Some(new4));
     }
 }
-

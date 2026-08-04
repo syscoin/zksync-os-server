@@ -29,7 +29,6 @@ struct RevertPlan {
 async fn derive_last_l1_batch_to_keep(
     from_block_number: u64,
     l1_state: &L1State,
-    max_blocks_to_process: u64,
 ) -> anyhow::Result<Option<u64>> {
     let last_committed_batch = l1_state.last_committed_batch;
     let last_executed_batch = l1_state.last_executed_batch;
@@ -246,13 +245,10 @@ async fn plan_l1_revert(
                 "DangerBlockRebuildWithL1Revert: deriving batch to revert from from_block_number"
             );
 
-            let Some(last_l1_batch_to_keep) = derive_last_l1_batch_to_keep(
-                bounds.from_block_number,
-                l1_state,
-                max_blocks_to_process,
-            )
-            .await
-            .context("failed to derive last_l1_batch_to_keep")?
+            let Some(last_l1_batch_to_keep) =
+                derive_last_l1_batch_to_keep(bounds.from_block_number, l1_state)
+                    .await
+                    .context("failed to derive last_l1_batch_to_keep")?
             else {
                 return Ok(None);
             };
@@ -344,4 +340,3 @@ pub async fn revert_l1_on_startup(
         }
     }
 }
-

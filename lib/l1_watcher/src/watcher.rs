@@ -187,33 +187,9 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
             end_block,
             max_blocks_to_process: config.max_blocks_to_process,
             block_boundary: BlockBoundary::Finalized,
-            processor,
-        }
-    }
-
-    /// Builds a watcher for a single pre-resolved segment, tailing the confirmed boundary
-    /// (`latest - confirmations`). Unlike [`new_finalized`](Self::new_finalized), it reacts to an
-    /// event within `confirmations` blocks instead of waiting out finality.
-    pub(crate) async fn new_confirmed(
-        config: L1WatcherConfig,
-        provider: NodeProvider,
-        address: ValueOrArray<Address>,
-        next_block: BlockNumber,
-        end_block: Option<BlockNumber>,
-        l1_chain_id: u64,
-        processor: P,
-    ) -> anyhow::Result<Self> {
-        let confirmations = resolve_confirmations(&provider, l1_chain_id, &config).await?;
-        Ok(Self {
-            provider,
-            address,
-            next_block,
-            end_block,
-            max_blocks_to_process: config.max_blocks_to_process,
-            block_boundary: BlockBoundary::Finalized,
             poll_interval: config.poll_interval,
             processor,
-        })
+        }
     }
 
     /// Builds a watcher for a single pre-resolved segment, tailing the confirmed boundary
@@ -414,6 +390,3 @@ pub enum L1WatcherError {
     #[error("output has been closed")]
     OutputClosed,
 }
-
-
-

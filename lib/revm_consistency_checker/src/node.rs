@@ -292,13 +292,15 @@ where
                 }
             }
 
-            output.send_and_record(
-                AppliedBlock {
-                    output: block,
-                    record: replay_record,
-                },
-                &state_reporter,
-            )?;
+            output
+                .send_and_record(
+                    AppliedBlock {
+                        output: block,
+                        record: replay_record,
+                    },
+                    &state_reporter,
+                )
+                .await?;
         }
     }
 }
@@ -426,4 +428,3 @@ mod tests {
         assert_eq!(syscoin_revm_prevrandao(), B256::from(U256::ONE));
     }
 }
-

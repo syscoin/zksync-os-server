@@ -1,10 +1,14 @@
 //! Replay request and response payloads for the `zks` protocol.
 //!
-//! The protocol version pins the replay record format used inside [`BlockReplays`]: production
-//! `zks/5` uses [`v3`], while negotiation tests can use the deliberately lossy [`v0`].
+//! The protocol version pins the replay record format used inside [`BlockReplays`]: Syscoin
+//! production `zks/5` uses [`v4`], while negotiation tests can use the deliberately lossy
+//! [`v0`]. The upstream v3 shape remains available for decoding tests but was never released on a
+//! Syscoin network as `zks/5`.
 
 pub mod v0;
 pub mod v3;
+// SYSCOIN: zks/5 pins this frozen format because v31 replay requires the canonical upgrade hash.
+pub mod v4;
 
 mod impls;
 
@@ -72,4 +76,3 @@ pub trait WireReplayRecord:
     /// Returns the record's block number without converting the full payload.
     fn block_number(&self) -> BlockNumber;
 }
-

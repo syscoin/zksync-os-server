@@ -11,6 +11,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CallKind {
@@ -518,4 +519,3 @@ mod tests {
         assert!(!is_heavy_rpc_method(UNKNOWN_METHOD));
     }
 }
-

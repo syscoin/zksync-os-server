@@ -69,7 +69,6 @@ impl<Ok> ToRpcResult<Ok, DebugError> for Result<Ok, DebugError> {
         self.map_err(|err| match err {
             DebugError::UnsupportedDefaultTracer
             | DebugError::UnsupportedTracer(_)
-            | DebugError::UnsupportedJsTracer
             | DebugError::UnsupportedTxIndex
             | DebugError::InvalidTracerConfig
             | DebugError::TransactionNotFound

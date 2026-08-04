@@ -301,4 +301,3 @@ async fn l2_token_address(tester: &Tester, l1_token: Address) -> anyhow::Result<
 
     Ok(l2_erc20_address)
 }
-

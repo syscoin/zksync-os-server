@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::watcher::{L1WatcherError, StartResolver};
 use crate::{EventSink, L1WatcherConfig, ProcessL1Event, util};
@@ -226,7 +227,7 @@ impl L1UpgradeTxWatcher {
                     );
                     proposed_upgrade.l2ProtocolUpgradeTx.data = rewritten;
                 }
-                Err(e) if is_method_missing(&e) => {
+                Err(e) if is_method_missing(&e) || is_pre_v31_empty_revert(&e) => {
                     tracing::info!(
                         init_address = ?upgrade_init_address,
                         "init contract does not expose getL2UpgradeTxData (pre-v31); using original tx data"
@@ -637,18 +638,17 @@ impl L1UpgradeTxWatcher {
                     self.ctm_l1
                 );
             }
-            Err(e) => {
-                // Transport errors (503, timeout, etc.) should propagate.
-                // Contract-level reverts (function not found) are expected on pre-v31 CTMs.
-                if matches!(e, alloy::contract::Error::TransportError(_)) {
-                    return Err(e.into());
-                }
+            Err(e) if is_method_missing(&e) || is_pre_v31_empty_revert(&e) => {
                 tracing::info!(
                     configured_supplier = ?self.bytecode_supplier_address,
                     ctm = ?self.ctm_l1,
                     "CTM does not expose L1_BYTECODES_SUPPLIER(); using configured supplier"
                 );
                 Ok(self.bytecode_supplier_address)
+            }
+            Err(e) => {
+                // Transport errors (503, timeout, etc.) should propagate.
+                Err(e.into())
             }
         }
     }
@@ -786,9 +786,26 @@ async fn get_upgrade_cut_data_block(
     let ctm = IChainTypeManagerInstance::new(ctm_address, provider.clone());
     match ctm.upgradeCutDataBlock(raw_protocol_version).call().await {
         Ok(n) => Ok(Some(n.saturating_to::<u64>())),
-        Err(e) if is_method_missing(&e) => Ok(None),
+        Err(e) if is_method_missing(&e) || is_pre_v31_empty_revert(&e) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+// Anvil reports an unknown selector against the pre-v31 CTM as an empty EVM revert. Keep this
+// compatibility exception local to the read-only lookup; privileged upgrade calls must continue
+// to propagate transport-level reverts rather than silently selecting legacy behavior.
+fn is_pre_v31_empty_revert(err: &alloy::contract::Error) -> bool {
+    let alloy::contract::Error::TransportError(err) = err else {
+        return false;
+    };
+    err.as_error_resp().is_some_and(|response| {
+        response.code == 3
+            && response.message == "execution reverted"
+            && response
+                .data
+                .as_ref()
+                .is_some_and(|data| data.get() == "\"0x\"")
+    })
 }
 
 async fn fetch_upgrade_cut_log_at(
@@ -813,17 +830,17 @@ async fn fetch_upgrade_cut_log_at(
 }
 
 async fn find_l1_block_by_protocol_version(
-    zk_chain: &ZkChain<NodeProvider>,
+    zk_chain: ZkChain<NodeProvider>,
     protocol_version: ProtocolSemanticVersion,
 ) -> anyhow::Result<BlockNumber> {
     let protocol_version = protocol_version.packed()?;
 
     let deployment_block = zk_chain.deployment_block().await?;
     util::find_l1_block_by_predicate(
-        zk_chain.provider(),
+        Arc::new(zk_chain),
         deployment_block,
-        move |block| async move {
-            let res = zk_chain.get_raw_protocol_version(block.into()).await?;
+        move |zk, block| async move {
+            let res = zk.get_raw_protocol_version(block.into()).await?;
             Ok(res >= protocol_version)
         },
     )
@@ -865,5 +882,3 @@ mod tests {
         assert_eq!(hash, expected_hash);
     }
 }
-
-

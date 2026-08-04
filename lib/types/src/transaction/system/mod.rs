@@ -246,7 +246,7 @@ mod tx_serde {
             let inner = SystemTx {
                 to: tx.to,
                 input: tx.input,
-                salt: tx.nonce,
+                salt: tx.salt,
             };
             let envelope = SystemTxEnvelope::try_from_inner(inner).map_err(str::to_owned)?;
             if tx.hash != *envelope.hash() {
@@ -637,4 +637,3 @@ mod tests {
         assert!(SystemTxEnvelope::decode_2718(&mut encoded.as_slice()).is_err());
     }
 }
-

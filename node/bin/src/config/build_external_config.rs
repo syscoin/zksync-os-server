@@ -243,5 +243,3 @@ pub fn load_config_file_sources(config_sources: &mut ConfigSources, config_paths
         }
     }
 }
-
-

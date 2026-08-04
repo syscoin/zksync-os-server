@@ -42,4 +42,3 @@ pub struct BlockContext {
     pub execution_version: u32,
     pub blob_fee: U256,
 }
-

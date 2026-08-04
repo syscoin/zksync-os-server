@@ -134,18 +134,6 @@ impl<T: L2Subpool> Pool<T> {
         .await
         .context("failed to create L1 transaction watcher")?;
 
-        let gateway_migration_watcher = GatewayMigrationWatcher::create_watcher(
-            l1_state.diamond_proxy_l1.clone(),
-            l1_state.bridgehub_l1.clone(),
-            config.chain_id,
-            l1_state.l1_chain_id,
-            config.gateway_chain_id,
-            config.l1_watcher_config.clone(),
-            sl_chain_id_subpool.clone(),
-        )
-        .await
-        .context("failed to create gateway migration watcher")?;
-
         let subcomponents = Subcomponents {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
@@ -456,6 +444,21 @@ impl<T: L2Subpool> Pool<T> {
                 update_kind: PoolUpdateKind::Commit,
             });
 
+        // Propagate the just-finalized protocol version to the L2 validator so that
+        // version-gated stateless checks (e.g. intrinsic native resources, v31+) use the
+        // correct version for incoming txs.
+        self.l2_subpool
+            .update_pending_protocol_version(replay_record.protocol_version.clone());
+        // Refresh the validator's fee params from the executed block's context. This is the only
+        // fee source on nodes that don't produce blocks (external nodes never call
+        // `update_pending_block_fees`); on the main node these values are overwritten with the
+        // pending block's params at the start of each `produce()`.
+        self.l2_subpool.update_pending_fee_params(FeeParams {
+            eip1559_basefee: replay_record.block_context.eip1559_basefee,
+            native_price: replay_record.block_context.native_price,
+            pubdata_price: replay_record.block_context.pubdata_price,
+        });
+
         Ok(StateChangeOutcome {
             last_interop_log_id,
             last_l1_priority_id,
@@ -549,6 +552,3 @@ impl<'a> MarkingTxStream<'a> {
         }
     }
 }
-
-
-

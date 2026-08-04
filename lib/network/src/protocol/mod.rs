@@ -23,4 +23,3 @@ pub use handler_shared_state::HandlerSharedState;
 
 /// Maximum number of replay records carried in a single `BlockReplays` message.
 const MAX_BLOCKS_PER_MESSAGE: u64 = 64;
-

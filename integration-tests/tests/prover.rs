@@ -35,4 +35,3 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
 
     Ok(())
 }
-

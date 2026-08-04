@@ -1004,6 +1004,12 @@ pub struct SequencerConfig {
     #[config(default_t = Duration::from_millis(250))]
     pub block_time: Duration,
 
+    /// Offset applied to wall-clock timestamps for newly produced blocks.
+    /// Keep this at zero in production; historical local fixtures use it to stay aligned with
+    /// their settlement-layer snapshot clock.
+    #[config(default_t = 0)]
+    pub block_timestamp_offset_seconds: i64,
+
     /// Max number of transactions in a block.
     /// One of the block Seal Criteria. Only affects the Main Node.
     #[config(default_t = 1000)]
@@ -1327,6 +1333,76 @@ impl From<RpcRateLimitsConfig> for zksync_os_rpc::RateLimits {
     }
 }
 
+/// Rate limiter for incoming L2 transactions based on the sequencer's total recent execution
+/// throughput. It is only effective on the main node.
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
+#[config(derive(Default))]
+#[config(validate(
+    Self::check_credit_windows,
+    "max_credit_seconds must be positive, other windows non-negative, and reopen_credit_seconds must not exceed max_credit_seconds"
+))]
+pub struct TxGasRateLimitConfig {
+    #[config(default_t = false)]
+    pub enabled: bool,
+
+    #[config(default_t = NonZeroU64::new(72_000_000).unwrap())]
+    pub gas_per_second: NonZeroU64,
+
+    /// Idle burst headroom in seconds' worth of `gas_per_second`.
+    #[config(default_t = 30.0)]
+    pub max_credit_seconds: f64,
+
+    /// Credit required to reopen the gate after exhaustion.
+    #[config(default_t = 1.0)]
+    pub reopen_credit_seconds: f64,
+
+    /// Maximum remembered deficit; excess block usage is repaid before reopening.
+    #[config(default_t = 2.0)]
+    pub deficit_floor_seconds: f64,
+
+    #[config(default, with = Delimited::new(","))]
+    pub exempt_senders: HashSet<Address>,
+}
+
+impl TxGasRateLimitConfig {
+    fn check_credit_windows(&self) -> Result<(), ErrorWithOrigin> {
+        let windows = [
+            self.max_credit_seconds,
+            self.reopen_credit_seconds,
+            self.deficit_floor_seconds,
+        ];
+        if windows
+            .iter()
+            .any(|window| !window.is_finite() || *window < 0.0)
+        {
+            return Err(ErrorWithOrigin::custom(
+                "tx_gas_rate_limit seconds windows must be finite and non-negative",
+            ));
+        }
+        if self.max_credit_seconds == 0.0 {
+            return Err(ErrorWithOrigin::custom(
+                "tx_gas_rate_limit.max_credit_seconds must be positive",
+            ));
+        }
+        if self.reopen_credit_seconds > self.max_credit_seconds {
+            return Err(ErrorWithOrigin::custom(
+                "tx_gas_rate_limit.reopen_credit_seconds must not exceed max_credit_seconds",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_lib(self) -> zksync_os_mempool::TxGasRateLimitConfig {
+        zksync_os_mempool::TxGasRateLimitConfig {
+            gas_per_second: self.gas_per_second.get(),
+            max_credit_seconds: self.max_credit_seconds,
+            reopen_credit_seconds: self.reopen_credit_seconds,
+            deficit_floor_seconds: self.deficit_floor_seconds,
+            exempt_senders: self.exempt_senders,
+        }
+    }
+}
+
 /// L1 sender configuration. The signing key fields are only required on the Main Node
 /// when the batcher is enabled; External Nodes do not send L1 transactions and may omit them.
 ///
@@ -1550,73 +1626,6 @@ pub struct GatewaySenderConfig {
     /// rejection.
     #[config(default_t = 30 * TimeUnit::Seconds)]
     pub gateway_da_admission_retry_interval: Duration,
-
-    /// Gateway blocks (inclusive of the inclusion block) before a transaction is confirmed.
-    #[config(default_t = DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY)]
-    pub required_confirmations: u64,
-
-    /// Max submission attempts per Gateway transaction when the Gateway node rejects it with
-    /// a nonce-class error.
-    #[config(default_t = DEFAULT_NONCE_ERROR_MAX_ATTEMPTS)]
-    pub nonce_error_max_attempts: usize,
-
-    /// Backoff between attempts after a nonce-class rejection. Gives the Gateway node time
-    /// to settle its pool/state view after a block import.
-    #[config(default_t = DEFAULT_NONCE_ERROR_RETRY_BACKOFF)]
-    pub nonce_error_retry_backoff: Duration,
-}
-
-/// Gateway sender configuration. Used by the L1Sender pipeline components when the chain is
-/// currently settling on a Gateway (as discovered from the L1 settlement layer interval at
-/// startup). When the chain is settling on L1 directly, this config is ignored and
-/// [`L1SenderConfig`] is used instead.
-///
-/// Operator keys here must be funded on the Gateway chain. They are optional at config-validation
-/// time; their presence is enforced at runtime once the settlement layer is discovered.
-#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
-#[config(derive(Default))]
-pub struct GatewaySenderConfig {
-    /// Signer to commit batches to the Gateway.
-    /// Must be consistent with the operator key set on the Gateway chain admin (permissioned!).
-    /// Required at runtime when the chain settles on Gateway.
-    #[config(secret, alias = "operator_commit_pk", with = SignerConfigDeserializer)]
-    pub operator_commit_sk: Option<SignerConfig>,
-
-    /// Signer to submit proofs to the Gateway.
-    /// Can be an arbitrary funded address — proof submission is permissionless.
-    /// Required at runtime when the chain settles on Gateway.
-    #[config(secret, alias = "operator_prove_pk", with = SignerConfigDeserializer)]
-    pub operator_prove_sk: Option<SignerConfig>,
-
-    /// Signer to execute batches on the Gateway.
-    /// Can be an arbitrary funded address — execute submission is permissionless.
-    /// Required at runtime when the chain settles on Gateway.
-    #[config(secret, alias = "operator_execute_pk", with = SignerConfigDeserializer)]
-    pub operator_execute_sk: Option<SignerConfig>,
-
-    /// Max fee per gas (in Gateway base token wei) we are willing to spend.
-    #[config(default_t = 200 * EtherUnit::Gwei)]
-    pub max_fee_per_gas: EtherAmount,
-
-    /// Max priority fee per gas (in Gateway base token wei) we are willing to spend.
-    #[config(default_t = 1 * EtherUnit::Gwei)]
-    pub max_priority_fee_per_gas: EtherAmount,
-
-    /// Force transaction resubmission options.
-    #[config(nest, default)]
-    pub force_transaction_resubmission: ForceTransactionResubmissionConfig,
-
-    /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
-    #[config(default_t = 16)]
-    pub command_limit: usize,
-
-    /// How often to poll the Gateway for new blocks.
-    #[config(default_t = 1 * TimeUnit::Seconds)]
-    pub poll_interval: Duration,
-
-    /// Maximum time to wait for a Gateway transaction to be included.
-    #[config(default_t = 600 * TimeUnit::Seconds)]
-    pub transaction_timeout: Duration,
 
     /// Gateway blocks (inclusive of the inclusion block) before a transaction is confirmed.
     #[config(default_t = DEFAULT_REQUIRED_CONFIRMATIONS_GATEWAY)]
@@ -2491,6 +2500,7 @@ impl From<RpcConfig> for zksync_os_rpc::RpcConfig {
         Self {
             address: c.address,
             eth_call_gas: c.eth_call_gas,
+            block_timestamp_offset_seconds: 0,
             js_tracer_timeout: c.js_tracer_timeout,
             js_tracer_max_memory_bytes: c.js_tracer_max_memory.0 as usize,
             eth_simulate_block_gas_limit: c.eth_simulate_block_gas_limit,
@@ -2791,11 +2801,13 @@ impl From<BatchVerificationConfig> for zksync_os_batch_verification::BatchVerifi
 pub fn gas_adjuster_config(
     c: GasAdjusterConfig,
     pubdata_mode: PubdataMode,
+    use_syscoin_blob_da: bool,
     max_priority_fee_per_gas_wei: u128,
     batcher_config: &BatcherConfig,
 ) -> zksync_os_gas_adjuster::GasAdjusterConfig {
     zksync_os_gas_adjuster::GasAdjusterConfig {
         pubdata_mode,
+        use_syscoin_blob_da,
         max_base_fee_samples: c.max_base_fee_samples,
         num_samples_for_blob_base_fee_estimate: c.num_samples_for_blob_base_fee_estimate,
         max_blob_fill_ratio_samples: c.max_blob_fill_ratio_samples,
@@ -3635,5 +3647,3 @@ mod tests {
         );
     }
 }
-
-
