@@ -37,7 +37,12 @@ async fn fetch_committed_batch(
     batch_number: u64,
 ) -> anyhow::Result<(B256, u64, u64)> {
     let l1_state = fetch_l1_state(tester).await?;
-    let (batch, _) = fetch_live_committed_batch(&l1_state.diamond_proxy_sl, batch_number).await?;
+    let (batch, _) = fetch_live_committed_batch(
+        &l1_state.diamond_proxy_sl,
+        batch_number,
+        tester.config().l1_watcher_config.max_blocks_to_process,
+    )
+    .await?;
     Ok((
         batch.batch_info.hash(),
         batch.first_block_number(),
@@ -56,8 +61,12 @@ async fn fetch_on_chain_batch_commit_tx_hash(
     batch_number: u64,
 ) -> anyhow::Result<B256> {
     let l1_state = fetch_l1_state(tester).await?;
-    let (_, commit_tx_hash) =
-        fetch_live_committed_batch(&l1_state.diamond_proxy_sl, batch_number).await?;
+    let (_, commit_tx_hash) = fetch_live_committed_batch(
+        &l1_state.diamond_proxy_sl,
+        batch_number,
+        tester.config().l1_watcher_config.max_blocks_to_process,
+    )
+    .await?;
     Ok(commit_tx_hash)
 }
 
@@ -788,6 +797,8 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
     // On-chain hash of the surviving batch — must be unchanged after the revert+rebuild, proving
     // the revert kept everything up to and including `survivor_batch`.
     let survivor_hash_before = fetch_on_chain_batch_hash(&tester, survivor_batch).await?;
+    let reverted_commit_tx_hash_before =
+        fetch_on_chain_batch_commit_tx_hash(&tester, containing_batch).await?;
     let pre_restart_tip = tester.l2_provider.get_block_number().await?;
 
     let stopped = tester.stop().await?;
@@ -833,6 +844,13 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
         move |state| state.last_committed_batch >= containing_batch,
     )
     .await?;
+
+    let recommitted_tx_hash =
+        fetch_on_chain_batch_commit_tx_hash(&restarted, containing_batch).await?;
+    assert_ne!(
+        recommitted_tx_hash, reverted_commit_tx_hash_before,
+        "live commit discovery must return the replacement commit after revert/recommit"
+    );
 
     Ok(())
 }

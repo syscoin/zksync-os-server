@@ -94,6 +94,7 @@ impl CommittedBatchProvider {
     pub async fn new<BatchStorage>(
         runtime: &Runtime,
         l1_state: &L1State,
+        max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
         archive_l1_provider: Option<NodeProvider>,
         load_genesis_batch_info: impl AsyncFnOnce() -> StoredBatchInfo,
@@ -128,6 +129,7 @@ impl CommittedBatchProvider {
         let (prioritized_batch_numbers, _) = startup_frontier.startup_batch_numbers();
         provider
             .load_batch_numbers(
+                max_l1_blocks_to_scan,
                 &batch_storage,
                 archive_l1_provider.as_ref(),
                 prioritized_batch_numbers,
@@ -141,6 +143,7 @@ impl CommittedBatchProvider {
             provider_for_init
                 .init(
                     startup_frontier,
+                    max_l1_blocks_to_scan,
                     batch_storage_for_init,
                     archive_l1_provider_for_init,
                 )
@@ -156,6 +159,7 @@ impl CommittedBatchProvider {
     async fn init<BatchStorage>(
         &self,
         startup_frontier: StartupBatchFrontier,
+        max_l1_blocks_to_scan: u64,
         batch_storage: BatchStorage,
         archive_l1_provider: Option<NodeProvider>,
     ) -> anyhow::Result<()>
@@ -164,6 +168,7 @@ impl CommittedBatchProvider {
     {
         let (_, remaining_batch_numbers) = startup_frontier.startup_batch_numbers();
         self.load_batch_numbers(
+            max_l1_blocks_to_scan,
             &batch_storage,
             archive_l1_provider.as_ref(),
             remaining_batch_numbers,
@@ -225,6 +230,7 @@ impl CommittedBatchProvider {
     // SYSCOIN: Check persisted executed batch storage before issuing historical L1 calls.
     async fn load_batch_numbers<BatchStorage>(
         &self,
+        max_l1_blocks_to_scan: u64,
         batch_storage: &BatchStorage,
         archive_l1_provider: Option<&NodeProvider>,
         batch_numbers: Vec<u64>,
@@ -256,12 +262,17 @@ impl CommittedBatchProvider {
                                 &interval.proxy,
                                 provider,
                                 batch_number,
+                                max_l1_blocks_to_scan,
                             )
                             .await?
                         }
-                        _ => fetch_live_committed_batch(&interval.proxy, batch_number)
-                            .await?
-                            .0,
+                        _ => fetch_live_committed_batch(
+                            &interval.proxy,
+                            batch_number,
+                            max_l1_blocks_to_scan,
+                        )
+                        .await?
+                        .0,
                     };
                 tracing::info!(
                     batch_number = discovered_batch.number(),
@@ -331,6 +342,7 @@ where
 pub async fn fetch_live_committed_batch(
     diamond_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<(DiscoveredCommittedBatch, TxHash)> {
     let latest = diamond_proxy.provider().get_block_number().await?;
     let total_committed = diamond_proxy
@@ -344,13 +356,13 @@ pub async fn fetch_live_committed_batch(
     let live_hash = diamond_proxy
         .stored_batch_hash(batch_number, latest.into())
         .await?;
-    let deployment_block = diamond_proxy.deployment_block().await?;
-    let live_commit_block = util::find_l1_block_by_predicate(
-        Arc::new(diamond_proxy.clone()),
-        deployment_block,
-        move |proxy, block| async move {
-            Ok(proxy.stored_batch_hash(batch_number, block.into()).await? == live_hash)
-        },
+    // SYSCOIN: Retained settlement contracts can clear and later re-expose the same stored hash
+    // across revert/recommit. Hash equality is therefore not monotonic here; locate the active
+    // commit with the BlocksRevert-aware discovery retained by this fork.
+    let live_commit_block = util::find_l1_commit_block_by_batch_number(
+        diamond_proxy.clone(),
+        batch_number,
+        max_l1_blocks_to_scan,
     )
     .await
     .with_context(|| format!("failed to find live commit block for batch {batch_number}"))?;
@@ -379,9 +391,10 @@ struct ProviderTips {
 async fn fetch_batch_from_live_with_context(
     live_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
     context: String,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
-    fetch_live_committed_batch(live_proxy, batch_number)
+    fetch_live_committed_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
         .await
         .map(|(batch, _commit_tx_hash)| batch)
         .with_context(|| format!("{context}; live provider fallback also failed"))
@@ -425,6 +438,7 @@ async fn read_provider_tips_or_live_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
     phase: &str,
     observed_tips: Option<ProviderTips>,
 ) -> anyhow::Result<TipReadOutcome> {
@@ -451,6 +465,7 @@ async fn read_provider_tips_or_live_fallback(
             fetch_batch_from_live_with_context(
                 live_proxy,
                 batch_number,
+                max_l1_blocks_to_scan,
                 format!(
                     "provider tip lookup failed {phase} committed batch {batch_number}: {tip_err}"
                 ),
@@ -466,6 +481,7 @@ async fn live_fallback_if_archive_is_behind(
     live_proxy: &ZkChain<NodeProvider>,
     tips: ProviderTips,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
     phase: &str,
 ) -> anyhow::Result<Option<DiscoveredCommittedBatch>> {
     if tips.archive >= tips.live {
@@ -482,6 +498,7 @@ async fn live_fallback_if_archive_is_behind(
     fetch_batch_from_live_with_context(
         live_proxy,
         batch_number,
+        max_l1_blocks_to_scan,
         format!(
             "archive provider is behind live provider {phase} committed batch {batch_number} \
              (archive tip {}, live tip {})",
@@ -525,11 +542,13 @@ async fn archive_batch_lookup_outcome(
     tips_before_fetch: ProviderTips,
     attempt: usize,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<ArchiveLookupOutcome> {
     let tips_after_fetch = match read_provider_tips_or_live_fallback(
         live_proxy,
         archive_provider,
         batch_number,
+        max_l1_blocks_to_scan,
         "after archive",
         Some(tips_before_fetch),
     )
@@ -543,6 +562,7 @@ async fn archive_batch_lookup_outcome(
         live_proxy,
         tips_after_fetch,
         batch_number,
+        max_l1_blocks_to_scan,
         "after archive fetch",
     )
     .await?
@@ -572,6 +592,7 @@ async fn archive_batch_lookup_outcome(
         return fetch_batch_from_live_with_context(
             live_proxy,
             batch_number,
+            max_l1_blocks_to_scan,
             format!(
                 "archive committed batch {batch_number} failed live hash validation \
                  (archive tip {}, live tip {}): {validation_err}",
@@ -586,6 +607,7 @@ async fn archive_batch_lookup_outcome(
         live_proxy,
         archive_provider,
         batch_number,
+        max_l1_blocks_to_scan,
         "after archive validation",
         Some(tips_after_fetch),
     )
@@ -599,6 +621,7 @@ async fn archive_batch_lookup_outcome(
         live_proxy,
         tips_after_validation,
         batch_number,
+        max_l1_blocks_to_scan,
         "after archive validation",
     )
     .await?
@@ -632,11 +655,13 @@ async fn fetch_batch_with_archive_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
     batch_number: u64,
+    max_l1_blocks_to_scan: u64,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
     let mut tips = match read_provider_tips_or_live_fallback(
         live_proxy,
         archive_provider,
         batch_number,
+        max_l1_blocks_to_scan,
         "before",
         None,
     )
@@ -648,7 +673,8 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     for attempt in 0..2 {
-        match fetch_live_committed_batch(&archive_proxy, batch_number).await {
+        match fetch_live_committed_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await
+        {
             Ok((batch, _commit_tx_hash)) => match archive_batch_lookup_outcome(
                 live_proxy,
                 archive_provider,
@@ -656,6 +682,7 @@ async fn fetch_batch_with_archive_fallback(
                 tips,
                 attempt,
                 batch_number,
+                max_l1_blocks_to_scan,
             )
             .await?
             {
@@ -674,6 +701,7 @@ async fn fetch_batch_with_archive_fallback(
                 return fetch_batch_from_live_with_context(
                     live_proxy,
                     batch_number,
+                    max_l1_blocks_to_scan,
                     format!("archive provider failed to fetch committed batch {batch_number}: {archive_err}"),
                 )
                 .await;
@@ -690,6 +718,7 @@ async fn fetch_batch_with_archive_fallback(
     fetch_batch_from_live_with_context(
         live_proxy,
         batch_number,
+        max_l1_blocks_to_scan,
         format!("provider tip changed during archive committed batch {batch_number} lookup retry"),
     )
     .await

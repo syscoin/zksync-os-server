@@ -611,6 +611,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let committed_batch_provider = CommittedBatchProvider::new(
         runtime,
         &l1_state,
+        config.l1_watcher_config.max_blocks_to_process,
         persistent_batch_storage.clone(),
         l1_archive_provider.clone(),
         || async {

@@ -29,6 +29,7 @@ struct RevertPlan {
 async fn derive_last_l1_batch_to_keep(
     from_block_number: u64,
     l1_state: &L1State,
+    max_blocks_to_process: u64,
 ) -> anyhow::Result<Option<u64>> {
     let last_committed_batch = l1_state.last_committed_batch;
     let last_executed_batch = l1_state.last_executed_batch;
@@ -42,7 +43,7 @@ async fn derive_last_l1_batch_to_keep(
     }
 
     let fetch_committed = |batch: u64| async move {
-        fetch_live_committed_batch(&l1_state.diamond_proxy_sl, batch)
+        fetch_live_committed_batch(&l1_state.diamond_proxy_sl, batch, max_blocks_to_process)
             .await
             .map(|(batch_data, _commit_tx_hash)| batch_data)
             .with_context(|| format!("failed to fetch committed batch {batch} from L1"))
@@ -231,6 +232,7 @@ async fn ensure_revert(
 async fn plan_l1_revert(
     rebuild: &RebuildConfig,
     l1_state: &L1State,
+    max_blocks_to_process: u64,
 ) -> anyhow::Result<Option<RevertPlan>> {
     match rebuild {
         RebuildConfig::BlockRebuild { .. } => Ok(None),
@@ -245,10 +247,13 @@ async fn plan_l1_revert(
                 "DangerBlockRebuildWithL1Revert: deriving batch to revert from from_block_number"
             );
 
-            let Some(last_l1_batch_to_keep) =
-                derive_last_l1_batch_to_keep(bounds.from_block_number, l1_state)
-                    .await
-                    .context("failed to derive last_l1_batch_to_keep")?
+            let Some(last_l1_batch_to_keep) = derive_last_l1_batch_to_keep(
+                bounds.from_block_number,
+                l1_state,
+                max_blocks_to_process,
+            )
+            .await
+            .context("failed to derive last_l1_batch_to_keep")?
             else {
                 return Ok(None);
             };
@@ -281,12 +286,13 @@ async fn plan_l1_revert(
                 l1_state.last_executed_batch,
             );
 
-            let (_, on_chain_commit_tx_hash) =
-                fetch_live_committed_batch(&l1_state.diamond_proxy_sl, from_batch_number)
-                    .await
-                    .context(
-                        "failed to fetch on-chain commit tx hash for L1Revert from_batch_number",
-                    )?;
+            let (_, on_chain_commit_tx_hash) = fetch_live_committed_batch(
+                &l1_state.diamond_proxy_sl,
+                from_batch_number,
+                max_blocks_to_process,
+            )
+            .await
+            .context("failed to fetch on-chain commit tx hash for L1Revert from_batch_number")?;
 
             if on_chain_commit_tx_hash != *from_batch_commit_tx_hash {
                 tracing::info!(
@@ -329,8 +335,9 @@ pub async fn revert_l1_on_startup(
         .genesis_config
         .chain_id
         .context("`genesis.chain_id` is required for startup rebuild")?;
+    let max_blocks = config.l1_watcher_config.max_blocks_to_process;
 
-    match plan_l1_revert(rebuild, l1_state).await? {
+    match plan_l1_revert(rebuild, l1_state, max_blocks).await? {
         None => Ok(false),
         Some(plan) => {
             perform_l1_revert(&plan, l1_state, chain_id, sl_provider)
