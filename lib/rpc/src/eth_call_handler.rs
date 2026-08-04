@@ -524,13 +524,11 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             block_context.eip1559_basefee.saturating_to::<u128>(),
         );
 
-        let effective_gas_price = request
-            .gas_price
-            .or(request.max_fee_per_gas)
-            .unwrap_or_default();
-        if effective_gas_price > 0 {
+        let max_cost_gas_price =
+            estimate_max_cost_gas_price(&request, block_context.eip1559_basefee);
+        if !max_cost_gas_price.is_zero() {
             let gas_limit_from_balance =
-                max_gas_from_balance(&request, block_context.eip1559_basefee, storage_view)?;
+                max_gas_from_balance(&request, max_cost_gas_price, storage_view)?;
             highest_gas_limit = highest_gas_limit.min(gas_limit_from_balance);
         }
         request.set_gas_limit(highest_gas_limit);
@@ -798,6 +796,24 @@ fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, base
     }
 }
 
+// Transaction validation reserves gas_limit * gasPrice for legacy requests and
+// gas_limit * maxFeePerGas for EIP-1559 requests. A priority-only estimate has
+// no explicit cap, so CallFees derives basefee + tip. The estimate ceiling must
+// use the matching maximum-cost price; using basefee alone makes the ceiling
+// itself unaffordable whenever the simulated price exceeds basefee.
+fn estimate_max_cost_gas_price(request: &TransactionRequest, basefee: U256) -> U256 {
+    if let Some(gas_price) = request.gas_price {
+        return U256::from(gas_price);
+    }
+    if let Some(max_fee_per_gas) = request.max_fee_per_gas {
+        return U256::from(max_fee_per_gas);
+    }
+    match request.max_priority_fee_per_gas {
+        Some(tip) if tip != 0 => basefee.saturating_add(U256::from(tip)),
+        _ => U256::ZERO,
+    }
+}
+
 /// Returns how much gas the sender can afford: `(balance - value) / gas_price`.
 fn max_gas_from_balance<V: ViewState>(
     request: &TransactionRequest,
@@ -943,5 +959,34 @@ mod tests {
             .max_priority_fee_per_gas(0);
         clamp_estimate_request_fees_to_basefee(&mut eip1559, 100);
         assert_eq!(eip1559.max_fee_per_gas, Some(100));
+    }
+
+    #[test]
+    fn estimate_balance_cap_preserves_affordability_for_all_fee_shapes() {
+        let basefee = U256::from(10);
+        let legacy = TransactionRequest::default().gas_price(120);
+        assert_eq!(
+            estimate_max_cost_gas_price(&legacy, basefee),
+            U256::from(120)
+        );
+
+        let eip1559 = TransactionRequest::default()
+            .max_fee_per_gas(20)
+            .max_priority_fee_per_gas(10);
+        let max_cost_price = estimate_max_cost_gas_price(&eip1559, basefee);
+        assert_eq!(max_cost_price, U256::from(20));
+
+        let balance = U256::from(1_000);
+        let old_basefee_ceiling = balance / basefee;
+        assert!(old_basefee_ceiling * max_cost_price > balance);
+
+        let fee_cap_ceiling = balance / max_cost_price;
+        assert!(fee_cap_ceiling * max_cost_price <= balance);
+
+        let priority_only = TransactionRequest::default().max_priority_fee_per_gas(7);
+        assert_eq!(
+            estimate_max_cost_gas_price(&priority_only, basefee),
+            U256::from(17)
+        );
     }
 }
