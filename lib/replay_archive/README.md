@@ -26,6 +26,11 @@ For the filesystem backend, the full path is:
 
 S3 and GCS use the same session-prefixed value as the object key.
 
+> **SYSCOIN rollout:** Flat `<block_number>/<block_hash>` archives are deliberately not read because
+> they do not carry trustworthy writer provenance. This format has not been released; production
+> deployments must start with an empty archive bucket or prefix. Experimental flat archives must be
+> recovered with the pre-session tooling and re-archived, never copied into the session namespace.
+
 The object value is the replay record payload only. There is no wrapper, batch number, block range,
 or extra archive metadata in the object body.
 

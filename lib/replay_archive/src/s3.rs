@@ -1,13 +1,18 @@
 use crate::{
     ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession, ReplayArchiveStorage,
-    ReplayArchiveStorageReader,
+    ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
 };
 use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, ConfigLoader, Region, meta::region::RegionProviderChain};
 use aws_runtime::env_config::file::{EnvConfigFileKind, EnvConfigFiles};
-use aws_sdk_s3::{Client, primitives::ByteStream};
+use aws_sdk_s3::{
+    Client,
+    error::{ProvideErrorMetadata as _, SdkError},
+    operation::put_object::PutObjectError,
+    primitives::ByteStream,
+};
 use std::path::PathBuf;
 
 /// Object metadata key recording which node archived the object; forensic only.
@@ -87,25 +92,68 @@ impl S3ReplayArchiveStorage {
     }
 
     async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<()> {
-        // SYSCOIN: propagate conditional-create conflicts. Accepting HTTP 412 would let a
-        // different writer pre-populate this session and satisfy the local archive gate.
-        self.client
+        let upload_token = crate::new_upload_token();
+        let result = self
+            .client
             .put_object()
             .bucket(&self.config.bucket_base_url)
             .key(key)
             .metadata(ARCHIVED_BY_METADATA_KEY, self.session.node_id())
+            .metadata(UPLOAD_TOKEN_METADATA_KEY, &upload_token)
             .if_none_match("*")
             .body(ByteStream::from(object))
             .send()
-            .await
-            .with_context(|| {
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // SYSCOIN: a conditional PUT may have succeeded before its response was lost. Accept
+            // the retry conflict only when the stored unguessable token belongs to this request;
+            // a first-writer object from any other request still fails closed.
+            Err(err) if is_precondition_failed(&err) => {
+                self.verify_upload_token(key, &upload_token).await
+            }
+            Err(err) => Err(err).with_context(|| {
                 format!(
                     "failed to create append-only replay archive S3 object s3://{}/{}",
                     self.config.bucket_base_url, key
                 )
-            })?;
-        Ok(())
+            }),
+        }
     }
+
+    async fn verify_upload_token(&self, key: &str, expected_token: &str) -> anyhow::Result<()> {
+        let object = self
+            .client
+            .head_object()
+            .bucket(&self.config.bucket_base_url)
+            .key(key)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to verify replay archive S3 object after a conditional conflict at s3://{}/{}",
+                    self.config.bucket_base_url, key
+                )
+            })?;
+        let stored_token = object
+            .metadata()
+            .and_then(|metadata| metadata.get(UPLOAD_TOKEN_METADATA_KEY))
+            .map(String::as_str);
+        crate::ensure_upload_token_matches(
+            &format!("s3://{}/{}", self.config.bucket_base_url, key),
+            expected_token,
+            stored_token,
+        )
+    }
+}
+
+fn is_precondition_failed(err: &SdkError<PutObjectError>) -> bool {
+    err.as_service_error()
+        .and_then(|err| err.code())
+        .is_some_and(|code| code == "PreconditionFailed")
+        || err
+            .raw_response()
+            .is_some_and(|response| response.status().as_u16() == 412)
 }
 
 #[async_trait]

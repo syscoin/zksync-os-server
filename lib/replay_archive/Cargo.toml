@@ -28,6 +28,7 @@ aws-sdk-s3.workspace = true
 bytes.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
+rand.workspace = true
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-gax = { workspace = true, optional = true }
 google-cloud-kms-v1 = { workspace = true, optional = true }

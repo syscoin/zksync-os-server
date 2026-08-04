@@ -1,6 +1,6 @@
 use crate::{
     ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession, ReplayArchiveStorage,
-    ReplayArchiveStorageReader,
+    ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
 };
 use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
@@ -90,6 +90,13 @@ fn is_not_found(err: &google_cloud_storage::Error) -> bool {
             .is_some_and(|status| status.code == Code::NotFound)
 }
 
+fn is_precondition_failed(err: &google_cloud_storage::Error) -> bool {
+    err.http_status_code() == Some(412)
+        || err
+            .status()
+            .is_some_and(|status| status.code == Code::FailedPrecondition)
+}
+
 /// GCS implementation of [`ReplayArchiveStorage`].
 #[derive(Clone)]
 pub struct GcsReplayArchiveStorage {
@@ -126,26 +133,62 @@ impl GcsReplayArchiveStorage {
     }
 
     async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<()> {
-        // SYSCOIN: propagate generation-match conflicts. Accepting HTTP 412 would let a
-        // different writer pre-populate this session and satisfy the local archive gate.
-        self.clients
+        let upload_token = crate::new_upload_token();
+        let result = self
+            .clients
             .storage
             .write_object(
                 self.config.bucket_resource(),
                 key,
                 bytes::Bytes::from(object),
             )
-            .set_metadata([(ARCHIVED_BY_METADATA_KEY, self.session.node_id())])
+            .set_metadata([
+                (ARCHIVED_BY_METADATA_KEY, self.session.node_id()),
+                (UPLOAD_TOKEN_METADATA_KEY, &upload_token),
+            ])
             .set_if_generation_match(0)
             .send_unbuffered()
-            .await
-            .with_context(|| {
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            // SYSCOIN: distinguish an SDK retry after an accepted upload from a foreign
+            // first-writer object without weakening the generation-match create condition.
+            Err(err) if is_precondition_failed(&err) => {
+                self.verify_upload_token(key, &upload_token).await
+            }
+            Err(err) => Err(err).with_context(|| {
                 format!(
                     "failed to create append-only replay archive GCS object gs://{}/{}",
                     self.config.bucket_base_url, key
                 )
+            }),
+        }
+    }
+
+    async fn verify_upload_token(&self, key: &str, expected_token: &str) -> anyhow::Result<()> {
+        let object = self
+            .clients
+            .control
+            .get_object()
+            .set_bucket(self.config.bucket_resource())
+            .set_object(key)
+            .with_idempotency(true)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to verify replay archive GCS object after a conditional conflict at gs://{}/{}",
+                    self.config.bucket_base_url, key
+                )
             })?;
-        Ok(())
+        crate::ensure_upload_token_matches(
+            &format!("gs://{}/{}", self.config.bucket_base_url, key),
+            expected_token,
+            object
+                .metadata
+                .get(UPLOAD_TOKEN_METADATA_KEY)
+                .map(String::as_str),
+        )
     }
 }
 

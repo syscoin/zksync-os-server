@@ -52,6 +52,27 @@ pub use write_replay::ReplayArchivingWriteReplay;
 
 pub const REPLAY_ARCHIVE_QUEUE_SIZE: usize = 128;
 
+// SYSCOIN: Conditional cloud-upload retries carry an unpredictable token so a retry conflict can
+// be distinguished from an object created by another archive writer without weakening fail-closed
+// session ownership.
+pub(crate) const UPLOAD_TOKEN_METADATA_KEY: &str = "upload-token";
+
+fn new_upload_token() -> String {
+    alloy::hex::encode(rand::random::<[u8; 32]>())
+}
+
+fn ensure_upload_token_matches(
+    location: &str,
+    expected_token: &str,
+    stored_token: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        stored_token == Some(expected_token),
+        "append-only replay archive object already exists with a different upload token at {location}"
+    );
+    Ok(())
+}
+
 /// Replay archive layout:
 ///
 /// ```text
@@ -314,6 +335,13 @@ mod tests {
         assert!(parse_archive_object_key("42-node-a/not-a-number/0x00").is_none());
         assert!(parse_archive_object_key("7/not-a-hash").is_none());
         assert!(parse_archive_object_key("single-segment").is_none());
+    }
+
+    #[test]
+    fn upload_token_distinguishes_ambiguous_retry_from_foreign_object() {
+        ensure_upload_token_matches("archive/key", "ours", Some("ours")).unwrap();
+        ensure_upload_token_matches("archive/key", "ours", Some("theirs")).unwrap_err();
+        ensure_upload_token_matches("archive/key", "ours", None).unwrap_err();
     }
 
     #[tokio::test]
