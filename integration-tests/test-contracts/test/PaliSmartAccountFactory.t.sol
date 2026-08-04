@@ -43,7 +43,7 @@ contract PaliSmartAccountFactoryTest is Test {
 
         assertEq(account, predicted);
         assertGt(account.code.length, 0);
-        assertEq(PaliSmartAccount(payable(account)).accountId(), "pali.smart-account.erc7579.1.0.0");
+        assertEq(PaliSmartAccount(payable(account)).accountId(), "pali.smart-account.erc7579.2.0.0");
         assertTrue(PaliSmartAccount(payable(account)).isModuleInstalled(MODULE_TYPE_VALIDATOR, address(ecdsa), ""));
 
         address[] memory owners = ecdsa.owners(account);
@@ -66,9 +66,7 @@ contract PaliSmartAccountFactoryTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                PaliSmartAccountFactory.InvalidAccountEntryPoint.selector,
-                address(entryPoint),
-                address(otherEntryPoint)
+                PaliSmartAccountFactory.InvalidAccountEntryPoint.selector, address(entryPoint), address(otherEntryPoint)
             )
         );
         new PaliSmartAccountFactory(address(implementation), address(otherEntryPoint));

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {MODULE_TYPE_VALIDATOR} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {
+    MODULE_TYPE_VALIDATOR,
+    VALIDATION_FAILED,
+    VALIDATION_SUCCESS
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {Test} from "forge-std/Test.sol";
 import {PaliCompositeValidatorModule} from "contracts/src/pali/PaliCompositeValidatorModule.sol";
 import {PaliECDSAValidatorModule} from "contracts/src/pali/PaliECDSAValidatorModule.sol";
@@ -17,16 +22,65 @@ contract MockP256Precompile {
 }
 
 contract RevertingValidatorModule {
+    uint256 internal constant PALI_MODULE_TYPE_COMPOSITE_CHILD =
+        uint256(keccak256("pali.validator.composite-child.v1"));
+
     function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
-        return moduleTypeId == MODULE_TYPE_VALIDATOR;
+        return moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == PALI_MODULE_TYPE_COMPOSITE_CHILD;
     }
 
     function onInstall(bytes calldata) external {}
 
     function onUninstall(bytes calldata) external {}
 
+    function validateUserOpWithSender(address, PackedUserOperation calldata, bytes32, bytes calldata)
+        external
+        pure
+        returns (uint256)
+    {
+        revert("broken child validator");
+    }
+
     function isValidSignatureWithSender(address, bytes32, bytes calldata) external pure returns (bytes4) {
         revert("broken child validator");
+    }
+}
+
+contract LegacyValidatorModule {
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == MODULE_TYPE_VALIDATOR;
+    }
+}
+
+contract PolicyRestrictedValidatorModule {
+    bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
+    uint256 internal constant PALI_MODULE_TYPE_COMPOSITE_CHILD =
+        uint256(keccak256("pali.validator.composite-child.v1"));
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == PALI_MODULE_TYPE_COMPOSITE_CHILD;
+    }
+
+    function onInstall(bytes calldata) external {}
+
+    function onUninstall(bytes calldata) external {}
+
+    function validateUserOp(PackedUserOperation calldata, bytes32) external pure returns (uint256) {
+        return VALIDATION_FAILED;
+    }
+
+    function validateUserOpWithSender(address, PackedUserOperation calldata, bytes32, bytes calldata)
+        external
+        pure
+        returns (uint256)
+    {
+        // A valid signature with a non-zero validAfter restriction. Composite
+        // v1 deliberately rejects richer validationData it cannot propagate.
+        return uint256(1) << 208;
+    }
+
+    function isValidSignatureWithSender(address, bytes32, bytes calldata) external pure returns (bytes4) {
+        return EIP1271_SUCCESS;
     }
 }
 
@@ -88,6 +142,18 @@ contract PaliValidatorMalformedSignatureTest is Test {
         assertEq(p256.isValidSignatureWithSender(address(this), keccak256("pali"), hex"1234"), EIP1271_FAILED);
     }
 
+    function testCompositeRejectsLegacyChildWithoutFullContextMarker() public {
+        LegacyValidatorModule legacy = new LegacyValidatorModule();
+        PaliCompositeValidatorModule candidate = new PaliCompositeValidatorModule();
+        address[] memory children = new address[](1);
+        children[0] = address(legacy);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(PaliCompositeValidatorModule.InvalidChildValidator.selector, address(legacy))
+        );
+        candidate.onInstall(abi.encode(children, uint64(1)));
+    }
+
     function isModuleInstalled(uint256, address, bytes calldata) external pure returns (bool) {
         return true;
     }
@@ -143,7 +209,106 @@ contract PaliCompositeRevertingChildTest is Test {
         assertEq(composite.isValidSignatureWithSender(address(this), hash, abi.encode(childSignatures)), EIP1271_FAILED);
     }
 
+    function testEcdsaAcceptsCanonicalUserOperationTypedDataSignature() public view {
+        bytes32 userOpHash = keccak256("canonical ERC-4337 typed-data hash");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, userOpHash);
+        PackedUserOperation memory userOp;
+        userOp.sender = address(this);
+        userOp.signature = abi.encodePacked(r, s, bytes1(v));
+
+        assertEq(ecdsa.validateUserOp(userOp, userOpHash), VALIDATION_SUCCESS);
+    }
+
+    function testEcdsaAcceptsCanonicalErc1271Hash() public view {
+        bytes32 hash = keccak256("ERC-7739 transformed ERC-1271 hash");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, hash);
+        assertEq(
+            ecdsa.isValidSignatureWithSender(address(this), hash, abi.encodePacked(r, s, bytes1(v))), EIP1271_SUCCESS
+        );
+    }
+
+    function testCompositeUserOperationUsesCompatibleChildValidation() public {
+        bytes32 hash = keccak256("pali user operation");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, hash);
+        bytes[] memory childSignatures = new bytes[](2);
+        childSignatures[1] = abi.encodePacked(r, s, bytes1(v));
+        PackedUserOperation memory userOp;
+        userOp.sender = address(this);
+        userOp.signature = abi.encode(childSignatures);
+
+        assertEq(composite.validateUserOp(userOp, hash), VALIDATION_SUCCESS);
+    }
+
+    function testCompositeRejectsDirectUserOperationValidationFromNonAccount() public {
+        PackedUserOperation memory userOp;
+        userOp.sender = address(this);
+        bytes[] memory childSignatures = new bytes[](2);
+        childSignatures[1] = hex"01";
+        userOp.signature = abi.encode(childSignatures);
+
+        vm.prank(address(0xB0B));
+        assertEq(composite.validateUserOp(userOp, keccak256("unauthorized direct call")), VALIDATION_FAILED);
+    }
+
     function isModuleInstalled(uint256, address, bytes calldata) external pure returns (bool) {
         return true;
+    }
+}
+
+contract PaliCompositePolicyEnforcementTest is Test {
+    bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
+    bytes4 internal constant EIP1271_FAILED = 0xffffffff;
+
+    PaliCompositeValidatorModule private composite;
+    PolicyRestrictedValidatorModule private restrictedChild;
+    mapping(address module => bool installed) private _installed;
+
+    function setUp() public {
+        restrictedChild = new PolicyRestrictedValidatorModule();
+        _installed[address(restrictedChild)] = true;
+
+        composite = new PaliCompositeValidatorModule();
+        address[] memory children = new address[](1);
+        children[0] = address(restrictedChild);
+        composite.onInstall(abi.encode(children, uint64(1)));
+    }
+
+    function testCompositeEnforcesChildUserOperationPolicy() public {
+        PackedUserOperation memory userOp;
+        userOp.sender = address(this);
+        bytes[] memory childSignatures = new bytes[](1);
+        childSignatures[0] = hex"01";
+        userOp.signature = abi.encode(childSignatures);
+
+        assertEq(composite.validateUserOp(userOp, keccak256("restricted user operation")), VALIDATION_FAILED);
+    }
+
+    function testUninstalledChildDoesNotCountTowardCompositeThreshold() public {
+        _installed[address(restrictedChild)] = false;
+        bytes[] memory childSignatures = new bytes[](1);
+        childSignatures[0] = hex"01";
+
+        assertEq(
+            composite.isValidSignatureWithSender(
+                address(this), keccak256("stale child signature"), abi.encode(childSignatures)
+            ),
+            EIP1271_FAILED
+        );
+    }
+
+    function testInstalledChildStillCountsTowardCompositeThreshold() public view {
+        bytes[] memory childSignatures = new bytes[](1);
+        childSignatures[0] = hex"01";
+
+        assertEq(
+            composite.isValidSignatureWithSender(
+                address(this), keccak256("installed child signature"), abi.encode(childSignatures)
+            ),
+            EIP1271_SUCCESS
+        );
+    }
+
+    function isModuleInstalled(uint256 moduleTypeId, address module, bytes calldata) external view returns (bool) {
+        return moduleTypeId == MODULE_TYPE_VALIDATOR && _installed[module];
     }
 }

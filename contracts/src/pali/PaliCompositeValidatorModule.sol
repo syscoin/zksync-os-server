@@ -10,6 +10,7 @@ import {
     VALIDATION_FAILED,
     VALIDATION_SUCCESS
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {IPaliCompositeChildValidator, PALI_MODULE_TYPE_COMPOSITE_CHILD} from "./IPaliCompositeChildValidator.sol";
 
 contract PaliCompositeValidatorModule is IERC7579Validator {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
@@ -50,11 +51,56 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
 
     function validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash)
         external
-        view
         override
         returns (uint256)
     {
-        return _validateSignature(userOp.sender, userOpHash, userOp.signature) ? VALIDATION_SUCCESS : VALIDATION_FAILED;
+        if (msg.sender != userOp.sender) {
+            return VALIDATION_FAILED;
+        }
+
+        address[] storage children = _children[userOp.sender];
+        uint64 threshold_ = _threshold[userOp.sender];
+        if (threshold_ == 0 || children.length == 0) {
+            return VALIDATION_FAILED;
+        }
+
+        bytes[] memory childSignatures;
+        try this.decodeChildSignatures(userOp.signature) returns (bytes[] memory decodedSignatures) {
+            childSignatures = decodedSignatures;
+        } catch {
+            return VALIDATION_FAILED;
+        }
+
+        if (childSignatures.length != children.length) {
+            return VALIDATION_FAILED;
+        }
+
+        uint64 validChildren;
+        for (uint256 i = 0; i < children.length; ++i) {
+            if (childSignatures[i].length == 0 || !_isChildInstalled(userOp.sender, children[i])) {
+                continue;
+            }
+
+            try IPaliCompositeChildValidator(children[i])
+                .validateUserOpWithSender(userOp.sender, userOp, userOpHash, childSignatures[i]) returns (
+                uint256 validationData
+            ) {
+                // Composite v1 supports immediate, non-aggregated validation only. Any
+                // richer validationData is rejected instead of silently discarding it.
+                if (validationData == VALIDATION_SUCCESS) {
+                    unchecked {
+                        ++validChildren;
+                    }
+                    if (validChildren >= threshold_) {
+                        return VALIDATION_SUCCESS;
+                    }
+                }
+            } catch {
+                // A reverting or incompatible child counts as invalid.
+            }
+        }
+
+        return VALIDATION_FAILED;
     }
 
     function isValidSignatureWithSender(address sender, bytes32 hash, bytes calldata signature)
@@ -86,7 +132,7 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
 
         uint64 validChildren;
         for (uint256 i = 0; i < children.length; ++i) {
-            if (childSignatures[i].length == 0) {
+            if (childSignatures[i].length == 0 || !_isChildInstalled(account, children[i])) {
                 continue;
             }
 
@@ -118,6 +164,14 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
         return abi.decode(signature, (bytes[]));
     }
 
+    function _isChildInstalled(address account, address child) private view returns (bool) {
+        try IERC7579ModuleConfig(account).isModuleInstalled(MODULE_TYPE_VALIDATOR, child, "") returns (bool installed) {
+            return installed;
+        } catch {
+            return false;
+        }
+    }
+
     function _setPolicy(address account, address[] memory children, uint64 threshold_) private {
         if (threshold_ == 0 || threshold_ > children.length) {
             revert InvalidCompositeThreshold(uint64(children.length), threshold_);
@@ -127,6 +181,7 @@ contract PaliCompositeValidatorModule is IERC7579Validator {
             address child = children[i];
             if (
                 child == address(0) || !IERC7579Module(child).isModuleType(MODULE_TYPE_VALIDATOR)
+                    || !IERC7579Module(child).isModuleType(PALI_MODULE_TYPE_COMPOSITE_CHILD)
                     || !IERC7579ModuleConfig(account).isModuleInstalled(MODULE_TYPE_VALIDATOR, child, "")
             ) {
                 revert InvalidChildValidator(child);
