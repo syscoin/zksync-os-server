@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {
     IERC7579Validator,
     MODULE_TYPE_EXECUTOR,
@@ -10,10 +11,14 @@ import {
     MODULE_TYPE_VALIDATOR,
     VALIDATION_FAILED
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import {AccountERC7579Hooked} from
-    "@openzeppelin/contracts/account/extensions/draft-AccountERC7579Hooked.sol";
+import {AccountERC7579Hooked} from "@openzeppelin/contracts/account/extensions/draft-AccountERC7579Hooked.sol";
+import {AccountERC7579} from "@openzeppelin/contracts/account/extensions/draft-AccountERC7579.sol";
+import {Calldata} from "@openzeppelin/contracts/utils/Calldata.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {AbstractSigner} from "@openzeppelin/contracts/utils/cryptography/signers/AbstractSigner.sol";
+import {ERC7739} from "@openzeppelin/contracts/utils/cryptography/signers/draft-ERC7739.sol";
 
-contract PaliSmartAccount is AccountERC7579Hooked {
+contract PaliSmartAccount is AccountERC7579Hooked, ERC7739 {
     struct ModuleInit {
         address module;
         bytes data;
@@ -31,7 +36,7 @@ contract PaliSmartAccount is AccountERC7579Hooked {
     IEntryPoint private immutable _entryPoint;
     address public activeValidator;
 
-    constructor(IEntryPoint entryPoint_) {
+    constructor(IEntryPoint entryPoint_) EIP712("pali.smart-account.erc1271", "1") {
         if (address(entryPoint_) == address(0)) {
             revert InvalidEntryPoint();
         }
@@ -89,23 +94,21 @@ contract PaliSmartAccount is AccountERC7579Hooked {
         }
     }
 
-    function isValidSignature(bytes32 hash, bytes calldata signature) public view override returns (bytes4) {
-        if (signature.length >= 20) {
-            (address module, bytes calldata innerSignature) = _extractSignatureValidator(signature);
-            if (module == activeValidator && module != address(0)) {
-                try IERC7579Validator(module).isValidSignatureWithSender(msg.sender, hash, innerSignature) returns (
-                    bytes4 magic
-                ) {
-                    return magic;
-                } catch {}
-            }
-        }
+    function isValidSignature(bytes32 hash, bytes calldata signature)
+        public
+        view
+        override(AccountERC7579, ERC7739)
+        returns (bytes4)
+    {
+        return ERC7739.isValidSignature(hash, signature);
+    }
 
-        return bytes4(0xffffffff);
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 
     function accountId() public pure override returns (string memory) {
-        return "pali.smart-account.erc7579.1.0.0";
+        return "pali.smart-account.erc7579.2.0.0";
     }
 
     function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal override {
@@ -148,7 +151,25 @@ contract PaliSmartAccount is AccountERC7579Hooked {
             : VALIDATION_FAILED;
     }
 
-    function _rawSignatureValidation(bytes32, bytes calldata) internal pure override returns (bool) {
+    function _rawSignatureValidation(bytes32 hash, bytes calldata signature)
+        internal
+        view
+        override(AbstractSigner, AccountERC7579)
+        returns (bool)
+    {
+        if (signature.length >= 20) {
+            (address module, bytes calldata innerSignature) = _extractSignatureValidator(signature);
+            if (
+                module == activeValidator && module != address(0)
+                    && isModuleInstalled(MODULE_TYPE_VALIDATOR, module, Calldata.emptyBytes())
+            ) {
+                try IERC7579Validator(module).isValidSignatureWithSender(msg.sender, hash, innerSignature) returns (
+                    bytes4 magic
+                ) {
+                    return magic == IERC1271.isValidSignature.selector;
+                } catch {}
+            }
+        }
         return false;
     }
 }

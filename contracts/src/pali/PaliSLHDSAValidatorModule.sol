@@ -3,17 +3,17 @@ pragma solidity ^0.8.26;
 
 import {PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
-    IERC7579Validator,
     MODULE_TYPE_VALIDATOR,
     VALIDATION_FAILED,
     VALIDATION_SUCCESS
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {IPaliCompositeChildValidator, PALI_MODULE_TYPE_COMPOSITE_CHILD} from "./IPaliCompositeChildValidator.sol";
 
 interface ISLHDSAVerifier {
     function verify(bytes32 pkSeed, bytes32 pkRoot, bytes32 message, bytes calldata sig) external view returns (bool);
 }
 
-contract PaliSLHDSAValidatorModule is IERC7579Validator {
+contract PaliSLHDSAValidatorModule is IPaliCompositeChildValidator {
     bytes4 internal constant EIP1271_SUCCESS = 0x1626ba7e;
     bytes4 internal constant EIP1271_FAILED = 0xffffffff;
     bytes32 internal constant N_MASK = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000000000000000000000000000;
@@ -61,7 +61,7 @@ contract PaliSLHDSAValidatorModule is IERC7579Validator {
     }
 
     function isModuleType(uint256 moduleTypeId) external pure override returns (bool) {
-        return moduleTypeId == MODULE_TYPE_VALIDATOR;
+        return moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == PALI_MODULE_TYPE_COMPOSITE_CHILD;
     }
 
     function isInitialized(address account) external view returns (bool) {
@@ -75,6 +75,15 @@ contract PaliSLHDSAValidatorModule is IERC7579Validator {
         returns (uint256)
     {
         return _validateSignature(userOp.sender, userOpHash, userOp.signature) ? VALIDATION_SUCCESS : VALIDATION_FAILED;
+    }
+
+    function validateUserOpWithSender(
+        address account,
+        PackedUserOperation calldata,
+        bytes32 userOpHash,
+        bytes calldata signature
+    ) external view override returns (uint256) {
+        return _validateSignature(account, userOpHash, signature) ? VALIDATION_SUCCESS : VALIDATION_FAILED;
     }
 
     function isValidSignatureWithSender(address sender, bytes32 hash, bytes calldata signature)
