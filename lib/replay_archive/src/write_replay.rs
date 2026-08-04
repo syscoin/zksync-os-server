@@ -64,25 +64,35 @@ where
         let (replay_record, block_hash) = record.clone().split();
         let written = self.replay.write(record, override_allowed).await?;
 
-        let archive_record = if written {
-            (block_hash, replay_record)
-        } else {
-            let block_number = replay_record.block_context.block_number;
-            // SYSCOIN: A fresh archive session must backfill WAL records that replay storage
-            // already contains after restart. Re-read the canonical value so rejected caller
-            // bytes can never be archived in its place.
-            let replay_record = self
-                .replay
-                .get_replay_record(block_number)
-                .with_context(|| format!("missing canonical replay record {block_number}"))?;
-            let block_hash = self
-                .replay
-                .get_canonical_block_hash(block_number)
-                .with_context(|| format!("missing canonical block hash {block_number}"))?;
-            (block_hash, replay_record)
-        };
-
         if let Some(archive_sender) = &self.archive_sender {
+            let archive_record = if written {
+                (block_hash, replay_record)
+            } else {
+                let block_number = replay_record.block_context.block_number;
+                // SYSCOIN: A fresh archive session must backfill WAL records that replay storage
+                // already contains after restart. Re-read the canonical value so rejected caller
+                // bytes can never be archived in its place.
+                let canonical_record = self
+                    .replay
+                    .get_replay_record(block_number)
+                    .with_context(|| format!("missing canonical replay record {block_number}"))?;
+                let canonical_hash = if let Some(canonical_hash) =
+                    self.replay.get_canonical_block_hash(block_number)
+                {
+                    canonical_hash
+                } else {
+                    // SYSCOIN: Databases predating CanonicalHash cannot reconstruct the current
+                    // tip hash. Trust the freshly executed sealed hash only when its record agrees
+                    // with canonical replay storage.
+                    anyhow::ensure!(
+                        canonical_record == replay_record,
+                        "rejected replay record {block_number} differs from canonical storage"
+                    );
+                    block_hash
+                };
+                (canonical_hash, canonical_record)
+            };
+
             REPLAY_ARCHIVE_METRICS
                 .queue_depth
                 .set(replay_archive_queue_depth(archive_sender));
@@ -115,7 +125,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct ExistingReplay {
         record: ReplayRecord,
-        block_hash: BlockHash,
+        block_hash: Option<BlockHash>,
     }
 
     impl ReadReplay for ExistingReplay {
@@ -133,7 +143,9 @@ mod tests {
         }
 
         fn get_canonical_block_hash(&self, block_number: BlockNumber) -> Option<BlockHash> {
-            (block_number == self.record.block_context.block_number).then_some(self.block_hash)
+            (block_number == self.record.block_context.block_number)
+                .then_some(self.block_hash)
+                .flatten()
         }
 
         fn latest_record(&self) -> BlockNumber {
@@ -157,7 +169,7 @@ mod tests {
         let canonical_hash = B256::with_last_byte(7);
         let replay = ExistingReplay {
             record: canonical_record.clone(),
-            block_hash: canonical_hash,
+            block_hash: Some(canonical_hash),
         };
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let archiving = ReplayArchivingWriteReplay::new(replay, Some(sender));
@@ -176,6 +188,54 @@ mod tests {
         assert_eq!(
             receiver.recv().await,
             Some((canonical_hash, canonical_record))
+        );
+    }
+
+    #[tokio::test]
+    async fn noop_archive_does_not_require_legacy_tip_hash() {
+        let canonical_record = test_replay_record(7);
+        let replay = ExistingReplay {
+            record: canonical_record.clone(),
+            block_hash: None,
+        };
+        let archiving = ReplayArchivingWriteReplay::new(replay, None);
+
+        let mut rejected_record = canonical_record;
+        rejected_record.block_output_hash = B256::with_last_byte(9);
+        let written = archiving
+            .write(
+                Sealed::new_unchecked(rejected_record, B256::with_last_byte(9)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(!written);
+    }
+
+    #[tokio::test]
+    async fn legacy_tip_backfill_uses_verified_sealed_hash() {
+        let canonical_record = test_replay_record(7);
+        let replay = ExistingReplay {
+            record: canonical_record.clone(),
+            block_hash: None,
+        };
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let archiving = ReplayArchivingWriteReplay::new(replay, Some(sender));
+        let executed_hash = B256::with_last_byte(7);
+
+        let written = archiving
+            .write(
+                Sealed::new_unchecked(canonical_record.clone(), executed_hash),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(!written);
+        assert_eq!(
+            receiver.recv().await,
+            Some((executed_hash, canonical_record))
         );
     }
 
