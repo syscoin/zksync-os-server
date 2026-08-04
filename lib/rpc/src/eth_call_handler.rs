@@ -524,13 +524,10 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             block_context.eip1559_basefee.saturating_to::<u128>(),
         );
 
-        let effective_gas_price = request
-            .gas_price
-            .or(request.max_fee_per_gas)
-            .unwrap_or_default();
-        if effective_gas_price > 0 {
+        let max_cost_gas_price = estimate_max_cost_gas_price(&request);
+        if !max_cost_gas_price.is_zero() {
             let gas_limit_from_balance =
-                max_gas_from_balance(&request, block_context.eip1559_basefee, storage_view)?;
+                max_gas_from_balance(&request, max_cost_gas_price, storage_view)?;
             highest_gas_limit = highest_gas_limit.min(gas_limit_from_balance);
         }
         request.set_gas_limit(highest_gas_limit);
@@ -798,6 +795,19 @@ fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, base
     }
 }
 
+// Transaction validation reserves gas_limit * gasPrice for legacy requests and
+// gas_limit * maxFeePerGas for EIP-1559 requests. The estimate ceiling must use
+// that same price; using basefee makes the ceiling itself unaffordable whenever
+// maxFeePerGas exceeds basefee.
+fn estimate_max_cost_gas_price(request: &TransactionRequest) -> U256 {
+    U256::from(
+        request
+            .gas_price
+            .or(request.max_fee_per_gas)
+            .unwrap_or_default(),
+    )
+}
+
 /// Returns how much gas the sender can afford: `(balance - value) / gas_price`.
 fn max_gas_from_balance<V: ViewState>(
     request: &TransactionRequest,
@@ -943,5 +953,16 @@ mod tests {
             .max_priority_fee_per_gas(0);
         clamp_estimate_request_fees_to_basefee(&mut eip1559, 100);
         assert_eq!(eip1559.max_fee_per_gas, Some(100));
+    }
+
+    #[test]
+    fn estimate_balance_cap_uses_transaction_max_cost_price() {
+        let legacy = TransactionRequest::default().gas_price(120);
+        assert_eq!(estimate_max_cost_gas_price(&legacy), U256::from(120));
+
+        let eip1559 = TransactionRequest::default()
+            .max_fee_per_gas(150)
+            .max_priority_fee_per_gas(10);
+        assert_eq!(estimate_max_cost_gas_price(&eip1559), U256::from(150));
     }
 }
