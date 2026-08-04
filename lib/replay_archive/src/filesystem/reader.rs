@@ -1,12 +1,11 @@
 use crate::{
     ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession, ReplayArchiveStorageReader,
-    format_block_hash,
+    format_block_hash, parse_canonical_block_hash, parse_canonical_block_number,
 };
-use alloy::primitives::{BlockHash, BlockNumber};
+use alloy::primitives::BlockNumber;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
-use std::str::FromStr as _;
 
 /// File-system implementation of [`ReplayArchiveStorageReader`].
 ///
@@ -64,7 +63,7 @@ impl FileSystemReplayArchiveReader {
             };
             // Interrupted-write leftovers accompany data files in the flat layout; only plain
             // block hash names are archive objects.
-            let Ok(block_hash) = BlockHash::from_str(file_name) else {
+            let Some(block_hash) = parse_canonical_block_hash(file_name) else {
                 if !file_name.contains(".partial") {
                     tracing::warn!(
                         path = %object_entry.path().display(),
@@ -138,10 +137,10 @@ impl ReplayArchiveStorageReader for FileSystemReplayArchiveReader {
                 if !block_entry.file_type().await?.is_dir() {
                     continue;
                 }
-                let Ok(block_number) = block_entry
-                    .file_name()
-                    .to_string_lossy()
-                    .parse::<BlockNumber>()
+                let block_dir_name = block_entry.file_name();
+                let Some(block_number) = block_dir_name
+                    .to_str()
+                    .and_then(parse_canonical_block_number)
                 else {
                     tracing::warn!(
                         path = %block_entry.path().display(),
@@ -178,12 +177,13 @@ fn is_temporary_archive_object(entry: &tokio::fs::DirEntry) -> bool {
 mod tests {
     use super::*;
     use crate::format_block_hash;
+    use alloy::primitives::BlockHash;
 
     #[tokio::test]
-    async fn list_keys_ignores_temporary_archive_files() {
+    async fn list_keys_ignores_temporary_and_noncanonical_archive_files() {
         let tempdir = tempfile::tempdir().unwrap();
         let block_number = 7;
-        let block_hash = BlockHash::with_last_byte(1);
+        let block_hash = BlockHash::with_last_byte(0xab);
         let session = ReplayArchiveSession::new(42, "node-a").unwrap();
         let block_path = tempdir
             .path()
@@ -199,6 +199,29 @@ mod tests {
         tokio::fs::write(block_path.join(format_block_hash(block_hash)), b"complete")
             .await
             .unwrap();
+        let noncanonical_block_path = tempdir.path().join(session.folder_name()).join("0007");
+        tokio::fs::create_dir_all(&noncanonical_block_path)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            noncanonical_block_path.join(format_block_hash(block_hash)),
+            b"wrong block path",
+        )
+        .await
+        .unwrap();
+        let canonical_hash = format_block_hash(block_hash);
+        let uppercase_hash = format!("0x{}", canonical_hash[2..].to_uppercase());
+        assert_eq!(uppercase_hash.parse::<BlockHash>().unwrap(), block_hash);
+        let noncanonical_hash_path = tempdir.path().join(session.folder_name()).join("8");
+        tokio::fs::create_dir_all(&noncanonical_hash_path)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            noncanonical_hash_path.join(uppercase_hash),
+            b"wrong hash path",
+        )
+        .await
+        .unwrap();
 
         let reader = FileSystemReplayArchiveReader::new(tempdir.path().to_path_buf());
         let page = reader.list_keys_page(None).await.unwrap();

@@ -2,6 +2,7 @@
 use crate::kms::GcpKmsIdentity;
 use crate::{
     ReplayArchiveKey, ReplayArchiveSession, ReplayArchiveStorageReader, format_block_hash,
+    parse_canonical_block_hash, parse_canonical_block_number,
 };
 use age_core::format::{FileKey, Stanza};
 use alloy::primitives::{BlockHash, BlockNumber, Sealed};
@@ -334,10 +335,10 @@ async fn scan_existing_downloaded_objects(
         )
     })?;
     while let Some(block_entry) = block_entries.next_entry().await? {
-        let Ok(block_number) = block_entry
-            .file_name()
-            .to_string_lossy()
-            .parse::<BlockNumber>()
+        let block_dir_name = block_entry.file_name();
+        let Some(block_number) = block_dir_name
+            .to_str()
+            .and_then(parse_canonical_block_number)
         else {
             continue;
         };
@@ -347,10 +348,8 @@ async fn scan_existing_downloaded_objects(
 
         let mut hash_entries = tokio::fs::read_dir(block_entry.path()).await?;
         while let Some(hash_entry) = hash_entries.next_entry().await? {
-            let Ok(block_hash) = hash_entry
-                .file_name()
-                .to_string_lossy()
-                .parse::<BlockHash>()
+            let hash_dir_name = hash_entry.file_name();
+            let Some(block_hash) = hash_dir_name.to_str().and_then(parse_canonical_block_hash)
             else {
                 continue;
             };
@@ -481,10 +480,7 @@ async fn read_candidate_records(
             continue;
         }
         let file_name = entry.file_name();
-        let Some(block_hash) = file_name
-            .to_str()
-            .and_then(|name| name.parse::<BlockHash>().ok())
-        else {
+        let Some(block_hash) = file_name.to_str().and_then(parse_canonical_block_hash) else {
             if !is_partial_download_name(&file_name) {
                 tracing::warn!(
                     path = %entry.path().display(),

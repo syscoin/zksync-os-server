@@ -240,6 +240,18 @@ fn format_block_hash(block_hash: BlockHash) -> String {
     alloy::hex::encode_prefixed(block_hash.0)
 }
 
+// SYSCOIN: Listed paths must round-trip exactly. Normalizing a listed component could make a
+// reader fetch a different object than the one whose name passed validation.
+pub(crate) fn parse_canonical_block_number(value: &str) -> Option<BlockNumber> {
+    let block_number = value.parse::<BlockNumber>().ok()?;
+    (block_number.to_string() == value).then_some(block_number)
+}
+
+pub(crate) fn parse_canonical_block_hash(value: &str) -> Option<BlockHash> {
+    let block_hash = value.parse::<BlockHash>().ok()?;
+    (format_block_hash(block_hash) == value).then_some(block_hash)
+}
+
 /// Parses a session-scoped object-store key back into a [`ReplayArchiveKey`].
 ///
 /// Keys that do not match `<session>/<block_number>/<block_hash>` are logged and skipped instead of
@@ -253,10 +265,10 @@ pub(crate) fn parse_archive_object_key(object_key: &str) -> Option<ReplayArchive
     let key = match parts.as_slice() {
         [session, block_number, block_hash] => match (
             session.parse::<ReplayArchiveSession>(),
-            block_number.parse::<BlockNumber>(),
-            block_hash.parse::<BlockHash>(),
+            parse_canonical_block_number(block_number),
+            parse_canonical_block_hash(block_hash),
         ) {
-            (Ok(session), Ok(block_number), Ok(block_hash)) => {
+            (Ok(session), Some(block_number), Some(block_hash)) => {
                 Some(ReplayArchiveKey::new(session, block_number, block_hash))
             }
             _ => None,
@@ -410,6 +422,21 @@ mod tests {
         assert!(parse_archive_object_key("42-node-a/not-a-number/0x00").is_none());
         assert!(parse_archive_object_key("7/not-a-hash").is_none());
         assert!(parse_archive_object_key("single-segment").is_none());
+    }
+
+    #[test]
+    fn archive_object_key_parser_rejects_noncanonical_components() {
+        let session = ReplayArchiveSession::new(42, "node-a")
+            .unwrap()
+            .folder_name();
+        let block_hash = B256::with_last_byte(0xab);
+        let canonical_hash = format_block_hash(block_hash);
+        let uppercase_hash = format!("0x{}", canonical_hash[2..].to_uppercase());
+        assert_eq!("0007".parse::<BlockNumber>().unwrap(), 7);
+        assert_eq!(uppercase_hash.parse::<BlockHash>().unwrap(), block_hash);
+
+        assert!(parse_archive_object_key(&format!("{session}/0007/{canonical_hash}")).is_none());
+        assert!(parse_archive_object_key(&format!("{session}/7/{uppercase_hash}")).is_none());
     }
 
     #[test]
