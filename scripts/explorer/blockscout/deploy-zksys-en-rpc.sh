@@ -638,26 +638,33 @@ def write_node_script(
     protocol: str,
     syscoin_edge_da_commit_target: str,
     runner_args: list[str],
+    enforce_runtime_nofile: bool,
 ) -> None:
     rendered_runner_args = " ".join(q(arg) for arg in runner_args)
-    text = f"""#!/usr/bin/env bash
-set -euo pipefail
-: "${{OS_SERVER_NOFILE_TARGET:=1048576}}"
-: "${{OS_SERVER_NOFILE_RECOMMENDED:=131072}}"
-: "${{OS_SERVER_NOFILE_MIN:=65536}}"
+    # Deployment builds run under the SSH session's limits and never serve node traffic; only the
+    # systemd runtime wrapper needs the high-TPS descriptor gate.
+    runtime_nofile_preflight = ""
+    if enforce_runtime_nofile:
+        runtime_nofile_preflight = '''\
+: "${OS_SERVER_NOFILE_TARGET:=1048576}"
+: "${OS_SERVER_NOFILE_RECOMMENDED:=131072}"
+: "${OS_SERVER_NOFILE_MIN:=65536}"
 current_nofile="$(ulimit -n)"
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_TARGET}}" ]; then
-  ulimit -n "${{OS_SERVER_NOFILE_TARGET}}" 2>/dev/null || true
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_TARGET}" ]; then
+  ulimit -n "${OS_SERVER_NOFILE_TARGET}" 2>/dev/null || true
 fi
 current_nofile="$(ulimit -n)"
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_MIN}}" ]; then
-  echo "open-file limit too low for zksync-os-server: ${{current_nofile}}" >&2
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_MIN}" ]; then
+  echo "open-file limit too low for zksync-os-server: ${current_nofile}" >&2
   exit 1
 fi
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
-  echo "warning: open-file limit is below recommended value: ${{current_nofile}}" >&2
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_RECOMMENDED}" ]; then
+  echo "warning: open-file limit is below recommended value: ${current_nofile}" >&2
 fi
-export PATH="${{HOME}}/.cargo/bin:${{PATH}}"
+'''
+    text = f"""#!/usr/bin/env bash
+set -euo pipefail
+{runtime_nofile_preflight}export PATH="${{HOME}}/.cargo/bin:${{PATH}}"
 cd {q(str(repo))}
 export GATEWAY_DIR={q(str(gateway_dir))}
 export ZKSYNC_OS_SERVER_PATH={q(str(repo))}
@@ -786,6 +793,7 @@ for instance in (public, debug):
         protocol,
         syscoin_edge_da_commit_target,
         ["build-prebuilt"],
+        enforce_runtime_nofile=False,
     )
     write_node_script(
         out_dir / "start-node.sh",
@@ -796,6 +804,7 @@ for instance in (public, debug):
         protocol,
         syscoin_edge_da_commit_target,
         ["exec-prebuilt", "--", "--config", str(config_path)],
+        enforce_runtime_nofile=True,
     )
 PY
 
