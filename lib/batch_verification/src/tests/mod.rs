@@ -80,6 +80,7 @@ pub fn dummy_batch_metadata(batch_number: u64, from: u64, to: u64) -> BatchMetad
             commit_info: dummy_commit_batch_info(batch_number, from, to),
             protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
             upgrade_tx_hash: None,
+            use_legacy_v31_commitment: false,
         },
         chain_address: Address::ZERO,
         blob_sidecar: None,

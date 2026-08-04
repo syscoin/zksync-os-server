@@ -6,7 +6,7 @@ Default single-chain configuration for running ZKsync OS against L1 for protocol
 
 | Config            | Chain ID | RPC Port |
 |-------------------|----------|----------|
-| `config.yaml`     | 6565     | 3050     |
+| `config.yaml`     | 506      | 3050     |
 
 ## Quick Start
 

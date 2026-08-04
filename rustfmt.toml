@@ -1,0 +1,6 @@
+ignore = [
+    "lib/network/src/wire/replays/v1.rs",
+    "lib/network/src/wire/replays/v2.rs",
+    "lib/network/src/wire/replays/v3.rs",
+    "lib/network/src/wire/replays/v4.rs",
+]

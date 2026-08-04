@@ -142,6 +142,8 @@ pub enum TxRejectionReason {
     InvalidSignature,
     /// Node is temporarily not accepting transactions (e.g. syncing).
     NotAccepting,
+    /// The executed-gas rate limiter's bank is exhausted.
+    GasRateLimited,
     /// The signer address is on the blacklist.
     BlacklistedSigner,
     /// The exact transaction hash is on the blacklist.

@@ -60,6 +60,7 @@ impl SnarkJobManager {
     pub async fn pick_real_job(
         &self,
         prover_id: String,
+        supported_proving_versions: Option<&[ProvingVersion]>,
     ) -> anyhow::Result<Option<Vec<(FriJob, FriProof)>>> {
         // consume/remove all fake jobs that may be in the front of the queue
         self.process_pending_fake_fri_proofs().await?;
@@ -68,6 +69,8 @@ impl SnarkJobManager {
             .jobs
             .pick_jobs_while_with_limit(self.max_fris_per_snark, &prover_id, |job| {
                 !job.batch_envelope.data.is_fake()
+                    && supported_proving_versions
+                        .is_none_or(|versions| versions.contains(&job.metadata.proving_version))
             })
             .await;
 
@@ -201,7 +204,10 @@ impl SnarkJobManager {
 
             let batch_from = assigned.first().unwrap().0.batch_number;
             let batch_to = assigned.last().unwrap().0.batch_number;
-            let permit = self.try_reserve_permit_downstream()?;
+            // Fake proving runs inside the node, so downstream saturation is normal pipeline
+            // backpressure rather than a client-visible retry condition. Keep the jobs assigned
+            // while waiting instead of abandoning them until the much longer assignment timeout.
+            let permit = self.reserve_permit_downstream().await?;
             let Some(completed) = self
                 .jobs
                 .complete_many_jobs(batch_from, batch_to, ProverType::Fake, "fake_prover")
@@ -238,6 +244,13 @@ impl SnarkJobManager {
                 anyhow::bail!("server is shutting down");
             }
         })
+    }
+
+    async fn reserve_permit_downstream(&self) -> anyhow::Result<Permit<'_, ProofCommand>> {
+        self.prove_batches_sender
+            .reserve()
+            .await
+            .map_err(|_| anyhow::anyhow!("server is shutting down"))
     }
     // SYSCOIN
     pub async fn status(&self) -> Vec<JobState> {

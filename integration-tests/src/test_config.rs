@@ -1,6 +1,7 @@
 use crate::config::{ChainLayout, load_chain_config};
 use crate::{AnvilL1, BATCH_VERIFICATION_ADDRESSES, BATCH_VERIFICATION_KEYS};
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::Address;
+use blake2::{Blake2s256, Digest};
 use httpmock::Method::POST;
 use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
 use serde_json::{Value, json};
@@ -44,9 +45,7 @@ pub fn make_full_pipeline_config(config: &mut Config) {
 }
 
 pub(crate) fn disable_prover_input_generation(config: &mut Config) {
-    if config.prover_api_config.fake_fri_provers.enabled
-        && config.prover_api_config.fake_snark_provers.enabled
-    {
+    if config.prover_api_config.fake_fri_provers.enabled {
         config.prover_input_generator_config.enable_input_generation = false;
     }
 }
@@ -63,6 +62,13 @@ pub(crate) async fn build_node_config(
         gateway_provider_config.rpc_poll_interval = TEST_PROVIDER_POLL_INTERVAL;
     }
     config.sequencer_config.fee_collector_address = Address::random();
+    config.sequencer_config.block_timestamp_offset_seconds = l1.timestamp_offset_seconds;
+    // SYSCOIN: the pinned v31 L1 snapshot replays bootstrap/system transactions whose legacy
+    // nonce semantics are outside REVM's diagnostic surface. The canonical ZKsync OS executor
+    // still validates them; only allow the existing bounded checker skip in local fixtures.
+    config
+        .sequencer_config
+        .revm_consistency_checker_allow_bootstrap_skip = true;
     config.rpc_config.send_raw_transaction_sync_timeout = Duration::from_secs(10);
     // SYSCOIN: integration tests intentionally exercise debug tracing on local RPC.
     config.rpc_config.enable_debug_namespace = true;
@@ -84,29 +90,28 @@ pub(crate) async fn build_node_config(
     Ok(config)
 }
 
-pub(crate) async fn maybe_start_bitcoin_da_mock(config: &mut Config) -> Option<BitcoinDaMock> {
-    if config.batcher_config.bitcoin_da_rpc_url.is_some()
-        || !matches!(
-            config.l1_sender_config.pubdata_mode,
-            Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
-        )
-    {
+pub(crate) fn maybe_start_bitcoin_da_mock(config: &mut Config) -> Option<BitcoinDaMock> {
+    let may_use_syscoin_da = matches!(
+        config.l1_sender_config.pubdata_mode,
+        Some(PubdataMode::Blobs | PubdataMode::RelayedL2Calldata)
+    ) || config.gateway_provider_config.is_some();
+    if config.batcher_config.bitcoin_da_rpc_url.is_some() || !may_use_syscoin_da {
         return None;
     }
 
-    let server = MockServer::start_async().await;
-    server
-        .mock_async(|when, then| {
-            when.method(POST);
-            then.respond_with(|req: &HttpMockRequest| {
-                HttpMockResponse::builder()
-                    .status(200)
-                    .header("content-type", "application/json")
-                    .body(handle_bitcoin_da_rpc(&req.body_string()))
-                    .build()
-            });
-        })
-        .await;
+    // SYSCOIN: Keep mock creation synchronous so restart futures remain `Send` and can be
+    // supervised with `tokio::spawn`; httpmock's async builder retains `Rc` state across await.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST);
+        then.respond_with(|req: &HttpMockRequest| {
+            HttpMockResponse::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(handle_bitcoin_da_rpc(&req.body_string()))
+                .build()
+        });
+    });
 
     let server_url = server.base_url();
     config.batcher_config.bitcoin_da_rpc_url = Some(server_url.clone());
@@ -152,7 +157,8 @@ fn handle_bitcoin_da_call(call: &Value) -> Value {
             let data = params.first().and_then(Value::as_str).unwrap_or_default();
             let data = data.strip_prefix("0x").unwrap_or(data);
             let bytes = alloy::hex::decode(data).unwrap_or_default();
-            json!({"versionhash": format!("0x{}", alloy::hex::encode(keccak256(bytes)))})
+            // SYSCOIN: The committed blob ID is Blake2s over the exact encoded chunk.
+            json!({"versionhash": format!("0x{}", alloy::hex::encode(Blake2s256::digest(bytes)))})
         }
         "getnevmblobdata" => {
             let version_hash = params.first().and_then(Value::as_str).unwrap_or_default();

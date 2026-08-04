@@ -87,6 +87,11 @@ pub struct RpcConfig {
     /// Gas limit of transactions executed via eth_call
     pub eth_call_gas: usize,
 
+    /// Offset applied to wall-clock timestamps for synthesized pending blocks.
+    /// This must match the sequencer's timestamp offset so RPC simulation uses the same clock as
+    /// block production.
+    pub block_timestamp_offset_seconds: i64,
+
     /// Maximum execution time of a single JS tracer run
     pub js_tracer_timeout: Duration,
 
@@ -114,6 +119,17 @@ pub struct RpcConfig {
 
     /// Maximum RPC response payload size for both HTTP and WS in megabytes
     pub max_response_size: u32,
+
+    /// Limits the work admitted by one JSON-RPC batch. The server rejects larger batches before
+    /// dispatching any entry, so one request cannot create an unbounded work queue.
+    pub max_batch_size: u32,
+
+    /// Allows entries in one JSON-RPC batch to run concurrently, with a per-batch limit.
+    ///
+    /// Responses stay in request order, but execution does not. For example, a transaction and a
+    /// read that depends on it may race when sent in the same batch. Keep this disabled for clients
+    /// that rely on sequential batch execution.
+    pub parallel_batches: bool,
 
     /// Maximum number of blocks that could be scanned per filter
     pub max_blocks_per_filter: u64,

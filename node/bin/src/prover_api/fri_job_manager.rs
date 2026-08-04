@@ -241,12 +241,21 @@ impl FriJobManager {
     ///
     /// `min_age` is used for fake provers to avoid taking fresh items,
     /// letting real provers race first.
+    ///
+    /// `supported_proving_versions` restricts assignment to batches of these versions;
+    /// `None` means the prover declared nothing and any batch qualifies.
     pub async fn pick_next_job(
         &self,
         min_age: Duration,
         prover_id: String,
+        supported_proving_versions: Option<&[ProvingVersion]>,
     ) -> Option<(FriJob, ProverInput)> {
-        self.jobs.pick_job(min_age, &prover_id).await
+        self.jobs
+            .pick_job(min_age, &prover_id, |job| {
+                supported_proving_versions
+                    .is_none_or(|versions| versions.contains(&job.metadata.proving_version))
+            })
+            .await
     }
 
     /// Submit a **real** proof provided by an external prover.
@@ -564,6 +573,7 @@ mod tests {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
                 protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
                 upgrade_tx_hash: None,
+                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
             blob_sidecar: None,

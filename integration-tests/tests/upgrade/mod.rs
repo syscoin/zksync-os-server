@@ -2,8 +2,8 @@ use alloy::primitives::{Address, Bytes, FixedBytes, U256};
 use alloy::providers::Provider;
 use alloy::sol_types::SolCall;
 use std::collections::BTreeMap;
-use zksync_os_integration_tests::contracts::SampleForceDeployment;
-use zksync_os_integration_tests::upgrade::{Action, CommitterFacetV31, FacetCut, UpgradeTester};
+use zksync_os_integration_tests::contracts::{SampleForceDeployment, SyscoinCommitterFacetTest};
+use zksync_os_integration_tests::upgrade::{Action, FacetCut, L2DACommitmentScheme, UpgradeTester};
 use zksync_os_integration_tests::{GatewayTester, Tester};
 use zksync_os_server::default_protocol_version::NEXT_PROTOCOL_VERSION;
 
@@ -38,6 +38,7 @@ async fn upgrade_patch_no_deployments() -> anyhow::Result<()> {
             upgrade_timestamp,
             true,
             Vec::new(),
+            None,
         )
         .await?;
 
@@ -72,6 +73,7 @@ async fn upgrade_patch_no_deployments_gateway() -> anyhow::Result<()> {
             upgrade_timestamp,
             true,
             Vec::new(),
+            None,
         )
         .await?;
 
@@ -105,6 +107,7 @@ async fn upgrade_patch_no_deployments_settles_to_gateway() -> anyhow::Result<()>
             upgrade_timestamp,
             true,
             Vec::new(),
+            None,
         )
         .await?;
 
@@ -149,7 +152,7 @@ async fn upgrade_to_v31_with_deployments() -> anyhow::Result<()> {
 
     // Deploy new CommitterFacet.
     let l1_chain_id = upgrade_tester.tester.l1_provider().get_chain_id().await?;
-    let committer_facet = CommitterFacetV31::deploy(
+    let committer_facet = SyscoinCommitterFacetTest::deploy(
         upgrade_tester.tester.l1_provider().clone(),
         U256::from(l1_chain_id),
     )
@@ -161,7 +164,7 @@ async fn upgrade_to_v31_with_deployments() -> anyhow::Result<()> {
         action: Action::Replace,
         isFreezable: true,
         selectors: vec![FixedBytes(
-            CommitterFacetV31::commitBatchesSharedBridgeCall::SELECTOR,
+            SyscoinCommitterFacetTest::commitBatchesSharedBridgeCall::SELECTOR,
         )],
     };
 
@@ -172,6 +175,10 @@ async fn upgrade_to_v31_with_deployments() -> anyhow::Result<()> {
             upgrade_timestamp,
             false,
             vec![facet_cut],
+            Some((
+                *committer_facet.address(),
+                L2DACommitmentScheme::BLOBS_ZKSYNC_OS,
+            )),
         )
         .await?;
 
@@ -249,6 +256,7 @@ async fn upgrade_to_v32_with_deployments_settles_to_gateway() -> anyhow::Result<
             upgrade_timestamp,
             false,
             vec![],
+            None,
         )
         .await?;
 

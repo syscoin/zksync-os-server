@@ -17,7 +17,7 @@ use zksync_os_contract_interface::models::DACommitmentScheme;
 use zksync_os_interface::traits::TxListSource;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
-use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
+use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReadStateHistory, ReplayRecord, TreeBlock};
 use zksync_os_types::{ProvingVersion, PubdataMode, ZksyncOsEncode};
 
@@ -48,9 +48,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId =
         zksync_os_pipeline::ComponentId::ProverInputGenerator;
-    // SYSCOIN: upstream switched pipeline sends to `try_send`. Keep enough
-    // capacity for the warm-up result plus the supported concurrent result
-    // burst so normal completion skew does not look like downstream failure.
+    // Bound completed prover inputs retained in memory while the batcher drains them.
     const OUTPUT_CHANNEL_CAPACITY: usize = PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY;
 
     /// Works on multiple blocks in parallel, up to [Self::maximum_in_flight_blocks].
@@ -78,7 +76,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                     return Ok(());
                 };
                 state_reporter.enter_state(GenericComponentState::Active);
-                output.send_and_record(
+                send_with_backpressure(
+                    &output,
                     ProverBlock {
                         output: block_output,
                         record: replay_record,
@@ -86,7 +85,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                         tree_output: tree.output,
                     },
                     &state_reporter,
-                )?;
+                )
+                .await?;
             }
         }
         // Process the first item alone — it involves heavy trusted-setup precomputation
@@ -102,7 +102,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             block_number = result.output.header.number,
             "sending block with prover input to batcher",
         );
-        output.send_and_record(result, &state_reporter)?;
+        send_with_backpressure(&output, result, &state_reporter).await?;
 
         // Process remaining items with up to `maximum_in_flight_blocks` in parallel.
         // Results are delivered in arrival order via FuturesOrdered.
@@ -135,13 +135,30 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                         block_number = item.output.header.number,
                         "sending block with prover input to batcher",
                     );
-                    output.send_and_record(item, &state_reporter)?;
+                    send_with_backpressure(&output, item, &state_reporter).await?;
                 }
             }
         }
 
         Ok(())
     }
+}
+
+async fn send_with_backpressure(
+    output: &mpsc::Sender<ProverBlock>,
+    item: ProverBlock,
+    state_reporter: &ComponentStateReporter,
+) -> Result<()> {
+    let block_number = item.record.block_context.block_number;
+    let block_timestamp = item.record.block_context.timestamp;
+    // Prover-input computations may finish in a burst. Waiting here keeps their ordered results
+    // intact while the batcher drains instead of turning normal scheduling skew into node failure.
+    output
+        .send(item)
+        .await
+        .map_err(|_| anyhow::anyhow!("batcher input channel closed"))?;
+    state_reporter.record_processed(block_number, Some(block_timestamp), None);
+    Ok(())
 }
 
 impl<ReadState: ReadStateHistory + Clone + Send + 'static> ProverInputGenerator<ReadState> {

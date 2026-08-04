@@ -10,7 +10,7 @@ use backon::{ConstantBuilder, Retryable};
 use zksync_os_integration_tests::BATCH_VERIFICATION_KEYS;
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{
-    CURRENT_TO_L1, NEXT_TO_GATEWAY, TestEnvironment, Tester, assert_traits::ReceiptAssert,
+    CURRENT_TO_L1, NEXT_TO_L1, TestEnvironment, Tester, assert_traits::ReceiptAssert,
     contracts::EventEmitter, test_multisetup,
 };
 use zksync_os_server::config::Config;
@@ -24,11 +24,14 @@ async fn launch_en(
     main_node.launch_from_config(config).await
 }
 
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
+#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
 async fn batch_verification_works(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     config.batch_verification_config.server_enabled = true;
     config.batch_verification_config.threshold = 1;
+    // Do not rely on an incidental follow-up block to seal the batch under test; the production
+    // timeout is longer than this integration test's finalization deadline.
+    config.batcher_config.batch_timeout = Duration::from_millis(100);
     let main_node = env.launch(config).await?;
 
     let _en1 = launch_en(&main_node, |config: &mut Config| {
@@ -129,7 +132,7 @@ async fn batch_verification_with_2_ens(env: TestEnvironment) -> anyhow::Result<(
     Ok(())
 }
 
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
+#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
 async fn transaction_replay(main_node: Tester) -> anyhow::Result<()> {
     let en1 = launch_en(&main_node, |_| {}).await?;
 

@@ -1,4 +1,5 @@
 use crate::util;
+use alloy::eips::BlockId;
 use alloy::primitives::{BlockNumber, TxHash};
 use alloy::providers::Provider;
 use anyhow::Context;
@@ -37,6 +38,10 @@ const WAIT_FOR_BATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// startup bookkeeping. Then run [`Self::init`] in a background task to populate the remaining
 /// historical committed range while consumers use [`Self::wait_for_batch`] to block until a
 /// specific batch becomes available.
+///
+/// SYSCOIN: Startup lookup remains interval-aware rather than using one L1-only commit sweep.
+/// Historical Gateway intervals require different providers, while archive-backed L1 results are
+/// accepted only across stable live/archive tips and after live-hash validation.
 #[derive(Debug, Clone)]
 pub struct CommittedBatchProvider {
     inner: Arc<RwLock<Inner>>,
@@ -104,7 +109,10 @@ impl CommittedBatchProvider {
         // Special case for genesis
         if l1_state.last_executed_batch == 0 {
             let batch_info = load_genesis_batch_info().await;
-            let batch_hash_l1 = l1_state.diamond_proxy_l1.stored_batch_hash(0).await?;
+            let batch_hash_l1 = l1_state
+                .diamond_proxy_l1
+                .stored_batch_hash(0, BlockId::latest())
+                .await?;
             anyhow::ensure!(
                 batch_hash_l1 == batch_info.hash(),
                 "genesis batch hash mismatch: L1 {}, local {}",
@@ -258,8 +266,13 @@ impl CommittedBatchProvider {
                             )
                             .await?
                         }
-                        _ => fetch_batch(&interval.proxy, batch_number, max_l1_blocks_to_scan)
-                            .await?,
+                        _ => fetch_live_committed_batch(
+                            &interval.proxy,
+                            batch_number,
+                            max_l1_blocks_to_scan,
+                        )
+                        .await?
+                        .0,
                     };
                 tracing::info!(
                     batch_number = discovered_batch.number(),
@@ -322,24 +335,48 @@ where
         .map(|batch| batch.committed_batch))
 }
 
-/// Resolves a committed batch from L1 by first finding the block that committed it and then
-/// decoding the corresponding stored batch data.
-pub async fn fetch_batch(
-    diamond_proxy_sl: &ZkChain<NodeProvider>,
+/// Resolves the commit whose stored batch hash matches the currently live hash.
+///
+/// Reverts leave historical commit events behind, so rebuild and revert planning must bind the
+/// decoded calldata to the hash that the settlement layer currently exposes.
+pub async fn fetch_live_committed_batch(
+    diamond_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
     max_l1_blocks_to_scan: u64,
-) -> anyhow::Result<DiscoveredCommittedBatch> {
-    let sl_block_with_commit = util::find_l1_commit_block_by_batch_number(
-        diamond_proxy_sl.clone(),
+) -> anyhow::Result<(DiscoveredCommittedBatch, TxHash)> {
+    let latest = diamond_proxy.provider().get_block_number().await?;
+    let total_committed = diamond_proxy
+        .get_total_batches_committed(latest.into())
+        .await?;
+    anyhow::ensure!(
+        total_committed >= batch_number,
+        "batch {batch_number} is not committed on the settlement layer \
+         (batches committed as of block {latest}: {total_committed})",
+    );
+    let live_hash = diamond_proxy
+        .stored_batch_hash(batch_number, latest.into())
+        .await?;
+    // SYSCOIN: Retained settlement contracts can clear and later re-expose the same stored hash
+    // across revert/recommit. Hash equality is therefore not monotonic here; locate the active
+    // commit with the BlocksRevert-aware discovery retained by this fork.
+    let live_commit_block = util::find_l1_commit_block_by_batch_number(
+        diamond_proxy.clone(),
         batch_number,
         max_l1_blocks_to_scan,
     )
     .await
-    .with_context(|| format!("failed to find L1 commit block for batch {batch_number}"))?;
+    .with_context(|| format!("failed to find live commit block for batch {batch_number}"))?;
 
-    util::fetch_stored_batch_data(diamond_proxy_sl, sl_block_with_commit, batch_number)
-        .await?
-        .with_context(|| format!("failed to find committed batch {batch_number} on L1"))
+    let (batch, commit_tx_hash) =
+        util::fetch_stored_batch_data(diamond_proxy, live_commit_block, batch_number)
+            .await?
+            .with_context(|| format!("failed to decode live committed batch {batch_number}"))?;
+    anyhow::ensure!(
+        batch.batch_info.hash() == live_hash,
+        "batch {batch_number} reconstructed from settlement-layer block {live_commit_block} does \
+         not match the live stored batch hash {live_hash}",
+    );
+    Ok((batch, commit_tx_hash))
 }
 
 // SYSCOIN: Helpers below implement the archive/live startup lookup policy for
@@ -357,8 +394,9 @@ async fn fetch_batch_from_live_with_context(
     max_l1_blocks_to_scan: u64,
     context: String,
 ) -> anyhow::Result<DiscoveredCommittedBatch> {
-    fetch_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
+    fetch_live_committed_batch(live_proxy, batch_number, max_l1_blocks_to_scan)
         .await
+        .map(|(batch, _commit_tx_hash)| batch)
         .with_context(|| format!("{context}; live provider fallback also failed"))
 }
 
@@ -635,8 +673,9 @@ async fn fetch_batch_with_archive_fallback(
 
     let archive_proxy = ZkChain::new(*live_proxy.address(), archive_provider.clone());
     for attempt in 0..2 {
-        match fetch_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await {
-            Ok(batch) => match archive_batch_lookup_outcome(
+        match fetch_live_committed_batch(&archive_proxy, batch_number, max_l1_blocks_to_scan).await
+        {
+            Ok((batch, _commit_tx_hash)) => match archive_batch_lookup_outcome(
                 live_proxy,
                 archive_provider,
                 batch,
@@ -660,12 +699,12 @@ async fn fetch_batch_with_archive_fallback(
                     "archive provider failed to fetch committed batch; retrying live provider",
                 );
                 return fetch_batch_from_live_with_context(
-                        live_proxy,
-                        batch_number,
-                        max_l1_blocks_to_scan,
+                    live_proxy,
+                    batch_number,
+                    max_l1_blocks_to_scan,
                     format!("archive provider failed to fetch committed batch {batch_number}: {archive_err}"),
-                    )
-                    .await;
+                )
+                .await;
             }
         }
     }
@@ -692,7 +731,7 @@ async fn validate_archive_batch_against_live(
     batch: &DiscoveredCommittedBatch,
 ) -> anyhow::Result<()> {
     let live_batch_hash = live_proxy
-        .stored_batch_hash(batch.number())
+        .stored_batch_hash(batch.number(), BlockId::latest())
         .await
         .with_context(|| {
             format!(
@@ -706,31 +745,6 @@ async fn validate_archive_batch_against_live(
         "archive batch hash {archive_batch_hash} does not match live stored batch hash {live_batch_hash}",
     );
     Ok(())
-}
-
-/// Resolves the L1 transaction hash of the Commit transaction of batch `batch_number` (not to be confused with batch header hash itself)
-pub async fn fetch_batch_commit_tx_hash(
-    diamond_proxy_sl: &ZkChain<NodeProvider>,
-    batch_number: u64,
-    max_l1_blocks_to_scan: u64,
-) -> anyhow::Result<TxHash> {
-    let sl_block_with_commit = util::find_l1_commit_block_by_batch_number(
-        diamond_proxy_sl.clone(),
-        batch_number,
-        max_l1_blocks_to_scan,
-    )
-    .await
-    .with_context(|| format!("failed to find L1 commit block for batch {batch_number}"))?;
-
-    util::find_commit_log(diamond_proxy_sl, sl_block_with_commit, batch_number)
-        .await?
-        .map(|(_, tx_hash)| tx_hash)
-        .with_context(|| {
-            format!(
-                "failed to find commit tx for batch {batch_number} in L1 block \
-                 {sl_block_with_commit}"
-            )
-        })
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use backon::{ConstantBuilder, Retryable};
 use std::time::Duration;
 use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_contract_interface::{IValidatorTimelock, ZkChain};
-use zksync_os_l1_watcher::{fetch_batch, fetch_batch_commit_tx_hash};
+use zksync_os_l1_watcher::fetch_live_committed_batch;
 use zksync_os_operator_signer::SignerConfig;
 use zksync_os_provider::{EthWalletProvider, NodeProvider};
 
@@ -43,8 +43,9 @@ async fn derive_last_l1_batch_to_keep(
     }
 
     let fetch_committed = |batch: u64| async move {
-        fetch_batch(&l1_state.diamond_proxy_sl, batch, max_blocks_to_process)
+        fetch_live_committed_batch(&l1_state.diamond_proxy_sl, batch, max_blocks_to_process)
             .await
+            .map(|(batch_data, _commit_tx_hash)| batch_data)
             .with_context(|| format!("failed to fetch committed batch {batch} from L1"))
     };
 
@@ -285,7 +286,7 @@ async fn plan_l1_revert(
                 l1_state.last_executed_batch,
             );
 
-            let on_chain_commit_tx_hash = fetch_batch_commit_tx_hash(
+            let (_, on_chain_commit_tx_hash) = fetch_live_committed_batch(
                 &l1_state.diamond_proxy_sl,
                 from_batch_number,
                 max_blocks_to_process,

@@ -11,10 +11,10 @@ use alloy::providers::utils::Eip1559Estimator;
 use alloy::rpc::types::TransactionRequest;
 use alloy::rpc::types::simulate::{SimBlock, SimulatePayload};
 use alloy::rpc::types::state::{AccountOverride, StateOverridesBuilder};
-use alloy::sol_types::{SolCall, SolEvent, SolValue};
+use alloy::sol_types::{SolEvent, SolValue};
 use zksync_os_integration_tests::contracts::EventEmitter::TestEvent;
 use zksync_os_integration_tests::contracts::{Counter, EventEmitter};
-use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_GATEWAY, Tester, test_multisetup};
+use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_L1, Tester, test_multisetup};
 
 /// Simulate a single ETH transfer in one block and verify that gas was consumed.
 #[test_multisetup([CURRENT_TO_L1])]
@@ -145,9 +145,8 @@ async fn simulate_state_carries_across_blocks(tester: Tester) -> anyhow::Result<
 
 /// Simulate the transaction shape used by the settlement-layer sender through `eth_simulateV1`.
 ///
-/// Direct-L1 commit transactions carry blob sidecars. Gateway commit transactions never
-/// carry blobs, so the gateway case proves we do not need EIP-4844 support there.
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
+/// L1 commit transactions carry blob sidecars.
+#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
 async fn simulate_settlement_sender_tx_shape(tester: Tester) -> anyhow::Result<()> {
     let provider = tester.sl_provider();
     let settles_on_gateway = tester.gateway_eth_provider().is_some();

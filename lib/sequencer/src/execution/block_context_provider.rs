@@ -1,4 +1,4 @@
-use crate::execution::fee_provider::{FeeParams, FeeProvider};
+use crate::execution::fee_provider::FeeProvider;
 use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{
     BlockCommand, InvalidTxPolicy, PreparedBlockCommand, RebuildCommand, SealPolicy,
@@ -15,8 +15,8 @@ use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_mempool::{MarkingTxStream, Pool};
 use zksync_os_storage_api::{BlockContext, BlockHashes, ReplayRecord};
 use zksync_os_types::{
-    BlockOutput, BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, SystemTxEnvelope,
-    SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
+    BlockOutput, BlockStartCursors, ExecutionVersion, FeeParams, ProtocolSemanticVersion,
+    SystemTxEnvelope, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
 
 /// Component that turns `BlockCommand`s into `PreparedBlockCommand`s.
@@ -51,6 +51,7 @@ pub struct Config {
     pub pubdata_limit: u64,
     pub fee_collector_address: Address,
     pub block_time: Duration,
+    pub block_timestamp_offset_seconds: i64,
     pub service_block_delay: Duration,
     pub max_transactions_in_block: usize,
     pub interop_roots_per_block: u64,
@@ -142,10 +143,8 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         let block_number = previous_record.block_context.block_number + 1;
         let (fee_params, best_txs) = loop {
             let pending_fee_params = self.fee_provider.produce_fee_params().await?;
-            self.pool.update_pending_block_fees(
-                pending_fee_params.eip1559_basefee.saturating_to(),
-                None,
-            );
+            self.pool
+                .update_pending_block_fees(pending_fee_params, None);
 
             // Create stream:
             // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
@@ -176,7 +175,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             drop(best_txs);
         };
 
-        let timestamp = (millis_since_epoch() / 1000) as u64;
+        let timestamp = unix_timestamp_seconds(self.config.block_timestamp_offset_seconds);
 
         // SYSCOIN: Check if we peeked upgrade metadata.
         // Patch-only upgrades with version <= the previous record's version can be safely
@@ -399,7 +398,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         }
 
         let timestamp = if rebuild.reset_timestamp {
-            (millis_since_epoch() / 1000) as u64
+            unix_timestamp_seconds(self.config.block_timestamp_offset_seconds)
         } else {
             rebuild.replay_record.block_context.timestamp
         };
@@ -547,6 +546,15 @@ pub fn millis_since_epoch() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("Incorrect system time")
         .as_millis()
+}
+
+fn unix_timestamp_seconds(offset_seconds: i64) -> u64 {
+    let now = (millis_since_epoch() / 1000) as u64;
+    if offset_seconds >= 0 {
+        now.saturating_add(offset_seconds as u64)
+    } else {
+        now.saturating_sub(offset_seconds.unsigned_abs())
+    }
 }
 
 // SYSCOIN: full upgrade transactions can be valid at the current protocol version on a fresh

@@ -1,5 +1,8 @@
+mod validator;
+
 use crate::metrics::{TRANSACTION_POOL_METRICS, ViseRecorder};
-use crate::{L2PooledTransaction, TxValidatorConfig};
+use crate::subpools::rate_limited_l2::{RateLimitedL2Subpool, TxGasRateLimiter};
+use crate::{L2PooledTransaction, TxGasRateLimitConfig, TxValidatorConfig};
 use alloy::consensus::transaction::Recovered;
 use alloy::primitives::TxHash;
 use futures::Stream;
@@ -9,11 +12,10 @@ use reth_evm_ethereum::EthEvmConfig;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::blobstore::NoopBlobStore;
 use reth_transaction_pool::error::{InvalidPoolTransactionError, PoolError};
-use reth_transaction_pool::validate::EthTransactionValidatorBuilder;
+use reth_transaction_pool::validate::{EthTransactionValidatorBuilder, TransactionValidator};
 use reth_transaction_pool::{
-    AddedTransactionOutcome, CoinbaseTipOrdering, EthTransactionValidator, Pool, PoolConfig,
-    PoolResult, PoolTransaction, TransactionListenerKind, TransactionOrigin, TransactionPoolExt,
-    TransactionValidationOutcome, TransactionValidator,
+    AddedTransactionOutcome, CoinbaseTipOrdering, Pool, PoolConfig, PoolResult, PoolTransaction,
+    TransactionListenerKind, TransactionOrigin, TransactionPoolExt, TransactionValidationOutcome,
 };
 use reth_transaction_pool::{BestTransactions, ValidPoolTransaction};
 use std::fmt::Debug;
@@ -21,16 +23,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
+use validator::ZkTransactionValidator;
 use zksync_os_reth_compat::provider::ZkProviderFactory;
 use zksync_os_storage_api::{ReadRepository, ReadStateHistory};
-use zksync_os_types::{L2Transaction, ZkTransaction};
+use zksync_os_types::{FeeParams, L2Transaction, ProtocolSemanticVersion, ZkTransaction};
 
 pub(crate) type RethPool<State, Repository> = Pool<
-    EthTransactionValidator<
-        ZkProviderFactory<State, Repository>,
-        L2PooledTransaction,
-        EthEvmConfig,
-    >,
+    ZkTransactionValidator<ZkProviderFactory<State, Repository>, L2PooledTransaction>,
     CoinbaseTipOrdering<L2PooledTransaction>,
     NoopBlobStore,
 >;
@@ -44,6 +43,14 @@ pub trait L2Subpool:
     + Debug
     + 'static
 {
+    /// Propagates the latest pending block fee params to the validator so that subsequent
+    /// validations use up-to-date prices.
+    fn update_pending_fee_params(&self, fee_params: FeeParams);
+
+    /// Propagates the protocol version expected for the next produced block to the
+    /// validator, so version-gated stateless checks can be enabled accordingly.
+    fn update_pending_protocol_version(&self, protocol_version: ProtocolSemanticVersion);
+
     /// Convenience method to add a local L2 transaction
     fn add_l2_transaction(
         &self,
@@ -55,21 +62,29 @@ pub trait L2Subpool:
         )
     }
 
-    /// SYSCOIN: validate an RPC L2 transaction with the pool's cheap local checks before any
-    /// external admission hooks run, without making the transaction visible to block production.
+    /// Validates an RPC transaction before external admission hooks run, without making it
+    /// visible to block production.
     fn validate_l2_transaction(
         &self,
         transaction: L2Transaction,
     ) -> impl Future<Output = PoolResult<()>> + Send;
 
-    // SYSCOIN: RPC forwarding rollbacks operate directly on the L2 subpool, not the aggregate
-    // `Pool` wrapper, so account for the rollback at the abstraction used by `TxHandler`.
+    // RPC forwarding rollbacks operate directly on the L2 subpool rather than the aggregate
+    // pool, so the metric must be recorded at this abstraction.
     fn remove_forwarding_rollback_transactions(&self, tx_hashes: Vec<TxHash>) {
         TRANSACTION_POOL_METRICS
             .forwarding_rollback_transactions
             .inc_by(tx_hashes.len() as u64);
         self.remove_transactions(tx_hashes);
     }
+
+    /// Arms the (optional) executed-gas rate limiter: from this moment on, canonical blocks
+    /// drain its bank. Call once the node is caught up and about to start serving live
+    /// traffic — never before, since blocks committed during WAL replay / EN catch-up arrive
+    /// at replay speed and would otherwise double-charge the bank and pin the gate shut.
+    ///
+    /// No-op unless the limiter is enabled; safe to call multiple times or never.
+    fn arm_gas_rate_limiter(&self) {}
 
     fn best_transactions_stream(&self) -> L2TransactionsStream {
         L2TransactionsStream {
@@ -99,6 +114,14 @@ impl<State: ReadStateHistory + Clone, Repository: ReadRepository + Clone> L2Subp
                 Err(PoolError::other(tx_hash, err))
             }
         }
+    }
+
+    fn update_pending_fee_params(&self, fee_params: FeeParams) {
+        self.validator().update_fee_params(fee_params);
+    }
+
+    fn update_pending_protocol_version(&self, protocol_version: ProtocolSemanticVersion) {
+        self.validator().update_protocol_version(protocol_version);
     }
 }
 
@@ -164,6 +187,8 @@ impl L2TransactionsStreamMarker {
     }
 }
 
+/// `gas_rate_limit`: `None` disables the executed-gas rate limiter (e.g. non-main nodes, or the
+/// feature turned off in config); `Some` enables it on this pool instance.
 pub fn in_memory(
     zk_provider_factory: ZkProviderFactory<
         impl ReadStateHistory + Clone,
@@ -171,24 +196,31 @@ pub fn in_memory(
     >,
     pool_config: PoolConfig,
     validator_config: TxValidatorConfig,
+    gas_rate_limit: Option<TxGasRateLimitConfig>,
 ) -> impl L2Subpool {
     let blob_store = NoopBlobStore::default();
     // Use `ViseRecorder` during mempool initialization to register metrics. This will make sure
     // reth mempool metrics are propagated to `vise` collector. Only code inside the closure is
     // affected.
-    ::metrics::with_local_recorder(&ViseRecorder, move || {
+    let pool = ::metrics::with_local_recorder(&ViseRecorder, move || {
         let chain_spec = zk_provider_factory.chain_spec();
-        RethPool::new(
+        let eth_validator =
             EthTransactionValidatorBuilder::new(zk_provider_factory, EthEvmConfig::new(chain_spec))
                 .no_prague()
                 .with_max_tx_input_bytes(validator_config.max_input_bytes)
                 // SYSCOIN: Operators may disable this with 0 for cheap base-token chains, or set a
                 // nonzero cap to retain reth's maximum-fee sanity check.
                 .set_tx_fee_cap(validator_config.tx_fee_cap)
-                .build(blob_store),
+                .build(blob_store);
+        RethPool::new(
+            ZkTransactionValidator::new(eth_validator),
             CoinbaseTipOrdering::default(),
             blob_store,
             pool_config,
         )
-    })
+    });
+    RateLimitedL2Subpool::new(
+        pool,
+        gas_rate_limit.map(|config| Arc::new(TxGasRateLimiter::new(&config))),
+    )
 }

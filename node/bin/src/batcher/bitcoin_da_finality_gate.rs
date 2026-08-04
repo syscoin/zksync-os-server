@@ -370,8 +370,11 @@ impl BitcoinDaFinalityGate {
 
     async fn verify_command_da_before_commit(&self, command: &CommitCommand) -> anyhow::Result<()> {
         for batch in command.as_ref() {
-            if batch.batch.batch_info.commit_info.l2_da_commitment_scheme
-                == DACommitmentScheme::BlobsZKsyncOS
+            // SYSCOIN: Pre-v31 blob-mode batches use EIP-4844 sidecars and have no Bitcoin DA
+            // publication record. Only v31+ assigns Syscoin semantics to this commitment scheme.
+            if batch.batch.batch_info.protocol_version.minor >= 31
+                && batch.batch.batch_info.commit_info.l2_da_commitment_scheme
+                    == DACommitmentScheme::BlobsZKsyncOS
             {
                 self.verify_batch_da_before_commit(
                     batch.batch_number(),
@@ -406,7 +409,7 @@ impl PipelineComponent for BitcoinDaFinalityGate {
             if let L1SenderCommand::SendToL1(commit_command) = &command {
                 self.verify_command_da_before_commit(commit_command).await?;
             }
-            output.send_and_record(command, &state_reporter)?;
+            output.send_and_record(command, &state_reporter).await?;
         }
         tracing::info!("inbound channel closed");
         Ok(())

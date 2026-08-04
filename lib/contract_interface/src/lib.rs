@@ -293,6 +293,7 @@ alloy::sol! {
         function getTotalPriorityTxs() external view returns (uint256);
         function getPubdataPricingMode() external view returns (PubdataPricingMode);
         function getAdmin() external view returns (address);
+        function getTransactionFilterer() external view returns (address);
         function getChainTypeManager() external view returns (address);
         function getProtocolVersion() external view returns (uint256);
         function baseTokenGasPriceMultiplierNominator() external view returns (uint128);
@@ -823,12 +824,13 @@ impl<P: Provider> ZkChain<P> {
         self.instance.provider()
     }
 
-    pub async fn stored_batch_hash(&self, batch_number: u64) -> Result<B256> {
+    pub async fn stored_batch_hash(&self, batch_number: u64, block_id: BlockId) -> Result<B256> {
         self.instance
             .storedBatchHash(U256::from(batch_number))
+            .block(block_id)
             .call()
             .await
-            .enrich("storedBatchHash", None)
+            .enrich("storedBatchHash", Some(block_id))
     }
 
     pub async fn get_total_batches_committed(&self, block_id: BlockId) -> Result<u64> {
@@ -897,6 +899,15 @@ impl<P: Provider> ZkChain<P> {
             .call()
             .await
             .enrich("getAdmin", None)
+    }
+
+    /// Returns the L1-to-L2 transaction filter configured for the chain.
+    pub async fn get_transaction_filterer(&self) -> Result<Address> {
+        self.instance
+            .getTransactionFilterer()
+            .call()
+            .await
+            .enrich("getTransactionFilterer", None)
     }
 
     /// Returns the current CTM for the chain.
