@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {IEntryPoint} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import {IEntryPoint, PackedUserOperation} from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
+    IERC7579Validator,
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_HOOK,
-    MODULE_TYPE_VALIDATOR
+    MODULE_TYPE_VALIDATOR,
+    VALIDATION_FAILED
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Test} from "forge-std/Test.sol";
@@ -21,6 +23,40 @@ contract MockHookModule {
     function onInstall(bytes calldata) external {}
 
     function onUninstall(bytes calldata) external {}
+}
+
+contract FullLengthPersonalValidator is IERC7579Validator {
+    bytes4 private constant EIP1271_SUCCESS = 0x1626ba7e;
+    bytes4 private constant EIP1271_FAILED = 0xffffffff;
+
+    bytes32 private expectedHash;
+    uint256 private expectedLength;
+
+    function setExpected(bytes32 hash, uint256 length) external {
+        expectedHash = hash;
+        expectedLength = length;
+    }
+
+    function onInstall(bytes calldata) external override {}
+
+    function onUninstall(bytes calldata) external override {}
+
+    function isModuleType(uint256 moduleTypeId) external pure override returns (bool) {
+        return moduleTypeId == MODULE_TYPE_VALIDATOR;
+    }
+
+    function validateUserOp(PackedUserOperation calldata, bytes32) external pure override returns (uint256) {
+        return VALIDATION_FAILED;
+    }
+
+    function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
+        external
+        view
+        override
+        returns (bytes4)
+    {
+        return hash == expectedHash && signature.length == expectedLength ? EIP1271_SUCCESS : EIP1271_FAILED;
+    }
 }
 
 contract PaliSmartAccountTest is Test {
@@ -174,6 +210,39 @@ contract PaliSmartAccountTest is Test {
 
         assertEq(firstAccount.isValidSignature(originalHash, signature), EIP1271_SUCCESS);
         assertEq(secondAccount.isValidSignature(originalHash, signature), EIP1271_FAILED);
+    }
+
+    function testPersonalSignatureFallsBackAfterTypedLookingSuffix() public {
+        FullLengthPersonalValidator validator = new FullLengthPersonalValidator();
+        PaliSmartAccount.ModuleInit[] memory validators = new PaliSmartAccount.ModuleInit[](1);
+        validators[0] = PaliSmartAccount.ModuleInit({module: address(validator), data: ""});
+        PaliSmartAccount.ModuleInit[] memory executors = new PaliSmartAccount.ModuleInit[](0);
+        PaliSmartAccount.ModuleInit memory fallbackHandler;
+        PaliSmartAccount.ModuleInit[] memory hooks = new PaliSmartAccount.ModuleInit[](0);
+        PaliSmartAccount account = _deployProxy(abi.encode(validators, executors, fallbackHandler, hooks));
+
+        bytes32 appSeparator = keccak256("adversarial app separator");
+        bytes32 contentsHash = keccak256("adversarial contents");
+        bytes memory contentsDescription = bytes("X()");
+        bytes32 hash = keccak256(abi.encodePacked(hex"1901", appSeparator, contentsHash));
+        validator.setExpected(_personalSignHash(account, hash), 3856);
+
+        uint256 suffixLength = 32 + 32 + contentsDescription.length + 2;
+        bytes memory filler = new bytes(3856 - suffixLength);
+        bytes memory innerSignature = abi.encodePacked(
+            filler,
+            appSeparator,
+            contentsHash,
+            contentsDescription,
+            uint16(contentsDescription.length)
+        );
+
+        assertEq(innerSignature.length, 3856);
+        bytes memory accountSignature = abi.encodePacked(address(validator), innerSignature);
+
+        // The typed-data attempt receives a shortened inner signature and fails;
+        // the personal-sign fallback then validates the original full calldata.
+        assertEq(account.isValidSignature(hash, accountSignature), EIP1271_SUCCESS);
     }
 
     function testInstallingValidatorSwitchesActiveValidator() public {
