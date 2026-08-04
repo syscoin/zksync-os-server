@@ -373,6 +373,16 @@ ZKSYS_GAS_TANK_ADDRESS="$(normalize_zksys_gas_tank_address "${ZKSYS_GAS_TANK_ADD
 
 provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
+# Invalidate the prior deployment before uploading source or replacing generated
+# configuration. Existing processes keep running, but a later restart cannot
+# accept an old binary against partially updated deployment state if this run
+# fails before the replacement build completes.
+remote_prebuilt_stamps=(
+  "${REMOTE_BASE_DIR}/zksys-public/.gateway-launch/target/zksys-public/release/zksync-os-server.sha256"
+  "${REMOTE_BASE_DIR}/zksys-debug/.gateway-launch/target/zksys-debug/release/zksync-os-server.sha256"
+)
+ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "rm -f -- $(shell_join "${remote_prebuilt_stamps[@]}")"
+
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
   echo "Uploading zksync-os-server tree to ${REMOTE_HOST}:${REMOTE_OS_SERVER_PATH}"
   remote_os_server_path_q="$(shell_join "${REMOTE_OS_SERVER_PATH}")"
@@ -530,13 +540,6 @@ EOF
 fi
 
 install -d -m 0755 "${REMOTE_BASE_DIR}"
-
-# Invalidate the prior deployment before replacing generated configuration.
-# Existing processes keep running, but a later restart cannot accept an old
-# binary against partially updated deployment state if generation/build fails.
-for instance in zksys-public zksys-debug; do
-  rm -f "${REMOTE_BASE_DIR}/${instance}/.gateway-launch/target/${instance}/release/zksync-os-server.sha256"
-done
 
 python3 - \
   "${PROVIDER_B64}" \
