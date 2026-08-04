@@ -140,6 +140,10 @@ pub trait ReadReplayExt: ReadReplay {
                     .replays
                     .get_replay_record_by_key(*this.current_block, db_key)
                 {
+                    // SYSCOIN: Release a peer-supplied override after a successful read. Failed
+                    // overrides stay pinned so a later poll cannot silently fall back to canonical
+                    // data for the same block.
+                    this.db_key_overrides.remove(this.current_block);
                     *this.current_block += 1;
                     Poll::Ready(Some(record))
                 } else {
