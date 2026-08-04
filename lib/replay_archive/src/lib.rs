@@ -76,7 +76,7 @@ fn ensure_upload_token_matches(
 /// Replay archive layout:
 ///
 /// ```text
-/// <timestamp_millis>-<node_id>/<block_number>/<block_hash>
+/// <timestamp_millis>-<random_nonce>-<node_id>/<block_number>/<block_hash>
 /// ```
 ///
 /// SYSCOIN: Each node process owns an append-only session. This prevents another archive writer
@@ -84,6 +84,7 @@ fn ensure_upload_token_matches(
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ReplayArchiveSession {
     timestamp_millis: u64,
+    nonce: String,
     node_id: String,
 }
 
@@ -92,10 +93,22 @@ impl ReplayArchiveSession {
         timestamp_millis: u64,
         node_id: impl Into<String>,
     ) -> Result<Self, InvalidReplayArchiveSession> {
+        let nonce = alloy::hex::encode(rand::random::<[u8; 16]>());
+        Self::from_parts(timestamp_millis, nonce, node_id)
+    }
+
+    fn from_parts(
+        timestamp_millis: u64,
+        nonce: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> Result<Self, InvalidReplayArchiveSession> {
+        let nonce = nonce.into();
         let node_id = node_id.into();
+        validate_nonce(&nonce)?;
         validate_node_id(&node_id)?;
         Ok(Self {
             timestamp_millis,
+            nonce,
             node_id,
         })
     }
@@ -109,7 +122,7 @@ impl ReplayArchiveSession {
     }
 
     pub fn folder_name(&self) -> String {
-        format!("{}-{}", self.timestamp_millis, self.node_id)
+        format!("{}-{}-{}", self.timestamp_millis, self.nonce, self.node_id)
     }
 }
 
@@ -123,13 +136,25 @@ impl FromStr for ReplayArchiveSession {
     type Err = InvalidReplayArchiveSession;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (timestamp_millis, node_id) = value
-            .split_once('-')
+        let mut parts = value.splitn(3, '-');
+        let timestamp_millis = parts
+            .next()
             .ok_or(InvalidReplayArchiveSession::MissingTimestamp)?;
+        let nonce = parts
+            .next()
+            .ok_or(InvalidReplayArchiveSession::MissingNonce)?;
+        let node_id = parts
+            .next()
+            .ok_or(InvalidReplayArchiveSession::MissingNodeId)?;
         let timestamp_millis = timestamp_millis
             .parse()
             .map_err(|_| InvalidReplayArchiveSession::InvalidTimestamp)?;
-        Self::new(timestamp_millis, node_id)
+        let session = Self::from_parts(timestamp_millis, nonce, node_id)?;
+        // SYSCOIN: Recovery must never normalize a listed path into a different fetch key.
+        if session.folder_name() != value {
+            return Err(InvalidReplayArchiveSession::NonCanonical);
+        }
+        Ok(session)
     }
 }
 
@@ -178,8 +203,27 @@ pub enum InvalidReplayArchiveSession {
     NodeIdContainsPathSeparator,
     #[error("replay archive session name must start with <timestamp_millis>-")]
     MissingTimestamp,
+    #[error("replay archive session name must contain a random nonce")]
+    MissingNonce,
+    #[error("replay archive session name must contain a node id")]
+    MissingNodeId,
     #[error("replay archive session timestamp must be an unsigned integer")]
     InvalidTimestamp,
+    #[error("replay archive session nonce must be 32 lowercase hexadecimal characters")]
+    InvalidNonce,
+    #[error("replay archive session name is not canonically encoded")]
+    NonCanonical,
+}
+
+fn validate_nonce(nonce: &str) -> Result<(), InvalidReplayArchiveSession> {
+    if nonce.len() != 32
+        || !nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(InvalidReplayArchiveSession::InvalidNonce);
+    }
+    Ok(())
 }
 
 fn validate_node_id(node_id: &str) -> Result<(), InvalidReplayArchiveSession> {
@@ -311,13 +355,36 @@ mod tests {
     #[test]
     fn archive_key_roundtrips_session_layout() {
         let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let session_name = session.folder_name();
         let key = ReplayArchiveKey::new(session, 7, B256::ZERO);
 
         assert_eq!(
             key.object_path(),
-            "42-node-a/7/0x0000000000000000000000000000000000000000000000000000000000000000"
+            format!(
+                "{session_name}/7/0x0000000000000000000000000000000000000000000000000000000000000000"
+            )
         );
         assert_eq!(parse_archive_object_key(&key.object_path()), Some(key));
+    }
+
+    #[test]
+    fn sessions_are_unique_and_reject_noncanonical_names() {
+        let first = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let second = ReplayArchiveSession::new(42, "node-a").unwrap();
+        assert_ne!(first, second);
+
+        let canonical = first.folder_name();
+        assert_eq!(canonical.parse::<ReplayArchiveSession>().unwrap(), first);
+        assert!(
+            format!("0{canonical}")
+                .parse::<ReplayArchiveSession>()
+                .is_err()
+        );
+
+        let mut uppercase_nonce = canonical.clone();
+        let nonce_start = uppercase_nonce.find('-').unwrap() + 1;
+        uppercase_nonce.replace_range(nonce_start..nonce_start + 1, "A");
+        assert!(uppercase_nonce.parse::<ReplayArchiveSession>().is_err());
     }
 
     #[test]
@@ -331,7 +398,15 @@ mod tests {
             .is_none()
         );
         assert!(parse_archive_object_key("42-node-a/7/not-a-hash").is_none());
-        assert!(parse_archive_object_key("42-node-a/.session").is_none());
+        assert!(
+            parse_archive_object_key(&format!(
+                "{}/.session",
+                ReplayArchiveSession::new(42, "node-a")
+                    .unwrap()
+                    .folder_name()
+            ))
+            .is_none()
+        );
         assert!(parse_archive_object_key("42-node-a/not-a-number/0x00").is_none());
         assert!(parse_archive_object_key("7/not-a-hash").is_none());
         assert!(parse_archive_object_key("single-segment").is_none());

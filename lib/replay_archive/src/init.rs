@@ -57,8 +57,8 @@ pub async fn init_replay_archive(
     }
 
     let node_id = std::env::var("POD_NAME").unwrap_or_else(|_| "node".to_owned());
-    // SYSCOIN: bind the gate to a writer-owned session so another archive writer cannot satisfy
-    // it by winning a shared first-writer key.
+    // SYSCOIN: bind the gate to a random writer-owned session so another archive writer cannot
+    // satisfy it by winning a shared first-writer key, and simultaneous restarts cannot collide.
     let session = ReplayArchiveSession::new(current_timestamp_millis(), node_id)
         .expect("failed to create replay archive session");
 

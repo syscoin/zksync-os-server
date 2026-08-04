@@ -15,13 +15,13 @@ recovered from L1 committed batch range events once block replay records are ava
 Each node process creates a writer-owned session. Replay records use:
 
 ```text
-<timestamp_millis>-<node_id>/<block_number>/<block_hash>
+<timestamp_millis>-<random_nonce>-<node_id>/<block_number>/<block_hash>
 ```
 
 For the filesystem backend, the full path is:
 
 ```text
-<archive_root>/<timestamp_millis>-<node_id>/<block_number>/<block_hash>
+<archive_root>/<timestamp_millis>-<random_nonce>-<node_id>/<block_number>/<block_hash>
 ```
 
 S3 and GCS use the same session-prefixed value as the object key.
@@ -36,7 +36,7 @@ or extra archive metadata in the object body.
 
 Implementations of `ReplayArchiveStorage` must provide isolated, append-only writes:
 
-- `init` must create a fresh session and fail if that session already exists.
+- `init` must create a fresh random session and fail if that session already exists.
 - `contains_object` checks only the current writer's session.
 - `append_object` creates a missing key and fails if the key already exists.
 - Existing archive data must never be accepted as this writer's successful append.
@@ -67,6 +67,11 @@ Several nodes can archive the same `(block_number, block_hash)` without racing b
 session prefixes differ. An existing key inside the current session is an error and fails the
 archive component. This makes the L1 commit gate depend on an object successfully published by the
 local writer rather than on unverified presence created by another writer.
+
+> **SYSCOIN:** S3 and GCS requests carry a fresh random upload token in object metadata. A
+> conditional-create conflict is accepted only when the stored token matches that exact request,
+> which handles an SDK retry after a lost success response without accepting another writer's
+> object.
 
 ## Implementations
 
@@ -144,7 +149,7 @@ Recovery has two steps.
 First, download all archive objects into a local recovery layout:
 
 ```text
-<output_root>/<block_number>/<block_hash>/<timestamp_millis>-<node_id>
+<output_root>/<block_number>/<block_hash>/<timestamp_millis>-<random_nonce>-<node_id>
 ```
 
 Second, rebuild the node replay RocksDB from a canonical anchor:

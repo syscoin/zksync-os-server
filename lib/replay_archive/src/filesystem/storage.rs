@@ -285,11 +285,12 @@ mod tests {
     #[tokio::test]
     async fn init_rejects_existing_session() {
         let tempdir = tempfile::tempdir().unwrap();
-        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
+        let session = test_session();
+        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session.clone())
             .await
             .unwrap();
 
-        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
+        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session)
             .await
             .unwrap_err();
     }
