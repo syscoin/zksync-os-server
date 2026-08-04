@@ -316,6 +316,10 @@ fn log_recovery_progress(count: usize, log: impl FnOnce()) {
     }
 }
 
+fn parse_downloaded_session_name(session_name: &std::ffi::OsStr) -> Option<ReplayArchiveSession> {
+    session_name.to_str()?.parse().ok()
+}
+
 /// Scans an existing download output root for already-downloaded objects.
 ///
 /// Entries that do not parse as `<block_number>/<block_hash>/<session>` are ignored, including
@@ -361,11 +365,10 @@ async fn scan_existing_downloaded_objects(
                 if !session_entry.file_type().await?.is_file() {
                     continue;
                 }
-                let Ok(session) = session_entry
-                    .file_name()
-                    .to_string_lossy()
-                    .parse::<ReplayArchiveSession>()
-                else {
+                let session_name = session_entry.file_name();
+                // SYSCOIN: Lossy filename decoding could normalize an invalid local path into a
+                // valid remote session key and make resume skip the object it still needs.
+                let Some(session) = parse_downloaded_session_name(&session_name) else {
                     continue;
                 };
                 existing.insert(ReplayArchiveKey::new(session, block_number, block_hash));
@@ -755,6 +758,33 @@ mod tests {
         assert_eq!(downloaded, 1);
         assert_eq!(tokio::fs::read(&record_path).await.unwrap(), b"second");
         assert!(!tokio::fs::try_exists(partial_path).await.unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn downloaded_session_name_parser_rejects_non_utf8() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let session = ReplayArchiveSession::new(42, "node-\u{fffd}").unwrap();
+        let mut malformed_session_name = session.folder_name().into_bytes();
+        let replacement = "\u{fffd}".as_bytes();
+        let replacement_start = malformed_session_name
+            .windows(replacement.len())
+            .position(|window| window == replacement)
+            .unwrap();
+        malformed_session_name.splice(
+            replacement_start..replacement_start + replacement.len(),
+            [0xff],
+        );
+        let malformed_session_name = std::ffi::OsString::from_vec(malformed_session_name);
+        assert_eq!(
+            malformed_session_name
+                .to_string_lossy()
+                .parse::<ReplayArchiveSession>()
+                .unwrap(),
+            session
+        );
+        assert!(parse_downloaded_session_name(&malformed_session_name).is_none());
     }
 
     #[tokio::test]
