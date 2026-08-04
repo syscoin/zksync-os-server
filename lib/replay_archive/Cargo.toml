@@ -25,9 +25,11 @@ async-trait.workspace = true
 aws-config.workspace = true
 aws-runtime.workspace = true
 aws-sdk-s3.workspace = true
+base64.workspace = true
 bytes.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 futures.workspace = true
+rand.workspace = true
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-gax = { workspace = true, optional = true }
 google-cloud-kms-v1 = { workspace = true, optional = true }
@@ -36,7 +38,7 @@ rand_core06 = { workspace = true, optional = true }
 reth-tasks.workspace = true
 rsa = { workspace = true, optional = true }
 serde_json.workspace = true
-sha2 = { workspace = true, optional = true }
+sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-stream.workspace = true
@@ -54,7 +56,6 @@ gcp = [
     "dep:google-cloud-storage",
     "dep:rand_core06",
     "dep:rsa",
-    "dep:sha2",
 ]
 
 [dev-dependencies]

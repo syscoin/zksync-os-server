@@ -1,7 +1,9 @@
 use crate::{
-    ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveStorage, ReplayArchiveStorageReader,
+    PublishedObjectIdentities, ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession,
+    ReplayArchiveStorage, ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
+    ensure_published_identity_matches,
 };
-use alloy::primitives::{BlockHash, BlockNumber};
+use alloy::primitives::{B256, BlockHash, BlockNumber, keccak256};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use google_cloud_auth::credentials::anonymous;
@@ -12,6 +14,7 @@ use std::fmt;
 
 /// Object metadata key recording which node archived the object; forensic only.
 const ARCHIVED_BY_METADATA_KEY: &str = "archived-by";
+const SESSION_MARKER_FILE_NAME: &str = ".session";
 
 /// Authentication mode for GCS replay archive access.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +91,6 @@ fn is_not_found(err: &google_cloud_storage::Error) -> bool {
             .is_some_and(|status| status.code == Code::NotFound)
 }
 
-/// `if_generation_match(0)` failures surface as HTTP 412 over JSON and `FAILED_PRECONDITION`
-/// over gRPC; both mean a live object already exists at the key.
 fn is_precondition_failed(err: &google_cloud_storage::Error) -> bool {
     err.http_status_code() == Some(412)
         || err
@@ -101,8 +102,9 @@ fn is_precondition_failed(err: &google_cloud_storage::Error) -> bool {
 #[derive(Clone)]
 pub struct GcsReplayArchiveStorage {
     config: GcsReplayArchiveConfig,
-    writer_node_id: String,
+    session: ReplayArchiveSession,
     clients: GcsClients,
+    published_generations: PublishedObjectIdentities<i64>,
 }
 
 impl fmt::Debug for GcsReplayArchiveStorage {
@@ -110,7 +112,7 @@ impl fmt::Debug for GcsReplayArchiveStorage {
         formatter
             .debug_struct("GcsReplayArchiveStorage")
             .field("config", &self.config)
-            .field("writer_node_id", &self.writer_node_id)
+            .field("session", &self.session)
             .finish_non_exhaustive()
     }
 }
@@ -120,60 +122,175 @@ impl GcsReplayArchiveStorage {
         &self.config
     }
 
-    fn object_key(block_number: BlockNumber, block_hash: BlockHash) -> String {
-        ReplayArchiveKey::new(block_number, block_hash).object_path()
+    pub fn session(&self) -> &ReplayArchiveSession {
+        &self.session
     }
+
+    fn object_key(&self, block_number: BlockNumber, block_hash: BlockHash) -> String {
+        ReplayArchiveKey::new(self.session.clone(), block_number, block_hash).object_path()
+    }
+
+    fn session_marker_key(&self) -> String {
+        format!("{}/{}", self.session, SESSION_MARKER_FILE_NAME)
+    }
+
+    async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<i64> {
+        let upload_token = crate::new_upload_token();
+        let payload_digest = keccak256(&object);
+        let result = self
+            .clients
+            .storage
+            .write_object(
+                self.config.bucket_resource(),
+                key,
+                bytes::Bytes::from(object),
+            )
+            .set_metadata([
+                (ARCHIVED_BY_METADATA_KEY, self.session.node_id()),
+                (UPLOAD_TOKEN_METADATA_KEY, &upload_token),
+            ])
+            .set_if_generation_match(0)
+            .send_unbuffered()
+            .await;
+        match result {
+            Ok(object) => ensure_valid_generation(key, object.generation),
+            // SYSCOIN: distinguish an SDK retry after an accepted upload from a foreign
+            // first-writer object without weakening the generation-match create condition.
+            Err(err) if is_precondition_failed(&err) => {
+                self.verify_upload(key, &upload_token, payload_digest).await
+            }
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "failed to create append-only replay archive GCS object gs://{}/{}",
+                    self.config.bucket_base_url, key
+                )
+            }),
+        }
+    }
+
+    async fn verify_upload(
+        &self,
+        key: &str,
+        expected_token: &str,
+        expected_payload_digest: B256,
+    ) -> anyhow::Result<i64> {
+        let object = self
+            .clients
+            .control
+            .get_object()
+            .set_bucket(self.config.bucket_resource())
+            .set_object(key)
+            .with_idempotency(true)
+            .send()
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to verify replay archive GCS object after a conditional conflict at gs://{}/{}",
+                    self.config.bucket_base_url, key
+                )
+            })?;
+        crate::ensure_upload_token_matches(
+            &format!("gs://{}/{}", self.config.bucket_base_url, key),
+            expected_token,
+            object
+                .metadata
+                .get(UPLOAD_TOKEN_METADATA_KEY)
+                .map(String::as_str),
+        )?;
+        // SYSCOIN: Upload metadata is readable and can be copied onto a replacement object. On
+        // the rare lost-response path, hash the actual stored bytes before adopting its generation.
+        let stored_payload = self.read_object(key, object.generation).await?;
+        ensure_payload_digest_matches(
+            &format!("gs://{}/{}", self.config.bucket_base_url, key),
+            expected_payload_digest,
+            &stored_payload,
+        )?;
+        ensure_valid_generation(key, object.generation)
+    }
+
+    async fn read_object(&self, key: &str, generation: i64) -> anyhow::Result<Vec<u8>> {
+        let read = async {
+            let mut reader = self
+                .clients
+                .storage
+                .read_object(self.config.bucket_resource(), key)
+                .set_generation(generation)
+                .send()
+                .await?;
+            let mut object = Vec::new();
+            while let Some(chunk) = reader.next().await.transpose()? {
+                object.extend_from_slice(&chunk);
+            }
+            Ok::<_, google_cloud_storage::Error>(object)
+        };
+        read.await.with_context(|| {
+            format!(
+                "failed to verify replay archive GCS object payload at gs://{}/{}",
+                self.config.bucket_base_url, key
+            )
+        })
+    }
+}
+
+fn ensure_payload_digest_matches(
+    location: &str,
+    expected_payload_digest: B256,
+    stored_payload: &[u8],
+) -> anyhow::Result<()> {
+    ensure_published_identity_matches(
+        location,
+        &expected_payload_digest,
+        Some(&keccak256(stored_payload)),
+    )
+}
+
+fn ensure_valid_generation(key: &str, generation: i64) -> anyhow::Result<i64> {
+    anyhow::ensure!(
+        generation > 0,
+        "GCS did not return a valid generation for replay archive object {key}"
+    );
+    Ok(generation)
 }
 
 #[async_trait]
 impl ReplayArchiveStorage for GcsReplayArchiveStorage {
     type Config = GcsReplayArchiveConfig;
 
-    async fn init(config: Self::Config, writer_node_id: String) -> anyhow::Result<Self> {
+    async fn init(config: Self::Config, session: ReplayArchiveSession) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !config.bucket_base_url.is_empty(),
             "replay archive GCS bucket_base_url cannot be empty"
         );
         let clients = GcsClients::new(&config.auth_mode).await?;
-        Ok(Self {
+        let storage = Self {
             config,
-            writer_node_id,
+            session,
             clients,
-        })
+            published_generations: PublishedObjectIdentities::default(),
+        };
+        storage
+            .put_new_object(&storage.session_marker_key(), Vec::new())
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create append-only replay archive GCS session {}",
+                    storage.session
+                )
+            })?;
+        Ok(storage)
     }
 
-    async fn put_object_if_absent(
+    async fn append_object(
         &self,
         block_number: BlockNumber,
         block_hash: BlockHash,
         object: Vec<u8>,
     ) -> anyhow::Result<()> {
-        let key = Self::object_key(block_number, block_hash);
-        let result = self
-            .clients
-            .storage
-            .write_object(
-                self.config.bucket_resource(),
-                &key,
-                bytes::Bytes::from(object),
-            )
-            .set_metadata([(ARCHIVED_BY_METADATA_KEY, &self.writer_node_id)])
-            // Succeeds only if no live version of this object exists yet — the GCS equivalent
-            // of S3's `if_none_match("*")`. Exactly one concurrent writer wins; the rest see a
-            // precondition failure. This also makes the upload safe to retry.
-            .set_if_generation_match(0)
-            .send_unbuffered()
-            .await;
-        match result {
-            Ok(_) => Ok(()),
-            Err(err) if is_precondition_failed(&err) => Ok(()),
-            Err(err) => Err(err).with_context(|| {
-                format!(
-                    "failed to create replay archive GCS object gs://{}/{}",
-                    self.config.bucket_base_url, key
-                )
-            }),
-        }
+        let generation = self
+            .put_new_object(&self.object_key(block_number, block_hash), object)
+            .await?;
+        self.published_generations
+            .record(block_number, block_hash, generation)
     }
 
     async fn contains_object(
@@ -181,7 +298,11 @@ impl ReplayArchiveStorage for GcsReplayArchiveStorage {
         block_number: BlockNumber,
         block_hash: BlockHash,
     ) -> anyhow::Result<bool> {
-        let key = Self::object_key(block_number, block_hash);
+        let Some(expected_generation) = self.published_generations.get(block_number, block_hash)
+        else {
+            return Ok(false);
+        };
+        let key = self.object_key(block_number, block_hash);
         let result = self
             .clients
             .control
@@ -192,8 +313,25 @@ impl ReplayArchiveStorage for GcsReplayArchiveStorage {
             .send()
             .await;
         match result {
-            Ok(_) => Ok(true),
-            Err(err) if is_not_found(&err) => Ok(false),
+            Ok(object) => {
+                // SYSCOIN: GCS generations are immutable object identities. A credentialed
+                // overwrite gets a new generation and must not release the commit gate.
+                ensure_published_identity_matches(
+                    &format!("gs://{}/{}", self.config.bucket_base_url, key),
+                    &expected_generation,
+                    Some(&object.generation),
+                )?;
+                self.published_generations
+                    .remove(block_number, block_hash)?;
+                Ok(true)
+            }
+            Err(err) if is_not_found(&err) => {
+                anyhow::bail!(
+                    "locally published replay archive object disappeared from gs://{}/{}",
+                    self.config.bucket_base_url,
+                    key
+                )
+            }
             Err(err) => Err(err).with_context(|| {
                 format!(
                     "failed to check replay archive GCS object gs://{}/{}",
@@ -317,7 +455,9 @@ mod tests {
             options: RequestOptions,
         ) -> google_cloud_gax::Result<Response<Object>> {
             assert_eq!(options.idempotent(), Some(true));
-            Ok(Response::from(Object::new()))
+            let mut object = Object::new();
+            object.generation = 7;
+            Ok(Response::from(object))
         }
 
         async fn list_objects(
@@ -347,13 +487,25 @@ mod tests {
         assert_eq!(config.bucket_resource(), "projects/_/buckets/bucket");
     }
 
+    #[test]
+    fn retry_verification_rejects_replaced_payload() {
+        let expected = keccak256(b"locally published");
+        ensure_payload_digest_matches("gs://bucket/key", expected, b"locally published").unwrap();
+        ensure_payload_digest_matches("gs://bucket/key", expected, b"replacement").unwrap_err();
+    }
+
     #[tokio::test]
     async fn contains_object_marks_request_idempotent() {
         let storage = GcsReplayArchiveStorage {
             config: GcsReplayArchiveConfig::anonymous("bucket"),
-            writer_node_id: "node-a".to_owned(),
+            session: ReplayArchiveSession::new(42, "node-a").unwrap(),
             clients: idempotency_checking_clients().await,
+            published_generations: PublishedObjectIdentities::default(),
         };
+        storage
+            .published_generations
+            .record(7, BlockHash::ZERO, 7)
+            .unwrap();
 
         assert!(storage.contains_object(7, BlockHash::ZERO).await.unwrap());
     }
@@ -379,8 +531,9 @@ mod tests {
         let clients = idempotency_checking_clients().await;
         let storage = GcsReplayArchiveStorage {
             config: GcsReplayArchiveConfig::anonymous("bucket"),
-            writer_node_id: "node-a".to_owned(),
+            session: ReplayArchiveSession::new(42, "node-a").unwrap(),
             clients: clients.clone(),
+            published_generations: PublishedObjectIdentities::default(),
         };
         let reader = GcsReplayArchiveReader {
             config: GcsReplayArchiveConfig::anonymous("bucket"),

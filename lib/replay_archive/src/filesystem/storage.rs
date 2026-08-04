@@ -1,5 +1,8 @@
-use crate::{ReplayArchiveStorage, ReplayArchiver, ReplayRecordArchiver, format_block_hash};
-use alloy::primitives::{BlockHash, BlockNumber};
+use crate::{
+    PublishedObjectIdentities, ReplayArchiveSession, ReplayArchiveStorage, ReplayArchiver,
+    ReplayRecordArchiver, ensure_published_identity_matches, format_block_hash,
+};
+use alloy::primitives::{B256, BlockHash, BlockNumber, keccak256};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -11,12 +14,14 @@ const TEMP_FILE_CREATE_ATTEMPTS: usize = 1024;
 
 /// File-system implementation of [`ReplayArchiveStorage`].
 ///
-/// Objects are written to `<root>/<block_number>/<block_hash>`. A complete temporary file is
+/// Objects are written to `<root>/<session>/<block_number>/<block_hash>`. A complete temporary file is
 /// hard-linked to the final path so concurrent writers cannot overwrite each other and a crash
 /// cannot leave a partial payload at the final key.
 #[derive(Debug, Clone)]
 pub struct FileSystemReplayArchiveStorage {
     root_path: PathBuf,
+    session: ReplayArchiveSession,
+    published_digests: PublishedObjectIdentities<B256>,
 }
 
 impl FileSystemReplayArchiveStorage {
@@ -24,8 +29,16 @@ impl FileSystemReplayArchiveStorage {
         &self.root_path
     }
 
+    pub fn session(&self) -> &ReplayArchiveSession {
+        &self.session
+    }
+
+    fn session_path(&self) -> PathBuf {
+        self.root_path.join(self.session.folder_name())
+    }
+
     fn block_dir_path(&self, block_number: BlockNumber) -> PathBuf {
-        self.root_path.join(block_number.to_string())
+        self.session_path().join(block_number.to_string())
     }
 
     fn object_path(&self, block_number: BlockNumber, block_hash: BlockHash) -> PathBuf {
@@ -98,7 +111,7 @@ async fn sync_directory(path: &Path) -> anyhow::Result<()> {
 impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
     type Config = PathBuf;
 
-    async fn init(root_path: Self::Config, _writer_node_id: String) -> anyhow::Result<Self> {
+    async fn init(root_path: Self::Config, session: ReplayArchiveSession) -> anyhow::Result<Self> {
         tokio::fs::create_dir_all(&root_path)
             .await
             .with_context(|| {
@@ -107,15 +120,32 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
                     root_path.display()
                 )
             })?;
-        Ok(Self { root_path })
+        let session_path = root_path.join(session.folder_name());
+        // SYSCOIN: a pre-existing session is unsafe because its objects may belong to another
+        // process; fail startup instead of inheriting their archive presence.
+        tokio::fs::create_dir(&session_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to create append-only replay archive session {}",
+                    session_path.display()
+                )
+            })?;
+        sync_directory(&root_path).await?;
+        Ok(Self {
+            root_path,
+            session,
+            published_digests: PublishedObjectIdentities::default(),
+        })
     }
 
-    async fn put_object_if_absent(
+    async fn append_object(
         &self,
         block_number: BlockNumber,
         block_hash: BlockHash,
         object: Vec<u8>,
     ) -> anyhow::Result<()> {
+        let object_digest = keccak256(&object);
         let block_dir_path = self.block_dir_path(block_number);
         tokio::fs::create_dir_all(&block_dir_path)
             .await
@@ -125,10 +155,10 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
                     block_dir_path.display()
                 )
             })?;
-        sync_directory(&self.root_path).await?;
+        sync_directory(&self.session_path()).await?;
 
-        // SYSCOIN: avoid letting the commit gate observe a final archive path until
-        // the object is fully written, synced, and published without overwriting.
+        // SYSCOIN: avoid letting the commit gate observe a final archive path until the object is
+        // fully written and synced; an existing final path must fail instead of being accepted.
         let object_path = self.object_path(block_number, block_hash);
         let (temporary_object_path, mut file) = self
             .create_temporary_object(block_number, block_hash)
@@ -157,7 +187,6 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
 
             match tokio::fs::hard_link(&temporary_object_path, &object_path).await {
                 Ok(()) => sync_directory(&block_dir_path).await?,
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(err) => {
                     return Err(err).with_context(|| {
                         format!(
@@ -187,7 +216,8 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
             let _ = tokio::fs::remove_file(&temporary_object_path).await;
         }
         publish_result?;
-        Ok(())
+        self.published_digests
+            .record(block_number, block_hash, object_digest)
     }
 
     async fn contains_object(
@@ -195,13 +225,32 @@ impl ReplayArchiveStorage for FileSystemReplayArchiveStorage {
         block_number: BlockNumber,
         block_hash: BlockHash,
     ) -> anyhow::Result<bool> {
+        let Some(expected_digest) = self.published_digests.get(block_number, block_hash) else {
+            return Ok(false);
+        };
         let object_path = self.object_path(block_number, block_hash);
-        match tokio::fs::metadata(&object_path).await {
-            Ok(metadata) => Ok(metadata.is_file()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        match tokio::fs::read(&object_path).await {
+            Ok(object) => {
+                let stored_digest = keccak256(object);
+                // SYSCOIN: A path inside our random session can still be replaced by another
+                // holder of the filesystem credentials. Bind the gate to the bytes we published.
+                ensure_published_identity_matches(
+                    &object_path.display().to_string(),
+                    &expected_digest,
+                    Some(&stored_digest),
+                )?;
+                self.published_digests.remove(block_number, block_hash)?;
+                Ok(true)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "locally published replay archive object disappeared from {}",
+                    object_path.display()
+                )
+            }
             Err(err) => Err(err).with_context(|| {
                 format!(
-                    "failed to read replay archive object metadata {}",
+                    "failed to verify replay archive object {}",
                     object_path.display()
                 )
             }),
@@ -222,21 +271,21 @@ impl FileSystemReplayArchiver {
         }
     }
 
-    pub async fn init(root_path: PathBuf, writer_node_id: String) -> anyhow::Result<Self> {
-        let storage = FileSystemReplayArchiveStorage::init(root_path, writer_node_id).await?;
+    pub async fn init(root_path: PathBuf, session: ReplayArchiveSession) -> anyhow::Result<Self> {
+        let storage = FileSystemReplayArchiveStorage::init(root_path, session).await?;
         Ok(Self::new(storage))
     }
 }
 
 #[async_trait]
 impl ReplayArchiver for FileSystemReplayArchiver {
-    async fn ensure_replay_record(
+    async fn append_replay_record(
         &self,
         block_hash: BlockHash,
         replay_record: zksync_os_storage_api::ReplayRecord,
     ) -> anyhow::Result<()> {
         self.inner
-            .ensure_replay_record(block_hash, replay_record)
+            .append_replay_record(block_hash, replay_record)
             .await
     }
 
@@ -255,11 +304,28 @@ impl ReplayArchiver for FileSystemReplayArchiver {
 mod tests {
     use super::*;
 
+    fn test_session() -> ReplayArchiveSession {
+        ReplayArchiveSession::new(42, "node-a").unwrap()
+    }
+
+    #[tokio::test]
+    async fn init_rejects_existing_session() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let session = test_session();
+        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session.clone())
+            .await
+            .unwrap();
+
+        FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), session)
+            .await
+            .unwrap_err();
+    }
+
     #[tokio::test]
     async fn contains_object_ignores_temporary_archive_files() {
         let tempdir = tempfile::tempdir().unwrap();
         let storage =
-            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), "node-a".into())
+            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
                 .await
                 .unwrap();
         let block_number = 7;
@@ -300,10 +366,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_object_publishes_complete_final_path() {
+    async fn append_object_publishes_complete_final_path() {
         let tempdir = tempfile::tempdir().unwrap();
         let storage =
-            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), "node-a".into())
+            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
                 .await
                 .unwrap();
         let block_number = 7;
@@ -311,7 +377,7 @@ mod tests {
         let object = b"complete replay object".to_vec();
 
         storage
-            .put_object_if_absent(block_number, block_hash, object.clone())
+            .append_object(block_number, block_hash, object.clone())
             .await
             .unwrap();
 
@@ -327,6 +393,12 @@ mod tests {
                 .unwrap(),
             object
         );
+        assert!(
+            !storage
+                .contains_object(block_number, block_hash)
+                .await
+                .unwrap()
+        );
         let mut entries = tokio::fs::read_dir(storage.block_dir_path(block_number))
             .await
             .unwrap();
@@ -337,5 +409,38 @@ mod tests {
                 entry.path()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn contains_object_rejects_replaced_payload() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let storage =
+            FileSystemReplayArchiveStorage::init(tempdir.path().to_path_buf(), test_session())
+                .await
+                .unwrap();
+        let block_number = 7;
+        let block_hash = BlockHash::with_last_byte(1);
+
+        storage
+            .append_object(block_number, block_hash, b"locally published".to_vec())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            storage.object_path(block_number, block_hash),
+            b"credentialed writer replacement",
+        )
+        .await
+        .unwrap();
+
+        let error = storage
+            .contains_object(block_number, block_hash)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no longer matches the locally published object"),
+            "{error:#}"
+        );
     }
 }

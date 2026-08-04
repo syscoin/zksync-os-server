@@ -1,8 +1,10 @@
 use crate::metrics::REPLAY_ARCHIVE_METRICS;
+use crate::replay_record::encode_replay_record;
 use crate::{REPLAY_ARCHIVE_QUEUE_SIZE, ReplayArchiver};
-use alloy::primitives::{BlockHash, BlockNumber};
+use alloy::primitives::{B256, BlockHash, BlockNumber, keccak256};
 use anyhow::Context as _;
 use futures::{StreamExt as _, TryStreamExt as _};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -12,6 +14,9 @@ pub type ReplayArchiveRecord = (BlockHash, ReplayRecord);
 pub type ReplayArchiveSender = mpsc::Sender<ReplayArchiveRecord>;
 
 const MAX_PARALLEL_OBJECT_PUTS: usize = 10;
+// SYSCOIN: Retain a completed append long enough for every retry already accepted by the bounded
+// channel to reach registration, including records concurrently writing ahead of that retry.
+const COMPLETED_REPLAY_HISTORY_SIZE: usize = REPLAY_ARCHIVE_QUEUE_SIZE + MAX_PARALLEL_OBJECT_PUTS;
 
 /// Background component that archives replay records from a bounded queue.
 ///
@@ -21,29 +26,79 @@ const MAX_PARALLEL_OBJECT_PUTS: usize = 10;
 pub struct ReplayArchiveComponent<Archive> {
     archive: Archive,
     records: mpsc::Receiver<ReplayArchiveRecord>,
+    consume_receipts_after_append: bool,
 }
 
 impl<Archive> ReplayArchiveComponent<Archive>
 where
     Archive: ReplayArchiver,
 {
+    /// Creates an archiver whose publication receipts are retained for the L1 commit gate.
     pub fn new(archive: Archive) -> (ReplayArchiveSender, Self) {
+        Self::new_with_receipt_policy(archive, false)
+    }
+
+    /// Creates an archiver for a node that has no L1 commit gate.
+    pub fn new_without_commit_gate(archive: Archive) -> (ReplayArchiveSender, Self) {
+        // SYSCOIN: ENs and batcher-disabled nodes never install ReplayArchiveGateComponent. Verify
+        // and consume each publication receipt here so those nodes do not retain one receipt per
+        // archived block forever.
+        Self::new_with_receipt_policy(archive, true)
+    }
+
+    fn new_with_receipt_policy(
+        archive: Archive,
+        consume_receipts_after_append: bool,
+    ) -> (ReplayArchiveSender, Self) {
         let (sender, records) = mpsc::channel(REPLAY_ARCHIVE_QUEUE_SIZE);
-        (sender, Self { archive, records })
+        (
+            sender,
+            Self {
+                archive,
+                records,
+                consume_receipts_after_append,
+            },
+        )
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let Self { archive, records } = self;
+        let Self {
+            archive,
+            records,
+            consume_receipts_after_append,
+        } = self;
         let highest_archived_block_number = Mutex::new(None);
+        let recent_records = Mutex::new(RecentReplayRecords::default());
 
         ReceiverStream::new(records)
             .map(Ok::<_, anyhow::Error>)
             .try_for_each_concurrent(MAX_PARALLEL_OBJECT_PUTS, |record| {
                 let archive = &archive;
                 let highest_archived_block_number = &highest_archived_block_number;
+                let recent_records = &recent_records;
 
                 async move {
-                    let archived_block_number = archive_replay_record(archive, record).await?;
+                    let fingerprint = ReplayRecordFingerprint::new(&record);
+                    let should_archive = recent_records
+                        .lock()
+                        .expect("recent replay record mutex is poisoned")
+                        .register(fingerprint)?;
+                    if !should_archive {
+                        tracing::debug!(
+                            block_number = fingerprint.block_number,
+                            block_hash = %fingerprint.block_hash,
+                            "Skipping duplicate replay archive enqueue"
+                        );
+                        return Ok(());
+                    }
+
+                    let archived_block_number =
+                        archive_replay_record(archive, record, consume_receipts_after_append)
+                            .await?;
+                    recent_records
+                        .lock()
+                        .expect("recent replay record mutex is poisoned")
+                        .mark_completed(fingerprint);
                     update_highest_archived_block_number(
                         highest_archived_block_number,
                         archived_block_number,
@@ -52,6 +107,77 @@ where
                 }
             })
             .await
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReplayRecordFingerprint {
+    block_number: BlockNumber,
+    block_hash: BlockHash,
+    payload_hash: B256,
+}
+
+impl ReplayRecordFingerprint {
+    fn new((block_hash, replay_record): &ReplayArchiveRecord) -> Self {
+        Self {
+            block_number: replay_record.block_context.block_number,
+            block_hash: *block_hash,
+            payload_hash: keccak256(encode_replay_record(replay_record)),
+        }
+    }
+
+    fn key(self) -> (BlockNumber, BlockHash) {
+        (self.block_number, self.block_hash)
+    }
+}
+
+#[derive(Debug, Default)]
+struct RecentReplayRecords {
+    in_flight: HashMap<(BlockNumber, BlockHash), B256>,
+    completed: HashMap<(BlockNumber, BlockHash), B256>,
+    completed_order: VecDeque<(BlockNumber, BlockHash)>,
+}
+
+impl RecentReplayRecords {
+    fn register(&mut self, fingerprint: ReplayRecordFingerprint) -> anyhow::Result<bool> {
+        let key = fingerprint.key();
+        if let Some(existing_hash) = self
+            .in_flight
+            .get(&key)
+            .or_else(|| self.completed.get(&key))
+        {
+            anyhow::ensure!(
+                *existing_hash == fingerprint.payload_hash,
+                "conflicting replay records queued for block #{}, {}",
+                fingerprint.block_number,
+                fingerprint.block_hash
+            );
+            return Ok(false);
+        }
+
+        // SYSCOIN: WAL replay must populate a fresh session even when local replay storage reports
+        // an existing record. Keep identical retry enqueues away from fail-closed storage without
+        // making an object created outside this component count as a successful append.
+        self.in_flight.insert(key, fingerprint.payload_hash);
+        Ok(true)
+    }
+
+    fn mark_completed(&mut self, fingerprint: ReplayRecordFingerprint) {
+        let key = fingerprint.key();
+        let payload_hash = self
+            .in_flight
+            .remove(&key)
+            .expect("completed replay record must be in flight");
+        self.completed.insert(key, payload_hash);
+        self.completed_order.push_back(key);
+
+        while self.completed_order.len() > COMPLETED_REPLAY_HISTORY_SIZE {
+            let oldest = self
+                .completed_order
+                .pop_front()
+                .expect("completed replay record queue must not be empty");
+            self.completed.remove(&oldest);
+        }
     }
 }
 
@@ -74,6 +200,7 @@ fn update_highest_archived_block_number(
 async fn archive_replay_record<Archive>(
     archive: &Archive,
     (block_hash, replay_record): ReplayArchiveRecord,
+    consume_receipt_after_append: bool,
 ) -> anyhow::Result<BlockNumber>
 where
     Archive: ReplayArchiver,
@@ -82,9 +209,20 @@ where
     tracing::info!("Archiving replay record for block #{block_number}, {block_hash}");
     let archive_time = REPLAY_ARCHIVE_METRICS.archive_time.start();
     archive
-        .ensure_replay_record(block_hash, replay_record)
+        .append_replay_record(block_hash, replay_record)
         .await
         .with_context(|| format!("failed to archive replay record for block {block_number}"))?;
+    if consume_receipt_after_append {
+        anyhow::ensure!(
+            archive
+                .contains_replay_record(block_number, block_hash)
+                .await
+                .with_context(|| {
+                    format!("failed to verify replay archive record for block {block_number}")
+                })?,
+            "newly appended replay archive record is not present for block #{block_number}, {block_hash}"
+        );
+    }
     archive_time.observe();
     Ok(block_number)
 }
@@ -101,11 +239,12 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingArchiver {
         appended: AtomicUsize,
+        checked: AtomicUsize,
     }
 
     #[async_trait]
     impl ReplayArchiver for RecordingArchiver {
-        async fn ensure_replay_record(
+        async fn append_replay_record(
             &self,
             _block_hash: BlockHash,
             _replay_record: ReplayRecord,
@@ -119,7 +258,8 @@ mod tests {
             _block_number: BlockNumber,
             _block_hash: BlockHash,
         ) -> anyhow::Result<bool> {
-            Ok(false)
+            self.checked.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
         }
     }
 
@@ -138,6 +278,7 @@ mod tests {
         component.run().await.unwrap();
 
         assert_eq!(archiver.appended.load(Ordering::SeqCst), 1);
+        assert_eq!(archiver.checked.load(Ordering::SeqCst), 0);
         let mut encoded = String::new();
         MetricsCollection::default()
             .collect()
@@ -148,6 +289,79 @@ mod tests {
             .find(|line| line.starts_with("replay_archive_archive_time_seconds_count"))
             .unwrap_or_else(|| panic!("archive_time metric is not exported:\n{encoded}"));
         assert!(count_line.ends_with(" 1"), "{count_line}");
+
+        let ungated_archiver = Arc::new(RecordingArchiver::default());
+        let (sender, component) =
+            ReplayArchiveComponent::new_without_commit_gate(ungated_archiver.clone());
+
+        for block_number in 1..=3 {
+            let mut record = test_replay_record();
+            record.block_context.block_number = block_number;
+            sender
+                .send((B256::with_last_byte(block_number as u8), record))
+                .await
+                .unwrap();
+        }
+        drop(sender);
+        component.run().await.unwrap();
+
+        assert_eq!(ungated_archiver.appended.load(Ordering::SeqCst), 3);
+        assert_eq!(ungated_archiver.checked.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn identical_enqueues_are_deduplicated() {
+        let mut recent = RecentReplayRecords::default();
+        let record = (B256::with_last_byte(1), test_replay_record());
+        let fingerprint = ReplayRecordFingerprint::new(&record);
+
+        assert!(recent.register(fingerprint).unwrap());
+        assert!(!recent.register(fingerprint).unwrap());
+        recent.mark_completed(fingerprint);
+        assert!(!recent.register(fingerprint).unwrap());
+    }
+
+    #[test]
+    fn queued_retry_survives_full_completion_window() {
+        let mut recent = RecentReplayRecords::default();
+        let original = (B256::with_last_byte(1), test_replay_record());
+        let original_fingerprint = ReplayRecordFingerprint::new(&original);
+        assert!(recent.register(original_fingerprint).unwrap());
+        recent.mark_completed(original_fingerprint);
+
+        for block_number in 1_000..1_000 + COMPLETED_REPLAY_HISTORY_SIZE as u64 - 1 {
+            let mut record = test_replay_record();
+            record.block_context.block_number = block_number;
+            let mut block_hash = B256::ZERO;
+            block_hash[24..].copy_from_slice(&block_number.to_be_bytes());
+            let fingerprint = ReplayRecordFingerprint::new(&(block_hash, record));
+            assert!(recent.register(fingerprint).unwrap());
+            recent.mark_completed(fingerprint);
+        }
+
+        assert!(!recent.register(original_fingerprint).unwrap());
+    }
+
+    #[test]
+    fn conflicting_enqueues_fail_closed() {
+        let mut recent = RecentReplayRecords::default();
+        let block_hash = B256::with_last_byte(1);
+        let first = test_replay_record();
+        let mut conflicting = first.clone();
+        conflicting.block_output_hash = B256::with_last_byte(2);
+
+        recent
+            .register(ReplayRecordFingerprint::new(&(block_hash, first)))
+            .unwrap();
+        let err = recent
+            .register(ReplayRecordFingerprint::new(&(block_hash, conflicting)))
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("conflicting replay records queued"),
+            "{err:#}"
+        );
     }
 
     fn test_replay_record() -> ReplayRecord {
