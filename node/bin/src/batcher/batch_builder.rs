@@ -25,6 +25,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     sl_chain_id: u64,
     compact_edge_da_commit_target: Address,
     expected_upgrade_tx_hash: Option<B256>,
+    legacy_pre_syscoin_da: bool,
     read_state: &ReadState,
 ) -> anyhow::Result<BatchForSigning<ProverInput>> {
     let block_number_from = blocks.first().unwrap().1.block_context.block_number;
@@ -35,13 +36,15 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
 
     let state_view = read_state.state_view_at(block_number_to)?;
     let multichain_root = read_multichain_root(state_view);
-    let (batch_info, blob_sidecar) = PendingBatchInfo::build(
+    let batch_blocks = || {
         blocks
             .iter()
             .map(|(block_output, replay_record, tree, _)| {
                 (block_output, replay_record.transactions.as_slice(), tree)
             })
-            .collect(),
+            .collect()
+    };
+    let build_args = (
         chain_id,
         batch_number,
         pubdata_mode,
@@ -51,7 +54,34 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         expected_upgrade_tx_hash,
         Some(compact_edge_da_commit_target),
         &last_replay_record.block_context.block_hashes.0,
-    )?;
+    );
+    let (batch_info, blob_sidecar) = if legacy_pre_syscoin_da {
+        PendingBatchInfo::build_legacy_pre_syscoin_da(
+            batch_blocks(),
+            build_args.0,
+            build_args.1,
+            build_args.2,
+            build_args.3,
+            build_args.4,
+            build_args.5,
+            build_args.6,
+            build_args.7,
+            build_args.8,
+        )?
+    } else {
+        PendingBatchInfo::build(
+            batch_blocks(),
+            build_args.0,
+            build_args.1,
+            build_args.2,
+            build_args.3,
+            build_args.4,
+            build_args.5,
+            build_args.6,
+            build_args.7,
+            build_args.8,
+        )?
+    };
 
     let mut logs = Vec::new();
     let mut messages = Vec::new();
@@ -72,7 +102,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
             }
         }
     }
-
     let proving_version =
         ProvingVersion::try_from(blocks.first().unwrap().1.protocol_version.clone())?;
     // execution version should be the same for all the blocks, it is ensured by the seal criteria
@@ -89,9 +118,6 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         );
     }
 
-    // Detect any `SetSLChainId` system transaction across all blocks in the batch.
-    // Excludes the sentinel value `u64::MAX` which is used during protocol upgrades and is
-    // unrelated to gateway migrations.
     // Detect any `SetSLChainId` system transaction across all blocks in the batch.
     // Excludes the sentinel value `u64::MAX` which is used during protocol upgrades and is
     // unrelated to gateway migrations.

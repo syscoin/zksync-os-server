@@ -677,13 +677,13 @@ fn should_fallback_to_genesis_log_scan(err: &anyhow::Error) -> bool {
 }
 
 /// Fetches and decodes stored batch data for batch `batch_number` that is expected to have been
-/// committed in `l1_block_number`. Returns `None` if requested batch has not been committed in
-/// the given L1 block.
+/// committed in `l1_block_number`, together with the transaction that committed it. Returns
+/// `None` if the requested batch was not committed in that block.
 pub async fn fetch_stored_batch_data(
     zk_chain: &ZkChain<NodeProvider>,
     l1_block_number: BlockNumber,
     batch_number: u64,
-) -> anyhow::Result<Option<DiscoveredCommittedBatch>> {
+) -> anyhow::Result<Option<(DiscoveredCommittedBatch, TxHash)>> {
     let Some((commit_log, tx_hash)) =
         find_commit_log(zk_chain, l1_block_number, batch_number).await?
     else {
@@ -693,10 +693,13 @@ pub async fn fetch_stored_batch_data(
         .await?
         .into_stored();
 
-    Ok(Some(DiscoveredCommittedBatch {
-        batch_info,
-        block_range: commit_log.firstBlockNumber..=commit_log.lastBlockNumber,
-    }))
+    Ok(Some((
+        DiscoveredCommittedBatch {
+            batch_info,
+            block_range: commit_log.firstBlockNumber..=commit_log.lastBlockNumber,
+        },
+        tx_hash,
+    )))
 }
 
 /// Finds the `ReportCommittedBatchRangeZKsyncOS` commit event for `batch_number` in
@@ -717,16 +720,21 @@ pub(crate) async fn find_commit_log(
                 .to_block(l1_block_number),
         )
         .await?;
-    Ok(logs.into_iter().find_map(|log| {
-        let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)
-            .expect("unable to decode `ReportCommittedBatchRangeZKsyncOS` log");
-        (batch_log.batchNumber == batch_number).then(|| {
-            (
-                batch_log,
-                log.transaction_hash.expect("indexed log without tx hash"),
-            )
+    // Take the last matching log: a batch may be committed, reverted, and recommitted in one L1
+    // block, in which case only the final commit can match the block's resulting stored batch hash.
+    Ok(logs
+        .into_iter()
+        .filter_map(|log| {
+            let batch_log = ReportCommittedBatchRangeZKsyncOS::decode_log(&log.inner)
+                .expect("unable to decode `ReportCommittedBatchRangeZKsyncOS` log");
+            (batch_log.batchNumber == batch_number).then(|| {
+                (
+                    batch_log,
+                    log.transaction_hash.expect("indexed log without tx hash"),
+                )
+            })
         })
-    }))
+        .next_back())
 }
 
 /// Fetches batch commit transaction and extra data from L1 required to construct `CommitedBatch`.

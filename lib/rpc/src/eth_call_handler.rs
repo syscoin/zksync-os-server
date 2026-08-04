@@ -66,6 +66,7 @@ struct ExecutionEnv {
 pub(crate) fn build_pending_block_context(
     storage: &impl ReadRpcStorage,
     chain_id: u64,
+    block_timestamp_offset_seconds: i64,
 ) -> Result<BlockContext, EthCallError> {
     let latest_block_number = storage.replay_storage().latest_record();
     let latest_block = storage
@@ -92,6 +93,11 @@ pub(crate) fn build_pending_block_context(
         .expect("incorrect system time")
         .as_millis();
     let timestamp = (millis_since_epoch / 1000) as u64;
+    let timestamp = if block_timestamp_offset_seconds >= 0 {
+        timestamp.saturating_add(block_timestamp_offset_seconds as u64)
+    } else {
+        timestamp.saturating_sub(block_timestamp_offset_seconds.unsigned_abs())
+    };
 
     Ok(BlockContext {
         chain_id,
@@ -274,7 +280,11 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
 
     /// Builds new block context for theoretical pending block using current system state.
     pub(crate) fn build_pending_block_context(&self) -> Result<BlockContext, EthCallError> {
-        build_pending_block_context(&self.storage, self.chain_id)
+        build_pending_block_context(
+            &self.storage,
+            self.chain_id,
+            self.config.block_timestamp_offset_seconds,
+        )
     }
 
     fn resolve_block_context(
@@ -768,7 +778,9 @@ fn set_gas_limit(tx: &mut ZkTransaction, gas_limit: u64) {
 // produce an underpriced transaction after relaxed RPC validation.
 fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, basefee: u128) {
     if let Some(gas_price) = request.gas_price {
-        request.gas_price = Some(gas_price.max(basefee));
+        if gas_price != 0 {
+            request.gas_price = Some(gas_price.max(basefee));
+        }
     } else if let Some(max_fee_per_gas) = request.max_fee_per_gas {
         // SYSCOIN: preserve this invalid explicit fee shape so `CallFees` can keep
         // returning `FeeCapTooLow` instead of clamping it into a valid estimate.
@@ -780,7 +792,9 @@ fn clamp_estimate_request_fees_to_basefee(request: &mut TransactionRequest, base
         if max_fee_per_gas < request.max_priority_fee_per_gas.unwrap_or_default() {
             return;
         }
-        request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
+        if max_fee_per_gas != 0 {
+            request.max_fee_per_gas = Some(max_fee_per_gas.max(basefee));
+        }
     }
 }
 
@@ -903,5 +917,31 @@ mod tests {
         let range = GasRange::new(u64::MAX / 2 + 1, u64::MAX);
 
         assert_eq!(range.biased_midpoint(), range.midpoint());
+    }
+
+    #[test]
+    fn estimate_fee_clamp_preserves_explicit_zero_fees() {
+        let mut legacy = TransactionRequest::default().gas_price(0);
+        clamp_estimate_request_fees_to_basefee(&mut legacy, 100);
+        assert_eq!(legacy.gas_price, Some(0));
+
+        let mut eip1559 = TransactionRequest::default()
+            .max_fee_per_gas(0)
+            .max_priority_fee_per_gas(0);
+        clamp_estimate_request_fees_to_basefee(&mut eip1559, 100);
+        assert_eq!(eip1559.max_fee_per_gas, Some(0));
+    }
+
+    #[test]
+    fn estimate_fee_clamp_raises_positive_underpriced_fees() {
+        let mut legacy = TransactionRequest::default().gas_price(1);
+        clamp_estimate_request_fees_to_basefee(&mut legacy, 100);
+        assert_eq!(legacy.gas_price, Some(100));
+
+        let mut eip1559 = TransactionRequest::default()
+            .max_fee_per_gas(1)
+            .max_priority_fee_per_gas(0);
+        clamp_estimate_request_fees_to_basefee(&mut eip1559, 100);
+        assert_eq!(eip1559.max_fee_per_gas, Some(100));
     }
 }

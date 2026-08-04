@@ -21,7 +21,7 @@ use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_mempool::PoolError;
 use zksync_os_mempool::subpools::l2::L2Subpool;
-use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind};
+use zksync_os_mempool::{InvalidPoolTransactionError, PoolErrorKind, gas_rate_limit_retry_after};
 use zksync_os_rpc_api::types::ZkTransactionReceipt;
 use zksync_os_storage_api::BlockContext;
 use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient};
@@ -135,6 +135,7 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let last_block_ctx = *self.last_constructed_block_context.borrow();
             let storage = self.storage.clone();
             let chain_id = self.chain_id;
+            let block_timestamp_offset_seconds = self.config.block_timestamp_offset_seconds;
             let zk_tx: ZkTransaction = l2_tx.clone().into();
             let policy_client = policy_client.clone();
             // `spawn_blocking`: the body has blocking I/O and VM execution.
@@ -149,7 +150,11 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
             let sim = tokio::task::spawn_blocking(move || {
                 let block_context = match last_block_ctx {
                     Some(block_context) => block_context,
-                    None => build_pending_block_context(&storage, chain_id)?,
+                    None => build_pending_block_context(
+                        &storage,
+                        chain_id,
+                        block_timestamp_offset_seconds,
+                    )?,
                 };
                 let storage_view =
                     storage.state_at_block_number_or_latest(block_context.block_number)?;
@@ -178,7 +183,17 @@ impl<RpcStorage: ReadRpcStorage, Mempool: L2Subpool> TxHandler<RpcStorage, Mempo
         }
         {
             let _guard = MempoolLatencyGuard::new();
-            self.mempool.add_l2_transaction(l2_tx).await?;
+            // The gas rate limiter (when enabled) gates admission inside the mempool itself, so
+            // every insertion path — this one and, once consensus lands, gossip — is covered by
+            // the same gate. Its rejection is carried through `PoolError` and unpacked here into
+            // the dedicated variant so `retryAfterMs` still reaches the caller.
+            self.mempool
+                .add_l2_transaction(l2_tx)
+                .await
+                .map_err(|err| match gas_rate_limit_retry_after(&err) {
+                    Some(retry_after) => EthSendRawTransactionError::GasRateLimited { retry_after },
+                    None => EthSendRawTransactionError::PoolError(err),
+                })?;
         }
         Ok(hash)
     }
@@ -645,6 +660,12 @@ pub enum EthSendRawTransactionError {
     BlacklistedTransaction,
     #[error("compact edge DA admission check failed: {0}")]
     EdgeDaAdmissionCheckFailed(String),
+    /// The executed-gas rate limiter is exhausted; retriable.
+    #[error(
+        "transaction gas rate limit exceeded: node is at capacity, retry in ~{}ms",
+        .retry_after.as_millis()
+    )]
+    GasRateLimited { retry_after: Duration },
     /// Policy service rejected the transaction.
     #[error("transaction denied by policy service")]
     PolicyDenied,
@@ -664,6 +685,7 @@ impl From<&EthSendRawTransactionError> for TxRejectionReason {
             EthSendRawTransactionError::BlacklistedSigner => Self::BlacklistedSigner,
             EthSendRawTransactionError::BlacklistedTransaction => Self::BlacklistedTransaction,
             EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(_) => Self::PoolOther,
+            EthSendRawTransactionError::GasRateLimited { .. } => Self::GasRateLimited,
             EthSendRawTransactionError::ForwardError(err) => match err {
                 TxForwardError::Rpc(RpcError::ErrorResp(_)) => Self::ForwardRejected,
                 _ => Self::ForwardTransportError,

@@ -1,11 +1,9 @@
 #![cfg(feature = "prover-tests")]
 
-use zksync_os_integration_tests::{
-    CURRENT_TO_L1, NEXT_TO_GATEWAY, SettlementLayer, TestCase, TestEnvironment, test_multisetup,
-};
+use zksync_os_integration_tests::{CURRENT_TO_L1, NEXT_TO_L1, TestEnvironment, test_multisetup};
 
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_GATEWAY])]
-async fn prover(env: TestEnvironment, test_case: TestCase) -> anyhow::Result<()> {
+#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
+async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     // Test that prover can successfully prove at least one batch
     let mut config = env.default_config().await?;
     config.prover_api_config.fake_fri_provers.enabled = false;

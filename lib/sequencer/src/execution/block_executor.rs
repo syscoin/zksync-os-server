@@ -219,15 +219,17 @@ where
                 .last_execution_version
                 .set(replay_record.block_context.execution_version as u64);
 
-            output.send_and_record(
-                BlockPayload {
-                    output: block_output,
-                    record: replay_record,
-                    command_type: cmd_type,
-                    failed_transactions: purged_txs,
-                },
-                &state_reporter,
-            )?;
+            output
+                .send_and_record(
+                    BlockPayload {
+                        output: block_output,
+                        record: replay_record,
+                        command_type: cmd_type,
+                        failed_transactions: purged_txs,
+                    },
+                    &state_reporter,
+                )
+                .await?;
         }
     }
 }

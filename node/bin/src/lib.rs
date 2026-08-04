@@ -63,7 +63,7 @@ use priority_tree_pipeline_step::PriorityTreePipelineStep;
 use reth_tasks::Runtime;
 use secrecy::ExposeSecret;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -628,10 +628,25 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     tracing::info!("Initializing mempools");
     let zk_provider_factory = ZkProviderFactory::new(state.clone(), repositories.clone(), chain_id);
+    // The gas rate limiter models sequencer capacity, which only the main node owns: other
+    // roles forward txs to the main node, whose limiter is authoritative and whose rejections
+    // (incl. `retryAfterMs`) propagate back to the caller.
+    let gas_rate_limit = if node_role.is_main() && config.rpc_config.tx_gas_rate_limit.enabled {
+        Some(config.rpc_config.tx_gas_rate_limit.clone().into_lib())
+    } else {
+        if !node_role.is_main() && config.rpc_config.tx_gas_rate_limit.enabled {
+            tracing::warn!(
+                "rpc.tx_gas_rate_limit is ignored on non-main nodes; the executed-gas \
+                 rate limiter runs on the main node only"
+            );
+        }
+        None
+    };
     let l2_subpool = zksync_os_mempool::subpools::l2::in_memory(
         zk_provider_factory.clone(),
         config.mempool_config.clone().into(),
         config.tx_validator_config.clone().into(),
+        gas_rate_limit,
     );
 
     let (
@@ -1044,6 +1059,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         let gas_adjuster_config = gas_adjuster_config(
             config.gas_adjuster_config.clone(),
             pubdata_mode,
+            current_protocol_version.minor >= 31,
             max_priority_fee_per_gas,
             &config.batcher_config,
         );
@@ -1106,8 +1122,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     // Mini-component capable of doing local `eth_call` without going through RPC. Needed for
     // interop fee updater so it can query the current interop fee.
+    let mut local_rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
+    local_rpc_config.block_timestamp_offset_seconds =
+        config.sequencer_config.block_timestamp_offset_seconds;
     let local_eth_call = Box::new(EthCallHandler::new(
-        config.rpc_config.clone().into(),
+        local_rpc_config,
         rpc_storage.clone(),
         chain_id,
         last_constructed_block_ctx_receiver.clone(),
@@ -1148,6 +1167,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             pubdata_limit: config.sequencer_config.block_pubdata_limit_bytes,
             fee_collector_address: config.sequencer_config.fee_collector_address,
             block_time: config.sequencer_config.block_time,
+            block_timestamp_offset_seconds: config.sequencer_config.block_timestamp_offset_seconds,
             service_block_delay: config.sequencer_config.service_block_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
@@ -1278,6 +1298,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         rx
     };
 
+    let rpc_ready: Arc<OnceLock<()>> = Arc::new(OnceLock::new());
+
     // ======== Start Status Server ========
     let status_port = if config.status_server_config.enabled {
         let status_listener = prebound_status_listener
@@ -1289,6 +1311,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         let status_state = StatusServerState {
             pipeline_snapshot: pipeline_snapshot_rx,
             consensus_raft_status_rx: raft_status_rx,
+            ready: rpc_ready.clone(),
         };
         runtime.spawn_critical_with_graceful_shutdown_signal(
             "status server",
@@ -1310,13 +1333,21 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         .port();
 
     let repositories_for_wait = repositories.clone();
+    let l2_subpool_for_wait = l2_subpool.clone();
     let wait_for_db = async move {
         // Wait for repositories to be ready to be used in RPC.
         repositories_for_wait
             .wait_for_db_ready_to_process_blocks()
             .await;
+        // Enable gas rate limiter when the node is ready to process blocks, so that the limiter is not active
+        // during the startup phase.
+        l2_subpool_for_wait.arm_gas_rate_limiter();
+        // `rpc::spawn` awaits this future before serving.
+        let _ = rpc_ready.set(());
     };
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
+    rpc_config.block_timestamp_offset_seconds =
+        config.sequencer_config.block_timestamp_offset_seconds;
     // SYSCOIN: Gateway must reject child-chain compact DA commit txs before block inclusion
     // if the referenced Bitcoin DA hashes are not retrievable yet.
     rpc_config.edge_da_admission = edge_da_admission_config(&config, syscoin_edge_da_commit_target)
@@ -1629,7 +1660,10 @@ async fn run_main_node_pipeline(
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() });
+        .pipe(TreeManager {
+            tree: tree.clone(),
+            runtime: runtime.clone(),
+        });
 
     if !config.batcher_config.enabled {
         tracing::warn!(
@@ -1751,11 +1785,9 @@ async fn run_main_node_pipeline(
 
     if !config.prover_input_generator_config.enable_input_generation {
         assert!(
-            config.prover_api_config.fake_fri_provers.enabled
-                && config.prover_api_config.fake_snark_provers.enabled,
-            "prover_input_generator_config.enable_input_generation=false requires both \
-             prover_api_config.fake_fri_provers.enabled and \
-             prover_api_config.fake_snark_provers.enabled to be true"
+            config.prover_api_config.fake_fri_provers.enabled,
+            "prover_input_generator_config.enable_input_generation=false requires \
+             prover_api_config.fake_fri_provers.enabled=true"
         );
     }
 
@@ -1978,7 +2010,10 @@ async fn run_en_pipeline(
                     )
                 }),
         )
-        .pipe(TreeManager { tree: tree.clone() });
+        .pipe(TreeManager {
+            tree: tree.clone(),
+            runtime: runtime.clone(),
+        });
 
     // SYSCOIN: construct the batch-verification responder only when this EN is
     // explicitly configured to sign batches. Our default signing key is empty

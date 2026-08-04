@@ -1,4 +1,7 @@
 use crate::config::{ChainLayout, load_chain_config};
+use crate::contracts::{
+    LegacyDepositTransactionFiltererTest, SyscoinBlobsL1DAValidatorTest, SyscoinCommitterFacetTest,
+};
 use crate::node_log::NodeLogState;
 use crate::prover_tester::ProverTester;
 use crate::provider::ZksyncTestingProvider;
@@ -7,14 +10,19 @@ use crate::test_config::{
     BitcoinDaMock, TEST_PROVIDER_POLL_INTERVAL, build_node_config, disable_prover_input_generation,
     maybe_start_bitcoin_da_mock,
 };
+use crate::upgrade::{
+    Action, DiamondCutData, FacetCut, L2DACommitmentScheme, ZkChain, send_l1_to_gateway_request,
+};
 use alloy::network::EthereumWallet;
-use alloy::primitives::U256;
+use alloy::primitives::{FixedBytes, U256, address};
+use alloy::providers::ext::AnvilApi;
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{
     DynProvider, Identity, PendingTransactionBuilder, Provider, ProviderBuilder, WalletProvider,
 };
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::{LocalSigner, PrivateKeySigner};
+use alloy::sol_types::SolCall;
 use anyhow::Context;
 use backon::ConstantBuilder;
 use backon::Retryable;
@@ -22,7 +30,7 @@ use reth_tasks::{PanickedTaskError, Runtime, RuntimeBuilder, RuntimeConfig, Toki
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tokio::{net::TcpListener, runtime::Handle};
@@ -50,6 +58,7 @@ pub mod assert_traits;
 pub mod config;
 pub mod contracts;
 pub mod l1_helpers;
+mod leash;
 mod node_log;
 mod prover_tester;
 pub mod provider;
@@ -85,6 +94,13 @@ impl TestCase {
         }
     }
 
+    pub const fn next_to_l1() -> Self {
+        Self {
+            protocol_version: NEXT_PROTOCOL_VERSION,
+            settlement_layer: SettlementLayer::L1,
+        }
+    }
+
     pub const fn next_to_gateway() -> Self {
         Self {
             protocol_version: NEXT_PROTOCOL_VERSION,
@@ -95,9 +111,21 @@ impl TestCase {
     pub async fn environment(self) -> anyhow::Result<TestEnvironment> {
         TestEnvironment::from_case(self).await
     }
+
+    pub async fn environment_with_gateway_config(
+        self,
+        configure_gateway: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<TestEnvironment> {
+        anyhow::ensure!(
+            self.settlement_layer == SettlementLayer::Gateway,
+            "Gateway configuration overrides require a Gateway test topology"
+        );
+        TestEnvironment::from_case_with_gateway_config(self, configure_gateway).await
+    }
 }
 
 pub const CURRENT_TO_L1: TestCase = TestCase::current_to_l1();
+pub const NEXT_TO_L1: TestCase = TestCase::next_to_l1();
 pub const NEXT_TO_GATEWAY: TestCase = TestCase::next_to_gateway();
 
 /// Set of private keys for batch verification participants.
@@ -148,6 +176,13 @@ impl PreparedRuntime {
 
 impl TestEnvironment {
     async fn from_case(case: TestCase) -> anyhow::Result<Self> {
+        Self::from_case_with_gateway_config(case, |_| {}).await
+    }
+
+    async fn from_case_with_gateway_config(
+        case: TestCase,
+        configure_gateway: impl FnOnce(&mut Config),
+    ) -> anyhow::Result<Self> {
         match case.settlement_layer {
             SettlementLayer::L1 => {
                 let chain_layout = ChainLayout::Default {
@@ -178,12 +213,26 @@ impl TestEnvironment {
                 if !prover_input_generation_enabled() {
                     disable_prover_input_generation(&mut gateway_config);
                 }
+                // Keep the fixture-upgrade transactions in one Gateway batch so the fake proof
+                // pipeline does not see a burst of setup-only batches before the child starts.
+                gateway_config.batcher_config.batch_timeout = Duration::from_secs(2);
+                // The fixture Gateway may seal several setup batches while its contracts are
+                // upgraded. Serialize settlement submissions so the deliberately small pipeline
+                // buffers cannot be filled by that test-only startup burst.
+                gateway_config.l1_sender_config.command_limit = 1;
+                gateway_config.prover_api_config.fake_fri_provers.workers = 1;
+                gateway_config
+                    .prover_api_config
+                    .fake_fri_provers
+                    .compute_time = Duration::from_secs(6);
+                configure_gateway(&mut gateway_config);
                 let gateway = Tester::launch_with_new_runtime(
                     l1.clone(),
                     ChainLayout::Gateway { protocol_version },
                     gateway_config,
                 )
                 .await?;
+                patch_v31_gateway_contracts(&l1, &gateway, 0).await?;
                 let gateway = GatewayContext::from_tester(gateway);
                 let prepared_runtime = PreparedRuntime::new().await?;
                 Ok(Self {
@@ -203,6 +252,10 @@ impl TestEnvironment {
                 gateway.rpc_url.clone(),
                 TEST_PROVIDER_POLL_INTERVAL,
             ));
+            // Fixture startup and funding can create several child batches before a test begins.
+            // Submit them serially to the in-process Gateway so the test harness does not turn
+            // that bootstrap burst into artificial pipeline backpressure.
+            config.gateway_sender_config.command_limit = 1;
         }
         Tester::bind_runtime_config(
             &self.l1,
@@ -238,7 +291,7 @@ impl TestEnvironment {
         } else {
             None
         };
-        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config).await;
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config);
         #[cfg(feature = "prover-tests")]
         let enable_prover = !config.prover_api_config.fake_fri_provers.enabled;
         let mut tester = Tester::launch_node_inner(
@@ -443,6 +496,10 @@ impl Tester {
         CURRENT_TO_L1.environment().await?.launch_default().await
     }
 
+    pub fn protocol_version(&self) -> &'static str {
+        self.chain_layout.protocol_version()
+    }
+
     pub fn l2_rpc_url(&self) -> &str {
         &self.l2_rpc_address
     }
@@ -484,6 +541,15 @@ impl Tester {
         // Due to type inference issue, we need to specify None type here and this whole function if a de-facto helper for this
         self.launch_external_node_inner(None::<fn(&mut Config)>)
             .await
+    }
+
+    /// Restarts an external node against this main node while preserving the external node's DB.
+    /// Runtime-assigned endpoints may change when the main node restarts, so the EN connection
+    /// settings must be refreshed rather than replayed from its stopped config.
+    pub async fn restart_external_node(&self, stopped: StoppedTester) -> anyhow::Result<Self> {
+        let mut config = stopped.config.clone();
+        self.apply_external_node_defaults(&mut config);
+        stopped.start_with_config(config).await
     }
 
     pub async fn launch_external_node_overrides(
@@ -585,7 +651,7 @@ impl Tester {
     ) -> anyhow::Result<Self> {
         let tempdir = Arc::new(tempfile::tempdir()?);
         Self::bind_runtime_config(&l1, tempdir.as_ref(), &mut config);
-        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config).await;
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config);
         Self::launch_node_inner(
             l1,
             config,
@@ -826,7 +892,7 @@ impl StoppedTester {
         let mut config = config;
         let bitcoin_da_mock = match bitcoin_da_mock {
             Some(mock) => Some(mock),
-            None => maybe_start_bitcoin_da_mock(&mut config).await,
+            None => maybe_start_bitcoin_da_mock(&mut config),
         };
         preserve_http_ports_on_restart(&mut config, previous_bound_ports)?;
         drop(http_port_reservations);
@@ -952,6 +1018,86 @@ impl GatewayContext {
             node: SupportingNode::from_tester(tester),
         }
     }
+}
+
+async fn patch_v31_gateway_contracts(
+    l1: &AnvilL1,
+    gateway: &Tester,
+    chain_index: usize,
+) -> anyhow::Result<()> {
+    if gateway.protocol_version() != PROTOCOL_VERSION_V31_0 {
+        return Ok(());
+    }
+    let child_layout = ChainLayout::GatewayChain {
+        protocol_version: PROTOCOL_VERSION_V31_0,
+        chain_index,
+    };
+    let child_chain_id = load_chain_config(child_layout)
+        .await
+        .genesis_config
+        .chain_id
+        .context("v31 Gateway child config is missing its chain ID")?;
+    let bridgehub_l1 = gateway.l2_zk_provider.get_bridgehub_contract().await?;
+    let bridgehub_gateway = Bridgehub::new(
+        zksync_os_contract_interface::l1_discovery::L2_BRIDGEHUB_ADDRESS,
+        gateway.l2_provider.clone(),
+        child_chain_id,
+    );
+    let child_diamond_address = *bridgehub_gateway.zk_chain().await?.address();
+    let child_diamond = ZkChain::new(child_diamond_address, gateway.l2_provider.clone());
+
+    let committer =
+        SyscoinCommitterFacetTest::deploy(gateway.l2_provider.clone(), U256::from(L1_CHAIN_ID))
+            .await
+            .context("failed to deploy the Syscoin committer on the v31 test Gateway")?;
+    let commit_selector =
+        FixedBytes(SyscoinCommitterFacetTest::commitBatchesSharedBridgeCall::SELECTOR);
+    let committer_cut = DiamondCutData {
+        facetCuts: vec![FacetCut {
+            facet: *committer.address(),
+            action: Action::Replace,
+            isFreezable: child_diamond
+                .isFunctionFreezable(commit_selector)
+                .call()
+                .await?,
+            selectors: vec![commit_selector],
+        }],
+        initAddress: Default::default(),
+        initCalldata: Default::default(),
+    };
+    let chain_type_manager = child_diamond.getChainTypeManager().call().await?;
+    send_l1_to_gateway_request(
+        &l1.provider,
+        &gateway.l2_provider,
+        &gateway.l2_zk_provider,
+        bridgehub_l1,
+        chain_type_manager,
+        child_diamond_address,
+        child_diamond
+            .executeUpgrade(committer_cut)
+            .calldata()
+            .clone(),
+    )
+    .await
+    .context("failed to install the Syscoin committer on the v31 test Gateway")?;
+
+    let diamond_admin = child_diamond.getAdmin().call().await?;
+    send_l1_to_gateway_request(
+        &l1.provider,
+        &gateway.l2_provider,
+        &gateway.l2_zk_provider,
+        bridgehub_l1,
+        diamond_admin,
+        child_diamond_address,
+        child_diamond
+            .setDAValidatorPair(*committer.address(), L2DACommitmentScheme::BLOBS_ZKSYNC_OS)
+            .calldata()
+            .clone(),
+    )
+    .await
+    .context("failed to install the Syscoin DA validator on the v31 test Gateway")?;
+
+    Ok(())
 }
 
 impl Drop for SupportingNode {
@@ -1158,6 +1304,9 @@ impl GatewayTesterBuilder {
             gateway_config,
         )
         .await?;
+        for chain_index in 0..num_chains {
+            patch_v31_gateway_contracts(&l1, &gateway, chain_index).await?;
+        }
         let gateway_rpc_url = gateway.l2_rpc_url().to_owned();
 
         let mut chains = Vec::with_capacity(num_chains);
@@ -1257,12 +1406,12 @@ async fn wait_for_gateway_readiness(
     })
     .await
 }
-
 #[derive(Debug, Clone)]
 pub struct AnvilL1 {
     pub address: String,
     pub provider: NodeProvider,
     pub wallet: EthereumWallet,
+    pub(crate) timestamp_offset_seconds: i64,
 
     // Temporary directory that holds uncompressed l1-state.json used to initialize Anvil's state.
     // Needs to be held for the duration of test's lifetime.
@@ -1272,9 +1421,14 @@ pub struct AnvilL1 {
 impl AnvilL1 {
     async fn start(chain_layout: ChainLayout<'_>) -> anyhow::Result<Self> {
         let tempdir = tempfile::tempdir()?;
-        let l1_state = chain_layout.l1_state();
+        let mut l1_state: serde_json::Value = serde_json::from_slice(&chain_layout.l1_state())?;
+        let l1_timestamp = l1_state_timestamp(&l1_state)?;
+        let wall_clock_timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let timestamp_offset_seconds =
+            i64::try_from(l1_timestamp)?.saturating_sub(i64::try_from(wall_clock_timestamp)?);
+        patch_v31_syscoin_da_validator(chain_layout, &mut l1_state)?;
         let l1_state_path = tempdir.path().join("l1-state.json");
-        std::fs::write(&l1_state_path, &l1_state)
+        std::fs::write(&l1_state_path, serde_json::to_vec(&l1_state)?)
             .context("failed to write L1 state to temporary state file")?;
 
         // --slots-in-an-epoch defines what blocks are "finalized" in Anvil, last finalized block is `latest - 2 * slots_in_an_epoch`
@@ -1287,10 +1441,19 @@ impl AnvilL1 {
                 .arg("--mixed-mining")
                 .arg("--load-state")
                 .arg(l1_state_path)
+                // Loaded fixtures preserve historical L2 timestamps. Keep Anvil on the fixture's
+                // clock so settlement contracts do not reject newly replayed batches as stale.
+                .arg("--timestamp")
+                .arg(l1_timestamp.to_string())
                 .arg("--slots-in-an-epoch")
                 .arg("10")
         })?;
         let address = provider.inner().anvil().endpoint();
+
+        // `AnvilInstance`'s Drop never runs if the test process is SIGKILLed or aborts,
+        // which would orphan an anvil that mines (and allocates) forever. The leash kills
+        // it whenever this process dies, no matter how.
+        leash::attach(provider.inner().anvil().child().id(), "anvil")?;
 
         let wallet = provider.wallet().clone();
 
@@ -1309,15 +1472,140 @@ impl AnvilL1 {
         })
         .await?;
 
+        if chain_layout.protocol_version() == PROTOCOL_VERSION_V31_0 {
+            // The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
+            // Deploying first ensures the facet's chain ID and timestamp-window immutables are
+            // initialized exactly as they are in production before its code replaces the fixture.
+            let committer =
+                SyscoinCommitterFacetTest::deploy(provider.clone(), U256::from(L1_CHAIN_ID))
+                    .await
+                    .context("failed to deploy the Syscoin v31 committer facet")?;
+            let committer_code = provider
+                .get_code_at(*committer.address())
+                .await
+                .context("failed to read the deployed Syscoin v31 committer facet")?;
+            provider
+                .anvil_set_code(
+                    address!("cadf65088e818af6e6ec5c321a81a811d0d223ba"),
+                    committer_code,
+                )
+                .await
+                .context("failed to install the Syscoin v31 committer facet")?;
+
+            if matches!(chain_layout, ChainLayout::Default { .. }) {
+                let chain_config = load_chain_config(ChainLayout::Default {
+                    protocol_version: PROTOCOL_VERSION_V31_0,
+                })
+                .await;
+                let chain_id = chain_config
+                    .genesis_config
+                    .chain_id
+                    .context("v31 direct-L1 fixture is missing its chain ID")?;
+                let bridgehub_address = chain_config
+                    .genesis_config
+                    .bridgehub_address
+                    .context("v31 direct-L1 fixture is missing its Bridgehub address")?;
+                let bridgehub = Bridgehub::new(bridgehub_address, provider.clone(), chain_id);
+                let filterer_address = bridgehub
+                    .zk_chain()
+                    .await?
+                    .get_transaction_filterer()
+                    .await?;
+                let filterer = LegacyDepositTransactionFiltererTest::deploy(provider.clone())
+                    .await
+                    .context("failed to deploy the v31 legacy-deposit filter shim")?;
+                let filterer_code = provider
+                    .get_code_at(*filterer.address())
+                    .await
+                    .context("failed to read the v31 legacy-deposit filter shim")?;
+                provider
+                    .anvil_set_code(filterer_address, filterer_code)
+                    .await
+                    .context("failed to install the v31 legacy-deposit filter shim")?;
+            }
+        }
+
         tracing::info!("L1 chain started on {}", address);
+
+        // `NodeProvider::new` probes Anvil's capabilities over a transport with no request
+        // timeout; an Anvil that wedges right after passing the readiness check above would
+        // otherwise hang the test until nextest's terminate timeout.
+        let provider = (|| async {
+            tokio::time::timeout(Duration::from_secs(10), NodeProvider::new(provider.clone()))
+                .await
+                .context("timed out probing L1 node capabilities")?
+                .context("failed to probe L1 node capabilities")
+        })
+        .retry(
+            ConstantBuilder::default()
+                .with_delay(Duration::from_millis(200))
+                .with_max_times(5),
+        )
+        .notify(|err: &anyhow::Error, dur: Duration| {
+            tracing::info!(%err, ?dur, "retrying L1 node capability probing");
+        })
+        .await?;
 
         Ok(Self {
             address,
-            provider: NodeProvider::new(provider).await?,
+            provider,
             wallet,
+            timestamp_offset_seconds,
             _tempdir: Arc::new(tempdir),
         })
     }
+}
+
+fn patch_v31_syscoin_da_validator(
+    chain_layout: ChainLayout<'_>,
+    state: &mut serde_json::Value,
+) -> anyhow::Result<()> {
+    if chain_layout.protocol_version() != PROTOCOL_VERSION_V31_0 {
+        return Ok(());
+    }
+
+    // Some fixture chains still point at the old rollup validator while others already point at
+    // the dedicated ZKsync OS blobs validator. Both predate Syscoin's compact blob-ID input.
+    const V31_DA_VALIDATORS: [&str; 2] = [
+        "0xebab99053a18ee485b5f0f960c7d9efed9f9dbd8",
+        "0x6707e526d43d161218cc6f482f9cd17cd37e5837",
+    ];
+    for validator in V31_DA_VALIDATORS {
+        replace_l1_state_code(
+            state,
+            validator,
+            SyscoinBlobsL1DAValidatorTest::DEPLOYED_BYTECODE.as_ref(),
+        )?;
+    }
+    Ok(())
+}
+
+fn replace_l1_state_code(
+    state: &mut serde_json::Value,
+    address: &str,
+    bytecode: &[u8],
+) -> anyhow::Result<()> {
+    let account = state["accounts"]
+        .get_mut(address)
+        .with_context(|| format!("v31 L1 state is missing contract {address}"))?;
+    account["code"] = serde_json::Value::String(format!("0x{}", alloy::hex::encode(bytecode)));
+    Ok(())
+}
+
+fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
+    let timestamp = state["block"]["timestamp"]
+        .as_str()
+        .context("L1 state is missing the block timestamp")?;
+    timestamp.strip_prefix("0x").map_or_else(
+        || {
+            timestamp
+                .parse()
+                .context("invalid decimal L1 state timestamp")
+        },
+        |timestamp| {
+            u64::from_str_radix(timestamp, 16).context("invalid hexadecimal L1 state timestamp")
+        },
+    )
 }
 
 #[cfg(feature = "prover-tests")]
@@ -1343,7 +1631,7 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
     let path =
         download_prover_and_unpack(protocol_version, cfg!(feature = "gpu-prover-tests")).await;
 
-    let mut child = tokio::process::Command::new(path)
+    let mut child = tokio::process::Command::new(&path)
         .arg("--sequencer-urls")
         .arg(sequencer_urls.join(","))
         .arg("--app-bin-path")
@@ -1359,8 +1647,21 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
         .arg("--max-fris-per-snark")
         .arg("1")
         .arg("--disable-zk")
+        // Without this the prover keeps running after a panic: the wait-task below is
+        // dropped on runtime shutdown without ever signalling the child.
+        .kill_on_drop(true)
         .spawn()
         .expect("failed to spawn prover service");
+    let pid = child
+        .id()
+        .expect("newly spawned prover service has no process ID");
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .expect("prover binary path has no file name")
+        .to_string_lossy();
+    // Same rationale as for anvil: `kill_on_drop` never fires if the test process is
+    // SIGKILLed or aborts.
+    leash::attach(pid, &name).expect("failed to attach leash to prover service");
     tokio::task::spawn(async move {
         let code = child
             .wait()
