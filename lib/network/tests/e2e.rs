@@ -178,7 +178,7 @@ trait PeerExt {
         node_role: NodeRole,
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
-        max_active_connections: usize,
+        max_active_connections: (usize, usize),
         verifier_signing_key: Option<SecretString>,
         trusted_main_node_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles;
@@ -275,7 +275,7 @@ where
         node_role: NodeRole,
         starting_block: BlockNumber,
         replays: impl IntoIterator<Item = (BlockNumber, ReplayRecord)>,
-        max_active_connections: usize,
+        max_active_connections: (usize, usize),
         verifier_signing_key: Option<SecretString>,
         trusted_main_node_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles {
@@ -284,13 +284,13 @@ where
         // Both subprotocols share one event stream, exactly as in production.
         let zks_state = HandlerSharedState::new(
             protocol_tx.clone(),
-            max_active_connections,
+            max_active_connections.0,
             trusted_main_node_peers.clone(),
         );
         // SYSCOIN: Match production by applying trusted-peer admission to both independent caps.
         let twofa_state = HandlerSharedState::new(
             protocol_tx,
-            max_active_connections,
+            max_active_connections.1,
             trusted_main_node_peers.clone(),
         );
         let zks_2fa_registry = Arc::new(RwLock::new(HashMap::new()));
@@ -879,13 +879,13 @@ async fn trusted_peer_bypasses_max_active_connections() {
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn zks_2fa_authorizes_verifier_and_replays() {
     // A trusted verifier uses independent lanes: replay over `zks/5` and authentication over
-    // `zks_2fa`. Both must bypass their full independent caps and make progress on the same RLPx
-    // connection.
+    // `zks_2fa`. The verifier lane must bypass its full cap while replay also makes progress on the
+    // same RLPx connection.
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV5>(1);
     let main_peer_id = net.peers_mut()[0].peer_id();
+    let main_addr = net.peers_mut()[0].local_addr();
     let external_peer_id = net.peers_mut()[1].peer_id();
-    let external_addr = net.peers_mut()[1].local_addr();
     let expected_signer = PrivateKeySigner::from_str(
         "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110",
     )
@@ -896,7 +896,7 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
-        0,
+        (100, 0),
         None,
         HashSet::from([external_peer_id]),
     );
@@ -904,16 +904,16 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone())],
-        100,
+        (100, 100),
         Some(default_verifier_signing_key()),
         HashSet::from([main_peer_id]),
     );
 
     let handle = net.spawn();
-    // The trusted-peer bypass is intentionally outgoing-only, where the peer ID is known.
-    handle.peers()[0]
+    // Verifier ENs initiate the production connection; the main node learns their ID after RLPx.
+    handle.peers()[1]
         .network()
-        .add_peer(external_peer_id, external_addr);
+        .add_peer(main_peer_id, main_addr);
 
     let peer1_id = *handle.peers()[1].peer_id();
     let mut saw_verifier_authorized = false;
@@ -956,6 +956,60 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn zks_2fa_cap_rejection_keeps_replay_connected() {
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let record1 = dummy_record::<ZksProtocolV5>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
+    let main_addr = net.peers_mut()[0].local_addr();
+
+    let mut main = net.peers_mut()[0].add_zks_2fa_sub_protocol(
+        NodeRole::MainNode,
+        0,
+        [(1, record1.clone())],
+        (100, 0),
+        None,
+        HashSet::new(),
+    );
+    let mut external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
+        NodeRole::ExternalNode,
+        1,
+        [(1, record1.clone())],
+        (100, 100),
+        Some(default_verifier_signing_key()),
+        HashSet::from([main_peer_id]),
+    );
+
+    let handle = net.spawn();
+    handle.peers()[1]
+        .network()
+        .add_peer(main_peer_id, main_addr);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut saw_cap_rejection = false;
+        let mut saw_replay_request = false;
+        while !(saw_cap_rejection && saw_replay_request) {
+            match main.protocol_rx.recv().await {
+                Some(ProtocolEvent::MaxActiveConnectionsExceeded { max_connections }) => {
+                    assert_eq!(max_connections, 0);
+                    saw_cap_rejection = true;
+                }
+                Some(ProtocolEvent::ReplayRequested { starting_block, .. }) => {
+                    assert_eq!(starting_block, 1);
+                    saw_replay_request = true;
+                }
+                Some(_) => {}
+                None => panic!("event stream closed before 2FA rejection and replay"),
+            }
+        }
+    })
+    .await
+    .expect("2FA cap rejection must not close replay");
+
+    let received_replay_record = external.replay_rx.recv().await.unwrap();
+    assert_eq!(received_replay_record, record1);
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn zks_2fa_emits_verifier_unauthorized() {
     // A verifier EN authenticating with a signer the main node does not accept must be reported
     // as unauthorized over `zks_2fa`, while replay still proceeds over the independent `zks/5`
@@ -968,7 +1022,7 @@ async fn zks_2fa_emits_verifier_unauthorized() {
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
-        100,
+        (100, 100),
         None,
         HashSet::new(),
     );
@@ -976,7 +1030,7 @@ async fn zks_2fa_emits_verifier_unauthorized() {
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone())],
-        100,
+        (100, 100),
         Some(alternate_verifier_signing_key()),
         HashSet::from([main_peer_id]),
     );
@@ -1034,7 +1088,7 @@ async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
-        100,
+        (100, 100),
         None,
         HashSet::new(),
     );
@@ -1042,7 +1096,7 @@ async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone())],
-        100,
+        (100, 100),
         Some(default_verifier_signing_key()),
         HashSet::from([configured_main_peer_id]),
     );
