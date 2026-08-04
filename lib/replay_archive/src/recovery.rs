@@ -318,7 +318,7 @@ fn log_recovery_progress(count: usize, log: impl FnOnce()) {
 /// Scans an existing download output root for already-downloaded objects.
 ///
 /// Entries that do not parse as `<block_number>/<block_hash>/<session>` are ignored, including
-/// `.partial` files left behind by an interrupted write.
+/// temporary files left behind by an interrupted write.
 async fn scan_existing_downloaded_objects(
     output_root: &Path,
 ) -> anyhow::Result<HashSet<ReplayArchiveKey>> {
@@ -397,10 +397,10 @@ async fn write_downloaded_object(
         )
     })?;
 
-    // Write to a temporary name and rename so that an object file only exists under its
-    // final name once fully written; interrupted downloads leave `.partial` files that the
-    // resume scan ignores and the next attempt overwrites.
-    let partial_path = output_path.with_extension("partial");
+    // SYSCOIN: Keep temporary names outside the parseable session namespace. A valid node ID may
+    // end in `.partial`, so replacing the extension could alias the final session path and make a
+    // truncated download look complete to the resume scan.
+    let partial_path = partial_download_path(&output_path, &key.session);
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -435,6 +435,15 @@ async fn write_downloaded_object(
             )
         })?;
     Ok(())
+}
+
+fn partial_download_path(output_path: &Path, session: &ReplayArchiveSession) -> PathBuf {
+    output_path.with_file_name(format!(".partial-{}", session.folder_name()))
+}
+
+fn is_partial_download_name(file_name: &std::ffi::OsStr) -> bool {
+    let file_name = file_name.to_string_lossy();
+    file_name.starts_with(".partial-") || file_name.ends_with(".partial")
 }
 
 /// Reads and decodes all `(block_hash, record)` candidates present for a block number.
@@ -476,7 +485,7 @@ async fn read_candidate_records(
             .to_str()
             .and_then(|name| name.parse::<BlockHash>().ok())
         else {
-            if !file_name.to_string_lossy().ends_with(".partial") {
+            if !is_partial_download_name(&file_name) {
                 tracing::warn!(
                     path = %entry.path().display(),
                     "Skipping replay archive entry that is not a block hash"
@@ -531,7 +540,7 @@ async fn read_verified_replay_record(
             .and_then(|name| name.parse::<ReplayArchiveSession>().ok())
             .is_none()
         {
-            if !file_name.to_string_lossy().ends_with(".partial") {
+            if !is_partial_download_name(&file_name) {
                 tracing::warn!(
                     path = %entry.path().display(),
                     "Skipping replay archive entry that is not a session"
@@ -681,7 +690,8 @@ mod tests {
         let archive_root = tempfile::tempdir().unwrap();
         let output_root = tempfile::tempdir().unwrap();
         let block_hash = B256::with_last_byte(1);
-        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        // Exercise a valid session name that would collide with `with_extension("partial")`.
+        let session = ReplayArchiveSession::new(42, "node.partial").unwrap();
 
         let storage = FileSystemReplayArchiveStorage::init(
             archive_root.path().to_path_buf(),
@@ -725,7 +735,17 @@ mod tests {
             .join("8")
             .join(crate::format_block_hash(block_hash))
             .join(session.folder_name());
-        let partial_path = record_path.with_extension("partial");
+        let partial_path = partial_download_path(&record_path, &session);
+        assert_ne!(partial_path, record_path);
+        assert!(
+            partial_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .parse::<ReplayArchiveSession>()
+                .is_err(),
+            "temporary name must not parse as a complete session"
+        );
         tokio::fs::remove_file(&record_path).await.unwrap();
         tokio::fs::write(&partial_path, b"sec").await.unwrap();
 
