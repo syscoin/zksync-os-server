@@ -14,6 +14,9 @@ pub type ReplayArchiveRecord = (BlockHash, ReplayRecord);
 pub type ReplayArchiveSender = mpsc::Sender<ReplayArchiveRecord>;
 
 const MAX_PARALLEL_OBJECT_PUTS: usize = 10;
+// SYSCOIN: Retain a completed append long enough for every retry already accepted by the bounded
+// channel to reach registration, including records concurrently writing ahead of that retry.
+const COMPLETED_REPLAY_HISTORY_SIZE: usize = REPLAY_ARCHIVE_QUEUE_SIZE + MAX_PARALLEL_OBJECT_PUTS;
 
 /// Background component that archives replay records from a bounded queue.
 ///
@@ -138,7 +141,7 @@ impl RecentReplayRecords {
         self.completed.insert(key, payload_hash);
         self.completed_order.push_back(key);
 
-        while self.completed_order.len() > REPLAY_ARCHIVE_QUEUE_SIZE {
+        while self.completed_order.len() > COMPLETED_REPLAY_HISTORY_SIZE {
             let oldest = self
                 .completed_order
                 .pop_front()
@@ -253,6 +256,27 @@ mod tests {
         assert!(!recent.register(fingerprint).unwrap());
         recent.mark_completed(fingerprint);
         assert!(!recent.register(fingerprint).unwrap());
+    }
+
+    #[test]
+    fn queued_retry_survives_full_completion_window() {
+        let mut recent = RecentReplayRecords::default();
+        let original = (B256::with_last_byte(1), test_replay_record());
+        let original_fingerprint = ReplayRecordFingerprint::new(&original);
+        assert!(recent.register(original_fingerprint).unwrap());
+        recent.mark_completed(original_fingerprint);
+
+        for block_number in 1_000..1_000 + COMPLETED_REPLAY_HISTORY_SIZE as u64 - 1 {
+            let mut record = test_replay_record();
+            record.block_context.block_number = block_number;
+            let mut block_hash = B256::ZERO;
+            block_hash[24..].copy_from_slice(&block_number.to_be_bytes());
+            let fingerprint = ReplayRecordFingerprint::new(&(block_hash, record));
+            assert!(recent.register(fingerprint).unwrap());
+            recent.mark_completed(fingerprint);
+        }
+
+        assert!(!recent.register(original_fingerprint).unwrap());
     }
 
     #[test]
