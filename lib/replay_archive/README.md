@@ -81,6 +81,10 @@ local writer rather than on unverified presence created by another writer.
 > generation, and the filesystem backend hashes the current bytes. An overwrite by another holder
 > of the archive credentials therefore fails closed instead of satisfying the gate.
 
+> **SYSCOIN:** ENs and batcher-disabled main nodes do not install the L1 commit gate. Their archive
+> component verifies and consumes each publication receipt immediately after append, preventing an
+> unbounded per-block receipt map while retaining the same fail-closed object identity check.
+
 > **SYSCOIN:** Rejected replay writes are archived only once for keys in the startup WAL range.
 > Those startup keys are retained for the process session, while rejected writes above the startup
 > tip are skipped because their successful insertion already queued them. This preserves restart

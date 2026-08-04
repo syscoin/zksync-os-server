@@ -1215,8 +1215,14 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         state_clone.compact_periodically_optional(),
     );
 
-    let replay_archive =
-        init_replay_archive(config.replay_archive_config.clone().into(), runtime).await;
+    // SYSCOIN: Only an active main-node batcher installs the L1 archive gate. Other node modes
+    // consume publication receipts in the archive component so receipt tracking stays bounded.
+    let replay_archive = init_replay_archive(
+        config.replay_archive_config.clone().into(),
+        runtime,
+        node_role.is_main() && config.batcher_config.enabled,
+    )
+    .await;
     let (replay_archive_sender, replay_archiver) = replay_archive.unzip();
     let archiving_block_replay_storage =
         ReplayArchivingWriteReplay::new(block_replay_storage, replay_archive_sender);

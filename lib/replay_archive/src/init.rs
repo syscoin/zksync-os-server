@@ -51,6 +51,7 @@ pub type InitializedReplayArchive = (ReplayArchiveSender, Arc<dyn ReplayArchiver
 pub async fn init_replay_archive(
     config: ReplayArchiveConfig,
     runtime: &Runtime,
+    commit_gate_enabled: bool,
 ) -> Option<InitializedReplayArchive> {
     if let ReplayArchiveConfig::Noop = &config {
         return None;
@@ -90,7 +91,11 @@ pub async fn init_replay_archive(
             archive_for_storage(storage, encryption).await
         }
     };
-    let (sender, component) = ReplayArchiveComponent::new(archive.clone());
+    let (sender, component) = if commit_gate_enabled {
+        ReplayArchiveComponent::new(archive.clone())
+    } else {
+        ReplayArchiveComponent::new_without_commit_gate(archive.clone())
+    };
     runtime.spawn_critical_task("replay archive", async move {
         component
             .run()

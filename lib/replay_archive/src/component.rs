@@ -26,19 +26,47 @@ const COMPLETED_REPLAY_HISTORY_SIZE: usize = REPLAY_ARCHIVE_QUEUE_SIZE + MAX_PAR
 pub struct ReplayArchiveComponent<Archive> {
     archive: Archive,
     records: mpsc::Receiver<ReplayArchiveRecord>,
+    consume_receipts_after_append: bool,
 }
 
 impl<Archive> ReplayArchiveComponent<Archive>
 where
     Archive: ReplayArchiver,
 {
+    /// Creates an archiver whose publication receipts are retained for the L1 commit gate.
     pub fn new(archive: Archive) -> (ReplayArchiveSender, Self) {
+        Self::new_with_receipt_policy(archive, false)
+    }
+
+    /// Creates an archiver for a node that has no L1 commit gate.
+    pub fn new_without_commit_gate(archive: Archive) -> (ReplayArchiveSender, Self) {
+        // SYSCOIN: ENs and batcher-disabled nodes never install ReplayArchiveGateComponent. Verify
+        // and consume each publication receipt here so those nodes do not retain one receipt per
+        // archived block forever.
+        Self::new_with_receipt_policy(archive, true)
+    }
+
+    fn new_with_receipt_policy(
+        archive: Archive,
+        consume_receipts_after_append: bool,
+    ) -> (ReplayArchiveSender, Self) {
         let (sender, records) = mpsc::channel(REPLAY_ARCHIVE_QUEUE_SIZE);
-        (sender, Self { archive, records })
+        (
+            sender,
+            Self {
+                archive,
+                records,
+                consume_receipts_after_append,
+            },
+        )
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let Self { archive, records } = self;
+        let Self {
+            archive,
+            records,
+            consume_receipts_after_append,
+        } = self;
         let highest_archived_block_number = Mutex::new(None);
         let recent_records = Mutex::new(RecentReplayRecords::default());
 
@@ -64,7 +92,9 @@ where
                         return Ok(());
                     }
 
-                    let archived_block_number = archive_replay_record(archive, record).await?;
+                    let archived_block_number =
+                        archive_replay_record(archive, record, consume_receipts_after_append)
+                            .await?;
                     recent_records
                         .lock()
                         .expect("recent replay record mutex is poisoned")
@@ -170,6 +200,7 @@ fn update_highest_archived_block_number(
 async fn archive_replay_record<Archive>(
     archive: &Archive,
     (block_hash, replay_record): ReplayArchiveRecord,
+    consume_receipt_after_append: bool,
 ) -> anyhow::Result<BlockNumber>
 where
     Archive: ReplayArchiver,
@@ -181,6 +212,17 @@ where
         .append_replay_record(block_hash, replay_record)
         .await
         .with_context(|| format!("failed to archive replay record for block {block_number}"))?;
+    if consume_receipt_after_append {
+        anyhow::ensure!(
+            archive
+                .contains_replay_record(block_number, block_hash)
+                .await
+                .with_context(|| {
+                    format!("failed to verify replay archive record for block {block_number}")
+                })?,
+            "newly appended replay archive record is not present for block #{block_number}, {block_hash}"
+        );
+    }
     archive_time.observe();
     Ok(block_number)
 }
@@ -197,6 +239,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingArchiver {
         appended: AtomicUsize,
+        checked: AtomicUsize,
     }
 
     #[async_trait]
@@ -215,7 +258,8 @@ mod tests {
             _block_number: BlockNumber,
             _block_hash: BlockHash,
         ) -> anyhow::Result<bool> {
-            Ok(false)
+            self.checked.fetch_add(1, Ordering::SeqCst);
+            Ok(true)
         }
     }
 
@@ -234,6 +278,7 @@ mod tests {
         component.run().await.unwrap();
 
         assert_eq!(archiver.appended.load(Ordering::SeqCst), 1);
+        assert_eq!(archiver.checked.load(Ordering::SeqCst), 0);
         let mut encoded = String::new();
         MetricsCollection::default()
             .collect()
@@ -244,6 +289,24 @@ mod tests {
             .find(|line| line.starts_with("replay_archive_archive_time_seconds_count"))
             .unwrap_or_else(|| panic!("archive_time metric is not exported:\n{encoded}"));
         assert!(count_line.ends_with(" 1"), "{count_line}");
+
+        let ungated_archiver = Arc::new(RecordingArchiver::default());
+        let (sender, component) =
+            ReplayArchiveComponent::new_without_commit_gate(ungated_archiver.clone());
+
+        for block_number in 1..=3 {
+            let mut record = test_replay_record();
+            record.block_context.block_number = block_number;
+            sender
+                .send((B256::with_last_byte(block_number as u8), record))
+                .await
+                .unwrap();
+        }
+        drop(sender);
+        component.run().await.unwrap();
+
+        assert_eq!(ungated_archiver.appended.load(Ordering::SeqCst), 3);
+        assert_eq!(ungated_archiver.checked.load(Ordering::SeqCst), 3);
     }
 
     #[test]
