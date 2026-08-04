@@ -576,6 +576,12 @@ pub struct ProviderConfig {
     /// Backoff used between retry attempts.
     #[config(default_t = Duration::from_millis(1000))]
     pub retry_backoff: Duration,
+
+    /// SYSCOIN Per-attempt timeout for every L1 or Gateway RPC request. Must comfortably exceed
+    /// the slowest legitimate request (e.g. `eth_getLogs` over
+    /// `l1_watcher.max_blocks_to_process` blocks).
+    #[config(default_t = 30 * TimeUnit::Seconds)]
+    pub request_timeout: Duration,
 }
 
 impl Default for ProviderConfig {
@@ -585,6 +591,7 @@ impl Default for ProviderConfig {
             rpc_poll_interval: 7 * TimeUnit::Seconds,
             max_retries: 5,
             retry_backoff: Duration::from_millis(1000),
+            request_timeout: 30 * TimeUnit::Seconds,
         }
     }
 }
