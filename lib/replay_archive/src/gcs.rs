@@ -3,7 +3,7 @@ use crate::{
     ReplayArchiveStorage, ReplayArchiveStorageReader, UPLOAD_TOKEN_METADATA_KEY,
     ensure_published_identity_matches,
 };
-use alloy::primitives::{BlockHash, BlockNumber};
+use alloy::primitives::{B256, BlockHash, BlockNumber, keccak256};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use google_cloud_auth::credentials::anonymous;
@@ -136,6 +136,7 @@ impl GcsReplayArchiveStorage {
 
     async fn put_new_object(&self, key: &str, object: Vec<u8>) -> anyhow::Result<i64> {
         let upload_token = crate::new_upload_token();
+        let payload_digest = keccak256(&object);
         let result = self
             .clients
             .storage
@@ -156,7 +157,7 @@ impl GcsReplayArchiveStorage {
             // SYSCOIN: distinguish an SDK retry after an accepted upload from a foreign
             // first-writer object without weakening the generation-match create condition.
             Err(err) if is_precondition_failed(&err) => {
-                self.verify_upload_token(key, &upload_token).await
+                self.verify_upload(key, &upload_token, payload_digest).await
             }
             Err(err) => Err(err).with_context(|| {
                 format!(
@@ -167,7 +168,12 @@ impl GcsReplayArchiveStorage {
         }
     }
 
-    async fn verify_upload_token(&self, key: &str, expected_token: &str) -> anyhow::Result<i64> {
+    async fn verify_upload(
+        &self,
+        key: &str,
+        expected_token: &str,
+        expected_payload_digest: B256,
+    ) -> anyhow::Result<i64> {
         let object = self
             .clients
             .control
@@ -191,8 +197,51 @@ impl GcsReplayArchiveStorage {
                 .get(UPLOAD_TOKEN_METADATA_KEY)
                 .map(String::as_str),
         )?;
+        // SYSCOIN: Upload metadata is readable and can be copied onto a replacement object. On
+        // the rare lost-response path, hash the actual stored bytes before adopting its generation.
+        let stored_payload = self.read_object(key, object.generation).await?;
+        ensure_payload_digest_matches(
+            &format!("gs://{}/{}", self.config.bucket_base_url, key),
+            expected_payload_digest,
+            &stored_payload,
+        )?;
         ensure_valid_generation(key, object.generation)
     }
+
+    async fn read_object(&self, key: &str, generation: i64) -> anyhow::Result<Vec<u8>> {
+        let read = async {
+            let mut reader = self
+                .clients
+                .storage
+                .read_object(self.config.bucket_resource(), key)
+                .set_generation(generation)
+                .send()
+                .await?;
+            let mut object = Vec::new();
+            while let Some(chunk) = reader.next().await.transpose()? {
+                object.extend_from_slice(&chunk);
+            }
+            Ok::<_, google_cloud_storage::Error>(object)
+        };
+        read.await.with_context(|| {
+            format!(
+                "failed to verify replay archive GCS object payload at gs://{}/{}",
+                self.config.bucket_base_url, key
+            )
+        })
+    }
+}
+
+fn ensure_payload_digest_matches(
+    location: &str,
+    expected_payload_digest: B256,
+    stored_payload: &[u8],
+) -> anyhow::Result<()> {
+    ensure_published_identity_matches(
+        location,
+        &expected_payload_digest,
+        Some(&keccak256(stored_payload)),
+    )
 }
 
 fn ensure_valid_generation(key: &str, generation: i64) -> anyhow::Result<i64> {
@@ -436,6 +485,13 @@ mod tests {
         let config = GcsReplayArchiveConfig::anonymous("bucket");
 
         assert_eq!(config.bucket_resource(), "projects/_/buckets/bucket");
+    }
+
+    #[test]
+    fn retry_verification_rejects_replaced_payload() {
+        let expected = keccak256(b"locally published");
+        ensure_payload_digest_matches("gs://bucket/key", expected, b"locally published").unwrap();
+        ensure_payload_digest_matches("gs://bucket/key", expected, b"replacement").unwrap_err();
     }
 
     #[tokio::test]

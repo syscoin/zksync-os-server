@@ -71,14 +71,21 @@ archive component. This makes the L1 commit gate depend on an object successfull
 local writer rather than on unverified presence created by another writer.
 
 > **SYSCOIN:** S3 and GCS requests carry a fresh random upload token in object metadata. A
-> conditional-create conflict is accepted only when the stored token matches that exact request,
-> which handles an SDK retry after a lost success response without accepting another writer's
-> object.
+> conditional-create conflict is accepted only when the stored token and payload identity match
+> that exact request. S3 verifies its SHA-256 checksum; GCS reads and hashes the exact returned
+> generation on this rare path. This handles an SDK retry after a lost success response without
+> accepting another writer's object.
 
 > **SYSCOIN:** The L1 commit gate also revalidates the locally published object identity. S3 uses
 > the service-validated SHA-256 checksum returned by `PutObject`, GCS uses the immutable object
 > generation, and the filesystem backend hashes the current bytes. An overwrite by another holder
 > of the archive credentials therefore fails closed instead of satisfying the gate.
+
+> **SYSCOIN:** Rejected replay writes are archived only once for keys in the startup WAL range.
+> Those startup keys are retained for the process session, while rejected writes above the startup
+> tip are skipped because their successful insertion already queued them. This preserves restart
+> backfill without letting a stale duplicate hit append-only storage after the short queue retry
+> window, and without retaining every block produced for the lifetime of the process.
 
 ## Implementations
 

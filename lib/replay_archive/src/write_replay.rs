@@ -2,7 +2,9 @@ use crate::ReplayArchiveSender;
 use crate::metrics::REPLAY_ARCHIVE_METRICS;
 use alloy::primitives::{BlockHash, BlockNumber, Sealed};
 use anyhow::Context;
+use std::collections::HashSet;
 use std::fmt::Debug;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zksync_os_storage_api::{BlockContext, ReadReplay, ReplayRecord, WriteReplay};
 
@@ -11,18 +13,91 @@ use zksync_os_storage_api::{BlockContext, ReadReplay, ReplayRecord, WriteReplay}
 pub struct ReplayArchivingWriteReplay<Replay> {
     replay: Replay,
     archive_sender: Option<ReplayArchiveSender>,
+    initial_replay_tip: Option<BlockNumber>,
+    initial_session_records: Arc<Mutex<HashSet<(BlockNumber, BlockHash)>>>,
 }
 
-impl<Replay> ReplayArchivingWriteReplay<Replay> {
+impl<Replay> ReplayArchivingWriteReplay<Replay>
+where
+    Replay: ReadReplay,
+{
     pub fn new(replay: Replay, archive_sender: Option<ReplayArchiveSender>) -> Self {
+        let initial_replay_tip = archive_sender.as_ref().map(|_| replay.latest_record());
         Self {
             replay,
             archive_sender,
+            initial_replay_tip,
+            initial_session_records: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     pub fn replay(&self) -> &Replay {
         &self.replay
+    }
+
+    /// Enqueues a record that was inserted before this wrapper was constructed (currently genesis).
+    pub async fn enqueue_existing_replay_record(
+        &self,
+        block_hash: BlockHash,
+        replay_record: ReplayRecord,
+    ) -> anyhow::Result<()> {
+        self.enqueue_replay_record((block_hash, replay_record))
+            .await
+    }
+
+    async fn enqueue_replay_record(
+        &self,
+        archive_record: (BlockHash, ReplayRecord),
+    ) -> anyhow::Result<()> {
+        let Some(archive_sender) = &self.archive_sender else {
+            return Ok(());
+        };
+        let block_number = archive_record.1.block_context.block_number;
+        let block_hash = archive_record.0;
+
+        REPLAY_ARCHIVE_METRICS
+            .queue_depth
+            .set(replay_archive_queue_depth(archive_sender));
+        let started_at = Instant::now();
+        archive_sender
+            .send(archive_record)
+            .await
+            .context("archive_sender closed")?;
+        REPLAY_ARCHIVE_METRICS
+            .enqueue_latency
+            .observe(started_at.elapsed());
+        REPLAY_ARCHIVE_METRICS
+            .queue_depth
+            .set(replay_archive_queue_depth(archive_sender));
+
+        if self
+            .initial_replay_tip
+            .is_some_and(|initial_tip| block_number <= initial_tip)
+        {
+            self.initial_session_records
+                .lock()
+                .expect("initial replay archive record lock is poisoned")
+                .insert((block_number, block_hash));
+        }
+        Ok(())
+    }
+
+    fn should_archive_rejected_record(
+        &self,
+        block_number: BlockNumber,
+        block_hash: BlockHash,
+    ) -> bool {
+        let Some(initial_tip) = self.initial_replay_tip else {
+            return false;
+        };
+        if block_number > initial_tip {
+            return false;
+        }
+        !self
+            .initial_session_records
+            .lock()
+            .expect("initial replay archive record lock is poisoned")
+            .contains(&(block_number, block_hash))
     }
 }
 
@@ -64,11 +139,21 @@ where
         let (replay_record, block_hash) = record.clone().split();
         let written = self.replay.write(record, override_allowed).await?;
 
-        if let Some(archive_sender) = &self.archive_sender {
+        if self.archive_sender.is_some() {
             let archive_record = if written {
                 (block_hash, replay_record)
             } else {
                 let block_number = replay_record.block_context.block_number;
+                // SYSCOIN: Only the first rejected write from the startup WAL range is a required
+                // fresh-session backfill. Post-startup blocks were queued on their successful
+                // write, and remembering startup keys prevents arbitrarily stale duplicates from
+                // reaching append-only storage without growing at the lifetime chain rate.
+                if self
+                    .initial_replay_tip
+                    .is_some_and(|initial_tip| block_number > initial_tip)
+                {
+                    return Ok(written);
+                }
                 // SYSCOIN: A fresh archive session must backfill WAL records that replay storage
                 // already contains after restart. Re-read the canonical value so rejected caller
                 // bytes can never be archived in its place.
@@ -90,23 +175,12 @@ where
                     );
                     block_hash
                 };
+                if !self.should_archive_rejected_record(block_number, canonical_hash) {
+                    return Ok(written);
+                }
                 (canonical_hash, canonical_record)
             };
-
-            REPLAY_ARCHIVE_METRICS
-                .queue_depth
-                .set(replay_archive_queue_depth(archive_sender));
-            let started_at = Instant::now();
-            archive_sender
-                .send(archive_record)
-                .await
-                .context("archive_sender closed")?;
-            REPLAY_ARCHIVE_METRICS
-                .enqueue_latency
-                .observe(started_at.elapsed());
-            REPLAY_ARCHIVE_METRICS
-                .queue_depth
-                .set(replay_archive_queue_depth(archive_sender));
+            self.enqueue_replay_record(archive_record).await?;
         }
 
         Ok(written)
@@ -187,8 +261,33 @@ mod tests {
         assert!(!written);
         assert_eq!(
             receiver.recv().await,
-            Some((canonical_hash, canonical_record))
+            Some((canonical_hash, canonical_record.clone()))
         );
+
+        let written = archiving
+            .write(
+                Sealed::new_unchecked(canonical_record, canonical_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!written);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejected_post_startup_record_is_not_reenqueued() {
+        let replay = ExistingReplay {
+            record: test_replay_record(7),
+            block_hash: Some(B256::with_last_byte(7)),
+        };
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let archiving = ReplayArchivingWriteReplay::new(replay, Some(sender));
+
+        assert!(!archiving.should_archive_rejected_record(8, B256::with_last_byte(8)));
     }
 
     #[tokio::test]
