@@ -230,11 +230,7 @@ contract PaliSmartAccountTest is Test {
         uint256 suffixLength = 32 + 32 + contentsDescription.length + 2;
         bytes memory filler = new bytes(3856 - suffixLength);
         bytes memory innerSignature = abi.encodePacked(
-            filler,
-            appSeparator,
-            contentsHash,
-            contentsDescription,
-            uint16(contentsDescription.length)
+            filler, appSeparator, contentsHash, contentsDescription, uint16(contentsDescription.length)
         );
 
         assertEq(innerSignature.length, 3856);
