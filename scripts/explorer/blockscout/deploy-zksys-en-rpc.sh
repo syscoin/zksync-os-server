@@ -373,6 +373,16 @@ ZKSYS_GAS_TANK_ADDRESS="$(normalize_zksys_gas_tank_address "${ZKSYS_GAS_TANK_ADD
 
 provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
+# Invalidate the prior deployment before uploading source or replacing generated
+# configuration. Existing processes keep running, but a later restart cannot
+# accept an old binary against partially updated deployment state if this run
+# fails before the replacement build completes.
+remote_prebuilt_stamps=(
+  "${REMOTE_BASE_DIR}/zksys-public/.gateway-launch/target/zksys-public/release/zksync-os-server.sha256"
+  "${REMOTE_BASE_DIR}/zksys-debug/.gateway-launch/target/zksys-debug/release/zksync-os-server.sha256"
+)
+ssh "${ssh_opts[@]}" "${REMOTE_HOST}" "rm -f -- $(shell_join "${remote_prebuilt_stamps[@]}")"
+
 if [[ "${UPLOAD_REPO}" == "true" ]]; then
   echo "Uploading zksync-os-server tree to ${REMOTE_HOST}:${REMOTE_OS_SERVER_PATH}"
   remote_os_server_path_q="$(shell_join "${REMOTE_OS_SERVER_PATH}")"
@@ -622,7 +632,7 @@ def provider_lines(name: str, provider: dict) -> list[str]:
     return lines
 
 
-def write_start_script(
+def write_node_script(
     path: Path,
     repo: Path,
     gateway_dir: Path,
@@ -630,31 +640,40 @@ def write_start_script(
     config: Path,
     protocol: str,
     syscoin_edge_da_commit_target: str,
+    runner_args: list[str],
+    enforce_runtime_nofile: bool,
 ) -> None:
-    text = f"""#!/usr/bin/env bash
-set -euo pipefail
-: "${{OS_SERVER_NOFILE_TARGET:=1048576}}"
-: "${{OS_SERVER_NOFILE_RECOMMENDED:=131072}}"
-: "${{OS_SERVER_NOFILE_MIN:=65536}}"
+    rendered_runner_args = " ".join(q(arg) for arg in runner_args)
+    # Deployment builds run under the SSH session's limits and never serve node traffic; only the
+    # systemd runtime wrapper needs the high-TPS descriptor gate.
+    runtime_nofile_preflight = ""
+    if enforce_runtime_nofile:
+        runtime_nofile_preflight = '''\
+: "${OS_SERVER_NOFILE_TARGET:=1048576}"
+: "${OS_SERVER_NOFILE_RECOMMENDED:=131072}"
+: "${OS_SERVER_NOFILE_MIN:=65536}"
 current_nofile="$(ulimit -n)"
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_TARGET}}" ]; then
-  ulimit -n "${{OS_SERVER_NOFILE_TARGET}}" 2>/dev/null || true
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_TARGET}" ]; then
+  ulimit -n "${OS_SERVER_NOFILE_TARGET}" 2>/dev/null || true
 fi
 current_nofile="$(ulimit -n)"
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_MIN}}" ]; then
-  echo "open-file limit too low for zksync-os-server: ${{current_nofile}}" >&2
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_MIN}" ]; then
+  echo "open-file limit too low for zksync-os-server: ${current_nofile}" >&2
   exit 1
 fi
-if [ "${{current_nofile}}" -lt "${{OS_SERVER_NOFILE_RECOMMENDED}}" ]; then
-  echo "warning: open-file limit is below recommended value: ${{current_nofile}}" >&2
+if [ "${current_nofile}" -lt "${OS_SERVER_NOFILE_RECOMMENDED}" ]; then
+  echo "warning: open-file limit is below recommended value: ${current_nofile}" >&2
 fi
-export PATH="${{HOME}}/.cargo/bin:${{PATH}}"
+'''
+    text = f"""#!/usr/bin/env bash
+set -euo pipefail
+{runtime_nofile_preflight}export PATH="${{HOME}}/.cargo/bin:${{PATH}}"
 cd {q(str(repo))}
 export GATEWAY_DIR={q(str(gateway_dir))}
 export ZKSYNC_OS_SERVER_PATH={q(str(repo))}
 export PROTOCOL_VERSION={q(protocol)}
 export SYSCOIN_EDGE_DA_COMMIT_TARGET={q(syscoin_edge_da_commit_target)}
-exec bash {q(str(repo / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"))} {q(workspace)} -- run --release -- --config {q(str(config))}
+exec bash {q(str(repo / "scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"))} {q(workspace)} -- {rendered_runner_args}
 """
     path.write_text(text, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -768,7 +787,18 @@ for instance in (public, debug):
         "l2:\n"
         f"  zksys_gas_tank_addr: {zksys_gas_tank_address}\n",
     )
-    write_start_script(
+    write_node_script(
+        out_dir / "build-node.sh",
+        repo,
+        out_dir,
+        instance["name"],
+        config_path,
+        protocol,
+        syscoin_edge_da_commit_target,
+        ["build-prebuilt"],
+        enforce_runtime_nofile=False,
+    )
+    write_node_script(
         out_dir / "start-node.sh",
         repo,
         out_dir,
@@ -776,8 +806,16 @@ for instance in (public, debug):
         config_path,
         protocol,
         syscoin_edge_da_commit_target,
+        ["exec-prebuilt", "--", "--config", str(config_path)],
+        enforce_runtime_nofile=True,
     )
 PY
+
+# Prepare the workspace-specific binaries before installing or restarting the
+# services. Runtime restarts must not clone, rewrite, or compile source.
+for instance in zksys-public zksys-debug; do
+  "${REMOTE_BASE_DIR}/${instance}/build-node.sh"
+done
 
 for instance in zksys-public zksys-debug; do
   sudo tee "/etc/systemd/system/${instance}.service" >/dev/null <<EOF
