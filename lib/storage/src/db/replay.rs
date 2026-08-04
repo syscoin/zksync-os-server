@@ -397,13 +397,15 @@ impl BlockReplayStorage {
     }
 
     fn get_context_by_key(&self, block_number: BlockNumber, key: &[u8]) -> Option<BlockContext> {
+        // SYSCOIN: Replay peers control override keys, so a key-selected row must still belong to
+        // the requested block. Otherwise a peer can panic this task through `ContextV2` or splice
+        // fields from another block into a record through the legacy compatibility path.
         // Prefer the stripped row: its block hashes are reconstructed from `CanonicalHash`, so
         // nothing depends on the copy embedded in the legacy row anymore.
         if let Some(stored) = self.get_stored_context_v2(key) {
-            assert_eq!(
-                stored.block_number, block_number,
-                "block number mismatch when reading context"
-            );
+            if stored.block_number != block_number {
+                return None;
+            }
             return Some(
                 stored.into_context(self.chain_id, self.read_block_hashes(block_number, key)),
             );
@@ -413,7 +415,11 @@ impl BlockReplayStorage {
         // reverted block. Both are served as stored: for the former the embedded hashes are
         // just as correct, and for the latter they are authoritative — `CanonicalHash` entries
         // for a reverted block's ancestors may have been overwritten by the new canonical chain.
-        self.get_legacy_context(key)
+        let context = self.get_legacy_context(key)?;
+        if context.block_number != block_number {
+            return None;
+        }
+        Some(context)
     }
 
     /// Cheaper than [`ReadReplay::get_context`] when only the timestamp is needed: skips
@@ -990,6 +996,30 @@ mod tests {
         }
         delete_stripped_rows(&storage, 100..=200);
         assert_chain_reads_back(&storage, &chain);
+    }
+
+    #[tokio::test]
+    async fn mismatched_override_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        let chain = make_chain(3);
+        for sealed in &chain {
+            storage.write(sealed.clone(), false).await.unwrap();
+        }
+
+        let block_two_key = 2u64.to_be_bytes().to_vec();
+        assert_eq!(
+            storage.get_replay_record_by_key(1, Some(block_two_key.clone())),
+            None
+        );
+
+        // The compatibility fallback must reject the same mismatch after a rollback to a DB
+        // layout that predates stripped contexts.
+        delete_stripped_rows(&storage, 2..=2);
+        assert_eq!(
+            storage.get_replay_record_by_key(1, Some(block_two_key)),
+            None
+        );
     }
 
     #[tokio::test]
