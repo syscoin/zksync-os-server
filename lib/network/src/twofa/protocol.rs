@@ -49,8 +49,8 @@ pub struct Zks2faConnectionHandler {
     role: Twofa2Role,
     state: HandlerSharedState,
     connection_registry: Zks2faConnectionRegistry,
-    /// Owned permit that corresponds to a taken active connection slot.
-    permit: OwnedSemaphorePermit,
+    /// Owned permit for a taken active connection slot, or `None` for a trusted peer.
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Zks2faProtocolHandler {
@@ -78,18 +78,32 @@ impl Zks2faProtocolHandler {
         }
     }
 
+    fn establish_connection(
+        &self,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> Zks2faConnectionHandler {
+        Zks2faConnectionHandler {
+            role: self.role.clone(),
+            state: self.state.clone(),
+            connection_registry: self.connection_registry.clone(),
+            permit,
+        }
+    }
+
     fn try_establish_connection(
         &self,
         socket_addr: SocketAddr,
         peer_id: Option<PeerId>,
     ) -> Option<Zks2faConnectionHandler> {
+        // SYSCOIN: Trusted outgoing verifiers must bypass this independent cap; otherwise
+        // unauthenticated peers can fill it and block required batch verification.
+        if let Some(peer_id) = peer_id
+            && self.state.is_trusted(&peer_id)
+        {
+            return Some(self.establish_connection(None));
+        }
         match self.state.try_acquire_connection_slot() {
-            Ok(permit) => Some(Zks2faConnectionHandler {
-                role: self.role.clone(),
-                state: self.state.clone(),
-                connection_registry: self.connection_registry.clone(),
-                permit,
-            }),
+            Ok(permit) => Some(self.establish_connection(Some(permit))),
             Err(_) => {
                 match peer_id {
                     Some(peer_id) => tracing::warn!(
@@ -198,7 +212,7 @@ pub struct Zks2faConnection {
     task: tokio::task::JoinHandle<()>,
     peer_id: PeerId,
     connection_registry: Zks2faConnectionRegistry,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
 }
 
 impl Drop for Zks2faConnection {
@@ -241,4 +255,46 @@ fn into_message_stream(
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::Address;
+    use std::collections::HashSet;
+
+    #[test]
+    fn trusted_outgoing_peer_bypasses_connection_cap() {
+        let trusted_peer = PeerId::repeat_byte(1);
+        let untrusted_peer = PeerId::repeat_byte(2);
+        let (protocol_tx, _protocol_rx) = mpsc::unbounded_channel();
+        let (verify_result_tx, _verify_result_rx) = mpsc::channel(1);
+        let state = HandlerSharedState::new(protocol_tx, 1, HashSet::from([trusted_peer]));
+        let handler = Zks2faProtocolHandler::for_main_node(
+            MainNode2faConfig {
+                accepted_verifier_signers: Vec::<Address>::new(),
+                verify_result_tx,
+            },
+            state,
+            Arc::new(RwLock::new(HashMap::new())),
+        );
+        let socket_addr = "127.0.0.1:30303".parse().unwrap();
+
+        let _untrusted_connection = handler
+            .try_establish_connection(socket_addr, None)
+            .expect("the first untrusted connection should fill the cap");
+
+        assert!(
+            handler
+                .try_establish_connection(socket_addr, Some(trusted_peer))
+                .is_some(),
+            "a trusted outgoing verifier must remain connectable when the cap is full"
+        );
+        assert!(
+            handler
+                .try_establish_connection(socket_addr, Some(untrusted_peer))
+                .is_none(),
+            "an untrusted outgoing peer must remain subject to the cap"
+        );
+    }
 }
