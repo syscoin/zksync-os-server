@@ -28,13 +28,13 @@ RPC_URL="${ZKTANENBAUM_RPC_URL:-${RPC_URL:-https://rpc-zk.tanenbaum.io}}"
 # Canonical ERC-4337 EntryPoint v0.9 singleton.
 ENTRYPOINT_ADDRESS="${ENTRYPOINT_ADDRESS:-0x433709009B8330FDa32311DF1C2AFA402eD8D009}"
 PALI_CREATE2_DEPLOYER_ADDRESS="${PALI_CREATE2_DEPLOYER_ADDRESS:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
-PALI_INFRASTRUCTURE_VERSION="PALI_SMART_ACCOUNT_ERC7579_V1"
+PALI_INFRASTRUCTURE_VERSION="PALI_SMART_ACCOUNT_ERC7579_V2"
 
 export FOUNDRY_BYTECODE_HASH=none
 export FOUNDRY_CBOR_METADATA=false
 
 # SLH-DSA validator constructor args: abi.encode(verifier).
-SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000789d5ac3a14b543a46fc402eedcf31d8c8b93d4a31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
+SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS="0x000000000000000000000000588d8afa40c08983a114957310c04d05a9dcb56d31e33d9848db6a8821cf39adeb347aff047a308f52b04aee2a398e29fee8b628"
 
 lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
@@ -167,12 +167,12 @@ echo
 
 publish_entrypoint
 publish_contract "${account_implementation_address}" "Pali smart account implementation" "src/pali/PaliSmartAccount.sol:PaliSmartAccount" "${account_implementation_ctor}"
-publish_contract "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
-publish_contract "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
-publish_contract "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a" "SLH-DSA verifier" "src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
-publish_contract "0x3fe7586e106eb90988dc2385a5987b7040da06f3" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
-publish_contract "0xb455eb25bcab13f003a0db5dec5e195ab634afda" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
-publish_contract "0x6b4e0a92e1cee54b93ede57f7b839a423960b913" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
+publish_contract "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133" "ECDSA validator module" "src/pali/PaliECDSAValidatorModule.sol:PaliECDSAValidatorModule"
+publish_contract "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" "P-256 passkey validator module" "src/pali/PaliP256WebAuthnValidatorModule.sol:PaliP256WebAuthnValidatorModule"
+publish_contract "0x588d8afa40c08983a114957310c04d05a9dcb56d" "SLH-DSA verifier" "src/pali/SLHDSASHA212824Verifier.sol:SLHDSASHA212824Verifier"
+publish_contract "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" "SLH-DSA validator module" "src/pali/PaliSLHDSAValidatorModule.sol:PaliSLHDSAValidatorModule" "${SLH_DSA_VALIDATOR_CONSTRUCTOR_ARGS}"
+publish_contract "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" "Composite validator module" "src/pali/PaliCompositeValidatorModule.sol:PaliCompositeValidatorModule"
+publish_contract "0x23f0801ab25feee643253cd1ee5f8962bf3c63db" "Guardian recovery module" "src/pali/PaliGuardianRecoveryModule.sol:PaliGuardianRecoveryModule"
 publish_contract "${factory_address}" "Pali smart account factory" "src/pali/PaliSmartAccountFactory.sol:PaliSmartAccountFactory" "${factory_ctor}"
 
 echo "Waiting for Sourcify verification results..."
@@ -181,12 +181,12 @@ for _ in $(seq 1 30); do
   for addr in \
     "${ENTRYPOINT_ADDRESS}" \
     "${account_implementation_address}" \
-    "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad" \
-    "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd" \
-    "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a" \
-    "0x3fe7586e106eb90988dc2385a5987b7040da06f3" \
-    "0xb455eb25bcab13f003a0db5dec5e195ab634afda" \
-    "0x6b4e0a92e1cee54b93ede57f7b839a423960b913" \
+    "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133" \
+    "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24" \
+    "0x588d8afa40c08983a114957310c04d05a9dcb56d" \
+    "0x3b35e207243164753af0b6d2d99c7ad61f4c4034" \
+    "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9" \
+    "0x23f0801ab25feee643253cd1ee5f8962bf3c63db" \
     "${factory_address}"; do
     if [[ "$(runtime_code "${addr}")" == "0x" ]]; then
       continue
@@ -207,12 +207,12 @@ unverified=0
 CONTRACTS=(
   "${ENTRYPOINT_ADDRESS}|EntryPoint v0.9"
   "${account_implementation_address}|Pali smart account implementation"
-  "0xa891d5b9bf6ed7c05bfc29c284aa6d4f672118ad|ECDSA validator module"
-  "0x3eb5235eba1afa59500c2da1d4c66284aafbf3fd|P-256 passkey validator module"
-  "0x789d5ac3a14b543a46fc402eedcf31d8c8b93d4a|SLH-DSA verifier"
-  "0x3fe7586e106eb90988dc2385a5987b7040da06f3|SLH-DSA validator module"
-  "0xb455eb25bcab13f003a0db5dec5e195ab634afda|Composite validator module"
-  "0x6b4e0a92e1cee54b93ede57f7b839a423960b913|Guardian recovery module"
+  "0xbe057b217a1e17ffdc27c5262db790f0aaaa9133|ECDSA validator module"
+  "0xcde85b38a769dbe696574b5f4d8fa6ff4e420a24|P-256 passkey validator module"
+  "0x588d8afa40c08983a114957310c04d05a9dcb56d|SLH-DSA verifier"
+  "0x3b35e207243164753af0b6d2d99c7ad61f4c4034|SLH-DSA validator module"
+  "0x85b6218f5ef96e8e33bed1b08ba6d021bd574bd9|Composite validator module"
+  "0x23f0801ab25feee643253cd1ee5f8962bf3c63db|Guardian recovery module"
   "${factory_address}|Pali smart account factory"
 )
 for entry in "${CONTRACTS[@]}"; do
