@@ -1,5 +1,5 @@
 use crate::metrics::REPLAY_ARCHIVE_METRICS;
-use crate::{ReplayArchiveStorage, ReplayArchiver, ensure_object_archived};
+use crate::{ReplayArchiveStorage, ReplayArchiver};
 use alloy::primitives::{BlockHash, BlockNumber};
 use async_trait::async_trait;
 use zksync_os_storage_api::ReplayRecord;
@@ -25,18 +25,19 @@ impl<Storage> ReplayArchiver for ReplayRecordArchiver<Storage>
 where
     Storage: ReplayArchiveStorage,
 {
-    async fn ensure_replay_record(
+    async fn append_replay_record(
         &self,
         block_hash: BlockHash,
         replay_record: ReplayRecord,
     ) -> anyhow::Result<()> {
         let block_number = replay_record.block_context.block_number;
-        ensure_object_archived(&self.storage, block_number, block_hash, || {
-            let encoded = encode_replay_record(&replay_record);
-            REPLAY_ARCHIVE_METRICS.object_bytes[&"stored"].observe(encoded.len());
-            Ok(encoded)
-        })
-        .await
+        // SYSCOIN: a session append must encode and publish this writer's record; shared-key
+        // presence is not proof that the expected payload was archived.
+        let encoded = encode_replay_record(&replay_record);
+        REPLAY_ARCHIVE_METRICS.object_bytes[&"stored"].observe(encoded.len());
+        self.storage
+            .append_object(block_number, block_hash, encoded)
+            .await
     }
 
     async fn contains_replay_record(

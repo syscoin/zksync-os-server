@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use reth_tasks::Runtime;
 
 use crate::{
     AgeEncryptedReplayArchiver, FileSystemReplayArchiveStorage, ReplayArchiveComponent,
-    ReplayArchiveSender, ReplayArchiveStorage, ReplayArchiver, ReplayRecordArchiver,
-    S3ReplayArchiveConfig, S3ReplayArchiveStorage,
+    ReplayArchiveSender, ReplayArchiveSession, ReplayArchiveStorage, ReplayArchiver,
+    ReplayRecordArchiver, S3ReplayArchiveConfig, S3ReplayArchiveStorage,
 };
 #[cfg(feature = "gcp")]
 use crate::{
@@ -55,9 +56,11 @@ pub async fn init_replay_archive(
         return None;
     }
 
-    // Identifies this node in forensic object metadata; plays no role in the object layout,
-    // so all nodes share one flat archive namespace regardless of identity or restarts.
-    let writer_node_id = std::env::var("POD_NAME").unwrap_or_else(|_| "node".to_owned());
+    let node_id = std::env::var("POD_NAME").unwrap_or_else(|_| "node".to_owned());
+    // SYSCOIN: bind the gate to a writer-owned session so another archive writer cannot satisfy
+    // it by winning a shared first-writer key.
+    let session = ReplayArchiveSession::new(current_timestamp_millis(), node_id)
+        .expect("failed to create replay archive session");
 
     let archive = match &config {
         ReplayArchiveConfig::Noop => unreachable!("already checked for Noop option"),
@@ -65,23 +68,24 @@ pub async fn init_replay_archive(
             root_path,
             encryption,
         } => {
-            let storage =
-                FileSystemReplayArchiveStorage::init(root_path.clone(), writer_node_id.clone())
-                    .await
-                    .context("failed to initialize filesystem replay archive")
-                    .expect("failed to initialize replay archive");
+            let storage = FileSystemReplayArchiveStorage::init(root_path.clone(), session.clone())
+                .await
+                .with_context(|| format!("failed to create replay archive session {session}"))
+                .expect("failed to initialize replay archive");
             archive_for_storage(storage, encryption).await
         }
         ReplayArchiveConfig::S3 { config, encryption } => {
-            let storage = S3ReplayArchiveStorage::init(config.clone(), writer_node_id.clone())
+            let storage = S3ReplayArchiveStorage::init(config.clone(), session.clone())
                 .await
+                .with_context(|| format!("failed to create replay archive S3 session {session}"))
                 .expect("failed to initialize S3 replay archive");
             archive_for_storage(storage, encryption).await
         }
         #[cfg(feature = "gcp")]
         ReplayArchiveConfig::Gcs { config, encryption } => {
-            let storage = GcsReplayArchiveStorage::init(config.clone(), writer_node_id.clone())
+            let storage = GcsReplayArchiveStorage::init(config.clone(), session.clone())
                 .await
+                .with_context(|| format!("failed to create replay archive GCS session {session}"))
                 .expect("failed to initialize GCS replay archive");
             archive_for_storage(storage, encryption).await
         }
@@ -93,8 +97,17 @@ pub async fn init_replay_archive(
             .await
             .expect("replay archive component failed");
     });
-    tracing::info!(writer_node_id, "Replay archive enabled");
+    tracing::info!(%session, "Replay archive enabled");
     Some((sender, archive))
+}
+
+fn current_timestamp_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("system time in millis does not fit into u64")
 }
 
 async fn archive_for_storage<Storage>(

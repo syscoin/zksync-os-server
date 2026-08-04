@@ -82,7 +82,7 @@ where
     tracing::info!("Archiving replay record for block #{block_number}, {block_hash}");
     let archive_time = REPLAY_ARCHIVE_METRICS.archive_time.start();
     archive
-        .ensure_replay_record(block_hash, replay_record)
+        .append_replay_record(block_hash, replay_record)
         .await
         .with_context(|| format!("failed to archive replay record for block {block_number}"))?;
     archive_time.observe();
@@ -105,7 +105,7 @@ mod tests {
 
     #[async_trait]
     impl ReplayArchiver for RecordingArchiver {
-        async fn ensure_replay_record(
+        async fn append_replay_record(
             &self,
             _block_hash: BlockHash,
             _replay_record: ReplayRecord,

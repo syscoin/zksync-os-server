@@ -1,6 +1,8 @@
 #[cfg(feature = "gcp")]
 use crate::kms::GcpKmsIdentity;
-use crate::{ReplayArchiveKey, ReplayArchiveStorageReader, format_block_hash};
+use crate::{
+    ReplayArchiveKey, ReplayArchiveSession, ReplayArchiveStorageReader, format_block_hash,
+};
 use age_core::format::{FileKey, Stanza};
 use alloy::primitives::{BlockHash, BlockNumber, Sealed};
 use anyhow::Context as _;
@@ -24,7 +26,7 @@ pub const DEFAULT_DECRYPT_CONCURRENCY: NonZeroUsize = NonZeroUsize::new(32).unwr
 /// The output layout is:
 ///
 /// ```text
-/// <output_root>/<block_number>/<block_hash>
+/// <output_root>/<block_number>/<block_hash>/<session>
 /// ```
 ///
 /// Objects already present under `output_root` are skipped without re-downloading, so an
@@ -315,8 +317,8 @@ fn log_recovery_progress(count: usize, log: impl FnOnce()) {
 
 /// Scans an existing download output root for already-downloaded objects.
 ///
-/// Entries that do not parse as `<block_number>/<block_hash>` are ignored, including `.partial`
-/// files left behind by an interrupted write: they get re-downloaded and overwritten.
+/// Entries that do not parse as `<block_number>/<block_hash>/<session>` are ignored, including
+/// `.partial` files left behind by an interrupted write.
 async fn scan_existing_downloaded_objects(
     output_root: &Path,
 ) -> anyhow::Result<HashSet<ReplayArchiveKey>> {
@@ -352,10 +354,23 @@ async fn scan_existing_downloaded_objects(
             else {
                 continue;
             };
-            if !hash_entry.file_type().await?.is_file() {
+            if !hash_entry.file_type().await?.is_dir() {
                 continue;
             }
-            existing.insert(ReplayArchiveKey::new(block_number, block_hash));
+            let mut session_entries = tokio::fs::read_dir(hash_entry.path()).await?;
+            while let Some(session_entry) = session_entries.next_entry().await? {
+                if !session_entry.file_type().await?.is_file() {
+                    continue;
+                }
+                let Ok(session) = session_entry
+                    .file_name()
+                    .to_string_lossy()
+                    .parse::<ReplayArchiveSession>()
+                else {
+                    continue;
+                };
+                existing.insert(ReplayArchiveKey::new(session, block_number, block_hash));
+            }
         }
     }
 
@@ -369,7 +384,8 @@ async fn write_downloaded_object(
 ) -> anyhow::Result<()> {
     let output_path = output_root
         .join(key.block_number.to_string())
-        .join(format_block_hash(key.block_hash));
+        .join(format_block_hash(key.block_hash))
+        .join(key.session.folder_name());
 
     let parent = output_path
         .parent()
@@ -452,7 +468,7 @@ async fn read_candidate_records(
                 entry.path().display()
             )
         })?;
-        if !file_type.is_file() {
+        if !file_type.is_dir() {
             continue;
         }
         let file_name = entry.file_name();
@@ -485,20 +501,79 @@ async fn read_verified_replay_record(
     block_hash: BlockHash,
     decoder: &Arc<ReplayRecordDecoder>,
 ) -> anyhow::Result<ReplayRecord> {
-    let replay_record_path = input_root
+    let replay_record_dir = input_root
         .join(block_number.to_string())
         .join(format_block_hash(block_hash));
-    let record_bytes = tokio::fs::read(&replay_record_path)
+    let mut entries = tokio::fs::read_dir(&replay_record_dir)
         .await
         .with_context(|| {
             format!(
                 "missing replay archive record for block #{block_number}, {block_hash} at {}",
-                replay_record_path.display()
+                replay_record_dir.display()
             )
         })?;
-    decoder
-        .decode_off_thread(record_bytes, replay_record_path)
-        .await
+
+    let mut canonical_record: Option<ReplayRecord> = None;
+    let mut canonical_path: Option<PathBuf> = None;
+    let mut records_count = 0;
+    while let Some(entry) = entries.next_entry().await.with_context(|| {
+        format!(
+            "failed to read replay archive record directory {}",
+            replay_record_dir.display()
+        )
+    })? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        if file_name
+            .to_str()
+            .and_then(|name| name.parse::<ReplayArchiveSession>().ok())
+            .is_none()
+        {
+            if !file_name.to_string_lossy().ends_with(".partial") {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    "Skipping replay archive entry that is not a session"
+                );
+            }
+            continue;
+        }
+
+        let path = entry.path();
+        let record_bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("failed to read replay archive record {}", path.display()))?;
+        let record = decoder
+            .decode_off_thread(record_bytes, path.clone())
+            .await?;
+        anyhow::ensure!(
+            record.block_context.block_number == block_number,
+            "replay record path block number {block_number} does not match record block number {} at {}",
+            record.block_context.block_number,
+            path.display()
+        );
+
+        // SYSCOIN: independent writer copies must agree before recovery trusts the path hash.
+        if let Some(expected) = &canonical_record {
+            anyhow::ensure!(
+                expected == &record,
+                "replay archive record differs between sessions for block #{block_number}, {block_hash}; paths: {}, {}",
+                canonical_path.as_ref().unwrap().display(),
+                path.display()
+            );
+        } else {
+            canonical_record = Some(record);
+            canonical_path = Some(path);
+        }
+        records_count += 1;
+    }
+
+    anyhow::ensure!(
+        records_count > 0,
+        "no replay archive record files found for block #{block_number}, {block_hash}"
+    );
+    canonical_record.context("replay archive record count was non-zero but no record was loaded")
 }
 
 /// age identity used for replay archive record decryption.
@@ -606,19 +681,20 @@ mod tests {
         let archive_root = tempfile::tempdir().unwrap();
         let output_root = tempfile::tempdir().unwrap();
         let block_hash = B256::with_last_byte(1);
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
 
         let storage = FileSystemReplayArchiveStorage::init(
             archive_root.path().to_path_buf(),
-            "node-a".to_owned(),
+            session.clone(),
         )
         .await
         .unwrap();
         storage
-            .put_object_if_absent(7, block_hash, b"first".to_vec())
+            .append_object(7, block_hash, b"first".to_vec())
             .await
             .unwrap();
         storage
-            .put_object_if_absent(8, block_hash, b"second".to_vec())
+            .append_object(8, block_hash, b"second".to_vec())
             .await
             .unwrap();
 
@@ -647,7 +723,8 @@ mod tests {
         let record_path = output_root
             .path()
             .join("8")
-            .join(crate::format_block_hash(block_hash));
+            .join(crate::format_block_hash(block_hash))
+            .join(session.folder_name());
         let partial_path = record_path.with_extension("partial");
         tokio::fs::remove_file(&record_path).await.unwrap();
         tokio::fs::write(&partial_path, b"sec").await.unwrap();
@@ -782,7 +859,8 @@ mod tests {
         let reorged_out_path = input_root
             .path()
             .join("0")
-            .join(format_block_hash(reorged_out_hash));
+            .join(format_block_hash(reorged_out_hash))
+            .join(test_session().folder_name());
         tokio::fs::create_dir_all(reorged_out_path.parent().unwrap())
             .await
             .unwrap();
@@ -826,15 +904,68 @@ mod tests {
         assert_eq!(recovered, 1);
     }
 
+    #[tokio::test]
+    async fn recover_records_rejects_divergent_session_copies() {
+        let input_root = tempfile::tempdir().unwrap();
+        let replay_db = tempfile::tempdir().unwrap();
+        let block_hash = B256::with_last_byte(1);
+        let record = test_replay_record(0, B256::ZERO);
+        write_downloaded_replay_record_for_session(
+            input_root.path(),
+            &ReplayArchiveSession::new(42, "node-a").unwrap(),
+            0,
+            block_hash,
+            &record,
+        )
+        .await;
+        let mut poisoned = record;
+        poisoned.block_output_hash = B256::with_last_byte(2);
+        write_downloaded_replay_record_for_session(
+            input_root.path(),
+            &ReplayArchiveSession::new(43, "node-b").unwrap(),
+            0,
+            block_hash,
+            &poisoned,
+        )
+        .await;
+
+        let err =
+            recover_replay_records_to_rocksdb(input_root.path(), replay_db.path(), 0, block_hash)
+                .await
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("differs between sessions"),
+            "{err:#}"
+        );
+    }
+
     async fn write_downloaded_replay_record(
         input_root: &Path,
         block_number: BlockNumber,
         block_hash: BlockHash,
         record: &ReplayRecord,
     ) {
+        write_downloaded_replay_record_for_session(
+            input_root,
+            &test_session(),
+            block_number,
+            block_hash,
+            record,
+        )
+        .await;
+    }
+
+    async fn write_downloaded_replay_record_for_session(
+        input_root: &Path,
+        session: &ReplayArchiveSession,
+        block_number: BlockNumber,
+        block_hash: BlockHash,
+        record: &ReplayRecord,
+    ) {
         let path = input_root
             .join(block_number.to_string())
-            .join(format_block_hash(block_hash));
+            .join(format_block_hash(block_hash))
+            .join(session.folder_name());
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
@@ -852,13 +983,18 @@ mod tests {
     ) {
         let path = input_root
             .join(block_number.to_string())
-            .join(format_block_hash(block_hash));
+            .join(format_block_hash(block_hash))
+            .join(test_session().folder_name());
         tokio::fs::create_dir_all(path.parent().unwrap())
             .await
             .unwrap();
         let encrypted =
             age::encrypt(recipient, serde_json::to_vec(record).unwrap().as_slice()).unwrap();
         tokio::fs::write(path, encrypted).await.unwrap();
+    }
+
+    fn test_session() -> ReplayArchiveSession {
+        ReplayArchiveSession::new(42, "node-a").unwrap()
     }
 
     fn test_replay_record(

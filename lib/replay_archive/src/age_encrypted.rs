@@ -2,7 +2,7 @@
 use crate::kms::GcpKmsRecipient;
 use crate::metrics::REPLAY_ARCHIVE_METRICS;
 use crate::replay_record::encode_replay_record;
-use crate::{ReplayArchiveStorage, ReplayArchiver, ensure_object_archived};
+use crate::{ReplayArchiveStorage, ReplayArchiver};
 use age_core::format::{FileKey, Stanza};
 use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
@@ -81,18 +81,18 @@ impl<Storage> ReplayArchiver for AgeEncryptedReplayArchiver<Storage>
 where
     Storage: ReplayArchiveStorage,
 {
-    async fn ensure_replay_record(
+    async fn append_replay_record(
         &self,
         block_hash: BlockHash,
         replay_record: ReplayRecord,
     ) -> anyhow::Result<()> {
         let block_number = replay_record.block_context.block_number;
-        // Encryption is deferred into the encode closure: when the block is already archived
-        // (the common case for follower nodes), no encryption work happens at all.
-        ensure_object_archived(&self.storage, block_number, block_hash, || {
-            self.encrypt_replay_record(&replay_record)
-        })
-        .await
+        // SYSCOIN: randomized encryption still has to precede this writer's session append; a
+        // different writer's object must never satisfy the local archive gate.
+        let encrypted = self.encrypt_replay_record(&replay_record)?;
+        self.storage
+            .append_object(block_number, block_hash, encrypted)
+            .await
     }
 
     async fn contains_replay_record(

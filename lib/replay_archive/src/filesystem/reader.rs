@@ -1,5 +1,6 @@
 use crate::{
-    ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveStorageReader, format_block_hash,
+    ReplayArchiveKey, ReplayArchiveKeyPage, ReplayArchiveSession, ReplayArchiveStorageReader,
+    format_block_hash,
 };
 use alloy::primitives::{BlockHash, BlockNumber};
 use anyhow::Context as _;
@@ -9,7 +10,7 @@ use std::str::FromStr as _;
 
 /// File-system implementation of [`ReplayArchiveStorageReader`].
 ///
-/// Lists the flat layout (`<root>/<block_number>/<block_hash>`).
+/// Lists the session layout (`<root>/<session>/<block_number>/<block_hash>`).
 #[derive(Debug, Clone)]
 pub struct FileSystemReplayArchiveReader {
     root_path: PathBuf,
@@ -26,6 +27,7 @@ impl FileSystemReplayArchiveReader {
 
     fn object_path(&self, key: &ReplayArchiveKey) -> PathBuf {
         self.root_path
+            .join(key.session.folder_name())
             .join(key.block_number.to_string())
             .join(format_block_hash(key.block_hash))
     }
@@ -33,6 +35,7 @@ impl FileSystemReplayArchiveReader {
     async fn list_block_dir_objects(
         &self,
         block_dir: &Path,
+        session: &ReplayArchiveSession,
         block_number: BlockNumber,
         keys: &mut Vec<ReplayArchiveKey>,
     ) -> anyhow::Result<()> {
@@ -70,7 +73,11 @@ impl FileSystemReplayArchiveReader {
                 }
                 continue;
             };
-            keys.push(ReplayArchiveKey::new(block_number, block_hash));
+            keys.push(ReplayArchiveKey::new(
+                session.clone(),
+                block_number,
+                block_hash,
+            ));
         }
         Ok(())
     }
@@ -111,15 +118,40 @@ impl ReplayArchiveStorageReader for FileSystemReplayArchiveReader {
                 continue;
             };
 
-            let Ok(block_number) = dir_name.parse::<BlockNumber>() else {
+            let Ok(session) = dir_name.parse::<ReplayArchiveSession>() else {
                 tracing::warn!(
                     path = %root_entry.path().display(),
-                    "Skipping replay archive root entry that is not a block number"
+                    "Skipping replay archive root entry that is not a session"
                 );
                 continue;
             };
-            self.list_block_dir_objects(&root_entry.path(), block_number, &mut keys)
-                .await?;
+            let mut block_entries =
+                tokio::fs::read_dir(root_entry.path())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to read replay archive session {}",
+                            root_entry.path().display()
+                        )
+                    })?;
+            while let Some(block_entry) = block_entries.next_entry().await? {
+                if !block_entry.file_type().await?.is_dir() {
+                    continue;
+                }
+                let Ok(block_number) = block_entry
+                    .file_name()
+                    .to_string_lossy()
+                    .parse::<BlockNumber>()
+                else {
+                    tracing::warn!(
+                        path = %block_entry.path().display(),
+                        "Skipping replay archive session entry that is not a block number"
+                    );
+                    continue;
+                };
+                self.list_block_dir_objects(&block_entry.path(), &session, block_number, &mut keys)
+                    .await?;
+            }
         }
 
         Ok(ReplayArchiveKeyPage {
@@ -152,7 +184,11 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let block_number = 7;
         let block_hash = BlockHash::with_last_byte(1);
-        let block_path = tempdir.path().join(block_number.to_string());
+        let session = ReplayArchiveSession::new(42, "node-a").unwrap();
+        let block_path = tempdir
+            .path()
+            .join(session.folder_name())
+            .join(block_number.to_string());
         tokio::fs::create_dir_all(&block_path).await.unwrap();
         tokio::fs::write(
             block_path.join(format!(".{}.999.1.tmp", format_block_hash(block_hash))),
@@ -167,7 +203,10 @@ mod tests {
         let reader = FileSystemReplayArchiveReader::new(tempdir.path().to_path_buf());
         let page = reader.list_keys_page(None).await.unwrap();
 
-        assert_eq!(page.keys, [ReplayArchiveKey::new(block_number, block_hash)]);
+        assert_eq!(
+            page.keys,
+            [ReplayArchiveKey::new(session, block_number, block_hash)]
+        );
         assert_eq!(
             reader.fetch_object(&page.keys[0]).await.unwrap(),
             b"complete"

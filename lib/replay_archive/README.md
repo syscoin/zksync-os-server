@@ -9,28 +9,32 @@ recovered from L1 committed batch range events once block replay records are ava
 
 ## Storage Layout
 
-All nodes and process restarts write to one shared namespace. Replay records use:
+> **SYSCOIN:** Upstream currently uses a shared flat first-writer namespace. Syscoin keeps writer
+> sessions so archive presence cannot be supplied by a different writer.
+
+Each node process creates a writer-owned session. Replay records use:
 
 ```text
-<block_number>/<block_hash>
+<timestamp_millis>-<node_id>/<block_number>/<block_hash>
 ```
 
 For the filesystem backend, the full path is:
 
 ```text
-<archive_root>/<block_number>/<block_hash>
+<archive_root>/<timestamp_millis>-<node_id>/<block_number>/<block_hash>
 ```
 
-S3 and GCS use the same `<block_number>/<block_hash>` value as the object key.
+S3 and GCS use the same session-prefixed value as the object key.
 
 The object value is the replay record payload only. There is no wrapper, batch number, block range,
 or extra archive metadata in the object body.
 
-Implementations of `ReplayArchiveStorage` must provide idempotent, append-only writes:
+Implementations of `ReplayArchiveStorage` must provide isolated, append-only writes:
 
-- `contains_object` checks whether a key is already present.
-- `put_object_if_absent` creates a missing key and treats an existing key as success.
-- Existing archive data must never be overwritten, even with identical bytes.
+- `init` must create a fresh session and fail if that session already exists.
+- `contains_object` checks only the current writer's session.
+- `append_object` creates a missing key and fails if the key already exists.
+- Existing archive data must never be accepted as this writer's successful append.
 
 ## Write Path
 
@@ -46,28 +50,18 @@ The current queue size is `REPLAY_ARCHIVE_QUEUE_SIZE`.
 ### Concurrent Writes
 
 `ReplayArchiveComponent` processes up to `MAX_PARALLEL_OBJECT_PUTS` archive operations
-concurrently. The same storage contract handles races between those operations and writers in
-other nodes.
+concurrently. Every operation writes inside the process's unique session.
 
-For each replay record, the archiver first checks whether `<block_number>/<block_hash>` already
-exists. If it does, the write succeeds immediately without serializing or encrypting the payload.
-This check is an optimization; it is not the concurrency guarantee.
-
-If the key is missing, the archiver builds the payload and performs an atomic conditional create:
+For each replay record, the archiver builds the payload and performs an atomic conditional create:
 
 - GCS uses `if_generation_match(0)`.
 - S3 uses `If-None-Match: *`.
 - The filesystem writes a complete temporary file and hard-links it to the final path.
 
-When several nodes race, exactly one conditional create publishes the object. The other writers
-observe that the key already exists and also return success. A restart follows the same path and
-normally stops at the initial existence check. Errors other than an already-existing key are
-propagated and fail the archive component.
-
-First-writer-wins applies to the exact `(block_number, block_hash)` pair. Different block hashes at
-the same height are separate objects. If writers provide different replay records for the same key,
-the first stored payload is retained; writers do not download, decrypt, or compare the existing
-payload.
+Several nodes can archive the same `(block_number, block_hash)` without racing because their
+session prefixes differ. An existing key inside the current session is an error and fails the
+archive component. This makes the L1 commit gate depend on an object successfully published by the
+local writer rather than on unverified presence created by another writer.
 
 ## Implementations
 
@@ -135,8 +129,8 @@ The private identity should be stored separately and used only during recovery:
 AGE-SECRET-KEY-...
 ```
 
-Encryption is randomized, so archive presence checks verify object existence only. They do not
-re-encrypt a replay record and compare bytes.
+Encryption is randomized, so the live gate verifies presence only inside its writer-owned session.
+Recovery decrypts every session copy and requires the decoded records for a block/hash to agree.
 
 ## Recovery
 
@@ -145,7 +139,7 @@ Recovery has two steps.
 First, download all archive objects into a local recovery layout:
 
 ```text
-<output_root>/<block_number>/<block_hash>
+<output_root>/<block_number>/<block_hash>/<timestamp_millis>-<node_id>
 ```
 
 Second, rebuild the node replay RocksDB from a canonical anchor:
@@ -163,9 +157,9 @@ If the archive was encrypted, recovery decrypts downloaded objects in memory whe
 version (`--kms-key-version`) or an age identity (`--identity-file` / `--age-secret-key`) is
 provided. Decrypted replay records are not written to disk.
 
-The recovery logic starts from the anchor, reads the replay record for that block, extracts the
-previous block hash from the replay record, and walks backward until block `0`. It then writes the
-canonical chain into RocksDB from genesis upward using the node replay storage format.
+The recovery logic requires all session copies for each canonical block/hash to decode to the same
+replay record. It then starts from the anchor, extracts the previous block hash from each record,
+walks backward until block `0`, and writes the canonical chain into RocksDB from genesis upward.
 
 ## CLI
 
