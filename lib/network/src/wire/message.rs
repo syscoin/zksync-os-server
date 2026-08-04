@@ -156,7 +156,10 @@ impl TryFrom<u8> for ZksMessageId {
 mod tests {
     use super::ZksMessage;
     use crate::version::ZksProtocolV5;
-    use crate::wire::replays::RecordOverride;
+    use crate::wire::replays::{
+        MAX_REPLAY_OVERRIDE_DB_KEY_BYTES, MAX_REPLAY_OVERRIDE_PAYLOAD_BYTES,
+        MAX_REPLAY_RECORD_OVERRIDES, RecordOverride,
+    };
     use alloy::primitives::Bytes;
 
     #[test]
@@ -192,5 +195,80 @@ mod tests {
             let err = ZksMessage::<ZksProtocolV5>::decode_message(&mut slice).unwrap_err();
             assert_eq!(err, alloy_rlp::Error::Custom("unrecognized zks message id"));
         }
+    }
+
+    #[test]
+    fn rejects_too_many_replay_overrides_during_decode() {
+        let overrides = (0..=MAX_REPLAY_RECORD_OVERRIDES)
+            .map(|block_number| RecordOverride {
+                block_number: block_number as u64,
+                db_key: Bytes::new(),
+            })
+            .collect();
+        let encoded = ZksMessage::<ZksProtocolV5>::get_block_replays(0, None, overrides).encoded();
+
+        let err = ZksMessage::<ZksProtocolV5>::decode_message(&mut encoded.as_ref()).unwrap_err();
+
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom("replay override count exceeds limit")
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_replay_override_key_during_decode() {
+        let encoded = ZksMessage::<ZksProtocolV5>::get_block_replays(
+            0,
+            None,
+            vec![RecordOverride {
+                block_number: 0,
+                db_key: vec![0; MAX_REPLAY_OVERRIDE_DB_KEY_BYTES + 1].into(),
+            }],
+        )
+        .encoded();
+
+        let err = ZksMessage::<ZksProtocolV5>::decode_message(&mut encoded.as_ref()).unwrap_err();
+
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom("replay override db key exceeds limit")
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_replay_override_payload_before_item_decode() {
+        let encoded = ZksMessage::<ZksProtocolV5>::get_block_replays(
+            0,
+            None,
+            vec![RecordOverride {
+                block_number: 0,
+                db_key: vec![0; MAX_REPLAY_OVERRIDE_PAYLOAD_BYTES].into(),
+            }],
+        )
+        .encoded();
+
+        let err = ZksMessage::<ZksProtocolV5>::decode_message(&mut encoded.as_ref()).unwrap_err();
+
+        assert_eq!(
+            err,
+            alloy_rlp::Error::Custom("replay override payload exceeds limit")
+        );
+    }
+
+    #[test]
+    fn accepts_bounded_replay_override_keys() {
+        let message = ZksMessage::<ZksProtocolV5>::get_block_replays(
+            42,
+            Some(1),
+            vec![RecordOverride {
+                block_number: 42,
+                db_key: vec![0xAB; MAX_REPLAY_OVERRIDE_DB_KEY_BYTES].into(),
+            }],
+        );
+        let encoded = message.encoded();
+
+        let decoded = ZksMessage::<ZksProtocolV5>::decode_message(&mut encoded.as_ref()).unwrap();
+
+        assert_eq!(decoded.encoded(), encoded);
     }
 }
