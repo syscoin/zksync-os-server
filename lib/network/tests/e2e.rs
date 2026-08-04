@@ -172,7 +172,7 @@ trait PeerExt {
     /// Registers production `zks/5` replay and `zks_2fa` verification on the same peer.
     ///
     /// Both handlers publish into one `ProtocolEvent` stream, matching production. Only an
-    /// external-node peer needs `verifier_signing_key`.
+    /// external-node peer needs `verifier_signing_key`; trusted peers apply to both handlers.
     fn add_zks_2fa_sub_protocol(
         &mut self,
         node_role: NodeRole,
@@ -287,8 +287,12 @@ where
             max_active_connections,
             trusted_main_node_peers.clone(),
         );
-        let twofa_state =
-            HandlerSharedState::new(protocol_tx, max_active_connections, HashSet::new());
+        // SYSCOIN: Match production by applying trusted-peer admission to both independent caps.
+        let twofa_state = HandlerSharedState::new(
+            protocol_tx,
+            max_active_connections,
+            trusted_main_node_peers.clone(),
+        );
         let zks_2fa_registry = Arc::new(RwLock::new(HashMap::new()));
         let replays = InMemReplay::new(replays);
 
@@ -874,11 +878,14 @@ async fn trusted_peer_bypasses_max_active_connections() {
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn zks_2fa_authorizes_verifier_and_replays() {
-    // A verifier peer uses independent lanes: replay over `zks/5` and authentication over
-    // `zks_2fa`. Both must make progress on the same RLPx connection.
+    // A trusted verifier uses independent lanes: replay over `zks/5` and authentication over
+    // `zks_2fa`. Both must bypass their full independent caps and make progress on the same RLPx
+    // connection.
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV5>(1);
     let main_peer_id = net.peers_mut()[0].peer_id();
+    let external_peer_id = net.peers_mut()[1].peer_id();
+    let external_addr = net.peers_mut()[1].local_addr();
     let expected_signer = PrivateKeySigner::from_str(
         "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110",
     )
@@ -889,9 +896,9 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
-        100,
+        0,
         None,
-        HashSet::new(),
+        HashSet::from([external_peer_id]),
     );
     let mut external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
         NodeRole::ExternalNode,
@@ -903,7 +910,10 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
     );
 
     let handle = net.spawn();
-    handle.connect_peers().await;
+    // The trusted-peer bypass is intentionally outgoing-only, where the peer ID is known.
+    handle.peers()[0]
+        .network()
+        .add_peer(external_peer_id, external_addr);
 
     let peer1_id = *handle.peers()[1].peer_id();
     let mut saw_verifier_authorized = false;
