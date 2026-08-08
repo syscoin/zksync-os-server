@@ -3156,6 +3156,7 @@ mod tests {
         assert_eq!(record.udp_port, 30301);
     }
 
+    // SYSCOIN: Forced resubmission is a local recovery mode and must retain its nested config.
     #[test]
     fn l1_sender_force_resubmission_config_is_nested() {
         let default_config = parse_l1_sender_config([]);
@@ -3204,7 +3205,7 @@ mod tests {
             ),
             (
                 "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_BLOB_GAS_REPLACEMENT_MULTIPLIER",
-                "1.75",
+                "2.25",
             ),
         ]);
 
@@ -3225,7 +3226,7 @@ mod tests {
             config
                 .force_transaction_resubmission
                 .max_fee_per_blob_gas_replacement_multiplier,
-            1.75
+            2.25
         );
     }
 
@@ -3360,12 +3361,17 @@ mod tests {
         config.validate().await.unwrap();
     }
 
+    // SYSCOIN: Forced replacements must satisfy geth/reth pool bump thresholds.
     #[test]
-    fn l1_sender_replacement_multipliers_must_be_greater_than_one() {
+    fn l1_sender_replacement_multipliers_must_meet_pool_thresholds() {
         let schema = ConfigSchema::new(&L1SenderConfig::DESCRIPTION, "l1_sender");
         let repo = ConfigRepository::new(&schema).with(Environment::from_iter(
             "",
             [
+                (
+                    "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_ENABLED",
+                    "true",
+                ),
                 (
                     "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_GAS_REPLACEMENT_MULTIPLIER",
                     "1.0",
@@ -3389,18 +3395,10 @@ mod tests {
             .to_string();
 
         assert!(
-            err.contains("max_fee_per_gas_replacement_multiplier"),
+            err.contains("replacement multipliers must be >= 1.1"),
             "{err}"
         );
-        assert!(
-            err.contains("max_priority_fee_per_gas_replacement_multiplier"),
-            "{err}"
-        );
-        assert!(
-            err.contains("max_fee_per_blob_gas_replacement_multiplier"),
-            "{err}"
-        );
-        assert!(err.contains("must be greater than 1.0"), "{err}");
+        assert!(err.contains(">= 2.0 for the blob fee"), "{err}");
     }
 
     #[tokio::test]
