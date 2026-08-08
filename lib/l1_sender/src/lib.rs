@@ -1108,7 +1108,8 @@ where
     /// `2 * gas_used` per call. Each command goes into its own simulated block so
     /// cumulative block-gas-limit constraints can't reject the batch, while writes from
     /// earlier blocks remain visible to later ones (spec-mandated overlay propagation).
-    /// Falls back to [`L1_GAS_LIMIT_FALLBACK`] per tx on any simulate failure.
+    /// Falls back to `eth_estimateGas` for a single command, or
+    /// [`L1_GAS_LIMIT_FALLBACK`] per tx for a multi-command wave.
     ///
     /// `in_flight_prefix` mirrors already-submitted-but-unmined transactions ahead of
     /// `commands` in the payload so chained calls (batch N+1 requires batch N committed) see
@@ -1196,45 +1197,128 @@ where
                 tracing::warn!(
                     returned = blocks.len(),
                     expected = expected_blocks,
-                    "eth_simulateV1 returned mismatched block count, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                    "eth_simulateV1 returned mismatched block count; using safe gas fallback",
                 );
-                return Ok(vec![L1_GAS_LIMIT_FALLBACK; commands.len()]);
+                return self
+                    .fallback_gas_limits(
+                        commands,
+                        prepared_sidecars,
+                        operator_address,
+                        fee_params,
+                        starting_nonce,
+                    )
+                    .await;
             }
             Err(err) => {
                 tracing::warn!(
                     %err,
-                    "eth_simulateV1 unavailable or errored, falling back to {L1_GAS_LIMIT_FALLBACK} per tx",
+                    "eth_simulateV1 unavailable or errored; using safe gas fallback",
                 );
-                return Ok(vec![L1_GAS_LIMIT_FALLBACK; commands.len()]);
+                return self
+                    .fallback_gas_limits(
+                        commands,
+                        prepared_sidecars,
+                        operator_address,
+                        fee_params,
+                        starting_nonce,
+                    )
+                    .await;
             }
         };
 
-        let gas_limits = blocks
+        let mut gas_limits = Vec::with_capacity(commands.len());
+        for (i, block) in blocks
             .iter()
             // A prefix call reverting is expected on providers whose simulation base already
             // includes pool transactions; only the trailing per-command results matter.
             .skip(in_flight_prefix.len())
             .enumerate()
-            .map(|(i, block)| match block.calls.first() {
-                Some(call) if call.status => call.gas_used.saturating_mul(2),
+        {
+            match block.calls.first() {
+                Some(call) if call.status => gas_limits.push(call.gas_used.saturating_mul(2)),
                 Some(call) => {
                     tracing::warn!(
                         tx_index = i,
                         return_data = ?call.return_data,
-                        "eth_simulateV1 call reverted, falling back to {L1_GAS_LIMIT_FALLBACK}",
+                        "eth_simulateV1 call reverted",
                     );
-                    L1_GAS_LIMIT_FALLBACK
+                    if commands.len() > 1 {
+                        anyhow::bail!(
+                            "refusing fixed gas fallback after eth_simulateV1 reverted for \
+                             command {i} in a multi-command wave"
+                        );
+                    }
+                    return self
+                        .fallback_gas_limits(
+                            commands,
+                            prepared_sidecars,
+                            operator_address,
+                            fee_params,
+                            starting_nonce,
+                        )
+                        .await;
                 }
                 None => {
-                    tracing::warn!(
-                        tx_index = i,
-                        "eth_simulateV1 block had no call result, falling back to {L1_GAS_LIMIT_FALLBACK}",
-                    );
-                    L1_GAS_LIMIT_FALLBACK
+                    tracing::warn!(tx_index = i, "eth_simulateV1 block had no call result",);
+                    if commands.len() == 1 {
+                        return self
+                            .fallback_gas_limits(
+                                commands,
+                                prepared_sidecars,
+                                operator_address,
+                                fee_params,
+                                starting_nonce,
+                            )
+                            .await;
+                    }
+                    gas_limits.push(L1_GAS_LIMIT_FALLBACK);
                 }
-            })
-            .collect();
+            }
+        }
         Ok(gas_limits)
+    }
+
+    async fn fallback_gas_limits(
+        &self,
+        commands: &[Input],
+        prepared_sidecars: &[Option<Arc<PreparedSidecar>>],
+        operator_address: Address,
+        fee_params: FeeParams,
+        starting_nonce: u64,
+    ) -> anyhow::Result<Vec<u64>> {
+        if let Some(gas_limits) = fixed_fallback_gas_limits(commands.len()) {
+            return Ok(gas_limits);
+        }
+
+        let command = commands
+            .first()
+            .context("gas fallback requires one L1 command")?;
+        let mut request = build_l1_simulation_request(
+            operator_address,
+            self.to_address,
+            command.solidity_call(self.gateway, &operator_address),
+            starting_nonce,
+            fee_params,
+            prepared_sidecars
+                .first()
+                .and_then(|sidecar| sidecar.as_deref()),
+        );
+        request.gas = None;
+
+        // SYSCOIN: settlement RPCs enforce a transaction-fee cap. A fixed 15M fallback at
+        // Syscoin's configured max fee can exceed that cap before the transaction is admitted;
+        // a single command has no nonce-ordered predecessor, so the standard per-tx estimate is
+        // safe and preserves the pre-pipeline v31 behavior.
+        let gas_limit = self
+            .provider
+            .estimate_gas(request)
+            .await
+            .context("eth_estimateGas fallback for single L1 command")?;
+        tracing::warn!(
+            gas_limit,
+            "using eth_estimateGas fallback for single L1 command"
+        );
+        Ok(vec![gas_limit])
     }
 
     async fn report_custom_priority_fee_metrics(&self) -> anyhow::Result<()> {
@@ -1612,9 +1696,28 @@ impl FeeParams {
     }
 }
 
+// SYSCOIN: multi-command waves can depend on state created by earlier pending nonces, so only
+// the single-command case may fall back to an independent `eth_estimateGas` call.
+fn fixed_fallback_gas_limits(command_count: usize) -> Option<Vec<u64>> {
+    (command_count != 1).then(|| vec![L1_GAS_LIMIT_FALLBACK; command_count])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_command_simulate_failure_uses_estimate_gas() {
+        assert_eq!(fixed_fallback_gas_limits(1), None);
+    }
+
+    #[test]
+    fn multi_command_simulate_failure_preserves_fixed_fallback() {
+        assert_eq!(
+            fixed_fallback_gas_limits(2),
+            Some(vec![L1_GAS_LIMIT_FALLBACK; 2])
+        );
+    }
 
     #[test]
     fn nonce_error_classification() {
