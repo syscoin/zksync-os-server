@@ -1201,6 +1201,7 @@ where
                 );
                 return self
                     .fallback_gas_limits(
+                        in_flight_prefix.len(),
                         commands,
                         prepared_sidecars,
                         operator_address,
@@ -1216,6 +1217,7 @@ where
                 );
                 return self
                     .fallback_gas_limits(
+                        in_flight_prefix.len(),
                         commands,
                         prepared_sidecars,
                         operator_address,
@@ -1250,6 +1252,7 @@ where
                     }
                     return self
                         .fallback_gas_limits(
+                            in_flight_prefix.len(),
                             commands,
                             prepared_sidecars,
                             operator_address,
@@ -1263,6 +1266,7 @@ where
                     if commands.len() == 1 {
                         return self
                             .fallback_gas_limits(
+                                in_flight_prefix.len(),
                                 commands,
                                 prepared_sidecars,
                                 operator_address,
@@ -1280,13 +1284,14 @@ where
 
     async fn fallback_gas_limits(
         &self,
+        in_flight_prefix_len: usize,
         commands: &[Input],
         prepared_sidecars: &[Option<Arc<PreparedSidecar>>],
         operator_address: Address,
         fee_params: FeeParams,
         starting_nonce: u64,
     ) -> anyhow::Result<Vec<u64>> {
-        if let Some(gas_limits) = fixed_fallback_gas_limits(commands.len()) {
+        if let Some(gas_limits) = fixed_fallback_gas_limits(in_flight_prefix_len, commands.len())? {
             return Ok(gas_limits);
         }
 
@@ -1307,8 +1312,8 @@ where
 
         // SYSCOIN: settlement RPCs enforce a transaction-fee cap. A fixed 15M fallback at
         // Syscoin's configured max fee can exceed that cap before the transaction is admitted;
-        // a single command has no nonce-ordered predecessor, so the standard per-tx estimate is
-        // safe and preserves the pre-pipeline v31 behavior.
+        // a single command without an unmined prefix has no nonce-ordered predecessor, so the
+        // standard per-tx estimate is safe and preserves the pre-pipeline v31 behavior.
         let gas_limit = self
             .provider
             .estimate_gas(request)
@@ -1696,10 +1701,21 @@ impl FeeParams {
     }
 }
 
-// SYSCOIN: multi-command waves can depend on state created by earlier pending nonces, so only
-// the single-command case may fall back to an independent `eth_estimateGas` call.
-fn fixed_fallback_gas_limits(command_count: usize) -> Option<Vec<u64>> {
-    (command_count != 1).then(|| vec![L1_GAS_LIMIT_FALLBACK; command_count])
+// SYSCOIN: waves and commands behind an unmined prefix can depend on earlier pending state, so
+// only one command with an empty prefix may fall back to an independent `eth_estimateGas` call.
+fn fixed_fallback_gas_limits(
+    in_flight_prefix_len: usize,
+    command_count: usize,
+) -> anyhow::Result<Option<Vec<u64>>> {
+    if command_count == 1 {
+        anyhow::ensure!(
+            in_flight_prefix_len == 0,
+            "cannot independently estimate one L1 command behind an unmined transaction prefix"
+        );
+        Ok(None)
+    } else {
+        Ok(Some(vec![L1_GAS_LIMIT_FALLBACK; command_count]))
+    }
 }
 
 #[cfg(test)]
@@ -1708,13 +1724,18 @@ mod tests {
 
     #[test]
     fn single_command_simulate_failure_uses_estimate_gas() {
-        assert_eq!(fixed_fallback_gas_limits(1), None);
+        assert_eq!(fixed_fallback_gas_limits(0, 1).unwrap(), None);
+    }
+
+    #[test]
+    fn single_command_behind_unmined_prefix_refuses_independent_estimate() {
+        assert!(fixed_fallback_gas_limits(1, 1).is_err());
     }
 
     #[test]
     fn multi_command_simulate_failure_preserves_fixed_fallback() {
         assert_eq!(
-            fixed_fallback_gas_limits(2),
+            fixed_fallback_gas_limits(0, 2).unwrap(),
             Some(vec![L1_GAS_LIMIT_FALLBACK; 2])
         );
     }
