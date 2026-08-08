@@ -17746,6 +17746,7 @@ dependencies = [
  "blake2",
  "jsonrpsee",
  "serde",
+ "serde_json",
  "zksync_os_genesis",
  "zksync_os_merkle_tree_api",
  "zksync_os_storage_api",

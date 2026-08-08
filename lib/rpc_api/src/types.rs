@@ -102,6 +102,9 @@ pub struct L2ToL1LogProof {
     ///
     /// It is `None` for [`LogProofTarget::L1BatchRoot`] proofs, which do not include a MessageRoot
     /// extension.
+    // SYSCOIN: Keep the v31 JSON-RPC wire key consumed by production relayers while allowing the
+    // generalized v32 spelling on input. The Rust name can describe either settlement layer.
+    #[serde(rename = "gatewayBlockNumber", alias = "settlementLayerBlockNumber")]
     pub settlement_layer_block_number: Option<u64>,
 }
 
@@ -384,6 +387,30 @@ mod tests {
     use alloy::consensus::{Block, BlockBody, Header};
     use alloy::eips::Encodable2718;
     use alloy_rlp::BufMut;
+
+    #[test]
+    fn l2_to_l1_log_proof_preserves_v31_gateway_block_wire_key() {
+        let proof = L2ToL1LogProof {
+            batch_number: 11,
+            proof: vec![B256::repeat_byte(1)],
+            id: 2,
+            root: B256::repeat_byte(3),
+            settlement_layer_block_number: Some(42),
+        };
+
+        // SYSCOIN: Existing v31 relayers read `gatewayBlockNumber`; changing only the Rust field
+        // name must not silently remove that response value.
+        let serialized = serde_json::to_value(&proof).unwrap();
+        assert_eq!(serialized["gatewayBlockNumber"], 42);
+        assert!(serialized.get("settlementLayerBlockNumber").is_none());
+
+        let mut generalized = serialized;
+        let object = generalized.as_object_mut().unwrap();
+        let block_number = object.remove("gatewayBlockNumber").unwrap();
+        object.insert("settlementLayerBlockNumber".to_owned(), block_number);
+        let decoded: L2ToL1LogProof = serde_json::from_value(generalized).unwrap();
+        assert_eq!(decoded.settlement_layer_block_number, Some(42));
+    }
 
     #[derive(Clone)]
     enum RawTransaction {
