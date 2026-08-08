@@ -708,7 +708,9 @@ where
         let new_hash = reply_rx
             .await
             .context("submitter dropped an eviction resend request")?;
-        entry.tx_hashes.push(new_hash);
+        if !entry.tx_hashes.contains(&new_hash) {
+            entry.tx_hashes.push(new_hash);
+        }
         entry.submitted_at = Instant::now();
         Ok(())
     }

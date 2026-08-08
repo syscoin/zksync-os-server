@@ -598,6 +598,9 @@ where
     ///   are a deliberate operator bound, so the sender waits indefinitely (warning on the
     ///   transaction-timeout cadence) instead of crash-looping for the duration of a fee spike;
     ///   upstream backpressure engages while it waits.
+    /// * replacement-underpriced rejections — if the matching transaction is still pooled, it
+    ///   is adopted; otherwise the sender waits at the configured cap until the conflicting
+    ///   transaction leaves the pool instead of bypassing the cap or crash-looping.
     ///
     /// Everything else (including transport errors, where the tx may or may not have been
     /// admitted) propagates as fatal: restart + in-flight recovery is the only safe way to
@@ -684,14 +687,42 @@ where
                     tokio::time::sleep(self.config.gateway_da_admission_retry_interval).await;
                 }
                 Err(err) if is_replacement_underpriced_error(&err) => {
-                    // Notably hit when `force_transaction_resubmission` is re-run against
-                    // transactions a previous force run already priced at the configured
-                    // replacement fees — those fees are absolute, so no further bump happens.
-                    return Err(anyhow::Error::from(err).context(
-                        "replacement fees did not outbid the transaction already pooled at \
-                         this nonce; if this repeats, raise the \
-                         `force_transaction_resubmission` multipliers or the fee caps",
-                    ));
+                    // SYSCOIN: A false eviction signal or restart can race a matching transaction
+                    // that is still pooled. Tracking it preserves the operator fee cap without
+                    // turning the expected replacement rejection into a sender crash loop.
+                    if let Some(pending_tx) = self.find_landed_tx(&tx_request).await {
+                        tracing::info!(
+                            command_name,
+                            range,
+                            tx_hash = ?pending_tx.tx_hash(),
+                            "matching transaction is still present at its nonce; adopting it"
+                        );
+                        return Ok(pending_tx);
+                    }
+
+                    let elapsed = started_at.elapsed();
+                    if !self.config.transaction_timeout.is_zero() && elapsed >= next_fee_warning_at
+                    {
+                        next_fee_warning_at += self.config.transaction_timeout;
+                        tracing::warn!(
+                            command_name,
+                            range,
+                            waited_secs = elapsed.as_secs_f64(),
+                            %err,
+                            "replacement transaction cannot outbid the conflicting transaction \
+                             without exceeding the configured fee caps; the sender is stalled \
+                             until that transaction leaves the pool (or the replacement \
+                             multipliers / fee caps are raised)"
+                        );
+                    } else {
+                        tracing::debug!(
+                            command_name,
+                            range,
+                            %err,
+                            "replacement transaction remains capped; waiting before retrying"
+                        );
+                    }
+                    tokio::time::sleep(self.config.nonce_error_retry_backoff).await;
                 }
                 Err(err) if is_fee_too_low_error(&err) => {
                     let elapsed = started_at.elapsed();
@@ -770,8 +801,9 @@ where
 
     /// Checks whether a transaction with this request's calldata already sits at its nonce —
     /// on chain or in the pool — and returns a pending-transaction handle for it if so. Used
-    /// to disambiguate nonce/already-known send rejections. Returns `None` (never an error)
-    /// when the provider cannot answer; the caller falls back to its retry policy.
+    /// to disambiguate nonce/already-known and replacement-underpriced send rejections. Returns
+    /// `None` (never an error) when the provider cannot answer; the caller falls back to its
+    /// retry policy.
     async fn find_landed_tx(
         &self,
         tx_request: &TransactionRequest,
