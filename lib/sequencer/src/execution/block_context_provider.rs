@@ -5,8 +5,12 @@ use crate::model::blocks::{
 };
 use alloy::primitives::{Address, B256, BlockHash, TxHash, U256};
 use anyhow::Context as _;
+use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    sync::watch,
+    time::{Instant, MissedTickBehavior},
+};
 use zksync_os_contract_interface::settlement_layer_intervals::{
     IntervalSettlementLayer, SettlementLayerIntervals,
 };
@@ -18,6 +22,10 @@ use zksync_os_types::{
     BlockOutput, BlockStartCursors, ExecutionVersion, FeeParams, ProtocolSemanticVersion,
     SystemTxEnvelope, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
+
+// SYSCOIN: An idle Gateway must keep its provisional RPC context close to the timestamp that
+// block production will select after the first transaction arrives.
+const PENDING_CONTEXT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Component that turns `BlockCommand`s into `PreparedBlockCommand`s.
 /// Last step in the stream where `Produce` and `Replay` are differentiated.
@@ -169,14 +177,20 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             // SYSCOIN: V31 Gateway roots remain valid, while v32 enables roots imported from L1.
             let include_interop_traffic =
                 self.settles_on_gateway() || previous_record.protocol_version.supports_l1_interop();
-            let best_txs = self
-                .pool
-                .best_transactions_stream(
-                    self.next_interop_tx_allowed_after,
-                    include_interop_traffic,
-                )
-                .await
-                .context("mempool is closed")?;
+            let best_txs_future = self.pool.best_transactions_stream(
+                self.next_interop_tx_allowed_after,
+                include_interop_traffic,
+            );
+            let pending_context_sender = self.last_constructed_block_ctx_sender.clone();
+            let best_txs = await_with_pending_context_refresh(
+                best_txs_future,
+                pending_block_context,
+                &pending_context_sender,
+                self.config.block_timestamp_offset_seconds,
+                PENDING_CONTEXT_REFRESH_INTERVAL,
+            )
+            .await
+            .context("mempool is closed")?;
 
             // SYSCOIN: `best_transactions_stream` can wait indefinitely while the mempool
             // is empty. If fee inputs changed during that wait, discard the selected stream
@@ -596,6 +610,36 @@ fn unix_timestamp_seconds(offset_seconds: i64) -> u64 {
     }
 }
 
+// SYSCOIN: `best_transactions_stream` may wait forever on a no-op Gateway. Refreshing only this
+// provisional context keeps RPC simulation aligned with the fresh timestamp selected after the
+// wait, without mutating the final context of an executing block.
+async fn await_with_pending_context_refresh<F>(
+    future: F,
+    mut pending_context: BlockContext,
+    sender: &watch::Sender<Option<BlockContext>>,
+    timestamp_offset_seconds: i64,
+    refresh_interval: Duration,
+) -> F::Output
+where
+    F: Future,
+{
+    let mut refresh = tokio::time::interval(refresh_interval);
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // The caller has just published the initial context, so skip the immediate first tick.
+    refresh.tick().await;
+    tokio::pin!(future);
+
+    loop {
+        tokio::select! {
+            output = &mut future => return output,
+            _ = refresh.tick() => {
+                pending_context.timestamp = unix_timestamp_seconds(timestamp_offset_seconds);
+                sender.send_replace(Some(pending_context));
+            }
+        }
+    }
+}
+
 // SYSCOIN: full upgrade transactions can be valid at the current protocol version on a fresh
 // v31 genesis start; patch-only equal/lower metadata should remain skippable.
 fn should_apply_upgrade_metadata(
@@ -810,5 +854,36 @@ mod tests {
                 .contains("inconsistent genesis block hashes"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn refreshes_provisional_pending_timestamp_while_gateway_is_idle() {
+        let stale_timestamp = unix_timestamp_seconds(0).saturating_sub(2 * 60 * 60);
+        let context = block_context(11, stale_timestamp, BlockHashes::default());
+        let (sender, mut receiver) = watch::channel(Some(context));
+        let wait = await_with_pending_context_refresh(
+            std::future::pending::<()>(),
+            context,
+            &sender,
+            0,
+            Duration::from_millis(1),
+        );
+        tokio::pin!(wait);
+
+        tokio::select! {
+            _ = &mut wait => panic!("pending transaction wait unexpectedly completed"),
+            changed = tokio::time::timeout(Duration::from_secs(1), receiver.changed()) => {
+                changed
+                    .expect("pending context refresh timed out")
+                    .expect("pending context sender closed");
+            }
+        }
+
+        let refreshed = receiver
+            .borrow()
+            .expect("pending context must remain available");
+        assert!(refreshed.timestamp > context.timestamp + 60 * 60);
+        assert_eq!(refreshed.block_number, context.block_number);
+        assert_eq!(refreshed.eip1559_basefee, context.eip1559_basefee);
     }
 }

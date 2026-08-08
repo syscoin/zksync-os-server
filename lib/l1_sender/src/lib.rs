@@ -98,6 +98,25 @@ impl FeeParams {
         }
     }
 
+    // SYSCOIN: Replacement floors can be influenced by an untrusted settlement RPC's view of
+    // pending transactions, so they cannot authorize fees above the operator-selected limits.
+    pub(crate) fn apply_bounded_floor(self, floor: FeeParams, limits: FeeParams) -> FeeParams {
+        FeeParams {
+            max_fee_per_gas: self
+                .max_fee_per_gas
+                .max(floor.max_fee_per_gas)
+                .min(limits.max_fee_per_gas),
+            max_priority_fee_per_gas: self
+                .max_priority_fee_per_gas
+                .max(floor.max_priority_fee_per_gas)
+                .min(limits.max_priority_fee_per_gas),
+            max_fee_per_blob_gas: self
+                .max_fee_per_blob_gas
+                .max(floor.max_fee_per_blob_gas)
+                .min(limits.max_fee_per_blob_gas),
+        }
+    }
+
     /// Fee floor for replacing this transaction in the pool. Geth and reth require a 100%
     /// bump on tip, fee cap AND blob fee cap to replace a blob transaction, but only a 10%
     /// bump for regular transactions.
@@ -1084,14 +1103,7 @@ where
         force_transaction_resubmission: bool,
     ) -> anyhow::Result<FeeParams> {
         if force_transaction_resubmission {
-            let params = fee_config.replacement_fee_params();
-            // Blob-capable senders need a 100% bump to replace pooled blob transactions;
-            // the configured multipliers only have to satisfy the regular 10% bump rule.
-            return Ok(if Input::MAY_SEND_BLOBS {
-                params.max(fee_config.configured_fee_params().doubled())
-            } else {
-                params
-            });
+            return Ok(fee_config.fee_limits(true, Input::MAY_SEND_BLOBS));
         }
 
         let configured_params = fee_config.configured_fee_params();
@@ -1652,6 +1664,23 @@ fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeePar
 }
 
 impl L1SenderFeeConfig {
+    // SYSCOIN: Forced startup replacement is an explicit operator override; ordinary sends and
+    // automatic eviction recovery remain bounded by the documented configured maxima.
+    pub(crate) fn fee_limits(self, force_resubmission: bool, may_send_blobs: bool) -> FeeParams {
+        if !force_resubmission {
+            return self.configured_fee_params();
+        }
+
+        let replacement = self.replacement_fee_params();
+        // Blob pools require a 100% bump in every fee field even when configured replacement
+        // multipliers only cover the regular transaction-pool rule.
+        if may_send_blobs {
+            replacement.max(self.configured_fee_params().doubled())
+        } else {
+            replacement
+        }
+    }
+
     fn validate_syscoin_fee_caps(self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.max_fee_per_gas_wei >= SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
@@ -2018,5 +2047,57 @@ mod tests {
                 configured.max_priority_fee_per_gas,
             );
         }
+    }
+
+    #[test]
+    fn replacement_floors_cannot_compound_above_fee_limits() {
+        let resolved = FeeParams {
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 5,
+            max_fee_per_blob_gas: 50,
+        };
+        let limits = FeeParams {
+            max_fee_per_gas: 100,
+            max_priority_fee_per_gas: 10,
+            max_fee_per_blob_gas: 50,
+        };
+
+        for carries_blobs in [false, true] {
+            let mut replacement = resolved;
+            for _ in 0..32 {
+                replacement = replacement
+                    .apply_bounded_floor(replacement.replacement_floor(carries_blobs), limits);
+                assert!(replacement.max_fee_per_gas <= limits.max_fee_per_gas);
+                assert!(replacement.max_priority_fee_per_gas <= limits.max_priority_fee_per_gas);
+                assert!(replacement.max_fee_per_blob_gas <= limits.max_fee_per_blob_gas);
+            }
+        }
+    }
+
+    #[test]
+    fn forced_resubmission_keeps_explicit_operator_replacement_limits() {
+        let config = L1SenderFeeConfig {
+            max_fee_per_gas_wei: 100_000,
+            max_priority_fee_per_gas_wei: 30_000,
+            max_fee_per_blob_gas_wei: 50_000,
+            max_fee_per_gas_replacement_multiplier: 1.5,
+            max_priority_fee_per_gas_replacement_multiplier: 1.5,
+            max_fee_per_blob_gas_replacement_multiplier: 1.5,
+        };
+
+        let regular_limits = config.fee_limits(false, true);
+        assert_eq!(regular_limits.max_fee_per_gas, 100_000);
+        assert_eq!(regular_limits.max_priority_fee_per_gas, 30_000);
+        assert_eq!(regular_limits.max_fee_per_blob_gas, 50_000);
+
+        let forced_regular_limits = config.fee_limits(true, false);
+        assert_eq!(forced_regular_limits.max_fee_per_gas, 150_000);
+        assert_eq!(forced_regular_limits.max_priority_fee_per_gas, 45_000);
+        assert_eq!(forced_regular_limits.max_fee_per_blob_gas, 75_000);
+
+        let forced_blob_limits = config.fee_limits(true, true);
+        assert_eq!(forced_blob_limits.max_fee_per_gas, 200_000);
+        assert_eq!(forced_blob_limits.max_priority_fee_per_gas, 60_000);
+        assert_eq!(forced_blob_limits.max_fee_per_blob_gas, 100_000);
     }
 }

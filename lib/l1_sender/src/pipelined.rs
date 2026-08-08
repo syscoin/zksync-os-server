@@ -541,14 +541,20 @@ where
     ) -> FeeParams {
         match state.replacement {
             Some(plan) if state.next_nonce < plan.until_nonce => {
-                let raised = fee_params.max(plan.fee_floor);
+                let raised = fee_params.apply_bounded_floor(
+                    plan.fee_floor,
+                    self.config.fee_config.fee_limits(
+                        self.config.force_transaction_resubmission,
+                        Input::MAY_SEND_BLOBS,
+                    ),
+                );
                 tracing::warn!(
                     command_name = Input::COMPONENT_ID.as_str(),
                     until_nonce = plan.until_nonce,
                     next_nonce = state.next_nonce,
                     ?raised,
                     "replacing stale in-flight transactions from a previous session; \
-                     applying a 2x replacement fee floor (may exceed configured fee caps)",
+                     applying a replacement fee floor within operator-selected fee limits",
                 );
                 raised
             }
@@ -733,7 +739,15 @@ where
                 self.config.force_transaction_resubmission,
             )
             .await?;
-        let fee_params = resolved.max(entry.fee_params.replacement_floor(entry.sidecar.is_some()));
+        // SYSCOIN: A remote RPC can falsely report an in-flight transaction as evicted; preserve
+        // the replacement attempt without allowing that signal to bypass operator fee limits.
+        let fee_params = resolved.apply_bounded_floor(
+            entry.fee_params.replacement_floor(entry.sidecar.is_some()),
+            self.config.fee_config.fee_limits(
+                self.config.force_transaction_resubmission,
+                Input::MAY_SEND_BLOBS,
+            ),
+        );
 
         let blob_base_fee = if entry.sidecar.is_some() {
             Some(self.provider.get_blob_base_fee().await?)
