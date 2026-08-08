@@ -45,6 +45,37 @@ where
             .await
     }
 
+    /// Enqueues every canonical replay record that existed when this archive session started.
+    pub async fn backfill_initial_replay_records(&self) -> anyhow::Result<()> {
+        let Some(initial_tip) = self.initial_replay_tip else {
+            return Ok(());
+        };
+
+        // SYSCOIN: A restored v31 WAL may start at its existing tip without replaying historical
+        // blocks through `WriteReplay::write`. Explicitly seed the new archive session so recovery
+        // is complete from genesis rather than depending on rejected writes as an implicit scan.
+        for block_number in 0..=initial_tip {
+            let replay_record = self
+                .replay
+                .get_replay_record(block_number)
+                .with_context(|| format!("missing canonical replay record {block_number}"))?;
+            let Some(block_hash) = self.replay.get_canonical_block_hash(block_number) else {
+                // SYSCOIN: Legacy databases cannot reconstruct their current tip hash until that
+                // block is replayed. Leave only that record to the verified rejected-write path.
+                tracing::warn!(
+                    block_number,
+                    "Skipping replay archive startup backfill until canonical hash is reconstructed"
+                );
+                continue;
+            };
+            if self.should_archive_rejected_record(block_number, block_hash) {
+                self.enqueue_replay_record((block_hash, replay_record))
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn enqueue_replay_record(
         &self,
         archive_record: (BlockHash, ReplayRecord),

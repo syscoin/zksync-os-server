@@ -84,6 +84,19 @@ pub struct SettlementLayerIntervals {
 }
 
 impl SettlementLayerIntervals {
+    /// Constructs the canonical open-ended direct-L1 layout when discovery is unnecessary
+    /// (for example, for components assembled from already-known state in tests).
+    pub fn direct_l1(proxy: ZkChain<NodeProvider>) -> Self {
+        Self {
+            intervals: Arc::new(vec![SettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::L1,
+                first_batch: 1,
+                last_batch: None,
+                proxy,
+            }]),
+        }
+    }
+
     /// Discovers the intervals on-chain from `IL1ChainAssetHandler.migrationInterval` and attaches
     /// the matching diamond proxy to each. Fails if a historical Gateway interval references a
     /// chain that the configured `gateway_provider` cannot serve.

@@ -22,5 +22,9 @@ blake2.workspace = true
 jsonrpsee = { workspace = true, default-features = false, features = ["macros", "client", "jsonrpsee-core"] }
 serde.workspace = true
 
+[dev-dependencies]
+# SYSCOIN: Assert the v31 JSON-RPC response key remains wire-compatible.
+serde_json.workspace = true
+
 [features]
 server = ["jsonrpsee/server"]

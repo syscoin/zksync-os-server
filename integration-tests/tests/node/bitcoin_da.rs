@@ -9,7 +9,9 @@ use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
 use serde_json::{Value, json};
 use smart_config::value::SecretString;
 use std::time::Duration;
-use zksync_os_integration_tests::NEXT_TO_GATEWAY;
+// SYSCOIN: Bitcoin-DA Gateway coverage stays on the v31 production topology until V8 exposes the
+// compact edge-DA inputs required by our settlement contract.
+use zksync_os_integration_tests::CURRENT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
 use zksync_os_server::config::BitcoinDaFinalityMode;
 use zksync_os_types::PubdataMode;
@@ -120,7 +122,8 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         })
         .await;
     let server_url = server.base_url();
-    let env = NEXT_TO_GATEWAY.environment().await?;
+    // SYSCOIN: Exercise the same v31 Gateway path deployed on testnet.
+    let env = CURRENT_TO_GATEWAY.environment().await?;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
     config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
@@ -255,7 +258,8 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
 
     let server_url = server.base_url();
     let gateway_server_url = server_url.clone();
-    let env = NEXT_TO_GATEWAY
+    // SYSCOIN: Confirmation-based Bitcoin DA finality must remain covered on production v31.
+    let env = CURRENT_TO_GATEWAY
         .environment_with_gateway_config(move |config| {
             config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
             config.batcher_config.bitcoin_da_rpc_url = Some(gateway_server_url.clone());

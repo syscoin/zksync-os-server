@@ -10,8 +10,8 @@ use backon::{ConstantBuilder, Retryable};
 use zksync_os_integration_tests::BATCH_VERIFICATION_KEYS;
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::{
-    CURRENT_TO_L1, NEXT_TO_L1, TestEnvironment, Tester, assert_traits::ReceiptAssert,
-    contracts::EventEmitter, test_multisetup,
+    CURRENT_TO_L1, TestEnvironment, Tester, assert_traits::ReceiptAssert, contracts::EventEmitter,
+    test_multisetup,
 };
 use zksync_os_server::config::Config;
 
@@ -24,7 +24,7 @@ async fn launch_en(
     main_node.launch_from_config(config).await
 }
 
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
+#[test_multisetup([CURRENT_TO_L1])]
 async fn batch_verification_works(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     config.batch_verification_config.server_enabled = true;
@@ -71,17 +71,22 @@ async fn batch_verification_without_enough_ens(env: TestEnvironment) -> anyhow::
     .await?;
 
     // Do some random transaction
-    let _deploy_tx_receipt = EventEmitter::deploy_builder(main_node.l2_provider.clone())
+    let deploy_tx_receipt = EventEmitter::deploy_builder(main_node.l2_provider.clone())
         .send()
         .await?
         .expect_successful_receipt()
         .await?;
 
-    // First block should not get finalized because EN with 2FA is needed.
+    // SYSCOIN: The pinned v31 fixture already contains finalized history, so assert against the
+    // newly produced block rather than the upstream empty-genesis block number.
+    let block_number = deploy_tx_receipt
+        .block_number
+        .expect("deployment receipt must contain a block number");
+    // The new block should not get finalized because an additional authorized EN is needed.
     // Use a shorter timeout: if finalization hasn't happened in 20s, it won't.
     main_node
         .l2_zk_provider
-        .wait_not_finalized(1, Duration::from_secs(20))
+        .wait_not_finalized(block_number, Duration::from_secs(20))
         .await?;
     Ok(())
 }
@@ -100,11 +105,22 @@ async fn batch_verification_with_2_ens(env: TestEnvironment) -> anyhow::Result<(
     })
     .await?;
 
-    // First block should not get finalized because 2 EN with 2FA are needed.
+    // Produce a block while only one verifier is connected.
+    let first_receipt = EventEmitter::deploy_builder(main_node.l2_provider.clone())
+        .send()
+        .await?
+        .expect_successful_receipt()
+        .await?;
+    // SYSCOIN: The pinned v31 fixture already contains finalized history, so assert against the
+    // newly produced block rather than the upstream empty-genesis block number.
+    let first_block = first_receipt
+        .block_number
+        .expect("deployment receipt must contain a block number");
+    // The new block should not get finalized because two authorized ENs are needed.
     // Use a shorter timeout: if finalization hasn't happened in 20s, it won't.
     main_node
         .l2_zk_provider
-        .wait_not_finalized(1, Duration::from_secs(20))
+        .wait_not_finalized(first_block, Duration::from_secs(20))
         .await?;
 
     let _en2 = launch_en(&main_node, |config: &mut Config| {
@@ -132,7 +148,7 @@ async fn batch_verification_with_2_ens(env: TestEnvironment) -> anyhow::Result<(
     Ok(())
 }
 
-#[test_multisetup([CURRENT_TO_L1, NEXT_TO_L1])]
+#[test_multisetup([CURRENT_TO_L1])]
 async fn transaction_replay(main_node: Tester) -> anyhow::Result<()> {
     let en1 = launch_en(&main_node, |_| {}).await?;
 

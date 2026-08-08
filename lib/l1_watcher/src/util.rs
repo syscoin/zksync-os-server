@@ -383,7 +383,6 @@ async fn latest_block_for_event_scan(
     start_block_number: BlockNumber,
 ) -> anyhow::Result<BlockNumber> {
     let mut stale_height_attempts = 0;
-    let mut logged_next_block_wait = false;
 
     loop {
         let latest_block = match provider.get_block_number().await {
@@ -403,30 +402,6 @@ async fn latest_block_for_event_scan(
         };
         match event_scan_block_count(start_block_number, latest_block) {
             Ok(_) => return Ok(latest_block),
-            Err(err)
-                if latest_block.checked_add(1) == Some(start_block_number)
-                    && stale_height_attempts + 1 < STALE_L1_HEIGHT_RETRY_ATTEMPTS =>
-            {
-                stale_height_attempts += 1;
-                if !logged_next_block_wait {
-                    tracing::warn!(
-                        start_block_number,
-                        latest_block,
-                        attempt = stale_height_attempts,
-                        "event scan cursor is at the next block; waiting for provider tip to advance"
-                    );
-                    logged_next_block_wait = true;
-                } else {
-                    tracing::debug!(
-                        start_block_number,
-                        latest_block,
-                        attempt = stale_height_attempts,
-                        error = %err,
-                        "still waiting for provider tip to advance to event scan start"
-                    );
-                }
-                tokio::time::sleep(STALE_L1_HEIGHT_RETRY_DELAY).await;
-            }
             Err(err) if stale_height_attempts + 1 < STALE_L1_HEIGHT_RETRY_ATTEMPTS => {
                 stale_height_attempts += 1;
                 tracing::debug!(
@@ -448,6 +423,12 @@ fn event_scan_block_count(
     start_block_number: BlockNumber,
     latest_block: BlockNumber,
 ) -> anyhow::Result<u64> {
+    // SYSCOIN: a cursor exactly one past the tip is a proven empty inclusive range. This occurs
+    // when a commit is at the current tip and its subsequent revert scan starts at the next block.
+    if latest_block.checked_add(1) == Some(start_block_number) {
+        return Ok(0);
+    }
+
     latest_block
         .checked_sub(start_block_number)
         .and_then(|span| span.checked_add(1))
@@ -584,8 +565,11 @@ pub async fn find_l1_execute_block_by_batch_number(
     .await
 }
 
-/// Finds the first L1 block where `interopRootLogId >= next_interop_root_id`.
-/// Uses binary search for efficiency.
+/// Finds the first L1 block where MessageRoot's counter reached `next_interop_root_id`.
+///
+/// The input is the next root the chain has not imported. For example, cursor 42 resolves to the
+/// block that advanced the counter to 42. A zero cursor has no on-chain anchor yet and resolves to
+/// block 0.
 pub async fn find_l1_block_by_interop_root_id(
     bridgehub: Bridgehub<NodeProvider>,
     next_interop_root_id: u64,
@@ -593,13 +577,11 @@ pub async fn find_l1_block_by_interop_root_id(
     if next_interop_root_id == 0 {
         return Ok(0);
     }
-
     let message_root_address = bridgehub.message_root_address().await?;
     let message_root = Arc::new(MessageRoot::new(
         message_root_address,
         bridgehub.provider().clone(),
     ));
-
     let latest = message_root.provider().get_block_number().await?;
     // The provider's cache resolves (and remembers) the MessageRoot deployment block, giving the
     // search a tight lower bound without a per-iteration code-existence guard.
@@ -851,6 +833,7 @@ mod tests {
 
     #[test]
     fn event_scan_block_count_is_inclusive() {
+        assert_eq!(event_scan_block_count(11, 10).unwrap(), 0);
         assert_eq!(event_scan_block_count(10, 10).unwrap(), 1);
         assert_eq!(event_scan_block_count(10, 12).unwrap(), 3);
     }

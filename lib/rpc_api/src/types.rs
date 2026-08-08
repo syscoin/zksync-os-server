@@ -83,23 +83,60 @@ pub fn raw_transaction_rlp_item_length(raw_tx: &[u8]) -> usize {
     }
 }
 
-/// A struct with the proof for the L2->L1 log in a specific block.
+/// Proof that an L2-to-L1 log belongs to a source batch and, optionally, L1's MessageRoot.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct L2ToL1LogProof {
     /// The L1 batch number containing the log.
     pub batch_number: u64,
-    /// The merkle path for the leaf.
+    /// Proof words in the format consumed by the contracts. The first word is metadata; the
+    /// remaining words contain the log path and any aggregation segments selected by
+    /// [`LogProofTarget`].
     pub proof: Vec<B256>,
-    /// The id of the leaf in a tree.
+    /// Index of the log leaf in the batch's L2-to-L1 log tree.
     pub id: u32,
-    /// The root of the tree.
+    /// Source batch root reached by the first proof segment.
     pub root: B256,
-    /// The gateway block number where this L2 batch was executed.
+    /// Settlement-layer block where the source batch was executed for a
+    /// [`LogProofTarget::MessageRoot`] proof.
     ///
-    /// Present whenever the node has a gateway provider configured (i.e. the chain settles to a
-    /// gateway rather than directly to L1). `None` for chains that settle directly to L1.
-    pub gateway_block_number: Option<u64>,
+    /// It is `None` for [`LogProofTarget::L1BatchRoot`] proofs, which do not include a MessageRoot
+    /// extension.
+    // SYSCOIN: Keep the v31 JSON-RPC wire key consumed by production relayers while allowing the
+    // generalized v32 spelling on input. The Rust name can describe either settlement layer.
+    #[serde(rename = "gatewayBlockNumber", alias = "settlementLayerBlockNumber")]
+    pub settlement_layer_block_number: Option<u64>,
+}
+
+/// One leaf of an Indexed Merkle Tree, in on-chain field order
+/// (`L2InteropCommitmentTree.leafAt` / `IndexedMerkleTreeLib`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImtLeaf {
+    /// The leaf's stored value (the atomic-interop commit value).
+    pub value: U256,
+    /// Index of the next leaf in the value-sorted linked list.
+    pub next_index: U256,
+    /// Value of the next leaf in the value-sorted linked list.
+    pub next_value: U256,
+}
+
+/// Membership proof for one commit value in a chain's atomic-interop commitment tree.
+///
+/// This response authenticates the commit leaf against the IMT root at one L2 block. To execute an
+/// atomic bundle, the caller pairs it with a `MessageRoot` proof from
+/// `zks_getL2ToL1LogProof`; that second proof authenticates the IMT root across chains.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImtInclusionProof {
+    /// The IMT root at the requested block (matches `L2InteropCommitmentTree.root()`).
+    pub chain_imt_root: B256,
+    /// The proven leaf.
+    pub leaf: ImtLeaf,
+    /// The leaf's index in the tree.
+    pub imt_leaf_index: u64,
+    /// Dynamic-height Merkle path, ordered from the leaf level upward.
+    pub imt_proof: Vec<B256>,
 }
 
 /// Selects the root that the returned merkle proof anchors to.
@@ -108,16 +145,19 @@ pub struct L2ToL1LogProof {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LogProofTarget {
-    /// Proof anchored to the SL L1 batch aggregated root.
+    /// Stops at the source chain's batch root without reading or adding any MessageRoot state.
     ///
-    /// The proof covers the full gateway batch range and includes the local-root extension,
-    /// making it suitable for L1 verification.
+    /// This is the default used by L1 verification flows such as withdrawal finalization.
     #[default]
     L1BatchRoot,
-    /// Proof anchored to the SL block-level message root.
+    /// Extends the source batch-root proof through the source chain's batch tree and then L1's
+    /// shared chain tree in MessageRoot.
     ///
-    /// The proof targets the specific execution block (no local-root extension),
-    /// making it suitable for cross-chain interop message verification.
+    /// MessageRoot appends the source chain's batch root when the batch executes on L1. Reading it
+    /// at that execution block selects the historical shared root containing the append; later
+    /// blocks may contain a different root. Other chains import the shared root keyed by this L1
+    /// block. This target is available only for batches produced under a protocol version that
+    /// supports L1 interop.
     MessageRoot,
 }
 
@@ -347,6 +387,30 @@ mod tests {
     use alloy::consensus::{Block, BlockBody, Header};
     use alloy::eips::Encodable2718;
     use alloy_rlp::BufMut;
+
+    #[test]
+    fn l2_to_l1_log_proof_preserves_v31_gateway_block_wire_key() {
+        let proof = L2ToL1LogProof {
+            batch_number: 11,
+            proof: vec![B256::repeat_byte(1)],
+            id: 2,
+            root: B256::repeat_byte(3),
+            settlement_layer_block_number: Some(42),
+        };
+
+        // SYSCOIN: Existing v31 relayers read `gatewayBlockNumber`; changing only the Rust field
+        // name must not silently remove that response value.
+        let serialized = serde_json::to_value(&proof).unwrap();
+        assert_eq!(serialized["gatewayBlockNumber"], 42);
+        assert!(serialized.get("settlementLayerBlockNumber").is_none());
+
+        let mut generalized = serialized;
+        let object = generalized.as_object_mut().unwrap();
+        let block_number = object.remove("gatewayBlockNumber").unwrap();
+        object.insert("settlementLayerBlockNumber".to_owned(), block_number);
+        let decoded: L2ToL1LogProof = serde_json::from_value(generalized).unwrap();
+        assert_eq!(decoded.settlement_layer_block_number, Some(42));
+    }
 
     #[derive(Clone)]
     enum RawTransaction {

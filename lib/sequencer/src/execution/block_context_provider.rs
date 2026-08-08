@@ -146,14 +146,34 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             self.pool
                 .update_pending_block_fees(pending_fee_params, None);
 
+            // SYSCOIN: RPC fee methods must observe the configured pending fee even while an
+            // empty mempool leaves `best_transactions_stream` waiting indefinitely. Publish a
+            // provisional context now; upgrade metadata can replace its execution version below.
+            let pending_execution_version: ExecutionVersion = (&previous_record.protocol_version)
+                .try_into()
+                .context("Cannot instantiate a pending block for unsupported execution version")?;
+            let pending_block_context = self.build_produced_block_context(
+                &previous_record,
+                previous_block_hash,
+                block_number,
+                unix_timestamp_seconds(self.config.block_timestamp_offset_seconds),
+                pending_fee_params,
+                pending_execution_version,
+            );
+            self.last_constructed_block_ctx_sender
+                .send_replace(Some(pending_block_context));
+
             // Create stream:
             // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
             // - L1 transactions first, then L2 transactions.
+            // SYSCOIN: V31 Gateway roots remain valid, while v32 enables roots imported from L1.
+            let include_interop_traffic =
+                self.settles_on_gateway() || previous_record.protocol_version.supports_l1_interop();
             let best_txs = self
                 .pool
                 .best_transactions_stream(
                     self.next_interop_tx_allowed_after,
-                    self.settles_on_gateway(),
+                    include_interop_traffic,
                 )
                 .await
                 .context("mempool is closed")?;
@@ -221,57 +241,39 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             .try_into()
             .context("Cannot instantiate a block for unsupported execution version")?;
 
-        // Insert a SetSLChainId system transaction exactly once: when the protocol
-        // version is v31 (either via upgrade from v30, or on the first block of a
-        // fresh v31 chain). After it fires once, the condition can never trigger again.
-        let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if protocol_version.minor == 31
-            && (previous_record.protocol_version.minor < 31
-                || previous_record.block_context.block_number == 0)
-        {
-            let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
-                self.current_sl_chain_id,
-                // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                u64::MAX,
-            );
-            // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
-            // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
-            // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
-            // rejection when the stream is markable.
-            let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
-            let tx_source = if best_txs.stream_contains_upgrade_tx {
-                best_txs.stream.append_tx(sl_chain_id_tx)
+        // Insert SetSLChainId once on the first post-v31 block, including a fresh v32 chain.
+        let first_post_v31_block = previous_record.protocol_version.minor < 31
+            || previous_record.block_context.block_number == 0;
+        let (tx_source, expect_sl_chain_id_tx_after_upgrade) =
+            if protocol_version.is_post_v31() && first_post_v31_block {
+                let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
+                    self.current_sl_chain_id,
+                    // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                    u64::MAX,
+                );
+                // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
+                // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
+                // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
+                // rejection when the stream is markable.
+                let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
+                let tx_source = if best_txs.stream_contains_upgrade_tx {
+                    best_txs.stream.append_tx(sl_chain_id_tx)
+                } else {
+                    best_txs.stream.prepend_tx(sl_chain_id_tx)
+                };
+                (tx_source, true)
             } else {
-                best_txs.stream.prepend_tx(sl_chain_id_tx)
+                (best_txs.stream, false)
             };
-            (tx_source, true)
-        } else {
-            (best_txs.stream, false)
-        };
 
-        let FeeParams {
-            eip1559_basefee,
-            native_price,
-            pubdata_price,
-        } = fee_params;
-        let block_context = BlockContext {
-            eip1559_basefee,
-            native_price,
-            pubdata_price,
+        let block_context = self.build_produced_block_context(
+            &previous_record,
+            previous_block_hash,
             block_number,
             timestamp,
-            chain_id: self.config.l2_chain_id,
-            coinbase: self.config.fee_collector_address,
-            block_hashes: previous_record
-                .block_context
-                .block_hashes
-                .push(previous_block_hash),
-            gas_limit: self.config.gas_limit,
-            pubdata_limit: self.config.pubdata_limit,
-            // todo: initialize as source of randomness, i.e. the value of prevRandao
-            mix_hash: Default::default(),
-            execution_version: execution_version as u32,
-            blob_fee: U256::ONE,
-        };
+            fee_params,
+            execution_version,
+        );
         self.last_constructed_block_ctx_sender
             .send_replace(Some(block_context));
         Ok(Some(PreparedBlockCommand {
@@ -295,6 +297,43 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             interop_roots_per_block: self.config.interop_roots_per_block,
             strict_subpool_cleanup: true,
         }))
+    }
+
+    // SYSCOIN: Use one constructor for the provisional pending context and the context attached to
+    // the selected stream so RPC fee publication cannot drift from block production.
+    fn build_produced_block_context(
+        &self,
+        previous_record: &ReplayRecord,
+        previous_block_hash: BlockHash,
+        block_number: u64,
+        timestamp: u64,
+        fee_params: FeeParams,
+        execution_version: ExecutionVersion,
+    ) -> BlockContext {
+        let FeeParams {
+            eip1559_basefee,
+            native_price,
+            pubdata_price,
+        } = fee_params;
+        BlockContext {
+            eip1559_basefee,
+            native_price,
+            pubdata_price,
+            block_number,
+            timestamp,
+            chain_id: self.config.l2_chain_id,
+            coinbase: self.config.fee_collector_address,
+            block_hashes: previous_record
+                .block_context
+                .block_hashes
+                .push(previous_block_hash),
+            gas_limit: self.config.gas_limit,
+            pubdata_limit: self.config.pubdata_limit,
+            // todo: initialize as source of randomness, i.e. the value of prevRandao
+            mix_hash: Default::default(),
+            execution_version: execution_version as u32,
+            blob_fee: U256::ONE,
+        }
     }
 
     async fn replay(

@@ -2,6 +2,7 @@
 mod batcher;
 mod bitcoin_da;
 mod external_node;
+mod l1_sender;
 mod mempool;
 mod rebuild;
 mod replay_archive;

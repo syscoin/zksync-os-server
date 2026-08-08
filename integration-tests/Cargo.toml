@@ -27,6 +27,9 @@ zksync_os_multivm.workspace = true
 zksync_os_network.workspace = true
 zksync_os_replay_archive.workspace = true
 zksync_os_rocksdb.workspace = true
+# SYSCOIN: Replay recovery tests inspect the recovered WAL before an in-process reopen.
+zksync_os_storage.workspace = true
+zksync_os_storage_api.workspace = true
 zksync_os_status_server.workspace = true
 zksync_os_integration_tests_macros.workspace = true
 zksync_os_verify_storage_proof = { path = "../tools/verify-storage-proof" }

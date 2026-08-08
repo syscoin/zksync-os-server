@@ -204,9 +204,9 @@ impl SnarkJobManager {
 
             let batch_from = assigned.first().unwrap().0.batch_number;
             let batch_to = assigned.last().unwrap().0.batch_number;
-            // Fake proving runs inside the node, so downstream saturation is normal pipeline
-            // backpressure rather than a client-visible retry condition. Keep the jobs assigned
-            // while waiting instead of abandoning them until the much longer assignment timeout.
+            // SYSCOIN: fake proving runs inside the node, so downstream saturation is normal
+            // pipeline backpressure rather than a client-visible retry condition. Keep the jobs
+            // assigned while waiting instead of abandoning them until the assignment timeout.
             let permit = self.reserve_permit_downstream().await?;
             let Some(completed) = self
                 .jobs
