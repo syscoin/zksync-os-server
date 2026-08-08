@@ -74,6 +74,9 @@ const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
 /// Per-call cap for `eth_simulateV1`. The simulation reports the actual `gas_used`.
 const L1_SIM_GAS_LIMIT: u64 = 30_000_000;
+// SYSCOIN: Preserve the safety margin used by the pre-pipeline v31 `eth_estimateGas` path.
+const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
+const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FeeParams {
@@ -1315,12 +1318,32 @@ where
         // Syscoin's configured max fee can exceed that cap before the transaction is admitted;
         // a single command without an unmined prefix has no nonce-ordered predecessor, so the
         // standard per-tx estimate is safe and preserves the pre-pipeline v31 behavior.
-        let gas_limit = self
+        let estimated_gas = self
             .provider
             .estimate_gas(request)
             .await
             .context("eth_estimateGas fallback for single L1 command")?;
+        let latest_block = self
+            .provider
+            .get_block(BlockId::latest())
+            .await?
+            .context("latest L1 block is unavailable while padding gas estimate")?;
+        let block_gas_limit = latest_block.header.gas_limit;
+        let gas_limit = padded_estimated_gas_limit(estimated_gas, block_gas_limit)?;
+        if gas_limit
+            < estimated_gas
+                .saturating_mul(L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR)
+                .div_ceil(L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR)
+        {
+            tracing::warn!(
+                estimated_gas,
+                block_gas_limit,
+                gas_limit,
+                "capping padded L1 gas estimate at latest block gas limit"
+            );
+        }
         tracing::warn!(
+            estimated_gas,
             gas_limit,
             "using eth_estimateGas fallback for single L1 command"
         );
@@ -1719,6 +1742,20 @@ fn fixed_fallback_gas_limits(
     }
 }
 
+// SYSCOIN: `eth_estimateGas` reports the current minimum. Pad it for state movement between
+// estimation and inclusion, but never construct a transaction above the L1 block gas limit.
+fn padded_estimated_gas_limit(estimated_gas: u64, block_gas_limit: u64) -> anyhow::Result<u64> {
+    anyhow::ensure!(
+        estimated_gas <= block_gas_limit,
+        "estimated L1 transaction gas ({estimated_gas}) exceeds latest L1 block gas limit \
+         ({block_gas_limit})"
+    );
+    Ok(estimated_gas
+        .saturating_mul(L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR)
+        .div_ceil(L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR)
+        .min(block_gas_limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1739,6 +1776,13 @@ mod tests {
             fixed_fallback_gas_limits(0, 2).unwrap(),
             Some(vec![L1_GAS_LIMIT_FALLBACK; 2])
         );
+    }
+
+    #[test]
+    fn estimate_gas_fallback_restores_padding_and_block_cap() {
+        assert_eq!(padded_estimated_gas_limit(100, 1_000).unwrap(), 120);
+        assert_eq!(padded_estimated_gas_limit(999, 1_000).unwrap(), 1_000);
+        assert!(padded_estimated_gas_limit(1_001, 1_000).is_err());
     }
 
     #[test]
