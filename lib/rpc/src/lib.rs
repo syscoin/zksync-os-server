@@ -64,6 +64,7 @@ use jsonrpsee::ws_client::RpcServiceBuilder;
 use reth_rpc_eth_types::EthSubscriptionIdProvider;
 use reth_tasks::Runtime;
 use tower_http::cors::{Any, CorsLayer};
+use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
 use zksync_os_genesis::GenesisInputSource;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::debug::DebugApiServer;
@@ -95,6 +96,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     tx_forwarder: Option<TxForwarder>,
     l1_provider: DynProvider,
     gateway_provider: Option<DynProvider>,
+    settlement_layer_intervals: SettlementLayerIntervals,
     policy_client: Option<PolicyClient>,
     runtime: &Runtime,
     wait_for_db: impl Future<Output = ()> + Send + 'static,
@@ -137,6 +139,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             chain_id,
             l1_provider,
             gateway_provider,
+            settlement_layer_intervals,
             eth_call_handler.clone(),
         )
         .into_rpc(),

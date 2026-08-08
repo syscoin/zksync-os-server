@@ -16,6 +16,9 @@ use ruint::aliases::B160;
 use std::sync::Arc;
 use zk_ee::common_structs::derive_flat_storage_key;
 use zksync_os_contract_interface::IBridgehub;
+use zksync_os_contract_interface::settlement_layer_intervals::{
+    IntervalSettlementLayer, SettlementLayerIntervals,
+};
 use zksync_os_genesis::{GenesisInput, GenesisInputSource};
 use zksync_os_merkle_tree_api::flat::StorageSlotProof;
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
@@ -39,6 +42,9 @@ pub struct ZksNamespace<RpcStorage> {
     l1_provider: DynProvider,
     /// SYSCOIN: Present while the chain settles on Gateway; v31 proofs use its legacy tree format.
     gateway_provider: Option<DynProvider>,
+    // SYSCOIN: A configured historical Gateway client does not imply that every batch settled
+    // there; route proofs by the discovered batch interval across Gateway -> L1 migrations.
+    settlement_layer_intervals: SettlementLayerIntervals,
     commitment_tree_reader: InteropCommitmentTreeReader<RpcStorage>,
 }
 
@@ -52,6 +58,7 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
         l2_chain_id: u64,
         l1_provider: DynProvider,
         gateway_provider: Option<DynProvider>,
+        settlement_layer_intervals: SettlementLayerIntervals,
         eth_call_handler: EthCallHandler<RpcStorage>,
     ) -> Self {
         Self {
@@ -62,6 +69,7 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
             l2_chain_id,
             l1_provider,
             gateway_provider,
+            settlement_layer_intervals,
             commitment_tree_reader: InteropCommitmentTreeReader::new(eth_call_handler),
         }
     }
@@ -147,78 +155,97 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             .chain(std::iter::once(multichain_root))
             .collect::<Vec<_>>();
 
-        let (proof_extension, settlement_layer_block_number) =
-            // SYSCOIN: Preserve the v31 Gateway extension while upstream v32 routes directly to L1.
-            if let Some(gateway_provider) = &self.gateway_provider {
-                let execute_sl_block_number = batch.execute_sl_block_number.ok_or_else(|| {
-                    ZksError::Batch(anyhow::anyhow!(
-                        "batch {batch_number} has not been executed on Gateway yet"
-                    ))
-                })?;
-                let extension = build_gateway_proof_extension(
-                    self.l2_chain_id,
-                    batch_number,
-                    execute_sl_block_number,
-                    matches!(proof_target, LogProofTarget::MessageRoot),
-                    gateway_provider,
-                )
-                .await
-                // SYSCOIN: retain the nested v31 Gateway contract-call cause in RPC errors; the
-                // generic context alone makes production proof failures indistinguishable.
-                .map_err(|err| anyhow::anyhow!("build Gateway proof extension: {err:#}"))?;
-                (Some(extension), Some(execute_sl_block_number))
-            } else {
-                match proof_target {
-                    // Other chains do not store this source batch root. They import the shared root
-                    // keyed by `(L1 chain id, L1 block)`, so continue through the source chain's batch
-                    // tree and L1's chain tree. The execution block identifies the exact shared root
-                    // and supplies the settlement-layer timestamp boundary used by atomic interop.
-                    LogProofTarget::MessageRoot => {
-                        if !last_block_replay_record
-                            .protocol_version
-                            .supports_l1_interop()
-                        {
-                            return Err(ZksError::MessageRootProofUnsupportedProtocolVersion {
-                                batch_number,
-                                required_protocol_version:
-                                    ProtocolSemanticVersion::MIN_VERSION_WITH_L1_INTEROP,
-                                actual_protocol_version: last_block_replay_record.protocol_version,
-                            });
-                        }
+        // SYSCOIN: Provider presence is historical configuration, not a per-batch routing signal.
+        // A post-migration node keeps its Gateway provider for old v31 proofs while new batches
+        // must extend through the direct-L1 MessageRoot path.
+        let settlement_interval = self
+            .settlement_layer_intervals
+            .find_interval(batch_number)
+            .ok_or_else(|| {
+                ZksError::Batch(anyhow::anyhow!(
+                    "no settlement-layer interval contains batch {batch_number}"
+                ))
+            })?;
+        let batch_settles_on_gateway = matches!(
+            &settlement_interval.settlement_layer,
+            IntervalSettlementLayer::Gateway(_)
+        );
 
-                        let execute_sl_block_number =
-                            batch.execute_sl_block_number.ok_or_else(|| {
-                                ZksError::Batch(anyhow::anyhow!(
-                                    "batch {batch_number} has not been executed on L1 yet"
-                                ))
-                            })?;
-
-                        // MessageRoot is a deployed L1 contract rather than a fixed-address system
-                        // contract, so its address comes from Bridgehub.
-                        let l1_message_root_address =
-                            IBridgehub::new(self.bridgehub_address, &self.l1_provider)
-                                .messageRoot()
-                                .call()
-                                .await
-                                .context("bridgehub.messageRoot()")?;
-
-                        let proof_extension = build_message_root_proof_extension(
-                            self.l2_chain_id,
+        let (proof_extension, settlement_layer_block_number) = if batch_settles_on_gateway {
+            let gateway_provider = self.gateway_provider.as_ref().ok_or_else(|| {
+                ZksError::Batch(anyhow::anyhow!(
+                    "batch {batch_number} settled on Gateway, but no historical Gateway provider is configured"
+                ))
+            })?;
+            let execute_sl_block_number = batch.execute_sl_block_number.ok_or_else(|| {
+                ZksError::Batch(anyhow::anyhow!(
+                    "batch {batch_number} has not been executed on Gateway yet"
+                ))
+            })?;
+            let extension = build_gateway_proof_extension(
+                self.l2_chain_id,
+                batch_number,
+                execute_sl_block_number,
+                matches!(proof_target, LogProofTarget::MessageRoot),
+                gateway_provider,
+            )
+            .await
+            // SYSCOIN: retain the nested v31 Gateway contract-call cause in RPC errors; the
+            // generic context alone makes production proof failures indistinguishable.
+            .map_err(|err| anyhow::anyhow!("build Gateway proof extension: {err:#}"))?;
+            (Some(extension), Some(execute_sl_block_number))
+        } else {
+            match proof_target {
+                // Other chains do not store this source batch root. They import the shared root
+                // keyed by `(L1 chain id, L1 block)`, so continue through the source chain's batch
+                // tree and L1's chain tree. The execution block identifies the exact shared root
+                // and supplies the settlement-layer timestamp boundary used by atomic interop.
+                LogProofTarget::MessageRoot => {
+                    if !last_block_replay_record
+                        .protocol_version
+                        .supports_l1_interop()
+                    {
+                        return Err(ZksError::MessageRootProofUnsupportedProtocolVersion {
                             batch_number,
-                            execute_sl_block_number,
-                            &self.l1_provider,
-                            l1_message_root_address,
-                        )
-                        .await
-                        .context("build MessageRoot proof extension")?;
-
-                        (Some(proof_extension), Some(execute_sl_block_number))
+                            required_protocol_version:
+                                ProtocolSemanticVersion::MIN_VERSION_WITH_L1_INTEROP,
+                            actual_protocol_version: last_block_replay_record.protocol_version,
+                        });
                     }
-                    // Other targets (e.g. L1 withdrawal-finalization proofs) terminate at L1 as a
-                    // final node — there is no settlement layer above L1.
-                    _ => (None, None),
+
+                    let execute_sl_block_number =
+                        batch.execute_sl_block_number.ok_or_else(|| {
+                            ZksError::Batch(anyhow::anyhow!(
+                                "batch {batch_number} has not been executed on L1 yet"
+                            ))
+                        })?;
+
+                    // MessageRoot is a deployed L1 contract rather than a fixed-address system
+                    // contract, so its address comes from Bridgehub.
+                    let l1_message_root_address =
+                        IBridgehub::new(self.bridgehub_address, &self.l1_provider)
+                            .messageRoot()
+                            .call()
+                            .await
+                            .context("bridgehub.messageRoot()")?;
+
+                    let proof_extension = build_message_root_proof_extension(
+                        self.l2_chain_id,
+                        batch_number,
+                        execute_sl_block_number,
+                        &self.l1_provider,
+                        l1_message_root_address,
+                    )
+                    .await
+                    .context("build MessageRoot proof extension")?;
+
+                    (Some(proof_extension), Some(execute_sl_block_number))
                 }
-            };
+                // Other targets (e.g. L1 withdrawal-finalization proofs) terminate at L1 as a
+                // final node — there is no settlement layer above L1.
+                _ => (None, None),
+            }
+        };
 
         let proof = assemble_log_proof(log_leaf_proof, proof_extension);
 

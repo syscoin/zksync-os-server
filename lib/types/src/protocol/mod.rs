@@ -68,7 +68,9 @@ impl ProtocolSemanticVersion {
         // A patch version can change the proving harness, so a version is only live once it
         // maps to a `ProvingVersion` known to this server release.
         match self.minor {
-            30..=32 => ProvingVersion::try_from(self.clone()).is_ok(),
+            // SYSCOIN: V32 code is compiled for direct-L1 validation, but it is not production
+            // live until its V8 app, VK, contracts, and compact Bitcoin-DA commitments agree.
+            30..=31 => ProvingVersion::try_from(self.clone()).is_ok(),
             // When updating this function, make sure to insert the new non-live version here.
             _ => false,
         }
@@ -249,7 +251,8 @@ mod tests {
             // Patch versions without a known proving version are not live.
             ((0, 30, 99), false),
             ((0, 31, 0), true),
-            ((0, 32, 0), true),
+            // SYSCOIN: keep the production upgrade watcher closed for the gated V8 rollout.
+            ((0, 32, 0), false),
             ((0, 32, 1), false),
             ((0, 33, 0), false), // When updating this test, make sure to insert the new non-live version here.
         ];

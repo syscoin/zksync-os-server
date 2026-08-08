@@ -1406,6 +1406,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         tx_forwarder,
         l1_provider.clone().erased(),
         gateway_provider.map(|p| p.erased()),
+        // SYSCOIN: RPC proof routing must use the requested batch's settlement interval rather
+        // than treating a retained historical Gateway provider as the active settlement layer.
+        l1_state.settlement_layer_intervals.clone(),
         rpc_policy_client,
         runtime,
         wait_for_db,
