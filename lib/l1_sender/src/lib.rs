@@ -1130,6 +1130,7 @@ where
         // eth_simulateV1 caps a payload at 256 blocks; with default configs
         // prefix+commands is ≤ 32, so hitting this means a misconfiguration — degrade to
         // un-prefixed estimation rather than fail.
+        let original_in_flight_prefix_len = in_flight_prefix.len();
         let in_flight_prefix = if in_flight_prefix.len() + commands.len() > 256 {
             tracing::warn!(
                 prefix_len = in_flight_prefix.len(),
@@ -1201,7 +1202,7 @@ where
                 );
                 return self
                     .fallback_gas_limits(
-                        in_flight_prefix.len(),
+                        original_in_flight_prefix_len,
                         commands,
                         prepared_sidecars,
                         operator_address,
@@ -1217,7 +1218,7 @@ where
                 );
                 return self
                     .fallback_gas_limits(
-                        in_flight_prefix.len(),
+                        original_in_flight_prefix_len,
                         commands,
                         prepared_sidecars,
                         operator_address,
@@ -1252,7 +1253,7 @@ where
                     }
                     return self
                         .fallback_gas_limits(
-                            in_flight_prefix.len(),
+                            original_in_flight_prefix_len,
                             commands,
                             prepared_sidecars,
                             operator_address,
@@ -1266,7 +1267,7 @@ where
                     if commands.len() == 1 {
                         return self
                             .fallback_gas_limits(
-                                in_flight_prefix.len(),
+                                original_in_flight_prefix_len,
                                 commands,
                                 prepared_sidecars,
                                 operator_address,
