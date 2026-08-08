@@ -48,6 +48,7 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
     // pipeline moving.
     let tester = TestCase {
         protocol_version: PROTOCOL_VERSION_V31_0,
+        // SYSCOIN: V8 validation is direct-L1-only until compact Gateway DA preimages exist.
         settlement_layer: SettlementLayer::L1,
     }
     .environment()
@@ -65,6 +66,8 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
             .with_force_deployments(BTreeMap::new())
             .with_timestamp(U256::from(1))
             .build();
+        // SYSCOIN: Our upgrade helper also accepts the optional compact-DA validator pair; this
+        // direct-L1 V8 test intentionally leaves it unset.
         upgrade_tester
             .execute_default_upgrade(
                 &protocol_upgrade,

@@ -37,7 +37,7 @@ pub struct ZksNamespace<RpcStorage> {
     l2_chain_id: u64,
     /// Queries the deployed L1 MessageRoot when an interop proof needs its aggregation segments.
     l1_provider: DynProvider,
-    /// Present while the chain settles on Gateway; v31 Gateway proofs use its legacy tree format.
+    /// SYSCOIN: Present while the chain settles on Gateway; v31 proofs use its legacy tree format.
     gateway_provider: Option<DynProvider>,
     commitment_tree_reader: InteropCommitmentTreeReader<RpcStorage>,
 }
@@ -148,6 +148,7 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             .collect::<Vec<_>>();
 
         let (proof_extension, settlement_layer_block_number) =
+            // SYSCOIN: Preserve the v31 Gateway extension while upstream v32 routes directly to L1.
             if let Some(gateway_provider) = &self.gateway_provider {
                 let execute_sl_block_number = batch.execute_sl_block_number.ok_or_else(|| {
                     ZksError::Batch(anyhow::anyhow!(
@@ -162,7 +163,9 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                     gateway_provider,
                 )
                 .await
-                .context("build Gateway proof extension")?;
+                // SYSCOIN: retain the nested v31 Gateway contract-call cause in RPC errors; the
+                // generic context alone makes production proof failures indistinguishable.
+                .map_err(|err| anyhow::anyhow!("build Gateway proof extension: {err:#}"))?;
                 (Some(extension), Some(execute_sl_block_number))
             } else {
                 match proof_target {

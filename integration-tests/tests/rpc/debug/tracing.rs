@@ -12,7 +12,7 @@ use alloy::sol_types::{Revert, SolCall, SolError};
 use std::collections::HashMap;
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, ReceiptAssert, ReceiptsAssert};
 use zksync_os_integration_tests::contracts::{
-    Counter, EventEmitter, TracingPrimary, TracingSecondary,
+    EventEmitter, TestERC20, TracingPrimary, TracingSecondary,
 };
 use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_multisetup};
 use zksync_os_provider::NodeProvider;
@@ -87,10 +87,9 @@ fn pubdata_exhaustion_fee_config() -> FeeConfig {
     }
 }
 
-/// This limit is high enough for validation (including the post-v31 intrinsic-native check) to
-/// pass under `pubdata_exhaustion_fee_config()`, but low enough for the tx to run out of
-/// resources when paying for execution pubdata.
-const PUBDATA_EXHAUSTION_GAS_LIMIT: u64 = 750_000;
+/// SYSCOIN: This limit covers the gas-tank slot-diff intrinsic pubdata added to v31 validation,
+/// but still leaves too little native resource for the transaction's execution pubdata.
+const PUBDATA_EXHAUSTION_GAS_LIMIT: u64 = 1_000_000;
 
 fn assert_pubdata_exhaustion_call_frame(call_frame: &CallFrame) {
     assert_eq!(
@@ -210,10 +209,19 @@ async fn call_trace_transaction_reports_pubdata_exhaustion(
     let mut config = env.default_config().await?;
     config.fee_config = pubdata_exhaustion_fee_config();
     let tester = env.launch(config).await?;
-    let counter = Counter::deploy(tester.l2_provider.clone()).await?;
+    // SYSCOIN: A single counter write fits inside the intrinsic gas reserved for the zkSYS gas
+    // tank. Minting touches two application slots, preserving the intended post-admission
+    // pubdata-exhaustion path exercised by this upstream tracing regression.
+    let token = TestERC20::deploy(
+        tester.l2_provider.clone(),
+        U256::ZERO,
+        "Trace token".to_owned(),
+        "TRACE".to_owned(),
+    )
+    .await?;
 
-    let receipt = counter
-        .increment(U256::from(1))
+    let receipt = token
+        .mint(Address::random(), U256::MAX)
         .gas(PUBDATA_EXHAUSTION_GAS_LIMIT)
         .send()
         .await?
@@ -247,10 +255,18 @@ async fn call_trace_transaction_reports_pubdata_exhaustion_with_only_top_call(
     let mut config = env.default_config().await?;
     config.fee_config = pubdata_exhaustion_fee_config();
     let tester = env.launch(config).await?;
-    let counter = Counter::deploy(tester.l2_provider.clone()).await?;
+    // SYSCOIN: Use two application slot writes so the tx passes gas-tank intrinsic validation but
+    // still exhausts pubdata during execution.
+    let token = TestERC20::deploy(
+        tester.l2_provider.clone(),
+        U256::ZERO,
+        "Trace token".to_owned(),
+        "TRACE".to_owned(),
+    )
+    .await?;
 
-    let receipt = counter
-        .increment(U256::from(1))
+    let receipt = token
+        .mint(Address::random(), U256::MAX)
         .gas(PUBDATA_EXHAUSTION_GAS_LIMIT)
         .send()
         .await?
@@ -289,10 +305,18 @@ async fn call_trace_block_reports_pubdata_exhaustion(env: TestEnvironment) -> an
     let mut config = env.default_config().await?;
     config.fee_config = pubdata_exhaustion_fee_config();
     let tester = env.launch(config).await?;
-    let counter = Counter::deploy(tester.l2_provider.clone()).await?;
+    // SYSCOIN: Use two application slot writes so the tx passes gas-tank intrinsic validation but
+    // still exhausts pubdata during execution.
+    let token = TestERC20::deploy(
+        tester.l2_provider.clone(),
+        U256::ZERO,
+        "Trace token".to_owned(),
+        "TRACE".to_owned(),
+    )
+    .await?;
 
-    let receipt = counter
-        .increment(U256::from(1))
+    let receipt = token
+        .mint(Address::random(), U256::MAX)
         .gas(PUBDATA_EXHAUSTION_GAS_LIMIT)
         .send()
         .await?

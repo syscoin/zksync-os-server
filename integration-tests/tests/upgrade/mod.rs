@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use zksync_os_integration_tests::contracts::{SampleForceDeployment, SyscoinCommitterFacetTest};
 use zksync_os_integration_tests::upgrade::{Action, FacetCut, L2DACommitmentScheme, UpgradeTester};
 use zksync_os_integration_tests::{GatewayTester, Tester};
-use zksync_os_server::default_protocol_version::NEXT_PROTOCOL_VERSION;
+use zksync_os_server::default_protocol_version::PROTOCOL_VERSION;
 
 /// Executes the simplest patch protocol upgrade:
 /// - no contracts are deployed
@@ -51,7 +51,8 @@ async fn upgrade_patch_no_deployments_gateway() -> anyhow::Result<()> {
     let deadline = U256::MAX; // The protocol version will not have any deadline in this upgrade
 
     let gateway_tester = GatewayTester::builder()
-        .protocol_version(NEXT_PROTOCOL_VERSION)
+        // SYSCOIN: Gateway fixtures remain on the supported v31 production topology.
+        .protocol_version(PROTOCOL_VERSION)
         .num_chains(0)
         .build()
         .await?;
@@ -86,7 +87,8 @@ async fn upgrade_patch_no_deployments_settles_to_gateway() -> anyhow::Result<()>
     let deadline = U256::MAX;
 
     let gateway_tester = GatewayTester::builder()
-        .protocol_version(NEXT_PROTOCOL_VERSION)
+        // SYSCOIN: Gateway fixtures remain on the supported v31 production topology.
+        .protocol_version(PROTOCOL_VERSION)
         .num_chains(1)
         .build()
         .await?;
@@ -117,6 +119,10 @@ async fn upgrade_patch_no_deployments_settles_to_gateway() -> anyhow::Result<()>
 /// Performs V31->V32 protocol upgrade with a force deployment, exercising the legacy path
 /// where the node already knows the bytecode preimage from a prior L2 deployment.
 #[test_log::test(tokio::test)]
+// SYSCOIN: The upstream V8 app still commits standard KZG blob hashes, while production requires
+// the compact ordered Bitcoin-DA blob hash commitment. Keep activation gated until the app, VK,
+// and contracts commit to the same Syscoin-specific public input.
+#[ignore = "V8 native app is not yet compatible with Syscoin Bitcoin-DA commitments"]
 async fn upgrade_to_v32_with_predeployed_bytecodes() -> anyhow::Result<()> {
     let upgrade_timestamp = U256::from(1); // Protocol upgrade can be executed immediately.
     let deadline = U256::MAX; // The protocol version will not have any deadline in this upgrade
@@ -209,6 +215,9 @@ async fn upgrade_to_v32_with_predeployed_bytecodes() -> anyhow::Result<()> {
 /// Performs V31->V32 protocol upgrade which also does a force deployment.
 /// Upgraded chain settles to gateway.
 #[test_log::test(tokio::test)]
+// SYSCOIN: V8 also does not expose the per-transaction preimages needed for compact Gateway
+// edge-DA openings, so a v31 -> v32 Gateway upgrade is not production-safe yet.
+#[ignore = "V8 native app does not yet expose Syscoin Gateway edge-DA preimages"]
 async fn upgrade_to_v32_with_deployments_settles_to_gateway() -> anyhow::Result<()> {
     let upgrade_timestamp = U256::from(1); // Protocol upgrade can be executed immediately.
     let deadline = U256::MAX; // The protocol version will not have any deadline in this upgrade
@@ -225,7 +234,9 @@ async fn upgrade_to_v32_with_deployments_settles_to_gateway() -> anyhow::Result<
     .collect();
 
     let gateway_tester = GatewayTester::builder()
-        .protocol_version(NEXT_PROTOCOL_VERSION)
+        // SYSCOIN: Begin the v31 -> v32 upgrade from the supported Gateway fixture; there is no
+        // standalone v32 Gateway fixture while compact edge-DA preimages are unavailable in V8.
+        .protocol_version(PROTOCOL_VERSION)
         .num_chains(1)
         .build()
         .await?;

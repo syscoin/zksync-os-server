@@ -20,6 +20,20 @@ use zksync_os_storage_api::PersistedBatch;
 const LOG_PROOF_SUPPORTED_METADATA_VERSION: u8 = 1;
 const L2_MESSAGE_ROOT_ADDRESS: Address = address!("0x0000000000000000000000000000000000010005");
 
+mod v31_gateway {
+    use alloy::sol;
+
+    sol! {
+        /// SYSCOIN: V31 Gateway leaves predate the V32 `l1Timestamp` field. Its distinct event
+        /// signature must remain explicit; filtering with the V32 interface silently returns no logs.
+        event AppendedChainBatchRoot(
+            uint256 indexed chainId,
+            uint256 indexed batchNumber,
+            bytes32 chainBatchRoot
+        );
+    }
+}
+
 /// Reconstructs the sibling path for one newly appended batch leaf.
 ///
 /// `tree` is the state before the relevant block range and `new_hashes` are the leaves appended in
@@ -373,8 +387,8 @@ pub(crate) async fn build_message_root_proof_extension(
     })
 }
 
-/// Reconstructs the pre-v32 Gateway proof format. Its batch leaves omit the L1 timestamp, so it
-/// must remain separate from the v32 L1 MessageRoot path above.
+/// SYSCOIN: Reconstructs the production v31 Gateway proof format. Its batch leaves omit the L1
+/// timestamp, so it must remain separate from the v32 L1 MessageRoot path above.
 async fn gateway_batch_tree_proof(
     gateway_block_range: ops::RangeInclusive<u64>,
     l2_chain_id: u64,
@@ -397,7 +411,7 @@ async fn gateway_batch_tree_proof(
     let filter = Filter::new()
         .from_block(*gateway_block_range.start())
         .to_block(*gateway_block_range.end())
-        .event_signature(AppendedChainBatchRoot::SIGNATURE_HASH)
+        .event_signature(v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH)
         .topic1(U256::from(l2_chain_id))
         .address(L2_MESSAGE_ROOT_ADDRESS);
     let logs_future = gateway_provider
@@ -405,10 +419,29 @@ async fn gateway_batch_tree_proof(
         .map_err(|err| anyhow::Error::from(err).context("get Gateway batch-root logs"));
     let (tree, logs) = futures::future::try_join(tree_future, logs_future).await?;
 
-    let batch_idx = logs
+    let Some(batch_idx) = logs
         .iter()
         .position(|log| log.inner.topics()[2] == U256::from(batch_number).to_be_bytes())
-        .with_context(|| format!("batch #{batch_number} not found in Gateway MessageRoot logs"))?;
+    else {
+        // SYSCOIN: include already-filtered batch numbers so a stale execution mapping remains
+        // diagnosable without issuing a second or wider public RPC scan.
+        let observed_batches = logs
+            .iter()
+            .map(|log| {
+                format!(
+                    "{}@{}",
+                    U256::from_be_bytes(log.inner.topics()[2].0),
+                    log.block_number.unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "batch #{batch_number} not found in v31 Gateway MessageRoot logs for blocks \
+             {gateway_block_range:?} and chain {l2_chain_id}; observed matching batches \
+             [{observed_batches}]"
+        );
+    };
     let absolute_batch_idx = tree._nextLeafIndex.to::<usize>() + batch_idx;
     let batch_leaf_padding = keccak256(b"zkSync:BatchLeaf");
     let new_hashes = logs
@@ -426,6 +459,7 @@ async fn gateway_batch_tree_proof(
     Ok((words, batch_proof_len))
 }
 
+/// SYSCOIN: Extends a v31 source-chain proof through its Gateway settlement segment.
 pub(crate) async fn build_gateway_proof_extension(
     l2_chain_id: u64,
     batch_number: u64,
@@ -534,6 +568,20 @@ fn proof_metadata(log_proof_len: usize, batch_proof_len: u8, is_final_node: bool
 mod tests {
     use super::*;
     use alloy::primitives::b256;
+
+    #[test]
+    fn v31_gateway_batch_root_event_signature_is_immutable() {
+        // SYSCOIN: adding the V32 timestamp changes topic0 and would silently hide every v31
+        // Gateway batch-root event from proof reconstruction.
+        assert_eq!(
+            v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH,
+            b256!("0x4f7fd9ed016150a623d5a2cf43053fe313a56293a77e060a05db49ed22579520")
+        );
+        assert_ne!(
+            v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH,
+            AppendedChainBatchRoot::SIGNATURE_HASH
+        );
+    }
 
     #[test]
     fn assembles_final_log_proof_metadata() {

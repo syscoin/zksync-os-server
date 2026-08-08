@@ -103,20 +103,25 @@ async fn wait_for_block_hash_change(
     block_number: u64,
     original: B256,
 ) -> anyhow::Result<B256> {
-    (|| async {
+    // SYSCOIN: A preserved v31 DB can fail in the rebuild pipeline before its hash changes; report
+    // the fatal state or pipeline coordinates instead of returning a context-free retry timeout.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
         let hash = block_hash(tester, block_number).await?;
         if hash != original {
-            Ok(hash)
-        } else {
-            anyhow::bail!("rebuild not done yet: block {block_number} hash still matches original")
+            return Ok(hash);
         }
-    })
-    .retry(
-        ConstantBuilder::default()
-            .with_delay(Duration::from_millis(200))
-            .with_max_times(150),
-    )
-    .await
+        if tester.has_crashed() {
+            anyhow::bail!("node crashed while rebuilding block {block_number}");
+        }
+        if std::time::Instant::now() >= deadline {
+            let pipeline = tester.pipeline_status().await?;
+            anyhow::bail!(
+                "rebuild did not change block {block_number} hash from {original}; pipeline: {pipeline}"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Waits until an in-progress block rebuild has reached `pre_restart_tip` (the chain tip snapshotted
@@ -395,10 +400,10 @@ async fn rebuild_panics_if_from_block_is_already_committed(
 ///
 /// Scenario:
 ///   1. Start a node with delayed batch sealing and mine a few blocks.
-///   2. Snapshot block 1's hash; configure `BlockRebuild` with `reset_timestamps: true` so the
-///      rebuilt block gets a new hash, making the guard detectable on the second restart.
-///   3. First restart: hash matches → rebuild runs; block 1 gets a new hash.
-///   4. Second restart: same config, but block 1's hash has changed → guard fires, rebuild is
+///   2. Snapshot the new block's hash; configure `BlockRebuild` with `reset_timestamps: true` so
+///      the rebuilt block gets a new hash, making the guard detectable on the second restart.
+///   3. First restart: hash matches → rebuild runs; the target block gets a new hash.
+///   4. Second restart: same config, but the target hash changed → guard fires, rebuild is
 ///      skipped; node starts normally and accepts new transactions.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn block_rebuild_hash_guard_prevents_double_rebuild(
@@ -409,40 +414,50 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
     config.sequencer_config.block_time = Duration::from_millis(50);
     let tester = env.launch(config).await?;
 
-    send_throwaway_tx(&tester).await?;
-
-    let original_block1_hash = block_hash(&tester, 1).await?;
+    let receipt = send_throwaway_tx(&tester).await?;
+    // SYSCOIN: Rebuild the first block produced above the pinned v31 fixture, not its already
+    // finalized historical block 1.
+    let block_to_rebuild = receipt
+        .block_number
+        .expect("throwaway receipt should contain a block number");
+    let original_block_hash = block_hash(&tester, block_to_rebuild).await?;
 
     let stopped = tester.stop().await?;
     let mut restart_config = stopped.config().clone();
-    // reset_timestamps: true ensures block 1 gets a new hash after rebuild so the guard
+    // SYSCOIN: Fixture-adjusted timestamps can run a few seconds ahead of wall time because each
+    // 50ms test block still advances the integer timestamp. Move this test restart forward enough
+    // that `reset_timestamps` deterministically changes the guarded block hash.
+    restart_config
+        .sequencer_config
+        .block_timestamp_offset_seconds += 60;
+    // reset_timestamps: true ensures the target block gets a new hash after rebuild so the guard
     // can distinguish the pre- and post-rebuild states on the second restart.
     restart_config.sequencer_config.rebuild = Some(RebuildConfig::BlockRebuild {
         bounds: RebuildBounds {
-            from_block_number: 1,
-            from_block_hash: original_block1_hash,
+            from_block_number: block_to_rebuild,
+            from_block_hash: original_block_hash,
             blocks_to_empty: vec![],
             reset_timestamps: true,
         },
     });
 
-    // First restart: hash matches → rebuild runs; wait until block 1 has a new hash.
+    // First restart: hash matches → rebuild runs; wait until the target block has a new hash.
     let first_restart = stopped.start_with_config(restart_config.clone()).await?;
-    let rebuilt_block1_hash =
-        wait_for_block_hash_change(&first_restart, 1, original_block1_hash).await?;
+    let rebuilt_block_hash =
+        wait_for_block_hash_change(&first_restart, block_to_rebuild, original_block_hash).await?;
 
-    // Second restart: block 1's hash has changed → guard fires, rebuild skipped.
+    // Second restart: the target block's hash has changed → guard fires, rebuild skipped.
     let stopped2 = first_restart.stop().await?;
     let second_restart = stopped2.start_with_config(restart_config).await?;
 
     // Confirm the node started cleanly and is accepting new transactions.
     send_throwaway_tx(&second_restart).await?;
 
-    // Block 1 must still carry the rebuilt hash — guard fired, no re-rebuild.
-    let block1_after = block_hash(&second_restart, 1).await?;
+    // The target block must still carry the rebuilt hash — guard fired, no re-rebuild.
+    let block_after = block_hash(&second_restart, block_to_rebuild).await?;
     assert_eq!(
-        block1_after, rebuilt_block1_hash,
-        "block_rebuild hash guard failed: block 1 was rebuilt again on second restart"
+        block_after, rebuilt_block_hash,
+        "block_rebuild hash guard failed: target block was rebuilt again on second restart"
     );
 
     Ok(())
@@ -457,9 +472,9 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
 /// Scenario:
 ///   1. Start a node with the batcher and mine until a batch is committed on L1.
 ///   2. Stop the node.
-///   3. Restart with `rebuild.mode = danger_block_rebuild_with_l1_revert` and
-///      `rebuild.from_block_number = 1`; the node reverts all committed batches on L1 and then
-///      rebuilds blocks from block 1.
+///   3. Restart with `rebuild.mode = danger_block_rebuild_with_l1_revert` from the first block
+///      created above the fixture baseline; the node reverts the test-created committed batches
+///      on L1 and rebuilds from that block.
 ///   4. Confirm the node is alive by sending and confirming a new L2 transaction.
 ///   5. Verify the server commits a new batch on L1 with the same number as the reverted one.
 #[test_multisetup([CURRENT_TO_L1])]
@@ -468,25 +483,28 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Preserve the executed history embedded in the pinned v31 fixture and exercise the
+    // revert/rebuild flow only on batches created by this test.
+    let initial_state = fetch_l1_state(&tester).await?;
 
     // Unlike `rebuild_panics_if_from_block_is_already_committed` which uses a fast 50ms block
     // time, this test uses the default block time, so we send a transaction to give the batcher
     // real content and trigger a batch commit quickly.
     send_throwaway_tx(&tester).await?;
 
-    let committed_state = wait_for_l1_state(&tester, "a committed batch on L1", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&tester, "a newly committed batch on L1", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     // Batch execution is disabled, so nothing should ever be executed.
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
-    // last_executed_batch == 0 so we want to keep batch 0, reverting all committed batches
-    // (batch 1+). Batch 1 always starts at block 1, so from_block_number = 1.
-    let block1_hash = block_hash(&tester, 1).await?;
+    let first_new_batch = initial_state.last_committed_batch + 1;
+    let (_, first_new_block, _) = fetch_committed_batch(&tester, first_new_batch).await?;
+    let first_new_block_hash = block_hash(&tester, first_new_block).await?;
     let pre_restart_tip = tester.l2_provider.get_block_number().await?;
 
     let stopped = tester.stop().await?;
@@ -494,8 +512,8 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
     let mut restart_config = stopped.config().clone();
     restart_config.sequencer_config.rebuild = Some(RebuildConfig::DangerBlockRebuildWithL1Revert {
         bounds: RebuildBounds {
-            from_block_number: 1,
-            from_block_hash: block1_hash,
+            from_block_number: first_new_block,
+            from_block_hash: first_new_block_hash,
             blocks_to_empty: vec![],
             reset_timestamps: false,
         },
@@ -510,14 +528,14 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
     send_throwaway_tx(&restarted).await?;
 
     // Verify the server commits a new batch on L1 with the same number as a reverted one.
-    // After the revert, last_committed_batch on L1 is 0, so any nonzero value proves a
-    // distinct batch 1 was committed. The pre-revert batch COUNT is not a valid target: the
+    // After the revert, any value above the fixture baseline proves a distinct batch was
+    // committed. The pre-revert batch COUNT is not a valid target: the
     // rebuild re-batches the replayed blocks with fresh deadline timing, so the same blocks
     // can legitimately pack into fewer batches than the original run committed.
     wait_for_l1_state(
         &restarted,
         "server commits a new batch on L1 after rebuild",
-        |state| state.last_committed_batch >= 1,
+        |state| state.last_committed_batch > initial_state.last_committed_batch,
     )
     .await?;
 
@@ -529,13 +547,13 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
 ///
 /// Scenario:
 ///   1. Start a node with the batcher and wait for a committed batch.
-///   2. Snapshot block 1's hash (`original_hash`) — this is the guard value.
+///   2. Snapshot the first test-created block's hash (`original_hash`) — this is the guard value.
 ///   3. First restart: `danger_block_rebuild_with_l1_revert` mode, `from_block_hash = original_hash`.
-///      Hash matches → L1 revert + rebuild run; block 1 gets a new hash.
+///      Hash matches → L1 revert + rebuild run; the target block gets a new hash.
 ///   4. Wait for the node to commit a new batch on L1 (rebuild complete).
 ///   5. Second restart with the exact same config.
-///      `from_block_hash = original_hash` no longer matches block 1's rebuilt hash → skip revert.
-///   6. Assert `last_committed_batch` did not drop back to 0 on the second startup.
+///      `from_block_hash = original_hash` no longer matches the rebuilt hash → skip revert.
+///   6. Assert `last_committed_batch` did not drop below the post-rebuild frontier on startup.
 #[test_multisetup([CURRENT_TO_L1])]
 #[test_runtime(flavor = "multi_thread")]
 async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
@@ -544,20 +562,24 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Preserve the pinned v31 fixture's executed baseline and rebuild only the first
+    // newly committed batch.
+    let initial_state = fetch_l1_state(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
-    let committed_state = wait_for_l1_state(&tester, "at least one committed batch", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&tester, "at least one new committed batch", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
-    // Snapshot block 1's hash before any rebuild; this is stored as the guard value.
-    let original_block1_hash = block_hash(&tester, 1).await?;
+    let first_new_batch = initial_state.last_committed_batch + 1;
+    let (_, first_new_block, _) = fetch_committed_batch(&tester, first_new_batch).await?;
+    let original_block_hash = block_hash(&tester, first_new_block).await?;
 
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
@@ -566,8 +588,8 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     // differs from the pre-rebuild value and the guard can distinguish the two states.
     restart_config.sequencer_config.rebuild = Some(RebuildConfig::DangerBlockRebuildWithL1Revert {
         bounds: RebuildBounds {
-            from_block_number: 1,
-            from_block_hash: original_block1_hash,
+            from_block_number: first_new_block,
+            from_block_hash: original_block_hash,
             blocks_to_empty: vec![],
             reset_timestamps: true,
         },
@@ -577,19 +599,19 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     // First restart: hash matches → L1 revert + rebuild proceed.
     let first_restart = stopped.start_with_config(restart_config.clone()).await?;
 
-    // Wait for block 1 to be rebuilt with a new timestamp (hash changes).
-    wait_for_block_hash_change(&first_restart, 1, original_block1_hash).await?;
+    // Wait for the target block to be rebuilt with a new timestamp (hash changes).
+    wait_for_block_hash_change(&first_restart, first_new_block, original_block_hash).await?;
 
     // Wait for the batcher to re-commit a batch after rebuild; record the count.
     let state_before_second_restart = wait_for_l1_state(
         &first_restart,
         "new batch committed on L1 after rebuild",
-        |state| state.last_committed_batch >= 1,
+        |state| state.last_committed_batch > initial_state.last_committed_batch,
     )
     .await?;
     let committed_before = state_before_second_restart.last_committed_batch;
 
-    // Second restart: same config, but block 1's hash has changed → guard fires, revert skipped.
+    // Second restart: same config, but the target hash has changed → guard fires, revert skipped.
     let stopped2 = first_restart.stop().await?;
     let second_restart = stopped2.start_with_config(restart_config).await?;
 
@@ -625,32 +647,35 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Standalone L1 revert must preserve the pinned v31 executed baseline.
+    let initial_state = fetch_l1_state(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
-    let committed_state = wait_for_l1_state(&tester, "at least one committed batch", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&tester, "at least one new committed batch", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
     // Snapshot the current tip hash; it must survive the standalone L1 revert unchanged.
     let tip_block = tester.l2_provider.get_block_number().await?;
     let original_tip_hash = block_hash(&tester, tip_block).await?;
 
-    // Fetch the commit tx hash of batch 1 for the revert guard.
-    let batch1_commit_tx_hash = fetch_on_chain_batch_commit_tx_hash(&tester, 1).await?;
+    let first_new_batch = initial_state.last_committed_batch + 1;
+    let first_new_commit_tx_hash =
+        fetch_on_chain_batch_commit_tx_hash(&tester, first_new_batch).await?;
 
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
     let mut revert_config = stopped.config().clone();
-    // Revert batch 1 and above, keeping no committed batches. L1Revert → no local block rebuild.
+    // Revert new batches while retaining the fixture baseline. L1Revert does not rebuild blocks.
     revert_config.sequencer_config.rebuild = Some(RebuildConfig::L1Revert {
-        from_batch_number: NonZeroU64::new(1).unwrap(),
-        from_batch_commit_tx_hash: batch1_commit_tx_hash,
+        from_batch_number: NonZeroU64::new(first_new_batch).unwrap(),
+        from_batch_commit_tx_hash: first_new_commit_tx_hash,
         l1_reverter_sk: reverter_signer,
     });
 
@@ -690,44 +715,47 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Revert only batches created above the pinned v31 executed baseline.
+    let initial_state = fetch_l1_state(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
 
-    let committed_state = wait_for_l1_state(&tester, "at least one committed batch", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&tester, "at least one new committed batch", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
-    // Fetch the commit tx hash of batch 1 for the revert guard.
-    let batch1_commit_tx_hash = fetch_on_chain_batch_commit_tx_hash(&tester, 1).await?;
+    let first_new_batch = initial_state.last_committed_batch + 1;
+    let first_new_commit_tx_hash =
+        fetch_on_chain_batch_commit_tx_hash(&tester, first_new_batch).await?;
 
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
     let mut revert_config = stopped.config().clone();
-    // Keep the node replay-only so last_committed_batch stays at 0 after the revert, giving the
+    // Keep the node replay-only so last_committed_batch stays at the fixture baseline after the revert, giving the
     // idempotency test a stable condition to exercise the graceful-skip path.
     revert_config.batcher_config.enabled = false;
-    // Revert batch 1 and above; L1Revert mode means no local block rebuild runs.
+    // Revert new batches; L1Revert mode means no local block rebuild runs.
     revert_config.sequencer_config.rebuild = Some(RebuildConfig::L1Revert {
-        from_batch_number: NonZeroU64::new(1).unwrap(),
-        from_batch_commit_tx_hash: batch1_commit_tx_hash,
+        from_batch_number: NonZeroU64::new(first_new_batch).unwrap(),
+        from_batch_commit_tx_hash: first_new_commit_tx_hash,
         l1_reverter_sk: reverter_signer,
     });
 
-    // First restart: revert runs (last_committed_batch > 0).
+    // First restart: revert runs above the fixture baseline.
     let first_reverted = stopped.start_with_config(revert_config.clone()).await?;
 
-    // Verify the revert ran: wait until last_committed_batch reaches 0.
+    // Verify the revert ran: wait until last_committed_batch reaches the fixture baseline.
     wait_for_l1_state(&first_reverted, "all committed batches reverted", |state| {
-        state.last_committed_batch == 0
+        state.last_committed_batch == initial_state.last_committed_batch
     })
     .await?;
 
-    // Second restart: last_committed_batch (0) < from_batch_number (1) → graceful skip, no panic.
+    // Second restart: last_committed_batch is below from_batch_number → graceful skip, no panic.
     let stopped2 = first_reverted.stop().await?;
     let second = stopped2.start_with_config(revert_config).await?;
 
@@ -767,29 +795,30 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Select non-last batches above the executed history embedded in the v31 fixture.
+    let initial_state = fetch_l1_state(&tester).await?;
+    let containing_batch = initial_state.last_committed_batch + 2;
+    let target_committed_batch = containing_batch + 1;
 
-    // Drive at least three committed (still unexecuted) batches onto L1 so batch 2 is a non-last
-    // committed batch (batch 1 below to keep, batches >= 3 above to skip during the scan).
+    // Drive three new committed (still unexecuted) batches onto L1 so the middle one is non-last.
     let committed_state =
         mine_until_l1_state(&tester, "at least three committed batches", |state| {
-            state.last_committed_batch >= 3
+            state.last_committed_batch >= target_committed_batch
         })
         .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
-    // Target batch 2: a non-last committed batch. Place `from_block_number` strictly inside it when
-    // it spans multiple blocks, otherwise at its single block — either way it resolves to batch 2.
-    let containing_batch = 2;
+    // Place `from_block_number` strictly inside the middle new batch when possible.
     let (_, first_block, last_block) = fetch_committed_batch(&tester, containing_batch).await?;
     let from_block_number = if last_block > first_block {
         first_block + 1
     } else {
         first_block
     };
-    // Batch 1 is the deepest batch that must survive the revert.
+    // The immediately preceding batch is the deepest batch that must survive the revert.
     let survivor_batch = containing_batch - 1;
 
     let from_block_hash = block_hash(&tester, from_block_number).await?;
@@ -870,26 +899,31 @@ async fn l1_revert_rejects_already_executed_batch(env: TestEnvironment) -> anyho
     let mut config = env.default_config().await?;
     make_full_pipeline_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: Exercise rejection on a newly executed batch rather than attempting to revert the
+    // immutable executed history embedded in the v31 fixture.
+    let initial_state = fetch_l1_state(&tester).await?;
+    let first_new_batch = initial_state.last_executed_batch + 1;
 
     send_throwaway_tx(&tester).await?;
 
-    // The full pipeline executes batches; wait until batch 1 is executed (finalized) on L1.
-    wait_for_l1_state(&tester, "at least one executed batch on L1", |state| {
-        state.last_executed_batch >= 1
+    // The full pipeline executes batches; wait until a new batch is finalized on L1.
+    wait_for_l1_state(&tester, "at least one new executed batch on L1", |state| {
+        state.last_executed_batch >= first_new_batch
     })
     .await?;
 
     // Pass the real commit tx hash so the test stays meaningful even if the guard order changes:
     // with a matching hash the revert proceeds to the executed-batch check either way.
-    let batch1_commit_tx_hash = fetch_on_chain_batch_commit_tx_hash(&tester, 1).await?;
+    let first_new_commit_tx_hash =
+        fetch_on_chain_batch_commit_tx_hash(&tester, first_new_batch).await?;
 
     let stopped = tester.stop().await?;
     let reverter_signer = make_reverter_config(&stopped)?;
     let mut revert_config = stopped.config().clone();
-    // from_batch_number = 1 is at or below last_executed_batch, so the revert must be rejected.
+    // The selected new batch is at or below last_executed_batch, so the revert must be rejected.
     revert_config.sequencer_config.rebuild = Some(RebuildConfig::L1Revert {
-        from_batch_number: NonZeroU64::new(1).unwrap(),
-        from_batch_commit_tx_hash: batch1_commit_tx_hash,
+        from_batch_number: NonZeroU64::new(first_new_batch).unwrap(),
+        from_batch_commit_tx_hash: first_new_commit_tx_hash,
         l1_reverter_sk: reverter_signer,
     });
 

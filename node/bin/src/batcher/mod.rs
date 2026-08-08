@@ -30,7 +30,7 @@ use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::ReadStateHistory;
-use zksync_os_types::PubdataMode;
+use zksync_os_types::{ProvingVersion, PubdataMode};
 
 pub mod batch_builder;
 mod batch_deadline_policy;
@@ -378,10 +378,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         accumulator.report_accumulated_resources_to_metrics();
 
         let protocol_version = &blocks.first().unwrap().record.protocol_version;
-        // SYSCOIN Preserve protocol-version adaptation before deciding whether to publish Syscoin DA.
+        // SYSCOIN: Preserve protocol-version adaptation before deciding whether to publish Syscoin DA.
         let pubdata_mode = self
             .pubdata_mode
             .adapt_for_protocol_version(protocol_version);
+        let proving_version = ProvingVersion::try_from(protocol_version.clone())?;
         let uses_syscoin_da = protocol_version.minor >= 31
             && matches!(
                 pubdata_mode,
@@ -393,7 +394,9 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
             );
 
-        let total_pubdata = uses_syscoin_da.then(|| {
+        // SYSCOIN: V7 exposes pubdata per block. V8 exposes only lengths there, so its canonical
+        // bytes are collected from the native batch run returned by sealing below.
+        let block_pubdata = (uses_syscoin_da && proving_version < ProvingVersion::V8).then(|| {
             blocks
                 .iter()
                 .flat_map(|block| block.output.expect_pubdata_bytes().iter().copied())
@@ -401,7 +404,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         });
 
         /* ---------- seal the batch ---------- */
-        let mut batch_envelope = self
+        let sealed_batch = self
             .seal_batch_blocking(
                 blocks,
                 prev_batch_info.clone(),
@@ -410,10 +413,13 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 legacy_pre_syscoin_da,
             )
             .await?;
+        let mut batch_envelope = sealed_batch.batch;
         // SYSCOIN: `RelayedL2Calldata` is a compact edge-DA reference mode when settling to
         // Gateway; it uses the same Bitcoin DA publication and hash-array commitment as blobs.
         if uses_syscoin_da {
-            let total_pubdata = total_pubdata.expect("computed for Syscoin DA mode");
+            let total_pubdata = block_pubdata
+                .or(sealed_batch.canonical_pubdata)
+                .context("canonical pubdata is unavailable for Syscoin DA publication")?;
             let (blob_ids_from_pubdata, blob_chunks_from_pubdata) =
                 syscoin_blob_ids_and_chunks_from_pubdata(&total_pubdata)?;
             anyhow::ensure!(
@@ -442,12 +448,40 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         batch_number: u64,
         pubdata_mode: PubdataMode,
         legacy_pre_syscoin_da: bool,
-    ) -> anyhow::Result<BatchForSigning<ProverInput>> {
+    ) -> anyhow::Result<batch_builder::SealedBatch> {
         let chain_id = self.chain_id;
         let chain_address_sl = self.chain_address_sl;
         let sl_chain_id = self.sl_chain_id;
         let compact_edge_da_commit_target = self.compact_edge_da_commit_target;
         let expected_upgrade_tx_hash = self.expected_upgrade_tx_hash_for_batch(batch_number);
+        let proving_version = ProvingVersion::try_from(
+            blocks
+                .first()
+                .context("cannot seal an empty batch")?
+                .record
+                .protocol_version
+                .clone(),
+        )?;
+        // SYSCOIN: Keep v31 sealing on the component task so shutdown cannot leave an
+        // uncancellable blocking task holding a cloned RocksDB lock during an immediate restart.
+        // V8 native batch execution remains isolated because it is substantially CPU-bound.
+        if proving_version < ProvingVersion::V8 {
+            return batch_builder::seal_batch(
+                &blocks,
+                prev_batch_info,
+                batch_number,
+                chain_id,
+                chain_address_sl,
+                pubdata_mode,
+                sl_chain_id,
+                compact_edge_da_commit_target,
+                expected_upgrade_tx_hash,
+                legacy_pre_syscoin_da,
+                &self.read_state,
+                &self.merkle_tree,
+            );
+        }
+
         let read_state = self.read_state.clone();
         let merkle_tree = self.merkle_tree.clone();
         tokio::task::spawn_blocking(move || {
@@ -530,7 +564,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 self.pubdata_mode,
                 false,
             )
-            .await?;
+            .await?
+            .batch;
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes
         if self.batcher_config.assert_rebuilt_batch_hashes {
@@ -554,7 +589,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                         self.pubdata_mode,
                         true,
                     )
-                    .await?;
+                    .await?
+                    .batch;
                 let legacy_stored_batch_info =
                     legacy_rebuilt_batch.batch.batch_info.clone().into_stored();
                 if legacy_stored_batch_info.hash() == existing_batch.batch_info.hash() {

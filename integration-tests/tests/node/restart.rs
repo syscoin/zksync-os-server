@@ -11,7 +11,7 @@ use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_integration_tests::assert_traits::{DEFAULT_TIMEOUT, POLL_INTERVAL, ReceiptAssert};
 use zksync_os_integration_tests::config::{ChainLayout, load_chain_config};
-use zksync_os_integration_tests::l1_helpers::wait_for_l1_state;
+use zksync_os_integration_tests::l1_helpers::{fetch_l1_state, wait_for_l1_state};
 use zksync_os_integration_tests::provider::ZksyncTestingProvider;
 use zksync_os_integration_tests::rpc_recorder::RpcRecordConfig;
 use zksync_os_integration_tests::test_config::{
@@ -19,6 +19,7 @@ use zksync_os_integration_tests::test_config::{
 };
 use zksync_os_integration_tests::wallets::load_reverter_private_key;
 use zksync_os_integration_tests::{CURRENT_TO_L1, Tester, test_multisetup};
+use zksync_os_l1_watcher::fetch_live_committed_batch;
 use zksync_os_provider::{EthWalletProvider, NodeProvider};
 use zksync_os_server::INTERNAL_CONFIG_FILE_NAME;
 use zksync_os_server::config::Config;
@@ -182,6 +183,12 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
+    // SYSCOIN: The pinned v31 fixture starts with executed L1 history. Snapshot its frontiers so
+    // commit-only assertions cover only work produced by this test.
+    let initial_state = fetch_l1_state(&tester).await?;
+    let initial_safe = block_number_by_id(&tester, BlockId::Number(BlockNumberOrTag::Safe)).await?;
+    let initial_finalized =
+        block_number_by_id(&tester, BlockId::Number(BlockNumberOrTag::Finalized)).await?;
 
     tester
         .l2_provider
@@ -194,27 +201,43 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
         .expect_successful_receipt()
         .await?;
 
-    let committed_state = wait_for_l1_state(&tester, "a committed batch", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&tester, "a newly committed batch", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
     assert_eq!(
-        committed_state.last_proved_batch, 0,
-        "fake SNARK provers are disabled, so no batch should be proved"
+        committed_state.last_proved_batch, initial_state.last_proved_batch,
+        "fake SNARK provers are disabled, so the proved frontier must not advance"
     );
 
     let safe_before_revert = wait_for_block_number_by_id(
         &tester,
         "the safe block to advance after an L1 commit",
         BlockId::Number(BlockNumberOrTag::Safe),
-        |block_number| block_number > 0,
+        |block_number| block_number > initial_safe,
     )
     .await?;
-    assert!(safe_before_revert > 0);
+    assert!(safe_before_revert > initial_safe);
+
+    // SYSCOIN: The v31 fixture may commit its setup deposit after startup while its executed
+    // frontier stays on the preloaded history. Resolve the rollback target's exact L2 block from
+    // its surviving L1 commit instead of using either startup RPC tag as a proxy.
+    let expected_safe_after_revert = if committed_state.last_executed_batch == 0 {
+        0
+    } else {
+        fetch_live_committed_batch(
+            &committed_state.diamond_proxy_sl,
+            committed_state.last_executed_batch,
+            tester.config().l1_watcher_config.max_blocks_to_process,
+        )
+        .await?
+        .0
+        .last_block_number()
+    };
 
     let stopped = tester.stop().await?;
     revert_batches_on_l1(
@@ -230,13 +253,13 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     let safe_after_revert =
         block_number_by_id(&restarted, BlockId::Number(BlockNumberOrTag::Safe)).await?;
     assert_eq!(
-        safe_after_revert, 0,
+        safe_after_revert, expected_safe_after_revert,
         "startup after L1 revert must recover the last committed block from L1"
     );
     let finalized_after_revert =
         block_number_by_id(&restarted, BlockId::Number(BlockNumberOrTag::Finalized)).await?;
     assert_eq!(
-        finalized_after_revert, 0,
+        finalized_after_revert, initial_finalized,
         "startup after L1 revert must keep the executed frontier unchanged"
     );
 
@@ -244,7 +267,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             block_number_by_id(&restarted, BlockId::Number(BlockNumberOrTag::Safe)).await?,
-            0,
+            expected_safe_after_revert,
             "node must not re-process the reverted historical commit event during catch-up"
         );
     }
@@ -253,8 +276,8 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     restarted_config.batcher_config.enabled = true;
     make_full_pipeline_config(&mut restarted_config);
     let restarted = restarted.restart_with_config(restarted_config).await?;
-    // The initial L1->L2 deposit was in the reverted batch, so the wallet balance is 0 after
-    // the revert. Wait for the priority operation to be re-included before sending transactions.
+    // SYSCOIN: A priority operation created by this test can be removed by the L1 revert. Wait
+    // for it to be re-included before sending transactions after the pipeline is re-enabled.
     restarted.wait_for_initial_deposit().await?;
 
     let executed_receipt = restarted
@@ -272,7 +295,7 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
         .wait_batch_number_by_block_number(executed_receipt.block_number.unwrap())
         .await?;
     assert!(
-        executed_batch >= 1,
+        executed_batch > initial_state.last_executed_batch,
         "post-revert transactions must be assigned to a finalized batch"
     );
 
@@ -312,6 +335,8 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let main_node = env.launch(config).await?;
+    // SYSCOIN: Compare against the seeded v31 L1 frontier rather than empty-genesis batch zero.
+    let initial_state = fetch_l1_state(&main_node).await?;
 
     // Drive a batch onto L1 so there is a committed batch to revert.
     let receipt = main_node
@@ -328,13 +353,13 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
         .block_number
         .expect("included transaction must have a block number");
 
-    let committed_state = wait_for_l1_state(&main_node, "a committed batch", |state| {
-        state.last_committed_batch >= 1
+    let committed_state = wait_for_l1_state(&main_node, "a newly committed batch", |state| {
+        state.last_committed_batch > initial_state.last_committed_batch
     })
     .await?;
     assert_eq!(
-        committed_state.last_executed_batch, 0,
-        "batch execution is disabled, so no batch should be executed"
+        committed_state.last_executed_batch, initial_state.last_executed_batch,
+        "batch execution is disabled, so the executed frontier must not advance"
     );
 
     // Restart the main node with the batcher disabled so it stops committing and stays healthy
@@ -409,8 +434,13 @@ async fn tester_reports_fatal_node_error() -> anyhow::Result<()> {
     let env = CURRENT_TO_L1.environment().await?;
     let mut config = env.default_config().await?;
     make_full_pipeline_config(&mut config);
-    configure_failing_block(&config, 1);
-    let mut tester = env.launch(config).await?;
+    let tester = env.launch(config).await?;
+    // SYSCOIN: The pinned v31 fixture already contains block 1. Restart after discovering its
+    // actual tip, then fail the first newly produced block deterministically.
+    let failing_block = tester.l2_provider.get_block_number().await? + 1;
+    let stopped = tester.stop().await?;
+    configure_failing_block(stopped.config(), failing_block);
+    let mut tester = stopped.start().await?;
 
     tester
         .l2_provider

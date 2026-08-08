@@ -1,4 +1,4 @@
-//! Interop integration tests for cross-chain token transfers.
+//! SYSCOIN: Interop integration tests retaining the production v31 Gateway proof topology.
 
 use alloy::{
     eips::eip1559::Eip1559Estimation,
@@ -379,16 +379,33 @@ async fn relayer_get_message_proof(
     }
 
     // Get the log proof
+    // SYSCOIN: retain the last v31 Gateway RPC error so a proof-construction regression is not
+    // misreported as a generic five-minute timeout.
+    let mut last_error = None;
     let log_proof = loop {
         if start.elapsed() > timeout {
-            anyhow::bail!("Log proof was not available in time");
+            anyhow::bail!(
+                "Log proof was not available in time{}",
+                last_error
+                    .as_deref()
+                    .map(|error| format!("; last RPC error: {error}"))
+                    .unwrap_or_default()
+            );
         }
 
-        if let Ok(Some(proof)) = provider
+        match provider
             .get_l2_to_l1_log_proof_with_target(tx_hash, 0, LogProofTarget::MessageRoot)
             .await
         {
-            break proof;
+            Ok(Some(proof)) => break proof,
+            Ok(None) => {}
+            Err(err) => {
+                let error = err.to_string();
+                if !error.contains("has not been executed on Gateway yet") {
+                    return Err(err).context("construct v31 Gateway MessageRoot proof");
+                }
+                last_error = Some(error);
+            }
         }
 
         tokio::time::sleep(poll_interval).await;

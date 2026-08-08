@@ -31,8 +31,9 @@ pub struct InteropWatcher {
 }
 
 impl InteropWatcher {
-    /// Creates a settlement-layer-aware resolver. V31 Gateway intervals and V32+ direct-L1
-    /// intervals use the same persisted cursor, so every historical segment is scanned in order.
+    /// SYSCOIN: Creates a settlement-layer-aware resolver. V31 Gateway intervals and V32+
+    /// direct-L1 intervals use the same persisted cursor, so every historical segment is scanned
+    /// in order.
     pub fn create_watcher(
         intervals: SettlementLayerIntervals,
         config: L1WatcherConfig,

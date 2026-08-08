@@ -1258,6 +1258,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .await
             .expect("replay archive component stopped before accepting genesis replay record");
     }
+    // SYSCOIN: A preloaded v31 WAL does not necessarily replay its historical records through the
+    // writer on startup, so seed every canonical record into this writer-owned archive session.
+    archiving_block_replay_storage
+        .backfill_initial_replay_records()
+        .await
+        .expect("replay archive component stopped during startup WAL backfill");
 
     let PipelineHandles {
         backpressure_acceptance_rx,

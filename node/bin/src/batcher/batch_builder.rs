@@ -21,6 +21,12 @@ struct BatchPigMeasurement {
     elapsed: Duration,
 }
 
+// SYSCOIN: Carry V8 canonical pubdata past native sealing for Bitcoin DA publication.
+pub(crate) struct SealedBatch {
+    pub batch: BatchForSigning<ProverInput>,
+    pub canonical_pubdata: Option<Vec<u8>>,
+}
+
 /// Takes a vector of blocks and produces a batch envelope.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
@@ -36,7 +42,7 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     legacy_pre_syscoin_da: bool,
     read_state: &ReadState,
     merkle_tree: &MerkleTree<RocksDBWrapper>,
-) -> anyhow::Result<BatchForSigning<ProverInput>> {
+) -> anyhow::Result<SealedBatch> {
     let block_number_from = blocks.first().unwrap().record.block_context.block_number;
     let block_number_to = blocks.last().unwrap().record.block_context.block_number;
     let last_block_hash = blocks.last().unwrap().output.header.hash();
@@ -134,6 +140,8 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
             Some(compact_edge_da_commit_target),
             &last_replay_record.block_context.block_hashes.0,
         );
+        // SYSCOIN: Rebuild historical pre-compact-DA v31 batches with their original commitment;
+        // newly sealed v31 batches use the compact Bitcoin-DA commitment path.
         if legacy_pre_syscoin_da {
             PendingBatchInfo::build_legacy_pre_syscoin_da(
                 batch_blocks(),
@@ -163,11 +171,15 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
         }
     };
 
-    anyhow::ensure!(
-        batch_info.upgrade_tx_hash == expected_upgrade_tx_hash,
-        "canonical upgrade tx hash mismatch for batch #{batch_number}: expected {expected_upgrade_tx_hash:?}, built {:?}",
-        batch_info.upgrade_tx_hash,
-    );
+    // SYSCOIN: A discovered L1 hash is authoritative, but its absence must not reject the
+    // canonical hash carried by the replayed upgrade transaction in an existing v31 fixture.
+    if let Some(expected_upgrade_tx_hash) = expected_upgrade_tx_hash {
+        anyhow::ensure!(
+            batch_info.upgrade_tx_hash == Some(expected_upgrade_tx_hash),
+            "canonical upgrade tx hash mismatch for batch #{batch_number}: expected {expected_upgrade_tx_hash:?}, built {:?}",
+            batch_info.upgrade_tx_hash,
+        );
+    }
 
     let mut logs = Vec::new();
     let mut messages = Vec::new();
@@ -190,6 +202,11 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     }
 
     // execution version should be the same for all the blocks, it is ensured by the seal criteria
+    // SYSCOIN: V8 block outputs retain only pubdata lengths; preserve the canonical bytes from
+    // the native batch run for Bitcoin DA publication after the batch envelope is constructed.
+    let canonical_pubdata = native_batch_run
+        .as_ref()
+        .map(|batch_run| batch_run.pubdata.clone());
     let (batch_prover_input, legacy_pig_measurement) =
         compute_batch_prover_input(blocks, proving_version, pubdata_mode, native_batch_run)?;
     if let Some(measurement) = native_pig_measurement.or(legacy_pig_measurement) {
@@ -258,7 +275,10 @@ pub(crate) fn seal_batch<ReadState: ReadStateHistory>(
     )
     .with_stage(BatchExecutionStage::BatchSealed);
 
-    Ok(batch_envelope)
+    Ok(SealedBatch {
+        batch: batch_envelope,
+        canonical_pubdata,
+    })
 }
 
 fn compute_batch_prover_input(

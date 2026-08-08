@@ -2731,7 +2731,7 @@ impl GatewaySenderConfig {
             },
             force_transaction_resubmission: force_transaction_resubmission.enabled,
             command_limit: self.command_limit,
-            // Gateway senders use the same upstream bounded pipeline; the library keeps
+            // SYSCOIN: Gateway senders use the same upstream bounded pipeline; the library keeps
             // Gateway execute serialized because MessageRoot appends are state-dependent.
             pipelining_enabled: true,
             poll_interval: self.poll_interval,

@@ -107,6 +107,14 @@ impl TestCase {
             settlement_layer: SettlementLayer::Gateway,
         }
     }
+
+    // SYSCOIN: Keep an explicit supported Gateway topology while NEXT advances to direct-L1 V8.
+    pub const fn current_to_gateway() -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            settlement_layer: SettlementLayer::Gateway,
+        }
+    }
     pub async fn environment(self) -> anyhow::Result<TestEnvironment> {
         TestEnvironment::from_case(self).await
     }
@@ -124,6 +132,9 @@ impl TestCase {
 }
 
 pub const CURRENT_TO_L1: TestCase = TestCase::current_to_l1();
+// SYSCOIN: v32 fixtures are intentionally direct-L1-only until the V8 app emits the compact
+// Gateway edge-DA preimages; keep Gateway coverage on the supported v31 production topology.
+pub const CURRENT_TO_GATEWAY: TestCase = TestCase::current_to_gateway();
 pub const NEXT_TO_L1: TestCase = TestCase::next_to_l1();
 pub const NEXT_TO_GATEWAY: TestCase = TestCase::next_to_gateway();
 
@@ -212,10 +223,10 @@ impl TestEnvironment {
                 if !prover_input_generation_enabled() {
                     disable_prover_input_generation(&mut gateway_config);
                 }
-                // Keep the fixture-upgrade transactions in one Gateway batch so the fake proof
+                // SYSCOIN: Keep the fixture-upgrade transactions in one Gateway batch so the fake proof
                 // pipeline does not see a burst of setup-only batches before the child starts.
                 gateway_config.batcher_config.batch_timeout = Duration::from_secs(2);
-                // The fixture Gateway may seal several setup batches while its contracts are
+                // SYSCOIN: The fixture Gateway may seal several setup batches while its contracts are
                 // upgraded. Serialize settlement submissions so the deliberately small pipeline
                 // buffers cannot be filled by that test-only startup burst.
                 gateway_config.l1_sender_config.command_limit = 1;
@@ -256,7 +267,7 @@ impl TestEnvironment {
                 gateway.rpc_url.clone(),
                 TEST_PROVIDER_POLL_INTERVAL,
             ));
-            // Fixture startup and funding can create several child batches before a test begins.
+            // SYSCOIN: Fixture startup and funding can create several child batches before a test begins.
             // Submit them serially to the in-process Gateway so the test harness does not turn
             // that bootstrap burst into artificial pipeline backpressure.
             config.gateway_sender_config.command_limit = 1;
@@ -291,6 +302,7 @@ impl TestEnvironment {
             &mut config,
         );
         config.l1_provider_config.rpc_url = l1_rpc_url;
+        // SYSCOIN: Preserve the configured Bitcoin-DA mock when an L1 fault proxy is inserted.
         let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config);
         Tester::launch_node_inner(
             self.l1,
@@ -561,6 +573,15 @@ impl Tester {
             .await?
             .error_for_status()?;
         Ok(response.json::<StatusResponse>().await?)
+    }
+
+    // SYSCOIN: Fixture restart/rebuild regressions need per-stage progress when a preserved DB
+    // stalls; the general status response does not expose pipeline coordinates.
+    pub async fn pipeline_status(&self) -> anyhow::Result<serde_json::Value> {
+        let response = reqwest::get(format!("{}/status/pipeline", self.status_server_url))
+            .await?
+            .error_for_status()?;
+        Ok(response.json().await?)
     }
 
     pub async fn wait_for_initial_deposit(&self) -> anyhow::Result<()> {
@@ -932,6 +953,10 @@ impl StoppedTester {
             ..
         } = self;
         let mut config = config;
+        // SYSCOIN: A stopped tester restart promises to preserve its current DB. Re-unpacking the
+        // pinned v31 ephemeral fixture would silently replace rebuilt/recovered WAL and repository
+        // state with the original fixture snapshot on every restart.
+        config.general_config.ephemeral_state = None;
         let bitcoin_da_mock = match bitcoin_da_mock {
             Some(mock) => Some(mock),
             None => maybe_start_bitcoin_da_mock(&mut config),
@@ -1062,6 +1087,7 @@ impl GatewayContext {
     }
 }
 
+// SYSCOIN: Patch the upstream fixture with the compact DA contracts used by our v31 testnet.
 async fn patch_v31_gateway_contracts(
     l1: &AnvilL1,
     gateway: &Tester,
@@ -1490,8 +1516,9 @@ impl AnvilL1 {
                         .arg("--mixed-mining")
                         .arg("--load-state")
                         .arg(&l1_state_path)
-                        // Loaded fixtures preserve historical L2 timestamps. Keep Anvil on the
-                        // fixture's clock so settlement contracts do not reject replayed batches.
+                        // SYSCOIN: Loaded fixtures preserve historical L2 timestamps. Keep Anvil
+                        // on the fixture's clock so settlement contracts do not reject replayed
+                        // batches.
                         .arg("--timestamp")
                         .arg(l1_timestamp.to_string())
                         .arg("--slots-in-an-epoch")
@@ -1522,7 +1549,7 @@ impl AnvilL1 {
             .await?;
 
             if chain_layout.protocol_version() == PROTOCOL_VERSION_V31_0 {
-                // The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
+                // SYSCOIN: The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
                 // Deploying first ensures the facet's chain ID and timestamp-window immutables are
                 // initialized exactly as they are in production before its code replaces the fixture.
                 let committer =

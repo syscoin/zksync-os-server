@@ -547,8 +547,9 @@ impl FriJobManager {
         batch_number: u64,
         prover_id: &'static str,
     ) -> Result<(), SubmitError> {
-        // We want to ensure we can send the result downstream before we remove the job
-        let permit = self.try_reserve_permit_downstream()?;
+        // SYSCOIN: fake workers submit only once, so normal pipeline backpressure must wait here;
+        // returning would strand the assigned job until the much longer assignment timeout.
+        let permit = self.reserve_permit_downstream().await?;
 
         // Downstream has capacity - we remove the job from `assigned_jobs`.
         let assigned = match self
@@ -600,14 +601,13 @@ impl FriJobManager {
         })
     }
 
-    fn try_reserve_permit_downstream(&self) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
-        match self.batches_with_proof_sender.try_reserve() {
-            Ok(permit) => Ok(permit),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                Err(SubmitError::Other("downstream backpressure".to_string()))
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(SubmitError::ShuttingDown),
-        }
+    async fn reserve_permit_downstream(
+        &self,
+    ) -> Result<mpsc::Permit<'_, ProvenBatch>, SubmitError> {
+        self.batches_with_proof_sender
+            .reserve()
+            .await
+            .map_err(|_| SubmitError::ShuttingDown)
     }
 }
 
@@ -856,6 +856,44 @@ mod tests {
             }
         })
         .await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fake_proof_waits_for_downstream_capacity() -> anyhow::Result<()> {
+        let proof_storage = proof_storage_for_test().await?;
+        let (downstream_tx, mut downstream_rx) = mpsc::channel(1);
+        let manager = Arc::new(FriJobManager::new(
+            downstream_tx,
+            proof_storage,
+            Duration::from_secs(30),
+            16,
+        ));
+
+        for batch_number in 1..=2 {
+            manager.add_job(dummy_input_batch(batch_number)).await;
+            manager
+                .pick_next_job(Duration::ZERO, "fake_prover".to_owned(), None)
+                .await
+                .expect("fake prover should receive the queued job");
+        }
+
+        manager.submit_fake_proof(1, "fake_prover").await?;
+        let manager_for_submit = Arc::clone(&manager);
+        let second_submit =
+            tokio::spawn(
+                async move { manager_for_submit.submit_fake_proof(2, "fake_prover").await },
+            );
+
+        tokio::task::yield_now().await;
+        assert!(!second_submit.is_finished());
+        assert_eq!(manager.status().await.len(), 1);
+
+        assert_eq!(downstream_rx.recv().await.unwrap().batch.batch_number(), 1);
+        second_submit.await??;
+        assert_eq!(downstream_rx.recv().await.unwrap().batch.batch_number(), 2);
+        assert!(manager.status().await.is_empty());
 
         Ok(())
     }

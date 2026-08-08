@@ -6,7 +6,7 @@ use crate::result::RevertError;
 use crate::rpc_storage::{ReadRpcStorage, RpcStorageError};
 use crate::sandbox::{call_trace_simulate, execute, execute_with};
 use alloy::consensus::transaction::Recovered;
-use alloy::consensus::{SignableTransaction, TxEip1559, TxEip2930, TxLegacy, TxType};
+use alloy::consensus::{SignableTransaction, Transaction, TxEip1559, TxEip2930, TxLegacy, TxType};
 use alloy::eips::BlockId;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, B256, Bytes, Signature, TxKind, U256};
@@ -17,7 +17,7 @@ use derive_more::Deref;
 use serde_json::Value as JsonValue;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
-use zk_os_api::helpers::get_nonce;
+use zk_os_api::helpers::{get_nonce, validate_l2_tx_intrinsic_native_resources};
 use zksync_os_interface::types::ExecutionOutput;
 use zksync_os_interface::{
     error::InvalidTransaction,
@@ -30,9 +30,9 @@ use zksync_os_storage_api::{
 use zksync_os_tx_validators::policy_client::{AccessType, PolicyClient, PolicySession};
 use zksync_os_types::ZksyncOsEncode;
 use zksync_os_types::{
-    L1_TX_MINIMAL_GAS_LIMIT, L1Envelope, L1PriorityTxType, L1Tx, L1TxType, L2Envelope,
-    REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE, SYSTEM_TX_TYPE_ID, UpgradeTxType, ZkEnvelope,
-    ZkTransaction, ZkTxType,
+    ExecutionVersion, L1_TX_MINIMAL_GAS_LIMIT, L1Envelope, L1PriorityTxType, L1Tx, L1TxType,
+    L2Envelope, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE, SYSTEM_TX_TYPE_ID, UpgradeTxType,
+    ZkEnvelope, ZkTransaction, ZkTxType,
 };
 
 #[derive(Clone, Debug)]
@@ -485,6 +485,9 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         state_override: Option<StateOverride>,
     ) -> Result<U256, EthCallError> {
         let mut block_context = self.resolve_block_context(block)?;
+        // SYSCOIN: Preserve the real pending fee inputs before execution-only pubdata padding so
+        // the admission floor matches the transaction the wallet will submit.
+        let admission_block_context = block_context;
 
         // Overestimate pubdata price to leave some space for fluctuations. Usual Ethereum tooling
         // assumes that gas limit stays constant in most scenarios, which is not the case in our system.
@@ -500,9 +503,15 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             Some(overrides) => self.estimate_gas_with_view(
                 request,
                 block_context,
+                admission_block_context,
                 OverriddenStateView::with_state_overrides(storage_view, overrides),
             ),
-            None => self.estimate_gas_with_view(request, block_context, storage_view),
+            None => self.estimate_gas_with_view(
+                request,
+                block_context,
+                admission_block_context,
+                storage_view,
+            ),
         }
     }
 }
@@ -550,6 +559,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         &self,
         request: TransactionRequest,
         block_context: BlockContext,
+        admission_block_context: BlockContext,
         mut storage_view: V,
     ) -> Result<U256, EthCallError> {
         tracing::trace!("Estimating gas with block context {block_context:?}");
@@ -601,6 +611,13 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             range.apply_probe(run_at(mid)?, Probe::Midpoint(mid))?;
             mid = range.midpoint();
         }
+
+        // SYSCOIN: The execution search uses `NopValidator`, while v31 mempool admission also
+        // enforces native-resource intrinsic gas. Apply the same monotonic floor so an estimate
+        // returned by RPC is always admissible by `eth_sendRawTransaction`.
+        if let Some(intrinsic_floor) = l2_intrinsic_gas_floor(&tx, &admission_block_context)? {
+            range.apply_floor(intrinsic_floor);
+        }
         tracing::trace!("Estimated gas limit: {}", range.highest);
 
         // Re-execute the resolved gas limit once with the validator wired in.
@@ -646,6 +663,83 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
         }
         Ok(())
     }
+}
+
+fn l2_intrinsic_gas_floor(
+    tx: &ZkTransaction,
+    block_context: &BlockContext,
+) -> Result<Option<u64>, EthCallError> {
+    let Ok(execution_version) = ExecutionVersion::try_from(block_context.execution_version) else {
+        return Ok(None);
+    };
+    let ZkEnvelope::L2(l2_tx) = tx.envelope() else {
+        return Ok(None);
+    };
+    if execution_version < ExecutionVersion::V6 {
+        return Ok(None);
+    }
+
+    let (access_list_accounts, access_list_storage_keys) = l2_tx
+        .access_list()
+        .map(|access_list| {
+            (
+                access_list.len() as u64,
+                access_list
+                    .iter()
+                    .map(|item| item.storage_keys.len())
+                    .sum::<usize>() as u64,
+            )
+        })
+        .unwrap_or_default();
+    let authorization_list_num = l2_tx
+        .authorization_list()
+        .map(|authorizations| authorizations.len() as u64)
+        .unwrap_or_default();
+    // SYSCOIN: Fee-less estimate requests are executed with zero gas price, but wallet fillers
+    // submit them at or above the pending base fee. Use that minimum admissible fee here so the
+    // returned gas limit includes the same native-resource floor the filled tx will face.
+    let tx_max_fee_per_gas = U256::from(l2_tx.max_fee_per_gas());
+    let max_fee_per_gas = tx_max_fee_per_gas.max(block_context.eip1559_basefee);
+    let max_priority_fee_per_gas = if tx_max_fee_per_gas < block_context.eip1559_basefee {
+        U256::ZERO
+    } else {
+        l2_tx
+            .max_priority_fee_per_gas()
+            .map(U256::from)
+            .unwrap_or(U256::ZERO)
+    };
+    let satisfies_intrinsic = |gas_limit| {
+        validate_l2_tx_intrinsic_native_resources(
+            block_context.eip1559_basefee,
+            block_context.native_price,
+            block_context.pubdata_price,
+            gas_limit,
+            l2_tx.input().len() as u64,
+            access_list_accounts,
+            access_list_storage_keys,
+            authorization_list_num,
+            max_fee_per_gas,
+            max_priority_fee_per_gas,
+        )
+        .is_ok()
+    };
+
+    let mut highest = tx.gas_limit();
+    if !satisfies_intrinsic(highest) {
+        return Err(EthCallError::ForwardSubsystemError(anyhow::anyhow!(
+            "transaction does not satisfy v31 intrinsic native-resource limits at block gas limit {highest}"
+        )));
+    }
+    let mut lowest = 0_u64;
+    while lowest.saturating_add(1) < highest {
+        let midpoint = u64::midpoint(lowest, highest);
+        if satisfies_intrinsic(midpoint) {
+            highest = midpoint;
+        } else {
+            lowest = midpoint;
+        }
+    }
+    Ok(Some(highest))
 }
 
 /// Simulate `tx`, optionally wiring `policy` as the validator. With a
