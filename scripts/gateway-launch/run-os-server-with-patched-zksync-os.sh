@@ -244,12 +244,24 @@ forward_re = re.compile(
     r'(?m)^zk_os_forward_system\s*=\s*\{.*?default-features\s*=\s*false\s*\}',
     re.MULTILINE | re.DOTALL,
 )
+forward_prev_re = re.compile(
+    r'(?m)^zk_os_forward_system_prev\s*=\s*\{.*?default-features\s*=\s*false\s*\}',
+    re.MULTILINE | re.DOTALL,
+)
 zk_ee_re = re.compile(
     r'(?m)^zk_ee\s*=\s*\{.*?\}',
     re.MULTILINE,
 )
+zk_ee_prev_re = re.compile(
+    r'(?m)^zk_ee_prev\s*=\s*\{.*?\}',
+    re.MULTILINE,
+)
 basic_re = re.compile(
     r'(?m)^zk_os_basic_system\s*=\s*\{.*?\}',
+    re.MULTILINE,
+)
+basic_prev_re = re.compile(
+    r'(?m)^zk_os_basic_system_prev\s*=\s*\{.*?\}',
     re.MULTILINE,
 )
 api_re = re.compile(
@@ -266,13 +278,28 @@ text, count_forward = forward_re.subn(
     text,
     count=1,
 )
+text, count_forward_prev = forward_prev_re.subn(
+    f'zk_os_forward_system_prev = {{ package = "forward_system", git = "{os_git_url}", tag = "{os_tag}", features = ["production", "no_print"], default-features = false }}',
+    text,
+    count=1,
+)
 text, count_ee = zk_ee_re.subn(
     f'zk_ee = {{ package = "zk_ee", git = "{os_git_url}", tag = "{os_tag}" }}',
     text,
     count=1,
 )
+text, count_ee_prev = zk_ee_prev_re.subn(
+    f'zk_ee_prev = {{ package = "zk_ee", git = "{os_git_url}", tag = "{os_tag}" }}',
+    text,
+    count=1,
+)
 text, count_basic = basic_re.subn(
     f'zk_os_basic_system = {{ package = "basic_system", git = "{os_git_url}", tag = "{os_tag}" }}',
+    text,
+    count=1,
+)
+text, count_basic_prev = basic_prev_re.subn(
+    f'zk_os_basic_system_prev = {{ package = "basic_system", git = "{os_git_url}", tag = "{os_tag}" }}',
     text,
     count=1,
 )
@@ -287,8 +314,17 @@ text, count_evm_interpreter = evm_interpreter_re.subn(
     count=1,
 )
 
-if (count_forward, count_ee, count_basic, count_api, count_evm_interpreter) != (1, 1, 1, 1, 1):
-    raise SystemExit("failed to rewrite current zksync-os dependencies in Cargo.toml")
+if (
+    count_forward,
+    count_forward_prev,
+    count_ee,
+    count_ee_prev,
+    count_basic,
+    count_basic_prev,
+    count_api,
+    count_evm_interpreter,
+) != (1, 1, 1, 1, 1, 1, 1, 1):
+    raise SystemExit("failed to rewrite current and V7 zksync-os dependencies in Cargo.toml")
 
 cargo_toml.write_text(text, encoding="utf-8")
 

@@ -149,11 +149,14 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             // Create stream:
             // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
             // - L1 transactions first, then L2 transactions.
+            // V31 Gateway roots remain valid, while v32 enables roots imported from L1.
+            let include_interop_traffic =
+                self.settles_on_gateway() || previous_record.protocol_version.supports_l1_interop();
             let best_txs = self
                 .pool
                 .best_transactions_stream(
                     self.next_interop_tx_allowed_after,
-                    self.settles_on_gateway(),
+                    include_interop_traffic,
                 )
                 .await
                 .context("mempool is closed")?;
@@ -221,32 +224,30 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             .try_into()
             .context("Cannot instantiate a block for unsupported execution version")?;
 
-        // Insert a SetSLChainId system transaction exactly once: when the protocol
-        // version is v31 (either via upgrade from v30, or on the first block of a
-        // fresh v31 chain). After it fires once, the condition can never trigger again.
-        let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if protocol_version.minor == 31
-            && (previous_record.protocol_version.minor < 31
-                || previous_record.block_context.block_number == 0)
-        {
-            let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
-                self.current_sl_chain_id,
-                // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                u64::MAX,
-            );
-            // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
-            // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
-            // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
-            // rejection when the stream is markable.
-            let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
-            let tx_source = if best_txs.stream_contains_upgrade_tx {
-                best_txs.stream.append_tx(sl_chain_id_tx)
+        // Insert SetSLChainId once on the first post-v31 block, including a fresh v32 chain.
+        let first_post_v31_block = previous_record.protocol_version.minor < 31
+            || previous_record.block_context.block_number == 0;
+        let (tx_source, expect_sl_chain_id_tx_after_upgrade) =
+            if protocol_version.is_post_v31() && first_post_v31_block {
+                let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
+                    self.current_sl_chain_id,
+                    // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                    u64::MAX,
+                );
+                // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
+                // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
+                // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
+                // rejection when the stream is markable.
+                let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
+                let tx_source = if best_txs.stream_contains_upgrade_tx {
+                    best_txs.stream.append_tx(sl_chain_id_tx)
+                } else {
+                    best_txs.stream.prepend_tx(sl_chain_id_tx)
+                };
+                (tx_source, true)
             } else {
-                best_txs.stream.prepend_tx(sl_chain_id_tx)
+                (best_txs.stream, false)
             };
-            (tx_source, true)
-        } else {
-            (best_txs.stream, false)
-        };
 
         let FeeParams {
             eip1559_basefee,

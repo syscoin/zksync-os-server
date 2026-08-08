@@ -6,7 +6,7 @@ use zksync_os_merkle_tree_api::{BatchTreeProof, TreeBatchOutput, TreeOperation};
 /// as a result of block execution. This proof is then used by the proof input generator.
 // SYSCOIN: batch-work spillover persists this upstream proof between execution
 // and prover-input generation.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockMerkleTreeData {
     /// Key tree parameters (root hash + number of leaves) **before** block execution.
     pub input: TreeBatchOutput,

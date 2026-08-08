@@ -66,7 +66,7 @@ pub struct MerkleTreeView {
 /// 4. New root hash of the tree is recreated using updated `sorted_leaves` and (the same) `hashes`.
 // SYSCOIN: batch-work spillover persists upstream Merkle proofs between
 // execution and prover-input generation.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchTreeProof {
     /// Performed tree operations. Correspond 1-to-1 to [`TreeEntry`]s.
     pub operations: Vec<TreeOperation>,

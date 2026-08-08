@@ -17,7 +17,7 @@ use zksync_os_interface::types::{
 use zksync_os_observability::ComponentStateReporter;
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReplayRecord, TreeBlock};
-use zksync_os_types::BlockOutput;
+use zksync_os_types::{BlockOutput, BlockPubdata};
 
 #[derive(Clone, Debug)]
 pub struct BatchWorkStorage {
@@ -252,8 +252,34 @@ impl BatchWorkItem {
 struct BatchWorkBlockOutput {
     header: BatchWorkHeader,
     tx_results: Vec<Option<BatchWorkTxOutput>>,
-    pubdata: Vec<u8>,
+    pubdata: BatchWorkPubdata,
     computational_native_used: u64,
+}
+
+// SYSCOIN: batch work is a restart buffer, and v32 block execution retains only the pubdata
+// length while v31 retains the bytes. Persist the distinction so catch-up cannot fabricate data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum BatchWorkPubdata {
+    Bytes(Vec<u8>),
+    Length(u64),
+}
+
+impl From<BlockPubdata> for BatchWorkPubdata {
+    fn from(pubdata: BlockPubdata) -> Self {
+        match pubdata {
+            BlockPubdata::Bytes(bytes) => Self::Bytes(bytes),
+            BlockPubdata::Length(length) => Self::Length(length),
+        }
+    }
+}
+
+impl From<BatchWorkPubdata> for BlockPubdata {
+    fn from(pubdata: BatchWorkPubdata) -> Self {
+        match pubdata {
+            BatchWorkPubdata::Bytes(bytes) => Self::Bytes(bytes),
+            BatchWorkPubdata::Length(length) => Self::Length(length),
+        }
+    }
 }
 
 impl From<BlockOutput> for BatchWorkBlockOutput {
@@ -269,7 +295,7 @@ impl From<BlockOutput> for BatchWorkBlockOutput {
                 .into_iter()
                 .map(|result| result.ok().map(BatchWorkTxOutput::from))
                 .collect(),
-            pubdata: block_output.pubdata,
+            pubdata: block_output.pubdata.into(),
             computational_native_used: block_output.computational_native_used,
         }
     }
@@ -294,7 +320,7 @@ impl BatchWorkBlockOutput {
             storage_writes: Vec::<StorageWrite>::new(),
             account_diffs: Vec::<AccountDiff>::new(),
             published_preimages: Vec::new(),
-            pubdata: self.pubdata,
+            pubdata: self.pubdata.into(),
             computational_native_used: self.computational_native_used,
         }
     }

@@ -119,10 +119,10 @@ impl<T: L2Subpool> Pool<T> {
         let interop_watcher = InteropWatcher::create_watcher(
             l1_state.settlement_layer_intervals.clone(),
             config.l1_watcher_config.clone(),
+            l1_state.bridgehub_l1.clone(),
             config.chain_id,
             interop_roots_subpool.clone(),
-        )
-        .context("failed to create interop roots watcher")?;
+        );
 
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -137,7 +137,7 @@ impl<T: L2Subpool> Pool<T> {
         let subcomponents = Subcomponents {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
-            interop_watcher,
+            interop_watcher: Some(interop_watcher),
             interop_fee_updater,
         };
 
@@ -219,9 +219,10 @@ impl<T: L2Subpool> Pool<T> {
     /// Also provides upgrade information is there is one (which is not necessarily accompanied by
     /// an upgrade transaction).
     ///
-    /// `include_interop_traffic` should be `false` whenever the chain currently settles on L1 --
-    /// in that case interop-root and interop-fee system txs are not valid downstream (they only
-    /// flow through Gateway settlement) and must not be included in produced blocks.
+    /// `include_interop_traffic` gates both interop-root and interop-fee system transactions; it
+    /// must only be enabled once the active protocol version supports L1-based interop. When it is
+    /// disabled, watched roots stay queued so a protocol upgrade can enable them without restarting
+    /// the watcher.
     ///
     /// Returns `None` if all transaction sources are closed.
     // SYSCOIN: Stream selection only needs shared access. Keeping this borrow immutable lets the

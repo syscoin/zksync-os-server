@@ -114,9 +114,10 @@ async fn upgrade_patch_no_deployments_settles_to_gateway() -> anyhow::Result<()>
     Ok(())
 }
 
-/// Performs V30->V31 protocol upgrade which also does a force deployment.
+/// Performs V31->V32 protocol upgrade with a force deployment, exercising the legacy path
+/// where the node already knows the bytecode preimage from a prior L2 deployment.
 #[test_log::test(tokio::test)]
-async fn upgrade_to_v31_with_deployments() -> anyhow::Result<()> {
+async fn upgrade_to_v32_with_predeployed_bytecodes() -> anyhow::Result<()> {
     let upgrade_timestamp = U256::from(1); // Protocol upgrade can be executed immediately.
     let deadline = U256::MAX; // The protocol version will not have any deadline in this upgrade
 

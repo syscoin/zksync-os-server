@@ -1,31 +1,33 @@
-use crate::ReadRpcStorage;
-use crate::log_proof_utils::{batch_tree_proof, chain_proof_vector, get_chain_log_proof};
+use crate::imt::{calculate_root, indexed_leaf_hash};
+use crate::interop_commitment_tree::{InteropCommitmentTreeError, InteropCommitmentTreeReader};
+use crate::log_proof_utils::{
+    assemble_log_proof, build_gateway_proof_extension, build_message_root_proof_extension,
+};
 use crate::result::ToRpcResult;
+use crate::{EthCallHandler, ReadRpcStorage};
 use alloy::primitives::{Address, B256, BlockNumber, TxHash, U64, U256, keccak256};
-use alloy::providers::{DynProvider, Provider};
+use alloy::providers::DynProvider;
 use alloy::rpc::types::Index;
 use anyhow::Context;
 use async_trait::async_trait;
 use blake2::{Blake2s256, Digest};
-use futures::{FutureExt, TryFutureExt};
 use jsonrpsee::core::RpcResult;
 use ruint::aliases::B160;
 use std::sync::Arc;
 use zk_ee::common_structs::derive_flat_storage_key;
+use zksync_os_contract_interface::IBridgehub;
 use zksync_os_genesis::{GenesisInput, GenesisInputSource};
 use zksync_os_merkle_tree_api::flat::StorageSlotProof;
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
 use zksync_os_rpc_api::{
     types::{
-        AddressScopedKey, BatchStorageProof, BlockMetadata, L1VerificationData, L2ToL1LogProof,
-        LogProofTarget, StateCommitmentPreimage,
+        AddressScopedKey, BatchStorageProof, BlockMetadata, ImtInclusionProof, ImtLeaf,
+        L1VerificationData, L2ToL1LogProof, LogProofTarget, StateCommitmentPreimage,
     },
     zks::ZksApiServer,
 };
-use zksync_os_storage_api::{PersistedBatch, RepositoryError, StateError, read_multichain_root};
-use zksync_os_types::L2_TO_L1_TREE_SIZE;
-
-const LOG_PROOF_SUPPORTED_METADATA_VERSION: u8 = 1;
+use zksync_os_storage_api::{RepositoryError, StateError, read_multichain_root};
+use zksync_os_types::{L2_TO_L1_TREE_SIZE, ProtocolSemanticVersion};
 
 pub struct ZksNamespace<RpcStorage> {
     bridgehub_address: Address,
@@ -33,17 +35,24 @@ pub struct ZksNamespace<RpcStorage> {
     storage: RpcStorage,
     genesis_input_source: Arc<dyn GenesisInputSource>,
     l2_chain_id: u64,
+    /// Queries the deployed L1 MessageRoot when an interop proof needs its aggregation segments.
+    l1_provider: DynProvider,
+    /// Present while the chain settles on Gateway; v31 Gateway proofs use its legacy tree format.
     gateway_provider: Option<DynProvider>,
+    commitment_tree_reader: InteropCommitmentTreeReader<RpcStorage>,
 }
 
 impl<RpcStorage> ZksNamespace<RpcStorage> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bridgehub_address: Address,
         bytecode_supplier_address: Address,
         storage: RpcStorage,
         genesis_input_source: Arc<dyn GenesisInputSource>,
         l2_chain_id: u64,
+        l1_provider: DynProvider,
         gateway_provider: Option<DynProvider>,
+        eth_call_handler: EthCallHandler<RpcStorage>,
     ) -> Self {
         Self {
             bridgehub_address,
@@ -51,7 +60,9 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
             storage,
             genesis_input_source,
             l2_chain_id,
+            l1_provider,
             gateway_provider,
+            commitment_tree_reader: InteropCommitmentTreeReader::new(eth_call_handler),
         }
     }
 }
@@ -136,163 +147,84 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             .chain(std::iter::once(multichain_root))
             .collect::<Vec<_>>();
 
-        let (batch_proof_len, batch_chain_proof, is_final_node, gateway_block_number) = match &self
-            .gateway_provider
-        {
-            Some(gateway_provider) => {
-                let execute_sl_block_number = batch
-                    .execute_sl_block_number
-                    .ok_or(ZksError::BatchNotAvailableYet)?;
-
+        let (proof_extension, settlement_layer_block_number) =
+            if let Some(gateway_provider) = &self.gateway_provider {
+                let execute_sl_block_number = batch.execute_sl_block_number.ok_or_else(|| {
+                    ZksError::Batch(anyhow::anyhow!(
+                        "batch {batch_number} has not been executed on Gateway yet"
+                    ))
+                })?;
+                let extension = build_gateway_proof_extension(
+                    self.l2_chain_id,
+                    batch_number,
+                    execute_sl_block_number,
+                    matches!(proof_target, LogProofTarget::MessageRoot),
+                    gateway_provider,
+                )
+                .await
+                .context("build Gateway proof extension")?;
+                (Some(extension), Some(execute_sl_block_number))
+            } else {
                 match proof_target {
-                    LogProofTarget::L1BatchRoot => {
-                        let gateway_batch: PersistedBatch = gateway_provider
-                            .raw_request(
-                                "unstable_getBatchByBlockNumber".into(),
-                                (execute_sl_block_number,),
-                            )
-                            .await
-                            .context("unstable_getBatchByBlockNumber")?;
-                        let gateway_batch_number = gateway_batch.number();
-
-                        // "batch" and "chain" parts can be fetched in parallel, so we prepare futures and join them at the end.
-                        let chain_log_proof_future = get_chain_log_proof(
-                            self.l2_chain_id,
-                            gateway_batch.last_block_number(),
-                            gateway_provider,
-                        )
-                        .map_err(|e| e.context("get_chain_log_proof"));
-
-                        let gw_local_root_future = gateway_provider
-                            .raw_request("unstable_getLocalRoot".into(), (gateway_batch_number,))
-                            .map_err(|e| anyhow::Error::from(e).context("unstable_getLocalRoot"));
-
-                        let gw_chain_id_future = gateway_provider
-                            .get_chain_id()
-                            .map_err(|e| anyhow::Error::from(e).context("get_chain_id"));
-
-                        let chain_proof_vector_future = futures::future::try_join3(
-                            chain_log_proof_future,
-                            gw_local_root_future,
-                            gw_chain_id_future,
-                        )
-                        .map_ok(
-                            |(mut chain_log_proof, gw_local_root, gw_chain_id)| {
-                                // Chain tree is the right subtree of the aggregated tree.
-                                // We append root of the left subtree to form full proof.
-                                chain_log_proof.chain_id_leaf_proof_mask |=
-                                    U256::from(1u64 << chain_log_proof.chain_id_leaf_proof.len());
-                                chain_log_proof.chain_id_leaf_proof.push(gw_local_root);
-                                chain_proof_vector(
-                                    gateway_batch_number,
-                                    chain_log_proof,
-                                    gw_chain_id,
-                                )
-                            },
-                        );
-
-                        let batch_tree_proof_future = batch_tree_proof(
-                            gateway_batch.block_range.clone(),
-                            self.l2_chain_id,
-                            batch_number,
-                            gateway_provider,
-                        )
-                        .map_err(|e| e.context("batch_tree_proof"));
-
-                        let (chain_proof_vector, (mut batch_chain_proof, batch_proof_len)) =
-                            futures::future::try_join(
-                                chain_proof_vector_future.boxed(),
-                                batch_tree_proof_future.boxed(),
-                            )
-                            .await?;
-
-                        batch_chain_proof.extend(chain_proof_vector);
-
-                        (
-                            batch_proof_len,
-                            batch_chain_proof,
-                            false,
-                            Some(execute_sl_block_number),
-                        )
-                    }
+                    // Other chains do not store this source batch root. They import the shared root
+                    // keyed by `(L1 chain id, L1 block)`, so continue through the source chain's batch
+                    // tree and L1's chain tree. The execution block identifies the exact shared root
+                    // and supplies the settlement-layer timestamp boundary used by atomic interop.
                     LogProofTarget::MessageRoot => {
-                        // For the "until msg root" format the chain proof is taken at the specific
-                        // SL block where this chain batch was executed (not at the end of the SL
-                        // L1 batch). The proof goes from the batch leaf directly to the block-level
-                        // message root, so no local-root extension is required.
-                        let chain_log_proof_future = get_chain_log_proof(
-                            self.l2_chain_id,
-                            execute_sl_block_number,
-                            gateway_provider,
-                        )
-                        .map_err(|e| e.context("get_chain_log_proof"));
+                        if !last_block_replay_record
+                            .protocol_version
+                            .supports_l1_interop()
+                        {
+                            return Err(ZksError::MessageRootProofUnsupportedProtocolVersion {
+                                batch_number,
+                                required_protocol_version:
+                                    ProtocolSemanticVersion::MIN_VERSION_WITH_L1_INTEROP,
+                                actual_protocol_version: last_block_replay_record.protocol_version,
+                            });
+                        }
 
-                        let gw_chain_id_future = gateway_provider
-                            .get_chain_id()
-                            .map_err(|e| anyhow::Error::from(e).context("get_chain_id"));
+                        let execute_sl_block_number =
+                            batch.execute_sl_block_number.ok_or_else(|| {
+                                ZksError::Batch(anyhow::anyhow!(
+                                    "batch {batch_number} has not been executed on L1 yet"
+                                ))
+                            })?;
 
-                        let chain_proof_vector_future =
-                            futures::future::try_join(chain_log_proof_future, gw_chain_id_future)
-                                .map_ok(|(chain_log_proof, gw_chain_id)| {
-                                    chain_proof_vector(
-                                        execute_sl_block_number,
-                                        chain_log_proof,
-                                        gw_chain_id,
-                                    )
-                                });
+                        // MessageRoot is a deployed L1 contract rather than a fixed-address system
+                        // contract, so its address comes from Bridgehub.
+                        let l1_message_root_address =
+                            IBridgehub::new(self.bridgehub_address, &self.l1_provider)
+                                .messageRoot()
+                                .call()
+                                .await
+                                .context("bridgehub.messageRoot()")?;
 
-                        // The batch tree proof uses only the single execution block so that the
-                        // resulting root matches the block-level message root.
-                        let batch_tree_proof_future = batch_tree_proof(
-                            execute_sl_block_number..=execute_sl_block_number,
+                        let proof_extension = build_message_root_proof_extension(
                             self.l2_chain_id,
                             batch_number,
-                            gateway_provider,
+                            execute_sl_block_number,
+                            &self.l1_provider,
+                            l1_message_root_address,
                         )
-                        .map_err(|e| e.context("batch_tree_proof"));
+                        .await
+                        .context("build MessageRoot proof extension")?;
 
-                        let (chain_proof_vector, (mut batch_chain_proof, batch_proof_len)) =
-                            futures::future::try_join(
-                                chain_proof_vector_future.boxed(),
-                                batch_tree_proof_future.boxed(),
-                            )
-                            .await?;
-
-                        batch_chain_proof.extend(chain_proof_vector);
-
-                        (
-                            batch_proof_len,
-                            batch_chain_proof,
-                            false,
-                            Some(execute_sl_block_number),
-                        )
+                        (Some(proof_extension), Some(execute_sl_block_number))
                     }
+                    // Other targets (e.g. L1 withdrawal-finalization proofs) terminate at L1 as a
+                    // final node — there is no settlement layer above L1.
+                    _ => (None, None),
                 }
-            }
-            None => (0, Vec::<B256>::new(), true, None),
-        };
+            };
 
-        let proof = {
-            let mut metadata = [0u8; 32];
-            metadata[0] = LOG_PROOF_SUPPORTED_METADATA_VERSION;
-            metadata[1] = log_leaf_proof.len() as u8;
-            metadata[2] = batch_proof_len;
-            metadata[3] = if is_final_node { 1 } else { 0 };
-
-            let mut result = vec![B256::new(metadata)];
-
-            result.extend(log_leaf_proof);
-            result.extend(batch_chain_proof);
-
-            result
-        };
+        let proof = assemble_log_proof(log_leaf_proof, proof_extension);
 
         Ok(Some(L2ToL1LogProof {
             batch_number,
             proof,
             root,
             id: l1_log_index as u32,
-            gateway_block_number,
+            settlement_layer_block_number,
         }))
     }
 
@@ -421,6 +353,61 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             l1_verification_data,
         }))
     }
+
+    /// Index of the low-nullifier leaf for `value` (the predecessor used when inserting `value`)
+    /// against the commitment tree as of `block_number`. `None` if no such leaf exists.
+    fn get_imt_low_nullifier_index_impl(
+        &self,
+        value: U256,
+        block_number: u64,
+    ) -> ZksResult<Option<u64>> {
+        let tree = self.commitment_tree_reader.read(block_number.into())?;
+        Ok(tree.find_low_nullifier_index(value))
+    }
+
+    /// Reconstructs the IMT inclusion proof for `commit_value` at `block_number`.
+    ///
+    /// The response includes the stored leaf preimage, its insertion-order index, and one sibling
+    /// per level in the dynamic-height tree. `None` means the requested value was absent at that
+    /// historical block.
+    fn get_imt_inclusion_proof_impl(
+        &self,
+        commit_value: U256,
+        block_number: u64,
+    ) -> ZksResult<Option<ImtInclusionProof>> {
+        let tree = self.commitment_tree_reader.read(block_number.into())?;
+        let Some(leaf_index) = tree.find_value_index(commit_value) else {
+            return Ok(None);
+        };
+        let leaf = tree.leaves()[leaf_index as usize];
+        let root = tree.root();
+        let path = tree.merkle_path(leaf_index);
+
+        // Self-verify the produced path against the root (same walk the on-chain `verifyInclusion`
+        // performs) so an engine bug surfaces here instead of as an on-chain `executeAtomicBundle`
+        // revert. A mismatch is an internal error, not a "leaf absent" (None) result.
+        let recomputed = calculate_root(&path, leaf_index, indexed_leaf_hash(&leaf));
+        if recomputed != root {
+            return Err(InteropCommitmentTreeError::ProofMismatch {
+                commit_value,
+                leaf_index,
+                recomputed_root: recomputed,
+                tree_root: root,
+            }
+            .into());
+        }
+
+        Ok(Some(ImtInclusionProof {
+            chain_imt_root: root,
+            leaf: ImtLeaf {
+                value: leaf.value,
+                next_index: leaf.next_index,
+                next_value: leaf.next_value,
+            },
+            imt_leaf_index: leaf_index,
+            imt_proof: path,
+        }))
+    }
 }
 
 #[async_trait]
@@ -466,6 +453,24 @@ impl<RpcStorage: ReadRpcStorage> ZksApiServer for ZksNamespace<RpcStorage> {
         self.get_proof_impl(account, &keys, batch_number)
             .to_rpc_result()
     }
+
+    async fn get_imt_inclusion_proof(
+        &self,
+        commit_value: U256,
+        block_number: u64,
+    ) -> RpcResult<Option<ImtInclusionProof>> {
+        self.get_imt_inclusion_proof_impl(commit_value, block_number)
+            .to_rpc_result()
+    }
+
+    async fn get_imt_low_nullifier_index(
+        &self,
+        value: U256,
+        block_number: u64,
+    ) -> RpcResult<Option<u64>> {
+        self.get_imt_low_nullifier_index_impl(value, block_number)
+            .to_rpc_result()
+    }
 }
 
 /// `zks` namespace result type.
@@ -474,13 +479,6 @@ pub type ZksResult<Ok> = Result<Ok, ZksError>;
 /// General `zks` namespace errors
 #[derive(Debug, thiserror::Error)]
 pub enum ZksError {
-    /// Block is executed according to L1 but hasn't been indexed by this node yet. Client needs to
-    /// retry after some time passes. For early blocks in old testnets it can also mean that the
-    /// batch is legacy and the node does not index it anymore.
-    #[error(
-        "L1 batch containing the transaction has not been finalized or indexed by this node yet"
-    )]
-    BatchNotAvailableYet,
     /// Historical block could not be found on this node (e.g., pruned).
     #[error("historical block {0} is not available")]
     BlockNotAvailable(BlockNumber),
@@ -492,6 +490,19 @@ pub enum ZksError {
         "provided L2->L1 log index ({0}) does not exist; there are only {1} L2->L1 logs in the transaction"
     )]
     IndexOutOfBounds(usize, usize),
+    /// The requested batch predates the L1 MessageRoot proof format.
+    #[error(
+        "MessageRoot proofs require protocol version {required_protocol_version} or newer; batch \
+         {batch_number} uses {actual_protocol_version}"
+    )]
+    MessageRootProofUnsupportedProtocolVersion {
+        batch_number: u64,
+        required_protocol_version: ProtocolSemanticVersion,
+        actual_protocol_version: ProtocolSemanticVersion,
+    },
+
+    #[error(transparent)]
+    CommitmentTree(#[from] InteropCommitmentTreeError),
 
     #[error(transparent)]
     Batch(#[from] anyhow::Error),

@@ -107,7 +107,6 @@ impl TestCase {
             settlement_layer: SettlementLayer::Gateway,
         }
     }
-
     pub async fn environment(self) -> anyhow::Result<TestEnvironment> {
         TestEnvironment::from_case(self).await
     }
@@ -135,8 +134,8 @@ pub const BATCH_VERIFICATION_KEYS: [&str; 2] = [
 ];
 /// Shutdown completes in <5 seconds when there is no CPU starvation. But because prover input
 /// generator runs its CPU-bound task on a blocking thread it can significantly slow down graceful
-/// shutdown. We put 60s here until zksync-os v0.4.0 which will get rid of RISC-V simulator and
-/// allow async/abortable prover input generation.
+/// shutdown. Keep 60s until V7 proving support is dropped (V8 generates prover input natively
+/// at batch seal, without the blocking RISC-V simulator).
 const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Set of addresses (i.e. public keys) expected by batch verification. Derived from [`BATCH_VERIFICATION_KEYS`].
 static BATCH_VERIFICATION_ADDRESSES: LazyLock<Vec<String>> = LazyLock::new(|| {
@@ -245,6 +244,11 @@ impl TestEnvironment {
         }
     }
 
+    /// Anvil's direct RPC endpoint, e.g. to put a fault-injecting proxy in front of it.
+    pub fn l1_rpc_url(&self) -> &str {
+        &self.l1.address
+    }
+
     pub async fn default_config(&self) -> anyhow::Result<Config> {
         let mut config = build_node_config(&self.l1, self.chain_layout, false).await?;
         if let Some(gateway) = &self.gateway {
@@ -268,6 +272,36 @@ impl TestEnvironment {
     pub async fn launch_default(self) -> anyhow::Result<Tester> {
         let config = self.default_config().await?;
         self.launch(config).await
+    }
+
+    /// Launches the node with its L1 RPC routed through `l1_rpc_url` (e.g. a fault-injecting
+    /// proxy in front of anvil) instead of anvil's direct endpoint. Test-side helpers
+    /// (`Tester::l1_provider()` etc.) still talk to anvil directly.
+    pub async fn launch_with_l1_rpc(
+        self,
+        mut config: Config,
+        l1_rpc_url: String,
+    ) -> anyhow::Result<Tester> {
+        if !prover_input_generation_enabled() {
+            disable_prover_input_generation(&mut config);
+        }
+        Tester::bind_runtime_config(
+            &self.l1,
+            self.prepared_runtime.tempdir.as_ref(),
+            &mut config,
+        );
+        config.l1_provider_config.rpc_url = l1_rpc_url;
+        let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config);
+        Tester::launch_node_inner(
+            self.l1,
+            config,
+            self.prepared_runtime.tempdir,
+            self.chain_layout,
+            None,
+            true,
+            bitcoin_da_mock,
+        )
+        .await
     }
 
     pub async fn launch(mut self, mut config: Config) -> anyhow::Result<Tester> {
@@ -395,6 +429,14 @@ pub struct SupportingNode {
 impl Tester {
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// URL of the node's prover API, if the prover server is enabled.
+    /// Stable across [`Tester::stop`] / restart (HTTP ports are preserved).
+    pub fn prover_api_url(&self) -> Option<String> {
+        self.bound_ports
+            .prover_api
+            .map(|port| format!("http://localhost:{port}"))
     }
 
     fn apply_external_node_defaults(&self, config: &mut Config) {
@@ -1431,128 +1473,148 @@ impl AnvilL1 {
         std::fs::write(&l1_state_path, serde_json::to_vec(&l1_state)?)
             .context("failed to write L1 state to temporary state file")?;
 
-        // --slots-in-an-epoch defines what blocks are "finalized" in Anvil, last finalized block is `latest - 2 * slots_in_an_epoch`
-        // so we set block time to 0.25s and slots in epoch set to 10 and finalization delays is about 10*0.25s*2=5s which is reasonable for tests.
-        let provider = ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| {
-            anvil
-                .chain_id(L1_CHAIN_ID)
-                .arg("--block-time")
-                .arg("0.25")
-                .arg("--mixed-mining")
-                .arg("--load-state")
-                .arg(l1_state_path)
-                // Loaded fixtures preserve historical L2 timestamps. Keep Anvil on the fixture's
-                // clock so settlement contracts do not reject newly replayed batches as stale.
-                .arg("--timestamp")
-                .arg(l1_timestamp.to_string())
-                .arg("--slots-in-an-epoch")
-                .arg("10")
-        })?;
-        let address = provider.inner().anvil().endpoint();
+        // Under CI load a freshly started Anvil can wedge (stop answering RPC for 60+s)
+        // right after passing the readiness check; retrying against it is hopeless, so
+        // after a few failed probes we kill it and spawn a fresh one.
+        const SPAWN_ATTEMPTS: usize = 3;
+        let mut last_err = None;
+        for attempt in 1..=SPAWN_ATTEMPTS {
+            // --slots-in-an-epoch defines what blocks are "finalized" in Anvil, last finalized block is `latest - 2 * slots_in_an_epoch`
+            // so we set block time to 0.25s and slots in epoch set to 10 and finalization delays is about 10*0.25s*2=5s which is reasonable for tests.
+            let provider =
+                ProviderBuilder::new().connect_anvil_with_wallet_and_config(|anvil| {
+                    anvil
+                        .chain_id(L1_CHAIN_ID)
+                        .arg("--block-time")
+                        .arg("0.25")
+                        .arg("--mixed-mining")
+                        .arg("--load-state")
+                        .arg(&l1_state_path)
+                        // Loaded fixtures preserve historical L2 timestamps. Keep Anvil on the
+                        // fixture's clock so settlement contracts do not reject replayed batches.
+                        .arg("--timestamp")
+                        .arg(l1_timestamp.to_string())
+                        .arg("--slots-in-an-epoch")
+                        .arg("10")
+                })?;
+            let address = provider.inner().anvil().endpoint();
 
-        // `AnvilInstance`'s Drop never runs if the test process is SIGKILLed or aborts,
-        // which would orphan an anvil that mines (and allocates) forever. The leash kills
-        // it whenever this process dies, no matter how.
-        leash::attach(provider.inner().anvil().child().id(), "anvil")?;
+            // `AnvilInstance`'s Drop never runs if the test process is SIGKILLed or aborts,
+            // which would orphan an anvil that mines (and allocates) forever. The leash kills
+            // it whenever this process dies, no matter how.
+            leash::attach(provider.inner().anvil().child().id(), "anvil")?;
 
-        let wallet = provider.wallet().clone();
+            let wallet = provider.wallet().clone();
 
-        (|| async {
-            // Wait for L1 node to get up and be able to respond.
-            provider.clone().get_chain_id().await?;
-            Ok(())
-        })
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(Duration::from_millis(200))
-                .with_max_times(50),
-        )
-        .notify(|err: &anyhow::Error, dur: Duration| {
-            tracing::info!(%err, ?dur, "retrying connection to L1 node");
-        })
-        .await?;
+            (|| async {
+                // Wait for L1 node to get up and be able to respond.
+                provider.clone().get_chain_id().await?;
+                Ok(())
+            })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(Duration::from_millis(200))
+                    .with_max_times(50),
+            )
+            .notify(|err: &anyhow::Error, dur: Duration| {
+                tracing::info!(%err, ?dur, "retrying connection to L1 node");
+            })
+            .await?;
 
-        if chain_layout.protocol_version() == PROTOCOL_VERSION_V31_0 {
-            // The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
-            // Deploying first ensures the facet's chain ID and timestamp-window immutables are
-            // initialized exactly as they are in production before its code replaces the fixture.
-            let committer =
-                SyscoinCommitterFacetTest::deploy(provider.clone(), U256::from(L1_CHAIN_ID))
+            if chain_layout.protocol_version() == PROTOCOL_VERSION_V31_0 {
+                // The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
+                // Deploying first ensures the facet's chain ID and timestamp-window immutables are
+                // initialized exactly as they are in production before its code replaces the fixture.
+                let committer =
+                    SyscoinCommitterFacetTest::deploy(provider.clone(), U256::from(L1_CHAIN_ID))
+                        .await
+                        .context("failed to deploy the Syscoin v31 committer facet")?;
+                let committer_code = provider
+                    .get_code_at(*committer.address())
                     .await
-                    .context("failed to deploy the Syscoin v31 committer facet")?;
-            let committer_code = provider
-                .get_code_at(*committer.address())
-                .await
-                .context("failed to read the deployed Syscoin v31 committer facet")?;
-            provider
-                .anvil_set_code(
-                    address!("cadf65088e818af6e6ec5c321a81a811d0d223ba"),
-                    committer_code,
-                )
-                .await
-                .context("failed to install the Syscoin v31 committer facet")?;
-
-            if matches!(chain_layout, ChainLayout::Default { .. }) {
-                let chain_config = load_chain_config(ChainLayout::Default {
-                    protocol_version: PROTOCOL_VERSION_V31_0,
-                })
-                .await;
-                let chain_id = chain_config
-                    .genesis_config
-                    .chain_id
-                    .context("v31 direct-L1 fixture is missing its chain ID")?;
-                let bridgehub_address = chain_config
-                    .genesis_config
-                    .bridgehub_address
-                    .context("v31 direct-L1 fixture is missing its Bridgehub address")?;
-                let bridgehub = Bridgehub::new(bridgehub_address, provider.clone(), chain_id);
-                let filterer_address = bridgehub
-                    .zk_chain()
-                    .await?
-                    .get_transaction_filterer()
-                    .await?;
-                let filterer = LegacyDepositTransactionFiltererTest::deploy(provider.clone())
-                    .await
-                    .context("failed to deploy the v31 legacy-deposit filter shim")?;
-                let filterer_code = provider
-                    .get_code_at(*filterer.address())
-                    .await
-                    .context("failed to read the v31 legacy-deposit filter shim")?;
+                    .context("failed to read the deployed Syscoin v31 committer facet")?;
                 provider
-                    .anvil_set_code(filterer_address, filterer_code)
+                    .anvil_set_code(
+                        address!("cadf65088e818af6e6ec5c321a81a811d0d223ba"),
+                        committer_code,
+                    )
                     .await
-                    .context("failed to install the v31 legacy-deposit filter shim")?;
+                    .context("failed to install the Syscoin v31 committer facet")?;
+
+                if matches!(chain_layout, ChainLayout::Default { .. }) {
+                    let chain_config = load_chain_config(ChainLayout::Default {
+                        protocol_version: PROTOCOL_VERSION_V31_0,
+                    })
+                    .await;
+                    let chain_id = chain_config
+                        .genesis_config
+                        .chain_id
+                        .context("v31 direct-L1 fixture is missing its chain ID")?;
+                    let bridgehub_address = chain_config
+                        .genesis_config
+                        .bridgehub_address
+                        .context("v31 direct-L1 fixture is missing its Bridgehub address")?;
+                    let bridgehub = Bridgehub::new(bridgehub_address, provider.clone(), chain_id);
+                    let filterer_address = bridgehub
+                        .zk_chain()
+                        .await?
+                        .get_transaction_filterer()
+                        .await?;
+                    let filterer = LegacyDepositTransactionFiltererTest::deploy(provider.clone())
+                        .await
+                        .context("failed to deploy the v31 legacy-deposit filter shim")?;
+                    let filterer_code = provider
+                        .get_code_at(*filterer.address())
+                        .await
+                        .context("failed to read the v31 legacy-deposit filter shim")?;
+                    provider
+                        .anvil_set_code(filterer_address, filterer_code)
+                        .await
+                        .context("failed to install the v31 legacy-deposit filter shim")?;
+                }
+            }
+
+            tracing::info!("L1 chain started on {}", address);
+
+            // `NodeProvider::new` probes Anvil's capabilities over a transport with no request
+            // timeout; an Anvil that wedges right after passing the readiness check above would
+            // otherwise hang the test until nextest's terminate timeout.
+            let probed = (|| async {
+                tokio::time::timeout(Duration::from_secs(10), NodeProvider::new(provider.clone()))
+                    .await
+                    .context("timed out probing L1 node capabilities")?
+                    .context("failed to probe L1 node capabilities")
+            })
+            .retry(
+                ConstantBuilder::default()
+                    .with_delay(Duration::from_millis(200))
+                    .with_max_times(2),
+            )
+            .notify(|err: &anyhow::Error, dur: Duration| {
+                tracing::info!(%err, ?dur, "retrying L1 node capability probing");
+            })
+            .await;
+
+            match probed {
+                Ok(provider) => {
+                    return Ok(Self {
+                        address,
+                        provider,
+                        wallet,
+                        timestamp_offset_seconds,
+                        _tempdir: Arc::new(tempdir),
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!(%err, attempt, "anvil unresponsive to capability probing; respawning");
+                    // Dropping `provider` (the last owner of `AnvilInstance`) kills the wedged anvil.
+                    last_err = Some(err);
+                }
             }
         }
-
-        tracing::info!("L1 chain started on {}", address);
-
-        // `NodeProvider::new` probes Anvil's capabilities over a transport with no request
-        // timeout; an Anvil that wedges right after passing the readiness check above would
-        // otherwise hang the test until nextest's terminate timeout.
-        let provider = (|| async {
-            tokio::time::timeout(Duration::from_secs(10), NodeProvider::new(provider.clone()))
-                .await
-                .context("timed out probing L1 node capabilities")?
-                .context("failed to probe L1 node capabilities")
-        })
-        .retry(
-            ConstantBuilder::default()
-                .with_delay(Duration::from_millis(200))
-                .with_max_times(5),
-        )
-        .notify(|err: &anyhow::Error, dur: Duration| {
-            tracing::info!(%err, ?dur, "retrying L1 node capability probing");
-        })
-        .await?;
-
-        Ok(Self {
-            address,
-            provider,
-            wallet,
-            timestamp_offset_seconds,
-            _tempdir: Arc::new(tempdir),
-        })
+        Err(last_err
+            .expect("SPAWN_ATTEMPTS > 0")
+            .context("L1 node capability probing failed for every spawned anvil"))
     }
 }
 
@@ -1612,16 +1674,12 @@ fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
 async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
     let protocol_version = tester.chain_layout.protocol_version();
     let app_bin_path = match protocol_version {
-        PROTOCOL_VERSION => utils::materialize_multiblock_batch_bin(
-            &tester.tempdir.path().join("app_bins"),
-            "v6",
-            zksync_os_multivm::apps::v6::MULTIBLOCK_BATCH,
-        ),
         PROTOCOL_VERSION_V31_0 => utils::materialize_multiblock_batch_bin(
             &tester.tempdir.path().join("app_bins"),
             "v7",
             zksync_os_multivm::apps::v7::MULTIBLOCK_BATCH,
         ),
+        // V6 (protocol v30.x) proving support was dropped when the 0.4.0 lane became current.
         _ => panic!("unsupported protocol version for prover tests"),
     };
     let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
@@ -1678,7 +1736,6 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
 #[cfg(feature = "prover-tests")]
 fn prover_release_for_protocol(protocol_version: &str) -> &'static str {
     match protocol_version {
-        PROTOCOL_VERSION => "v0.7.1",
         PROTOCOL_VERSION_V31_0 => "v0.8.0",
         _ => {
             panic!("unsupported protocol version `{protocol_version}` for prover binary selection")

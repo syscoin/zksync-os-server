@@ -13,6 +13,7 @@ mod eth_fill_transaction_handler;
 mod eth_filter;
 mod eth_impl;
 mod eth_pubsub_impl;
+mod interop_commitment_tree;
 mod metrics;
 mod ots_impl;
 mod result;
@@ -20,6 +21,7 @@ mod rpc_storage;
 mod simulate;
 pub use rpc_storage::{ReadRpcStorage, RpcStorage};
 mod debug_impl;
+mod imt;
 pub mod js_tracer;
 mod limits;
 mod log_proof_utils;
@@ -91,6 +93,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     acceptance_state: watch::Receiver<TransactionAcceptanceState>,
     last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     tx_forwarder: Option<TxForwarder>,
+    l1_provider: DynProvider,
     gateway_provider: Option<DynProvider>,
     policy_client: Option<PolicyClient>,
     runtime: &Runtime,
@@ -132,7 +135,9 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             storage.clone(),
             genesis_input_source,
             chain_id,
+            l1_provider,
             gateway_provider,
+            eth_call_handler.clone(),
         )
         .into_rpc(),
     )?;

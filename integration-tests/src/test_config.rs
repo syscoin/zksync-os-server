@@ -61,6 +61,9 @@ pub(crate) async fn build_node_config(
     if let Some(gateway_provider_config) = &mut config.gateway_provider_config {
         gateway_provider_config.rpc_poll_interval = TEST_PROVIDER_POLL_INTERVAL;
     }
+    // The L1 senders poll receipts on their own cadence (1s default) — keep tests fast
+    // against anvil's 0.25s blocks.
+    config.l1_sender_config.poll_interval = TEST_PROVIDER_POLL_INTERVAL;
     config.sequencer_config.fee_collector_address = Address::random();
     config.sequencer_config.block_timestamp_offset_seconds = l1.timestamp_offset_seconds;
     // SYSCOIN: the pinned v31 L1 snapshot replays bootstrap/system transactions whose legacy

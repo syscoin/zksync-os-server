@@ -1,6 +1,5 @@
 use crate::commands::{L1SenderCommand, SendToL1};
 use crate::config::L1SenderConfig;
-use crate::report_operator_metrics_loop;
 use alloy::primitives::Address;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
@@ -34,20 +33,15 @@ where
     const OUTPUT_CHANNEL_CAPACITY: usize = 1;
 
     async fn run(
-        self,
+        mut self,
         input: PeekableReceiver<Self::Input>,
         output: mpsc::Sender<Self::Output>,
         state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
-        let operator_address = self.operator_address().await?;
-        let metrics_provider = self.provider.clone();
+        self.register_operator().await?;
         tokio::select! {
             result = self.run_l1_sender(input, output, state_reporter) => result,
-            result = report_operator_metrics_loop(
-                metrics_provider,
-                operator_address,
-                C::COMPONENT_ID.as_str(),
-            ) => result,
+            result = self.report_operator_metrics_loop() => result,
         }
     }
 }

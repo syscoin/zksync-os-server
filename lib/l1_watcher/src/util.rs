@@ -584,8 +584,11 @@ pub async fn find_l1_execute_block_by_batch_number(
     .await
 }
 
-/// Finds the first L1 block where `interopRootLogId >= next_interop_root_id`.
-/// Uses binary search for efficiency.
+/// Finds the first L1 block where MessageRoot's counter reached `next_interop_root_id`.
+///
+/// The input is the next root the chain has not imported. For example, cursor 42 resolves to the
+/// block that advanced the counter to 42. A zero cursor has no on-chain anchor yet and resolves to
+/// block 0.
 pub async fn find_l1_block_by_interop_root_id(
     bridgehub: Bridgehub<NodeProvider>,
     next_interop_root_id: u64,
@@ -593,13 +596,11 @@ pub async fn find_l1_block_by_interop_root_id(
     if next_interop_root_id == 0 {
         return Ok(0);
     }
-
     let message_root_address = bridgehub.message_root_address().await?;
     let message_root = Arc::new(MessageRoot::new(
         message_root_address,
         bridgehub.provider().clone(),
     ));
-
     let latest = message_root.provider().get_block_number().await?;
     // The provider's cache resolves (and remembers) the MessageRoot deployment block, giving the
     // search a tight lower bound without a per-iteration code-existence guard.

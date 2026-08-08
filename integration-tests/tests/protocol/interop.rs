@@ -519,8 +519,8 @@ async fn test_interop_l2_to_l1_message_verification() -> anyhow::Result<()> {
         relayer_get_message_proof(&chain_a.l2_zk_provider, tx_hash, block_number).await?;
 
     let gw_block_number = log_proof
-        .gateway_block_number
-        .expect("MessageRoot proof must contain gateway_block_number");
+        .settlement_layer_block_number
+        .expect("MessageRoot proof must contain settlement_layer_block_number");
 
     // Wait for interop root to become available on chain B, keyed by gateway chain + GW block
     chain_b
@@ -669,8 +669,8 @@ async fn test_interop_bundle_send() -> Result<()> {
     .await?;
 
     let gw_block_number = log_proof
-        .gateway_block_number
-        .expect("MessageRoot proof must contain gateway_block_number");
+        .settlement_layer_block_number
+        .expect("MessageRoot proof must contain settlement_layer_block_number");
 
     // Wait for interop root to get included on chain B, keyed by gateway chain + GW block
     chain_b

@@ -1,3 +1,9 @@
+//! L1 `MessageRoot` event ingestion for interop-root system transactions.
+//!
+//! Each `NewInteropRoot` carries a shared root that chains must import before they can verify
+//! cross-chain proofs against it. This watcher resumes near the persisted interop cursor, drops
+//! roots that were already imported, and forwards new roots to the mempool sink.
+
 use alloy::primitives::ruint::FromUintError;
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
@@ -17,115 +23,68 @@ use crate::sl_aware_watcher::{SegmentResolver, SegmentSpec};
 use crate::util::{find_l1_block_by_interop_root_id, find_l1_execute_block_by_batch_number};
 use crate::watcher::L1WatcherError;
 use crate::{EventSink, L1WatcherConfig, ProcessRawEvents};
-/// Watches interop root updates emitted by Gateway settlement layers and feeds them into the
-/// interop subpool.
-///
-/// This component reads `NewInteropRoot` events from the Gateway bridgehub's message-root
-/// contract, de-duplicates multiple logs for the same `logId`, and inserts the latest
-/// `IndexedInteropRoot` into its sink.
-///
-/// To support a chain that has migrated GW → L1 (or GW → L1 → GW → …), the watcher walks every
-/// Gateway interval — historical and active — via [`SlAwareL1Watcher`](crate::SlAwareL1Watcher).
-/// Each historical Gateway segment is bounded by the L1/SL block where the last included interop
-/// root was emitted.
+
+/// Decodes confirmed `NewInteropRoot` logs for the shared [`L1Watcher`](crate::L1Watcher).
 pub struct InteropWatcher {
     starting_interop_root_id: u64,
     sink: Box<dyn EventSink<IndexedInteropRoot>>,
 }
 
 impl InteropWatcher {
-    /// Builds the watcher if the chain has at least one Gateway interval. Returns `Ok(None)`
-    /// for chains that have only ever settled on L1 — those have no interop roots to watch.
+    /// Creates a settlement-layer-aware resolver. V31 Gateway intervals and V32+ direct-L1
+    /// intervals use the same persisted cursor, so every historical segment is scanned in order.
     pub fn create_watcher(
         intervals: SettlementLayerIntervals,
         config: L1WatcherConfig,
+        l1_bridgehub: Bridgehub<NodeProvider>,
         l2_chain_id: u64,
         sink: impl EventSink<IndexedInteropRoot>,
-    ) -> anyhow::Result<Option<SegmentResolver<u64, Self>>> {
-        // Whether there is anything to watch depends only on the (static) interval layout, so we
-        // can decide Some/None up front without resolving any block windows.
-        let has_gateway_segment = intervals.intervals().iter().any(|interval| {
-            matches!(
-                interval.settlement_layer,
-                IntervalSettlementLayer::Gateway(_)
-            ) && interval
-                .last_batch
-                .is_none_or(|lb| interval.first_batch <= lb)
-        });
-        if !has_gateway_segment {
-            tracing::info!("chain has no Gateway intervals; skipping interop roots watcher");
-            return Ok(None);
-        }
-
+    ) -> SegmentResolver<u64, Self> {
         let resolve_segments = move |starting_interop_root_id: u64| async move {
             let mut segments = Vec::new();
             for interval in intervals.intervals() {
-                // L1 intervals never emit interop roots; skip them outright.
-                let IntervalSettlementLayer::Gateway(_) = interval.settlement_layer else {
-                    continue;
-                };
-                // Empty intervals are possible when a migration closes without committing
-                // anything (`first_batch > last_batch`). Nothing to scan.
                 if interval
                     .last_batch
-                    .is_some_and(|lb| interval.first_batch > lb)
+                    .is_some_and(|last_batch| interval.first_batch > last_batch)
                 {
                     continue;
                 }
 
-                let gw_zk_chain = &interval.proxy;
-                let bridgehub = Bridgehub::new(
-                    L2_BRIDGEHUB_ADDRESS,
-                    gw_zk_chain.provider().clone(),
-                    l2_chain_id,
-                );
+                let bridgehub = match interval.settlement_layer {
+                    IntervalSettlementLayer::L1 => l1_bridgehub.clone(),
+                    IntervalSettlementLayer::Gateway(_) => Bridgehub::new(
+                        L2_BRIDGEHUB_ADDRESS,
+                        interval.proxy.provider().clone(),
+                        l2_chain_id,
+                    ),
+                };
                 let message_root = bridgehub.message_root_address().await.with_context(|| {
-                    format!("failed to fetch message_root address for interval {interval}")
+                    format!("failed to fetch MessageRoot address for interval {interval}")
                 })?;
-
-                // The chain's `interop_root_id` cursor carries over across migrations, so the
-                // same value is the floor anchor on every segment —
-                // `find_l1_block_by_interop_root_id` resolves it to the correct block on
-                // whichever SL we point it at.
-                let start_block =
-                    find_l1_block_by_interop_root_id(bridgehub.clone(), starting_interop_root_id)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to find {} block for \
-                                 interop_root_id={starting_interop_root_id} in interval \
-                                 {interval}",
-                                interval.settlement_layer
-                            )
-                        })?;
-                // End block is chosen pessimistically: it's the GW block where last batch was
-                // executed, hence we could import extra roots that were never picked up during
-                // the interval. This is not a problem though as mempool will not serve them in
-                // the next interval as interop is not possible on L1. The slight tradeoff here
-                // is that they will be stuck in memory until the next restart.
+                let start_block = find_l1_block_by_interop_root_id(
+                    bridgehub.clone(),
+                    starting_interop_root_id,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to resolve interop_root_id={starting_interop_root_id} in interval {interval}"
+                    )
+                })?;
                 let end_block = match interval.last_batch {
                     Some(last_batch) => Some(
-                        find_l1_execute_block_by_batch_number(gw_zk_chain.clone(), last_batch)
+                        find_l1_execute_block_by_batch_number(interval.proxy.clone(), last_batch)
                             .await
                             .with_context(|| {
                                 format!(
-                                    "failed to find Gateway execute block for batch \
-                                     #{last_batch} in interval {interval}"
+                                    "failed to find settlement-layer execute block for batch #{last_batch} in interval {interval}"
                                 )
                             })?,
                     ),
                     None => None,
                 };
-
-                tracing::info!(
-                    ?interval,
-                    message_root = ?message_root,
-                    start_block,
-                    ?end_block,
-                    "scheduling interop watcher segment"
-                );
                 segments.push(SegmentSpec {
-                    provider: gw_zk_chain.provider().clone(),
+                    provider: bridgehub.provider().clone(),
                     address: message_root.into(),
                     start_block,
                     end_block,
@@ -139,7 +98,7 @@ impl InteropWatcher {
             Ok((segments, processor))
         };
 
-        Ok(Some(SegmentResolver::new(config, resolve_segments)))
+        SegmentResolver::new(config, resolve_segments)
     }
 }
 
@@ -154,7 +113,8 @@ impl ProcessRawEvents for InteropWatcher {
     }
 
     fn filter_events(&self, logs: Vec<Log>) -> Vec<Log> {
-        // we want to accept only the latest event for each log id
+        // A polling range may contain repeated updates for one log id. Only its latest root should
+        // reach the subpool.
         let mut indexes = HashMap::new();
 
         for log in logs {
@@ -183,6 +143,8 @@ impl ProcessRawEvents for InteropWatcher {
             .try_into()
             .map_err(|e: FromUintError<u64>| L1WatcherError::Other(e.into()))?;
 
+        // Because startup rescans the block containing the cursor, only that first scanned L1 block
+        // can contain roots that were already imported.
         if log_id < self.starting_interop_root_id {
             tracing::debug!(
                 log_id,
