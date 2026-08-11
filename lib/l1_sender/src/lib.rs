@@ -78,6 +78,20 @@ const L1_SIM_GAS_LIMIT: u64 = 30_000_000;
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
 
+fn l1_simulation_gas_limit(block_gas_limit: u64) -> anyhow::Result<u64> {
+    anyhow::ensure!(
+        block_gas_limit > 0,
+        "latest L1 block reported a zero gas limit"
+    );
+    // SYSCOIN: Syscoin L1 caps blocks at 16M gas, so the generic 30M safety cap must
+    // also be bounded by the settlement chain's current block gas limit.
+    Ok(L1_SIM_GAS_LIMIT.min(block_gas_limit))
+}
+
+fn padded_simulation_result_gas_limit(gas_used: u64, simulation_gas_limit: u64) -> u64 {
+    gas_used.saturating_mul(2).min(simulation_gas_limit)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FeeParams {
     max_fee_per_gas: u128,
@@ -205,6 +219,7 @@ fn build_l1_simulation_request(
     nonce: u64,
     fee_params: FeeParams,
     prepared_sidecar: Option<&PreparedSidecar>,
+    gas_limit: u64,
 ) -> TransactionRequest {
     // Mirror submission fees so providers (e.g. anvil) that parse the request
     // as a typed tx accept it.
@@ -215,7 +230,7 @@ fn build_l1_simulation_request(
         .with_max_fee_per_gas(fee_params.max_fee_per_gas)
         .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
         .with_nonce(nonce)
-        .with_gas_limit(L1_SIM_GAS_LIMIT);
+        .with_gas_limit(gas_limit);
 
     if let Some(prepared_sidecar) = prepared_sidecar {
         req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
@@ -1202,6 +1217,13 @@ where
             )
             .build();
 
+        let latest_block = self
+            .provider
+            .get_block(BlockId::latest())
+            .await?
+            .context("latest L1 block is unavailable while preparing gas simulation")?;
+        let simulation_gas_limit = l1_simulation_gas_limit(latest_block.header.gas_limit)?;
+
         let prefix_blocks = in_flight_prefix.iter().map(|entry| {
             build_l1_simulation_request(
                 operator_address,
@@ -1210,6 +1232,7 @@ where
                 entry.nonce,
                 entry.fee_params,
                 entry.sidecar.as_deref(),
+                simulation_gas_limit,
             )
         });
         let command_blocks = commands.iter().enumerate().map(|(i, cmd)| {
@@ -1220,6 +1243,7 @@ where
                 starting_nonce + i as u64,
                 fee_params,
                 prepared_sidecars[i].as_deref(),
+                simulation_gas_limit,
             )
         });
         let block_state_calls = prefix_blocks
@@ -1285,7 +1309,10 @@ where
             .enumerate()
         {
             match block.calls.first() {
-                Some(call) if call.status => gas_limits.push(call.gas_used.saturating_mul(2)),
+                Some(call) if call.status => gas_limits.push(padded_simulation_result_gas_limit(
+                    call.gas_used,
+                    simulation_gas_limit,
+                )),
                 Some(call) => {
                     tracing::warn!(
                         tx_index = i,
@@ -1355,6 +1382,7 @@ where
             prepared_sidecars
                 .first()
                 .and_then(|sidecar| sidecar.as_deref()),
+            L1_SIM_GAS_LIMIT,
         );
         request.gas = None;
 
@@ -1822,6 +1850,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn simulation_gas_limit_respects_l1_block_limit() {
+        assert_eq!(l1_simulation_gas_limit(16_000_000).unwrap(), 16_000_000);
+        assert_eq!(l1_simulation_gas_limit(60_000_000).unwrap(), 30_000_000);
+        assert!(l1_simulation_gas_limit(0).is_err());
+        assert_eq!(
+            padded_simulation_result_gas_limit(9_000_000, 16_000_000),
+            16_000_000
+        );
+    }
+
+    #[test]
     fn single_command_simulate_failure_uses_estimate_gas() {
         assert_eq!(fixed_fallback_gas_limits(0, 1).unwrap(), None);
     }
@@ -1955,7 +1994,9 @@ mod tests {
             nonce,
             fee_params,
             Some(&prepared),
+            16_000_000,
         );
+        assert_eq!(fixed_request.gas, Some(16_000_000));
         fixed_request
             .build_typed_simulate_transaction()
             .expect("sidecar-backed blob simulation request should be buildable");
