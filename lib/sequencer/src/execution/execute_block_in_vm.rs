@@ -243,42 +243,30 @@ pub async fn execute_block_in_vm<V: ViewState>(
 
                         match (tx.tx_type(), command.invalid_tx_policy) {
                             (ZkTxType::L1 | ZkTxType::Upgrade, _) => {
-                                match rejection_method(&e) {
-                                    // Seal what we have and let the tx retry from the subpool head in the next block.
-                                    TxRejectionMethod::SealBlock(reason) if !executed_txs.is_empty() => {
-                                        tracing::info!(
-                                            block_number = ctx.block_number,
-                                            "Sealing block {} before {} tx {} because it hit a sealing criterion: reason={reason:?}, error={e:?}",
-                                            ctx.block_number,
-                                            tx.tx_type(),
-                                            tx.hash(),
-                                        );
-                                        break reason;
-                                    }
-                                    // A resource-limit error for the first L1 tx means the block limits are
-                                    // configured below L1's per-tx caps. Log the configuration error without
-                                    // generating a block dump.
-                                    TxRejectionMethod::SealBlock(reason) => {
-                                        tracing::error!(
-                                            block_number = ctx.block_number,
-                                            "Cannot include {} tx {} in an empty block because it hit a sealing criterion; block limits may be configured below L1's per-tx caps: reason={reason:?}, error={e:?}",
-                                            tx.tx_type(),
-                                            tx.hash(),
-                                        );
-                                        break reason;
-                                    }
-                                    // A genuinely invalid priority tx is a protocol violation: the FIFO cannot
-                                    // skip it, so retain the block dump for investigation.
-                                    _ => {
-                                        return Err(
-                                            BlockDump {
-                                                ctx,
-                                                txs: all_processed_txs.clone(),
-                                                error: format!("invalid {} tx: {e:?} ({})", tx.tx_type(), tx.hash()),
-                                            }
-                                        )
-                                    }
+                                let can_seal_on_priority_tx_limit =
+                                    matches!(command.seal_policy, SealPolicy::Decide(..));
+                                if let Some(reason) = priority_tx_block_limit_seal_reason(
+                                    &e,
+                                    executed_txs.is_empty(),
+                                    can_seal_on_priority_tx_limit,
+                                ) {
+                                    tracing::info!(
+                                        block_number = ctx.block_number,
+                                        "Sealing block {} before {} tx {} because it hit a sealing criterion: reason={reason:?}, error={e:?}",
+                                        ctx.block_number,
+                                        tx.tx_type(),
+                                        tx.hash(),
+                                    );
+                                    break reason;
                                 }
+
+                                return Err(
+                                    BlockDump {
+                                        ctx,
+                                        txs: all_processed_txs.clone(),
+                                        error: format!("invalid {} tx: {e:?} ({})", tx.tx_type(), tx.hash()),
+                                    }
+                                )
                             }
                             (ZkTxType::System, _) => {
                                 return Err(
@@ -503,6 +491,23 @@ fn should_exclude_and_seal(
     None
 }
 
+fn priority_tx_block_limit_seal_reason(
+    error: &InvalidTransaction,
+    is_first_tx_in_block: bool,
+    can_seal_on_priority_tx_limit: bool,
+) -> Option<SealReason> {
+    // SYSCOIN: An unexecutable FIFO head must remain fatal; otherwise every produced block can
+    // seal empty and retry it forever. Replay limit failures also indicate inconsistent state.
+    if is_first_tx_in_block || !can_seal_on_priority_tx_limit {
+        return None;
+    }
+
+    match rejection_method(error) {
+        TxRejectionMethod::SealBlock(reason) => Some(reason),
+        TxRejectionMethod::Purge | TxRejectionMethod::Skip => None,
+    }
+}
+
 enum TxRejectionMethod {
     // purge tx from the mempool
     Purge,
@@ -603,5 +608,54 @@ fn rejection_method(error: &InvalidTransaction) -> TxRejectionMethod {
             TxRejectionMethod::SealBlock(SealReason::Blobs)
         }
         InvalidTransaction::OtherLimitReached(_) => TxRejectionMethod::SealBlock(SealReason::Other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn priority_tx_block_limit_error_seals_non_empty_produced_block() {
+        assert_eq!(
+            priority_tx_block_limit_seal_reason(
+                &InvalidTransaction::BlockPubdataLimitReached,
+                false,
+                true,
+            ),
+            Some(SealReason::Pubdata)
+        );
+    }
+
+    #[test]
+    fn priority_tx_block_limit_error_is_fatal_for_empty_block() {
+        assert_eq!(
+            priority_tx_block_limit_seal_reason(
+                &InvalidTransaction::BlockPubdataLimitReached,
+                true,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn priority_tx_block_limit_error_is_fatal_during_replay() {
+        assert_eq!(
+            priority_tx_block_limit_seal_reason(
+                &InvalidTransaction::BlockPubdataLimitReached,
+                false,
+                false,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn priority_tx_non_limit_error_remains_fatal() {
+        assert_eq!(
+            priority_tx_block_limit_seal_reason(&InvalidTransaction::InvalidEncoding, false, true,),
+            None
+        );
     }
 }
