@@ -1,13 +1,14 @@
 use alloy::network::{ReceiptResponse, TxSigner};
 use alloy::primitives::{Address, B256, U256, address};
 use alloy::providers::{PendingTransactionBuilder, Provider};
+use alloy::rpc::types::{TransactionReceipt, TransactionRequest};
 use alloy::sol_types::SolCall;
 use anyhow::Context;
 use std::time::Duration;
 use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMailbox::NewPriorityRequest;
-use zksync_os_integration_tests::assert_traits::{POLL_INTERVAL, ReceiptAssert};
+use zksync_os_integration_tests::assert_traits::{POLL_INTERVAL, ReceiptAssert, ReceiptsAssert};
 use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, Tester, test_multisetup};
 use zksync_os_types::REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE;
 
@@ -36,9 +37,28 @@ async fn l1_txs_exceeding_block_pubdata_limit(env: TestEnvironment) -> anyhow::R
     let pubdata_limit = tester.config().sequencer_config.block_pubdata_limit_bytes;
     // Each tx fits in an empty block on its own; two together breach the limit.
     let message_size = (pubdata_limit * 3 / 5) as usize;
-
-    let tx1 = send_priority_tx_with_pubdata(&tester, message_size).await?;
-    let tx2 = send_priority_tx_with_pubdata(&tester, message_size).await?;
+    let request = prepare_priority_tx_with_pubdata(&tester, message_size).await?;
+    let alice = tester.l1_wallet().default_signer().address();
+    let first_nonce = tester
+        .l1_provider()
+        .get_transaction_count(alice)
+        .pending()
+        .await?;
+    // Queue both deposits before awaiting either receipt so the node observes both within the
+    // same block window and must exercise the pubdata sealing criterion.
+    let (pending1, pending2) = tokio::try_join!(
+        tester
+            .l1_provider()
+            .send_transaction(request.clone().nonce(first_nonce)),
+        tester
+            .l1_provider()
+            .send_transaction(request.nonce(first_nonce + 1)),
+    )?;
+    let receipts = vec![pending1, pending2]
+        .expect_successful_receipts()
+        .await?;
+    let tx1 = priority_tx_hash(&receipts[0])?;
+    let tx2 = priority_tx_hash(&receipts[1])?;
 
     let block1 = wait_for_l2_inclusion(&tester, tx1).await?;
     let block2 = wait_for_l2_inclusion(&tester, tx2).await?;
@@ -51,12 +71,12 @@ async fn l1_txs_exceeding_block_pubdata_limit(env: TestEnvironment) -> anyhow::R
     Ok(())
 }
 
-/// Sends an L1 priority tx calling `L1Messenger.sendToL1` with a `message_size`-byte message,
-/// producing roughly that much pubdata on L2. Returns the canonical L2 tx hash.
-async fn send_priority_tx_with_pubdata(
+/// Prepares an L1 priority tx calling `L1Messenger.sendToL1` with a `message_size`-byte
+/// message, producing roughly that much pubdata on L2.
+async fn prepare_priority_tx_with_pubdata(
     tester: &Tester,
     message_size: usize,
-) -> anyhow::Result<B256> {
+) -> anyhow::Result<TransactionRequest> {
     let alice = tester.l1_wallet().default_signer().address();
     let chain_id = tester.l2_provider.get_chain_id().await?;
     let bridgehub = Bridgehub::new(
@@ -81,28 +101,23 @@ async fn send_priority_tx_with_pubdata(
             REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
         )
         .await?;
-    let receipt = tester
-        .l1_provider()
-        .send_transaction(
-            bridgehub
-                .request_l2_transaction_direct(
-                    base_cost,
-                    L1_MESSENGER_ADDRESS,
-                    U256::ZERO,
-                    calldata,
-                    gas_limit,
-                    REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
-                    alice,
-                )
-                .value(base_cost)
-                .max_fee_per_gas(fees.max_fee_per_gas)
-                .max_priority_fee_per_gas(fees.max_priority_fee_per_gas)
-                .into_transaction_request(),
+    Ok(bridgehub
+        .request_l2_transaction_direct(
+            base_cost,
+            L1_MESSENGER_ADDRESS,
+            U256::ZERO,
+            calldata,
+            gas_limit,
+            REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
+            alice,
         )
-        .await?
-        .expect_successful_receipt()
-        .await?;
+        .value(base_cost)
+        .max_fee_per_gas(fees.max_fee_per_gas)
+        .max_priority_fee_per_gas(fees.max_priority_fee_per_gas)
+        .into_transaction_request())
+}
 
+fn priority_tx_hash(receipt: &TransactionReceipt) -> anyhow::Result<B256> {
     Ok(receipt
         .logs()
         .iter()
