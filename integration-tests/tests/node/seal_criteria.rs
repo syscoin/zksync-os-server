@@ -23,6 +23,9 @@ alloy::sol! {
 #[test_multisetup([CURRENT_TO_L1])]
 async fn l1_txs_exceeding_block_pubdata_limit(env: TestEnvironment) -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
+    // SYSCOIN: Keep the upstream test payload below L1's per-priority-tx gas cap even though
+    // production uses a larger block pubdata limit for compact Bitcoin DA.
+    config.sequencer_config.block_pubdata_limit_bytes = 110_000;
     // Pubdata must be the only seal criterion that can fire: two ~55M-gas priority txs would
     // trip the default 100M block gas limit before ever reaching the pubdata check.
     config.sequencer_config.block_gas_limit = 300_000_000;
