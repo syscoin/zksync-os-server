@@ -1352,7 +1352,8 @@ pub struct TxGasRateLimitConfig {
     #[config(default_t = false)]
     pub enabled: bool,
 
-    #[config(default_t = NonZeroU64::new(72_000_000).unwrap())]
+    /// Target sustained executed-gas throughput, in gas per second.
+    #[config(default_t = NonZeroU64::new(35_000_000).unwrap())]
     pub gas_per_second: NonZeroU64,
 
     /// Idle burst headroom in seconds' worth of `gas_per_second`.
