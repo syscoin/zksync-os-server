@@ -145,7 +145,7 @@ fn compact_edge_da_ref_message_from_commit_calldata(
     let commit_info = commit.commit_batch_info;
     match commit_info.l2_da_commitment_scheme {
         DACommitmentScheme::BlobsZKsyncOS => {}
-        // Historical / validium commits do not emit the compact Bitcoin DA message.
+        // Non-compact v31 and validium commits do not emit this Syscoin Bitcoin DA message.
         _ => return Ok(None),
     }
 
