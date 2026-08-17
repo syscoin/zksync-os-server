@@ -1,12 +1,13 @@
 use alloy::consensus::{BlobTransactionSidecar, SidecarBuilder, SimpleCoder};
-use alloy::primitives::{Address, B256, BlockNumber, U256, keccak256};
+use alloy::primitives::{Address, B256, BlockNumber, Bytes, U256, keccak256};
 use alloy::sol_types::{SolCall, SolValue};
 use anyhow::ensure;
 use blake2::{Blake2s256, Digest};
 use serde::{Deserialize, Serialize};
 use std::ops;
 use std::ops::{Deref, DerefMut};
-use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
+use zksync_os_contract_interface::calldata::CommitCalldata;
+use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme, StoredBatchInfo};
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
 use zksync_os_merkle_tree_api::TreeBatchOutput;
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
@@ -132,6 +133,44 @@ fn is_compact_edge_da_commit_tx(
         && tx_input.len() >= 4
         && (tx_input[..4] == IExecutor::commitBatchesSharedBridgeCall::SELECTOR
             || tx_input[..4] == IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
+}
+
+// SYSCOIN: Replay execution retains transaction calldata and the emitted message hash, but the
+// messenger output does not retain its preimage. Recreate the validator's canonical message from
+// the child-chain commit calldata so Gateway batch commitments remain stable across restarts.
+fn compact_edge_da_ref_message_from_commit_calldata(
+    input: &[u8],
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let commit = CommitCalldata::decode(input)?;
+    let commit_info = commit.commit_batch_info;
+    match commit_info.l2_da_commitment_scheme {
+        DACommitmentScheme::BlobsZKsyncOS => {}
+        // Historical / validium commits do not emit the compact Bitcoin DA message.
+        _ => return Ok(None),
+    }
+
+    let blob_hashes = commit_info.operator_da_input;
+    ensure!(
+        !blob_hashes.is_empty()
+            && blob_hashes.len().is_multiple_of(ABI_WORD)
+            && blob_hashes.len() / ABI_WORD <= SYSCOIN_DA_MAX_BLOBS_PER_BATCH,
+        "compact edge DA operator input must contain 1..={SYSCOIN_DA_MAX_BLOBS_PER_BATCH} blob hashes"
+    );
+    ensure!(
+        keccak256(&blob_hashes) == commit_info.da_commitment,
+        "compact edge DA commitment does not match operator input"
+    );
+
+    Ok(Some(
+        (
+            U256::from(SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION),
+            U256::from(commit_info.chain_id),
+            U256::from(commit_info.batch_number),
+            commit_info.da_commitment,
+            Bytes::from(blob_hashes),
+        )
+            .abi_encode_params(),
+    ))
 }
 
 fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
@@ -402,16 +441,6 @@ impl PendingBatchInfo {
                 });
                 encoded_l2_l1_logs.extend(tx_output.l2_to_l1_logs.iter().map(
                     |log_with_preimage| {
-                        if let Some(preimage) = log_with_preimage.preimage.as_deref()
-                            && collect_edge_da_refs
-                            && let Some(edge_ref) = parse_syscoin_edge_da_ref_message(preimage)
-                        {
-                            edge_da_refs_root = keccak256(
-                                [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0]
-                                    .concat(),
-                            );
-                            edge_da_refs_input.extend_from_slice(preimage);
-                        }
                         let log = L2ToL1Log {
                             l2_shard_id: log_with_preimage.log.l2_shard_id,
                             is_service: log_with_preimage.log.is_service,
@@ -423,6 +452,26 @@ impl PendingBatchInfo {
                         log.encode()
                     },
                 ));
+
+                if collect_edge_da_refs
+                    && let Some(message) =
+                        compact_edge_da_ref_message_from_commit_calldata(tx.input().as_ref())?
+                {
+                    let message_hash = keccak256(&message);
+                    ensure!(
+                        tx_output
+                            .l2_to_l1_logs
+                            .iter()
+                            .any(|log| log.log.value == message_hash),
+                        "compact edge DA commit did not emit its canonical message"
+                    );
+                    let edge_ref = parse_syscoin_edge_da_ref_message(&message)
+                        .expect("locally encoded compact edge DA ref must parse");
+                    edge_da_refs_root = keccak256(
+                        [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat(),
+                    );
+                    edge_da_refs_input.extend_from_slice(&message);
+                }
             }
         }
 
@@ -782,12 +831,16 @@ mod canonical_output_tests {
     use super::calculate_da_fields;
     use super::{
         SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES, SyscoinEdgeDaRef,
-        blob_data_id, checked_upgrade_tx_hash, is_compact_edge_da_commit_tx,
-        syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
+        blob_data_id, checked_upgrade_tx_hash, compact_edge_da_ref_message_from_commit_calldata,
+        is_compact_edge_da_commit_tx, syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
     };
-    use alloy::primitives::{B256, U256, address, keccak256};
+    use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
     use alloy::sol_types::SolCall;
     use zksync_os_contract_interface::IExecutor;
+    use zksync_os_contract_interface::calldata::encode_commit_batch_data;
+    use zksync_os_contract_interface::models::{
+        CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
+    };
     use zksync_os_types::PubdataMode;
 
     fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
@@ -816,6 +869,52 @@ mod canonical_output_tests {
         message.extend(U256::from(blob_hashes.len()).to_be_bytes::<32>());
         message.extend(blob_hashes);
         message
+    }
+
+    fn compact_edge_commit_call_data(
+        chain_id: u64,
+        batch_number: u64,
+        scheme: DACommitmentScheme,
+        blob_hashes: Vec<u8>,
+    ) -> Vec<u8> {
+        let previous = StoredBatchInfo {
+            batch_number: batch_number - 1,
+            state_commitment: B256::ZERO,
+            number_of_layer1_txs: 0,
+            priority_operations_hash: B256::ZERO,
+            dependency_roots_rolling_hash: B256::ZERO,
+            l2_to_l1_logs_root_hash: B256::ZERO,
+            commitment: B256::ZERO,
+            last_block_timestamp: Some(0),
+        };
+        let commit = CommitBatchInfo {
+            batch_number,
+            new_state_commitment: B256::ZERO,
+            number_of_layer1_txs: 0,
+            number_of_layer2_txs: 1,
+            priority_operations_hash: B256::ZERO,
+            dependency_roots_rolling_hash: B256::ZERO,
+            l2_to_l1_logs_root_hash: B256::ZERO,
+            l2_da_commitment_scheme: scheme,
+            da_commitment: keccak256(&blob_hashes),
+            first_block_timestamp: 1,
+            first_block_number: Some(1),
+            last_block_timestamp: 1,
+            last_block_number: Some(1),
+            chain_id,
+            operator_da_input: blob_hashes,
+            edge_da_refs_input: Vec::new(),
+            edge_da_refs_root: B256::ZERO,
+            sl_chain_id: 57001,
+        };
+        let commit_data = encode_commit_batch_data(&previous, commit, 31);
+        IExecutor::commitBatchesSharedBridgeCall {
+            _chainAddress: Address::ZERO,
+            _processFrom: U256::from(batch_number),
+            _processTo: U256::from(batch_number),
+            _commitData: Bytes::from(commit_data),
+        }
+        .abi_encode()
     }
 
     #[test]
@@ -948,6 +1047,50 @@ mod canonical_output_tests {
         assert_eq!(refs[0].blob_version_hashes, first_blob_hashes);
         assert_eq!(refs[1].edge_batch_number, 2);
         assert_eq!(refs[1].blob_version_hashes, second_blob_hashes);
+    }
+
+    #[test]
+    fn edge_da_ref_message_is_recreated_from_commit_calldata() {
+        let chain_id = 57_057;
+        let batch_number = 2_839;
+        let mut blob_hashes = vec![0x11; 32];
+        blob_hashes.extend([0x22; 32]);
+        let input = compact_edge_commit_call_data(
+            chain_id,
+            batch_number,
+            DACommitmentScheme::BlobsZKsyncOS,
+            blob_hashes.clone(),
+        );
+
+        let message = compact_edge_da_ref_message_from_commit_calldata(&input)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            message,
+            compact_edge_da_ref_message(
+                chain_id,
+                batch_number,
+                keccak256(&blob_hashes),
+                &blob_hashes,
+            )
+        );
+    }
+
+    #[test]
+    fn validium_commit_has_no_compact_edge_ref_message() {
+        let input = compact_edge_commit_call_data(
+            57_057,
+            2_839,
+            DACommitmentScheme::EmptyNoDA,
+            vec![0; 32],
+        );
+
+        assert!(
+            compact_edge_da_ref_message_from_commit_calldata(&input)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
