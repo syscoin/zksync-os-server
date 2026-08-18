@@ -19,10 +19,10 @@ use zksync_os_storage_api::ReplayRecord;
 /// Sends a `GetBlockReplays` request immediately, then forwards each received `BlockReplays`
 /// record to the local sequencer via `replay_sender` and advances `starting_block`.
 ///
-/// Once the replay request is out, the connection has an inactivity timeout: if no message
-/// arrives within `replay_inactivity_timeout` (or the message stream terminates while the RLPx
-/// session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted so the service can
-/// disconnect the peer and let a fresh session re-request replays. Without this, a session
+/// Once the replay request is out, the connection has an inactivity timeout: if no valid replay
+/// record is forwarded within `replay_inactivity_timeout` (or the message stream terminates while
+/// the RLPx session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted so the service
+/// can disconnect the peer and let a fresh session re-request replays. Without this, a session
 /// whose data flow silently dies leaves the external node waiting forever.
 pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
     conn: impl Stream<Item = ZksMessage<P>> + Unpin,
@@ -110,17 +110,16 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
             })
             .ok();
     };
+    let mut inactivity_deadline = Instant::now() + inactivity_timeout;
     loop {
-        // Measure time actually spent waiting on the peer.
-        let inactivity_deadline = Instant::now() + inactivity_timeout;
         let msg = tokio::select! {
             msg = conn.next() => msg,
             _ = tokio::time::sleep_until(inactivity_deadline) => {
                 // The session may still look established (RLPx pings can flow while the replay
-                // stream is dead), so silence past the inactivity timeout is treated as a stall.
+                // stream is dead), so no replay progress past the timeout is treated as a stall.
                 tracing::warn!(
                     ?inactivity_timeout,
-                    "no messages from replay peer within inactivity timeout; reporting stall"
+                    "no replay progress within inactivity timeout; reporting stall"
                 );
                 report_stalled();
                 return;
@@ -171,6 +170,7 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
                         return;
                     }
                     *starting_block.write().unwrap() += 1;
+                    inactivity_deadline = Instant::now() + inactivity_timeout;
                 }
             }
         }
@@ -276,33 +276,115 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn inactivity_timeout_resets_on_incoming_replays() {
+    async fn valid_replay_progress_resets_inactivity_timeout() {
         let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
         let conn = Box::pin(futures::stream::poll_fn(move |cx| msg_rx.poll_recv(cx)));
         let (task, mut handles) = run_test_en_connection(conn);
 
-        // Deliver replays with gaps shorter than the inactivity timeout; cumulative time exceeds
-        // the timeout several times over, so this only passes if activity resets the deadline.
-        for block_number in 1..=3 {
-            tokio::time::sleep(INACTIVITY_TIMEOUT.mul_f64(0.7)).await;
-            msg_tx
-                .send(ZksMessage::block_replays(vec![test_record(block_number)]))
-                .expect("connection task must still be reading");
-            let forwarded = handles.replay_rx.recv().await.expect("record forwarded");
-            assert_eq!(forwarded.block_context.block_number, block_number);
-        }
+        handles
+            .outbound_rx
+            .recv()
+            .await
+            .expect("initial replay request");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(700)).await;
+        msg_tx
+            .send(ZksMessage::block_replays(vec![test_record(1)]))
+            .expect("connection task must still be reading");
+        let forwarded = handles.replay_rx.recv().await.expect("record forwarded");
+        assert_eq!(forwarded.block_context.block_number, 1);
+
+        // Cross the original deadline while remaining inside the timeout measured from progress.
+        tokio::time::advance(Duration::from_millis(400)).await;
+        tokio::task::yield_now().await;
         assert!(
             !task.is_finished(),
-            "inactivity timeout must not fire while replays keep arriving"
+            "forwarding a valid replay must reset the inactivity deadline"
         );
 
-        // Now go silent: the inactivity timeout terminates the connection from the next block.
+        tokio::time::advance(Duration::from_millis(601)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            task.is_finished(),
+            "timeout must fire after replay progress stops"
+        );
         task.await.expect("connection task must finish on its own");
         assert_matches!(
             handles.events_rx.try_recv(),
             Ok(ProtocolEvent::ReplayStreamStalled { peer_id, next_block }) => {
                 assert_eq!(peer_id, handles.peer_id);
-                assert_eq!(next_block, 4);
+                assert_eq!(next_block, 2);
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ignored_replay_request_does_not_reset_inactivity_timeout() {
+        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+        let conn = Box::pin(futures::stream::poll_fn(move |cx| msg_rx.poll_recv(cx)));
+        let (task, mut handles) = run_test_en_connection(conn);
+
+        handles
+            .outbound_rx
+            .recv()
+            .await
+            .expect("initial replay request");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(700)).await;
+        msg_tx
+            .send(ZksMessage::get_block_replays(1, Some(64), vec![]))
+            .expect("connection task must still be reading");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(301)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            task.is_finished(),
+            "an ignored request must not extend the progress deadline"
+        );
+        task.await.expect("connection task must finish on its own");
+        assert_matches!(
+            handles.events_rx.try_recv(),
+            Ok(ProtocolEvent::ReplayStreamStalled { peer_id, next_block }) => {
+                assert_eq!(peer_id, handles.peer_id);
+                assert_eq!(next_block, 1);
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_replay_response_does_not_reset_inactivity_timeout() {
+        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+        let conn = Box::pin(futures::stream::poll_fn(move |cx| msg_rx.poll_recv(cx)));
+        let (task, mut handles) = run_test_en_connection(conn);
+
+        handles
+            .outbound_rx
+            .recv()
+            .await
+            .expect("initial replay request");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(700)).await;
+        msg_tx
+            .send(ZksMessage::block_replays(vec![]))
+            .expect("connection task must still be reading");
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(301)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            task.is_finished(),
+            "an empty response must not extend the progress deadline"
+        );
+        task.await.expect("connection task must finish on its own");
+        assert_matches!(
+            handles.events_rx.try_recv(),
+            Ok(ProtocolEvent::ReplayStreamStalled { peer_id, next_block }) => {
+                assert_eq!(peer_id, handles.peer_id);
+                assert_eq!(next_block, 1);
             }
         );
     }
