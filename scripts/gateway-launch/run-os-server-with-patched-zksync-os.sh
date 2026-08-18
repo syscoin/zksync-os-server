@@ -29,7 +29,7 @@ shift
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH
 : "${PROTOCOL_VERSION:=v31.0}"
-: "${ZKSYNC_OS_GIT_URL:=https://github.com/syscoin/zksync-os.git}"
+: "${ZKSYNC_OS_GIT_URL:=https://github.com/matter-labs/zksync-os.git}"
 
 protocol_uses_dev_patch() {
   case "${PROTOCOL_VERSION}" in

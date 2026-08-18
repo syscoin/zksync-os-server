@@ -184,7 +184,7 @@ fn main() {
             let dir = format!("{manifest_dir}/apps/{}", config.download_tag);
             std::fs::create_dir_all(&dir).expect("failed to create directory");
             for variant in APP_VARIANTS {
-                // SYSCOIN: app binaries are hosted in the Syscoin zksync-os fork;
+                // SYSCOIN: app binaries are published as hash-pinned release assets;
                 // verify exact bytes before embedding them with include_bytes!.
                 let url = format!(
                     "https://github.com/syscoin/zksync-os/releases/download/{}/{variant}.bin",
