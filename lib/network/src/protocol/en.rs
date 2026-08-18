@@ -19,11 +19,11 @@ use zksync_os_storage_api::ReplayRecord;
 /// Sends a `GetBlockReplays` request immediately, then forwards each received `BlockReplays`
 /// record to the local sequencer via `replay_sender` and advances `starting_block`.
 ///
-/// Once the replay request is out, the connection has an inactivity timeout: if no valid replay
-/// record is forwarded within `replay_inactivity_timeout` (or the message stream terminates while
-/// the RLPx session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted so the service
-/// can disconnect the peer and let a fresh session re-request replays. Without this, a session
-/// whose data flow silently dies leaves the external node waiting forever.
+/// SYSCOIN: once the replay request is out, the connection has a progress timeout: if no valid
+/// replay record is forwarded within `replay_inactivity_timeout` (or the message stream terminates
+/// while the RLPx session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted so the
+/// service can disconnect the peer and let a fresh session re-request replays. Ignored or empty
+/// messages do not count as progress and cannot keep a stalled connection alive.
 pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
     conn: impl Stream<Item = ZksMessage<P>> + Unpin,
     outbound_tx: mpsc::Sender<OutboundMessage>,
@@ -110,6 +110,8 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
             })
             .ok();
     };
+    // SYSCOIN: keep one progress deadline across ignored and empty messages. Refresh it only
+    // after a valid replay record has been accepted and the shared cursor has advanced.
     let mut inactivity_deadline = Instant::now() + inactivity_timeout;
     loop {
         let msg = tokio::select! {
@@ -170,6 +172,7 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
                         return;
                     }
                     *starting_block.write().unwrap() += 1;
+                    // SYSCOIN: only accepted replay progress extends the connection lifetime.
                     inactivity_deadline = Instant::now() + inactivity_timeout;
                 }
             }
