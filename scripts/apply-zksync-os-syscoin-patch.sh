@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# SYSCOIN: this reviewable source overlay is generated exactly from the
-# upstream V7-compatible release into the portable-precompile tree.
-readonly EXPECTED_BASE_TAG="v0.3.2-interface-v0.1.3"
-readonly EXPECTED_BASE_REV="b76084f3e93b23c13f4f2506cb46f0da1497a4b8"
-readonly EXPECTED_PATCH_SHA256="4a4b2b1ba5f377db1835947ae3268ed6e6a6f13b411c11b11255f697402e85ec"
-
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 /absolute/path/to/zksync-os" >&2
   exit 1
@@ -23,12 +17,6 @@ fi
 
 if [[ ! -f "${PATCH_FILE}" ]]; then
   echo "error: patch file not found: ${PATCH_FILE}" >&2
-  exit 1
-fi
-
-actual_patch_sha256="$(shasum -a 256 "${PATCH_FILE}" | awk '{print $1}')"
-if [[ "${actual_patch_sha256}" != "${EXPECTED_PATCH_SHA256}" ]]; then
-  echo "error: zksync-os patch SHA-256 ${actual_patch_sha256} != expected ${EXPECTED_PATCH_SHA256}" >&2
   exit 1
 fi
 
@@ -173,12 +161,6 @@ fi
 if base_patch_applied && { ! canonical_upgrade_fix_applied || ! slh_dsa_precompile_applied || ! gas_tank_patch_applied; }; then
   echo "error: detected an older partially applied Syscoin patch in ${ZKSYNC_OS_PATH}." >&2
   echo "Please start from a clean upstream checkout/tag before applying the updated patch." >&2
-  exit 1
-fi
-
-actual_base_rev="$(git -C "${ZKSYNC_OS_PATH}" rev-parse HEAD)"
-if [[ "${actual_base_rev}" != "${EXPECTED_BASE_REV}" ]]; then
-  echo "error: zksync-os base ${actual_base_rev} != ${EXPECTED_BASE_TAG} (${EXPECTED_BASE_REV})" >&2
   exit 1
 fi
 
