@@ -830,6 +830,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
                         .sequencer_config
                         .en_max_blocks_per_replay_message,
                     trusted_main_node_peers,
+                    replay_inactivity_timeout: config.sequencer_config.en_replay_inactivity_timeout,
                     replay_sender,
                     verification: config.batch_verification_config.client_enabled.then(|| {
                         ExternalNodeVerifierConfig {

@@ -216,7 +216,7 @@ impl<P: ZksProtocolVersionSpec, Replay: ReadReplay + Clone> ConnectionHandler
                 )
             }
             ProtocolRole::ExternalNode(config) => tokio::spawn(
-                run_en_connection::<P>(conn, outbound_tx, peer_id, config)
+                run_en_connection::<P>(conn, outbound_tx, events_sender.clone(), peer_id, config)
                     .instrument(tracing::info_span!("en_connection", %peer_id)),
             ),
         };
