@@ -1,14 +1,15 @@
 # Template for Cargo.toml; run.sh substitutes @ZKSYNC_OS_PATH@ with the
-# absolute path of a zksync-os checkout that has the Syscoin patch applied.
+# absolute path of a compatible Syscoin zksync-os checkout.
 [package]
 name = "slh-dsa-difftest"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Differential tests for the Syscoin SLH-DSA-SHA2-128-24 precompile against the shared KAT/mutation vectors used by the Solidity fallback verifier tests."
+# SYSCOIN: Keep the standalone OS/Solidity corpus pinned to the draft set.
+description = "Differential tests for the Syscoin SLH-DSA-SHA2-128-24 precompile against the shared SP 800-230 IPD conformance corpus used by the Solidity fallback verifier tests."
 
 # Standalone: intentionally not a member of the zksync-os-server workspace,
-# because it depends on a *patched* zksync-os checkout (see run.sh).
+# because it depends on a separately selected Syscoin zksync-os checkout.
 [workspace]
 
 [dev-dependencies]

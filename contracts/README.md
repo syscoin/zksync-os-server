@@ -21,22 +21,44 @@ forge build
 
 ### SLH-DSA-SHA2-128-24 Verifier Status
 
+<!-- SYSCOIN: Consensus/release qualification for the limited-signature verifier. -->
+
 `src/pali/SLHDSASHA212824Verifier.sol` is a copied Solidity/Yul verifier for the
-NIST SP 800-230 `SLH-DSA-SHA2-128-24` parameter set. The intended security level
-is NIST category 1 / roughly 128-bit post-quantum security, subject to the scheme
-assumptions and per-key signing budget.
+`SLH-DSA-SHA2-128-24` limited-signature parameter set proposed by the NIST
+SP 800-230 Initial Public Draft. It uses the tuple `n=16, h=22, d=1, h'=22,
+a=24, k=6, lg_w=2, m=21`, the FIPS 205 external interface with empty context,
+and a strict `2^24` signature limit per key. This draft parameter set is not a
+FIPS-approved parameter set and its fixtures are not NIST ACVP vectors.
 
-The upstream SPHINCS- repository models this verifier in Verity / Lean 4, but
-that proof is an implementation-correctness result, not a machine-checked
-cryptographic EUF-CMA proof. The upstream theorem proves the hand-transcribed
-model refines its byte-level verifier spec under the stated trust surface.
-Remaining assumptions include the SHA-256 precompile/model bridge, an opaque
-SHA-256 primitive package, and source-to-model transcription fidelity.
+The upstream SPHINCS- repository models this verifier in Verity / Lean 4. Its
+theorem proves that hand-transcribed model refines its byte-level verifier spec
+under the stated trust surface; it is not a proof of the deployed Solidity/Yul,
+Rust or GPU implementations, and it is not a
+machine-checked cryptographic EUF-CMA proof. Remaining assumptions include the
+SHA-256 precompile/model bridge, an opaque SHA-256 primitive package, and
+source-to-model transcription fidelity.
 
-Local tests currently cover the Pali validator module integration, fail-closed
-behavior, malformed signature length, non-canonical public keys, rejection of an
-all-zero 3,856-byte signature, one pinned valid signer vector, and a
-deterministic Rust/Solidity mutation sweep. The mutation sweep is regression
-coverage, not coverage-guided fuzzing or a substitute for a broader
-independently generated conformance corpus. Keep the per-key signature-count
-policy outside this stateless verifier.
+The shared conformance corpus contains two valid fixtures:
+
+- `test/vectors/slh_dsa_sha2_128_24_sp800_230_ipd_counter0.json` is the canonical
+  reproducible counter-0 fixture. It records the complete deterministic signing
+  inputs, command, generator commits, and source/signature hashes.
+- `test/vectors/slh_dsa_sha2_128_24_kat.json` is retained only as an
+  unreproducible historical regression fixture. Its original generator, secret
+  seeds, and `opt_rand` were not recorded, so release conformance must not rely
+  on it alone.
+
+Both fixtures run through the Solidity verifier and the portable Rust OS
+system-function implementation. The latter consumes the exact precompile layout
+`pkSeed[32] || pkRoot[32] || message[32] || signature[3856]`.
+The deterministic mutation sweep is finite regression coverage, not a general
+equivalence proof. Keep the per-key signature-count policy outside this
+stateless verifier.
+
+An explicit, network-free external conformance gate is documented in
+`../tools/slh-dsa-conformance/README.md`. It compiles a hash-pinned
+`pq-code-package/slhdsa-c` checkout with the two-line experimental-parameter
+adaptation, accepts both fixtures, and rejects modified message, `R`, FORS,
+hypertree WOTS/authentication, short, and long cases. It is intentionally not a
+mandatory default workspace test because the independent source checkout must
+be supplied by the operator.

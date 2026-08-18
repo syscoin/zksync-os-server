@@ -1,0 +1,17 @@
+diff --git a/slh_var.h b/slh_var.h
+index 3be27a4..5526b95 100644
+--- a/slh_var.h
++++ b/slh_var.h
+@@ -17,9 +17,10 @@
+ 
+ /* a and hp adjusted to facilitate experimental parameter sets */
+ #define SLH_MAX_N 32
+-#define SLH_MAX_LEN (2 * SLH_MAX_N + 3)
++/* SYSCOIN: Expand scratch bounds only for the SP 800-230 IPD tuple. */
++#define SLH_MAX_LEN 68
+ #define SLH_MAX_K 35
+-#define SLH_MAX_HP 20
++#define SLH_MAX_HP 22
+ #define SLH_MAX_A 24
+ #define SLH_MAX_M 49
+ 
