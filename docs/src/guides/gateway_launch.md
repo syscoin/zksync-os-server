@@ -633,7 +633,7 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `SYSCOIN_REQUIRE_GAS_TANK` | Optional launch gate for edge-chain OS builds; when `1`, a missing/zero `l2.zksys_gas_tank_addr` fails the patched OS build instead of silently baking a native-only (tank-disabled) VK. Leave unset for the first boot before `zksys-l2-bootstrap.sh` has deployed the tank; set for production rebuilds |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
 | `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
-| `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |
+| `ZKSYNC_OS_GIT_URL` | Optional override for the `zksync-os` Git URL used when the launcher materializes its isolated workspace; the repo must contain the `Cargo.lock`-pinned commit (defaults to the Syscoin fork) |
 | `GATEWAY_CREATE2_FACTORY_SALT` | Optional deterministic `create2_factory_salt` override for L1 deployment |
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |

@@ -20,14 +20,12 @@ fn parse_git_reference(package_id: &PackageId) -> anyhow::Result<String> {
     Ok(reference.to_string())
 }
 
-// Rebuild tags (toolchain/compat fixes with no protocol changes, e.g. `v0.3.2-interface-v0.1.3`)
-// have no published app binaries; binaries are downloaded from the original releases they rebuild.
 // Remove entries as the corresponding proving lanes leave the support window.
 fn binary_source_config(reference: &str) -> Option<BinarySourceConfig> {
     match reference {
         "v0.3.2-interface-v0.1.3" => Some(BinarySourceConfig {
             proving_version: "V7",
-            download_tag: "v0.3.1-interface-v0.1.3",
+            download_tag: "v0.3.2-interface-v0.1.3",
         }),
         _ => None,
     }
@@ -54,14 +52,14 @@ fn expected_syscoin_app_sha256(tag: &str, variant: &str) -> anyhow::Result<&'sta
         ("v0.2.5", "singleblock_batch_logging_enabled") => {
             Ok("055ed473eb0af6797c9dda7ef7551aa7bb8907761be9c8726046c1959eeb6e4d")
         }
-        ("v0.3.1-interface-v0.1.3", "multiblock_batch") => {
-            Ok("b1a8483b67690f7675b337451f46836c402214b5e812d852b27c78bfa418d894")
+        ("v0.3.2-interface-v0.1.3", "multiblock_batch") => {
+            Ok("1487dd6070b75f43f433499f3ab2910e23dfacc24319bb09c1ed43375483e7b5")
         }
-        ("v0.3.1-interface-v0.1.3", "singleblock_batch") => {
-            Ok("8767628393eb03b22b36a8304f8e205b52ae011f2a36d1aae53880b2f95fcf67")
+        ("v0.3.2-interface-v0.1.3", "singleblock_batch") => {
+            Ok("097ca3c97ddf5c3985f2d97dfdc05354329ed137b219566847acda9417d02a87")
         }
-        ("v0.3.1-interface-v0.1.3", "singleblock_batch_logging_enabled") => {
-            Ok("5e19a2f43cf14178804ed3142f51d180eaaf8555d8a0272b53e5bbf0f46cac49")
+        ("v0.3.2-interface-v0.1.3", "singleblock_batch_logging_enabled") => {
+            Ok("4e7dbf72ae7edd7b1f6b555da787ad61f993c3757f0d8c654586b557a2c0417d")
         }
         _ => anyhow::bail!("missing expected SHA-256 for Syscoin zksync-os app {tag}/{variant}"),
     }

@@ -66,9 +66,10 @@ impl ProvingVersion {
     const V6_VK_HASH: &'static str =
         "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337";
 
-    /// verification key hash generated from patched zksync-os v0.3.0 multiblock proving binary.
+    /// Verification key hash generated from the Syscoin zksync-os v0.3.2 portable SLH-DSA
+    /// multiblock proving binary.
     const V7_VK_HASH: &'static str =
-        "0x6f837bbef255ebde36677f3accb456e16253fe43f4091b0e820bff0cf95a32a0";
+        "0x54bcb6abdcb4c8d8e088cc9f2ea9cc3505a8187a45b69e19e830590df6c9b0df";
 
     /// verification key hash generated from zksync-airbender v0.6.0-rc.1 (3f8f8e54, combined
     /// recursion layers) and zkos-wrapper v0.6.0-rc.1; matches the V8 entry in

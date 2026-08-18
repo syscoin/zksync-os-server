@@ -1,6 +1,6 @@
 general:
   protocol_version: "v31.0"
-  verification_key: "0x6f837bbef255ebde36677f3accb456e16253fe43f4091b0e820bff0cf95a32a0"
+  verification_key: "0x54bcb6abdcb4c8d8e088cc9f2ea9cc3505a8187a45b69e19e830590df6c9b0df"
 era-contracts:
   # TODO: remove branch and put tag and sha when the release is done
   #branch: "draft-v31-with-zksync-os"
