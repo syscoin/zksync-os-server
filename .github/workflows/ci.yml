@@ -34,8 +34,6 @@ jobs:
   ############################
   build:
     runs-on: matterlabs-ci-runner-high-performance
-    env:
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -44,6 +42,8 @@ jobs:
         uses: ./.github/actions/runner-setup
 
       - name: Build server
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/cargo-with-patched-zksync-os.sh ci-build -- build --locked --release --bin zksync-os-server --features gcp
 
       - name: Upload server binary
@@ -62,7 +62,6 @@ jobs:
     runs-on: matterlabs-ci-runner-high-performance
     env:
       ZKSYNC_USE_CUDA_STUBS: true
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -77,6 +76,8 @@ jobs:
         run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_local_patched_zksync_os -v
 
       - name: Run clippy
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/cargo-with-patched-zksync-os.sh ci-clippy -- clippy --locked --all-targets --all-features --workspace -- -D warnings
 
 
@@ -85,8 +86,6 @@ jobs:
   #################################################
   test:
     runs-on: matterlabs-ci-runner-high-performance
-    env:
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -95,6 +94,8 @@ jobs:
         uses: ./.github/actions/runner-setup
 
       - name: Run tests
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS}
 
       - name: Upload test results
@@ -119,7 +120,6 @@ jobs:
     runs-on: matterlabs-ci-runner-high-performance
     env:
       RUSTC_BOOTSTRAP: 1
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -129,6 +129,7 @@ jobs:
 
       - name: Measure coverage
         env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           # cargo-llvm-cov overrides the config.toml rustflags; keep `tokio_unstable` on since
           # the runtime metrics require it unconditionally.
           RUSTFLAGS: '--cfg tokio_unstable'
@@ -180,8 +181,6 @@ jobs:
   ####################################
   build-prover-tests:
     runs-on: matterlabs-ci-runner-ultra-performance
-    env:
-      GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     steps:
 
       - name: Checkout code
@@ -194,6 +193,7 @@ jobs:
       # Use `cargo nextest archive` to make sure that all dependencies are included properly.
       - name: Build and archive test
         env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           # This is a special mandatory hack to transfer test binary from one machine to another.
           # We must use a dummy `./` path addition in the workspace path /home/runner/_work
           # to prevent GitHub Actions to replace it to the mapped `/__w` folder in the docker container.
