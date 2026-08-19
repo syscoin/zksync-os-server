@@ -16,6 +16,13 @@ Configuration for running multiple ZKsync OS chains against a shared L1.
 ./run_local.sh ./local-chains/v31.0/multi_chain
 ```
 
+For v31, `run_local.sh` applies the repository patch to the exact official
+zksync-os revision in `Cargo.lock`, builds once, and runs that prebuilt binary
+for both chains with the edge-DA and gas-tank constants bound to the published
+V7 proving app. These older fixtures use different deployment addresses, so
+they are useful for general multi-node development but not compact edge-DA or
+zkSYS gas-tank execution tests.
+
 ## Wallets
 
 For complete list of keys and wallet addresses, check:

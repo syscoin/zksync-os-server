@@ -257,6 +257,8 @@ where
                     trusted_main_node_peers: trusted_peers.into_iter().collect(),
                     replay_sender: replay_tx,
                     verification: None,
+                    // Generous enough that the inactivity timeout never affects these tests.
+                    replay_inactivity_timeout: std::time::Duration::from_secs(600),
                 },
                 state,
             )
@@ -325,6 +327,8 @@ where
                     trusted_main_node_peers: trusted_main_node_peers.into_iter().collect(),
                     replay_sender: replay_tx,
                     verification: None,
+                    // Generous enough that the inactivity timeout never affects these tests.
+                    replay_inactivity_timeout: std::time::Duration::from_secs(600),
                 },
                 zks_state,
             ));
@@ -450,6 +454,9 @@ async fn emits_replay_session_events() {
             ) => {}
             Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
                 panic!("unexpected max active connections event")
+            }
+            Some(ProtocolEvent::ReplayStreamStalled { .. }) => {
+                panic!("unexpected replay stream stall event")
             }
             None => panic!("protocol event stream closed before replay events were observed"),
         }
@@ -650,6 +657,9 @@ async fn batches_multiple_replay_records() {
             ) => panic!("unexpected verifier event during replay batching test"),
             Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
                 panic!("unexpected max active connections event")
+            }
+            Some(ProtocolEvent::ReplayStreamStalled { .. }) => {
+                panic!("unexpected replay stream stall event")
             }
             None => {
                 panic!("protocol event stream closed before batched replay events were observed")
@@ -947,6 +957,9 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
             Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
                 panic!("unexpected max active connections event")
             }
+            Some(ProtocolEvent::ReplayStreamStalled { .. }) => {
+                panic!("unexpected replay stream stall event")
+            }
             None => panic!("event stream closed before verifier auth + replay were observed"),
         }
     }
@@ -1069,6 +1082,9 @@ async fn zks_2fa_emits_verifier_unauthorized() {
             ) => {}
             Some(ProtocolEvent::MaxActiveConnectionsExceeded { .. }) => {
                 panic!("unexpected max active connections event")
+            }
+            Some(ProtocolEvent::ReplayStreamStalled { .. }) => {
+                panic!("unexpected replay stream stall event")
             }
             None => panic!("event stream closed before verifier auth failure was observed"),
         }

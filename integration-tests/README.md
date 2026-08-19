@@ -25,24 +25,33 @@ Pre-requisites:
 
 ```shell
 # All tests (excluding prover)
-cargo nextest run -p zksync_os_integration_tests
+./scripts/cargo-with-patched-zksync-os.sh integration-all -- \
+  nextest run --locked -p zksync_os_integration_tests
 
 # Single test with exact name match
-cargo nextest run -p zksync_os_integration_tests -E 'test(=basic_transfers)'
+./scripts/cargo-with-patched-zksync-os.sh integration-basic -- \
+  nextest run --locked -p zksync_os_integration_tests -E 'test(=basic_transfers)'
 # If you want logs to be printed during the test:
-cargo nextest run -p zksync_os_integration_tests -E 'test(=basic_transfers)' --no-capture
+./scripts/cargo-with-patched-zksync-os.sh integration-basic-logs -- \
+  nextest run --locked -p zksync_os_integration_tests -E 'test(=basic_transfers)' --no-capture
 # If you want all tests containing a substring:
-cargo nextest run -p zksync_os_integration_tests -E 'test(~call)'
+./scripts/cargo-with-patched-zksync-os.sh integration-call -- \
+  nextest run --locked -p zksync_os_integration_tests -E 'test(~call)'
 
 # All tests inside `./tests/call.rs`
-cargo nextest run -p zksync_os_integration_tests -E 'binary(call)'
+./scripts/cargo-with-patched-zksync-os.sh integration-call-binary -- \
+  nextest run --locked -p zksync_os_integration_tests -E 'binary(call)'
 
 # Run prover tests (CPU prover)
 # !! Note `--release`, important to avoid stack overflow and low performance in prover !!
-cargo nextest run --release -p zksync_os_integration_tests --features prover-tests -E 'binary(prover)'
+./scripts/cargo-with-patched-zksync-os.sh integration-prover-cpu -- \
+  nextest run --locked --release -p zksync_os_integration_tests \
+  --features prover-tests -E 'binary(prover)'
 
 # Run prover tests (GPU prover)
 # !! Note `--release`, important to avoid stack overflow and low performance in prover !!
 # !! Requires 24GB of VRAM and CUDA toolkit 12.x installed !!
-cargo nextest run --release -p zksync_os_integration_tests --features gpu-prover-tests -E 'binary(prover)'
+./scripts/cargo-with-patched-zksync-os.sh integration-prover-gpu -- \
+  nextest run --locked --release -p zksync_os_integration_tests \
+  --features gpu-prover-tests -E 'binary(prover)'
 ```

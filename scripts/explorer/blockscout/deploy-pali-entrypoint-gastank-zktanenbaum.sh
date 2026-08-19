@@ -37,8 +37,8 @@
 #   EDGE_CHAIN_NAME         default: zksys; chain config to update after deployment
 #   UPDATE_CHAIN_GAS_TANK   true by default; writes deployed gas tank to
 #                           chains/$EDGE_CHAIN_NAME/configs/contracts.yaml
-#                           as l2.zksys_gas_tank_addr (consumed when baking
-#                           the patched ZKsync OS via SYSCOIN_GAS_TANK_ADDRESS)
+#                           as l2.zksys_gas_tank_addr after requiring it to
+#                           match the address bound to the published V7 app
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -221,23 +221,67 @@ echo "  chain:  ${CHAIN_ID}"
 echo "  token:  ${ZKSYS_TOKEN_ADDRESS}"
 echo
 
-output="$(
+published_v7_gas_tank=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+gas_tank_creation_code="$(
   cd "${CONTRACTS_DIR}"
-  forge create src/zksys/ZkSysGasTank.sol:ZkSysGasTank \
-    --rpc-url "${RPC_URL}" \
-    --chain "${CHAIN_ID}" \
-    --broadcast \
-    "${verify_args[@]}" \
-    "${wallet_args[@]}" \
-    --constructor-args "${ZKSYS_TOKEN_ADDRESS}"
+  forge inspect --no-metadata src/zksys/ZkSysGasTank.sol:ZkSysGasTank bytecode
 )"
+expected_gas_tank_runtime="$(
+  cast call --rpc-url "${RPC_URL}" --create "${gas_tank_creation_code}" \
+    "constructor(address)" "${ZKSYS_TOKEN_ADDRESS}"
+)"
+existing_gas_tank_runtime="$(rpc_code "${published_v7_gas_tank}")"
+if [[ "${existing_gas_tank_runtime}" != "0x" ]]; then
+  if [[ "$(lower "${existing_gas_tank_runtime}")" != "$(lower "${expected_gas_tank_runtime}")" ]]; then
+    echo "error: existing code at ${published_v7_gas_tank} is not the exact ZkSysGasTank runtime for token ${ZKSYS_TOKEN_ADDRESS}" >&2
+    exit 1
+  fi
+  echo "Using existing published V7 gas tank at ${published_v7_gas_tank}"
+  gas_tank_address="${published_v7_gas_tank}"
+else
+  if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
+    DEPLOYER_ADDRESS="$(cast wallet address "${wallet_args[@]}")"
+  fi
+  deployer_nonce="$(cast nonce --rpc-url "${RPC_URL}" "${DEPLOYER_ADDRESS}")"
+  predicted_gas_tank="$(
+    cast compute-address --nonce "${deployer_nonce}" "${DEPLOYER_ADDRESS}" |
+      sed -n 's/^Computed Address: //p'
+  )"
+  if [[ "$(lower "${predicted_gas_tank}")" != "${published_v7_gas_tank}" ]]; then
+    echo "error: the next ZkSysGasTank CREATE address ${predicted_gas_tank} differs from" >&2
+    echo "       the published V7 app value ${published_v7_gas_tank}; refusing to broadcast" >&2
+    echo "error: using another address requires a new app, VK, and verifier" >&2
+    exit 1
+  fi
 
-printf '%s\n' "${output}"
+  output="$(
+    cd "${CONTRACTS_DIR}"
+    forge create src/zksys/ZkSysGasTank.sol:ZkSysGasTank \
+      --rpc-url "${RPC_URL}" \
+      --chain "${CHAIN_ID}" \
+      --nonce "${deployer_nonce}" \
+      --no-metadata \
+      --broadcast \
+      "${verify_args[@]}" \
+      "${wallet_args[@]}" \
+      --constructor-args "${ZKSYS_TOKEN_ADDRESS}"
+  )"
 
-gas_tank_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | tail -n 1)"
-if [[ -z "${gas_tank_address}" ]]; then
-  echo "error: could not parse deployed ZkSysGasTank address" >&2
-  exit 1
+  printf '%s\n' "${output}"
+  gas_tank_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | tail -n 1)"
+  if [[ -z "${gas_tank_address}" ]]; then
+    echo "error: could not parse deployed ZkSysGasTank address" >&2
+    exit 1
+  fi
+  if [[ "$(lower "${gas_tank_address}")" != "${published_v7_gas_tank}" ]]; then
+    echo "error: deployed gas tank ${gas_tank_address} differs from its preflight address ${published_v7_gas_tank}" >&2
+    exit 1
+  fi
+  deployed_gas_tank_runtime="$(rpc_code "${gas_tank_address}")"
+  if [[ "$(lower "${deployed_gas_tank_runtime}")" != "$(lower "${expected_gas_tank_runtime}")" ]]; then
+    echo "error: deployed gas tank runtime does not match the exact locally built contract" >&2
+    exit 1
+  fi
 fi
 
 echo
@@ -307,8 +351,8 @@ path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encod
 PY
   echo "Updated ${contracts_yaml}: l2.zksys_gas_tank_addr=${gas_tank_address}"
   echo
-  echo "NOTE: the patched ZKsync OS must be (re)built with SYSCOIN_GAS_TANK_ADDRESS=${gas_tank_address}"
-  echo "      so the baked constant and the registered VK match the deployed tank."
+  echo "NOTE: this address must match the published V7 app binding"
+  echo "      0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb; otherwise a new app, VK, and verifier are required."
 fi
 
 echo

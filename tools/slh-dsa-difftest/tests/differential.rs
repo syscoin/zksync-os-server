@@ -1,9 +1,9 @@
 //! Differential tests for the SLH-DSA-SHA2-128-24 precompile (0x101).
 //!
-//! Runs the exact same known-answer vector and deterministic mutation sweep as
-//! the Solidity fallback verifier test in
+//! Runs the exact same SP 800-230 Initial Public Draft conformance corpus and
+//! deterministic mutation sweep as the Solidity fallback verifier test in
 //! `contracts/test/SLHDSASHA212824Differential.t.sol`. Both sides must accept
-//! the valid vector and reject every mutated/random vector, detecting
+//! both valid vectors and reject every mutated/random vector, detecting
 //! divergence on this finite corpus. This is regression coverage, not
 //! coverage-guided fuzzing or a general equivalence proof.
 //!
@@ -21,19 +21,35 @@ const SIGNATURE_LEN: usize = 3856;
 /// Word-aligned input layout: pkSeed(32) || pkRoot(32) || message(32) || sig.
 const SIG_OFFSET: usize = 96;
 
+// SYSCOIN: Preserve the historically accepted but provenance-poor vector while
+// making the fully reproducible SP 800-230 IPD counter-0 vector canonical.
+const VECTOR_PATHS: [(&str, &str); 2] = [
+    (
+        "legacy-unreproducible",
+        "/../../contracts/test/vectors/slh_dsa_sha2_128_24_kat.json",
+    ),
+    (
+        "canonical-sp800-230-ipd-counter0",
+        "/../../contracts/test/vectors/slh_dsa_sha2_128_24_sp800_230_ipd_counter0.json",
+    ),
+];
+
 const MUTATION_MASKS: [u8; 2] = [0x01, 0x80];
 /// Signature component boundaries: R randomizer [0..16), FORS trees
 /// [16..2416) (6 trees x (16-byte sk + 24 x 16-byte auth path)), WOTS chains
 /// [2416..3504) (68 x 16), Merkle auth path [3504..3856) (22 x 16).
-const SIG_BOUNDARY_OFFSETS: [usize; 14] =
-    [0, 15, 16, 31, 32, 415, 416, 2415, 2416, 2431, 3503, 3504, 3519, 3855];
+const SIG_BOUNDARY_OFFSETS: [usize; 14] = [
+    0, 15, 16, 31, 32, 415, 416, 2415, 2416, 2431, 3503, 3504, 3519, 3855,
+];
 const MUTATION_STRIDE: usize = 31;
 const RANDOM_VECTORS: usize = 8;
 const RANDOM_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct KatVector {
+struct ConformanceVector {
+    id: String,
+    status: String,
     pk_seed: String,
     pk_root: String,
     message: String,
@@ -41,14 +57,25 @@ struct KatVector {
     expected: bool,
 }
 
-fn kat_input() -> Vec<u8> {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../contracts/test/vectors/slh_dsa_sha2_128_24_kat.json"
+fn vector_input(label: &str, relative_path: &str) -> (String, Vec<u8>) {
+    let path = format!("{}{}", env!("CARGO_MANIFEST_DIR"), relative_path);
+    let raw = std::fs::read_to_string(path).expect("shared conformance vector file");
+    let vector: ConformanceVector = serde_json::from_str(&raw).expect("valid conformance JSON");
+    assert!(
+        vector.expected,
+        "conformance fixture must be a valid signature"
     );
-    let raw = std::fs::read_to_string(path).expect("shared KAT vector file");
-    let vector: KatVector = serde_json::from_str(&raw).expect("valid KAT JSON");
-    assert!(vector.expected, "KAT fixture must be a valid signature");
+    match label {
+        "legacy-unreproducible" => {
+            assert_eq!(vector.id, "slh-dsa-sha2-128-24-legacy-regression-v1");
+            assert_eq!(vector.status, "legacy-unreproducible-regression-only");
+        }
+        "canonical-sp800-230-ipd-counter0" => {
+            assert_eq!(vector.id, "slh-dsa-sha2-128-24-sp800-230-ipd-counter0-v1");
+            assert_eq!(vector.status, "canonical-reproducible-conformance");
+        }
+        _ => panic!("unrecognized conformance-vector label {label}"),
+    }
 
     let decode = |field: &str| hex::decode(field.trim_start_matches("0x")).expect("valid hex");
     let (pk_seed, pk_root, message, signature) = (
@@ -67,7 +94,14 @@ fn kat_input() -> Vec<u8> {
     input.extend_from_slice(&pk_root);
     input.extend_from_slice(&message);
     input.extend_from_slice(&signature);
-    input
+    (label.to_owned(), input)
+}
+
+fn corpus_inputs() -> Vec<(String, Vec<u8>)> {
+    VECTOR_PATHS
+        .iter()
+        .map(|(label, path)| vector_input(label, path))
+        .collect()
 }
 
 /// Executes the precompile implementation and returns whether it accepted.
@@ -97,77 +131,93 @@ fn xorshift64star(state: &mut u64) -> u8 {
 }
 
 #[test]
-fn valid_kat_verifies() {
-    assert!(verify(&kat_input()), "valid KAT rejected");
+fn valid_corpus_vectors_verify() {
+    for (label, input) in corpus_inputs() {
+        assert!(verify(&input), "valid conformance vector rejected: {label}");
+    }
 }
 
 #[test]
 fn mutated_signature_rejects() {
-    let input = kat_input();
-    let mut offsets: Vec<usize> = SIG_BOUNDARY_OFFSETS.to_vec();
-    offsets.extend((0..SIGNATURE_LEN).step_by(MUTATION_STRIDE));
-    for offset in offsets {
-        for mask in MUTATION_MASKS {
-            let mut mutated = input.clone();
-            mutated[SIG_OFFSET + offset] ^= mask;
-            assert!(
-                !verify(&mutated),
-                "sig mutation accepted at offset {offset} mask {mask:#04x}"
-            );
+    for (label, input) in corpus_inputs() {
+        let mut offsets: Vec<usize> = SIG_BOUNDARY_OFFSETS.to_vec();
+        offsets.extend((0..SIGNATURE_LEN).step_by(MUTATION_STRIDE));
+        for offset in offsets {
+            for mask in MUTATION_MASKS {
+                let mut mutated = input.clone();
+                mutated[SIG_OFFSET + offset] ^= mask;
+                assert!(
+                    !verify(&mutated),
+                    "{label}: sig mutation accepted at offset {offset} mask {mask:#04x}"
+                );
+            }
         }
     }
 }
 
 #[test]
 fn mutated_seed_root_message_rejects() {
-    let input = kat_input();
-    // First/last meaningful byte of pkSeed, pkRoot, and the message.
-    for offset in [0usize, 15, 32, 47, 64, 95] {
-        for mask in MUTATION_MASKS {
-            let mut mutated = input.clone();
-            mutated[offset] ^= mask;
-            assert!(
-                !verify(&mutated),
-                "header mutation accepted at offset {offset} mask {mask:#04x}"
-            );
+    for (label, input) in corpus_inputs() {
+        // First/last meaningful byte of pkSeed, pkRoot, and the message.
+        for offset in [0usize, 15, 32, 47, 64, 95] {
+            for mask in MUTATION_MASKS {
+                let mut mutated = input.clone();
+                mutated[offset] ^= mask;
+                assert!(
+                    !verify(&mutated),
+                    "{label}: header mutation accepted at offset {offset} mask {mask:#04x}"
+                );
+            }
         }
     }
 }
 
 #[test]
 fn noncanonical_key_padding_rejects() {
-    let input = kat_input();
-    // Nonzero low 16 bytes of the pkSeed/pkRoot words must be rejected.
-    // (The Solidity verifier reverts with "Invalid public key" here; the
-    // precompile signals failure by returning 0.)
-    for offset in [16usize, 31, 48, 63] {
-        let mut mutated = input.clone();
-        mutated[offset] = 1;
-        assert!(!verify(&mutated), "noncanonical key accepted at offset {offset}");
+    for (label, input) in corpus_inputs() {
+        // Nonzero low 16 bytes of the pkSeed/pkRoot words must be rejected.
+        // (The Solidity verifier reverts with "Invalid public key" here; the
+        // precompile signals failure by returning 0.)
+        for offset in [16usize, 31, 48, 63] {
+            let mut mutated = input.clone();
+            mutated[offset] = 1;
+            assert!(
+                !verify(&mutated),
+                "{label}: noncanonical key accepted at offset {offset}"
+            );
+        }
     }
 }
 
 #[test]
 fn wrong_length_rejects() {
-    let input = kat_input();
-    // (The Solidity verifier reverts with "Invalid sig length" here; the
-    // precompile signals failure by returning 0.)
-    assert!(!verify(&input[..input.len() - 1]), "truncated input accepted");
-    let mut extended = input.clone();
-    extended.push(0);
-    assert!(!verify(&extended), "extended input accepted");
+    for (label, input) in corpus_inputs() {
+        // (The Solidity verifier reverts with "Invalid sig length" here; the
+        // precompile signals failure by returning 0.)
+        assert!(
+            !verify(&input[..input.len() - 1]),
+            "{label}: truncated input accepted"
+        );
+        let mut extended = input.clone();
+        extended.push(0);
+        assert!(!verify(&extended), "{label}: extended input accepted");
+    }
     assert!(!verify(&[]), "empty input accepted");
 }
 
 #[test]
 fn random_signatures_reject() {
-    let input = kat_input();
-    let mut state = RANDOM_SEED;
-    for vector in 0..RANDOM_VECTORS {
-        let mut mutated = input.clone();
-        for byte in &mut mutated[SIG_OFFSET..] {
-            *byte = xorshift64star(&mut state);
+    for (label, input) in corpus_inputs() {
+        let mut state = RANDOM_SEED;
+        for vector in 0..RANDOM_VECTORS {
+            let mut mutated = input.clone();
+            for byte in &mut mutated[SIG_OFFSET..] {
+                *byte = xorshift64star(&mut state);
+            }
+            assert!(
+                !verify(&mutated),
+                "{label}: random signature accepted, vector {vector}"
+            );
         }
-        assert!(!verify(&mutated), "random signature accepted, vector {vector}");
     }
 }

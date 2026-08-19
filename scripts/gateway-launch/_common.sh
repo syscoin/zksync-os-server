@@ -375,8 +375,9 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
   export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
 }
 
-# SYSCOIN: optional zkSYS gas-tank address from the edge chain's contracts
-# config. Missing key or zero means the tank is disabled (native-only fees).
+# SYSCOIN: zkSYS gas-tank address recorded in the edge chain's contracts
+# config. Missing/zero is allowed only for first boot; the OS still keeps the
+# immutable published address and falls back to native fees until deployment.
 gl_zksys_gas_tank_from_edge_config() {
   gl_require GATEWAY_DIR
   local edge_chain_name
@@ -438,12 +439,23 @@ print(addr)
 PY
 }
 
-# SYSCOIN: bake the edge chain's gas-tank address into the patched OS build.
-# Consistency-checks any pre-set env against the chain config to avoid
-# building a VK that disagrees with the deployed chain.
+# SYSCOIN: validate the edge chain's gas-tank address against the immutable
+# value already bound to the published V7 application and VK.
 gl_export_syscoin_gas_tank_address_from_edge_config() {
   local expected var_name var_value var_value_lc
   expected="$(gl_zksys_gas_tank_from_edge_config)"
+  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
+    # First boot must use the same immutable b9fe... source as the published
+    # guest even though the contract has not been deployed yet. The OS falls
+    # back to native fee payment until zksys-l2-bootstrap records the tank.
+    if [ "${SYSCOIN_REQUIRE_GAS_TANK:-0}" = "1" ]; then
+      gl_die "SYSCOIN_REQUIRE_GAS_TANK=1 but l2.zksys_gas_tank_addr is missing/zero; deploy the published gas tank with zksys-l2-bootstrap.sh before launch"
+    fi
+    [ -n "${SYSCOIN_GAS_TANK_ADDRESS:-}" ] ||
+      gl_die "missing immutable SYSCOIN_GAS_TANK_ADDRESS during first-boot validation"
+    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; using the published V7 address before its first-boot deployment" >&2
+    return 0
+  fi
   for var_name in SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS; do
     var_value="${!var_name:-}"
     if [ -n "${var_value}" ]; then
@@ -452,20 +464,6 @@ gl_export_syscoin_gas_tank_address_from_edge_config() {
         gl_die "${var_name}=${var_value} does not match l2.zksys_gas_tank_addr=${expected}"
     fi
   done
-  if [ "${expected}" = "0x0000000000000000000000000000000000000000" ]; then
-    # A zero address disables tank-paid fees in the baked OS. This is expected
-    # on the very first boot (the tank is deployed by zksys-l2-bootstrap.sh
-    # against the running chain, then the OS is rebuilt), but must never ship
-    # in a production launch: set SYSCOIN_REQUIRE_GAS_TANK=1 there so a
-    # missing/zero l2.zksys_gas_tank_addr fails the build instead of silently
-    # producing a native-only VK.
-    if [ "${SYSCOIN_REQUIRE_GAS_TANK:-0}" = "1" ]; then
-      gl_die "SYSCOIN_REQUIRE_GAS_TANK=1 but l2.zksys_gas_tank_addr is missing/zero; deploy the gas tank (zksys-l2-bootstrap.sh) before building the OS"
-    fi
-    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; building the patched OS with the zkSYS gas tank DISABLED" >&2
-    unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-    return 0
-  fi
   export SYSCOIN_GAS_TANK_ADDRESS="${expected}"
 }
 

@@ -29,7 +29,9 @@ anvil --load-state ./local-chains/v30.2/l1-state.json --port 8545 --block-time 0
 then launch the server:
 
 ```
-cargo run
+./scripts/cargo-with-patched-zksync-os.sh manual-run -- run --locked -- \
+  --config ./local-chains/local_dev.yaml \
+  --config ./local-chains/v30.2/default/config.yaml
 ```
 
 To restart the chain, erase the local DB and re-run anvil:
@@ -58,13 +60,17 @@ cast send -r http://localhost:3050 0x5A67EE02274D9Ec050d412b96fE810Be4D71e7A0 --
 
 See `node/sequencer/config.rs` for config options and defaults. Use a JSON configuration file to override the defaults, e.g.:
 ```
-cargo run --release -- --config ./local-chains/v30.2/default/config.yaml
+./scripts/cargo-with-patched-zksync-os.sh manual-v30 -- run --locked --release -- \
+  --config ./local-chains/v30.2/default/config.yaml
 ```
 Explore the `local-chains` folder for additional chain configs grouped by protocol version. Detailed information is available in `local-chains/README.md`.
 
 You can also use environment variables to override the default settings:
 ```
-prover_api_fake_provers_enabled=false cargo run --release
+prover_api_fake_provers_enabled=false \
+  ./scripts/cargo-with-patched-zksync-os.sh manual-fake-prover -- run --locked --release -- \
+    --config ./local-chains/local_dev.yaml \
+    --config ./local-chains/v30.2/default/config.yaml
 ```
 If both the JSON config file and environment variables are set, the latter takes precedence.
 
@@ -74,5 +80,8 @@ Ephemeral mode runs the node using a temporary, isolated state directory, allowi
 
 The `ephemeral` setting is part of the general config and can be set like any other config value:
 ```
-general_ephemeral=true cargo run --release
+general_ephemeral=true \
+  ./scripts/cargo-with-patched-zksync-os.sh manual-ephemeral -- run --locked --release -- \
+    --config ./local-chains/local_dev.yaml \
+    --config ./local-chains/v30.2/default/config.yaml
 ```

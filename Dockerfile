@@ -5,27 +5,21 @@ FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
 COPY rust-toolchain.toml rust-toolchain.toml
 WORKDIR /app
 
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --bin zksync-os-server --recipe-path recipe.json
-
 FROM chef AS builder
 
 # ---- build-time system libs ----
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libclang-19-dev && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates git libclang-19-dev python3 && \
     rm -rf /var/lib/apt/lists/*
 
 ENV LIBCLANG_PATH=/usr/lib/llvm-19/lib
-ENV LD_LIBRARY_PATH=${LIBCLANG_PATH}:${LD_LIBRARY_PATH}
-
-COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies (this is the caching Docker layer)
-RUN cargo chef cook --bin zksync-os-server --release --features gcp --recipe-path recipe.json
+ENV LD_LIBRARY_PATH=/usr/lib/llvm-19/lib
 
 # Build application
 COPY . .
-RUN cargo build --release --bin zksync-os-server --features gcp
+RUN bash scripts/cargo-with-patched-zksync-os.sh \
+    docker-release -- build --locked --release --bin zksync-os-server --features gcp
 
 #################################
 # -------- Runtime -------------#
