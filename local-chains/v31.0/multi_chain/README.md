@@ -16,6 +16,11 @@ Configuration for running multiple ZKsync OS chains against a shared L1.
 ./run_local.sh ./local-chains/v31.0/multi_chain
 ```
 
+For v31, `run_local.sh` verifies that every selected
+`contracts_<chain-id>.yaml` has the same validator timelock, applies the
+repository patch to the exact official zksync-os revision in `Cargo.lock`,
+builds once, and runs that prebuilt binary for both chains.
+
 ## Wallets
 
 For complete list of keys and wallet addresses, check:

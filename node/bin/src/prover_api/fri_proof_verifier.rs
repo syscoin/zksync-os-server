@@ -363,7 +363,9 @@ mod tests {
     ///
     /// Run manually:
     ///   V8_PROOF_ARTIFACT_JSON=/path/to/proof.json \
-    ///     cargo test -p zksync_os_server --release v8_unified_layer_verifies_cli_proof -- --ignored
+    ///     ./scripts/cargo-with-patched-zksync-os.sh v8-proof-smoke -- \
+    ///       test --locked -p zksync_os_server --release \
+    ///       v8_unified_layer_verifies_cli_proof -- --ignored
     #[test]
     #[ignore = "needs a locally produced V8 proof artifact"]
     fn v8_unified_layer_verifies_cli_proof() {

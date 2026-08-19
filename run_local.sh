@@ -28,6 +28,8 @@ fi
 
 # Cleanup function to stop all started services
 cleanup() {
+    local exit_status=$?
+
     # Prevent re-entry when exit triggers the trap again
     trap - SIGINT SIGTERM EXIT
 
@@ -52,11 +54,13 @@ cleanup() {
 
     echo -e "${GREEN}All services stopped${NC}"
     rm -rf "$TEMP_DIR"
-    exit 0
+    exit "$exit_status"
 }
 
-# Set up trap for cleanup on script exit
-trap cleanup SIGINT SIGTERM EXIT
+# Preserve the conventional signal exit status, then let the EXIT trap clean up.
+trap 'exit 130' SIGINT
+trap 'exit 143' SIGTERM
+trap cleanup EXIT
 
 # Parse command line arguments
 CONFIG_DIR=""
@@ -107,6 +111,23 @@ if [ ! -d "$CONFIG_DIR" ]; then
     exit 1
 fi
 
+LOCAL_CONTEXT_RESOLVER="$REPO_ROOT/scripts/resolve-local-zksync-os-context.py"
+if ! LOCAL_CONTEXT=$(python3 "$LOCAL_CONTEXT_RESOLVER" "$CONFIG_DIR"); then
+    echo -e "${RED}Failed to resolve the local zksync-os build context${NC}"
+    exit 1
+fi
+IFS=$'\t' read -r LOCAL_PROTOCOL_VERSION LOCAL_EDGE_DA_COMMIT_TARGET <<< "$LOCAL_CONTEXT"
+
+PATCHED_OS_RUNNER="$REPO_ROOT/scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
+PATCHED_OS_WORKSPACE="run-local"
+export GATEWAY_DIR="${ZKSYNC_OS_LOCAL_BUILD_ROOT:-$REPO_ROOT/target/run-local-patched-os}"
+export ZKSYNC_OS_SERVER_PATH="$REPO_ROOT"
+export PROTOCOL_VERSION="${LOCAL_PROTOCOL_VERSION:-run-local}"
+export SYSCOIN_EDGE_DA_COMMIT_TARGET="$LOCAL_EDGE_DA_COMMIT_TARGET"
+# Every server binary contains the v0.3.2 VM dependency, regardless of which
+# local runtime protocol the selected fixture exercises.
+export ZKSYNC_OS_FORCE_PATCHED_WORKSPACE=true
+
 # Check for compressed L1 state file
 L1_STATE_FILE_GZ="$CONFIG_DIR/../l1-state.json.gz"
 if [ ! -f "$L1_STATE_FILE_GZ" ]; then
@@ -141,11 +162,20 @@ echo -e "${BLUE}========================================${NC}"
 
 # Build first
 echo -e "\n${GREEN}Building zksync-os-server...${NC}"
-if ! cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml"; then
+# Native execution must use the same patched v0.3.2 source as the proving app.
+# The launcher anchors the official tag to Cargo.lock, applies the local patch,
+# rewrites a disposable server workspace, and publishes a context-stamped binary.
+if ! "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- build-prebuilt; then
     echo -e "${RED}Build failed${NC}"
     exit 1
 fi
 echo -e "${GREEN}Build completed${NC}"
+
+run_chain() {
+    local config_file="$1"
+    "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- exec-prebuilt -- \
+        --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$config_file"
+}
 
 # Start Anvil
 echo -e "\n${GREEN}Starting Anvil...${NC}"
@@ -196,10 +226,10 @@ if [ -f "$SINGLE_CONFIG" ]; then
     echo -e "\n${GREEN}Starting single chain with config: $SINGLE_CONFIG${NC}"
     if [ -n "$LOGS_DIR" ]; then
         CHAIN_LOG_FILE="$LOGS_DIR/chain-$LOG_TIMESTAMP.log"
-        cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -- --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$SINGLE_CONFIG" > "$CHAIN_LOG_FILE" 2>&1 &
+        run_chain "$SINGLE_CONFIG" > "$CHAIN_LOG_FILE" 2>&1 &
         echo -e "${GREEN}Chain logs: $CHAIN_LOG_FILE${NC}"
     else
-        cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -- --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$SINGLE_CONFIG" &
+        run_chain "$SINGLE_CONFIG" &
     fi
     CHAIN_PID=$!
     PIDS+=($CHAIN_PID)
@@ -221,10 +251,10 @@ else
             # Extract config file name without extension for log file naming
             CONFIG_NAME=$(basename "$config_file" .yaml)
             CHAIN_LOG_FILE="$LOGS_DIR/${CONFIG_NAME}-$LOG_TIMESTAMP.log"
-            cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -- --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$config_file" > "$CHAIN_LOG_FILE" 2>&1 &
+            run_chain "$config_file" > "$CHAIN_LOG_FILE" 2>&1 &
             echo -e "${GREEN}Chain logs: $CHAIN_LOG_FILE${NC}"
         else
-            cargo run --release --manifest-path "$REPO_ROOT/Cargo.toml" -- --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$config_file" &
+            run_chain "$config_file" &
         fi
         CHAIN_PID=$!
         PIDS+=($CHAIN_PID)

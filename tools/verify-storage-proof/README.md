@@ -62,5 +62,6 @@ If auto-discovery is used (`--bridgehub`), the tool requires `--expected-chain-i
 The integration tests live in `integration-tests/tests/storage_proof.rs` and exercise the library against a local node with L1 (Anvil). Each test manages its own L1/node instance — no external setup required.
 
 ```bash
-RUST_LOG=info cargo nextest run -p zksync_os_integration_tests --test storage_proof --no-capture
+RUST_LOG=info ./scripts/cargo-with-patched-zksync-os.sh storage-proof-tests -- \
+  nextest run --locked -p zksync_os_integration_tests --test storage_proof --no-capture
 ```

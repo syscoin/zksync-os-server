@@ -42,13 +42,13 @@ jobs:
         uses: ./.github/actions/runner-setup
 
       - name: Build server
-        run: cargo build --release --bin zksync-os-server --features gcp
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-build -- build --locked --release --bin zksync-os-server --features gcp
 
       - name: Upload server binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zksync-os-server-${{ github.sha }}
-          path: target/release/zksync-os-server
+          path: ${{ github.workspace }}/target/release/zksync-os-server
           if-no-files-found: error
           retention-days: 1
 
@@ -70,8 +70,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Test patched zksync-os workspace tooling
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_local_patched_zksync_os -v
+
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-clippy -- clippy --locked --all-targets --all-features --workspace -- -D warnings
 
 
   #################################################
@@ -87,14 +90,14 @@ jobs:
         uses: ./.github/actions/runner-setup
 
       - name: Run tests
-        run: cargo nextest run --release --workspace ${NEXTEST_ITERATIONS}
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-test -- nextest run --locked --release --workspace ${NEXTEST_ITERATIONS}
 
       - name: Upload test results
         if: always() && !cancelled()
         uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
         with:
           check_name: 'Test results'
-          files: target/nextest/default/${{ env.TEST_RESULTS_XML }}
+          files: ${{ github.workspace }}/target/nextest/default/${{ env.TEST_RESULTS_XML }}
           action_fail_on_inconclusive: true
           compare_to_earlier_commit: false # Do not compare with `main` due to different number of iterations
 
@@ -123,14 +126,14 @@ jobs:
           # cargo-llvm-cov overrides the config.toml rustflags; keep `tokio_unstable` on since
           # the runtime metrics require it unconditionally.
           RUSTFLAGS: '--cfg tokio_unstable'
-        run: cargo llvm-cov --lcov --output-path lcov.info nextest --workspace --release --profile coverage
+        run: bash scripts/cargo-with-patched-zksync-os.sh ci-coverage -- llvm-cov --locked --lcov --output-path "${GITHUB_WORKSPACE}/lcov.info" nextest --workspace --release --profile coverage
 
       - name: Generate codecov report
         uses: codecov/codecov-action@fdcc8476540edceab3de004e990f80d881c6cc00 # v5.5.0
         if: always() && !cancelled()
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
+          files: ${{ github.workspace }}/lcov.info
           slug: ${{ github.repository }}
 
 
@@ -191,14 +194,16 @@ jobs:
           # This variable overwrites the default relative `./` in the .cargo/config.toml.
           WORKSPACE_DIR: "/opt/./actions-runner/_work/zksync-os-server/zksync-os-server"
         run: |
-          cargo nextest archive --release -p zksync_os_integration_tests \
-            --features gpu-prover-tests --test prover --archive-file ${PROVER_GPU_TESTS}.tar.zst
+          bash scripts/cargo-with-patched-zksync-os.sh ci-prover-archive -- \
+            nextest archive --locked --release -p zksync_os_integration_tests \
+            --features gpu-prover-tests --test prover \
+            --archive-file "${GITHUB_WORKSPACE}/${PROVER_GPU_TESTS}.tar.zst"
 
       - name: Upload tests
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.PROVER_GPU_TESTS }}
-          path: ${{ env.PROVER_GPU_TESTS }}.tar.zst
+          path: ${{ github.workspace }}/${{ env.PROVER_GPU_TESTS }}.tar.zst
           if-no-files-found: error
           retention-days: 1 # delete sooner to not waste storage
 

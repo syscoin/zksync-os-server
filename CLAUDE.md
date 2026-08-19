@@ -5,11 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build and Development Commands
 
 ### Basic Commands
-- **Build**: `cargo build` or `cargo build --release`
+- **Build**: `scripts/cargo-with-patched-zksync-os.sh dev-build -- build --locked` or `scripts/cargo-with-patched-zksync-os.sh dev-build-release -- build --locked --release`
 - **Format**: `cargo fmt --all -- --check`
-- **Lint**: `cargo clippy --all-targets --all-features --workspace --exclude zksync_os_integration_tests -- -D warnings`
-- **Unit tests**: `cargo nextest run --workspace --exclude zksync_os_integration_tests`
-- **Integration tests**: `cargo nextest run -p zksync_os_integration_tests --profile no-pig` (no live anvil needed — each test manages its own L1/node; `--profile no-pig` disables Prover Input Generation for faster runs)
+- **Lint**: `scripts/cargo-with-patched-zksync-os.sh dev-clippy -- clippy --locked --all-targets --all-features --workspace --exclude zksync_os_integration_tests -- -D warnings`
+- **Unit tests**: `scripts/cargo-with-patched-zksync-os.sh dev-test -- nextest run --locked --workspace --exclude zksync_os_integration_tests`
+- **Integration tests**: `scripts/cargo-with-patched-zksync-os.sh dev-integration -- nextest run --locked -p zksync_os_integration_tests --profile no-pig` (no live anvil needed — each test manages its own L1/node; `--profile no-pig` disables Prover Input Generation for faster runs)
+
+The wrapper checks out the official Matter Labs zksync-os revision pinned by this
+workspace, applies the checked-in Syscoin patch locally, and builds a disposable
+rewritten server workspace. Do not use plain Cargo for commands that compile
+`multivm`; its build script deliberately rejects the unpatched upstream source.
 
 ### Local Development Setup
 1. Run script: `./run_local.sh ./local-chains/v31.0/default`

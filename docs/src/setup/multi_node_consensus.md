@@ -20,6 +20,16 @@ anvil --load-state /tmp/l1-state.json --port 8545 --block-time 0.25 --mixed-mini
 
 The default ports used by ConsensusNode #1 below (`3050` RPC, `3060` p2p, `3071` status server, `3124` prover API, `3312` Prometheus) must be free on the host. In this example ConsensusNode #1 is also the only batcher-enabled node, so ConsensusNode #2 and #3 set `BATCHER_ENABLED=false` and `PROVER_API_ENABLED=false`. Each node keeps its status server enabled on a unique port so failover can be checked through `/status`.
 
+Build the server once from the official zksync-os revision plus the checked-in
+Syscoin patch. All nodes below use that same binary:
+
+```bash
+SYSCOIN_EDGE_DA_COMMIT_TARGET=0x9ba6e5da3d3b75043b5ed73f6442f504e8745c61 \
+SYSCOIN_GAS_TANK_ADDRESS= \
+./scripts/cargo-with-patched-zksync-os.sh consensus-demo -- \
+  build --locked --bin zksync-os-server
+```
+
 **ConsensusNode**
 
 Requirements:
@@ -59,7 +69,8 @@ CONSENSUS_ENABLED=true \
 CONSENSUS_BOOTSTRAP=true \
 CONSENSUS_PEER_IDS__JSON="${PEER_IDS_JSON}" \
 GENERAL_ROCKS_DB_PATH="db/en-1" \
-cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
+./target/debug/zksync-os-server \
+  --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
 ```
 
 ConsensusNode #2:
@@ -78,7 +89,8 @@ STATUS_SERVER_ADDRESS=0.0.0.0:3072 \
 RPC_ADDRESS=0.0.0.0:3051 \
 OBSERVABILITY_PROMETHEUS_PORT=3313 \
 GENERAL_ROCKS_DB_PATH="db/en-2" \
-cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
+./target/debug/zksync-os-server \
+  --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
 ```
 
 ConsensusNode #3:
@@ -97,7 +109,8 @@ STATUS_SERVER_ADDRESS=0.0.0.0:3073 \
 RPC_ADDRESS=0.0.0.0:3052 \
 OBSERVABILITY_PROMETHEUS_PORT=3314 \
 GENERAL_ROCKS_DB_PATH="db/en-3" \
-cargo run -- --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
+./target/debug/zksync-os-server \
+  --config ./local-chains/local_dev.yaml --config ./local-chains/v31.0/default/config.yaml
 ```
 
 Failover check:
@@ -117,7 +130,7 @@ Main Node:
 network_enabled=true \
 network_secret_key=0af6153646bbf600f55ce455e1995283542b1ae25ce2622ce1fda443927c5308 \
 network_boot_nodes=enode://246e07030b4c48b8f28ab1fdf797a02308b0ca724696b695aabee48ea48298ff221144a0c0f14ebf030aea6d5fb6b31bd3a02676204bb13e78336bb824e32f1d@127.0.0.1:3060,enode://d2db8005d59694a5b79b7c58d4d375c60c9323837e852bbbfd05819621c48a4218cefa37baf39a164e2a6f6c1b34c379c4a72c7480b5fbcc379d1befb881e8fc@127.0.0.1:3060 \
-cargo run
+./target/debug/zksync-os-server
 ```
 
 External Node:
@@ -134,5 +147,5 @@ observability_prometheus_port=3313 \
 general_rocks_db_path="db/en" \
 status_server_enabled=false \
 rpc_address=0.0.0.0:3051 \
-cargo run
+./target/debug/zksync-os-server
 ```
