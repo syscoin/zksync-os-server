@@ -56,6 +56,30 @@ fn require_patched_source_text(
     Ok(())
 }
 
+fn require_patched_source_sha256(
+    root: &Path,
+    relative_path: &str,
+    expected: &str,
+) -> anyhow::Result<()> {
+    let path = root.join(relative_path);
+    println!("cargo:rerun-if-changed={}", path.display());
+    let metadata = std::fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_file() {
+        anyhow::bail!(
+            "patched zksync-os source is not a regular file: {}",
+            path.display()
+        );
+    }
+    let actual = sha256_hex(&std::fs::read(&path)?);
+    if actual != expected {
+        anyhow::bail!(
+            "patched zksync-os source SHA-256 mismatch for {}: expected {expected}, got {actual}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn verify_syscoin_execution_source(package_manifest: &Path) -> anyhow::Result<()> {
     let package_dir = package_manifest.parent().ok_or_else(|| {
         anyhow::anyhow!(
@@ -89,6 +113,11 @@ fn verify_syscoin_execution_source(package_manifest: &Path) -> anyhow::Result<()
         source_root,
         "evm_interpreter/src/precompile_addresses.rs",
         "SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW",
+    )?;
+    require_patched_source_sha256(
+        source_root,
+        "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs",
+        "1eb8dc0da30570626a860968140c41663b9a40077f2c420665196b7506d7a7cb",
     )?;
     Ok(())
 }

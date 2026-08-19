@@ -371,6 +371,19 @@ PY
 fi
 ZKSYS_GAS_TANK_ADDRESS="$(normalize_zksys_gas_tank_address "${ZKSYS_GAS_TANK_ADDRESS}")"
 
+# Fail before deleting remote stamps, uploading source, or replacing config if
+# this deployment does not match the consensus inputs in the published V7 app.
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+PUBLISHED_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+if [[ "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" != "${PUBLISHED_EDGE_DA_COMMIT_TARGET}" ]]; then
+  echo "error: SYSCOIN_EDGE_DA_COMMIT_TARGET=${SYSCOIN_EDGE_DA_COMMIT_TARGET} differs from the published V7 app value ${PUBLISHED_EDGE_DA_COMMIT_TARGET}" >&2
+  exit 1
+fi
+if [[ "${ZKSYS_GAS_TANK_ADDRESS}" != "${PUBLISHED_GAS_TANK_ADDRESS}" ]]; then
+  echo "error: ZKSYS_GAS_TANK_ADDRESS=${ZKSYS_GAS_TANK_ADDRESS} differs from the published V7 app value ${PUBLISHED_GAS_TANK_ADDRESS}" >&2
+  exit 1
+fi
+
 provider_b64="$(printf '%s' "${provider_json}" | base64 | tr -d '\n')"
 
 # Invalidate the prior deployment before uploading source or replacing generated
@@ -811,8 +824,9 @@ for instance in (public, debug):
     )
 PY
 
-# Prepare the workspace-specific binaries before installing or restarting the
-# services. Runtime restarts must not clone, rewrite, or compile source.
+# Prepare binaries from the immutable published V7 consensus constants before
+# installing or restarting the services. Runtime restarts must not clone,
+# rewrite, or compile source.
 for instance in zksys-public zksys-debug; do
   "${REMOTE_BASE_DIR}/${instance}/build-node.sh"
 done

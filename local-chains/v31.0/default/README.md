@@ -15,11 +15,11 @@ Default single-chain configuration for running ZKsync OS against L1 for protocol
 ./run_local.sh ./local-chains/v31.0/default
 ```
 
-For v31, `run_local.sh` derives the Syscoin DA commit target from
-`../multi_chain/contracts_506.yaml`, applies the repository patch to the exact
-official zksync-os revision in `Cargo.lock`, and runs the resulting prebuilt
-binary. Custom fixtures without a matching `contracts_<chain-id>.yaml` must set
-`SYSCOIN_EDGE_DA_COMMIT_TARGET` to their deployed validator timelock address.
+For v31, `run_local.sh` applies the repository patch to the exact official
+zksync-os revision in `Cargo.lock` and runs the resulting prebuilt binary with
+the same edge-DA and gas-tank constants as the hash-pinned V7 proving app. The
+older local fixture has a different validator-timelock address, so it is useful
+for general node development but not for exercising compact edge-DA commits.
 
 ## Wallets
 

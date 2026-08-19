@@ -25,49 +25,47 @@ if [[ ! -f "${DA_LIMITS_PATCH_FILE}" ]]; then
   exit 1
 fi
 
-base_patch_core_applied() {
-  grep -q "error BitcoinDAPrecompileCallFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
-  && grep -q "error BitcoinDAVerificationFailed();" "${CONTRACTS_PATH}/da-contracts/contracts/DAContractsErrors.sol" \
-  && grep -q 'name = abi.encode("Syscoin");' "${CONTRACTS_PATH}/l1-contracts/contracts/bridge/BridgeHelper.sol" \
-  && grep -q 'TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18})' "${CONTRACTS_PATH}/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol" \
-  && grep -q "function _verifyBitcoinDA(bytes32 _dataHash) internal view" "${CONTRACTS_PATH}/da-contracts/contracts/BlobsL1DAValidatorZKsyncOS.sol" \
-  && grep -q "0x54bcb6abdcb4c8d8e088cc9f2ea9cc3505a8187a45b69e19e830590df6c9b0df" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol" \
-  && grep -q "L2DACommitmentScheme.BLOBS_ZKSYNC_OS" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol"
+PLONK_CONTRACT_REL="l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol"
+PLONK_KEY_REL="tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"
+FFLONK_CONTRACT_REL="l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierFflonk.sol"
+FFLONK_KEY_REL="tools/verifier-gen/data/ZKsyncOS_fflonk_scheduler_key.json"
+
+patch_forward_applicable() {
+  git -C "${CONTRACTS_PATH}" apply --check --recount "$1" >/dev/null 2>&1
 }
 
-base_patch_applied() {
-  base_patch_core_applied
+patch_reverse_applicable() {
+  git -C "${CONTRACTS_PATH}" apply --reverse --check --recount "$1" >/dev/null 2>&1
 }
 
-da_limits_patch_applied() {
-  grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/CalldataDA.sol" \
-  && grep -q "uint256 constant BLOB_SIZE_BYTES = 2 \* 1024 \* 1024;" "${CONTRACTS_PATH}/da-contracts/contracts/DAUtils.sol" \
-  && grep -q "uint256 constant MAX_NUMBER_OF_BLOBS = 32;" "${CONTRACTS_PATH}/system-contracts/contracts/Constants.sol" \
-  && grep -q "uint256 constant TOTAL_BLOBS_IN_COMMITMENT = 32;" "${CONTRACTS_PATH}/l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol"
-}
-
-check_base_contracts_patch() {
-  git -C "${CONTRACTS_PATH}" apply --check --recount "${PATCH_FILE}"
-}
-
-apply_base_contracts_patch() {
-  git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
-}
-
-ensure_contracts_clean_for_base_patch() {
-  if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
-    echo "error: ${CONTRACTS_PATH} has uncommitted changes and the base contracts patch is not applied" >&2
-    git -C "${CONTRACTS_PATH}" status --porcelain >&2
+verify_exact_file() {
+  local relative_path="$1" expected_size="$2" expected_sha256="$3"
+  local path="${CONTRACTS_PATH}/${relative_path}" actual_size actual_sha256
+  if [[ ! -f "${path}" || -L "${path}" ]]; then
+    echo "error: attested Era artifact is not a regular non-symlink file: ${path}" >&2
+    exit 1
+  fi
+  actual_size="$(wc -c < "${path}" | tr -d '[:space:]')"
+  if [[ "${actual_size}" != "${expected_size}" ]]; then
+    echo "error: Era artifact size mismatch for ${relative_path}: expected=${expected_size} actual=${actual_size}" >&2
+    exit 1
+  fi
+  actual_sha256="$(sha256sum "${path}" | awk '{print $1}')"
+  if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then
+    echo "error: Era artifact SHA-256 mismatch for ${relative_path}: expected=${expected_sha256} actual=${actual_sha256}" >&2
     exit 1
   fi
 }
 
-ensure_contracts_were_clean_for_partial_patch() {
-  if [[ -n "${initial_contracts_status}" && "${contracts_changed}" == false ]]; then
-    echo "error: ${CONTRACTS_PATH} has uncommitted changes and a contracts patch component is not applied" >&2
-    printf '%s\n' "${initial_contracts_status}" >&2
-    exit 1
-  fi
+verify_verifier_artifacts() {
+  verify_exact_file "${PLONK_CONTRACT_REL}" 95217 \
+    6302e7132a53c1895bf6ee9ede83a2c4e7bdddc5eedbffaabbe69fb043ee7e2f
+  verify_exact_file "${PLONK_KEY_REL}" 8082 \
+    f2805b9ef334f61c874e152b183035cb1d31172d48c6b125f0e6047c9aaa5168
+  verify_exact_file "${FFLONK_CONTRACT_REL}" 77746 \
+    9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48
+  verify_exact_file "${FFLONK_KEY_REL}" 1920 \
+    a1d093cf2bb0f5331c4a6bbf0e40d5f4888cc850324e8b9e406bde6686f07f77
 }
 
 # Refresh nested submodule URLs from .gitmodules and update recursively
@@ -88,48 +86,46 @@ if [[ "${ACTUAL_NESTED_SHA}" != "${EXPECTED_NESTED_SHA}" ]]; then
   exit 1
 fi
 
-initial_contracts_status="$(git -C "${CONTRACTS_PATH}" status --porcelain)"
-changed=false
-contracts_changed=false
-need_base_contracts_patch=false
-need_da_limits_patch=false
+base_forward=false
+base_reverse=false
+da_forward=false
+da_reverse=false
+patch_forward_applicable "${PATCH_FILE}" && base_forward=true
+patch_reverse_applicable "${PATCH_FILE}" && base_reverse=true
+patch_forward_applicable "${DA_LIMITS_PATCH_FILE}" && da_forward=true
+patch_reverse_applicable "${DA_LIMITS_PATCH_FILE}" && da_reverse=true
 
-if ! base_patch_core_applied; then
-  need_base_contracts_patch=true
-fi
-if ! da_limits_patch_applied; then
-  need_da_limits_patch=true
-fi
-
-if [[ "${need_base_contracts_patch}" == true ]]; then
-  ensure_contracts_clean_for_base_patch
-  echo "Checking base era-contracts Syscoin patch applicability..."
-  check_base_contracts_patch
-fi
-
-if [[ "${need_da_limits_patch}" == true ]]; then
-  ensure_contracts_were_clean_for_partial_patch
-  echo "Checking Syscoin DA limits patch applicability..."
-  git -C "${CONTRACTS_PATH}" apply --check --recount "${DA_LIMITS_PATCH_FILE}"
-fi
-
-if [[ "${need_base_contracts_patch}" == true ]]; then
-  echo "Applying base era-contracts Syscoin patch..."
-  apply_base_contracts_patch
-  changed=true
-  contracts_changed=true
-fi
-
-if [[ "${need_da_limits_patch}" == true ]]; then
-  echo "Applying era-contracts Syscoin DA limits patch..."
-  git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
-  changed=true
-  contracts_changed=true
-fi
-
-if [[ "${changed}" == false ]]; then
-  echo "era-contracts syscoin patch appears already applied; skipping."
+if [[ "${base_reverse}" == true && "${da_reverse}" == true ]]; then
+  verify_verifier_artifacts
+  echo "Era-contracts Syscoin patches and verifier artifacts are already exact; skipping."
   exit 0
 fi
 
-echo "Patch applied successfully."
+if [[ "${base_forward}" != true || "${da_forward}" != true ]]; then
+  echo "error: Era-contracts patch state is partial or diverged" >&2
+  echo "error: base(forward=${base_forward}, reverse=${base_reverse}) da-limits(forward=${da_forward}, reverse=${da_reverse})" >&2
+  exit 1
+fi
+
+if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain)" ]]; then
+  echo "error: ${CONTRACTS_PATH} has uncommitted changes before patch application" >&2
+  git -C "${CONTRACTS_PATH}" status --porcelain >&2
+  exit 1
+fi
+
+echo "Applying exact base Era-contracts Syscoin patch..."
+git -C "${CONTRACTS_PATH}" apply --recount "${PATCH_FILE}"
+echo "Applying exact Era-contracts Syscoin DA limits patch..."
+git -C "${CONTRACTS_PATH}" apply --recount "${DA_LIMITS_PATCH_FILE}"
+
+patch_reverse_applicable "${PATCH_FILE}" || {
+  echo "error: base Era-contracts patch postimage failed reverse applicability" >&2
+  exit 1
+}
+patch_reverse_applicable "${DA_LIMITS_PATCH_FILE}" || {
+  echo "error: Era-contracts DA limits patch postimage failed reverse applicability" >&2
+  exit 1
+}
+verify_verifier_artifacts
+
+echo "Patches applied and verifier artifacts attested successfully."

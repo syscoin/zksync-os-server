@@ -19,15 +19,32 @@ case "${WORKSPACE_NAME}" in
     ;;
 esac
 
-# These constants are the exact generated source inputs used for the published
-# V7 application binaries. Deployment launchers derive and validate their own
-# chain-specific values instead of using this static build wrapper.
-if [ -z "${SYSCOIN_EDGE_DA_COMMIT_TARGET+x}" ]; then
-  SYSCOIN_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
-fi
-if [ -z "${SYSCOIN_GAS_TANK_ADDRESS+x}" ]; then
-  SYSCOIN_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
-fi
+# These constants are consensus inputs baked into the hash-pinned V7 guest.
+# Native execution must use these exact values; a per-deployment rewrite would
+# create different execution semantics under the published VK.
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+PUBLISHED_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+
+require_published_value() {
+  local primary_name="$1" secondary_name="$2" expected="$3"
+  local name value normalized
+  for name in "${primary_name}" "${secondary_name}"; do
+    value="${!name:-}"
+    [ -z "${value}" ] && continue
+    normalized="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+    [ "${normalized}" = "${expected}" ] || {
+      echo "error: ${name}=${value} differs from the published V7 app value ${expected}" >&2
+      exit 1
+    }
+  done
+  printf -v "${primary_name}" '%s' "${expected}"
+  unset "${secondary_name}"
+}
+
+require_published_value SYSCOIN_EDGE_DA_COMMIT_TARGET \
+  ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET "${PUBLISHED_EDGE_DA_COMMIT_TARGET}"
+require_published_value SYSCOIN_GAS_TANK_ADDRESS \
+  ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS "${PUBLISHED_GAS_TANK_ADDRESS}"
 : "${PROTOCOL_VERSION:=v31.0}"
 : "${ZKSYNC_OS_GIT_URL:=https://github.com/matter-labs/zksync-os.git}"
 : "${GATEWAY_DIR:=${SYSCOIN_PATCHED_OS_BUILD_ROOT:-${TMPDIR:-/tmp}/syscoin-zksync-os-server-build}}"

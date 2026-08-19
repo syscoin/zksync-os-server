@@ -194,6 +194,8 @@ jobs:
         run: anvil --load-state ./local-chains/v31.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 &
 
       - name: Build server
+        env:
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         run: bash scripts/cargo-with-patched-zksync-os.sh spec-tests -- build --locked --release --bin zksync-os-server
 
       - name: Run server

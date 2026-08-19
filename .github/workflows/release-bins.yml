@@ -79,6 +79,7 @@ jobs:
       - name: Build
         env:
           RUSTFLAGS: '--cfg tokio_unstable'
+          GATEWAY_DIR: ${{ runner.temp }}/syscoin-zksync-os-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
         run: |
           bash scripts/cargo-with-patched-zksync-os.sh \
             "release-${{ matrix.target }}" -- build --locked --profile "${RELEASE_PROFILE}" \

@@ -111,19 +111,16 @@ if [ ! -d "$CONFIG_DIR" ]; then
     exit 1
 fi
 
-LOCAL_CONTEXT_RESOLVER="$REPO_ROOT/scripts/resolve-local-zksync-os-context.py"
-if ! LOCAL_CONTEXT=$(python3 "$LOCAL_CONTEXT_RESOLVER" "$CONFIG_DIR"); then
-    echo -e "${RED}Failed to resolve the local zksync-os build context${NC}"
-    exit 1
-fi
-IFS=$'\t' read -r LOCAL_PROTOCOL_VERSION LOCAL_EDGE_DA_COMMIT_TARGET <<< "$LOCAL_CONTEXT"
-
 PATCHED_OS_RUNNER="$REPO_ROOT/scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
 PATCHED_OS_WORKSPACE="run-local"
 export GATEWAY_DIR="${ZKSYNC_OS_LOCAL_BUILD_ROOT:-$REPO_ROOT/target/run-local-patched-os}"
 export ZKSYNC_OS_SERVER_PATH="$REPO_ROOT"
-export PROTOCOL_VERSION="${LOCAL_PROTOCOL_VERSION:-run-local}"
-export SYSCOIN_EDGE_DA_COMMIT_TARGET="$LOCAL_EDGE_DA_COMMIT_TARGET"
+export PROTOCOL_VERSION=run-local
+# These values are part of the published V7 guest. Local native execution must
+# use them exactly even when an older fixture names different deployment
+# contracts; otherwise sequencing and proof execution would disagree.
+export SYSCOIN_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+export SYSCOIN_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
 # Every server binary contains the v0.3.2 VM dependency, regardless of which
 # local runtime protocol the selected fixture exercises.
 export ZKSYNC_OS_FORCE_PATCHED_WORKSPACE=true
@@ -165,7 +162,7 @@ echo -e "\n${GREEN}Building zksync-os-server...${NC}"
 # Native execution must use the same patched v0.3.2 source as the proving app.
 # The launcher anchors the official tag to Cargo.lock, applies the local patch,
 # rewrites a disposable server workspace, and publishes a context-stamped binary.
-if ! "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- build-prebuilt; then
+if ! bash "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- build-prebuilt; then
     echo -e "${RED}Build failed${NC}"
     exit 1
 fi
@@ -173,7 +170,7 @@ echo -e "${GREEN}Build completed${NC}"
 
 run_chain() {
     local config_file="$1"
-    "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- exec-prebuilt -- \
+    bash "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- exec-prebuilt -- \
         --config "$REPO_ROOT/local-chains/local_dev.yaml" --config "$config_file"
 }
 

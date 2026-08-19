@@ -33,6 +33,12 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${PROTOCOL_VERSION:=v31.0}"
 : "${ZKSYNC_OS_GIT_URL:=https://github.com/matter-labs/zksync-os.git}"
 
+# Exact consensus inputs used to build the hash-pinned V7 application assets.
+# A workspace-specific source rewrite would make native execution disagree with
+# the proving guest while still advertising the same VK.
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+PUBLISHED_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+
 protocol_uses_dev_patch() {
   case "${PROTOCOL_VERSION}" in
   v31.* | v32.*) return 0 ;;
@@ -51,35 +57,37 @@ prebuilt_binary_path() {
 
 configure_build_context() {
   uses_patched_workspace || return 0
+
+  local var_name var_value normalized
+  for var_name in SYSCOIN_EDGE_DA_COMMIT_TARGET ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET; do
+    var_value="${!var_name:-}"
+    [ -z "${var_value}" ] && continue
+    normalized="$(gl_normalize_syscoin_edge_da_commit_target "${var_value}")"
+    [ "${normalized}" = "${PUBLISHED_EDGE_DA_COMMIT_TARGET}" ] || \
+      gl_die "${var_name}=${var_value} differs from the published V7 app value ${PUBLISHED_EDGE_DA_COMMIT_TARGET}"
+  done
+  export SYSCOIN_EDGE_DA_COMMIT_TARGET="${PUBLISHED_EDGE_DA_COMMIT_TARGET}"
+  unset ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET
   gl_export_syscoin_edge_da_commit_target_from_gateway_config
+
+  for var_name in SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS; do
+    var_value="${!var_name:-}"
+    [ -z "${var_value}" ] && continue
+    normalized="$(gl_normalize_syscoin_gas_tank_address "${var_value}")"
+    [ "${normalized}" = "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
+      gl_die "${var_name}=${var_value} differs from the published V7 app value ${PUBLISHED_GAS_TANK_ADDRESS}"
+  done
+  export SYSCOIN_GAS_TANK_ADDRESS="${PUBLISHED_GAS_TANK_ADDRESS}"
+  unset ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
+
   if [ "${ZKSYNC_OS_STATIC_BUILD_CONTEXT:-false}" = "true" ]; then
-    local gas_tank primary_gas_tank secondary_gas_tank
-    primary_gas_tank="${SYSCOIN_GAS_TANK_ADDRESS:-}"
-    secondary_gas_tank="${ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS:-}"
-    if [ -n "${primary_gas_tank}" ] && [ -n "${secondary_gas_tank}" ]; then
-      [ "$(gl_normalize_syscoin_gas_tank_address "${primary_gas_tank}")" = \
-        "$(gl_normalize_syscoin_gas_tank_address "${secondary_gas_tank}")" ] || \
-        gl_die "static Syscoin gas-tank build inputs disagree"
-    fi
-    gas_tank="${primary_gas_tank:-${secondary_gas_tank}}"
-    if [ -n "${gas_tank}" ]; then
-      export SYSCOIN_GAS_TANK_ADDRESS
-      SYSCOIN_GAS_TANK_ADDRESS="$(gl_normalize_syscoin_gas_tank_address "${gas_tank}")"
-      unset ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-    else
-      unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-    fi
     return 0
   fi
   case "${WORKSPACE_NAME}" in
   "${EDGE_CHAIN_NAME:-zksys}" | "${EDGE_CHAIN_NAME:-zksys}"-*)
     gl_export_syscoin_gas_tank_address_from_edge_config
     ;;
-  *)
-    # SYSCOIN: the zkSYS gas tank is edge-chain specific. Gateway nodes using
-    # the same patched OS must keep the generated gas-tank constant at zero.
-    unset SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS
-    ;;
+  *) ;;
   esac
 }
 

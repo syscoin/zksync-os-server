@@ -99,11 +99,9 @@ pub(crate) async fn send_l1_to_gateway_request(
     ) -> anyhow::Result<TransactionReceipt> {
         let _ = provider.estimate_gas(tx.clone()).await?;
         let hash = provider.anvil_send_impersonated_transaction(tx).await?;
-        Ok(
-            PendingTransactionBuilder::new(provider.root().clone(), hash)
-                .expect_successful_receipt()
-                .await?,
-        )
+        PendingTransactionBuilder::new(provider.root().clone(), hash)
+            .expect_successful_receipt()
+            .await
     }
 
     let tx_input = tx_input.into();

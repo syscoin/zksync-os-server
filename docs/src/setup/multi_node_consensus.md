@@ -24,11 +24,12 @@ Build the server once from the official zksync-os revision plus the checked-in
 Syscoin patch. All nodes below use that same binary:
 
 ```bash
-SYSCOIN_EDGE_DA_COMMIT_TARGET=0x9ba6e5da3d3b75043b5ed73f6442f504e8745c61 \
-SYSCOIN_GAS_TANK_ADDRESS= \
 ./scripts/cargo-with-patched-zksync-os.sh consensus-demo -- \
   build --locked --bin zksync-os-server
 ```
+
+The wrapper enforces the edge-DA and gas-tank addresses already bound to the
+hash-pinned V7 proving application. They are not per-node build parameters.
 
 **ConsensusNode**
 
