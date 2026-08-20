@@ -99,11 +99,7 @@ impl FriProvingPipelineStep {
         match &stored_batch.data {
             FriProof::Real(real) => {
                 if let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
-                    expected_batch
-                        .batch
-                        .previous_stored_batch_info
-                        .state_commitment,
-                    expected_stored_batch,
+                    &expected_batch.batch,
                     real.proof(),
                 ) {
                     tracing::warn!(

@@ -227,7 +227,7 @@ impl L1UpgradeTxWatcher {
                     );
                     proposed_upgrade.l2ProtocolUpgradeTx.data = rewritten;
                 }
-                Err(e) if is_method_missing(&e) || is_pre_v31_empty_revert(&e) => {
+                Err(e) if is_method_missing(&e) => {
                     tracing::info!(
                         init_address = ?upgrade_init_address,
                         "init contract does not expose getL2UpgradeTxData (pre-v31); using original tx data"
@@ -800,11 +800,10 @@ fn is_pre_v31_empty_revert(err: &alloy::contract::Error) -> bool {
     };
     err.as_error_resp().is_some_and(|response| {
         response.code == 3
-            && response.message == "execution reverted"
+            && response.message.to_ascii_lowercase().contains("revert")
             && response
-                .data
-                .as_ref()
-                .is_some_and(|data| data.get() == "\"0x\"")
+                .as_revert_data()
+                .is_some_and(|data| data.is_empty())
     })
 }
 
@@ -850,9 +849,44 @@ async fn find_l1_block_by_protocol_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::rpc::json_rpc::{ErrorPayload, RpcSend};
+    use alloy::transports::TransportError;
     use blake2::{Blake2s256, Digest as BlakeDigest};
+    use serde::Serialize;
     use zk_os_api::helpers::set_properties_code;
     use zk_os_basic_system::system_implementation::flat_storage_model::AccountProperties;
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NestedRevert {
+        original_error: RevertData,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct RevertData {
+        data: &'static str,
+    }
+
+    fn rpc_error<T: RpcSend>(data: Option<T>) -> alloy::contract::Error {
+        let payload = ErrorPayload {
+            code: 3,
+            message: "execution reverted".into(),
+            data,
+        }
+        .serialize_payload()
+        .unwrap();
+        alloy::contract::Error::TransportError(TransportError::ErrorResp(payload))
+    }
+
+    #[test]
+    fn pre_v31_fallback_accepts_only_empty_revert_data() {
+        assert!(is_pre_v31_empty_revert(&rpc_error(Some("0x"))));
+        assert!(is_pre_v31_empty_revert(&rpc_error(Some(NestedRevert {
+            original_error: RevertData { data: "0x" },
+        }))));
+        assert!(!is_pre_v31_empty_revert(&rpc_error(Some("0xdeadbeef"))));
+        assert!(!is_pre_v31_empty_revert(&rpc_error(Option::<&str>::None)));
+    }
 
     /// Golden-value test using a known externally-verifiable result.
     /// `blake2s256(b"") = 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9`

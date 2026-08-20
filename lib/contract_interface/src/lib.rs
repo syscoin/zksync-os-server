@@ -1030,3 +1030,63 @@ impl<T> Enrich for alloy::contract::Result<T> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_method_missing;
+    use alloy::rpc::json_rpc::{ErrorPayload, RpcSend};
+    use alloy::transports::TransportError;
+    use serde::Serialize;
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NestedRevert {
+        original_error: RevertData,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct RevertData {
+        data: &'static str,
+    }
+
+    fn rpc_error<T: RpcSend>(
+        code: i64,
+        message: &'static str,
+        data: Option<T>,
+    ) -> alloy::contract::Error {
+        let payload = ErrorPayload {
+            code,
+            message: message.into(),
+            data,
+        }
+        .serialize_payload()
+        .unwrap();
+        alloy::contract::Error::TransportError(TransportError::ErrorResp(payload))
+    }
+
+    #[test]
+    fn method_missing_rejects_transport_reverts() {
+        assert!(!is_method_missing(&rpc_error(
+            3,
+            "execution reverted",
+            Some("0x"),
+        )));
+        assert!(!is_method_missing(&rpc_error(
+            3,
+            "execution reverted",
+            Some(NestedRevert {
+                original_error: RevertData { data: "0x" },
+            }),
+        )));
+        assert!(!is_method_missing(&rpc_error(
+            3,
+            "execution reverted",
+            Some("0xdeadbeef"),
+        )));
+        assert!(!is_method_missing(&rpc_error(
+            -32603,
+            "execution reverted",
+            Option::<&str>::None,
+        )));
+    }
+}
