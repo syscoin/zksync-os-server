@@ -15199,6 +15199,7 @@ dependencies = [
  "serde",
  "structdiff",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
  "vise",
  "zksync_os_provider",

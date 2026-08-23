@@ -137,6 +137,15 @@ impl L1State {
             (sl_chain_id, bridgehub_sl)
         };
 
+        // SYSCOIN: Bind the configured Gateway RPC identity to the Gateway proxy selected by the
+        // canonical L1 chain. Chain-ID whitelisting alone is insufficient: another whitelisted
+        // Gateway could expose this edge chain and otherwise pass all startup discovery checks.
+        Self::validate_settlement_layer_identity(
+            &bridgehub_l1,
+            settlement_layer_address,
+            sl_chain_id,
+        )
+        .await?;
         Self::validate_chain_ids(&bridgehub_l1, &bridgehub_sl, l2_chain_id).await?;
 
         let diamond_proxy_sl = bridgehub_sl.zk_chain().await?;
@@ -254,6 +263,34 @@ impl L1State {
             .await?;
         anyhow::ensure!(is_sl_whitelisted, "SL is not whitelisted on L1 Bridgehub");
 
+        Ok(())
+    }
+
+    /// SYSCOIN: Fails closed unless a nonzero `getSettlementLayer()` address is the L1
+    /// Bridgehub's registered ZK chain for the configured Gateway RPC's chain ID. Direct-L1
+    /// settlement has no Gateway identity to resolve and remains unaffected.
+    async fn validate_settlement_layer_identity(
+        bridgehub_l1: &Bridgehub<NodeProvider>,
+        settlement_layer_address: Address,
+        sl_chain_id: u64,
+    ) -> anyhow::Result<()> {
+        if settlement_layer_address.is_zero() {
+            return Ok(());
+        }
+
+        let registered_gateway = bridgehub_l1
+            .zk_chain_by_chain_id(sl_chain_id)
+            .await
+            .with_context(|| {
+                format!("failed to resolve Gateway chain ID {sl_chain_id} through the L1 Bridgehub")
+            })?;
+        let registered_gateway_address = *registered_gateway.address();
+        anyhow::ensure!(
+            registered_gateway_address == settlement_layer_address,
+            "Gateway settlement-layer identity mismatch: L1 getSettlementLayer() returned \
+             {settlement_layer_address}, but L1 Bridgehub.getZKChain({sl_chain_id}) returned \
+             {registered_gateway_address}"
+        );
         Ok(())
     }
 
@@ -543,6 +580,39 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::network::EthereumWallet;
+    use alloy::primitives::{Bytes, address};
+    use alloy::providers::ProviderBuilder;
+    use alloy::rpc::types::Header;
+    use alloy::sol_types::SolValue;
+    use alloy::transports::mock::Asserter;
+
+    const EDGE_CHAIN_ID: u64 = 506;
+    const GATEWAY_CHAIN_ID: u64 = 270;
+
+    fn header_with_number(number: u64) -> Header<alloy::consensus::Header> {
+        let mut header: Header<alloy::consensus::Header> = Header::default();
+        header.inner.number = number;
+        header
+    }
+
+    async fn mocked_bridgehub_l1(asserter: &Asserter) -> Bridgehub<NodeProvider> {
+        // NodeProvider capability probes: latest header and finalized header.
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&header_with_number(1));
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .wallet(EthereumWallet::default())
+            .connect_mocked_client(asserter.clone());
+        let provider = NodeProvider::new(provider)
+            .await
+            .expect("mocked provider construction should succeed");
+        Bridgehub::new(
+            address!("0x0000000000000000000000000000000000001002"),
+            provider,
+            EDGE_CHAIN_ID,
+        )
+    }
 
     #[test]
     fn batch_frontiers_allow_ordered_state() {
@@ -564,5 +634,60 @@ mod tests {
     fn batch_frontiers_reject_non_monotonic_latest_counters() {
         assert!(validate_batch_frontiers(1, 1, 2, 1).is_err());
         assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
+    }
+
+    // SYSCOIN: A configured Gateway must be the exact ZK-chain proxy selected on canonical L1.
+    #[tokio::test]
+    async fn settlement_layer_identity_accepts_registered_gateway() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+        let gateway = address!("0x0000000000000000000000000000000000002002");
+        asserter.push_success(&Bytes::from(gateway.abi_encode()));
+
+        L1State::validate_settlement_layer_identity(&bridgehub_l1, gateway, GATEWAY_CHAIN_ID)
+            .await
+            .expect("matching Gateway identity must be accepted");
+
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: Whitelisting a Gateway chain ID must not let a different Gateway RPC identity pass.
+    #[tokio::test]
+    async fn settlement_layer_identity_rejects_different_registered_gateway() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+        let selected_gateway = address!("0x0000000000000000000000000000000000002002");
+        let registered_gateway = address!("0x0000000000000000000000000000000000003003");
+        asserter.push_success(&Bytes::from(registered_gateway.abi_encode()));
+
+        let err = L1State::validate_settlement_layer_identity(
+            &bridgehub_l1,
+            selected_gateway,
+            GATEWAY_CHAIN_ID,
+        )
+        .await
+        .expect_err("mismatched Gateway identity must be rejected");
+
+        assert!(
+            err.to_string().contains("identity mismatch"),
+            "unexpected error: {err:#}"
+        );
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: Direct-L1 settlement must not perform a Gateway lookup.
+    #[tokio::test]
+    async fn settlement_layer_identity_leaves_direct_l1_unaffected() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+
+        L1State::validate_settlement_layer_identity(&bridgehub_l1, Address::ZERO, GATEWAY_CHAIN_ID)
+            .await
+            .expect("direct-L1 settlement must not require a Gateway identity");
+
+        assert!(
+            asserter.read_q().is_empty(),
+            "direct-L1 validation must not issue an RPC call"
+        );
     }
 }
