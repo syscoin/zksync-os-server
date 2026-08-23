@@ -119,9 +119,9 @@ flate2.workspace = true
 tar.workspace = true
 tower-http = { workspace = true, features = ["compression-br", "compression-gzip", "compression-zstd"] }
 # SYSCOIN: Keep Blake2s publication and fail-closed chainlock/confirmation finality on the
-# reviewed v0.1.13 maintenance commit; PoDA remains availability-only.
+# reviewed v0.1.15 merge commit; PoDA remains availability-only.
 secrecy.workspace = true
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "23de0d4ff35dd448b86216e78d2c87e86e0e4a5b" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "1b6f11d3e538120759e062ca0a478973653c1038" }
 url.workspace = true
 
 [target.'cfg(unix)'.dependencies]

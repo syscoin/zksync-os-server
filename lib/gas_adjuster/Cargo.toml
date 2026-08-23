@@ -20,6 +20,6 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["time"] }
 num.workspace = true
 zksync_os_rpc_api.workspace = true
-# SYSCOIN: Share the fail-closed v0.1.13 Blake2s Bitcoin DA client pinned by the batcher.
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "23de0d4ff35dd448b86216e78d2c87e86e0e4a5b" }
+# SYSCOIN: Share the fail-closed v0.1.15 Blake2s Bitcoin DA client pinned by the batcher.
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "1b6f11d3e538120759e062ca0a478973653c1038" }
 url.workspace = true

@@ -26,9 +26,9 @@ zksync_os_merkle_tree.workspace = true
 zksync_os_interface.workspace = true
 
 alloy = { workspace = true, default-features = false, features = ["rlp"] }
-# SYSCOIN: Pin the reviewed v0.1.13 Blake2s maintenance commit whose finality APIs reject
+# SYSCOIN: Pin the reviewed v0.1.15 Blake2s merge commit whose finality APIs reject
 # PoDA-only availability; a bare archive hit must never authorize a validator signature.
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "23de0d4ff35dd448b86216e78d2c87e86e0e4a5b" }
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "1b6f11d3e538120759e062ca0a478973653c1038" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
