@@ -1,6 +1,6 @@
 use crate::metrics::L1_STATE_METRICS;
 use crate::models::BatchDaInputMode;
-use crate::settlement_layer_intervals::SettlementLayerIntervals;
+use crate::settlement_layer_intervals::{IntervalSettlementLayer, SettlementLayerIntervals};
 use crate::{Bridgehub, MultisigCommitter, PubdataPricingMode, ZkChain};
 use alloy::eips::BlockId;
 use alloy::primitives::{Address, U256, address};
@@ -214,6 +214,23 @@ impl L1State {
             l2_chain_id,
         )
         .await?;
+        let current_interval = settlement_layer_intervals
+            .intervals()
+            .last()
+            .expect("settlement layer discovery always returns an open interval");
+        // SYSCOIN: getSettlementLayer() and migration intervals are sampled by separate RPC
+        // reads. Abort if a concurrent migration produced a split startup topology rather than
+        // routing execution and settlement through different layers.
+        Self::validate_settlement_topology_snapshot(
+            settlement_layer_address,
+            l1_chain_id,
+            sl_chain_id,
+            *diamond_proxy_l1.address(),
+            *diamond_proxy_sl.address(),
+            &current_interval.settlement_layer,
+            *current_interval.proxy.address(),
+            current_interval.last_batch,
+        )?;
         tracing::info!(
             "discovered {} settlement layer intervals: {:?}",
             settlement_layer_intervals.intervals().len(),
@@ -290,6 +307,55 @@ impl L1State {
             "Gateway settlement-layer identity mismatch: L1 getSettlementLayer() returned \
              {settlement_layer_address}, but L1 Bridgehub.getZKChain({sl_chain_id}) returned \
              {registered_gateway_address}"
+        );
+        Ok(())
+    }
+
+    /// SYSCOIN: Fails closed when independently sampled settlement-layer signals describe
+    /// different current topologies, as can happen if migration races startup discovery.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_settlement_topology_snapshot(
+        settlement_layer_address: Address,
+        l1_chain_id: u64,
+        sl_chain_id: u64,
+        diamond_proxy_l1: Address,
+        diamond_proxy_sl: Address,
+        interval_layer: &IntervalSettlementLayer,
+        interval_proxy: Address,
+        interval_last_batch: Option<u64>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            interval_last_batch.is_none(),
+            "current settlement-layer interval is unexpectedly closed at batch {:?}",
+            interval_last_batch
+        );
+        if settlement_layer_address.is_zero() {
+            anyhow::ensure!(
+                sl_chain_id == l1_chain_id,
+                "direct-L1 settlement snapshot uses SL chain ID {sl_chain_id}, expected L1 chain ID {l1_chain_id}"
+            );
+            anyhow::ensure!(
+                matches!(interval_layer, IntervalSettlementLayer::L1),
+                "getSettlementLayer() reports direct L1 but the open interval reports {interval_layer}"
+            );
+            anyhow::ensure!(
+                diamond_proxy_sl == diamond_proxy_l1 && interval_proxy == diamond_proxy_l1,
+                "direct-L1 settlement proxy mismatch: L1={diamond_proxy_l1}, SL={diamond_proxy_sl}, interval={interval_proxy}"
+            );
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            sl_chain_id != l1_chain_id,
+            "Gateway settlement snapshot uses the L1 chain ID {l1_chain_id}"
+        );
+        anyhow::ensure!(
+            matches!(interval_layer, IntervalSettlementLayer::Gateway(chain_id) if *chain_id == sl_chain_id),
+            "getSettlementLayer() reports Gateway chain ID {sl_chain_id} but the open interval reports {interval_layer}"
+        );
+        anyhow::ensure!(
+            interval_proxy == diamond_proxy_sl,
+            "Gateway settlement proxy mismatch: resolved SL={diamond_proxy_sl}, interval={interval_proxy}"
         );
         Ok(())
     }
@@ -688,6 +754,103 @@ mod tests {
         assert!(
             asserter.read_q().is_empty(),
             "direct-L1 validation must not issue an RPC call"
+        );
+    }
+
+    #[test]
+    fn settlement_topology_snapshot_accepts_direct_l1() {
+        let proxy = address!("0x0000000000000000000000000000000000004004");
+        L1State::validate_settlement_topology_snapshot(
+            Address::ZERO,
+            57,
+            57,
+            proxy,
+            proxy,
+            &IntervalSettlementLayer::L1,
+            proxy,
+            None,
+        )
+        .expect("coherent direct-L1 snapshot must pass");
+    }
+
+    #[test]
+    fn settlement_topology_snapshot_accepts_gateway() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let sl_proxy = address!("0x0000000000000000000000000000000000005005");
+        L1State::validate_settlement_topology_snapshot(
+            address!("0x0000000000000000000000000000000000006006"),
+            57,
+            57_001,
+            l1_proxy,
+            sl_proxy,
+            &IntervalSettlementLayer::Gateway(57_001),
+            sl_proxy,
+            None,
+        )
+        .expect("coherent Gateway snapshot must pass");
+    }
+
+    #[test]
+    fn settlement_topology_snapshot_rejects_split_layer_signals() {
+        let proxy = address!("0x0000000000000000000000000000000000004004");
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                Address::ZERO,
+                57,
+                57,
+                proxy,
+                proxy,
+                &IntervalSettlementLayer::Gateway(57_001),
+                proxy,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                address!("0x0000000000000000000000000000000000006006"),
+                57,
+                57_001,
+                proxy,
+                proxy,
+                &IntervalSettlementLayer::L1,
+                proxy,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn settlement_topology_snapshot_rejects_gateway_id_or_proxy_mismatch() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let sl_proxy = address!("0x0000000000000000000000000000000000005005");
+        let gateway = address!("0x0000000000000000000000000000000000006006");
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                gateway,
+                57,
+                57_001,
+                l1_proxy,
+                sl_proxy,
+                &IntervalSettlementLayer::Gateway(57_002),
+                sl_proxy,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                gateway,
+                57,
+                57_001,
+                l1_proxy,
+                sl_proxy,
+                &IntervalSettlementLayer::Gateway(57_001),
+                l1_proxy,
+                None,
+            )
+            .is_err()
         );
     }
 }
