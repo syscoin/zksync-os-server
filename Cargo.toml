@@ -179,16 +179,14 @@ zk_os_forward_system_0_4_0 = { package = "forward_system", git = "https://github
 ], default-features = false }
 zk_ee_0_4_0 = { package = "zk_ee", git = "https://github.com/matter-labs/zksync-os.git", tag = "v0.4.0" }
 zk_os_basic_system_0_4_0 = { package = "basic_system", git = "https://github.com/matter-labs/zksync-os.git", tag = "v0.4.0" }
-# Airbender crates for verifying V8 FRI proofs submitted by external provers. The tag must match
-# the version the V8 VK was generated with (see `V8_VK_HASH` provenance in lib/types);
-# v0.6.0-rc.1 = 3f8f8e54, the `dev` merge of matter-labs/zksync-airbender#340 (combined
-# recursion layers) that zksync-airbender-prover pins for V8. Bump to the final v0.6.0 release
-# when cut.
-execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.1", features = [
+# SYSCOIN: Airbender crates that verify V8 FRI proofs must use the exact rc.2 graph
+# (`03454c7`) pinned by the prover and named in `V8_VK_HASH` provenance. Mixing rc.1 verifier
+# binaries with an rc.2 proof/VK can reject valid proofs before SNARK aggregation.
+execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2", features = [
     "verifier_binaries",
 ] }
-riscv_transpiler = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.1" }
-verifier_common = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.1" }
+riscv_transpiler = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2" }
+verifier_common = { git = "https://github.com/matter-labs/zksync-airbender", tag = "v0.6.0-rc.2" }
 
 # zksync-os version backing the server-wide types and pre-v32 execution. Same source as the
 # `_prev` proving lane above; these unsuffixed names outlive V7 proving support.

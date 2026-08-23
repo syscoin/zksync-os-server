@@ -658,7 +658,8 @@ mod tests {
             },
             batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
+                // SYSCOIN: Use the earliest still-supported V6 lane; 0.30.0 has no proving mapping.
+                protocol_version: ProtocolSemanticVersion::new(0, 30, 1),
                 upgrade_tx_hash: None,
                 use_legacy_v31_commitment: false,
             },
