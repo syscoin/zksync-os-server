@@ -28,8 +28,8 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="619638"
-EXPECTED_PATCH_SHA256="9c6cfd173e72ef8f03daa84ebab91301395991fe108d8563629e51d9a268f5e7"
+EXPECTED_PATCH_SIZE="658434"
+EXPECTED_PATCH_SHA256="1814e1ba5c0605df6e1338670d7c39d4d60e94503a2e836ed280cbd7207f4bcd"
 EXPECTED_PATCH_PATH_COUNT="65"
 EXPECTED_PATCH_PATHS_SHA256="8649c1aea0b303e6284d9ab26aff4641260aff9f6ce6ce3e2f5556331af3b3b0"
 
@@ -150,44 +150,44 @@ verify_postimage_manifest() {
     verify_exact_file "${relative_path}" "${expected_size}" "${expected_sha256}"
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 18173 679a977b41d3f78ec4901eca64fb70f22e5a9ecf458a15ed9b302f5bab013ad5 .github/workflows/l1-contracts-ci.yaml
-2630 29e972f02690e9c2ef5a5c4b3a9f54799a58dc6bf31d67e1e88c8ea9ddf9eb08 .github/workflows/slither.yaml
-1493 ee5502ea7cb6e38561e162408fa6b7700a622def6e7916b748216b176feefe04 .prettierignore
-159930 9996ebb12a8859125e4e86ee477cc28bb9e05e24e6a87236458f1515c7b111dd AllContractsHashes.json
-1606 e5b933c30f3b57b19b8d98566b1f6bccd9b676215bc77af65ac68e90edfa8925 da-contracts/contracts/DAContractsErrors.sol
-626 28c7a37358d33857944cf53a42e055efb9541077e2c39bdb5a3f8fa14719ee8f da-contracts/contracts/SyscoinDAUtils.sol
-2674 80ece9ccf2a1193ace6f64148609c6b5d470337674de5d0d0f9ba28a746ea9b1 da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
+2560 9b05619a1f4903fe24053955cbe652626b036127d3492ddb74efea4b27b2bd9e .github/workflows/slither.yaml
+1433 bd10dcd322c0f23805c556d31cecbdfdb562adb1fb6deb10b14f41019d5b5a21 .prettierignore
+159930 05a58477ab36d2b020c7bc94392888705fc261eec6cb1c38b9d2a905ede0d7c3 AllContractsHashes.json
+1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
+601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
+2811 1397e31377f382e311f9582deb25a7899cd9bf605c9bf1971093e0a814c20b45 da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 5020 2edd28b26d393c601e85d6de5bbe23096fd60332338e66ca36e999edca0b1697 da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 2214 21f230d3d1fe830ce140d2c18275c66d96f66e335d08da021d55148ed0df0747 l1-contracts/contracts/bridge/BridgeHelper.sol
-2836 06589d9330c51519d345f88e34405de989b2e12d6b738a453ab400b518316e66 l1-contracts/contracts/common/StateTransitionTypes.sol
-842 e891b509666f76be7c563a97a7479c6349152d08af039a5f4b3353dce0ffb8a9 l1-contracts/contracts/common/SyscoinConfig.sol
-4041 c9c3b11c387b021228b00df335beef2244146c7cbed18e3217e4e4e33034f02b l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
-2658 b7a62f4f1f5642ced9e1bcbe3c61559881d33900e787b206c92091b16b3851e0 l1-contracts/contracts/script-interfaces/IRegisterZKChain.sol
-4344 383306d927596adc1267aab23599d0c7616e0eef44a3fa2d91e6777ccd79605f l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
+2741 f56a1acc456774feeedd4e49f00af92ec27258518aa9ebe7a86e8d91c7046028 l1-contracts/contracts/common/StateTransitionTypes.sol
+833 63a9033b60dd77f0c166c4f6f2177693717163e526bded1e6724196b5ad7422a l1-contracts/contracts/common/SyscoinConfig.sol
+3945 6c64f59cf560d21a8c7223d86475df69c28a5348edc523f16f891a55b572fbd5 l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
+2673 a1beabc87a05602ff4c5dc1be2feead39949385549e7d19dc7f51db25f68e236 l1-contracts/contracts/script-interfaces/IRegisterZKChain.sol
+4350 46879b879bee93b99f2d1c549e64b304da215fe2da1281f54a658fb97d0ea98e l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 25886 14497f9b115ef308207a7a8f745694d3a10746d7692abfa0ac8a0fb41d25b155 l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-47544 c73ada7f005fb7c20e9fb8086efa13d948ebdb5bd4c2185904f08760369a17c4 l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-2056 b3404dc19085b9948d20ccf8428eadb6495457266c2a85a0c1980e904f32381a l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
-2544 a951df2eae1e2ffd45eb324a9f78eb68bcc40de520c23eee51f2791504270692 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
-8292 c7a38c97035baf42ab4ded36cf847579876328a7621533a8a1c97f6242c9724a l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
-9987 6621ebb1232f3472e0137a7b4a168ce53f0e890d9402aef23b7bba8f253753fb l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol
-635 b0362b887294641b3d7d88db721f20054f607073c10e38269a37447abb7e579a l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
-4260 a6c3d5267bc1d1a09ed33898fa6d0fa38d9c8ecee5f9599ec3ec60b553fa47ba l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
-2434 df0fa15a11933918c3964ddfdab5d1cb68505c2cc84623cb9196a57454e24ace l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
-1665 a0f629313ab6ab9eb3f5f015e71aa3c32ca6396677633558f4baec7249e3e504 l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
-9138 1d82642c805eb5bbc70b344e66c534b1838b862834241aeaecb58338ff2d9f48 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
-1699 0dc5e915edd69c90ac5ec53adb75f9d314e3004e8bc498005fdf25802bc7ae39 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
+47451 85294c11b0f49ce52a33487a836835ed156cc79a40e707656ffd69cfb26aedca l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
+2039 d016c5f44e58b3f7c1a9f528074d003df3a456cbc172ce32743bdb870cc7f8d4 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
+2615 f889b9306db4bc5eff5fb0bcdfc00c2e912350a426542b670fec7a363ecdc751 l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
+8280 fc0dd7d98d372330d55ba9d4a8d397dac768be390f230f9d8ab2d6e23bb93c3a l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
+9982 6d78dd90d9ea85ce9c30211fa8dbfbac53fd84e40f1328c0b72c091929803f46 l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol
+541 6ca90d2112debc99221b048a6a1a665ef8ea83b6042157e7c7c179803d57730e l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
+4273 51f404a6ac45d3d3b45100cee2a1ce824e9d61cb199d03d65434c51f973a25cc l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
+2719 626e72c2c39e07e943f87fcb4523576b0b701f5c7988cc8227481d97315e9909 l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
+1872 32d75e5fe32c3dd3d85459c03b7dc1dfa667a350c1cc3ebbc862ecc3cfe37582 l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
+8893 4dcff298c0a4df26751568bc6d78ba43931825a67f16783833c15906e9e54136 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
+2038 539e405865803e70ad68c2081299f681648b8319460a49c7400c2ac03d4e32e1 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
-10538 755ea22dd68a5e9a33a5f45bff95d883e6905f4b0f4cec316ad15e817e7873e1 l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
-31055 1dc5b657f78135ec5498d656e0ce823a9639db557fdbeadbf81e451cf766c075 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-13404 039bee3dae90608791444a7228fbed3a1915e0166a0dd902f75e89eaaf7058b7 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
-21477 06afab1ae2a68c0840039ae8c56ef7658a40ebc290ca342a11be6aafbd3e5bf5 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
-26296 380f712db91ba3cae7769c39d5b027c503959f19f5a83dbcf14dde11b12d679b l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-38430 cfab436689e8183183a7d59d11a0d5d0af4384868afef38decfe73efff6fd8bd l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-20608 5f87904f37d2c58527c77560cc9980aecc6ac3a75eb19a05439ab5fc4b34ab82 l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
-45332 5e43f5a066e3a0f2f752969b5289e1a98597ad3c55f4531a699b7d32f53001a4 l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
-31324 d4bbe178dab813b3e4f839e97f623906c3385d1309d95c2a50bc40d52f19243a l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
-23120 a5187b70a400f27f857d6f70230888d6d9c91a558e3f94d59ba2d6057e1c7a82 l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
-12107 2d75aed251f07b4b21e35399c5a1baed2eaa56f384a8decf3ebc1a9eb19de45d l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
-5206 9a81de37e315bc71d9839aeef5ba221619cdea98c17adc49a7500c3123266860 l1-contracts/foundry.toml
+10570 610487a7e3503b2860cccf81d6c28b06f0bd04f57d5da06b23a3aad39d098546 l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
+30611 3563eb0faa4aef96ab249d541a37f65ba3b9d211153f8017ad68e044b6ab560e l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
+13653 5d738e2bebe6831edc731fe87a84d63032e37f21b6ebd70b1ecf6fe04e0ed1bb l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
+21065 7fe7b3d63220de44c069d39a086b82e13925abc99a67d59161ea3cfe20541744 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
+26012 0d35573f3436f83523143dc5f36c8064706d63bb38a45c828c7bb5c86836844b l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
+38525 7452bdf0d2d5c9fda45bd5c08f70f21bf5945e4a8d69c4cbe0309a58a33e4f46 l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
+20390 fc11828bdb368afa549902e11de120e8bbb1e2c443462d10385813f297f5f553 l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
+45246 30bdc5d87a4eeff24d06d69be56221b05753c9317f8577b2534513630c1c88e4 l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
+31141 cd28c4f95efef2e6d82cd525e58467c0ea5f58cab83f000b20c6e01d4c2626ee l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
+23010 cb187e7f389dfbb0901d14c2e9b25ec887d279c139e83c3293ff08ed5de3edfc l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
+11788 ea6f79c67102e48874d3d2e1015c682452cd8ceba0ad8ebea532c46ebe9d624e l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
+5127 ee6d66efe63dc4b97540362d8ad9a693f4fb3c6ba7d7725e7a446c32d03c20c2 l1-contracts/foundry.toml
 2305049 7094cba7745c399407df2a9287a35ec3f5ac94767a5c79c0b2a9af5bb6698d69 l1-contracts/selectors
 16687 7bdf8ffdaa910ce9c148474897110db70ca559c0606f23ec3528cde5e8cc1a64 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 17852 8430598e45f49d8d33f7cd4ec200eda8109a461d0df64306615476d7e81163a1 l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
@@ -197,19 +197,19 @@ verify_postimage_manifest() {
 14206 d31debecd5d6dd48515fb3f4ffdfa5620a31402b79d22dbf7c7d01750ebbc052 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 6410 4a980bff555e45892aeb109bf0bd22b789c11e53988e0d5c5ec496c8c42dcec6 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 22429 7d74824b07446ac3dcc644070c4e73de276e209ec7069a1b31bb1eb25ad9dcbf l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
-17105 dae9931ba164bd3b75dfd8a4a677b1bcc9e010142a9d2921f81369648649a45f l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
-2772 108fa918e84c391494e03b9102f6262d58e71dfd4ad1a951da44c44e9490815f l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
+18595 5f035db0bba8065d1f19203fc9258f35393fde26f17a43d57cf9b4adb3d877e4 l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
+4513 a384c8bf0476364c8ad73f916c4739689f7eaee02abe63ecb4a2c935cb7c1f18 l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 37169 4528a744bd384ffb77614bc59bb8f9d7b4f85d1b6b6b37547907098ee0155d3a l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 7991 f95e44019436e4ddc543611a2b3ae890fc5c5d68ab4a64e56bfd79859e55644a l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 4253 fa76c9948e6714a48165c6916d02ff4d6922dd9a2a0224e0e0b11e007d360742 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 4041 3bf4db1e7f53fe628c3a42d4f24ecb33c813e22ec74aa6926ba3e785fbae88ff l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 2757 5fae24f2799106a7608b3d295f911cb3a21db39405f985441321478263489b58 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
-13287 6bdbb634773e67fd2bd141dc37e979010dc5e0409fb78186048f4d18d8c5a5fe l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-16899 8e6472327a7ba9ca897246c09ac8c472178a9dea12d1d169890c54c85d59027f l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
+14654 021fc712d1513822a74292cfae17b121bf1faf16e265c1fb2192dd14eb928d3a l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
+17221 abd546566d56ac84ba78764c69beb84c373e8467b048371f54cd3d6ede61f598 l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 2142 87c5bb6506f9762d2a5526df1a8d588f9ebf1a9726949fd1a482119a096b280b l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 69053 91f7111b6388441773b1dbaec13e98d4631b54f972cb806a537a4af6c0b473e7 protocol-ops/src/upgrade_verification/versions/v31/elements/deployed_addresses.rs
-10760 d004e8aa09787c425c5d70c8c0ee777e4c53c1edd8e6a8d6a99b45c8f00411f8 system-contracts/contracts/Constants.sol
-1998 1afdfa6219c4e30d81dbd226a9f93b9af3831d46b2aac3ea87cedfabeb35a327 tools/verifier-gen/README.md
+10751 608343dc8b3439bd91c2a54db26294161c1386b743e53c12ceeee44c867f4b94 system-contracts/contracts/Constants.sol
+2110 5e4f3154e8d5541fa955deb8108ace7f454ebccd0180429e1115fba81f143b4f tools/verifier-gen/README.md
 7504 a3139ed4dc14bf66978047bb4882e34952f43a9f7e8182c48ab01b775f5bd3e6 tools/verifier-gen/src/main.rs
 SYSCOIN_POSTIMAGE_MANIFEST
 }
@@ -236,11 +236,11 @@ verify_absent_path() {
 
 verify_semantics() {
   # Intentional downstream source/config deviations remain visibly attributable after rebases.
+  # The slither and prettier entries are deletion-only FFLONK cleanup; explicit absence checks
+  # below attest those two non-taggable exceptions without inventing replacement configuration.
   local tagged_path
   for tagged_path in \
     ".github/workflows/l1-contracts-ci.yaml" \
-    ".github/workflows/slither.yaml" \
-    ".prettierignore" \
     "da-contracts/contracts/DAContractsErrors.sol" \
     "da-contracts/contracts/SyscoinDAUtils.sol" \
     "da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol" \
@@ -286,25 +286,25 @@ verify_semantics() {
   # The most security-sensitive application-bound constants and ABI restrictions are tagged in place.
   require_text \
     "l1-contracts/contracts/state-transition/chain-interfaces/IExecutor.sol" \
-    "SYSCOIN: the V8 application reserves 32 compact Bitcoin-DA references per commitment."
+    "SYSCOIN: Compact Bitcoin DA permits up to thirty-two 2 MiB references per batch."
   require_text \
     "system-contracts/contracts/Constants.sol" \
-    "SYSCOIN: the V8 application uses 2 MiB compact Bitcoin-DA blobs rather than EIP-4844 payloads."
+    "SYSCOIN: A compact Bitcoin-DA reference represents one 2 MiB availability object."
   require_text \
     "system-contracts/contracts/Constants.sol" \
-    "SYSCOIN: one batch may bind at most 32 compact Bitcoin-DA blobs."
+    "SYSCOIN: Match the bounded thirty-two-reference compact DA envelope."
   require_text \
     "l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol" \
-    "SYSCOIN: the edge fields bind Gateway-relayed Bitcoin-DA references into the final-L1 commitment."
+    "SYSCOIN: Carry the opening and root separately so final settlement can revalidate Gateway relay data."
   require_text \
     "da-contracts/contracts/DAContractsErrors.sol" \
-    "SYSCOIN: compact Bitcoin-DA validation exposes dedicated precompile failure modes."
+    "SYSCOIN: Distinguish a failed raw Bitcoin-DA precompile call from an unavailable reference."
   require_text \
     "l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol" \
-    "SYSCOIN: retain the selector for ABI stability, but expose no alternate DA implementation."
+    "SYSCOIN: Keep the public ABI stable while rejecting legacy NoDA/Avail selector values."
   require_text \
     "l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol" \
-    "SYSCOIN: fresh canonical registration is rollup-only and rejects legacy Validium config."
+    "SYSCOIN: Compact Bitcoin DA has no Validium registration path."
 
   # A fresh production deployment has one cryptographic verifier route: final v0.4/V8 PLONK in slot 8.
   # The separately named testnet subclass retains type-3 fake proofs only when explicitly selected.
@@ -363,10 +363,26 @@ verify_semantics() {
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol" \
     "keccak256(abi.encodePacked(initialHash, _publicInputs))"
 
-  # The fake-prover lane is explicit and cannot be deployed on either supported production L1.
+  # The fake-prover lane is explicit and cannot be deployed for either supported production
+  # root L1, including when its constructor executes on the distinct Gateway chain ID.
   require_text \
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
-    "assert(block.chainid != MAINNET_CHAIN_ID && block.chainid != SYSCOIN_MAINNET_CHAIN_ID);"
+    "uint256 _l1ChainId"
+  require_text \
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
+    "_l1ChainId != 0 &&"
+  require_text \
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
+    "_l1ChainId != MAINNET_CHAIN_ID &&"
+  require_text \
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
+    "_l1ChainId != SYSCOIN_MAINNET_CHAIN_ID &&"
+  require_text \
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
+    "block.chainid != MAINNET_CHAIN_ID &&"
+  require_text \
+    "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
+    "block.chainid != SYSCOIN_MAINNET_CHAIN_ID"
   require_text \
     "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol" \
     "function IS_TESTNET_VERIFIER() external pure override returns (bool) {"
@@ -378,6 +394,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol" \
     "result.verifier = _config.testnetVerifier"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol" \
+    "constructor(GatewayVerifiersDeployerConfig memory _config, uint256 _l1ChainId)"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol" \
+    "_config.aliasedGovernanceAddress,"
+  require_text \
+    "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol" \
+    "_l1ChainId"
   forbid_text \
     "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol" \
     "result.verifierFflonk ="
@@ -390,6 +415,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol" \
     "return abi.encode(_plonk, _owner);"
+  require_text \
+    "l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol" \
+    "return abi.encode(_plonk, _owner, _l1ChainId);"
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    "? abi.encode(verifiersConfig, config.l1ChainId)"
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    ": abi.encode(verifiersConfig);"
   require_text \
     "l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol" \
     "function initializeVerifier(address _verifier, address _plonk, address _owner, bool _isZKsyncOS) internal view"
@@ -449,6 +483,21 @@ verify_semantics() {
   require_text \
     "l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol" \
     'assertTrue(wrapper.IS_TESTNET_VERIFIER(), "explicit testnet wrapper must report fake-proof mode");'
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol" \
+    "function testGatewayVerifierDeployerZKsyncOSRejectsSyscoinMainnetRootForTestnetRoute() external"
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol" \
+    "function testGatewayVerifierDeployerZKsyncOSRejectsEthereumMainnetRootForTestnetRoute() external"
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol" \
+    "function test_testnetVerifierConstructor_revertsForZeroRootChain() public"
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol" \
+    "function test_testnetVerifierConstructor_succeedsOnTestnetGateway() public"
+  require_text \
+    "l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol" \
+    "function test_genericEraVerifierCreationArgsRemainUpstreamEncoding() public"
 
   # Current generated inventory contains production, explicit testnet, and PLONK only.
   require_text "AllContractsHashes.json" '"contractName": "l1-contracts/ZKsyncOSDualVerifier"'
@@ -589,6 +638,7 @@ verify_semantics() {
     "l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/Committing.t.sol"
   verify_absent_path \
     "tools/verifier-gen/data/ZKsyncOS_fflonk_scheduler_key.json"
+  forbid_text ".github/workflows/slither.yaml" "ZKsyncOSVerifierFflonk.sol"
   forbid_text ".prettierignore" "ZKsyncOSVerifierFflonk.sol"
 }
 

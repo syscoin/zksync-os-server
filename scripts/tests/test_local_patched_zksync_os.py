@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -246,14 +247,22 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="619638"',
-            'EXPECTED_PATCH_SHA256="9c6cfd173e72ef8f03daa84ebab91301395991fe108d8563629e51d9a268f5e7"',
+            'EXPECTED_PATCH_SIZE="658434"',
+            'EXPECTED_PATCH_SHA256="1814e1ba5c0605df6e1338670d7c39d4d60e94503a2e836ed280cbd7207f4bcd"',
             'EXPECTED_PATCH_PATH_COUNT="65"',
             'EXPECTED_PATCH_PATHS_SHA256="8649c1aea0b303e6284d9ab26aff4641260aff9f6ce6ce3e2f5556331af3b3b0"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
             "if (version != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {",
             "_verifySyscoinEdgeDARefs(_newBatch.edgeDARefsInput, _newBatch.edgeDARefsRoot);",
+            "_l1ChainId != SYSCOIN_MAINNET_CHAIN_ID &&",
+            "constructor(GatewayVerifiersDeployerConfig memory _config, uint256 _l1ChainId)",
+            "return abi.encode(_plonk, _owner, _l1ChainId);",
+            "? abi.encode(verifiersConfig, config.l1ChainId)",
+            "testGatewayVerifierDeployerZKsyncOSRejectsSyscoinMainnetRootForTestnetRoute",
+            "testGatewayVerifierDeployerZKsyncOSRejectsEthereumMainnetRootForTestnetRoute",
+            'forbid_text ".github/workflows/slither.yaml" "ZKsyncOSVerifierFflonk.sol"',
+            'forbid_text ".prettierignore" "ZKsyncOSVerifierFflonk.sol"',
             "stock verifier artifact rejected",
             "canonical V8 VK regeneration required",
             "no app-bound security100 verifier hashes are approved",
@@ -268,19 +277,31 @@ class EraAttestationStaticTests(unittest.TestCase):
         for path, digest in (
             (
                 "da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol",
-                "80ece9ccf2a1193ace6f64148609c6b5d470337674de5d0d0f9ba28a746ea9b1",
+                "1397e31377f382e311f9582deb25a7899cd9bf605c9bf1971093e0a814c20b45",
             ),
             (
                 "l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol",
-                "df0fa15a11933918c3964ddfdab5d1cb68505c2cc84623cb9196a57454e24ace",
+                "626e72c2c39e07e943f87fcb4523576b0b701f5c7988cc8227481d97315e9909",
             ),
             (
                 "l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol",
-                "a0f629313ab6ab9eb3f5f015e71aa3c32ca6396677633558f4baec7249e3e504",
+                "32d75e5fe32c3dd3d85459c03b7dc1dfa667a350c1cc3ebbc862ecc3cfe37582",
             ),
             (
                 "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol",
-                "1d82642c805eb5bbc70b344e66c534b1838b862834241aeaecb58338ff2d9f48",
+                "4dcff298c0a4df26751568bc6d78ba43931825a67f16783833c15906e9e54136",
+            ),
+            (
+                "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol",
+                "539e405865803e70ad68c2081299f681648b8319460a49c7400c2ac03d4e32e1",
+            ),
+            (
+                "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol",
+                "f889b9306db4bc5eff5fb0bcdfc00c2e912350a426542b670fec7a363ecdc751",
+            ),
+            (
+                "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol",
+                "7452bdf0d2d5c9fda45bd5c08f70f21bf5945e4a8d69c4cbe0309a58a33e4f46",
             ),
             (
                 "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol",
@@ -319,6 +340,28 @@ class EraAttestationStaticTests(unittest.TestCase):
             patch,
         )
         self.assertIn("deleted file mode 100644", patch)
+
+    def test_era_keygen_workflow_attests_current_source_inputs(self) -> None:
+        helper_path = REPO_ROOT / "scripts" / "apply-era-contracts-syscoin-patch.sh"
+        patch_path = REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
+        ).read_text(encoding="utf-8")
+        helper = helper_path.read_bytes()
+        patch = patch_path.read_bytes()
+
+        for expected in (
+            f'ERA_PATCH_SIZE: "{len(patch)}"',
+            f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
+            'ERA_PATCH_PATH_COUNT: "65"',
+            "ERA_PATCH_PATHS_SHA256: "
+            "8649c1aea0b303e6284d9ab26aff4641260aff9f6ce6ce3e2f5556331af3b3b0",
+            "ERA_SOURCE_PATCHED_TREE: "
+            "74099df9db657faaa371ca8e1989e6fb2cb7741d",
+            f'ERA_HELPER_SIZE: "{len(helper)}"',
+            f"ERA_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
+        ):
+            self.assertIn(expected, workflow)
 
 
 class CanonicalFixtureGateStaticTests(unittest.TestCase):

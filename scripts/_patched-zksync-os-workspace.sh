@@ -3,6 +3,9 @@
 # must source gateway-launch/_common.sh first and set ZKSYNC_OS_SERVER_PATH,
 # GATEWAY_DIR, WORKSPACE_NAME, and ZKSYNC_OS_GIT_URL.
 
+# SYSCOIN: Exact source tree produced by the reviewed final-v0.4.0 downstream patch.
+SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="25c44f3a9df994ef29d96638eca58eccf1df64da"
+
 extract_zksync_os_dependency_field() {
   local dependency_alias="$1"
   local field="$2"
@@ -129,7 +132,7 @@ prepare_zksync_os_checkout() {
   local dependency_alias="$1"
   local applicator="$2"
   local dev_path="$3"
-  local os_tag os_git_url locked_rev os_root os_path repo_root base_date patched_rev
+  local os_tag os_git_url locked_rev os_root os_path repo_root base_date patched_rev patched_tree
 
   case "${WORKSPACE_NAME}" in
   "" | *[!A-Za-z0-9._-]*) gl_die "invalid workspace name: ${WORKSPACE_NAME}" ;;
@@ -167,6 +170,11 @@ prepare_zksync_os_checkout() {
   checkout_locked_base "${os_path}" "${locked_rev}" "${os_tag}"
   bash "${applicator}" "${os_path}"
   git -C "${os_path}" add --all
+  patched_tree="$(git -C "${os_path}" write-tree)"
+  # SYSCOIN: This is the final build-boundary attestation. Never commit or compile
+  # an applicator postimage containing unrelated, partial, or concurrently added files.
+  [ "${patched_tree}" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE}" ] || \
+    gl_die "wrong patched zksync-os tree: expected=${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE} actual=${patched_tree}"
   if ! git -C "${os_path}" diff --cached --quiet; then
     base_date="$(git -C "${os_path}" show -s --format=%cI "${locked_rev}")"
     GIT_AUTHOR_DATE="${base_date}" GIT_COMMITTER_DATE="${base_date}" \
@@ -177,6 +185,9 @@ prepare_zksync_os_checkout() {
     gl_die "patched zksync-os checkout is not clean: ${os_path}"
 
   patched_rev="$(git -C "${os_path}" rev-parse HEAD)"
+  patched_tree="$(git -C "${os_path}" rev-parse 'HEAD^{tree}')"
+  [ "${patched_tree}" = "${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE}" ] || \
+    gl_die "committed zksync-os tree drifted before build: expected=${SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE} actual=${patched_tree}"
   if [ "${patched_rev}" != "${locked_rev}" ]; then
     [ "$(git -C "${os_path}" rev-parse HEAD^)" = "${locked_rev}" ] || \
       gl_die "local patch commit is not based directly on locked revision ${locked_rev}"
