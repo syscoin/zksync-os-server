@@ -1,7 +1,7 @@
 use crate::config::SyscoinDaVerificationConfig;
 use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::VerificationRequest;
-use alloy::primitives::{Address, keccak256};
+use alloy::primitives::{Address, B256, keccak256};
 use alloy::signers::local::PrivateKeySigner;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
@@ -54,6 +54,20 @@ enum BatchVerificationError {
     MissingBlock(u64),
     #[error("Batch data mismatch")]
     BatchDataMismatch,
+    #[error(
+        "Previous batch is not contiguous: previous batch {previous_batch_number}, requested batch {requested_batch_number}"
+    )]
+    NonContiguousPreviousBatch {
+        previous_batch_number: u64,
+        requested_batch_number: u64,
+    },
+    #[error(
+        "Previous state commitment mismatch: request has {request_commitment}, native replay has {native_commitment}"
+    )]
+    PreviousStateCommitmentMismatch {
+        request_commitment: B256,
+        native_commitment: B256,
+    },
     #[error("Non-canonical settlement DA input mode: {0:?}")]
     NonCanonicalDaInputMode(BatchDaInputMode),
     #[error(
@@ -76,6 +90,28 @@ enum BatchVerificationError {
     SyscoinDaVerificationFailed(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+// SYSCOIN: A validator must bind the caller-supplied predecessor to the exact state loaded by
+// native replay; otherwise it could sign a valid current batch against a forged or stale history.
+fn validate_previous_batch_continuity(
+    requested_batch_number: u64,
+    previous_batch: &zksync_os_contract_interface::models::StoredBatchInfo,
+    native_previous_state_commitment: B256,
+) -> Result<(), BatchVerificationError> {
+    if previous_batch.batch_number.checked_add(1) != Some(requested_batch_number) {
+        return Err(BatchVerificationError::NonContiguousPreviousBatch {
+            previous_batch_number: previous_batch.batch_number,
+            requested_batch_number,
+        });
+    }
+    if previous_batch.state_commitment != native_previous_state_commitment {
+        return Err(BatchVerificationError::PreviousStateCommitmentMismatch {
+            request_commitment: previous_batch.state_commitment,
+            native_commitment: native_previous_state_commitment,
+        });
+    }
+    Ok(())
 }
 
 // SYSCOIN: Bind the accepted DA mode to direct-L1 versus Gateway settlement topology.
@@ -278,6 +314,11 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
             canonical_pubdata_bytes = native_batch_run.pubdata.len(),
             "Using native batch PIG for batch verification",
         );
+        validate_previous_batch_continuity(
+            request.batch_number,
+            &request.prev_commit_data,
+            native_batch_run.previous_state_commitment,
+        )?;
         let batch_info = native_batch_run.build_batch_info(
             request.batch_number,
             request.first_block_number,
@@ -477,13 +518,14 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone> PipelineCompon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{DummyFinality, dummy_commit_batch_info};
+    use crate::tests::{DummyFinality, dummy_batch_metadata, dummy_commit_batch_info};
     use crate::verify_batch_wire::encode_verify_batch_request;
     use alloy::consensus::{Header, Sealable};
     use alloy::eips::eip1559::INITIAL_BASE_FEE;
     use alloy::network::EthereumWallet;
     use alloy::primitives::{Address, B256, U256, address, keccak256};
     use alloy::providers::ProviderBuilder;
+    use alloy::sol_types::SolValue;
     use alloy::transports::mock::Asserter;
     use blake2::{Blake2s256, Digest};
     use httpmock::Method::POST;
@@ -499,7 +541,7 @@ mod tests {
     use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, ProverInput};
     use zksync_os_contract_interface::models::{BatchDaInputMode, StoredBatchInfo};
     use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
-    use zksync_os_contract_interface::{Bridgehub, ZkChain};
+    use zksync_os_contract_interface::{Bridgehub, IExecutor, ZkChain};
     use zksync_os_genesis::{FileGenesisInputSource, GenesisState, build_genesis};
     use zksync_os_interface::traits::{PreimageSource, ReadStorage};
     use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper, TreeBatchOutput, TreeEntry};
@@ -612,6 +654,48 @@ mod tests {
         let l1_state = test_l1_state().await;
         assert_ne!(l1_state.l1_chain_id, l1_state.sl_chain_id);
         assert_eq!(native_batch_sl_chain_id(&l1_state), SL_CHAIN_ID);
+    }
+
+    #[test]
+    fn verifier_requires_contiguous_previous_batch_number() {
+        let native_commitment = B256::repeat_byte(0x11);
+        let mut previous_batch =
+            dummy_batch_metadata(BATCH_NUMBER, 1, 1).previous_stored_batch_info;
+        previous_batch.state_commitment = native_commitment;
+        assert!(
+            validate_previous_batch_continuity(BATCH_NUMBER, &previous_batch, native_commitment)
+                .is_ok()
+        );
+
+        previous_batch.batch_number = BATCH_NUMBER;
+        assert!(matches!(
+            validate_previous_batch_continuity(BATCH_NUMBER, &previous_batch, native_commitment),
+            Err(BatchVerificationError::NonContiguousPreviousBatch { .. })
+        ));
+
+        previous_batch.batch_number = u64::MAX;
+        assert!(matches!(
+            validate_previous_batch_continuity(BATCH_NUMBER, &previous_batch, native_commitment),
+            Err(BatchVerificationError::NonContiguousPreviousBatch { .. })
+        ));
+    }
+
+    #[test]
+    fn verifier_requires_native_previous_state_commitment() {
+        let native_commitment = B256::repeat_byte(0x11);
+        let mut previous_batch =
+            dummy_batch_metadata(BATCH_NUMBER, 1, 1).previous_stored_batch_info;
+        previous_batch.state_commitment = native_commitment;
+        assert!(
+            validate_previous_batch_continuity(BATCH_NUMBER, &previous_batch, native_commitment)
+                .is_ok()
+        );
+
+        previous_batch.state_commitment = B256::repeat_byte(0x22);
+        assert!(matches!(
+            validate_previous_batch_continuity(BATCH_NUMBER, &previous_batch, native_commitment),
+            Err(BatchVerificationError::PreviousStateCommitmentMismatch { .. })
+        ));
     }
 
     #[test]
@@ -748,6 +832,47 @@ mod tests {
                 if reason.contains("Non-canonical settlement DA input mode")
         ));
         responder.l1_state.da_input_mode = BatchDaInputMode::Rollup;
+
+        let mut non_contiguous_request = request.clone();
+        let mut non_contiguous_previous = batch_envelope.batch.previous_stored_batch_info.clone();
+        non_contiguous_previous.batch_number = BATCH_NUMBER;
+        non_contiguous_request.prev_commit_data =
+            IExecutor::StoredBatchInfo::from(&non_contiguous_previous)
+                .abi_encode()
+                .into();
+        let non_contiguous_result = responder
+            .handle_verification_message(non_contiguous_request)
+            .await
+            .unwrap();
+        assert!(matches!(
+            non_contiguous_result.result,
+            VerifyBatchOutcome::Refused(reason)
+                if reason.contains("Previous batch is not contiguous")
+        ));
+
+        let mut wrong_previous_state_request = request.clone();
+        let mut wrong_previous_state = batch_envelope.batch.previous_stored_batch_info.clone();
+        wrong_previous_state.state_commitment = B256::repeat_byte(0xff);
+        assert_ne!(
+            wrong_previous_state.state_commitment,
+            batch_envelope
+                .batch
+                .previous_stored_batch_info
+                .state_commitment
+        );
+        wrong_previous_state_request.prev_commit_data =
+            IExecutor::StoredBatchInfo::from(&wrong_previous_state)
+                .abi_encode()
+                .into();
+        let wrong_previous_state_result = responder
+            .handle_verification_message(wrong_previous_state_request)
+            .await
+            .unwrap();
+        assert!(matches!(
+            wrong_previous_state_result.result,
+            VerifyBatchOutcome::Refused(reason)
+                if reason.contains("Previous state commitment mismatch")
+        ));
 
         let result = responder
             .handle_verification_message(request)
