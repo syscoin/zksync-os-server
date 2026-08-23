@@ -87,6 +87,24 @@ class LauncherStaticTests(unittest.TestCase):
             generator,
         )
 
+    def test_generated_prover_proxy_bounds_request_buffering(self) -> None:
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+
+        # SYSCOIN: The public proxy must reject oversized bodies before an unauthenticated
+        # client can fill nginx temporary storage; the node enforces the same 10 MiB ceiling.
+        self.assertIn("client_max_body_size 10m;", generator)
+        self.assertNotIn("client_max_body_size 0;", generator)
+        self.assertIn("proxy_connect_timeout 5s;", generator)
+        self.assertIn("proxy_send_timeout 650s;", generator)
+        self.assertIn("proxy_read_timeout 650s;", generator)
+        self.assertIn("len(prover_api_auth_password) < 32", generator)
+        self.assertIn("openssl rand -hex 32", generator)
+
     def test_generated_and_local_configs_allow_the_cpu_snark_lease(self) -> None:
         generator = (
             REPO_ROOT

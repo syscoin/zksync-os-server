@@ -407,6 +407,13 @@ if (not prover_api_auth_user or not prover_api_auth_password) and (
     raise SystemExit(
         "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
     )
+# SYSCOIN: A public Basic Auth endpoint protects job assignment and live lease capabilities.
+# Reject human-scale passwords in generated deployments; `openssl rand -hex 32` is URL-safe.
+if prover_api_auth_password and len(prover_api_auth_password) < 32:
+    raise SystemExit(
+        "PROVER_API_AUTH_PASSWORD must contain at least 32 characters "
+        "(recommended: openssl rand -hex 32)"
+    )
 prover_api_auth_config_lines = []
 if prover_api_auth_user and prover_api_auth_password:
     prover_api_auth_config_lines = [
@@ -440,12 +447,19 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_trusted_certificate /etc/letsencrypt/live/{domain}/chain.pem;
 
-    # Airbender proof submissions can exceed nginx's 1M default.
-    client_max_body_size 0;
+    # SYSCOIN: Match the node's 10 MiB request limit. An unlimited nginx buffer lets an
+    # unauthenticated internet client consume proxy disk before node-side auth can reject it.
+    client_max_body_size 10m;
 
     location / {{
         proxy_pass http://127.0.0.1:{prover_api_port};
         proxy_http_version 1.1;
+        # SYSCOIN: The prover client has a 600-second request backstop. Keep the public proxy
+        # alive slightly longer so native FRI verification / SNARK preflight, not nginx's
+        # 60-second default, determines the response and lease-retry semantics.
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 650s;
+        proxy_read_timeout 650s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
