@@ -343,6 +343,14 @@ impl BitcoinDaFinalityGate {
             if input.is_empty() {
                 continue;
             }
+            // SYSCOIN: Parse and enforce the canonical per-message and aggregate 32-ref bound
+            // before constructing a client or issuing any finality/republish work.
+            let edge_refs = syscoin_edge_da_refs_from_input(input).with_context(|| {
+                format!(
+                    "failed to parse Gateway edge DA refs for batch {}",
+                    batch.batch_number()
+                )
+            })?;
             // SYSCOIN: This pass verifies only compact edge-chain references forwarded by a Gateway
             // batch; the batch's own Bitcoin DA chunks are checked separately. Create the
             // client lazily once there is at least one forwarded reference to verify.
@@ -352,12 +360,6 @@ impl BitcoinDaFinalityGate {
             let client = client
                 .as_ref()
                 .expect("Bitcoin DA client was initialized before use");
-            let edge_refs = syscoin_edge_da_refs_from_input(input).with_context(|| {
-                format!(
-                    "failed to parse Gateway edge DA refs for batch {}",
-                    batch.batch_number()
-                )
-            })?;
             for edge_ref in edge_refs {
                 for version_hash in edge_ref.blob_version_hashes.chunks_exact(32) {
                     let version_hash = hex::encode(version_hash);

@@ -1,5 +1,7 @@
+use alloy::primitives::Address;
 use std::collections::HashSet;
 use zk_ee::{common_structs::MAX_NUMBER_OF_LOGS, system::MAX_NATIVE_COMPUTATIONAL};
+use zksync_os_batch_types::{SYSCOIN_DA_MAX_REFS_PER_BATCH, syscoin_edge_da_ref_count_for_blocks};
 use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{BlockOutput, ProtocolSemanticVersion, SystemTxType, ZkTxType};
@@ -55,6 +57,9 @@ pub(crate) struct BatchInfoAccumulator {
     pub has_upgrade_tx: bool,
     pub interop_roots_count: u64,
     pub should_seal_for_gateway_migration: bool,
+    // SYSCOIN: Number of final-L1 Bitcoin-DA openings forwarded by successful canonical
+    // Gateway commit calls in the candidate batch.
+    pub forwarded_da_refs_count: usize,
 
     pub protocol_versions: HashSet<ProtocolSemanticVersion>,
     pub execution_versions: HashSet<u32>,
@@ -64,6 +69,8 @@ pub(crate) struct BatchInfoAccumulator {
     pub tx_per_batch_limit: u64,
     pub batch_pubdata_limit_bytes: u64,
     pub interop_roots_per_batch_limit: u64,
+    // SYSCOIN: Match native replay's configured ValidatorTimelock target when counting refs.
+    pub compact_edge_da_commit_target: Address,
 }
 
 impl BatchInfoAccumulator {
@@ -72,17 +79,23 @@ impl BatchInfoAccumulator {
         tx_per_batch_limit: u64,
         batch_pubdata_limit_bytes: u64,
         interop_roots_per_batch_limit: u64,
+        compact_edge_da_commit_target: Address,
     ) -> Self {
         Self {
             blocks_per_batch_limit,
             tx_per_batch_limit,
             batch_pubdata_limit_bytes,
             interop_roots_per_batch_limit,
+            compact_edge_da_commit_target,
             ..Default::default()
         }
     }
 
-    pub fn add(&mut self, block_output: &BlockOutput, replay_record: &ReplayRecord) -> &Self {
+    pub fn add(
+        &mut self,
+        block_output: &BlockOutput,
+        replay_record: &ReplayRecord,
+    ) -> anyhow::Result<&Self> {
         self.native_cycles += block_output.computational_native_used;
         self.pubdata_bytes += block_output.pubdata_used();
         self.l2_to_l1_logs_count += block_output
@@ -108,6 +121,17 @@ impl BatchInfoAccumulator {
                 }
             })
             .sum::<u64>();
+
+        // SYSCOIN: Count only successful calls to the exact guest-bound commit target and use
+        // the canonical parser/root-builder path, including its per-message and aggregate cap.
+        let block_forwarded_refs = syscoin_edge_da_ref_count_for_blocks(
+            [(block_output, replay_record.transactions.as_slice())],
+            self.compact_edge_da_commit_target,
+        )?;
+        self.forwarded_da_refs_count = self
+            .forwarded_da_refs_count
+            .checked_add(block_forwarded_refs)
+            .ok_or_else(|| anyhow::anyhow!("Gateway forwarded DA ref count overflow"))?;
 
         // If there is a chain id update transaction not in the first block(note `self.block_count > 1`), we need to seal the batch for gateway migration(so it goes in the first block of the next batch)
         if replay_record.transactions.iter().any(|tx| {
@@ -140,7 +164,13 @@ impl BatchInfoAccumulator {
             self.has_upgrade_tx = true;
         }
 
-        self
+        Ok(self)
+    }
+
+    // SYSCOIN: This limit is settlement soundness, not a tunable resource heuristic. Unlike
+    // ordinary seal limits, an oversized first block must never enter an unprovable batch.
+    pub fn exceeds_forwarded_da_refs_limit(&self) -> bool {
+        self.forwarded_da_refs_count > SYSCOIN_DA_MAX_REFS_PER_BATCH
     }
 
     /// Checks if the batch should be sealed based on the content of the blocks.
@@ -152,6 +182,16 @@ impl BatchInfoAccumulator {
         if self.has_upgrade_tx && self.block_count > 1 {
             BATCHER_METRICS.seal_reason[&"upgrade_tx"].inc();
             tracing::debug!("Batcher: sealing batch due to upgrade transaction");
+            return true;
+        }
+
+        if self.exceeds_forwarded_da_refs_limit() {
+            BATCHER_METRICS.seal_reason[&"forwarded_da_refs"].inc();
+            tracing::debug!(
+                count = self.forwarded_da_refs_count,
+                limit = SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                "Batcher: reached forwarded Bitcoin DA ref limit"
+            );
             return true;
         }
 
@@ -264,7 +304,7 @@ impl BatchInfoAccumulator {
 
 #[cfg(test)]
 mod tests {
-    use super::BatchInfoAccumulator;
+    use super::{BatchInfoAccumulator, SYSCOIN_DA_MAX_REFS_PER_BATCH};
     use alloy::consensus::{Header, Sealed};
     use alloy::primitives::{Address, B256, U256};
     use semver::Version;
@@ -319,12 +359,14 @@ mod tests {
 
     #[test]
     fn accumulator_tracks_pubdata_used_not_pubdata_length() {
-        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100);
+        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100, Address::ZERO);
 
-        accumulator.add(
-            &dummy_block_output(BlockPubdata::new(7)),
-            &dummy_replay_record(),
-        );
+        accumulator
+            .add(
+                &dummy_block_output(BlockPubdata::new(7)),
+                &dummy_replay_record(),
+            )
+            .unwrap();
 
         assert_eq!(accumulator.pubdata_bytes, 7);
         assert!(!accumulator.should_seal());
@@ -332,16 +374,20 @@ mod tests {
 
     #[test]
     fn pubdata_seal_limit_uses_pubdata_used() {
-        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100);
+        let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100, Address::ZERO);
 
-        accumulator.add(
-            &dummy_block_output(BlockPubdata::new(21)),
-            &dummy_replay_record(),
-        );
-        accumulator.add(
-            &dummy_block_output(BlockPubdata::new(0)),
-            &dummy_replay_record(),
-        );
+        accumulator
+            .add(
+                &dummy_block_output(BlockPubdata::new(21)),
+                &dummy_replay_record(),
+            )
+            .unwrap();
+        accumulator
+            .add(
+                &dummy_block_output(BlockPubdata::new(0)),
+                &dummy_replay_record(),
+            )
+            .unwrap();
 
         assert!(accumulator.should_seal());
     }
@@ -356,6 +402,36 @@ mod tests {
             ..Default::default()
         };
         assert!(!accumulator.should_seal());
+    }
+
+    #[test]
+    fn forwarded_da_refs_have_no_oversized_first_block_exception() {
+        let accumulator = BatchInfoAccumulator {
+            block_count: 1,
+            forwarded_da_refs_count: SYSCOIN_DA_MAX_REFS_PER_BATCH + 1,
+            ..Default::default()
+        };
+
+        assert!(accumulator.exceeds_forwarded_da_refs_limit());
+        assert!(accumulator.should_seal());
+    }
+
+    #[test]
+    fn forwarded_da_refs_split_twenty_plus_thirteen_seals_before_candidate() {
+        let accepted = BatchInfoAccumulator {
+            block_count: 1,
+            forwarded_da_refs_count: 20,
+            ..Default::default()
+        };
+        assert!(!accepted.exceeds_forwarded_da_refs_limit());
+
+        let candidate = BatchInfoAccumulator {
+            block_count: 2,
+            forwarded_da_refs_count: accepted.forwarded_da_refs_count + 13,
+            ..accepted
+        };
+        assert!(candidate.exceeds_forwarded_da_refs_limit());
+        assert!(candidate.should_seal());
     }
 
     #[test]

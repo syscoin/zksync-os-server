@@ -15,6 +15,9 @@ const BLOB_CHUNK_SIZE: usize = 31;
 // SYSCOIN: Syscoin Bitcoin DA accepts up to 2 MiB per blob and up to 32 blobs per block.
 pub const SYSCOIN_DA_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
 pub const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
+// SYSCOIN: Final-L1 settlement performs one Bitcoin-DA opening per forwarded hash, so a
+// Gateway batch uses the same 32-opening ceiling for each message and for their aggregate.
+pub const SYSCOIN_DA_MAX_REFS_PER_BATCH: usize = SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
 pub const SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH: usize =
     SYSCOIN_DA_BYTES_PER_BLOB * SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
 pub const SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES: usize =
@@ -43,6 +46,10 @@ fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
         edge_ref.blob_version_hashes.len().is_multiple_of(32),
         "Syscoin edge DA refs must be a concatenation of 32-byte blob hashes"
     );
+    assert!(
+        edge_ref.blob_version_hashes.len() / ABI_WORD <= SYSCOIN_DA_MAX_REFS_PER_BATCH,
+        "Syscoin edge DA ref exceeds the per-message opening limit"
+    );
 
     let mut preimage = Vec::with_capacity(
         SYSCOIN_EDGE_DA_REFS_DOMAIN.len() + 32 * 4 + edge_ref.blob_version_hashes.len(),
@@ -61,8 +68,14 @@ fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
 pub fn syscoin_edge_da_refs_from_input(input: &[u8]) -> Option<Vec<SyscoinEdgeDaRef<'_>>> {
     let mut refs = Vec::new();
     let mut remaining = input;
+    let mut total_refs = 0usize;
     while !remaining.is_empty() {
         let (edge_ref, consumed) = parse_syscoin_edge_da_ref_message_prefix(remaining)?;
+        let message_refs = edge_ref.blob_version_hashes.len() / ABI_WORD;
+        total_refs = total_refs.checked_add(message_refs)?;
+        if total_refs > SYSCOIN_DA_MAX_REFS_PER_BATCH {
+            return None;
+        }
         refs.push(edge_ref);
         remaining = &remaining[consumed..];
     }
@@ -101,7 +114,10 @@ fn parse_syscoin_edge_da_ref_message_prefix(
         return None;
     }
     let blob_hashes_len = u256_word_to_usize(&message[blob_hashes_len_offset..blob_hashes_start])?;
-    if blob_hashes_len == 0 || blob_hashes_len % ABI_WORD != 0 {
+    if blob_hashes_len == 0
+        || blob_hashes_len % ABI_WORD != 0
+        || blob_hashes_len / ABI_WORD > SYSCOIN_DA_MAX_REFS_PER_BATCH
+    {
         return None;
     }
     let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
@@ -203,6 +219,7 @@ pub fn syscoin_edge_da_refs_for_blocks<'a>(
 ) -> anyhow::Result<(Vec<u8>, B256)> {
     let mut edge_da_refs_input = Vec::new();
     let mut edge_da_refs_root = B256::ZERO;
+    let mut total_refs = 0usize;
 
     for (block_output, transactions) in blocks {
         ensure!(
@@ -231,6 +248,14 @@ pub fn syscoin_edge_da_refs_for_blocks<'a>(
                 if let Some(preimage) = log.preimage.as_deref()
                     && let Some(edge_ref) = parse_syscoin_edge_da_ref_message(preimage)
                 {
+                    let message_refs = edge_ref.blob_version_hashes.len() / ABI_WORD;
+                    total_refs = total_refs
+                        .checked_add(message_refs)
+                        .ok_or_else(|| anyhow::anyhow!("compact edge DA ref count overflow"))?;
+                    ensure!(
+                        total_refs <= SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                        "compact edge DA refs exceed the per-Gateway-batch limit of {SYSCOIN_DA_MAX_REFS_PER_BATCH}"
+                    );
                     edge_da_refs_root = keccak256(
                         [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat(),
                     );
@@ -253,6 +278,14 @@ pub fn syscoin_edge_da_refs_for_blocks<'a>(
                 );
                 let edge_ref = parse_syscoin_edge_da_ref_message(&message)
                     .expect("locally encoded compact edge DA ref must parse");
+                let message_refs = edge_ref.blob_version_hashes.len() / ABI_WORD;
+                total_refs = total_refs
+                    .checked_add(message_refs)
+                    .ok_or_else(|| anyhow::anyhow!("compact edge DA ref count overflow"))?;
+                ensure!(
+                    total_refs <= SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                    "compact edge DA refs exceed the per-Gateway-batch limit of {SYSCOIN_DA_MAX_REFS_PER_BATCH}"
+                );
                 edge_da_refs_root =
                     keccak256([edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat());
                 edge_da_refs_input.extend_from_slice(&message);
@@ -261,6 +294,21 @@ pub fn syscoin_edge_da_refs_for_blocks<'a>(
     }
 
     Ok((edge_da_refs_input, edge_da_refs_root))
+}
+
+// SYSCOIN: Batcher peeking must use the exact same successful-target-call semantics as native
+// replay, while avoiding an oversized-first-block exception for settlement-critical openings.
+pub fn syscoin_edge_da_ref_count_for_blocks<'a>(
+    blocks: impl IntoIterator<Item = (&'a BlockOutput, &'a [ZkTransaction])>,
+    compact_edge_da_commit_target: Address,
+) -> anyhow::Result<usize> {
+    let (input, _) = syscoin_edge_da_refs_for_blocks(blocks, compact_edge_da_commit_target)?;
+    let refs = syscoin_edge_da_refs_from_input(&input)
+        .ok_or_else(|| anyhow::anyhow!("canonical compact edge DA input is malformed"))?;
+    Ok(refs
+        .iter()
+        .map(|edge_ref| edge_ref.blob_version_hashes.len() / ABI_WORD)
+        .sum())
 }
 
 fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
@@ -511,10 +559,10 @@ fn calculate_da_fields(pubdata: &[u8], pubdata_mode: PubdataMode) -> anyhow::Res
 mod canonical_output_tests {
     use super::calculate_da_fields;
     use super::{
-        SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES, SyscoinEdgeDaRef,
-        blob_data_id, collects_syscoin_edge_da_refs,
-        compact_edge_da_ref_message_from_commit_calldata, is_compact_edge_da_commit_tx,
-        syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
+        SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES,
+        SYSCOIN_DA_MAX_REFS_PER_BATCH, SyscoinEdgeDaRef, blob_data_id,
+        collects_syscoin_edge_da_refs, compact_edge_da_ref_message_from_commit_calldata,
+        is_compact_edge_da_commit_tx, syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
     };
     use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
     use alloy::sol_types::SolCall;
@@ -714,6 +762,56 @@ mod canonical_output_tests {
         assert_eq!(refs[0].blob_version_hashes, first_blob_hashes);
         assert_eq!(refs[1].edge_batch_number, 2);
         assert_eq!(refs[1].blob_version_hashes, second_blob_hashes);
+    }
+
+    #[test]
+    fn edge_da_refs_accept_exact_aggregate_limit_split_across_messages() {
+        let first_hashes = vec![0x11; 16 * 32];
+        let second_hashes = vec![0x22; 16 * 32];
+        let first = compact_edge_da_ref_message(10, 1, keccak256(&first_hashes), &first_hashes);
+        let second = compact_edge_da_ref_message(11, 2, keccak256(&second_hashes), &second_hashes);
+        let input = [first, second].concat();
+
+        let refs = syscoin_edge_da_refs_from_input(&input).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            refs.iter()
+                .map(|edge_ref| edge_ref.blob_version_hashes.len() / 32)
+                .sum::<usize>(),
+            SYSCOIN_DA_MAX_REFS_PER_BATCH
+        );
+        let root = refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+            keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+        });
+        assert_ne!(root, B256::ZERO);
+    }
+
+    #[test]
+    fn edge_da_refs_reject_aggregate_limit_across_messages() {
+        let first_hashes = vec![0x11; 16 * 32];
+        let second_hashes = vec![0x22; 17 * 32];
+        let first = compact_edge_da_ref_message(10, 1, keccak256(&first_hashes), &first_hashes);
+        let second = compact_edge_da_ref_message(11, 2, keccak256(&second_hashes), &second_hashes);
+
+        assert!(syscoin_edge_da_refs_from_input(&[first, second].concat()).is_none());
+    }
+
+    #[test]
+    fn edge_da_refs_reject_single_message_above_limit() {
+        let hashes = vec![0x33; (SYSCOIN_DA_MAX_REFS_PER_BATCH + 1) * 32];
+        let input = compact_edge_da_ref_message(10, 1, keccak256(&hashes), &hashes);
+
+        assert!(syscoin_edge_da_refs_from_input(&input).is_none());
+    }
+
+    #[test]
+    fn empty_edge_da_refs_remain_the_canonical_zero_root() {
+        let refs = syscoin_edge_da_refs_from_input(&[]).unwrap();
+        let root = refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+            keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+        });
+
+        assert_eq!(root, B256::ZERO);
     }
 
     #[test]

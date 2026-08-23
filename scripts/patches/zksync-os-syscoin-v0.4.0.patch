@@ -9,32 +9,111 @@ index 44ea91fd0eb218b598973adfc676f48439085137..2c660730a5a25d4db4af3cf88bffc351
 @@ -5826,0 +5827 @@ dependencies = [
 + "sha2 0.10.9",
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
-index dd55949e395569c32c605e3fefa8a603dd3c1aca..7c6f4c89a4a318f16bd1d8d47a0f7087ff596fad 100644
+index dd55949e395569c32c605e3fefa8a603dd3c1aca..6f8efcfc04abd8cfc47c79a2c5c3a521ff0c846c 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/batch_data.rs
-@@ -38,0 +39,2 @@ pub struct ZKBatchDataKeeper<A: alloc::alloc::Allocator, O: IOOracle> {
+@@ -38,0 +39,4 @@ pub struct ZKBatchDataKeeper<A: alloc::alloc::Allocator, O: IOOracle> {
 +    // SYSCOIN: ordered root of compact edge DA refs emitted by Gateway child-chain commits.
 +    pub edge_da_refs_root: Bytes32,
-@@ -60,0 +63 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
++    // SYSCOIN: forwarded Bitcoin-DA openings accepted by all previously applied blocks.
++    pub edge_da_refs_count: u32,
+@@ -60,0 +65,2 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
 +            edge_da_refs_root: Bytes32::ZERO,
-@@ -193,0 +197 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
++            edge_da_refs_count: 0,
+@@ -92,0 +99 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
++        syscoin_edge_da_refs_in_block: u32,
+@@ -127,0 +135,14 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
++        // SYSCOIN: Persist the cap counter alongside the rolling root so multiblock proving
++        // cannot reset the 32-opening budget at a block boundary.
++        let next_edge_da_refs_count = self
++            .edge_da_refs_count
++            .checked_add(syscoin_edge_da_refs_in_block)
++            .expect("Syscoin edge DA ref count overflow");
++        // SYSCOIN: Fail closed in the proving keeper as a second invariant boundary even if a
++        // future transaction-loop change accidentally admits an oversized multiblock batch.
++        assert!(
++            next_edge_da_refs_count
++                <= zk_ee::common_structs::logs_storage::SYSCOIN_DA_MAX_REFS_PER_BATCH,
++            "Syscoin edge DA refs exceed the per-Gateway-batch limit"
++        );
++        self.edge_da_refs_count = next_edge_da_refs_count;
+@@ -193,0 +215 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> ZKBatchDataKeeper<A, O> {
 +            edge_da_refs_root: self.edge_da_refs_root,
+@@ -236,0 +259,4 @@ impl<A: alloc::alloc::Allocator, O: IOOracle> TxHashesAccumulator for ZKBatchDat
++
++    fn syscoin_edge_da_ref_count(&self) -> u32 {
++        self.edge_da_refs_count
++    }
+@@ -316,0 +343 @@ mod tests {
++            0,
+@@ -330,0 +358,37 @@ mod tests {
++            0,
++        );
++    }
++
++    #[test]
++    #[should_panic(expected = "Syscoin edge DA refs exceed the per-Gateway-batch limit")]
++    fn apply_block_rejects_twenty_plus_thirteen_forwarded_refs() {
++        let mut keeper = ZKBatchDataKeeper::<Global, DummyOracle>::new();
++        let state_a = Bytes32::from_byte_fill(1);
++        let state_b = Bytes32::from_byte_fill(2);
++        let config = ChainConfig::default();
++
++        keeper.apply_block(
++            state_a,
++            state_b,
++            dummy_proof_data(),
++            100,
++            config,
++            Bytes32::ZERO,
++            Bytes32::ZERO,
++            core::iter::empty(),
++            U256::from(1u64),
++            0,
++            20,
++        );
++        keeper.apply_block(
++            state_b,
++            Bytes32::from_byte_fill(3),
++            dummy_proof_data(),
++            101,
++            config,
++            Bytes32::ZERO,
++            Bytes32::ZERO,
++            core::iter::empty(),
++            U256::from(1u64),
++            0,
++            13,
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs b/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
-index d7d49706074781ccb5280ef00e72f0a2a8b60eb7..a9121fd86d1c9c536aaf10364569d128ecd3b75f 100644
+index d7d49706074781ccb5280ef00e72f0a2a8b60eb7..9b79c13ddaaa05c05a0ed8c124859132b26297df 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/block_data.rs
 @@ -1,0 +2 @@ use alloc::vec::Vec;
 +use arrayvec::ArrayVec;
-@@ -229,0 +231,2 @@ pub struct ZKBasicBlockDataKeeper<EA: TxHashesAccumulator, A: Allocator + Clone
+@@ -229,0 +231,4 @@ pub struct ZKBasicBlockDataKeeper<EA: TxHashesAccumulator, A: Allocator + Clone
 +    /// SYSCOIN: accepted transaction numbers allowed to emit compact edge DA refs.
 +    pub syscoin_compact_edge_da_ref_tx_numbers: ArrayVec<u32, 16384>,
-@@ -256,0 +260,4 @@ impl<EA: TxHashesAccumulator + core::fmt::Debug, A: Allocator + Clone + Default>
++    /// SYSCOIN: canonical Bitcoin-DA hashes forwarded by accepted commit txs in this block.
++    pub syscoin_compact_edge_da_ref_count: u32,
+@@ -256,0 +262,8 @@ impl<EA: TxHashesAccumulator + core::fmt::Debug, A: Allocator + Clone + Default>
 +            .field(
 +                "syscoin_compact_edge_da_ref_tx_numbers",
 +                &self.syscoin_compact_edge_da_ref_tx_numbers,
 +            )
-@@ -274,0 +282 @@ impl<EA: TxHashesAccumulator, A: Allocator + Clone + Default> ZKBasicBlockDataKe
++            .field(
++                "syscoin_compact_edge_da_ref_count",
++                &self.syscoin_compact_edge_da_ref_count,
++            )
+@@ -274,0 +288,2 @@ impl<EA: TxHashesAccumulator, A: Allocator + Clone + Default> ZKBasicBlockDataKe
 +            syscoin_compact_edge_da_ref_tx_numbers: ArrayVec::new(),
++            syscoin_compact_edge_da_ref_count: 0,
+@@ -292,0 +308,6 @@ pub trait TxHashesAccumulator {
++
++    // SYSCOIN: Multiblock proving overrides this to expose the number of forwarded refs
++    // accumulated by prior blocks; single-block and sequencing keep the canonical zero default.
++    fn syscoin_edge_da_ref_count(&self) -> u32 {
++        0
++    }
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/blob_data_id_advice.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/blob_data_id_advice.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..49ee7e01e5deb56653cc9be9b742bb380dc75277
@@ -37363,7 +37442,7 @@ index f88bc181b634f14543abca7e6c604ff0124386e6..952eee9b225f36b928085679029eac7c
 +pub use blob_commitment_generator::blob_data_id_advice::BlobDataIdAdvice; // SYSCOIN: compact Bitcoin-DA advice
 +pub use blob_commitment_generator::blob_data_id_advice::BLOB_DATA_ID_QUERY_ID;
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
-index 6df356073560430cb0c4b2db8a7a19ca42d888ba..9202b8cd218055032bd972045fde7330d4a70584 100644
+index 6df356073560430cb0c4b2db8a7a19ca42d888ba..3aa18e6d770451b14052d6455d2abffe6ea0c049 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_multiblock_batch.rs
 @@ -116,0 +117,6 @@ where
@@ -37373,6 +37452,10 @@ index 6df356073560430cb0c4b2db8a7a19ca42d888ba..9202b8cd218055032bd972045fde7330
 +                &mut batch_data.edge_da_refs_root,
 +                &block_data.syscoin_compact_edge_da_ref_tx_numbers,
 +            );
+@@ -192,0 +199,3 @@ where
++            // SYSCOIN: Carry this block's accepted forwarded openings into the batch-persistent
++            // counter used by the next block's transaction loop.
++            block_data.syscoin_compact_edge_da_ref_count,
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs b/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
 index 6880416b88f8232e60f5813c6b52cd05794170ef..bc3753fa93de731f7558d2591fa0ee7c5b0b9354 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs
@@ -37425,10 +37508,63 @@ index ce3917f0bfd5a619414a0f0f6c1fbf71283d4e55..368ddac5279d8ee6a53be8d4e5b365fd
 +    }
 +
 diff --git a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
-index 096ad0281d25cbad392aae70429c61286160da42..c152ba01a360197a922b560ec8a25485d722a0f8 100644
+index 096ad0281d25cbad392aae70429c61286160da42..d722c4527cb6dd0a8ca384c3ef0fc3ad51c50de3 100644
 --- a/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
 +++ b/basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs
-@@ -250,0 +251,10 @@ where
+@@ -9,0 +10,16 @@ use zk_ee::system::{IOTeardown, Resource};
++// SYSCOIN: Keep the cross-block arithmetic in one testable, overflow-safe helper; the caller
++// compares the returned batch total with the consensus 32-opening limit before committing a tx.
++fn next_syscoin_edge_da_ref_counts(
++    prior_blocks: u32,
++    current_block: u32,
++    current_tx: u32,
++) -> Result<(u32, u32), zk_ee::system::errors::internal::InternalError> {
++    let next_block = current_block
++        .checked_add(current_tx)
++        .ok_or_else(|| internal_error!("Syscoin edge DA ref count overflow"))?;
++    let next_batch = prior_blocks
++        .checked_add(next_block)
++        .ok_or_else(|| internal_error!("Syscoin edge DA ref count overflow"))?;
++    Ok((next_block, next_batch))
++}
++
+@@ -172,0 +189,20 @@ where
++                            // SYSCOIN: Count canonical messages while the transaction frame can
++                            // still be rolled back. The batch keeper contains prior blocks and the
++                            // block keeper contains earlier accepted txs in this block.
++                            let syscoin_edge_da_refs_in_tx = if tx_status
++                                && tx_processing_result.collects_syscoin_edge_da_refs
++                            {
++                                system.io.syscoin_edge_da_ref_count_for_tx_number(
++                                    block_data.current_transaction_number,
++                                )?
++                            } else {
++                                0
++                            };
++                            let (
++                                next_syscoin_edge_da_refs_in_block,
++                                next_syscoin_edge_da_refs_in_batch,
++                            ) = next_syscoin_edge_da_ref_counts(
++                                batch_data.syscoin_edge_da_ref_count(),
++                                block_data.syscoin_compact_edge_da_ref_count,
++                                syscoin_edge_da_refs_in_tx,
++                            )?;
+@@ -187 +223,10 @@ where
+-                            if let Err(err) = check_for_block_limits(
++                            if next_syscoin_edge_da_refs_in_batch
++                                > zk_ee::common_structs::logs_storage::SYSCOIN_DA_MAX_REFS_PER_BATCH
++                            {
++                                // SYSCOIN: This is a sealing limit, not a validation purge. Revert
++                                // every tx effect and let the host seal/retry it in a fresh batch.
++                                system.finish_global_frame(Some(&pre_tx_rollback_handle))?;
++                                result_keeper.tx_processed(Err(
++                                    InvalidTransaction::SyscoinEdgeDaRefsLimitReached,
++                                ));
++                            } else if let Err(err) = check_for_block_limits(
+@@ -204,0 +250,2 @@ where
++                                block_data.syscoin_compact_edge_da_ref_count =
++                                    next_syscoin_edge_da_refs_in_block;
+@@ -250,0 +298,10 @@ where
 +                                if status && tx_processing_result.collects_syscoin_edge_da_refs {
 +                                    // SYSCOIN: bind compact edge DA refs only to the accepted
 +                                    // Gateway commit transaction that is authorized by metadata.
@@ -37439,6 +37575,31 @@ index 096ad0281d25cbad392aae70429c61286160da42..c152ba01a360197a922b560ec8a25485
 +                                            internal_error!("too many Syscoin edge DA ref txs")
 +                                        })?;
 +                                }
+@@ -285,0 +343,24 @@ where
++
++#[cfg(test)]
++mod syscoin_tests {
++    use super::next_syscoin_edge_da_ref_counts;
++    use zk_ee::common_structs::logs_storage::SYSCOIN_DA_MAX_REFS_PER_BATCH;
++
++    #[test]
++    fn gateway_refs_exact_limit_across_blocks_is_accepted() {
++        let (_, batch_total) = next_syscoin_edge_da_ref_counts(20, 0, 12).unwrap();
++        assert_eq!(batch_total, SYSCOIN_DA_MAX_REFS_PER_BATCH);
++    }
++
++    #[test]
++    fn gateway_refs_twenty_plus_thirteen_classifies_for_seal_and_retry() {
++        let (_, batch_total) = next_syscoin_edge_da_ref_counts(20, 0, 13).unwrap();
++        assert!(batch_total > SYSCOIN_DA_MAX_REFS_PER_BATCH);
++    }
++
++    #[test]
++    fn gateway_single_message_above_limit_classifies_for_seal_and_retry() {
++        let (_, batch_total) = next_syscoin_edge_da_ref_counts(0, 0, 33).unwrap();
++        assert!(batch_total > SYSCOIN_DA_MAX_REFS_PER_BATCH);
++    }
++}
 diff --git a/basic_bootloader/src/bootloader/constants.rs b/basic_bootloader/src/bootloader/constants.rs
 index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..2b8df62aac9a971bada46a7af4bc3d9d74aa5830 100644
 --- a/basic_bootloader/src/bootloader/constants.rs
@@ -37450,6 +37611,13 @@ index dcfad69d838de4664618ecc757c7d0fddbb2b7cb..2b8df62aac9a971bada46a7af4bc3d9d
 +// the worst-case convention of COINBASE_BALANCE_INTRINSIC_PUBDATA.
 +pub const SYSCOIN_GAS_TANK_INTRINSIC_PUBDATA: u64 = 3 * (32 + 34);
 +
+diff --git a/basic_bootloader/src/bootloader/errors.rs b/basic_bootloader/src/bootloader/errors.rs
+index 33c1faf4efa5d1f98e9716a34cffc1f199be6ac5..e097408e68fbfdc50005d43b68ba2b9cf34efa3f 100644
+--- a/basic_bootloader/src/bootloader/errors.rs
++++ b/basic_bootloader/src/bootloader/errors.rs
+@@ -102,0 +103,2 @@ pub enum InvalidTransaction {
++    /// SYSCOIN: Transaction would make a Gateway batch forward more than 32 Bitcoin-DA hashes.
++    SyscoinEdgeDaRefsLimitReached,
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/gas_helpers.rs b/basic_bootloader/src/bootloader/transaction_flow/gas_helpers.rs
 index 11b58af301576940bccb1a5f40e72b0b0b40ab55..42ecf8adb37fe1da466e492b3fcc723298ff711f 100644
 --- a/basic_bootloader/src/bootloader/transaction_flow/gas_helpers.rs
@@ -38806,6 +38974,21 @@ index 0000000000000000000000000000000000000000..9bbbad1c93e005544aeda68b149f03d2
 +        assert_eq!(output.len(), 32);
 +    }
 +}
+diff --git a/basic_system/src/system_implementation/system/io_subsystem.rs b/basic_system/src/system_implementation/system/io_subsystem.rs
+index 3bef1d35cf54d69d383c9d304a88a714ae463918..b485b0721183055b8565881956525e83920e2937 100644
+--- a/basic_system/src/system_implementation/system/io_subsystem.rs
++++ b/basic_system/src/system_implementation/system/io_subsystem.rs
+@@ -757,0 +758,10 @@ impl<
++    // SYSCOIN: Delegate the settlement-critical count to the same log preimages used by the
++    // proven compact-ref root, while the current transaction is still rollback-capable.
++    fn syscoin_edge_da_ref_count_for_tx_number(
++        &self,
++        authorized_tx_number: u32,
++    ) -> Result<u32, InternalError> {
++        self.logs_storage
++            .syscoin_edge_da_ref_count_for_tx_number(authorized_tx_number)
++    }
++
 diff --git a/callable_oracles/Cargo.toml b/callable_oracles/Cargo.toml
 index 39aaa5377a2facde0eb6f2bc599c2f0bc074cf6f..865b1dc5c18439dba544ff420b99b0666dfb4174 100644
 --- a/callable_oracles/Cargo.toml
@@ -39079,6 +39262,14 @@ index 6e077247a3b6363c50d062cd7215e391d7ffc673..7b704e99ec6dc48af0e5b9828b7789ef
 -production = ["fusaka-bpo-2"]
 +# SYSCOIN: Production execution exposes the fixed-parameter SLH-DSA precompile at 0x101.
 +production = ["fusaka-bpo-2", "system_hooks/slh_dsa_precompile"]
+diff --git a/forward_system/src/run/convert.rs b/forward_system/src/run/convert.rs
+index 453c10d3fac7b79b99f9920bdd34b0f9530a28e4..13740a4656d9daa6dba1e3b28c6eed46653a8f7b 100644
+--- a/forward_system/src/run/convert.rs
++++ b/forward_system/src/run/convert.rs
+@@ -135,0 +136,3 @@ impl IntoInterface<InvalidTransaction>
++            // SYSCOIN: Preserve a dedicated guest-side classification while using the interface's
++            // generic sealing-limit carrier so the server rolls back, seals, and retries the tx.
++            basic_bootloader::bootloader::errors::InvalidTransaction::SyscoinEdgeDaRefsLimitReached => { InvalidTransaction::OtherLimitReached("SyscoinEdgeDaRefsLimitReached".into()) }
 diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
 index 3af5b69422cedd3a0c7a2deda1bbef2fee879a0c..78ab537310c30f412408a8951915f25ec96085ee 100644
 --- a/forward_system/src/run/mod.rs
@@ -39683,16 +39874,19 @@ index 19839101d6bb2f17b1f8296d81cedae974470573..603904c5ef422225d4f0959ea8b9e150
 -            );
 +            oracle.add_external_processor(callable_oracles::blob_data_id::BlobDataIdQuery);
 diff --git a/zk_ee/src/common_structs/logs_storage.rs b/zk_ee/src/common_structs/logs_storage.rs
-index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..d74b53b9b6dc83672b3ba18e4fb8fb65bd83df12 100644
+index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..1aa529481228af34954d3db981d1a13714d1bcc6 100644
 --- a/zk_ee/src/common_structs/logs_storage.rs
 +++ b/zk_ee/src/common_structs/logs_storage.rs
-@@ -26,0 +27,5 @@ pub const MAX_NUMBER_OF_LOGS: u64 = 16_384;
+@@ -26,0 +27,8 @@ pub const MAX_NUMBER_OF_LOGS: u64 = 16_384;
 +// SYSCOIN: compact RelayedSLDAValidator message version for edge DA refs.
 +const SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION: u8 = 1;
 +const SYSCOIN_EDGE_DA_REFS_DOMAIN: &[u8] = b"SYSCOIN_EDGE_DA_REFS_V1";
++// SYSCOIN: One Gateway batch may forward at most the same 32 Bitcoin-DA openings accepted
++// by a direct Syscoin DA batch; this is enforced per message and cumulatively by the guest.
++pub const SYSCOIN_DA_MAX_REFS_PER_BATCH: u32 = 32;
 +const ABI_WORD: usize = 32;
 +const SYSCOIN_EDGE_DA_REF_HEAD_BYTES: usize = ABI_WORD * 5;
-@@ -356,0 +362,37 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
+@@ -356,0 +365,61 @@ impl<SF: StackFactory<M>, const M: usize, A: Allocator + Clone + Default> LogsSt
 +    pub fn syscoin_edge_da_refs_root_for_tx_numbers(
 +        &self,
 +        authorized_tx_numbers: &[u32],
@@ -39730,11 +39924,35 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..d74b53b9b6dc83672b3ba18e4fb8fb65
 +        }
 +    }
 +
-@@ -504,0 +547,216 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
++    pub fn syscoin_edge_da_ref_count_for_tx_number(
++        &self,
++        authorized_tx_number: u32,
++    ) -> Result<u32, InternalError> {
++        // SYSCOIN: Count canonical ref messages before the transaction frame commits so an
++        // over-limit Gateway commit can be rolled back and retried in the next batch.
++        let mut total = 0u32;
++        for message in self.list.iter() {
++            if message.tx_number != authorized_tx_number {
++                continue;
++            }
++            let GenericLogContentData::UserMsg(UserMsgData { data, .. }) = &message.data else {
++                continue;
++            };
++            let Some(message_refs) = syscoin_edge_da_ref_count(data.as_slice()) else {
++                continue;
++            };
++            total = total
++                .checked_add(message_refs)
++                .ok_or_else(|| internal_error!("Syscoin edge DA ref count overflow"))?;
++        }
++        Ok(total)
++    }
++
+@@ -504,0 +574,252 @@ impl<A: Allocator> From<&LogContent<A>> for L2ToL1Log {
 +
 +// SYSCOIN: hash abi.encode(uint8 version, uint256 chainId, uint256 batchNumber,
 +// bytes32 daCommitment, bytes blobHashes) emitted by the compact Gateway DA validator.
-+fn syscoin_edge_da_ref_hash(message: &[u8]) -> Option<Bytes32> {
++fn syscoin_edge_da_ref_count(message: &[u8]) -> Option<u32> {
 +    if message.len() < SYSCOIN_EDGE_DA_REF_HEAD_BYTES + ABI_WORD {
 +        return None;
 +    }
@@ -39758,12 +39976,22 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..d74b53b9b6dc83672b3ba18e4fb8fb65
 +    if message.len() != blob_hashes_end {
 +        return None;
 +    }
++    u32::try_from(blob_hashes_len / ABI_WORD).ok()
++}
++
++fn syscoin_edge_da_ref_hash(message: &[u8]) -> Option<Bytes32> {
++    let blob_count = syscoin_edge_da_ref_count(message)?;
++    if blob_count > SYSCOIN_DA_MAX_REFS_PER_BATCH {
++        return None;
++    }
++    let blob_hashes_len = usize::try_from(blob_count).ok()?.checked_mul(ABI_WORD)?;
++    let blob_hashes_start = SYSCOIN_EDGE_DA_REF_HEAD_BYTES + ABI_WORD;
++    let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
 +
 +    let mut hasher = crypto::sha3::Keccak256::new();
 +    hasher.update(SYSCOIN_EDGE_DA_REFS_DOMAIN);
 +    hasher.update(&message[ABI_WORD..ABI_WORD * 4]);
-+    let blob_count = U256::from(blob_hashes_len / ABI_WORD);
-+    hasher.update(blob_count.to_be_bytes::<32>());
++    hasher.update(U256::from(blob_count).to_be_bytes::<32>());
 +    hasher.update(&message[blob_hashes_start..blob_hashes_end]);
 +    Some(hasher.finalize().into())
 +}
@@ -39862,6 +40090,32 @@ index cde39a07031f5b2aaaeaa4ae3c8f68a039312a46..d74b53b9b6dc83672b3ba18e4fb8fb65
 +        let mut trailing_byte = message;
 +        trailing_byte.push(0);
 +        assert_eq!(syscoin_edge_da_ref_hash(&trailing_byte), None);
++
++        let exact_limit = edge_da_message(
++            chain_id,
++            batch_number,
++            commitment,
++            &[[0x44; 32]; SYSCOIN_DA_MAX_REFS_PER_BATCH as usize],
++        );
++        assert_eq!(
++            syscoin_edge_da_ref_count(&exact_limit),
++            Some(SYSCOIN_DA_MAX_REFS_PER_BATCH)
++        );
++        assert!(syscoin_edge_da_ref_hash(&exact_limit).is_some());
++
++        let over_limit = edge_da_message(
++            chain_id,
++            batch_number,
++            commitment,
++            &[[0x55; 32]; SYSCOIN_DA_MAX_REFS_PER_BATCH as usize + 1],
++        );
++        // SYSCOIN: The count remains observable to the tx loop so it can classify and roll back
++        // the overflowing transaction, while the root builder refuses to prove it.
++        assert_eq!(
++            syscoin_edge_da_ref_count(&over_limit),
++            Some(SYSCOIN_DA_MAX_REFS_PER_BATCH + 1)
++        );
++        assert_eq!(syscoin_edge_da_ref_hash(&over_limit), None);
 +    }
 +
 +    #[test]
@@ -39964,6 +40218,18 @@ index 28e95d164bf10b1411eb9d07c38185b5d4b2b578..21fcafd628ccc9c3c36aea3a408d79d0
 +    ) -> Result<(), SubsystemError<SlhDsaSha212824VerifyErrors>> {
 +        Self::SlhDsaSha212824Verify::execute(input, output, resources, allocator)
 +    }
++
+diff --git a/zk_ee/src/system/io.rs b/zk_ee/src/system/io.rs
+index 1aef263a31f9ed963c4b41065a31766dca95b41c..79ff05640167fe682c56754f5e165ad751aec377 100644
+--- a/zk_ee/src/system/io.rs
++++ b/zk_ee/src/system/io.rs
+@@ -535,0 +536,7 @@ pub trait IOSubsystemExt: IOSubsystem {
++    // SYSCOIN: Expose the canonical compact-ref count through the generic IO boundary so the
++    // bootloader can roll back an overflowing transaction before committing its global frame.
++    fn syscoin_edge_da_ref_count_for_tx_number(
++        &self,
++        authorized_tx_number: u32,
++    ) -> Result<u32, InternalError>;
 +
 diff --git a/zksync_os/Cargo.lock b/zksync_os/Cargo.lock
 index 35e955f93eeecffa07e7d3dae25a49a8cf189b67..8e4e69b6b3a777ca508fb088b9fb0aef93329c6c 100644

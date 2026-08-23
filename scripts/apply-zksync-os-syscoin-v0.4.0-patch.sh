@@ -14,11 +14,11 @@ PATCH_FILE="${SCRIPT_DIR}/patches/zksync-os-syscoin-v0.4.0.patch"
 # Exact base/tree, byte, path-set, and postimage checks retain strict provenance.
 EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"
 EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"
-EXPECTED_PATCHED_TREE="25c44f3a9df994ef29d96638eca58eccf1df64da"
-EXPECTED_PATCH_SIZE="1133789"
-EXPECTED_PATCH_SHA256="38b06604a483d037542a88f1ab1caf1688d58a0520b3773a74ab6e4b3f64626d"
-EXPECTED_PATCH_PATH_COUNT="53"
-EXPECTED_PATCH_PATHS_SHA256="dc67052881ca18e7ef03b5142a704a627357e1cb55d21ec2725e06cd343b11ac"
+EXPECTED_PATCHED_TREE="d26490345404b140c15885e2291a022d13eb8155"
+EXPECTED_PATCH_SIZE="1146546"
+EXPECTED_PATCH_SHA256="65aaf1312613e8fc17986f1cd79259d86eac8775fae6b21115e6b3dd7b9f2864"
+EXPECTED_PATCH_PATH_COUNT="57"
+EXPECTED_PATCH_PATHS_SHA256="fb6bf7da23cd771b245c77baae77849a29df1364a11649989724e9d022de9950"
 
 die() {
   echo "error: $*" >&2
@@ -122,6 +122,7 @@ verify_semantics() {
     "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/post_tx_op_proving_singleblock_batch.rs" \
     "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/public_input.rs" \
     "basic_bootloader/src/bootloader/block_flow/zk/tx_loop.rs" \
+    "basic_bootloader/src/bootloader/errors.rs" \
     "basic_bootloader/src/bootloader/constants.rs" \
     "basic_bootloader/src/bootloader/transaction_flow/gas_helpers.rs" \
     "basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs" \
@@ -133,6 +134,7 @@ verify_semantics() {
     "basic_system/src/cost_constants.rs" \
     "basic_system/src/system_functions/mod.rs" \
     "basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs" \
+    "basic_system/src/system_implementation/system/io_subsystem.rs" \
     "callable_oracles/Cargo.toml" \
     "callable_oracles/src/blob_data_id/mod.rs" \
     "callable_oracles/src/lib.rs" \
@@ -140,10 +142,12 @@ verify_semantics() {
     "evm_interpreter/src/precompile_addresses.rs" \
     "forward_system/Cargo.toml" \
     "forward_system/src/run/mod.rs" \
+    "forward_system/src/run/convert.rs" \
     "proof_running_system/Cargo.toml" \
     "system_hooks/Cargo.toml" \
     "system_hooks/src/lib.rs" \
     "zk_ee/src/common_structs/logs_storage.rs" \
+    "zk_ee/src/system/io.rs" \
     "zk_ee/src/system/base_system_functions.rs"
   do
     require_text "${tagged_path}" "SYSCOIN:"

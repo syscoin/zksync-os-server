@@ -1,3 +1,36 @@
+diff --git a/tools/verifier-gen/src/main.rs b/tools/verifier-gen/src/main.rs
+index bfd5368f6d4dfed50c913f657702988e9c3cb7ea..acd231480a43923fd3dc8aa408852cdd086d8817 100644
+GIT binary patch
+delta 1857
+zcma)7O>7%Q6qeJZB5OO1UH??6N}dxGcH6ZZQ4wI8rh=*!X;F-DRRpQE+B)Odva{=Y
+z#!=HMxQ7bpt<k%J#HlAF4pC2>xgZWmoM;gTE*vUxLU7>1%+9RiZH&Z9mS^AZH{bha
+z_WRP0<PjM+008^xnY~JJ%r^G!|AY@>pW?09-2OkYy%;_|k~-026d3RJYTWN|LMp+s
+z+~NCAj$kY$3q&4#cVcDskd;L&`=3uNkK=cf=gx>aP2XEKMb)OaX@mN=RxG#|WNf*-
+z)_?`kxrCkM91`O?{$SYgioZooGYG*Q<0}4XEKNul7S6^W;`6v&J9`!?A5|`uSJw#K
+zZIvr<<4tI|3_Ks`9a`&g_g0(2l`HR+*RDa=?{R7a^MN;-47S~F)Acxr<@?fK^u6{@
+zDYAt%-=hfem+^Vhz;<F8KS><LpA&@$vOf}e{3ZeTSHi}x65}yzKcB3|@Uy9ziH^$~
+z48NXwj9(nPh_6g<i(eM2X#*Ei4{#=x!_9PG_+G*<k8k3`%u{?TcR$yxLz{9?yRX;V
+zzSnY^9zL2nmABvmXiHFA6Np!jt&U4(@L9N6&z`~Z^dw%NK83$epH|*q)3c&;9)C-n
+z#A=G*xpX#kyb&GeJKk%rFWJLn1OoEX$phmGT)+>GlO@?$J`%JBx7~8Y7#ad?gWe&8
+zdNqH8s!6I?0X06hfHyOzQwIgD^J>=X*$w<QyO@!o3xkR(4*$*;Fq1oxluqm7c|)Z<
+z$-RA4TIzMYoy%Y%zu1?ryUJZ|nWkkK;%$DtR^K!^W!$P7TmA;fCDSwphoIM?T|(}4
+zDf8Rg)Cp*|K}gt!8%i;|x@p}5Az7hpW@;^wFvNo5%@vuXD@!cVH)+vX2LwoCN6)*{
+z<3V!*bG07h{#G&Y6q}y#U_XBH)qyk)hbq@WERIcPvSA(V6sIAqq<SjD$fkqXe1A6}
+zToXILF8QklCPByD7TfV^j?WyuHK)lOU0fV4Gd%EepHeO6&}MDDbJfZYl@#zVWv>Tv
+zSxv;0w?#m`9tt5JUz5$t6-&q{03^G(jL|N4=<PzJ7k(JG=C#~LhG`V|OT5rO6jv}c
+z^#Qn&*rO*d3ZXEi-_hLAuIsqohNFfV62zPqr5#7rJIs$`gVVP`<_@<U;^RN*xZHI^
+zKyrrx-Ljkw8o~c9*jK72<WeBR5%d<!7XeC6n7qA*Aq>r8FdqqR1fJm|Q3QPzMv`RW
+k3xXb;jMWiNHPE>d_Z{(_6Q3c|iqsR=gUpi8V2r!QzaLB|KL7v#
+
+delta 341
+zcmca$bxLo7)kJ$Y#@dMwT_>LHoqUneaB>u5+h#$gCPty6(&Uo-f)XpM;1Uqizo2At
+zH?!pCeasUXCnvDlF)0*p-pgvkGWiFmi2_hbW?s4ul-5+J=28HH+{BXP3<aPWdXs<f
+zDow8B3Yjd)Z94e~7YGYZPUcpeyqZU3vK=4K<SpEBU^x~ZtH~@pVo<rL$?m-BlNoun
+zCl~Q*Y+l71#K@GEHu*K5_T+iOJd<Vkmrgz@>^OM`zsF=g5zk2iWs~oTX;0P`P@23(
+zL~C-Hz~aemqT-W(iWp5kCSW!>RaA7cfZ#l!nEqr(L50chM1>|N3Mx%j5mTPLRIq{{
+z<YKV1b5ctbfYz)R)ScWe<~CVM=<eiaVlk85#C0Z@iHl6`6PKKPO=#id3*xqu1tr}0
+Pz<T_%H8eCexoWup&OC7#
+
 diff --git a/.github/workflows/l1-contracts-ci.yaml b/.github/workflows/l1-contracts-ci.yaml
 index 373a8cd2ce7167a7bf0f6e2214187ad184901f8f..ea26a6b69cf17fb7de4cf2a728ddddf0a1813674 100644
 --- a/.github/workflows/l1-contracts-ci.yaml
@@ -46,7 +79,7 @@ index 2f69f0596b6c3d939d07d224431244a90fa0c041..7cf5d667bb5a43f88d7ef0876dd82dae
  l1-contracts-foundry/lib
  lib
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd182658c7022ea47a09af2e1771a077e3a..61bef252312fc30c643b8482997daf191f07eb64 100644
+index a0200fd182658c7022ea47a09af2e1771a077e3a..1ac247e67a9a58cdc9fd0bc9fc808c7978fdd3a7 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -1,7 +1,7 @@
@@ -951,17 +984,17 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..61bef252312fc30c643b8482997daf19
    {
      "contractName": "l1-contracts/CommitterFacet",
 -    "zkBytecodeHash": "0x010005cd5257f32a6688147daad04b3b999d897cbb91aa3cebb02e2812ad0870",
-+    "zkBytecodeHash": "0x0100063d0f9ba3b6a271a95577cd18afac7e6ebaadd83c65ada7b36dbebb994e",
++    "zkBytecodeHash": "0x0100063ffa2ad9b09e9c3b9a6c585e0a0208f3a6de3ce5da77e00c981bfe9531",
      "zkBytecodePath": "/l1-contracts/zkout/Committer.sol/CommitterFacet.json",
 -    "evmBytecodeHash": "0x7b1ba12f4df29aa5a782b1406dc48f200d527eb50cd5d5b17b515aefc08f215e",
-+    "evmBytecodeHash": "0x94d298d02a3aaacfc7cb0d406304d59c0ac574bbd90943440e729ff4923045d7",
++    "evmBytecodeHash": "0x7aa77ad418268790914112b2d3a234454a5a42770594edc51b5b1924103d0afa",
      "evmBytecodePath": "/l1-contracts/out/Committer.sol/CommitterFacet.json",
 -    "evmDeployedBytecodeHash": "0xcf73a3a602b7f32662acbc64dac10a751f9c9597e8aa8bf8f70efabcc9f01895",
 -    "evmDeployedBytecodeBlakeHash": "0xb3f2f209f7876819db76d7a6b400e7cde7f121505075990fb38ec88818e8085f",
 -    "evmDeployedBytecodeLength": 14418
-+    "evmDeployedBytecodeHash": "0x05434675878c653728294b0309cbd2aabc6b9d05510418665611e3719250cb04",
-+    "evmDeployedBytecodeBlakeHash": "0x7edd6ca8ba7d578432314c59baf564bb7edcbf3263d977510b32e3d2add61d54",
-+    "evmDeployedBytecodeLength": 15783
++    "evmDeployedBytecodeHash": "0xef20f0bea5013291a4d226f8f027d89b0697c8a84a62109baef35f5e18c0751e",
++    "evmDeployedBytecodeBlakeHash": "0x01ccd1a1f6d0f202877e863346088ae825d29703a56068d1e2bbca912f08c40a",
++    "evmDeployedBytecodeLength": 15870
    },
    {
      "contractName": "l1-contracts/CountersUpgradeable",
@@ -3539,7 +3572,7 @@ index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..ed0fa914de6201bd01713ad68d5212d7
          }
          _enforceNoUnverifiedBatchesForChainConfigUpdate();
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b01bb331ea 100644
+index b8d073a5bd4a969c850a26a53e0004f2733faf0b..96732fc19a94fba8b91343f619826c591417c6c0 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 @@ -16,6 +16,16 @@ import {
@@ -3724,7 +3757,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          );
 
          storedBatchInfo = IExecutor.StoredBatchInfo({
-@@ -405,6 +411,132 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -405,6 +411,139 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          }
      }
 
@@ -3808,10 +3841,13 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
 +    function _verifySyscoinEdgeDARefs(bytes memory _input, bytes32 _expectedRoot) internal view {
 +        bytes32 root;
 +        uint256 offset;
-+        uint256 inputLength = _input.length;
++        // SYSCOIN: Cap the aggregate final-L1 Bitcoin-DA openings as well as each relayed
++        // message; otherwise many individually valid child batches could make one Gateway
++        // batch exceed the consensus 32-opening budget.
++        uint256 totalRefs;
 +
-+        while (offset < inputLength) {
-+            if (inputLength - offset < SYSCOIN_EDGE_DA_REF_HEAD_BYTES + 32) {
++        while (offset < _input.length) {
++            if (_input.length - offset < SYSCOIN_EDGE_DA_REF_HEAD_BYTES + 32) {
 +                revert SyscoinEdgeDARefInputMalformed(offset);
 +            }
 +
@@ -3825,10 +3861,14 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
 +            ) {
 +                revert SyscoinEdgeDARefInputMalformed(offset);
 +            }
++            totalRefs += hashesLength / SYSCOIN_DA_REFERENCE_SIZE;
++            if (totalRefs > SYSCOIN_DA_MAX_REFS_PER_BATCH) {
++                revert SyscoinEdgeDARefInputMalformed(offset);
++            }
 +
 +            uint256 hashesStart = offset + SYSCOIN_EDGE_DA_REF_HEAD_BYTES + 32;
 +            uint256 hashesEnd = hashesStart + hashesLength;
-+            if (hashesEnd > inputLength) {
++            if (hashesEnd > _input.length) {
 +                revert SyscoinEdgeDARefInputMalformed(offset);
 +            }
 +
@@ -3857,7 +3897,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
      function _commitOneBatchZKsyncOS(
          IExecutor.StoredBatchInfo memory _previousBatch,
          CommitBatchInfoZKsyncOS memory _newBatch,
-@@ -417,41 +549,22 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -417,41 +556,22 @@ contract CommitterFacet is ZKChainBase, ICommitter {
 
          // Preventing stack too deep error
          {
@@ -3912,7 +3952,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          }
 
          // When priority mode is activated, the batch must contain only priority transactions
-@@ -478,6 +591,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -478,6 +598,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
              revert SettlementLayerChainIdMismatch();
          }
 
@@ -3922,7 +3962,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          // The batch proof public input can be calculated as
          // keccak256(state_commitment_before & state_commitment_after & chain_config & batch_output_hash),
          // where chain_config is the chain id and the runtime chain config words (see `_getBatchProofPublicInputZKsyncOS`).
-@@ -495,7 +611,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -495,7 +618,9 @@ contract CommitterFacet is ZKChainBase, ICommitter {
                  _newBatch.l2LogsTreeRoot,
                  _expectedSystemContractUpgradeTxHash,
                  _newBatch.dependencyRootsRollingHash,
@@ -3933,7 +3973,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
              )
          );
 
-@@ -521,9 +639,7 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -521,9 +646,7 @@ contract CommitterFacet is ZKChainBase, ICommitter {
              // a proof for a new batch (and finalize it) even if the data for Gateway transactions has been fully lost.
              // For ZKsync OS this data includes only `StoredBatchInfo`: that is needed to commit and prove a batch on top of the previous one.
              // slither-disable-next-line unused-return
@@ -3944,7 +3984,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          }
 
          if (_newBatch.firstBlockNumber > _newBatch.lastBlockNumber) {
-@@ -533,9 +649,7 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -533,9 +656,7 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          // Emitting the block range for a batch. This is needed for indexing purposes.
          // IMPORTANT:in this release this range is not trusted and provided by the operator while not being included to the proof.
          emit ReportCommittedBatchRangeZKsyncOS(
@@ -3955,7 +3995,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          );
      }
 
-@@ -554,8 +668,8 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -554,8 +675,8 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          // We do not require the operator to always provide the precommitments as it is an optional feature.
          // However, if precommitments were provided, we do expect them to span over the entire batch
          if (
@@ -3966,7 +4006,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          ) {
              revert PrecommitmentMismatch(_batchNumber, _expectedL2TxsStatusRollingHash, storedPrecommitment);
          }
-@@ -610,10 +724,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -610,10 +731,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
      /// @dev The logs processed here should line up such that only one log for each key from the
      ///      SystemLogKey enum in Constants.sol is processed per new batch.
      /// @dev Data returned from here will be used to form the batch commitment.
@@ -3982,7 +4022,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          // Copy L2 to L1 logs into memory.
          bytes memory emittedL2Logs = _newBatch.systemLogs;
 
-@@ -631,11 +746,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -631,11 +753,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          for (uint256 i = 0; i < logsLength; i = i.uncheckedAdd(L2_TO_L1_LOG_SERIALIZE_SIZE)) {
              // Extract the values to be compared to/used such as the log sender, key, and value
              // slither-disable-next-line unused-return
@@ -3997,7 +4037,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
 
              // Ensure that the log hasn't been processed already
              if (_checkBit(processedLogs, uint8(logKey))) {
-@@ -705,10 +820,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -705,10 +827,11 @@ contract CommitterFacet is ZKChainBase, ICommitter {
      /// @param _currentPrecommitment The previous precommitment
      /// @param _packedTxPrecommitments The current precommitment
      /// @dev This function expects the number of new precommitments to be non-zero.
@@ -4013,7 +4053,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
          unchecked {
              uint256 length = _packedTxPrecommitments.length;
              if (length % PACKED_L2_PRECOMMITMENT_LENGTH != 0) {
-@@ -751,32 +867,29 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -751,32 +874,29 @@ contract CommitterFacet is ZKChainBase, ICommitter {
      ) internal view returns (bytes32 metadataHash, bytes32 auxiliaryOutputHash, bytes32 commitment) {
          bytes32 passThroughDataHash = keccak256(_batchPassThroughData(_newBatchData));
          metadataHash = keccak256(_batchMetaParameters());
@@ -4061,7 +4101,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..28ed99ccfea4ed3c9240c92de2e8a4b0
      }
 
      function _batchAuxiliaryOutput(
-@@ -792,24 +905,25 @@ contract CommitterFacet is ZKChainBase, ICommitter {
+@@ -792,24 +912,25 @@ contract CommitterFacet is ZKChainBase, ICommitter {
          bytes32 l2ToL1LogsHash = keccak256(_batch.systemLogs);
 
          return
@@ -9088,7 +9128,7 @@ index aec489a981b82cc928aad514a42c2a2dd1a0bec0..00000000000000000000000000000000
 -    }
 -}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
-index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f222aa68c8 100644
+index c621e20e759f413df914499e0ca9f8c6c0f0363d..a7a7f0a581913990cbcbc45ada6d80cf5cfbef3b 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 @@ -1,21 +1,102 @@
@@ -9204,7 +9244,7 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 
  contract CommittingTest is ExecutorTest {
      function isZKsyncOS() internal pure override returns (bool) {
-@@ -24,526 +105,264 @@ contract CommittingTest is ExecutorTest {
+@@ -24,526 +105,333 @@ contract CommittingTest is ExecutorTest {
 
      function setUp() public {}
 
@@ -9443,7 +9483,8 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 +            batch,
 +            abi.encodeWithSelector(TimeNotReached.selector, 1, block.timestamp - TESTNET_COMMIT_TIMESTAMP_NOT_OLDER)
          );
--
++    }
+
 -        CommitBatchInfoZKsyncOS memory correctNewCommitBatchInfo = newCommitBatchInfoZKsyncOS;
 -        correctNewCommitBatchInfo.operatorDAInput = operatorDAInput;
 -        correctNewCommitBatchInfo.daCommitment = daCommitment;
@@ -9465,8 +9506,8 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.blobhashes(blobVersionedHashes);
 -        vm.expectRevert(abi.encodeWithSelector(MismatchL2DACommitmentScheme.selector, 3, 4));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-     }
-
+-    }
+-
 -    function test_RevertWhen_CommittingWithWrongCalldata() public {
 -        // Calldata DA
 -        // With calldata zksync os always produces 1 blob with linear hash equals to zero
@@ -9575,7 +9616,13 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        address blobsl1DaValidatorZKsyncOS = Utils.deployBlobsL1DAValidatorZKsyncOSBytecode();
 -        vm.prank(address(owner));
 -        admin.setDAValidatorPair(blobsl1DaValidatorZKsyncOS, L2DACommitmentScheme.BLOBS_ZKSYNC_OS);
--
++    function _commitSyscoinWithEdgeRefs(bytes memory _input, bytes32 _root, bytes memory _expectedRevert) internal {
++        CommitBatchInfoZKsyncOS memory batch = _canonicalSyscoinBatch();
++        batch.edgeDARefsInput = _input;
++        batch.edgeDARefsRoot = _root;
++        _commitCanonicalSyscoinBatch(batch, _expectedRevert);
++    }
+
 -        vm.prank(validator);
 -        vm.blobhashes(blobVersionedHashes);
 -        vm.expectRevert(
@@ -9583,14 +9630,41 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -                InvalidBlobsPublished.selector,
 -                keccak256(abi.encodePacked(blobVersionedHashes)),
 -                daCommitment
--            )
--        );
++    function _splitSyscoinEdgeDARefs(uint256 _firstCount, uint256 _secondCount)
++        internal
++        view
++        returns (bytes memory input, bytes32 root)
++    {
++        bytes memory firstRefs = new bytes(_firstCount * 32);
++        bytes memory secondRefs = new bytes(_secondCount * 32);
++        (bytes memory firstInput,, bytes32 firstCommitment) =
++            _syscoinEdgeDARefsInput(l2ChainId, 7, firstRefs);
++        (bytes memory secondInput,, bytes32 secondCommitment) =
++            _syscoinEdgeDARefsInput(l2ChainId + 1, 8, secondRefs);
++        input = abi.encodePacked(firstInput, secondInput);
++
++        bytes32 firstRefHash = keccak256(
++            abi.encodePacked(
++                SYSCOIN_EDGE_DA_REFS_DOMAIN,
++                l2ChainId,
++                uint256(7),
++                firstCommitment,
++                _firstCount,
++                firstRefs
+             )
+         );
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function _commitSyscoinWithEdgeRefs(bytes memory _input, bytes32 _root, bytes memory _expectedRevert) internal {
-+        CommitBatchInfoZKsyncOS memory batch = _canonicalSyscoinBatch();
-+        batch.edgeDARefsInput = _input;
-+        batch.edgeDARefsRoot = _root;
-+        _commitCanonicalSyscoinBatch(batch, _expectedRevert);
++        bytes32 secondRefHash = keccak256(
++            abi.encodePacked(
++                SYSCOIN_EDGE_DA_REFS_DOMAIN,
++                l2ChainId + 1,
++                uint256(8),
++                secondCommitment,
++                _secondCount,
++                secondRefs
++            )
++        );
++        root = keccak256(abi.encodePacked(keccak256(abi.encodePacked(bytes32(0), firstRefHash)), secondRefHash));
      }
 
 -    function test_RevertWhen_CommittingWithNotPrepublishedBlobs() public {
@@ -9648,8 +9722,17 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(BlobNotPublished.selector);
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
--    }
--
++        bytes32 signature = keccak256("BlockCommit(uint256,bytes32,bytes32)");
++        bool found;
++        for (uint256 i = 0; i < logs.length; ++i) {
++            if (logs[i].emitter == address(committer) && logs[i].topics.length == 4 && logs[i].topics[0] == signature) {
++                assertEq(logs[i].topics[3], expectedCommitment);
++                found = true;
++            }
++        }
++        assertTrue(found, "BlockCommit not found");
+     }
+
 -    function test_RevertWhen_BatchNumberMismatch() public {
 -        bytes memory operatorDAInput = abi.encodePacked(bytes32(0));
 -        bytes32 daCommitment = bytes32(0);
@@ -9669,19 +9752,14 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
 -        vm.prank(address(owner));
 -        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
--
++    function test_SyscoinEdgeDARefsAcceptExactAggregateLimitSplitAcrossMessages() public {
++        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDAEcho()).code);
++        (bytes memory input, bytes32 root) = _splitSyscoinEdgeDARefs(16, 16);
+
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("BatchNumberMismatch(uint256,uint256)", 1, 5));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+        bytes32 signature = keccak256("BlockCommit(uint256,bytes32,bytes32)");
-+        bool found;
-+        for (uint256 i = 0; i < logs.length; ++i) {
-+            if (logs[i].emitter == address(committer) && logs[i].topics.length == 4 && logs[i].topics[0] == signature) {
-+                assertEq(logs[i].topics[3], expectedCommitment);
-+                found = true;
-+            }
-+        }
-+        assertTrue(found, "BlockCommit not found");
++        _commitSyscoinWithEdgeRefs(input, root, "");
      }
 
 -    function test_RevertWhen_IncorrectBatchChainId() public {
@@ -9696,7 +9774,10 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -
 -        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
 -        batchArray[0] = wrongChainBatch;
--
++    function test_RevertWhenSyscoinEdgeDARefsExceedAggregateLimitAcrossMessages() public {
++        (bytes memory input, bytes32 root) = _splitSyscoinEdgeDARefs(16, 17);
++        uint256 secondMessageOffset = abi.encode(uint8(1), l2ChainId, uint256(7), bytes32(0), new bytes(16 * 32)).length;
+
 -        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
 -            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
 -
@@ -9707,11 +9788,10 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("IncorrectBatchChainId(uint256,uint256)", 999, l2ChainId));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinEdgeDARefsInputMalformed() public {
 +        _commitSyscoinWithEdgeRefs(
-+            hex"1234",
-+            bytes32(0),
-+            abi.encodeWithSelector(SyscoinEdgeDARefInputMalformed.selector, 0)
++            input,
++            root,
++            abi.encodeWithSelector(SyscoinEdgeDARefInputMalformed.selector, secondMessageOffset)
 +        );
      }
 
@@ -9727,7 +9807,10 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -
 -        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
 -        batchArray[0] = wrongChainBatch;
--
++    function test_RevertWhenSingleSyscoinEdgeDARefMessageExceedsLimit() public {
++        bytes memory refs = new bytes(33 * 32);
++        (bytes memory input, bytes32 root,) = _syscoinEdgeDARefsInput(l2ChainId, 7, refs);
+
 -        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
 -            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
 -
@@ -9738,12 +9821,10 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("SettlementLayerChainIdMismatch()"));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinEdgeDARefsEmptyButRootNonzero() public {
-+        bytes32 root = keccak256("nonzero");
 +        _commitSyscoinWithEdgeRefs(
-+            "",
++            input,
 +            root,
-+            abi.encodeWithSelector(SyscoinEdgeDARefsRootMismatch.selector, root, bytes32(0))
++            abi.encodeWithSelector(SyscoinEdgeDARefInputMalformed.selector, 0)
 +        );
      }
 
@@ -9771,18 +9852,8 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("InvalidBlockRange(uint64,uint64,uint64)", 1, 10, 5));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinEdgeDARefsRootDoesNotOpen() public {
-+        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDAEcho()).code);
-+        bytes memory refsA = abi.encodePacked(bytes32(uint256(11)));
-+        bytes memory refsB = abi.encodePacked(bytes32(uint256(22)));
-+        (, bytes32 rootA, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, refsA);
-+        (bytes memory inputB, bytes32 rootB, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, refsB);
-+
-+        _commitSyscoinWithEdgeRefs(
-+            inputB,
-+            rootA,
-+            abi.encodeWithSelector(SyscoinEdgeDARefsRootMismatch.selector, rootA, rootB)
-+        );
++    function test_SyscoinEdgeDARefsEmptyInputAndZeroRootRemainValid() public {
++        _commitSyscoinWithEdgeRefs("", bytes32(0), "");
      }
 
 -    function test_RevertWhen_L2TimestampTooBig() public {
@@ -9809,18 +9880,11 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("L2TimestampTooBig()"));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinEdgeDAEmbeddedCommitmentDoesNotMatchRefs() public {
-+        bytes memory refs = abi.encodePacked(bytes32(uint256(11)));
-+        (bytes memory input, bytes32 root, bytes32 actualCommitment) = _syscoinEdgeDARefsInput(l2ChainId, 7, refs);
-+        bytes32 embeddedCommitment = keccak256("wrong");
-+        assembly {
-+            mstore(add(input, 0x80), embeddedCommitment)
-+        }
-+
++    function test_RevertWhenSyscoinEdgeDARefsInputMalformed() public {
 +        _commitSyscoinWithEdgeRefs(
-+            input,
-+            root,
-+            abi.encodeWithSelector(SyscoinEdgeDACommitmentMismatch.selector, embeddedCommitment, actualCommitment)
++            hex"1234",
++            bytes32(0),
++            abi.encodeWithSelector(SyscoinEdgeDARefInputMalformed.selector, 0)
 +        );
      }
 
@@ -9848,14 +9912,12 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(); // TimeNotReached error
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinBitcoinDAPrecompileReverts() public {
-+        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDARevert()).code);
-+        bytes32 dataHash = bytes32(uint256(11));
-+        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
++    function test_RevertWhenSyscoinEdgeDARefsEmptyButRootNonzero() public {
++        bytes32 root = keccak256("nonzero");
 +        _commitSyscoinWithEdgeRefs(
-+            input,
++            "",
 +            root,
-+            abi.encodeWithSelector(SyscoinEdgeDAPrecompileCallFailed.selector, dataHash)
++            abi.encodeWithSelector(SyscoinEdgeDARefsRootMismatch.selector, root, bytes32(0))
 +        );
      }
 
@@ -9887,11 +9949,18 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -        vm.prank(validator);
 -        vm.expectRevert(abi.encodeWithSignature("BatchTimestampGreaterThanLastL2BlockTimestamp()"));
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
-+    function test_RevertWhenSyscoinBitcoinDAReturnIsEmpty() public {
-+        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDAEmpty()).code);
-+        bytes32 dataHash = bytes32(uint256(11));
-+        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
-+        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
++    function test_RevertWhenSyscoinEdgeDARefsRootDoesNotOpen() public {
++        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDAEcho()).code);
++        bytes memory refsA = abi.encodePacked(bytes32(uint256(11)));
++        bytes memory refsB = abi.encodePacked(bytes32(uint256(22)));
++        (, bytes32 rootA, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, refsA);
++        (bytes memory inputB, bytes32 rootB, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, refsB);
++
++        _commitSyscoinWithEdgeRefs(
++            inputB,
++            rootA,
++            abi.encodeWithSelector(SyscoinEdgeDARefsRootMismatch.selector, rootA, rootB)
++        );
      }
 
 -    /// @notice Boundary case: `firstBlockTimestamp == lastBlockTimestamp` must still commit successfully,
@@ -9911,14 +9980,44 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..9512a132877fa7e3478fd3cd7196d7f2
 -
 -        CommitBatchInfoZKsyncOS[] memory batchArray = new CommitBatchInfoZKsyncOS[](1);
 -        batchArray[0] = equalTimestampBatch;
--
++    function test_RevertWhenSyscoinEdgeDAEmbeddedCommitmentDoesNotMatchRefs() public {
++        bytes memory refs = abi.encodePacked(bytes32(uint256(11)));
++        (bytes memory input, bytes32 root, bytes32 actualCommitment) = _syscoinEdgeDARefsInput(l2ChainId, 7, refs);
++        bytes32 embeddedCommitment = keccak256("wrong");
++        assembly {
++            mstore(add(input, 0x80), embeddedCommitment)
++        }
++
++        _commitSyscoinWithEdgeRefs(
++            input,
++            root,
++            abi.encodeWithSelector(SyscoinEdgeDACommitmentMismatch.selector, embeddedCommitment, actualCommitment)
++        );
++    }
+
 -        (uint256 commitBatchFrom, uint256 commitBatchTo, bytes memory commitData) = Utils
 -            .encodeCommitBatchesDataZKsyncOS(genesisStoredBatchInfo, batchArray);
--
++    function test_RevertWhenSyscoinBitcoinDAPrecompileReverts() public {
++        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDARevert()).code);
++        bytes32 dataHash = bytes32(uint256(11));
++        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
++        _commitSyscoinWithEdgeRefs(
++            input,
++            root,
++            abi.encodeWithSelector(SyscoinEdgeDAPrecompileCallFailed.selector, dataHash)
++        );
++    }
+
 -        address validiumL1DAValidator = address(new ValidiumL1DAValidator());
 -        vm.prank(address(owner));
 -        admin.setDAValidatorPair(validiumL1DAValidator, L2DACommitmentScheme.EMPTY_NO_DA);
--
++    function test_RevertWhenSyscoinBitcoinDAReturnIsEmpty() public {
++        vm.etch(SYSCOIN_BITCOIN_DA_PRECOMPILE, address(new SyscoinBitcoinDAEmpty()).code);
++        bytes32 dataHash = bytes32(uint256(11));
++        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
++        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
++    }
+
 -        vm.prank(validator);
 -        committer.commitBatchesSharedBridge(address(0), commitBatchFrom, commitBatchTo, commitData);
 +    function test_RevertWhenSyscoinBitcoinDAReturnDoesNotEchoRawHash() public {
@@ -11255,6 +11354,38 @@ index 0000000000000000000000000000000000000000..4c4374bc51c0e19daa0934f1454dff62
 +        manager.updateDAPair(deployed.rollupSLDAValidator, L2DACommitmentScheme.BLOBS_AND_PUBDATA_KECCAK256, true);
 +    }
 +}
+diff --git a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
+index db8384ac8af81a81859c0604ba90fed0a9ed8edd..19848634ee081ff943d1402106e96aff57be667f 100644
+--- a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
++++ b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
+@@ -357,11 +357,6 @@
+                 "type": "uint256",
+                 "internalType": "uint256"
+               },
+-              {
+-                "name": "availL1DAValidator",
+-                "type": "address",
+-                "internalType": "address"
+-              },
+               {
+                 "name": "chainCreationParams",
+                 "type": "tuple",
+diff --git a/l1-contracts/zkstack-out/IRegisterZKChain.sol/IRegisterZKChain.json b/l1-contracts/zkstack-out/IRegisterZKChain.sol/IRegisterZKChain.json
+index ebac6ed820e1308109907ff93c07e9113b6c0165..989c9915222204d9fcc70109856e1335327d7ffa 100644
+--- a/l1-contracts/zkstack-out/IRegisterZKChain.sol/IRegisterZKChain.json
++++ b/l1-contracts/zkstack-out/IRegisterZKChain.sol/IRegisterZKChain.json
+@@ -24,11 +24,6 @@
+             "type": "uint256",
+             "internalType": "uint256"
+           },
+-          {
+-            "name": "validiumMode",
+-            "type": "bool",
+-            "internalType": "bool"
+-          },
+           {
+             "name": "bridgehubCreateNewChainSalt",
+             "type": "uint256",
 diff --git a/protocol-ops/src/upgrade_verification/versions/v31/elements/deployed_addresses.rs b/protocol-ops/src/upgrade_verification/versions/v31/elements/deployed_addresses.rs
 index ef36f91c5977f3b1277f52bf98f79d3d3a5d6895..14389ed8fd8f704cc9c52950427cc18aea45de0a 100644
 --- a/protocol-ops/src/upgrade_verification/versions/v31/elements/deployed_addresses.rs
@@ -11286,39 +11417,6 @@ index 43c3447f2c847088e0c4de9aabab29ea60f5e289..6f652ae317fe80bb3973a3e3b8410793
 
  /// @dev Marker of EraVM bytecode
  uint8 constant ERA_VM_BYTECODE_FLAG = 1;
-diff --git a/tools/verifier-gen/src/main.rs b/tools/verifier-gen/src/main.rs
-index bfd5368f6d4dfed50c913f657702988e9c3cb7ea..acd231480a43923fd3dc8aa408852cdd086d8817 100644
-GIT binary patch
-delta 1857
-zcma)7O>7%Q6qeJZB5OO1UH??6N}dxGcH6ZZQ4wI8rh=*!X;F-DRRpQE+B)Odva{=Y
-z#!=HMxQ7bpt<k%J#HlAF4pC2>xgZWmoM;gTE*vUxLU7>1%+9RiZH&Z9mS^AZH{bha
-z_WRP0<PjM+008^xnY~JJ%r^G!|AY@>pW?09-2OkYy%;_|k~-026d3RJYTWN|LMp+s
-z+~NCAj$kY$3q&4#cVcDskd;L&`=3uNkK=cf=gx>aP2XEKMb)OaX@mN=RxG#|WNf*-
-z)_?`kxrCkM91`O?{$SYgioZooGYG*Q<0}4XEKNul7S6^W;`6v&J9`!?A5|`uSJw#K
-zZIvr<<4tI|3_Ks`9a`&g_g0(2l`HR+*RDa=?{R7a^MN;-47S~F)Acxr<@?fK^u6{@
-zDYAt%-=hfem+^Vhz;<F8KS><LpA&@$vOf}e{3ZeTSHi}x65}yzKcB3|@Uy9ziH^$~
-z48NXwj9(nPh_6g<i(eM2X#*Ei4{#=x!_9PG_+G*<k8k3`%u{?TcR$yxLz{9?yRX;V
-zzSnY^9zL2nmABvmXiHFA6Np!jt&U4(@L9N6&z`~Z^dw%NK83$epH|*q)3c&;9)C-n
-z#A=G*xpX#kyb&GeJKk%rFWJLn1OoEX$phmGT)+>GlO@?$J`%JBx7~8Y7#ad?gWe&8
-zdNqH8s!6I?0X06hfHyOzQwIgD^J>=X*$w<QyO@!o3xkR(4*$*;Fq1oxluqm7c|)Z<
-z$-RA4TIzMYoy%Y%zu1?ryUJZ|nWkkK;%$DtR^K!^W!$P7TmA;fCDSwphoIM?T|(}4
-zDf8Rg)Cp*|K}gt!8%i;|x@p}5Az7hpW@;^wFvNo5%@vuXD@!cVH)+vX2LwoCN6)*{
-z<3V!*bG07h{#G&Y6q}y#U_XBH)qyk)hbq@WERIcPvSA(V6sIAqq<SjD$fkqXe1A6}
-zToXILF8QklCPByD7TfV^j?WyuHK)lOU0fV4Gd%EepHeO6&}MDDbJfZYl@#zVWv>Tv
-zSxv;0w?#m`9tt5JUz5$t6-&q{03^G(jL|N4=<PzJ7k(JG=C#~LhG`V|OT5rO6jv}c
-z^#Qn&*rO*d3ZXEi-_hLAuIsqohNFfV62zPqr5#7rJIs$`gVVP`<_@<U;^RN*xZHI^
-zKyrrx-Ljkw8o~c9*jK72<WeBR5%d<!7XeC6n7qA*Aq>r8FdqqR1fJm|Q3QPzMv`RW
-k3xXb;jMWiNHPE>d_Z{(_6Q3c|iqsR=gUpi8V2r!QzaLB|KL7v#
-
-delta 341
-zcmca$bxLo7)kJ$Y#@dMwT_>LHoqUneaB>u5+h#$gCPty6(&Uo-f)XpM;1Uqizo2At
-zH?!pCeasUXCnvDlF)0*p-pgvkGWiFmi2_hbW?s4ul-5+J=28HH+{BXP3<aPWdXs<f
-zDow8B3Yjd)Z94e~7YGYZPUcpeyqZU3vK=4K<SpEBU^x~ZtH~@pVo<rL$?m-BlNoun
-zCl~Q*Y+l71#K@GEHu*K5_T+iOJd<Vkmrgz@>^OM`zsF=g5zk2iWs~oTX;0P`P@23(
-zL~C-Hz~aemqT-W(iWp5kCSW!>RaA7cfZ#l!nEqr(L50chM1>|N3Mx%j5mTPLRIq{{
-z<YKV1b5ctbfYz)R)ScWe<~CVM=<eiaVlk85#C0Z@iHl6`6PKKPO=#id3*xqu1tr}0
-Pz<T_%H8eCexoWup&OC7#
-
 diff --git a/tools/verifier-gen/README.md b/tools/verifier-gen/README.md
 index 76c5a61231bedbf7d1fce2a138f6d3e119fa13af..1c0f36df58bdea55aa131ae6bf23ab1202fa8995 100644
 --- a/tools/verifier-gen/README.md

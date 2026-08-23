@@ -523,7 +523,7 @@ mod tests {
     use alloy::consensus::{Header, Sealable};
     use alloy::eips::eip1559::INITIAL_BASE_FEE;
     use alloy::network::EthereumWallet;
-    use alloy::primitives::{Address, B256, U256, address, keccak256};
+    use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
     use alloy::providers::ProviderBuilder;
     use alloy::sol_types::SolValue;
     use alloy::transports::mock::Asserter;
@@ -743,6 +743,44 @@ mod tests {
         commit.edge_da_refs_input = vec![1];
         assert!(matches!(
             syscoin_da_availability_checks(&commit),
+            Err(BatchVerificationError::InvalidSyscoinDaCommitment(_))
+        ));
+    }
+
+    fn compact_edge_ref_message(chain_id: u64, batch_number: u64, ref_count: usize) -> Vec<u8> {
+        let hashes = vec![batch_number as u8; ref_count * 32];
+        (
+            U256::from(1),
+            U256::from(chain_id),
+            U256::from(batch_number),
+            keccak256(&hashes),
+            Bytes::from(hashes),
+        )
+            .abi_encode_params()
+    }
+
+    #[test]
+    fn verifier_caps_forwarded_refs_before_availability_work() {
+        let mut exact = dummy_commit_batch_info(BATCH_NUMBER, 1, 1);
+        exact.operator_da_input = vec![0xaa; 32 * 32];
+        exact.da_commitment = keccak256(&exact.operator_da_input);
+        exact.edge_da_refs_input = [
+            compact_edge_ref_message(57, 10, 16),
+            compact_edge_ref_message(58, 11, 16),
+        ]
+        .concat();
+        // SYSCOIN: The Gateway's own 32 openings and its separately capped 32 forwarded
+        // openings are independent budgets, for at most 64 finality checks in this host gate.
+        assert_eq!(syscoin_da_availability_checks(&exact).unwrap().len(), 64);
+
+        let mut oversized = exact;
+        oversized.edge_da_refs_input = [
+            compact_edge_ref_message(57, 10, 16),
+            compact_edge_ref_message(58, 11, 17),
+        ]
+        .concat();
+        assert!(matches!(
+            syscoin_da_availability_checks(&oversized),
             Err(BatchVerificationError::InvalidSyscoinDaCommitment(_))
         ));
     }

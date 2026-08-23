@@ -12,6 +12,7 @@ pub mod batcher_model;
 // SYSCOIN: Export the canonical compact Bitcoin DA builders and edge-reference reconstruction.
 pub use batch_info::{
     CanonicalBatchCommitData, CommittedBatchInfo, DiscoveredCommittedBatch, PendingBatchInfo,
-    SYSCOIN_DA_MAX_BLOBS_PER_BATCH, syscoin_blob_ids_and_chunks_from_pubdata,
+    SYSCOIN_DA_MAX_BLOBS_PER_BATCH, SYSCOIN_DA_MAX_REFS_PER_BATCH,
+    syscoin_blob_ids_and_chunks_from_pubdata, syscoin_edge_da_ref_count_for_blocks,
     syscoin_edge_da_refs_for_blocks, syscoin_edge_da_refs_from_input,
 };

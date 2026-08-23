@@ -301,6 +301,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             self.batcher_config.tx_per_batch_limit,
             self.pubdata_limit_bytes,
             self.batcher_config.interop_roots_per_batch_limit,
+            self.compact_edge_da_commit_target,
         );
 
         loop {
@@ -319,21 +320,42 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
                 /* ---------- collect blocks ---------- */
                seal_decision = block_receiver.peek_recv(|item| {
+                    // SYSCOIN: Evaluate the canonical forwarded-ref parser and aggregate cap on a
+                    // cloned candidate so fallible cap errors fail closed without mutating the
+                    // accepted accumulator; the match below then distinguishes seal from an
+                    // intrinsically oversized first block.
                     // determine if the block fits into the current batch
-                    let exceeds_standard_limit = accumulator
-                        .clone()
-                        .add(&item.output, &item.record)
-                        .should_seal();
+                    let mut candidate = accumulator.clone();
+                    candidate.add(&item.output, &item.record)?;
+                    let exceeds_forwarded_da_refs_limit =
+                        candidate.exceeds_forwarded_da_refs_limit();
+                    let exceeds_standard_limit = candidate.should_seal();
                     let contains_interop_bundle = block_contains_interop_bundle(&item.output);
-                    (exceeds_standard_limit, contains_interop_bundle)
+                    Ok::<_, anyhow::Error>((
+                        exceeds_standard_limit,
+                        exceeds_forwarded_da_refs_limit,
+                        contains_interop_bundle,
+                        item.record.block_context.block_number,
+                    ))
                 }) => {
                     state_reporter.enter_state(GenericComponentState::Active);
                     match seal_decision {
-                        Some((true, _)) if !blocks.is_empty() => {
+                        Some(Err(err)) => return Err(err),
+                        Some(Ok((true, _, _, _))) if !blocks.is_empty() => {
                             // some of the limits was reached, start sealing the batch
                             break;
                         }
-                        Some((exceeds_standard_limit, contains_interop_bundle)) => {
+                        Some(Ok((_, true, _, block_number))) => {
+                            // SYSCOIN: A block that alone forwards more than 32 openings can
+                            // never fit any batch; accepting it under the generic first-block
+                            // exception would create an unprovable and uncommittable batch.
+                            anyhow::bail!(
+                                "block {} exceeds the Gateway forwarded Bitcoin DA ref limit of {}",
+                                block_number,
+                                zksync_os_batch_types::SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                            );
+                        }
+                        Some(Ok((exceeds_standard_limit, _, contains_interop_bundle, _))) => {
                             // `exceeds_standard_limit` means the batch is still empty and the peeked
                             // block alone exceeds a seal limit. A batch must contain at least
                             // one block — refusing it would replay the same block forever — so
@@ -386,7 +408,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                             }
 
                             // ---------- accumulate batch data ----------
-                            accumulator.add(&block.output, &block.record);
+                            accumulator.add(&block.output, &block.record)?;
 
                             blocks.push(block);
 

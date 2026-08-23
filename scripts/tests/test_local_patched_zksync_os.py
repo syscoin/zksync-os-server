@@ -127,10 +127,10 @@ class LauncherStaticTests(unittest.TestCase):
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCH_SIZE="1133789"',
-            'EXPECTED_PATCH_SHA256="38b06604a483d037542a88f1ab1caf1688d58a0520b3773a74ab6e4b3f64626d"',
-            'EXPECTED_PATCH_PATH_COUNT="53"',
-            'EXPECTED_PATCH_PATHS_SHA256="dc67052881ca18e7ef03b5142a704a627357e1cb55d21ec2725e06cd343b11ac"',
+            'EXPECTED_PATCH_SIZE="1146546"',
+            'EXPECTED_PATCH_SHA256="65aaf1312613e8fc17986f1cd79259d86eac8775fae6b21115e6b3dd7b9f2864"',
+            'EXPECTED_PATCH_PATH_COUNT="57"',
+            'EXPECTED_PATCH_PATHS_SHA256="fb6bf7da23cd771b245c77baae77849a29df1364a11649989724e9d022de9950"',
         ):
             self.assertIn(expected, applicator)
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -138,7 +138,11 @@ class LauncherStaticTests(unittest.TestCase):
             "blob_data_id_advice.rs",
             "callable_oracles/src/blob_data_id/mod.rs",
             "forward_system/src/run/mod.rs",
+            "forward_system/src/run/convert.rs",
+            "basic_bootloader/src/bootloader/errors.rs",
+            "basic_system/src/system_implementation/system/io_subsystem.rs",
             "zk_ee/src/system/base_system_functions.rs",
+            "zk_ee/src/system/io.rs",
         ):
             self.assertIn(tagged_path, applicator)
 
@@ -247,14 +251,16 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="658434"',
-            'EXPECTED_PATCH_SHA256="1814e1ba5c0605df6e1338670d7c39d4d60e94503a2e836ed280cbd7207f4bcd"',
-            'EXPECTED_PATCH_PATH_COUNT="65"',
-            'EXPECTED_PATCH_PATHS_SHA256="8649c1aea0b303e6284d9ab26aff4641260aff9f6ce6ce3e2f5556331af3b3b0"',
+            'EXPECTED_PATCH_SIZE="662981"',
+            'EXPECTED_PATCH_SHA256="8295cacfc1227b8ab438e2de2dd789d32b50a8810eff51c621c339f1eb72636b"',
+            'EXPECTED_PATCH_PATH_COUNT="67"',
+            'EXPECTED_PATCH_PATHS_SHA256="9d38e0f838a0f505c3fa68e67999080bfba7530b5894ef799621612d212f2112"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
             "if (version != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {",
             "_verifySyscoinEdgeDARefs(_newBatch.edgeDARefsInput, _newBatch.edgeDARefsRoot);",
+            "uint256 totalRefs;",
+            "if (totalRefs > SYSCOIN_DA_MAX_REFS_PER_BATCH) {",
             "_l1ChainId != SYSCOIN_MAINNET_CHAIN_ID &&",
             "constructor(GatewayVerifiersDeployerConfig memory _config, uint256 _l1ChainId)",
             "return abi.encode(_plonk, _owner, _l1ChainId);",
@@ -353,11 +359,11 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "65"',
+            'ERA_PATCH_PATH_COUNT: "67"',
             "ERA_PATCH_PATHS_SHA256: "
-            "8649c1aea0b303e6284d9ab26aff4641260aff9f6ce6ce3e2f5556331af3b3b0",
+            "9d38e0f838a0f505c3fa68e67999080bfba7530b5894ef799621612d212f2112",
             "ERA_SOURCE_PATCHED_TREE: "
-            "74099df9db657faaa371ca8e1989e6fb2cb7741d",
+            "9ce505ed787020316ddc2d04bb176d80d49d0a11",
             f'ERA_HELPER_SIZE: "{len(helper)}"',
             f"ERA_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
         ):
