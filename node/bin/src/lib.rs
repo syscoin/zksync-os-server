@@ -1505,13 +1505,14 @@ fn validate_deployed_verifier_prover_policy(
             deployed_is_testnet_verifier,
             "in-process fake prover pools require a deployed verifier with IS_TESTNET_VERIFIER=true"
         );
-        if regeneration_required {
-            anyhow::ensure!(
-                prover_api_config.fake_fri_provers.enabled
-                    && prover_api_config.fake_snark_provers.enabled,
-                "canonical V8 VK regeneration is incomplete; both fake FRI and fake SNARK pools must be enabled"
-            );
-        }
+        // SYSCOIN: Fake proving is an in-process two-stage pipeline. A lone FRI pool cannot
+        // produce the SNARK submitted to settlement, and a lone SNARK pool has no FRI input;
+        // fail at startup instead of silently wedging batches in either configuration.
+        anyhow::ensure!(
+            prover_api_config.fake_fri_provers.enabled
+                && prover_api_config.fake_snark_provers.enabled,
+            "in-process fake proving requires both fake FRI and fake SNARK pools to be enabled"
+        );
         return Ok(());
     }
 
@@ -2904,6 +2905,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("both fake FRI and fake SNARK"));
+    }
+
+    // SYSCOIN: Installing the real VK does not make a partial mock pipeline operational.
+    #[test]
+    fn deployed_verifier_policy_completed_regeneration_rejects_either_partial_fake_pipeline() {
+        for (fake_fri_enabled, fake_snark_enabled) in [(true, false), (false, true)] {
+            let mut prover = ProverApiConfig::default();
+            prover.enabled = false;
+            prover.fake_fri_provers.enabled = fake_fri_enabled;
+            prover.fake_snark_provers.enabled = fake_snark_enabled;
+
+            let err = validate_deployed_verifier_prover_policy(
+                false,
+                &prover,
+                true,
+                B256::repeat_byte(0x11),
+                B256::repeat_byte(0x11),
+            )
+            .expect_err("either partial fake-prover topology must fail closed");
+            assert!(err.to_string().contains("both fake FRI and fake SNARK"));
+        }
     }
 
     #[test]
