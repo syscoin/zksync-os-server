@@ -645,7 +645,6 @@ mod tests {
             protocol_version: "0.29.1".parse().unwrap(),
             block_output_hash: B256::ZERO,
             force_preimages: vec![],
-            canonical_upgrade_tx_hash: B256::ZERO,
             starting_cursors: Default::default(),
         }
     }

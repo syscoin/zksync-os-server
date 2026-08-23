@@ -5,6 +5,7 @@ use crate::log_proof_utils::{
 };
 use crate::result::ToRpcResult;
 use crate::{EthCallHandler, ReadRpcStorage};
+use alloy::eips::BlockId;
 use alloy::primitives::{Address, B256, BlockNumber, TxHash, U64, U256, keccak256};
 use alloy::providers::DynProvider;
 use alloy::rpc::types::Index;
@@ -20,6 +21,7 @@ use zksync_os_contract_interface::settlement_layer_intervals::{
     IntervalSettlementLayer, SettlementLayerIntervals,
 };
 use zksync_os_genesis::{GenesisInput, GenesisInputSource};
+use zksync_os_l1_watcher::{CommittedBatchProvider, util::find_l1_execute_block_by_batch_number};
 use zksync_os_merkle_tree_api::flat::StorageSlotProof;
 use zksync_os_mini_merkle_tree::MiniMerkleTree;
 use zksync_os_rpc_api::{
@@ -29,7 +31,7 @@ use zksync_os_rpc_api::{
     },
     zks::ZksApiServer,
 };
-use zksync_os_storage_api::{RepositoryError, StateError, read_multichain_root};
+use zksync_os_storage_api::{PersistedBatch, RepositoryError, StateError, read_multichain_root};
 use zksync_os_types::{L2_TO_L1_TREE_SIZE, ProtocolSemanticVersion};
 
 pub struct ZksNamespace<RpcStorage> {
@@ -38,14 +40,50 @@ pub struct ZksNamespace<RpcStorage> {
     storage: RpcStorage,
     genesis_input_source: Arc<dyn GenesisInputSource>,
     l2_chain_id: u64,
-    /// Queries the deployed L1 MessageRoot when an interop proof needs its aggregation segments.
+    /// Queries L1 MessageRoot for V32 batches that settled directly on L1.
     l1_provider: DynProvider,
-    /// SYSCOIN: Present while the chain settles on Gateway; v31 proofs use its legacy tree format.
+    /// Present while the chain settles on Gateway; historical Gateway batches use its
+    /// `L2MessageRoot`.
     gateway_provider: Option<DynProvider>,
     // SYSCOIN: A configured historical Gateway client does not imply that every batch settled
     // there; route proofs by the discovered batch interval across Gateway -> L1 migrations.
     settlement_layer_intervals: SettlementLayerIntervals,
+    // SYSCOIN: Explicit operator trust gate for exposing MessageRoot proofs at the Gateway head.
+    // When disabled, the RPC remains bound to the persisted finalized-batch index.
+    optimistic_gateway_head: bool,
+    // SYSCOIN: With the explicit gate above, MessageRoot proofs for Gateway-settled batches may
+    // use the live committed-batch index after Gateway execution, without waiting for Gateway's
+    // aggregate batch to finalize on L1. Default withdrawal and direct-L1 proof paths continue to
+    // use persisted finalized batches.
+    committed_batch_provider: CommittedBatchProvider,
     commitment_tree_reader: InteropCommitmentTreeReader<RpcStorage>,
+}
+
+// SYSCOIN: The live committed-batch fallback is intentionally narrower than the persisted RPC
+// index: only Gateway MessageRoot proofs may use the optimistic Gateway execution boundary.
+fn permits_optimistic_gateway_batch(
+    optimistic_gateway_head: bool,
+    proof_target: LogProofTarget,
+    settlement_layer: &IntervalSettlementLayer,
+) -> bool {
+    optimistic_gateway_head
+        && matches!(proof_target, LogProofTarget::MessageRoot)
+        && matches!(settlement_layer, IntervalSettlementLayer::Gateway(_))
+}
+
+// SYSCOIN: A public proof request must report inconsistent transaction/batch indexing instead of
+// panicking the RPC task.
+fn require_batch_log_index(
+    batch_index: Option<usize>,
+    tx_hash: TxHash,
+    block_number: BlockNumber,
+    batch_number: u64,
+) -> ZksResult<usize> {
+    batch_index.ok_or(ZksError::TransactionNotInBatch {
+        tx_hash,
+        block_number,
+        batch_number,
+    })
 }
 
 impl<RpcStorage> ZksNamespace<RpcStorage> {
@@ -59,6 +97,8 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
         l1_provider: DynProvider,
         gateway_provider: Option<DynProvider>,
         settlement_layer_intervals: SettlementLayerIntervals,
+        optimistic_gateway_head: bool,
+        committed_batch_provider: CommittedBatchProvider,
         eth_call_handler: EthCallHandler<RpcStorage>,
     ) -> Self {
         Self {
@@ -70,6 +110,8 @@ impl<RpcStorage> ZksNamespace<RpcStorage> {
             l1_provider,
             gateway_provider,
             settlement_layer_intervals,
+            optimistic_gateway_head,
+            committed_batch_provider,
             commitment_tree_reader: InteropCommitmentTreeReader::new(eth_call_handler),
         }
     }
@@ -86,12 +128,45 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             return Ok(None);
         };
         let block_number = tx_meta.block_number;
-        let Some(batch) = self
+        let persisted_batch = self
             .storage
             .batch()
-            .get_batch_by_block_number(block_number)?
-        else {
-            return Ok(None);
+            .get_batch_by_block_number(block_number)?;
+        // SYSCOIN: The finalized batch store is deliberately conservative. For interop only, a
+        // Gateway execution is already a usable proof boundary: reconstruct from the live committed
+        // batch index and later prove that this exact batch has executed on Gateway. Never apply this
+        // fallback to withdrawals or direct-L1 MessageRoot proofs.
+        let batch = match persisted_batch {
+            Some(batch) => batch,
+            None if self.optimistic_gateway_head
+                && matches!(proof_target, LogProofTarget::MessageRoot) =>
+            {
+                let Some(committed_batch) = self
+                    .committed_batch_provider
+                    .get_batch_containing_block(block_number)
+                else {
+                    return Ok(None);
+                };
+                let committed_batch_number = committed_batch.number();
+                let Some(interval) = self
+                    .settlement_layer_intervals
+                    .find_interval(committed_batch_number)
+                else {
+                    return Ok(None);
+                };
+                if !permits_optimistic_gateway_batch(
+                    self.optimistic_gateway_head,
+                    proof_target,
+                    &interval.settlement_layer,
+                ) {
+                    return Ok(None);
+                }
+                PersistedBatch {
+                    committed_batch,
+                    execute_sl_block_number: None,
+                }
+            }
+            None => return Ok(None),
         };
 
         let mut batch_index = None;
@@ -121,24 +196,15 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                 }
             }
         }
-        let l1_log_index = batch_index
-            .expect("transaction not found in the batch that was supposed to contain it");
+        let l1_log_index =
+            require_batch_log_index(batch_index, tx_hash, block_number, batch_number)?;
 
         let (local_root, proof) =
             MiniMerkleTree::new(merkle_tree_leaves.into_iter(), Some(L2_TO_L1_TREE_SIZE))
                 .merkle_root_and_path(l1_log_index);
 
         let state = self.storage.state_view_at(*batch.block_range.end())?;
-        let last_block_replay_record = self
-            .storage
-            .replay_storage()
-            .get_replay_record(*batch.block_range.end())
-            .ok_or(ZksError::BlockNotAvailable(*batch.block_range.end()))?;
-        let multichain_root = if last_block_replay_record.protocol_version.is_post_v31() {
-            read_multichain_root(state)
-        } else {
-            B256::new([0u8; 32])
-        };
+        let multichain_root = read_multichain_root(state);
         let root = keccak256([local_root.0, multichain_root.0].concat());
         // SYSCOIN: We need to check if the root is the same as the committed root.
         if root != batch.batch_info.l2_to_l1_logs_root_hash {
@@ -155,9 +221,8 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
             .chain(std::iter::once(multichain_root))
             .collect::<Vec<_>>();
 
-        // SYSCOIN: Provider presence is historical configuration, not a per-batch routing signal.
-        // A post-migration node keeps its Gateway provider for old v31 proofs while new batches
-        // must extend through the direct-L1 MessageRoot path.
+        // SYSCOIN: Provider presence is not a per-batch routing signal. Resolve the recorded settlement
+        // interval so Gateway and direct-L1 batches extend the MessageRoot proof correctly.
         let settlement_interval = self
             .settlement_layer_intervals
             .find_interval(batch_number)
@@ -177,11 +242,31 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                     "batch {batch_number} settled on Gateway, but no historical Gateway provider is configured"
                 ))
             })?;
-            let execute_sl_block_number = batch.execute_sl_block_number.ok_or_else(|| {
-                ZksError::Batch(anyhow::anyhow!(
-                    "batch {batch_number} has not been executed on Gateway yet"
-                ))
-            })?;
+            let execute_sl_block_number = if let Some(block_number) = batch.execute_sl_block_number
+            {
+                block_number
+            } else {
+                if !self.optimistic_gateway_head {
+                    return Ok(None);
+                }
+                // SYSCOIN: The optimistic fallback is valid only after Gateway has executed the
+                // source batch. Resolve the exact execution block so the MessageRoot proof is
+                // anchored to the root emitted by that Gateway block, not to a later shared root.
+                let latest_executed = settlement_interval
+                    .proxy
+                    .get_total_batches_executed(BlockId::latest())
+                    .await
+                    .context("read latest Gateway executed batch")?;
+                if latest_executed < batch_number {
+                    return Ok(None);
+                }
+                find_l1_execute_block_by_batch_number(
+                    settlement_interval.proxy.clone(),
+                    batch_number,
+                )
+                .await
+                .context("resolve Gateway execution block")?
+            };
             let extension = build_gateway_proof_extension(
                 self.l2_chain_id,
                 batch_number,
@@ -190,17 +275,19 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                 gateway_provider,
             )
             .await
-            // SYSCOIN: retain the nested v31 Gateway contract-call cause in RPC errors; the
+            // SYSCOIN: retain the nested V32 Gateway contract-call cause in RPC errors; the
             // generic context alone makes production proof failures indistinguishable.
             .map_err(|err| anyhow::anyhow!("build Gateway proof extension: {err:#}"))?;
             (Some(extension), Some(execute_sl_block_number))
         } else {
             match proof_target {
-                // Other chains do not store this source batch root. They import the shared root
-                // keyed by `(L1 chain id, L1 block)`, so continue through the source chain's batch
-                // tree and L1's chain tree. The execution block identifies the exact shared root
-                // and supplies the settlement-layer timestamp boundary used by atomic interop.
                 LogProofTarget::MessageRoot => {
+                    let last_block_number = *batch.block_range.end();
+                    let last_block_replay_record = self
+                        .storage
+                        .replay_storage()
+                        .get_replay_record(last_block_number)
+                        .ok_or(ZksError::BlockNotAvailable(last_block_number))?;
                     if !last_block_replay_record
                         .protocol_version
                         .supports_l1_interop()
@@ -219,17 +306,13 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                                 "batch {batch_number} has not been executed on L1 yet"
                             ))
                         })?;
-
-                    // MessageRoot is a deployed L1 contract rather than a fixed-address system
-                    // contract, so its address comes from Bridgehub.
                     let l1_message_root_address =
                         IBridgehub::new(self.bridgehub_address, &self.l1_provider)
                             .messageRoot()
                             .call()
                             .await
                             .context("bridgehub.messageRoot()")?;
-
-                    let proof_extension = build_message_root_proof_extension(
+                    let extension = build_message_root_proof_extension(
                         self.l2_chain_id,
                         batch_number,
                         execute_sl_block_number,
@@ -238,8 +321,7 @@ impl<RpcStorage: ReadRpcStorage> ZksNamespace<RpcStorage> {
                     )
                     .await
                     .context("build MessageRoot proof extension")?;
-
-                    (Some(proof_extension), Some(execute_sl_block_number))
+                    (Some(extension), Some(execute_sl_block_number))
                 }
                 // Other targets (e.g. L1 withdrawal-finalization proofs) terminate at L1 as a
                 // final node — there is no settlement layer above L1.
@@ -515,14 +597,23 @@ pub enum ZksError {
     /// Historical transaction could not be found on this node (e.g., pruned).
     #[error("historical transaction {0} is not available")]
     TxNotAvailable(TxHash),
+    /// Transaction metadata and reconstructed batch contents disagree.
+    #[error(
+        "transaction {tx_hash} from block {block_number} is absent from reconstructed batch {batch_number}"
+    )]
+    TransactionNotInBatch {
+        tx_hash: TxHash,
+        block_number: BlockNumber,
+        batch_number: u64,
+    },
     /// Historical transaction could not be found on this node (e.g., pruned).
     #[error(
         "provided L2->L1 log index ({0}) does not exist; there are only {1} L2->L1 logs in the transaction"
     )]
     IndexOutOfBounds(usize, usize),
-    /// The requested batch predates the L1 MessageRoot proof format.
+    /// The requested batch predates the direct-L1 MessageRoot proof format.
     #[error(
-        "MessageRoot proofs require protocol version {required_protocol_version} or newer; batch \
+        "MessageRoot proofs require protocol version {required_protocol_version}; batch \
          {batch_number} uses {actual_protocol_version}"
     )]
     MessageRootProofUnsupportedProtocolVersion {
@@ -530,7 +621,6 @@ pub enum ZksError {
         required_protocol_version: ProtocolSemanticVersion,
         actual_protocol_version: ProtocolSemanticVersion,
     },
-
     #[error(transparent)]
     CommitmentTree(#[from] InteropCommitmentTreeError),
 
@@ -542,4 +632,56 @@ pub enum ZksError {
     GenesisSource(anyhow::Error),
     #[error(transparent)]
     State(#[from] StateError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        IntervalSettlementLayer, LogProofTarget, ZksError, permits_optimistic_gateway_batch,
+        require_batch_log_index,
+    };
+    use alloy::primitives::B256;
+
+    #[test]
+    fn optimistic_batch_fallback_is_gateway_message_root_only() {
+        let gateway = IntervalSettlementLayer::Gateway(506);
+        let l1 = IntervalSettlementLayer::L1;
+
+        assert!(permits_optimistic_gateway_batch(
+            true,
+            LogProofTarget::MessageRoot,
+            &gateway,
+        ));
+        assert!(!permits_optimistic_gateway_batch(
+            false,
+            LogProofTarget::MessageRoot,
+            &gateway,
+        ));
+        assert!(!permits_optimistic_gateway_batch(
+            true,
+            LogProofTarget::L1BatchRoot,
+            &gateway,
+        ));
+        assert!(!permits_optimistic_gateway_batch(
+            true,
+            LogProofTarget::MessageRoot,
+            &l1,
+        ));
+    }
+
+    // SYSCOIN: Inconsistent RPC indexes are returned as typed errors rather than panicking.
+    #[test]
+    fn missing_transaction_in_reconstructed_batch_is_typed_error() {
+        let tx_hash = B256::repeat_byte(0x11);
+        let err = require_batch_log_index(None, tx_hash, 42, 7).unwrap_err();
+
+        assert!(matches!(
+            err,
+            ZksError::TransactionNotInBatch {
+                tx_hash: actual_tx_hash,
+                block_number: 42,
+                batch_number: 7,
+            } if actual_tx_hash == tx_hash
+        ));
+    }
 }

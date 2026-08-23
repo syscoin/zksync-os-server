@@ -112,8 +112,10 @@ alloy::sol! {
 
         function getChainTree(uint256 chainId) public view returns (Bytes32PushTree);
 
-        // `l1Timestamp` is part of the batch-leaf preimage, so proofs bind the batch to L1 time.
-        event AppendedChainBatchRoot(uint256 indexed chainId, uint256 indexed batchNumber, bytes32 chainBatchRoot, uint256 l1Timestamp);
+        // SYSCOIN: The pinned Era V32 MessageRoot leaves bind the chain batch root and batch number. The settlement
+        // block is carried separately by the RPC proof response; it is not part of this event or
+        // `MessageHashing.batchLeafHash` in the pinned Era contracts.
+        event AppendedChainBatchRoot(uint256 indexed chainId, uint256 indexed batchNumber, bytes32 chainBatchRoot);
         function getMerklePathForChain(uint256 _chainId) external view returns (bytes32[] memory);
         mapping(uint256 chainId => uint256 chainIndex) public chainIndex;
     }
@@ -208,6 +210,15 @@ alloy::sol! {
             uint256 _chainId,
             uint256 _migrationNumber
         ) external view returns (MigrationInterval memory interval);
+    }
+
+    // SYSCOIN: Both canonical zkOS verifier wrappers expose an explicit deployment-mode marker.
+    // Startup uses it together with the on-chain VK hash to bind fake / real prover configuration
+    // to the verifier that the active settlement-layer diamond will actually call.
+    #[sol(rpc)]
+    interface IZKsyncOSVerifierMode {
+        function IS_TESTNET_VERIFIER() external view returns (bool);
+        function verificationKeyHash() external view returns (bytes32);
     }
 
     // `IChainTypeManager.sol`
@@ -308,6 +319,8 @@ alloy::sol! {
         function getAdmin() external view returns (address);
         function getTransactionFilterer() external view returns (address);
         function getChainTypeManager() external view returns (address);
+        // SYSCOIN: Resolve the verifier selected by this settlement-layer diamond at startup.
+        function getVerifier() external view returns (address);
         function getProtocolVersion() external view returns (uint256);
         function baseTokenGasPriceMultiplierNominator() external view returns (uint128);
         function baseTokenGasPriceMultiplierDenominator() external view returns (uint128);
@@ -409,70 +422,6 @@ alloy::sol! {
             uint256 _processTo,
             bytes calldata _executeData
         );
-    }
-
-    // taken from v29 version of `IExecutor.sol`
-    // We need this to make the server work with the v29 version of contracts during the upgrade, and it can be removed after
-    interface IExecutorV29 {
-        struct CommitBatchInfoZKsyncOS {
-            uint64 batchNumber;
-            bytes32 newStateCommitment;
-            uint256 numberOfLayer1Txs;
-            bytes32 priorityOperationsHash;
-            bytes32 dependencyRootsRollingHash;
-            bytes32 l2LogsTreeRoot;
-            address l2DaValidator;
-            bytes32 daCommitment;
-            uint64 firstBlockTimestamp;
-            uint64 lastBlockTimestamp;
-            uint256 chainId;
-            bytes operatorDAInput;
-        }
-    }
-
-    // taken from v30 version of `IExecutor.sol`
-    // This format is still required to submit v30 batches before the upgrade to v31.
-    interface IExecutorV30 {
-        struct CommitBatchInfoZKsyncOS {
-            uint64 batchNumber;
-            bytes32 newStateCommitment;
-            uint256 numberOfLayer1Txs;
-            bytes32 priorityOperationsHash;
-            bytes32 dependencyRootsRollingHash;
-            bytes32 l2LogsTreeRoot;
-            L2DACommitmentScheme daCommitmentScheme;
-            bytes32 daCommitment;
-            uint64 firstBlockTimestamp;
-            uint64 firstBlockNumber;
-            uint64 lastBlockTimestamp;
-            uint64 lastBlockNumber;
-            uint256 chainId;
-            bytes operatorDAInput;
-        }
-    }
-
-    // SYSCOIN: early v31 fixtures were generated before compact edge DA fields were appended,
-    // but after slChainId was added. Keep a read-only decoder for historical commit calldata;
-    // new commits use `IExecutor`.
-    interface IExecutorV31Legacy {
-        struct CommitBatchInfoZKsyncOS {
-            uint64 batchNumber;
-            bytes32 newStateCommitment;
-            uint256 numberOfLayer1Txs;
-            uint256 numberOfLayer2Txs;
-            bytes32 priorityOperationsHash;
-            bytes32 dependencyRootsRollingHash;
-            bytes32 l2LogsTreeRoot;
-            L2DACommitmentScheme daCommitmentScheme;
-            bytes32 daCommitment;
-            uint64 firstBlockTimestamp;
-            uint64 firstBlockNumber;
-            uint64 lastBlockTimestamp;
-            uint64 lastBlockNumber;
-            uint256 chainId;
-            bytes operatorDAInput;
-            uint256 slChainId;
-        }
     }
 
     // `IL1GenesisUpgrade.sol`
@@ -930,6 +879,40 @@ impl<P: Provider> ZkChain<P> {
             .call()
             .await
             .enrich("getChainTypeManager", None)
+    }
+
+    /// SYSCOIN: Returns the verifier selected by this diamond at `block_id`.
+    pub async fn get_verifier(&self, block_id: BlockId) -> Result<Address> {
+        self.instance
+            .getVerifier()
+            .block(block_id)
+            .call()
+            .await
+            .enrich("getVerifier", Some(block_id))
+    }
+
+    /// SYSCOIN: Reads the explicit deployment mode and VK hash from `verifier` at `block_id`.
+    /// Missing selectors, malformed return data, contract reverts, and provider errors propagate;
+    /// callers must never infer a production verifier from a failed marker call.
+    pub async fn get_zksync_os_verifier_mode(
+        &self,
+        verifier: Address,
+        block_id: BlockId,
+    ) -> Result<(bool, B256)> {
+        let instance = IZKsyncOSVerifierMode::new(verifier, self.provider());
+        let is_testnet = instance
+            .IS_TESTNET_VERIFIER()
+            .block(block_id)
+            .call()
+            .await
+            .enrich("IS_TESTNET_VERIFIER", Some(block_id))?;
+        let vk_hash = instance
+            .verificationKeyHash()
+            .block(block_id)
+            .call()
+            .await
+            .enrich("verificationKeyHash", Some(block_id))?;
+        Ok((is_testnet, vk_hash))
     }
 
     /// Returns the current protocol version of the chain.

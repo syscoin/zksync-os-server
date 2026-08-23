@@ -45,8 +45,7 @@ impl BackpressureConfig {
             | ComponentId::TreeManager
             | ComponentId::BatchWorkDispatcher
             | ComponentId::BatchWorkSource
-            | ComponentId::EnMigrationTrigger
-            | ComponentId::ProverInputGenerator => PipelineCondition {
+            | ComponentId::EnMigrationTrigger => PipelineCondition {
                 max_block_diff_to_upstream: Some(self.default_block_diff_limit),
                 ..Default::default()
             },

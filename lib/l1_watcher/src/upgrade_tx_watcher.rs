@@ -249,21 +249,12 @@ impl L1UpgradeTxWatcher {
             );
             (Some(tx), force_preimages)
         };
-        // SYSCOIN: upstream does not expose a canonical upgrade hash contract helper here. For
-        // full upgrade txs, bind replay metadata to the tx we actually fetched; patch-only
-        // metadata keeps the zero default and the patched OS falls back to its recorder.
-        let canonical_tx_hash = l2_upgrade_tx
-            .as_ref()
-            .map(|tx| *tx.hash())
-            .unwrap_or(B256::ZERO);
-
         let upgrade_tx = UpgradeInfo {
             tx: l2_upgrade_tx,
             metadata: UpgradeMetadata {
                 timestamp: *timestamp,
                 protocol_version,
                 force_preimages,
-                canonical_tx_hash,
             },
         };
 

@@ -387,7 +387,7 @@ struct ProviderTips {
     archive: BlockNumber,
 }
 
-// SYSCOIN
+// SYSCOIN: Fall back to the live settlement provider with the archive failure retained as context.
 async fn fetch_batch_from_live_with_context(
     live_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
@@ -400,7 +400,7 @@ async fn fetch_batch_from_live_with_context(
         .with_context(|| format!("{context}; live provider fallback also failed"))
 }
 
-// SYSCOIN
+// SYSCOIN: Snapshot both provider tips around archive lookups to detect lag or movement.
 async fn read_provider_tips(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -421,19 +421,19 @@ async fn read_provider_tips(
     Ok(ProviderTips { live, archive })
 }
 
-// SYSCOIN
+// SYSCOIN: A failed tip read can resolve directly through the live provider.
 enum TipReadOutcome {
     Tips(ProviderTips),
     LiveBatch(DiscoveredCommittedBatch),
 }
 
-// SYSCOIN
+// SYSCOIN: Archive discovery either yields a batch or requests a bounded retry with fresh tips.
 enum ArchiveLookupOutcome {
     Batch(DiscoveredCommittedBatch),
     Retry(ProviderTips),
 }
 
-// SYSCOIN
+// SYSCOIN: Route tip-read failures through the live provider instead of failing startup.
 async fn read_provider_tips_or_live_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -476,7 +476,7 @@ async fn read_provider_tips_or_live_fallback(
     }
 }
 
-// SYSCOIN
+// SYSCOIN: Never trust an archive result while its provider tip trails the live settlement tip.
 async fn live_fallback_if_archive_is_behind(
     live_proxy: &ZkChain<NodeProvider>,
     tips: ProviderTips,
@@ -509,7 +509,7 @@ async fn live_fallback_if_archive_is_behind(
     .map(Some)
 }
 
-// SYSCOIN
+// SYSCOIN: Retry archive reconstruction if either provider advanced during the lookup.
 fn retry_if_tips_changed(
     tips_before: ProviderTips,
     tips_after: ProviderTips,
@@ -534,7 +534,7 @@ fn retry_if_tips_changed(
     Some(ArchiveLookupOutcome::Retry(tips_after))
 }
 
-// SYSCOIN
+// SYSCOIN: Revalidate archive results against fresh live/archive tips before accepting them.
 async fn archive_batch_lookup_outcome(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,

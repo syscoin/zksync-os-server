@@ -88,7 +88,7 @@ fn load_config_defaults(config_sources: &mut ConfigSources, config_paths: Option
     load_config_file_sources(config_sources, &config_paths);
 }
 
-/// Stack size for tokio worker threads. The v32.0 native batch prover-input generator
+/// Stack size for tokio worker threads. The V8 native batch prover-input generator
 /// overflows the 2 MiB default and aborts the server while sealing its first batch.
 /// Only a ceiling - nothing is allocated up front.
 const WORKER_THREAD_STACK_SIZE: usize = 256 * 1024 * 1024;

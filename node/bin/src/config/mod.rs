@@ -20,7 +20,7 @@ use smart_config::{
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::num::{NonZeroU32, NonZeroU64};
-// SYSCOIN
+// SYSCOIN: Parse remote prover Basic Auth credentials and validated socket addresses.
 use std::str::FromStr;
 use std::{path::PathBuf, time::Duration};
 use zksync_os_batch_verification;
@@ -80,7 +80,6 @@ pub struct Config {
     pub gateway_sender_config: GatewaySenderConfig,
     pub l1_watcher_config: L1WatcherConfig,
     pub batcher_config: BatcherConfig,
-    pub prover_input_generator_config: ProverInputGeneratorConfig,
     pub prover_api_config: ProverApiConfig,
     pub status_server_config: StatusServerConfig,
     pub observability_config: ObservabilityConfig,
@@ -242,12 +241,6 @@ impl Config {
         schema
             .insert(&BatcherConfig::DESCRIPTION, "batcher")
             .expect("Failed to insert batcher config");
-        schema
-            .insert(
-                &ProverInputGeneratorConfig::DESCRIPTION,
-                "prover_input_generator",
-            )
-            .expect("Failed to insert prover_input_generator config");
         schema
             .insert(&ProverApiConfig::DESCRIPTION, "prover_api")
             .expect("Failed to insert prover api config");
@@ -479,7 +472,7 @@ pub struct GeneralConfig {
     #[config(default_t = NodeRole::MainNode, with = Serde![str])]
     pub node_role: NodeRole,
 
-    /// SYSCOIN Interval for warning while the main node waits on startup for pending settlement-layer
+    /// SYSCOIN: Interval for warning while the main node waits on startup for pending settlement-layer
     /// state to become finalized. Kept under the original timeout key for config compatibility; startup
     /// no longer aborts solely because pending state takes longer than this interval to finalize.
     #[config(default_t = 10 * TimeUnit::Seconds)]
@@ -577,7 +570,7 @@ pub struct ProviderConfig {
     #[config(default_t = Duration::from_millis(1000))]
     pub retry_backoff: Duration,
 
-    /// SYSCOIN Per-attempt timeout for every L1 or Gateway RPC request. Must comfortably exceed
+    /// SYSCOIN: Per-attempt timeout for every L1 or Gateway RPC request. Must comfortably exceed
     /// the slowest legitimate request (e.g. `eth_getLogs` over
     /// `l1_watcher.max_blocks_to_process` blocks).
     #[config(default_t = 30 * TimeUnit::Seconds)]
@@ -813,7 +806,7 @@ pub enum BitcoinDaFinalityMode {
     Confirmations,
 }
 
-// SYSCOIN
+// SYSCOIN: Fresh-only V32 genesis requires explicit L1 discovery inputs and a canonical guest file.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 pub struct GenesisConfig {
     /// L1 address of `Bridgehub` contract. This address and chain ID is an entrypoint into L1 discoverability so most
@@ -1011,6 +1004,16 @@ pub struct SequencerConfig {
     #[config(default_t = Duration::from_millis(250))]
     pub block_time: Duration,
 
+    /// SYSCOIN: Grace period for real traffic before a Gateway-settled edge produces one empty
+    /// companion block after an authenticated interop bundle. Direct-L1 chains never synthesize
+    /// this zero/zero batch because Era priority-mode activation can race the sequencer.
+    #[config(default_t = Duration::from_millis(250))]
+    #[config_validate(custom(
+        |_root: &Config, value: &Duration| !value.is_zero(),
+        "must be greater than zero"
+    ))]
+    pub interop_companion_idle_delay: Duration,
+
     /// Offset applied to wall-clock timestamps for newly produced blocks.
     /// Keep this at zero in production; historical local fixtures use it to stay aligned with
     /// their settlement-layer snapshot clock.
@@ -1027,7 +1030,7 @@ pub struct SequencerConfig {
     #[config(default_t = 100_000_000)]
     pub block_gas_limit: u64,
 
-    /// SYSCOIN Max pubdata bytes per block.
+    /// SYSCOIN: Maximum compact-DA pubdata bytes per block.
     /// One of the block Seal Criteria. Only affects the Main Node.
     #[config(default_t = 2 * 1024 * 1024)]
     pub block_pubdata_limit_bytes: u64,
@@ -1078,11 +1081,6 @@ pub struct SequencerConfig {
     /// If enabled, node will revert block with divergence detected by REVM consistency checker.
     #[config(default_t = false)]
     pub revm_consistency_checker_revert_on_divergence: bool,
-    /// SYSCOIN: allow REVM execution failures only during explicitly configured bootstrap replay.
-    /// This is disabled by default so other deployments keep strict early-chain checking.
-    #[config(default_t = false)]
-    pub revm_consistency_checker_allow_bootstrap_skip: bool,
-
     /// Block rebuild / L1 revert options. See [`RebuildConfig`] for the three modes.
     #[config(nest)]
     #[config_validate(custom(
@@ -1458,10 +1456,6 @@ pub struct L1SenderConfig {
     #[config(default_t = 1 * EtherUnit::Gwei)]
     pub max_priority_fee_per_gas: EtherAmount,
 
-    /// Max fee per blob gas we are willing to spend.
-    #[config(default_t = 2 * EtherUnit::Gwei)]
-    pub max_fee_per_blob_gas: EtherAmount,
-
     /// Force transaction resubmission options.
     #[config(nest, default)]
     pub force_transaction_resubmission: ForceTransactionResubmissionConfig,
@@ -1469,8 +1463,7 @@ pub struct L1SenderConfig {
     /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
     /// With pipelined sending this is the in-flight window size: the max number of
     /// submitted-but-not-yet-mined L1 transactions. Must not exceed the L1 node's per-account
-    /// pool cap — 16 for both geth's blobpool (`maxTxsPerAccount`) and reth's default
-    /// `max-account-slots` — or sends are rejected until the pool drains.
+    /// pool cap, or sends are rejected until the pool drains.
     #[config(default_t = 16)]
     pub command_limit: usize,
 
@@ -1552,9 +1545,7 @@ pub struct L1SenderConfig {
 #[config(derive(Default))]
 #[config(validate(
     Self::check_replacement_multipliers,
-    "replacement multipliers must be >= 1.1 (>= 2.0 for the blob fee) while force resubmission \
-     is enabled: geth and reth replace a pooled transaction only with a 10% fee bump (100% for \
-     blob transactions)"
+    "replacement multipliers must be >= 1.1 while force resubmission is enabled"
 ))]
 pub struct ForceTransactionResubmissionConfig {
     /// Skips startup in-flight recovery and resubmits queued L1 transactions with replacement fee caps.
@@ -1570,23 +1561,16 @@ pub struct ForceTransactionResubmissionConfig {
     /// Must be >= 1.1 while forced resubmission is enabled.
     #[config(default_t = 1.1, validate(is_positive_f64, "must be positive"))]
     pub max_priority_fee_per_gas_replacement_multiplier: f64,
-
-    /// Multiplier applied to `max_fee_per_blob_gas` when force transaction resubmission is enabled.
-    /// Must be >= 2.0 while forced resubmission is enabled.
-    #[config(default_t = 2.0, validate(is_positive_f64, "must be positive"))]
-    pub max_fee_per_blob_gas_replacement_multiplier: f64,
 }
 
 impl ForceTransactionResubmissionConfig {
     fn check_replacement_multipliers(&self) -> Result<(), ErrorWithOrigin> {
         if self.enabled
             && (self.max_fee_per_gas_replacement_multiplier < 1.1
-                || self.max_priority_fee_per_gas_replacement_multiplier < 1.1
-                || self.max_fee_per_blob_gas_replacement_multiplier < 2.0)
+                || self.max_priority_fee_per_gas_replacement_multiplier < 1.1)
         {
             return Err(ErrorWithOrigin::custom(
-                "replacement multipliers must be >= 1.1 (>= 2.0 for the blob fee) while force \
-                 resubmission is enabled",
+                "replacement multipliers must be >= 1.1 while force resubmission is enabled",
             ));
         }
         Ok(())
@@ -1700,6 +1684,16 @@ pub struct L1WatcherConfig {
     #[config(default_t = 2)]
     pub confirmations: u64,
 
+    /// SYSCOIN: Trust the active Gateway head as the interop settlement boundary for an edge
+    /// chain. This removes the confirmation lag for Gateway commit / execute and interop-root
+    /// watchers, but does not change direct-L1 or finalized watchers.
+    ///
+    /// With OpenRaft, Gateway `latest` is exposed only after quorum canonization. Without a
+    /// canonizer, this explicitly trusts the Gateway sequencer / RPC not to reorg an imported
+    /// root; imported interop roots cannot be rolled back after destination execution.
+    #[config(default_t = false)]
+    pub optimistic_gateway_head: bool,
+
     /// How often to poll L1 for the latest block.
     #[config(default_t = 1 * TimeUnit::Seconds)]
     pub poll_interval: Duration,
@@ -1756,7 +1750,7 @@ pub struct BatcherConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// SYSCOIN Maximum time a batch stays open before being sealed.
+    /// SYSCOIN: Maximum time a batch stays open before being sealed.
     ///
     /// The deadline is computed as `first_block_timestamp + batch_timeout`, where
     /// `first_block_timestamp` is the L2 timestamp of the first block in the batch. Using an
@@ -1776,7 +1770,7 @@ pub struct BatcherConfig {
     #[config(default_t = 10000)]
     pub tx_per_batch_limit: u64,
 
-    /// SYSCOIN Max number of L2 blocks per batch.
+    /// SYSCOIN: Maximum number of L2 blocks per batch.
     #[config(default_t = 1000)]
     pub blocks_per_batch_limit: u64,
 
@@ -1845,45 +1839,9 @@ pub struct BatcherConfig {
     pub bitcoin_da_gateway_l1_republish_enabled: bool,
 }
 
-// SYSCOIN: pipeline sends are nonblocking. The prover input generator processes
-// one warm-up block before opening the concurrent window, so the output channel
-// reserves one slot beyond the supported in-flight result burst.
-pub const PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS: usize = 16;
-pub const PROVER_INPUT_GENERATOR_OUTPUT_CHANNEL_CAPACITY: usize =
-    PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS + 1;
+/// SYSCOIN: Hard upper bound for amortized real-SNARK aggregation on the main node.
+const MAX_FRIS_PER_SNARK_HARD_CAP: usize = 100;
 
-/// Only used on the Main Node.
-#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
-#[config(derive(Default))]
-pub struct ProverInputGeneratorConfig {
-    /// Whether to enable debug output in RiscV binary.
-    /// Also known as server_app.bin vs server_app_logging_enabled.bin
-    #[config(default_t = false)]
-    pub logging_enabled: bool,
-
-    /// How many blocks should be worked on at once.
-    /// The batcher will wait for block N to finish before starting block N + maximum_in_flight_blocks.
-    #[config(
-        default_t = PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS,
-        validate(
-            maximum_in_flight_blocks_within_output_capacity,
-            "must not exceed supported prover input generator in-flight capacity"
-        )
-    )]
-    pub maximum_in_flight_blocks: usize,
-
-    /// When false, skip prover input generation and emit `ProverInput::Fake` instead.
-    /// Used for tests and some testnets where the expensive RiscV witness computation
-    /// is unnecessary.
-    #[config(default_t = true)]
-    pub enable_input_generation: bool,
-}
-
-fn maximum_in_flight_blocks_within_output_capacity(&val: &usize) -> bool {
-    val <= PROVER_INPUT_GENERATOR_MAXIMUM_IN_FLIGHT_BLOCKS
-}
-
-/// Only used on the Main Node.
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct ProverApiConfig {
@@ -1905,7 +1863,7 @@ pub struct ProverApiConfig {
     ))]
     pub address: String,
 
-    /// SYSCOIN Basic Auth username for remote prover API access.
+    /// SYSCOIN: Basic Auth username for remote prover API access.
     #[config(secret)]
     #[config_validate(custom(
         |root: &Config, value: &Option<SecretString>| {
@@ -1916,7 +1874,7 @@ pub struct ProverApiConfig {
     ))]
     pub auth_user: Option<SecretString>,
 
-    /// SYSCOIN Basic Auth password for remote prover API access.
+    /// SYSCOIN: Basic Auth password for remote prover API access.
     #[config(secret)]
     #[config_validate(custom(
         |root: &Config, value: &Option<SecretString>| {
@@ -1942,24 +1900,58 @@ pub struct ProverApiConfig {
     /// however, we won't turn real FRI proofs into fake ones - even on timeout.
     pub fake_snark_provers: FakeSnarkProversConfig,
 
-    /// SYSCOIN Timeout after which a FRI prover job is assigned to another Fri Prover Worker.
+    /// SYSCOIN: Timeout after which a FRI prover job is assigned to another FRI prover worker.
     #[config(alias = "job_timeout", default_t = 1800 * TimeUnit::Seconds)]
     pub fri_job_timeout: Duration,
 
-    /// SYSCOIN Timeout after which a SNARK prover job is assigned to another SNARK Prover Worker.
-    #[config(default_t = Duration::from_secs(600))]
+    /// SYSCOIN: Lease timeout after which a SNARK job may be assigned to another worker. CPU
+    /// combining and wrapping can legitimately outlast GPU FRI work, so the conservative default
+    /// avoids duplicate wrapping while operators collect deployment-specific timing data.
+    #[config(default_t = Duration::from_secs(7200))]
     pub snark_job_timeout: Duration,
 
-    /// SYSCOIN Max difference between the oldest and newest batch number being proven
+    /// SYSCOIN: Max difference between the oldest and newest batch number being proven.
     /// If the difference is larger than this, provers will not be assigned new jobs - only retries.
     /// We use max range instead of length limit to avoid having one old batch stuck -
-    /// otherwise GaplessCommitter's buffer would grow indefinitely.
-    #[config(default_t = 128)]
+    /// otherwise GaplessCommitter's buffer would grow indefinitely. The default holds one active
+    /// 100-FRI SNARK lease, the next complete 100-FRI aggregate, and at least 56 batches of
+    /// headroom so three resident GPU FRI workers do not stall while the separate CPU worker
+    /// combines and wraps the active range.
+    #[config(default_t = 256)]
+    #[config_validate(custom(
+        |_root: &Config, value: &usize| *value > 0,
+        "must be greater than zero"
+    ))]
     pub max_assigned_batch_range: usize,
 
-    /// SYSCOIN Max number of FRI proofs that will be aggregated to a single SNARK job.
+    /// SYSCOIN: Max number of FRI proofs aggregated into a single SNARK job.
     #[config(default_t = 100)]
+    #[config_validate(custom(
+        |_root: &Config, value: &usize| (2..=MAX_FRIS_PER_SNARK_HARD_CAP).contains(value),
+        "must be between 2 and the hard cap of 100"
+    ))]
     pub max_fris_per_snark: usize,
+
+    /// SYSCOIN: Preferred number of compatible consecutive FRI proofs in a real SNARK job.
+    /// A shorter range is released after `max_snark_batch_wait` only when it contains at least
+    /// two proofs. Ranges never cross a gap or proving-version boundary.
+    #[config(default_t = 100)]
+    #[config_validate(custom(
+        |root: &Config, value: &usize| {
+            *value >= 2 && *value <= root.prover_api_config.max_fris_per_snark
+        },
+        "must be between 2 and `prover_api.max_fris_per_snark`"
+    ))]
+    pub target_fris_per_snark: usize,
+
+    /// SYSCOIN: Maximum age of the oldest eligible FRI proof before a short range containing at
+    /// least two proofs is released to a real SNARK prover.
+    #[config(default_t = 3600 * TimeUnit::Seconds)]
+    #[config_validate(custom(
+        |_root: &Config, value: &Duration| !value.is_zero(),
+        "must be greater than zero"
+    ))]
+    pub max_snark_batch_wait: Duration,
 
     /// Default: store files in ./db/fri_proofs/ with 1GiB disk usage cap
     #[config(nest, default)]
@@ -2250,9 +2242,7 @@ pub struct GasAdjusterConfig {
     #[config(default_t = 100)]
     pub max_base_fee_samples: usize,
     #[config(default_t = 100)]
-    pub num_samples_for_blob_base_fee_estimate: usize,
-    #[config(default_t = 100)]
-    pub max_blob_fill_ratio_samples: usize,
+    pub num_samples_for_da_fee_estimate: usize,
     #[config(default_t = 13 * TimeUnit::Seconds)]
     pub poll_period: Duration,
     #[config(default_t = 1.0)]
@@ -2311,7 +2301,7 @@ pub struct BatchVerificationConfig {
     pub threshold: u64,
     /// [main node] Accepted signer pubkeys.
     #[config(default, with = Delimited::new(","))]
-    // SYSCOIN
+    // SYSCOIN: Reject malformed signer addresses before batch-verification startup.
     #[config_validate(custom(
         |root: &Config, value: &Vec<String>| {
             !root.batch_verification_config.server_enabled
@@ -2330,7 +2320,7 @@ pub struct BatchVerificationConfig {
     // SYSCOIN: Signing keys must not be serialized into config metrics.
     #[config(secret)]
     #[config(default_t = "".into())]
-    // SYSCOIN
+    // SYSCOIN: Reject malformed batch-verifier signing keys during config validation.
     #[config_validate(custom(
         |root: &Config, value: &SecretString| {
             !root.batch_verification_config.client_enabled
@@ -2661,13 +2651,10 @@ impl L1SenderConfig {
             fee_config: zksync_os_l1_sender::config::L1SenderFeeConfig {
                 max_fee_per_gas_wei: self.max_fee_per_gas.0,
                 max_priority_fee_per_gas_wei: self.max_priority_fee_per_gas.0,
-                max_fee_per_blob_gas_wei: self.max_fee_per_blob_gas.0,
                 max_fee_per_gas_replacement_multiplier: force_transaction_resubmission
                     .max_fee_per_gas_replacement_multiplier,
                 max_priority_fee_per_gas_replacement_multiplier: force_transaction_resubmission
                     .max_priority_fee_per_gas_replacement_multiplier,
-                max_fee_per_blob_gas_replacement_multiplier: force_transaction_resubmission
-                    .max_fee_per_blob_gas_replacement_multiplier,
             },
             force_transaction_resubmission: force_transaction_resubmission.enabled,
             command_limit: self.command_limit,
@@ -2725,14 +2712,10 @@ impl GatewaySenderConfig {
             fee_config: zksync_os_l1_sender::config::L1SenderFeeConfig {
                 max_fee_per_gas_wei: self.max_fee_per_gas.0,
                 max_priority_fee_per_gas_wei: self.max_priority_fee_per_gas.0,
-                // Gateway transactions never carry blobs, so the blob fee cap is unused.
-                max_fee_per_blob_gas_wei: 0,
                 max_fee_per_gas_replacement_multiplier: force_transaction_resubmission
                     .max_fee_per_gas_replacement_multiplier,
                 max_priority_fee_per_gas_replacement_multiplier: force_transaction_resubmission
                     .max_priority_fee_per_gas_replacement_multiplier,
-                max_fee_per_blob_gas_replacement_multiplier: force_transaction_resubmission
-                    .max_fee_per_blob_gas_replacement_multiplier,
             },
             force_transaction_resubmission: force_transaction_resubmission.enabled,
             command_limit: self.command_limit,
@@ -2841,20 +2824,17 @@ impl From<BatchVerificationConfig> for zksync_os_batch_verification::BatchVerifi
 pub fn gas_adjuster_config(
     c: GasAdjusterConfig,
     pubdata_mode: PubdataMode,
-    use_syscoin_blob_da: bool,
     max_priority_fee_per_gas_wei: u128,
     batcher_config: &BatcherConfig,
 ) -> zksync_os_gas_adjuster::GasAdjusterConfig {
     zksync_os_gas_adjuster::GasAdjusterConfig {
         pubdata_mode,
-        use_syscoin_blob_da,
         max_base_fee_samples: c.max_base_fee_samples,
-        num_samples_for_blob_base_fee_estimate: c.num_samples_for_blob_base_fee_estimate,
-        max_blob_fill_ratio_samples: c.max_blob_fill_ratio_samples,
+        num_samples_for_da_fee_estimate: c.num_samples_for_da_fee_estimate,
         max_priority_fee_per_gas: max_priority_fee_per_gas_wei,
         poll_period: c.poll_period,
         pubdata_pricing_multiplier: c.pubdata_pricing_multiplier,
-        // SYSCOIN
+        // SYSCOIN: Feed Bitcoin DA pricing credentials and policy into the gas adjuster.
         bitcoin_da_rpc_url: batcher_config.bitcoin_da_rpc_url.clone(),
         bitcoin_da_rpc_user: batcher_config
             .bitcoin_da_rpc_user
@@ -2987,6 +2967,12 @@ mod tests {
         repo.single::<L1SenderConfig>().unwrap().parse().unwrap()
     }
 
+    fn parse_l1_watcher_config<const N: usize>(env_vars: [(&str, &str); N]) -> L1WatcherConfig {
+        let schema = ConfigSchema::new(&L1WatcherConfig::DESCRIPTION, "l1_watcher");
+        let repo = ConfigRepository::new(&schema).with(Environment::from_iter("", env_vars));
+        repo.single::<L1WatcherConfig>().unwrap().parse().unwrap()
+    }
+
     fn parse_mempool_tx_validator_config<const N: usize>(
         env_vars: [(&str, &str); N],
     ) -> MempoolTxValidatorConfig {
@@ -3007,6 +2993,16 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap()
+    }
+
+    // SYSCOIN: Gateway-head interop must remain opt-in in both YAML and environment config.
+    #[test]
+    fn optimistic_gateway_head_config_is_explicit() {
+        assert!(!parse_l1_watcher_config([]).optimistic_gateway_head);
+        assert!(
+            parse_l1_watcher_config([("L1_WATCHER_OPTIMISTIC_GATEWAY_HEAD", "true")])
+                .optimistic_gateway_head
+        );
     }
 
     #[test]
@@ -3190,12 +3186,6 @@ mod tests {
                 .max_priority_fee_per_gas_replacement_multiplier,
             1.1
         );
-        assert_eq!(
-            default_config
-                .force_transaction_resubmission
-                .max_fee_per_blob_gas_replacement_multiplier,
-            2.0
-        );
 
         let config = parse_l1_sender_config([
             ("L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_ENABLED", "true"),
@@ -3206,10 +3196,6 @@ mod tests {
             (
                 "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_PRIORITY_FEE_PER_GAS_REPLACEMENT_MULTIPLIER",
                 "1.5",
-            ),
-            (
-                "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_BLOB_GAS_REPLACEMENT_MULTIPLIER",
-                "2.25",
             ),
         ]);
 
@@ -3225,12 +3211,6 @@ mod tests {
                 .force_transaction_resubmission
                 .max_priority_fee_per_gas_replacement_multiplier,
             1.5
-        );
-        assert_eq!(
-            config
-                .force_transaction_resubmission
-                .max_fee_per_blob_gas_replacement_multiplier,
-            2.25
         );
     }
 
@@ -3289,12 +3269,11 @@ mod tests {
                 operator_execute_sk: Some(local_signer(0x33)),
                 max_fee_per_gas: 200 * EtherUnit::Gwei,
                 max_priority_fee_per_gas: 1 * EtherUnit::Gwei,
-                max_fee_per_blob_gas: 2 * EtherUnit::Gwei,
                 force_transaction_resubmission: ForceTransactionResubmissionConfig::default(),
                 command_limit: 16,
                 pipelining_enabled: true,
                 poll_interval: Duration::from_millis(100),
-                // SYSCOIN
+                // SYSCOIN: Slow settlement RPCs need a longer transaction-liveness budget.
                 transaction_timeout: Duration::from_secs(3000),
                 tx_liveness_poll_interval: Duration::from_secs(30),
                 tx_liveness_max_missing_polls: 3,
@@ -3310,7 +3289,6 @@ mod tests {
             gateway_sender_config: GatewaySenderConfig::default(),
             l1_watcher_config: L1WatcherConfig::default(),
             batcher_config: BatcherConfig::default(),
-            prover_input_generator_config: ProverInputGeneratorConfig::default(),
             prover_api_config: ProverApiConfig::default(),
             status_server_config: StatusServerConfig::default(),
             observability_config: ObservabilityConfig::default(),
@@ -3327,7 +3305,7 @@ mod tests {
         }
     }
 
-    // SYSCOIN
+    // SYSCOIN: Keep the unauthenticated prover API default on loopback only.
     #[tokio::test]
     async fn prover_api_default_loopback_bind_does_not_require_auth() {
         let config = base_config(NodeRole::MainNode);
@@ -3337,7 +3315,7 @@ mod tests {
         config.validate().await.unwrap();
     }
 
-    // SYSCOIN
+    // SYSCOIN: Remote prover binds must reject missing Basic Auth credentials.
     #[tokio::test]
     async fn prover_api_non_loopback_bind_requires_auth() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3350,7 +3328,7 @@ mod tests {
         ));
     }
 
-    // SYSCOIN
+    // SYSCOIN: A remote prover bind is permitted once paired Basic Auth is configured.
     #[tokio::test]
     async fn prover_api_non_loopback_bind_allows_basic_auth() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3363,6 +3341,103 @@ mod tests {
             Some("Basic dXNlcjpwYXNz")
         );
         config.validate().await.unwrap();
+    }
+
+    // SYSCOIN: Keep aggregation efficient while allowing a separate CPU wrapper a conservative
+    // two-hour lease; the lease timeout does not change the one-hour short-range release bound.
+    #[tokio::test]
+    async fn prover_api_snark_defaults_support_cpu_wrapper() {
+        let config = base_config(NodeRole::MainNode);
+
+        assert_eq!(
+            config.prover_api_config.snark_job_timeout,
+            Duration::from_secs(7200)
+        );
+        assert_eq!(config.prover_api_config.max_assigned_batch_range, 256);
+        assert_eq!(config.prover_api_config.max_fris_per_snark, 100);
+        assert_eq!(config.prover_api_config.target_fris_per_snark, 100);
+        assert_eq!(
+            config.prover_api_config.max_snark_batch_wait,
+            Duration::from_secs(3600)
+        );
+        config.validate().await.unwrap();
+    }
+
+    // SYSCOIN: A zero queue span would reject even the first FRI and permanently starve min-2.
+    #[tokio::test]
+    async fn prover_api_max_assigned_batch_range_rejects_zero() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.max_assigned_batch_range = 0;
+
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(
+            err.contains("`prover_api.max_assigned_batch_range` must be greater than zero"),
+            "{err}"
+        );
+    }
+
+    // SYSCOIN: The empty interop companion is delayed briefly so ready real traffic wins first.
+    #[tokio::test]
+    async fn interop_companion_idle_delay_has_a_short_default() {
+        let config = base_config(NodeRole::MainNode);
+
+        assert_eq!(
+            config.sequencer_config.interop_companion_idle_delay,
+            Duration::from_millis(250)
+        );
+        config.validate().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn interop_companion_idle_delay_rejects_zero() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.sequencer_config.interop_companion_idle_delay = Duration::ZERO;
+
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(err.contains("`sequencer.interop_companion_idle_delay` must be greater than zero"));
+    }
+
+    // SYSCOIN: Reject aggregation counts outside the two-to-100 range.
+    #[tokio::test]
+    async fn prover_api_snark_readiness_rejects_invalid_counts() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.max_fris_per_snark = 101;
+        config.prover_api_config.target_fris_per_snark = 101;
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(err.contains("hard cap of 100"), "{err}");
+
+        config.prover_api_config.max_fris_per_snark = 10;
+        config.prover_api_config.target_fris_per_snark = 11;
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(
+            err.contains("must be between 2 and `prover_api.max_fris_per_snark`"),
+            "{err}"
+        );
+
+        config.prover_api_config.max_fris_per_snark = 1;
+        config.prover_api_config.target_fris_per_snark = 1;
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(
+            err.contains("must be between 2 and the hard cap of 100"),
+            "{err}"
+        );
+        assert!(
+            err.contains("must be between 2 and `prover_api.max_fris_per_snark`"),
+            "{err}"
+        );
+    }
+
+    // SYSCOIN: A zero wait would collapse the target-or-age policy.
+    #[tokio::test]
+    async fn prover_api_snark_readiness_rejects_zero_wait() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.max_snark_batch_wait = Duration::ZERO;
+
+        let err = config.validate().await.unwrap_err().to_string();
+        assert!(
+            err.contains("`prover_api.max_snark_batch_wait` must be greater than zero"),
+            "{err}"
+        );
     }
 
     // SYSCOIN: Forced replacements must satisfy geth/reth pool bump thresholds.
@@ -3384,10 +3459,6 @@ mod tests {
                     "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_PRIORITY_FEE_PER_GAS_REPLACEMENT_MULTIPLIER",
                     "0.75",
                 ),
-                (
-                    "L1_SENDER_FORCE_TRANSACTION_RESUBMISSION_MAX_FEE_PER_BLOB_GAS_REPLACEMENT_MULTIPLIER",
-                    "0.5",
-                ),
             ],
         ));
 
@@ -3402,7 +3473,6 @@ mod tests {
             err.contains("replacement multipliers must be >= 1.1"),
             "{err}"
         );
-        assert!(err.contains(">= 2.0 for the blob fee"), "{err}");
     }
 
     #[tokio::test]
@@ -3431,7 +3501,7 @@ mod tests {
         );
     }
 
-    // SYSCOIN
+    // SYSCOIN: Disabling the batcher permits a replay-only main node without sender credentials.
     #[tokio::test]
     async fn disabled_batcher_main_node_can_omit_l1_sender_fields() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3445,7 +3515,7 @@ mod tests {
         config.validate().await.unwrap();
     }
 
-    // SYSCOIN: cover consensus forwarding config validation required by Syscoin v31 deployment.
+    // SYSCOIN: cover consensus forwarding config validation required by Syscoin V32 deployment.
     #[tokio::test]
     async fn consensus_requires_tx_forwarding_rpc_urls_for_all_peers() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3590,7 +3660,7 @@ mod tests {
         );
     }
 
-    // SYSCOIN
+    // SYSCOIN: L1 policy may supply signer authorization when local signers are intentionally empty.
     #[tokio::test]
     async fn batch_verification_server_allows_empty_local_signers_at_config_load() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3602,7 +3672,7 @@ mod tests {
         config.validate().await.unwrap();
     }
 
-    // SYSCOIN
+    // SYSCOIN: Reject malformed local batch-verification signer addresses at config load.
     #[tokio::test]
     async fn batch_verification_server_requires_valid_signer_addresses() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3617,7 +3687,7 @@ mod tests {
         ));
     }
 
-    // SYSCOIN
+    // SYSCOIN: Reject malformed batch-verification client signing keys at config load.
     #[tokio::test]
     async fn batch_verification_client_requires_valid_signing_key() {
         let mut config = base_config(NodeRole::ExternalNode);

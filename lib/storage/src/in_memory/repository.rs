@@ -483,7 +483,8 @@ mod tests {
             storage_writes: vec![],
             account_diffs: vec![],
             published_preimages: vec![],
-            pubdata: BlockPubdata::Length(0),
+            // SYSCOIN: Fresh V32 block output persists only pubdata usage, never legacy bytes.
+            pubdata: BlockPubdata::new(0),
             computational_native_used: 0,
         };
         (block_output, vec![tx.clone()])

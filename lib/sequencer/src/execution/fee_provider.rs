@@ -1,12 +1,11 @@
 use crate::execution::metrics::EXECUTION_METRICS;
-use alloy::eips::eip4844::FIELD_ELEMENTS_PER_BLOB;
 use alloy::primitives::U256;
 use num::rational::Ratio;
 use num::{BigUint, ToPrimitive};
 use tokio::sync::watch;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
 use zksync_os_storage_api::ReplayRecord;
-use zksync_os_types::{FeeParams, PubdataMode, TokenPricesForFees};
+use zksync_os_types::{FeeParams, TokenPricesForFees};
 
 /// Fee-related configuration.
 #[derive(Debug, Clone)]
@@ -38,26 +37,20 @@ pub struct FeeProvider {
     fee_config: FeeConfig,
     previous_block_fee_params: Option<FeeParams>,
     pubdata_price_provider: watch::Receiver<Option<U256>>,
-    blob_fill_ratio_provider: watch::Receiver<Option<Ratio<u64>>>,
     base_token_price: BaseTokenPriceHandle,
-    pubdata_mode: Option<PubdataMode>,
 }
 
 impl FeeProvider {
     pub fn new(
         fee_config: FeeConfig,
         pubdata_price_provider: watch::Receiver<Option<U256>>,
-        blob_fill_ratio_provider: watch::Receiver<Option<Ratio<u64>>>,
         base_token_price: BaseTokenPriceHandle,
-        pubdata_mode: Option<PubdataMode>,
     ) -> Self {
         Self {
             fee_config,
             previous_block_fee_params: None,
             pubdata_price_provider,
-            blob_fill_ratio_provider,
             base_token_price,
-            pubdata_mode,
         }
     }
 
@@ -78,8 +71,7 @@ impl FeeProvider {
 
         let native_price = self.calculate_native_price(&token_prices);
         let eip1559_basefee = self.calculate_base_fee(&native_price);
-        let pubdata_price =
-            self.calculate_pubdata_price(&native_price, &token_prices, pubdata_price_in_sl_token);
+        let pubdata_price = self.calculate_pubdata_price(&token_prices, pubdata_price_in_sl_token);
         Self::record_metrics(&native_price, &eip1559_basefee, &pubdata_price);
 
         let native_price = biguint_to_u256_checked(&native_price).unwrap_or_else(|| {
@@ -173,7 +165,6 @@ impl FeeProvider {
 
     fn calculate_pubdata_price(
         &self,
-        native_price: &BigUint,
         token_prices: &TokenPricesForFees,
         pubdata_price_in_sl_token: Option<U256>,
     ) -> BigUint {
@@ -193,63 +184,9 @@ impl FeeProvider {
             price.ceil().to_integer()
         };
 
-        let pubdata_mode = self
-            .pubdata_mode
-            .expect("pubdata_mode must be set when producing blocks");
-        // SYSCOIN: Gateway-settled child chains use `RelayedL2Calldata`, but their pubdata
-        // is still stored in Syscoin DA blobs and should use blob overhead/fill accounting.
-        let uses_blob_da = matches!(
-            pubdata_mode,
-            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-        );
-
-        let desired_pubdata_price = if uses_blob_da {
-            // Blobs are special in a way that
-            // 1. They require additional overhead depending on native price.
-            // 2. Blob fill ratio affects the effective pubdata price.
-
-            // TODO(698): Import constants from zksync-os when available.
-            // Amount of native resource spent per blob.
-            const NATIVE_PER_BLOB: u64 = 50_000_000;
-            // Effective number of bytes stored in a blob for `SimpleCoder`.
-            const BYTES_USED_PER_BLOB: u64 = (FIELD_ELEMENTS_PER_BLOB - 1) * 31;
-            // Amount of native resource spent per pubdata byte (assuming blob is fully filled).
-            const NATIVE_PER_BLOB_BYTE: u64 = NATIVE_PER_BLOB / BYTES_USED_PER_BLOB;
-            // Default blob fill ratio to be used before `blob_fill_ratio_provider` is initialized.
-            const DEFAULT_FILL_RATIO: Ratio<u64> = Ratio::new_raw(1, 2);
-
-            let native_overhead = native_price * NATIVE_PER_BLOB_BYTE;
-            // Final pubdata price is base price + overhead depending on native price.
-            let pubdata_price_with_overhead = &base_pubdata_price + &native_overhead;
-
-            // By default, we assume that blobs are half-filled.
-            let fill_ratio =
-                (*self.blob_fill_ratio_provider.borrow()).unwrap_or(DEFAULT_FILL_RATIO);
-            // Adjust pubdata price according to blob fill ratio.
-            // More filled blobs => less pubdata price (since less overhead per byte).
-            // pubdata_price := pubdata_price / ratio = pubdata_price * denom / numer
-            let pubdata_price = {
-                let mut r = Ratio::from_integer(pubdata_price_with_overhead);
-                r *= BigUint::from(*fill_ratio.denom());
-                r /= BigUint::from(*fill_ratio.numer());
-                r.to_integer()
-            };
-
-            tracing::debug!(
-                desired_pubdata_price = %pubdata_price,
-                %base_pubdata_price,
-                %native_overhead,
-                %fill_ratio,
-                "Calculated desired pubdata price for blobs"
-            );
-            if let Some(r) = fill_ratio.to_f64() {
-                EXECUTION_METRICS.blob_fill_ratio.set(r);
-            }
-
-            pubdata_price
-        } else {
-            base_pubdata_price
-        };
+        // SYSCOIN: The gas adjuster supplies the canonical settlement-DA price per byte.
+        // Do not apply Ethereum blob-capacity or fill-ratio accounting on top of it.
+        let desired_pubdata_price = base_pubdata_price;
 
         // SYSCOIN: Bound pubdata price movement symmetrically so manipulated token
         // prices cannot slash DA fees immediately and then recover slowly.
@@ -339,7 +276,7 @@ mod tests {
     use num::rational::Ratio;
     use tokio::sync::watch;
     use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
-    use zksync_os_types::{FeeParams, PubdataMode, TokenApiRatio, TokenPricesForFees};
+    use zksync_os_types::{FeeParams, TokenApiRatio, TokenPricesForFees};
 
     fn token_prices(base_token_usd_price: f64, sl_token_usd_price: f64) -> TokenPricesForFees {
         TokenPricesForFees {
@@ -362,7 +299,6 @@ mod tests {
     ) -> FeeProvider {
         let (_pubdata_price_sender, pubdata_price_receiver) =
             watch::channel(Some(U256::from(pubdata_price_in_sl_token)));
-        let (_blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
         let previous_block_fee_params = previous_pubdata_price.map(|pubdata_price| FeeParams {
             eip1559_basefee: U256::ZERO,
             native_price: U256::ZERO,
@@ -379,9 +315,7 @@ mod tests {
                 native_price_override: None,
             },
             pubdata_price_receiver,
-            blob_fill_ratio_receiver,
             BaseTokenPriceHandle::pending(),
-            Some(PubdataMode::Calldata),
         );
         provider.previous_block_fee_params = previous_block_fee_params;
         provider
@@ -391,11 +325,8 @@ mod tests {
     fn pubdata_price_decrease_is_capped_from_previous_block() {
         let provider = fee_provider(Some(1_000), 1_000);
 
-        let price = provider.calculate_pubdata_price(
-            &BigUint::from(1u32),
-            &token_prices(100.0, 1.0),
-            Some(U256::from(1_000)),
-        );
+        let price =
+            provider.calculate_pubdata_price(&token_prices(100.0, 1.0), Some(U256::from(1_000)));
 
         assert_eq!(price, BigUint::from(500u32));
     }
@@ -404,11 +335,8 @@ mod tests {
     fn pubdata_price_increase_is_capped_from_previous_block() {
         let provider = fee_provider(Some(1_000), 2_000);
 
-        let price = provider.calculate_pubdata_price(
-            &BigUint::from(1u32),
-            &token_prices(1.0, 1.0),
-            Some(U256::from(2_000)),
-        );
+        let price =
+            provider.calculate_pubdata_price(&token_prices(1.0, 1.0), Some(U256::from(2_000)));
 
         assert_eq!(price, BigUint::from(1_500u32));
     }

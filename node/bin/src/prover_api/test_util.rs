@@ -1,21 +1,25 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, keccak256};
 use zksync_os_batch_types::PendingBatchInfo;
-use zksync_os_batch_types::batcher_model::{BatchForSigning, BatchMetadata, SignedBatchEnvelope};
-use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme, StoredBatchInfo};
-use zksync_os_types::{ProtocolSemanticVersion, PubdataMode};
+use zksync_os_batch_types::batcher_model::{
+    BatchForSigning, BatchMetadata, L2_TO_L1_MESSENGER_ADDRESS, SignedBatchEnvelope,
+};
+use zksync_os_contract_interface::models::{
+    CommitBatchInfo, DACommitmentScheme, L2Log, StoredBatchInfo,
+};
+use zksync_os_types::{L2_INTEROP_CENTER_ADDRESS, ProtocolSemanticVersion, PubdataMode};
 
-pub(super) fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
-    create_test_batch_envelope_with_protocol_version(
-        batch_number,
-        ProtocolSemanticVersion::new(0, 32, 0),
-    )
-}
-
-pub(super) fn create_test_batch_envelope_with_protocol_version(
-    batch_number: u64,
-    protocol_version: ProtocolSemanticVersion,
-) -> SignedBatchEnvelope<Vec<u8>> {
-    create_test_batch_envelope_with_data(batch_number, protocol_version, vec![1, 2, 3])
+// SYSCOIN: Construct the exact durable metadata emitted for a V32 InteropCenter bundle.
+pub(super) fn mark_test_batch_as_interop_bundle<T>(batch: &mut SignedBatchEnvelope<T>) {
+    let message = vec![0x01, 0x12, 0x34];
+    batch.batch.logs.push(L2Log {
+        l2_shard_id: 0,
+        is_service: true,
+        tx_number_in_batch: 0,
+        sender: L2_TO_L1_MESSENGER_ADDRESS,
+        key: B256::left_padding_from(L2_INTEROP_CENTER_ADDRESS.as_slice()),
+        value: keccak256(&message),
+    });
+    batch.batch.messages.push(message);
 }
 
 pub(super) fn create_test_batch_envelope_with_data<T>(
@@ -43,14 +47,14 @@ pub(super) fn create_test_batch_envelope_with_data<T>(
                 priority_operations_hash: B256::ZERO,
                 dependency_roots_rolling_hash: B256::ZERO,
                 l2_to_l1_logs_root_hash: B256::ZERO,
-                l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-                da_commitment: B256::ZERO,
+                l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+                da_commitment: keccak256([0u8; 32]),
                 first_block_timestamp: 0,
                 first_block_number: Some(batch_number),
                 last_block_timestamp: 0,
                 last_block_number: Some(batch_number),
                 chain_id: 1,
-                operator_da_input: vec![],
+                operator_da_input: vec![0u8; 32],
                 // SYSCOIN: synthetic prover jobs do not carry Gateway edge-DA openings.
                 edge_da_refs_input: vec![],
                 edge_da_refs_root: B256::ZERO,
@@ -58,14 +62,12 @@ pub(super) fn create_test_batch_envelope_with_data<T>(
             },
             protocol_version,
             upgrade_tx_hash: None,
-            use_legacy_v31_commitment: false,
         },
         chain_address: Address::ZERO,
-        blob_sidecar: None,
         first_block_number: batch_number,
         last_block_number: batch_number,
         last_block_hash: None,
-        pubdata_mode: PubdataMode::Calldata,
+        pubdata_mode: PubdataMode::Blobs,
         tx_count: 10,
         computational_native_used: None,
         logs: vec![],

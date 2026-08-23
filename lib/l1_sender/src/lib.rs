@@ -10,10 +10,8 @@ use crate::config::{L1SenderFeeConfig, SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI};
 use crate::metrics::{L1_SENDER_METRICS, PriorityFeeEstimatePercentile, PriorityFeeEstimateWindow};
 use crate::pipeline_component::L1Sender;
 use alloy::consensus::Transaction as ConsensusTransaction;
-use alloy::eips::eip4844::{DATA_GAS_PER_BLOB, env_settings::EnvKzgSettings};
-use alloy::eips::eip7594::BlobTransactionSidecarVariant;
 use alloy::eips::{BlockId, BlockNumberOrTag};
-use alloy::network::{TransactionBuilder, TransactionBuilder4844, TransactionResponse};
+use alloy::network::{TransactionBuilder, TransactionResponse};
 use alloy::primitives::utils::{format_ether, format_units};
 use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::Provider;
@@ -27,7 +25,6 @@ use alloy::transports::TransportError;
 use anyhow::Context as _;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt, TryStreamExt};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
@@ -74,7 +71,7 @@ const OPERATOR_METRICS_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const L1_GAS_LIMIT_FALLBACK: u64 = 15_000_000;
 /// Per-call cap for `eth_simulateV1`. The simulation reports the actual `gas_used`.
 const L1_SIM_GAS_LIMIT: u64 = 30_000_000;
-// SYSCOIN: Preserve the safety margin used by the pre-pipeline v31 `eth_estimateGas` path.
+// SYSCOIN: Preserve the safety margin used by the pre-pipeline `eth_estimateGas` path.
 const L1_TX_GAS_ESTIMATE_PADDING_NUMERATOR: u64 = 120;
 const L1_TX_GAS_ESTIMATE_PADDING_DENOMINATOR: u64 = 100;
 
@@ -96,7 +93,6 @@ fn padded_simulation_result_gas_limit(gas_used: u64, simulation_gas_limit: u64) 
 pub(crate) struct FeeParams {
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
-    max_fee_per_blob_gas: u128,
 }
 
 impl FeeParams {
@@ -108,7 +104,6 @@ impl FeeParams {
             max_priority_fee_per_gas: self
                 .max_priority_fee_per_gas
                 .max(other.max_priority_fee_per_gas),
-            max_fee_per_blob_gas: self.max_fee_per_blob_gas.max(other.max_fee_per_blob_gas),
         }
     }
 
@@ -124,76 +119,16 @@ impl FeeParams {
                 .max_priority_fee_per_gas
                 .max(floor.max_priority_fee_per_gas)
                 .min(limits.max_priority_fee_per_gas),
-            max_fee_per_blob_gas: self
-                .max_fee_per_blob_gas
-                .max(floor.max_fee_per_blob_gas)
-                .min(limits.max_fee_per_blob_gas),
         }
     }
 
-    /// Fee floor for replacing this transaction in the pool. Geth and reth require a 100%
-    /// bump on tip, fee cap AND blob fee cap to replace a blob transaction, but only a 10%
-    /// bump for regular transactions.
-    pub(crate) fn replacement_floor(self, carries_blobs: bool) -> FeeParams {
-        if carries_blobs {
-            self.doubled()
-        } else {
-            let bump = |fee: u128| fee.saturating_add(fee.div_ceil(10));
-            FeeParams {
-                max_fee_per_gas: bump(self.max_fee_per_gas),
-                max_priority_fee_per_gas: bump(self.max_priority_fee_per_gas),
-                max_fee_per_blob_gas: self.max_fee_per_blob_gas,
-            }
-        }
-    }
-
-    /// See [`Self::replacement_floor`] — the blob replacement bump.
-    pub(crate) fn doubled(self) -> FeeParams {
+    /// Fee floor for replacing a regular EIP-1559 transaction in the pool.
+    pub(crate) fn replacement_floor(self) -> FeeParams {
+        let bump = |fee: u128| fee.saturating_add(fee.div_ceil(10));
         FeeParams {
-            max_fee_per_gas: self.max_fee_per_gas.saturating_mul(2),
-            max_priority_fee_per_gas: self.max_priority_fee_per_gas.saturating_mul(2),
-            max_fee_per_blob_gas: self.max_fee_per_blob_gas.saturating_mul(2),
+            max_fee_per_gas: bump(self.max_fee_per_gas),
+            max_priority_fee_per_gas: bump(self.max_priority_fee_per_gas),
         }
-    }
-}
-
-/// A blob sidecar converted once into the wire format the chain accepts.
-///
-/// The EIP-7594 conversion computes 128 KZG cell proofs per blob (~200ms of CPU each), so it
-/// must happen exactly once per command — the result is shared between gas simulation, the
-/// send path, and in-flight simulation prefixes.
-#[derive(Debug, Clone)]
-pub(crate) struct PreparedSidecar {
-    variant: BlobTransactionSidecarVariant,
-    blob_count: u64,
-}
-
-impl PreparedSidecar {
-    /// Converts `sidecar` into the format the chain's active fork accepts. The EIP-7594 cell
-    /// proof computation is CPU-heavy, so it runs on the blocking pool.
-    pub(crate) async fn prepare(
-        sidecar: alloy::consensus::BlobTransactionSidecar,
-        use_eip7594: bool,
-    ) -> anyhow::Result<Self> {
-        let blob_count = sidecar.blobs.len() as u64;
-        let variant = if use_eip7594 {
-            let converted = tokio::task::spawn_blocking(move || {
-                sidecar.try_into_7594(EnvKzgSettings::Default.get())
-            })
-            .await
-            .context("EIP-7594 sidecar conversion task panicked")??;
-            BlobTransactionSidecarVariant::Eip7594(converted)
-        } else {
-            BlobTransactionSidecarVariant::Eip4844(sidecar)
-        };
-        Ok(Self {
-            variant,
-            blob_count,
-        })
-    }
-
-    pub(crate) fn blob_count(&self) -> u64 {
-        self.blob_count
     }
 }
 
@@ -205,7 +140,6 @@ impl PreparedSidecar {
 pub(crate) struct SimPrefixEntry {
     pub(crate) nonce: u64,
     pub(crate) calldata: Bytes,
-    pub(crate) sidecar: Option<Arc<PreparedSidecar>>,
     pub(crate) fee_params: FeeParams,
     /// Gas limit the transaction was sent with; reused when the transaction is evicted from
     /// the pool and must be resent at the same nonce.
@@ -218,29 +152,18 @@ fn build_l1_simulation_request(
     input: Bytes,
     nonce: u64,
     fee_params: FeeParams,
-    prepared_sidecar: Option<&PreparedSidecar>,
     gas_limit: u64,
 ) -> TransactionRequest {
     // Mirror submission fees so providers (e.g. anvil) that parse the request
     // as a typed tx accept it.
-    let mut req = TransactionRequest::default()
+    TransactionRequest::default()
         .with_from(operator_address)
         .with_to(to_address)
         .with_input(input)
         .with_max_fee_per_gas(fee_params.max_fee_per_gas)
         .with_max_priority_fee_per_gas(fee_params.max_priority_fee_per_gas)
         .with_nonce(nonce)
-        .with_gas_limit(gas_limit);
-
-    if let Some(prepared_sidecar) = prepared_sidecar {
-        req.max_fee_per_blob_gas = Some(fee_params.max_fee_per_blob_gas);
-        req.set_blob_sidecar(prepared_sidecar.variant.clone());
-        // Anvil routes blob requests through the EIP-4844 arm only when
-        // `type=3` is set explicitly; otherwise it returns -32602.
-        req.transaction_type = Some(3);
-    }
-
-    req
+        .with_gas_limit(gas_limit)
 }
 
 /// Process responsible for sending transactions to L1.
@@ -282,16 +205,6 @@ where
         {
             tracing::info!("inbound channel closed");
             return Ok(());
-        }
-
-        // The KZG trusted setup loads lazily on first use (~seconds); warm it up off the hot
-        // path so the first blob-carrying send doesn't stall the async executor.
-        if self.provider.capabilities().supports_eip7594 {
-            tokio::task::spawn_blocking(|| {
-                let _ = EnvKzgSettings::Default.get();
-            })
-            .await
-            .context("KZG trusted setup preload task panicked")?;
         }
 
         // Both send paths are large state machines; boxing keeps them out of this future
@@ -416,16 +329,8 @@ where
             let fee_params = self
                 .resolve_fee_params(fee_config, force_transaction_resubmission)
                 .await?;
-            let prepared_sidecars = self.prepare_sidecars(&commands).await?;
             let gas_limits = self
-                .estimate_gas_limits(
-                    &[],
-                    &commands,
-                    &prepared_sidecars,
-                    operator_address,
-                    fee_params,
-                    base_nonce,
-                )
+                .estimate_gas_limits(&[], &commands, operator_address, fee_params, base_nonce)
                 .await?;
             tracing::info!(
                 command_name,
@@ -434,22 +339,14 @@ where
                 "estimated gas limits via eth_simulateV1",
             );
 
-            let blob_base_fee = self
-                .fetch_blob_base_fee_if_needed(&prepared_sidecars)
-                .await?;
-
             // It's important to preserve the order of commands -
             // so that we send them downstream also in order.
             // This holds true because l1 transactions are included in the order of sender nonce.
             // Keep this in mind if changing sending logic (that is, if adding `buffer` we'd need to set nonce manually)
             let pending_txs: Vec<PendingTx<Input>> = futures::stream::iter(
-                commands
-                    .into_iter()
-                    .zip(gas_limits)
-                    .zip(prepared_sidecars)
-                    .enumerate(),
+                commands.into_iter().zip(gas_limits).enumerate(),
             )
-            .then(|(nonce_offset, ((mut cmd, gas_limit), prepared_sidecar))| {
+            .then(|(nonce_offset, (mut cmd, gas_limit))| {
                 let range = range.clone();
                 async move {
                     let tx_request = self.build_tx_request(
@@ -458,8 +355,6 @@ where
                         base_nonce + nonce_offset as u64,
                         gas_limit,
                         fee_params,
-                        prepared_sidecar.as_deref(),
-                        blob_base_fee,
                     );
 
                     // Notify CommitWatcher before the transaction can possibly land on L1:
@@ -489,42 +384,6 @@ where
         }
     }
 
-    /// Converts every blob-carrying command's sidecar into the chain's accepted wire format
-    /// exactly once. The result is shared between gas simulation, the send path and
-    /// in-flight simulation prefixes; the EIP-7594 conversion computes KZG cell proofs and
-    /// must never run twice for the same sidecar.
-    pub(crate) async fn prepare_sidecars(
-        &self,
-        commands: &[Input],
-    ) -> anyhow::Result<Vec<Option<Arc<PreparedSidecar>>>> {
-        let use_eip7594 = self.provider.capabilities().supports_eip7594;
-        futures::future::try_join_all(commands.iter().map(|cmd| async move {
-            match cmd.blob_sidecar() {
-                Some(sidecar) => Ok(Some(Arc::new(
-                    PreparedSidecar::prepare(sidecar, use_eip7594).await?,
-                ))),
-                None => Ok(None),
-            }
-        }))
-        .await
-    }
-
-    /// Only blob-carrying commands (commit path) need the blob base fee, so fetch it once per
-    /// send wave instead of paying an RPC round-trip per command. Used for monitoring only —
-    /// the submitted cap always comes from the configured fee params.
-    pub(crate) async fn fetch_blob_base_fee_if_needed(
-        &self,
-        prepared_sidecars: &[Option<Arc<PreparedSidecar>>],
-    ) -> anyhow::Result<Option<u128>> {
-        if prepared_sidecars.iter().any(|sidecar| sidecar.is_some()) {
-            let fee = self.provider.get_blob_base_fee().await?;
-            L1_SENDER_METRICS.report_blob_base_fee(fee)?;
-            Ok(Some(fee))
-        } else {
-            Ok(None)
-        }
-    }
-
     /// Builds a submission-ready transaction request and reports the balance-required metric.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_tx_request(
@@ -534,10 +393,8 @@ where
         nonce: u64,
         gas_limit: u64,
         fee_params: FeeParams,
-        prepared_sidecar: Option<&PreparedSidecar>,
-        blob_base_fee: Option<u128>,
     ) -> TransactionRequest {
-        let mut tx_request = TransactionRequest::default()
+        let tx_request = TransactionRequest::default()
             .with_from(operator_address)
             .with_nonce(nonce)
             .with_max_fee_per_gas(fee_params.max_fee_per_gas)
@@ -546,34 +403,9 @@ where
             .with_to(self.to_address)
             .with_input(calldata);
 
-        let mut blob_gas_limit = 0;
-        if let Some(prepared_sidecar) = prepared_sidecar {
-            blob_gas_limit = prepared_sidecar.blob_count() * DATA_GAS_PER_BLOB;
-            let max_fee_per_blob_gas = fee_params.max_fee_per_blob_gas;
-            if let Some(fee_per_blob_gas) = blob_base_fee
-                && fee_per_blob_gas > max_fee_per_blob_gas
-            {
-                tracing::warn!(
-                    max_fee_per_blob_gas,
-                    fee_per_blob_gas,
-                    "L1 sender's configured maxFeePerBlobGas is lower than the one estimated from network"
-                );
-            }
-            tx_request.set_max_fee_per_blob_gas(max_fee_per_blob_gas);
-            // The sidecar already carries the EIP-7594 or EIP-4844 format matching the chain's
-            // active fork (probed via `eth_config`, falling back to a chain-id heuristic — see
-            // `ProviderCapabilities::supports_eip7594` and
-            // https://github.com/foundry-rs/foundry/issues/12222).
-            tx_request.set_blob_sidecar(prepared_sidecar.variant.clone());
-        }
-
         let execution_balance_required =
             tx_request.max_fee_per_gas.unwrap_or_default() * u128::from(gas_limit);
-        let blob_balance_required =
-            tx_request.max_fee_per_blob_gas.unwrap_or_default() * u128::from(blob_gas_limit);
-        let balance_required = execution_balance_required
-            .saturating_add(blob_balance_required)
-            .min(u128::from(u64::MAX)) as u64;
+        let balance_required = execution_balance_required.min(u128::from(u64::MAX)) as u64;
         L1_SENDER_METRICS.balance_required_for_tx[&Input::COMPONENT_ID.as_str()]
             .set(balance_required);
 
@@ -784,17 +616,10 @@ where
                                     .max_priority_fee_per_gas
                                     .unwrap_or_default()
                                     .max(fresh.max_priority_fee_per_gas),
-                                max_fee_per_blob_gas: tx_request
-                                    .max_fee_per_blob_gas
-                                    .unwrap_or_default()
-                                    .max(fresh.max_fee_per_blob_gas),
                             };
                             tx_request.max_fee_per_gas = Some(raised.max_fee_per_gas);
                             tx_request.max_priority_fee_per_gas =
                                 Some(raised.max_priority_fee_per_gas);
-                            if tx_request.max_fee_per_blob_gas.is_some() {
-                                tx_request.max_fee_per_blob_gas = Some(raised.max_fee_per_blob_gas);
-                            }
                         }
                         Err(err) => {
                             // Estimation hiccups must not kill the wait loop; the next
@@ -1150,7 +975,7 @@ where
         force_transaction_resubmission: bool,
     ) -> anyhow::Result<FeeParams> {
         if force_transaction_resubmission {
-            return Ok(fee_config.fee_limits(true, Input::MAY_SEND_BLOBS));
+            return Ok(fee_config.fee_limits(true));
         }
 
         let configured_params = fee_config.configured_fee_params();
@@ -1182,11 +1007,9 @@ where
         &self,
         in_flight_prefix: &[SimPrefixEntry],
         commands: &[Input],
-        prepared_sidecars: &[Option<Arc<PreparedSidecar>>],
         operator_address: Address,
         fee_params: FeeParams,
-        // Sequential nonces start here — anvil's EIP-4844 parsing requires `nonce` and
-        // `gas_limit` even with `validation=false`. Matches the send nonces.
+        // Sequential nonces match the send nonces.
         starting_nonce: u64,
     ) -> anyhow::Result<Vec<u64>> {
         // eth_simulateV1 caps a payload at 256 blocks; with default configs
@@ -1231,7 +1054,6 @@ where
                 entry.calldata.clone(),
                 entry.nonce,
                 entry.fee_params,
-                entry.sidecar.as_deref(),
                 simulation_gas_limit,
             )
         });
@@ -1242,7 +1064,6 @@ where
                 cmd.solidity_call(self.gateway, &operator_address),
                 starting_nonce + i as u64,
                 fee_params,
-                prepared_sidecars[i].as_deref(),
                 simulation_gas_limit,
             )
         });
@@ -1275,7 +1096,6 @@ where
                     .fallback_gas_limits(
                         original_in_flight_prefix_len,
                         commands,
-                        prepared_sidecars,
                         operator_address,
                         fee_params,
                         starting_nonce,
@@ -1291,7 +1111,6 @@ where
                     .fallback_gas_limits(
                         original_in_flight_prefix_len,
                         commands,
-                        prepared_sidecars,
                         operator_address,
                         fee_params,
                         starting_nonce,
@@ -1329,7 +1148,6 @@ where
                         .fallback_gas_limits(
                             original_in_flight_prefix_len,
                             commands,
-                            prepared_sidecars,
                             operator_address,
                             fee_params,
                             starting_nonce,
@@ -1343,7 +1161,6 @@ where
                             .fallback_gas_limits(
                                 original_in_flight_prefix_len,
                                 commands,
-                                prepared_sidecars,
                                 operator_address,
                                 fee_params,
                                 starting_nonce,
@@ -1361,7 +1178,6 @@ where
         &self,
         in_flight_prefix_len: usize,
         commands: &[Input],
-        prepared_sidecars: &[Option<Arc<PreparedSidecar>>],
         operator_address: Address,
         fee_params: FeeParams,
         starting_nonce: u64,
@@ -1379,9 +1195,6 @@ where
             command.solidity_call(self.gateway, &operator_address),
             starting_nonce,
             fee_params,
-            prepared_sidecars
-                .first()
-                .and_then(|sidecar| sidecar.as_deref()),
             L1_SIM_GAS_LIMIT,
         );
         request.gas = None;
@@ -1389,7 +1202,7 @@ where
         // SYSCOIN: settlement RPCs enforce a transaction-fee cap. A fixed 15M fallback at
         // Syscoin's configured max fee can exceed that cap before the transaction is admitted;
         // a single command without an unmined prefix has no nonce-ordered predecessor, so the
-        // standard per-tx estimate is safe and preserves the pre-pipeline v31 behavior.
+        // standard per-tx estimate is safe and preserves the previous behavior.
         let estimated_gas = self
             .provider
             .estimate_gas(request)
@@ -1524,14 +1337,7 @@ where
         receipt: TransactionReceipt,
     ) -> anyhow::Result<()> {
         let execution_fee = receipt.gas_used as u128 * receipt.effective_gas_price;
-        let blob_fee = receipt
-            .blob_gas_used
-            .zip(receipt.blob_gas_price)
-            .map(|(gas_used, gas_price)| gas_used as u128 * gas_price)
-            .unwrap_or_default();
-        let balance_consumed = execution_fee
-            .saturating_add(blob_fee)
-            .min(u128::from(u64::MAX)) as u64;
+        let balance_consumed = execution_fee.min(u128::from(u64::MAX)) as u64;
 
         L1_SENDER_METRICS.balance_consumed_by_tx[&Input::COMPONENT_ID.as_str()]
             .set(balance_consumed);
@@ -1656,7 +1462,6 @@ fn is_fee_too_low_error(err: &TransportError) -> bool {
         TransportError::ErrorResp(payload) => {
             let message = payload.message.to_lowercase();
             message.contains("less than block base fee")
-                || message.contains("less than blob base fee")
                 || (message.contains("underpriced") && !message.contains("replacement"))
         }
         _ => false,
@@ -1664,7 +1469,7 @@ fn is_fee_too_low_error(err: &TransportError) -> bool {
 }
 
 /// Pool-capacity-class `eth_sendRawTransaction` rejections: the sender's per-account slot
-/// limit (geth blobpool `maxTxsPerAccount`, reth `max-account-slots`) or the global pool
+/// limit (for example, reth `max-account-slots`) or the global pool
 /// capacity is exhausted. Unlike nonce errors these clear as L1 mines blocks, so they get a
 /// longer retry budget ([`POOL_CAPACITY_ERROR_MAX_ATTEMPTS`]).
 fn is_pool_capacity_error(err: &TransportError) -> bool {
@@ -1684,10 +1489,9 @@ fn is_pool_capacity_error(err: &TransportError) -> bool {
 
 /// Combines operator-configured fee caps with the network's EIP-1559 estimate.
 ///
-/// `max_fee_per_gas` and `max_fee_per_blob_gas` are taken verbatim from
-/// `configured` — they are static caps set by the operator and never adjusted
-/// up from network estimates. Only `max_priority_fee_per_gas` follows the
-/// estimate, capped from above by the configured value.
+/// `max_fee_per_gas` is taken verbatim from `configured` — it is a static cap set by the
+/// operator and never adjusted up from network estimates. Only `max_priority_fee_per_gas`
+/// follows the estimate, capped from above by the configured value.
 fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeeParams {
     if estimated.max_fee_per_gas > configured.max_fee_per_gas {
         tracing::warn!(
@@ -1718,7 +1522,6 @@ fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeePar
     FeeParams {
         max_fee_per_gas: configured.max_fee_per_gas,
         max_priority_fee_per_gas,
-        max_fee_per_blob_gas: configured.max_fee_per_blob_gas,
     }
     .with_syscoin_priority_fee_floor()
 }
@@ -1726,19 +1529,12 @@ fn apply_fee_caps(configured: FeeParams, estimated: Eip1559Estimation) -> FeePar
 impl L1SenderFeeConfig {
     // SYSCOIN: Forced startup replacement is an explicit operator override; ordinary sends and
     // automatic eviction recovery remain bounded by the documented configured maxima.
-    pub(crate) fn fee_limits(self, force_resubmission: bool, may_send_blobs: bool) -> FeeParams {
+    pub(crate) fn fee_limits(self, force_resubmission: bool) -> FeeParams {
         if !force_resubmission {
             return self.configured_fee_params();
         }
 
-        let replacement = self.replacement_fee_params();
-        // Blob pools require a 100% bump in every fee field even when configured replacement
-        // multipliers only cover the regular transaction-pool rule.
-        if may_send_blobs {
-            replacement.max(self.configured_fee_params().doubled())
-        } else {
-            replacement
-        }
+        self.replacement_fee_params()
     }
 
     fn validate_syscoin_fee_caps(self) -> anyhow::Result<()> {
@@ -1775,7 +1571,6 @@ impl L1SenderFeeConfig {
         FeeParams {
             max_fee_per_gas: self.max_fee_per_gas_wei,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas_wei,
-            max_fee_per_blob_gas: self.max_fee_per_blob_gas_wei,
         }
     }
 
@@ -1791,9 +1586,6 @@ impl L1SenderFeeConfig {
                 .ceil() as u128,
             max_priority_fee_per_gas: ((base.max_priority_fee_per_gas as f64)
                 * self.max_priority_fee_per_gas_replacement_multiplier)
-                .ceil() as u128,
-            max_fee_per_blob_gas: ((self.max_fee_per_blob_gas_wei as f64)
-                * self.max_fee_per_blob_gas_replacement_multiplier)
                 .ceil() as u128,
         }
         .with_syscoin_priority_fee_floor()
@@ -1951,38 +1743,6 @@ mod tests {
     }
 
     #[test]
-    fn blob_simulation_request_is_buildable() {
-        let operator_address = Address::with_last_byte(1);
-        let to_address = Address::with_last_byte(2);
-        let input = Bytes::from_static(b"commit");
-        let nonce = 7;
-        let fee_params = FeeParams {
-            max_fee_per_gas: 100,
-            max_priority_fee_per_gas: 10,
-            max_fee_per_blob_gas: 20,
-        };
-        let blob_sidecar = alloy::consensus::BlobTransactionSidecar::default();
-
-        let prepared = PreparedSidecar {
-            blob_count: blob_sidecar.blobs.len() as u64,
-            variant: BlobTransactionSidecarVariant::Eip4844(blob_sidecar),
-        };
-        let fixed_request = build_l1_simulation_request(
-            operator_address,
-            to_address,
-            input,
-            nonce,
-            fee_params,
-            Some(&prepared),
-            16_000_000,
-        );
-        assert_eq!(fixed_request.gas, Some(16_000_000));
-        fixed_request
-            .build_typed_simulate_transaction()
-            .expect("sidecar-backed blob simulation request should be buildable");
-    }
-
-    #[test]
     fn pool_capacity_error_classification() {
         use alloy::rpc::json_rpc::ErrorPayload;
         use alloy::transports::TransportErrorKind;
@@ -1995,7 +1755,7 @@ mod tests {
             })
         };
 
-        // geth blobpool per-account cap and legacy-pool global capacity.
+        // Per-account and global pool capacity.
         assert!(is_pool_capacity_error(&resp(
             "account limit exceeded: pooled 16 txs"
         )));
@@ -2037,9 +1797,6 @@ mod tests {
         assert!(is_fee_too_low_error(&resp(
             "max fee per gas less than block base fee"
         )));
-        assert!(is_fee_too_low_error(&resp(
-            "max fee per blob gas less than blob base fee"
-        )));
         assert!(is_fee_too_low_error(&resp("transaction underpriced")));
 
         // An RBF bump that is too small never resolves by waiting — must stay fatal.
@@ -2052,16 +1809,13 @@ mod tests {
         )));
     }
 
-    /// `max_fee_per_gas` and `max_fee_per_blob_gas` are static caps set by
-    /// the operator — they must equal the configured values regardless of
-    /// what the network estimate reports. Only `max_priority_fee_per_gas` is
-    /// allowed to track the estimate (capped from above).
+    /// `max_fee_per_gas` is a static operator cap; only `max_priority_fee_per_gas` tracks the
+    /// estimate (capped from above).
     #[test]
-    fn apply_fee_caps_keeps_max_fee_and_blob_fee_static() {
+    fn apply_fee_caps_keeps_max_fee_static() {
         let configured = FeeParams {
             max_fee_per_gas: 100_000_000_000,
             max_priority_fee_per_gas: 2_000_000_000,
-            max_fee_per_blob_gas: 50_000_000_000,
         };
 
         // Estimates spanning far below, equal to, and far above the configured
@@ -2088,10 +1842,6 @@ mod tests {
                 capped.max_fee_per_gas, configured.max_fee_per_gas,
                 "max_fee_per_gas must equal configured cap (estimate: {est:?})",
             );
-            assert_eq!(
-                capped.max_fee_per_blob_gas, configured.max_fee_per_blob_gas,
-                "max_fee_per_blob_gas must equal configured cap (estimate: {est:?})",
-            );
             assert!(
                 capped.max_priority_fee_per_gas <= configured.max_priority_fee_per_gas,
                 "max_priority_fee_per_gas must never exceed configured cap \
@@ -2107,23 +1857,17 @@ mod tests {
         let resolved = FeeParams {
             max_fee_per_gas: 100,
             max_priority_fee_per_gas: 5,
-            max_fee_per_blob_gas: 50,
         };
         let limits = FeeParams {
             max_fee_per_gas: 100,
             max_priority_fee_per_gas: 10,
-            max_fee_per_blob_gas: 50,
         };
 
-        for carries_blobs in [false, true] {
-            let mut replacement = resolved;
-            for _ in 0..32 {
-                replacement = replacement
-                    .apply_bounded_floor(replacement.replacement_floor(carries_blobs), limits);
-                assert!(replacement.max_fee_per_gas <= limits.max_fee_per_gas);
-                assert!(replacement.max_priority_fee_per_gas <= limits.max_priority_fee_per_gas);
-                assert!(replacement.max_fee_per_blob_gas <= limits.max_fee_per_blob_gas);
-            }
+        let mut replacement = resolved;
+        for _ in 0..32 {
+            replacement = replacement.apply_bounded_floor(replacement.replacement_floor(), limits);
+            assert!(replacement.max_fee_per_gas <= limits.max_fee_per_gas);
+            assert!(replacement.max_priority_fee_per_gas <= limits.max_priority_fee_per_gas);
         }
     }
 
@@ -2132,25 +1876,16 @@ mod tests {
         let config = L1SenderFeeConfig {
             max_fee_per_gas_wei: 100_000,
             max_priority_fee_per_gas_wei: 30_000,
-            max_fee_per_blob_gas_wei: 50_000,
             max_fee_per_gas_replacement_multiplier: 1.5,
             max_priority_fee_per_gas_replacement_multiplier: 1.5,
-            max_fee_per_blob_gas_replacement_multiplier: 1.5,
         };
 
-        let regular_limits = config.fee_limits(false, true);
+        let regular_limits = config.fee_limits(false);
         assert_eq!(regular_limits.max_fee_per_gas, 100_000);
         assert_eq!(regular_limits.max_priority_fee_per_gas, 30_000);
-        assert_eq!(regular_limits.max_fee_per_blob_gas, 50_000);
 
-        let forced_regular_limits = config.fee_limits(true, false);
+        let forced_regular_limits = config.fee_limits(true);
         assert_eq!(forced_regular_limits.max_fee_per_gas, 150_000);
         assert_eq!(forced_regular_limits.max_priority_fee_per_gas, 45_000);
-        assert_eq!(forced_regular_limits.max_fee_per_blob_gas, 75_000);
-
-        let forced_blob_limits = config.fee_limits(true, true);
-        assert_eq!(forced_blob_limits.max_fee_per_gas, 200_000);
-        assert_eq!(forced_blob_limits.max_priority_fee_per_gas, 60_000);
-        assert_eq!(forced_blob_limits.max_fee_per_blob_gas, 100_000);
     }
 }

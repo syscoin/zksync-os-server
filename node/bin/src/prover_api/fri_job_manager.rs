@@ -32,16 +32,16 @@ use zksync_os_batch_types::batcher_model::{
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_types::ProvingVersion;
 
-// SYSCOIN
+// SYSCOIN: Retry durable accepted-proof reads long enough for transient filesystem visibility.
 #[cfg(not(test))]
 const ACCEPTED_PROOF_LOAD_RETRY_DELAY: Duration = Duration::from_secs(1);
-// SYSCOIN
+// SYSCOIN: Keep the same retry path fast in unit tests.
 #[cfg(test)]
 const ACCEPTED_PROOF_LOAD_RETRY_DELAY: Duration = Duration::from_millis(1);
-// SYSCOIN
+// SYSCOIN: Bound accepted-proof recovery before restoring the original proving job.
 #[cfg(not(test))]
 const ACCEPTED_PROOF_LOAD_MAX_ATTEMPTS: usize = 60;
-// SYSCOIN
+// SYSCOIN: Exercise exhaustion without a minute-long unit test.
 #[cfg(test)]
 const ACCEPTED_PROOF_LOAD_MAX_ATTEMPTS: usize = 2;
 
@@ -56,6 +56,9 @@ pub enum SubmitError {
     UnknownJob(u64),
     #[error("deserialization failed: {0:?}")]
     DeserializationFailed(bincode::error::DecodeError),
+    // SYSCOIN: Wrapper-incompatible map shapes are rejected before native verification.
+    #[error("invalid V8 proof shape: {0}")]
+    InvalidProofShape(String),
     // server execution version, prover execution version
     #[error("execution error mismatch - server expects {0:?}, but got {1:?} from prover")]
     ProvingVersionMismatch(ProvingVersion, ProvingVersion),
@@ -91,7 +94,7 @@ pub struct JobState {
     pub current_attempt: usize,
 }
 
-// SYSCOIN
+// SYSCOIN: Track the durable pending key until the accepted FRI proof reaches the next stage.
 #[derive(Debug)]
 struct AcceptedProof {
     batch_number: u64,
@@ -105,7 +108,7 @@ pub struct FriJobManager {
     jobs: Arc<ProverJobMap<ProverInput>>,
     // outbound
     batches_with_proof_sender: mpsc::Sender<ProvenBatch>,
-    // SYSCOIN
+    // SYSCOIN: Serialize accepted-proof durability and downstream handoff independently of API requests.
     accepted_proof_sender: mpsc::Sender<AcceptedProof>,
     // == storage ==
     proof_storage: ProofStorage,
@@ -123,7 +126,8 @@ impl FriJobManager {
             max_assigned_batch_range,
             ProverStage::Fri,
         ));
-        // SYSCOIN
+        // SYSCOIN: Drain durable accepted proofs in a background handoff queue so external FRI
+        // submitters are not coupled to SNARK-stage backpressure.
         let (accepted_proof_sender, mut accepted_proof_receiver) =
             mpsc::channel::<AcceptedProof>(5);
         let proof_storage_for_forwarder = proof_storage.clone();
@@ -307,11 +311,11 @@ impl FriJobManager {
         // SYSCOIN: Persist the accepted proof before removing the in-memory job, so
         // storage failures leave the job retriable. Forwarding records the batch number
         // and tracker; the forwarder reloads the proof from disk before sending downstream.
-        let proof = RealFriProof::V2 {
+        let proof = RealFriProof {
             proof: proof_bytes,
             proving_execution_version: proving_version as u32,
         };
-        let stored_batch = StoredBatch::V1(BatchEnvelope {
+        let stored_batch = StoredBatch(BatchEnvelope {
             batch: batch_metadata.clone(),
             data: FriProof::Real(proof),
             signature_data,
@@ -414,11 +418,9 @@ impl FriJobManager {
                 );
                 // The verifier died before producing register values; still report the
                 // expected hash so the persisted proof stays diagnosable.
-                let expected_hash_u32s = fri_proof_verifier::expected_public_input_registers(
-                    proving_version,
-                    batch_metadata,
-                )
-                .unwrap_or([0u32; 8]);
+                let expected_hash_u32s =
+                    fri_proof_verifier::expected_public_input_registers(batch_metadata)
+                        .unwrap_or([0u32; 8]);
                 Err(SubmitError::FriProofVerificationError {
                     expected_hash_u32s,
                     proof_final_register_values: [0u32; 16],
@@ -489,50 +491,21 @@ impl FriJobManager {
         proof_bytes: &Bytes,
         batch_number: u64,
     ) -> Result<(), SubmitError> {
+        debug_assert_eq!(proving_version, ProvingVersion::V8);
         let expected_hash_u32s =
-            fri_proof_verifier::expected_public_input_registers(proving_version, batch_metadata)?;
-        // TODO: This match is needed for the transition period.
-        // Protocol 0.30/0.31 proofs use the Airbender 0.5.2 `ProgramProof` format, while
-        // protocol 0.32 proofs use the unified stack's `UnrolledProgramProof`. All these
-        // protocols remain supported, so their incompatible encodings require separate
-        // verifier backends.
-        match proving_version {
-            ProvingVersion::V6 | ProvingVersion::V7 => {
-                tracing::debug!("Using 0.5.2 proof verifier for batch {}", batch_number);
-                let program_proof =
-                    bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-                        .map_err(|err| {
-                            tracing::warn!(batch_number, ?err, "Failed to deserialize proof");
-                            SubmitError::DeserializationFailed(err)
-                        })?
-                        .0;
-                fri_proof_verifier::verify_fri_proof(
-                    expected_hash_u32s,
-                    program_proof,
-                    batch_number,
-                )
-            }
-            ProvingVersion::V8 => {
-                // V8 provers (airbender unrolled stack) submit `UnrolledProgramProof`,
-                // which is a different wire format and proof system than the 0.5.2 lane.
-                tracing::debug!(
-                    "Using airbender unified-layer proof verifier for batch {}",
-                    batch_number
-                );
-                let program_proof: execution_utils::unrolled::UnrolledProgramProof =
-                    bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-                        .map_err(|err| {
-                            tracing::warn!(batch_number, ?err, "Failed to deserialize V8 proof");
-                            SubmitError::DeserializationFailed(err)
-                        })?
-                        .0;
-                fri_proof_verifier::verify_fri_proof_v8(
-                    expected_hash_u32s,
-                    &program_proof,
-                    batch_number,
-                )
-            }
-        }
+            fri_proof_verifier::expected_public_input_registers(batch_metadata)?;
+        tracing::debug!(
+            "Using airbender unified-layer proof verifier for batch {}",
+            batch_number
+        );
+        let program_proof: execution_utils::unrolled::UnrolledProgramProof =
+            bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+                .map_err(|err| {
+                    tracing::warn!(batch_number, ?err, "Failed to deserialize proof");
+                    SubmitError::DeserializationFailed(err)
+                })?
+                .0;
+        fri_proof_verifier::verify_fri_proof(expected_hash_u32s, &program_proof, batch_number)
     }
 
     /// Submit a **fake** proof on behalf of a fake prover worker.
@@ -568,7 +541,7 @@ impl FriJobManager {
         self.jobs.status().await
     }
 
-    // SYSCOIN
+    // SYSCOIN: Release a durable pending lease after its canonical handoff completes.
     fn release_pending_batch_with_proof_in_background(
         &self,
         pending_proof_key: PendingBatchProofKey,
@@ -581,7 +554,7 @@ impl FriJobManager {
         });
     }
 
-    // SYSCOIN
+    // SYSCOIN: Restore a consumed FRI job if downstream handoff fails, then release its pending lease.
     fn restore_job_and_release_pending_batch_with_proof_in_background(
         &self,
         accepted_proof: AcceptedProof,
@@ -610,7 +583,7 @@ impl FriJobManager {
 mod tests {
     use super::*;
     use crate::config::ProofStorageConfig;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::{Address, B256, keccak256};
     use tempfile::TempDir;
     use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchSignatureData, ProverInput};
@@ -628,17 +601,17 @@ mod tests {
             priority_operations_hash: B256::ZERO,
             dependency_roots_rolling_hash: B256::ZERO,
             l2_to_l1_logs_root_hash: B256::ZERO,
-            l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-            da_commitment: B256::ZERO,
+            l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+            da_commitment: keccak256([0u8; 32]),
             first_block_timestamp: 0,
             first_block_number: Some(from),
             last_block_timestamp: 0,
             last_block_number: Some(to),
             chain_id: 270,
-            operator_da_input: Vec::new(),
-            // SYSCOIN
+            operator_da_input: vec![0u8; 32],
+            // SYSCOIN: Synthetic prover metadata carries no compact edge DA openings.
             edge_da_refs_input: Vec::new(),
-            // SYSCOIN
+            // SYSCOIN: Synthetic prover metadata carries the empty compact edge DA root.
             edge_da_refs_root: B256::ZERO,
             sl_chain_id: 123,
         }
@@ -658,16 +631,14 @@ mod tests {
             },
             batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
+                protocol_version: ProtocolSemanticVersion::new(0, 32, 0),
                 upgrade_tx_hash: None,
-                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
-            blob_sidecar: None,
             first_block_number: from,
             last_block_number: to,
             last_block_hash: None,
-            pubdata_mode: PubdataMode::Calldata,
+            pubdata_mode: PubdataMode::Blobs,
             tx_count: 0,
             computational_native_used: None,
             logs: vec![],
@@ -706,7 +677,7 @@ mod tests {
         );
 
         manager.add_job(dummy_input_batch(1)).await;
-        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         let pending_key = proof_storage
             .save_pending_batch_with_proof(&stored_batch)
             .await?;
@@ -758,7 +729,7 @@ mod tests {
         let input_batch = dummy_input_batch(1);
 
         manager.add_job(input_batch).await;
-        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         let pending_key = proof_storage
             .save_pending_batch_with_proof(&stored_batch)
             .await?;
@@ -815,7 +786,7 @@ mod tests {
         );
 
         manager.add_job(dummy_input_batch(1)).await;
-        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         let pending_key = proof_storage
             .save_pending_batch_with_proof(&stored_batch)
             .await?;

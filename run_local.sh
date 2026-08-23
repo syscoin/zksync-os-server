@@ -96,9 +96,7 @@ done
 # Check if folder path is provided
 if [ -z "$CONFIG_DIR" ]; then
     echo -e "${RED}Usage: $0 <folder-path> [--logs-dir <path>]${NC}"
-    echo -e "Example: $0 ./local-chains/v31.0/default"
-    echo -e "Example: $0 ./local-chains/v30.2/multi_chain"
-    echo -e "Example: $0 ./local-chains/v31.0/default --logs-dir ./logs"
+    echo -e "Canonical v32.0/V8 examples are unavailable until the local-chain fixture is regenerated."
     exit 1
 fi
 
@@ -111,18 +109,24 @@ if [ ! -d "$CONFIG_DIR" ]; then
     exit 1
 fi
 
+# SYSCOIN: Never launch a stale fixture under the canonical V32/V8 identity.
+FIXTURE_PENDING_MARKER="$CONFIG_DIR/../CANONICAL_V8_REGENERATION_REQUIRED"
+if [ -f "$FIXTURE_PENDING_MARKER" ]; then
+    echo -e "${RED}Error: this local-chain fixture is blocked pending canonical v32.0/V8 regeneration.${NC}" >&2
+    echo -e "${RED}See: $FIXTURE_PENDING_MARKER${NC}" >&2
+    exit 1
+fi
+
 PATCHED_OS_RUNNER="$REPO_ROOT/scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh"
 PATCHED_OS_WORKSPACE="run-local"
 export GATEWAY_DIR="${ZKSYNC_OS_LOCAL_BUILD_ROOT:-$REPO_ROOT/target/run-local-patched-os}"
 export ZKSYNC_OS_SERVER_PATH="$REPO_ROOT"
 export PROTOCOL_VERSION=run-local
-# These values are part of the published V7 guest. Local native execution must
-# use them exactly even when an older fixture names different deployment
-# contracts; otherwise sequencing and proof execution would disagree.
+# SYSCOIN: These values are part of the canonical guest. Local native execution
+# must use them exactly; otherwise sequencing and proof execution would disagree.
 export SYSCOIN_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
 export SYSCOIN_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
-# Every server binary contains the v0.3.2 VM dependency, regardless of which
-# local runtime protocol the selected fixture exercises.
+# Every server binary uses the locally patched final zksync-os v0.4.0 source.
 export ZKSYNC_OS_FORCE_PATCHED_WORKSPACE=true
 
 # Check for compressed L1 state file
@@ -159,7 +163,7 @@ echo -e "${BLUE}========================================${NC}"
 
 # Build first
 echo -e "\n${GREEN}Building zksync-os-server...${NC}"
-# Native execution must use the same patched v0.3.2 source as the proving app.
+# Native execution must use the same patched final-v0.4 source as the proving app.
 # The launcher anchors the official tag to Cargo.lock, applies the local patch,
 # rewrites a disposable server workspace, and publishes a context-stamped binary.
 if ! bash "$PATCHED_OS_RUNNER" "$PATCHED_OS_WORKSPACE" -- build-prebuilt; then

@@ -1,3 +1,29 @@
+use alloy::primitives::{Address, B256, U256, address, keccak256};
+
+/// SYSCOIN: Consensus target baked into the canonical Syscoin zksync-os guest for compact edge-DA commit
+/// transactions. A runtime deployment must match this address before it can collect or verify
+/// compact edge references.
+pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
+    address!("0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19");
+
+/// SYSCOIN: Canonical EIP-7825 transaction gas cap committed by the V8 chain configuration.
+///
+/// This value is consensus-critical: the native PIG, L1 proof calldata, and Era executor must all
+/// hash the same value.
+pub const SYSCOIN_MAX_TX_GAS_LIMIT: u64 = 1 << 24;
+
+/// SYSCOIN: Canonical V8 chain configuration commitment.
+///
+/// The L2 chain ID is committed here instead of being repeated in `BatchOutput`. The middle word
+/// is `fri_proof_verification_enabled`, which is permanently disabled for this deployment.
+pub fn syscoin_chain_config_hash(chain_id: u64) -> B256 {
+    let mut bytes = Vec::with_capacity(32 * 3);
+    bytes.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    bytes.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+    bytes.extend_from_slice(&U256::from(SYSCOIN_MAX_TX_GAS_LIMIT).to_be_bytes::<32>());
+    keccak256(bytes)
+}
+
 mod config_format;
 pub use config_format::ConfigFormat;
 

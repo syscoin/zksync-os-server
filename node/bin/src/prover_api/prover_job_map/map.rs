@@ -48,6 +48,21 @@ pub struct ProverJobMap<T> {
     prover_stage: ProverStage,
 }
 
+/// SYSCOIN: Diagnostic state for an aggregate held below its target-or-age threshold.
+#[derive(Debug)]
+pub struct SnarkReadinessWait {
+    pub eligible_fris: usize,
+    pub oldest_eligible_age: Duration,
+}
+
+/// SYSCOIN: Atomic outcome of readiness inspection and aggregate leasing.
+#[derive(Debug)]
+pub enum SnarkJobPick<T> {
+    Assigned(Vec<(FriJob, T)>),
+    Waiting(SnarkReadinessWait),
+    Empty,
+}
+
 impl<T: Clone> ProverJobMap<T> {
     pub fn new(
         assignment_timeout: Duration,
@@ -66,11 +81,59 @@ impl<T: Clone> ProverJobMap<T> {
     /// Adds a pending job to the map.
     /// Awaits if adding this job exceeds `max_assigned_batch_range` until space is available.
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<T>) {
+        self.add_job_with_age(batch_envelope, Duration::ZERO).await;
+    }
+
+    /// SYSCOIN: Adds a pending job while preserving age reconstructed from durable storage.
+    pub async fn add_job_with_age(
+        &self,
+        batch_envelope: SignedBatchEnvelope<T>,
+        existing_age: Duration,
+    ) {
         let batch_number = batch_envelope.batch_number();
         let mut jobs = self.lock_with_tracking(JobMapMethod::AddJob).await;
 
-        // Wait until there's space available (await if batch range limit would be exceeded)
-        while self.is_queue_full(&jobs) {
+        loop {
+            // Startup rehydration intentionally runs before the recreated pipeline is drained,
+            // so the same canonical batch can arrive here twice. Treat that second arrival as an
+            // idempotent replay: replacing the entry would reset its aggregation clock and,
+            // worse, could erase a lease that an external prover already picked up. This check
+            // belongs inside the loop because another waiter can insert the batch while this
+            // caller is blocked on queue capacity.
+            if let Some(existing) = jobs.get_mut(&batch_number) {
+                let existing_batch = serde_json::to_vec(&existing.batch_envelope.batch)
+                    .expect("canonical batch metadata must serialize");
+                let replayed_batch = serde_json::to_vec(&batch_envelope.batch)
+                    .expect("replayed batch metadata must serialize");
+                // A same-number batch with different authoritative metadata is not an idempotent
+                // replay. This invariant is checked after committed-provider validation, so
+                // continuing with either value would hide corrupt or contradictory pipeline
+                // state. Stop the owning task instead of reporting a successful enqueue.
+                assert!(
+                    existing_batch == replayed_batch,
+                    "conflicting same-number prover job metadata for batch {batch_number} at {:?} stage",
+                    self.prover_stage
+                );
+
+                let replay_metadata =
+                    JobMetadata::new_from_batch_with_age(&batch_envelope, existing_age);
+                if replay_metadata.added_at < existing.metadata.added_at {
+                    existing.metadata.added_at = replay_metadata.added_at;
+                }
+
+                tracing::info!(
+                    batch_number,
+                    assigned_to_prover_id = ?existing.metadata.assigned_to_prover_id,
+                    ?self.prover_stage,
+                    "Ignored duplicate prover job replay while preserving existing queue state"
+                );
+                return;
+            }
+
+            // Wait until there's space available (await if batch range limit would be exceeded).
+            if !self.is_queue_full(&jobs) {
+                break;
+            }
             let queue_statistics = self.compute_and_record_statistics(&jobs);
 
             tracing::info!(
@@ -90,7 +153,7 @@ impl<T: Clone> ProverJobMap<T> {
         }
 
         let entry = JobEntry {
-            metadata: JobMetadata::new_from_batch(&batch_envelope),
+            metadata: JobMetadata::new_from_batch_with_age(&batch_envelope, existing_age),
             batch_envelope,
         };
 
@@ -104,8 +167,7 @@ impl<T: Clone> ProverJobMap<T> {
         );
     }
 
-    // SYSCOIN
-    /// Restores a job that was removed during completion but could not be handed off.
+    /// SYSCOIN: Restores a job that was removed during completion but could not be handed off.
     ///
     /// This intentionally bypasses the range wait in `add_job`: the job already occupied
     /// space in the map, and blocking while trying to undo a failed handoff can strand it.
@@ -193,13 +255,22 @@ impl<T: Clone> ProverJobMap<T> {
                 }
             }
 
-            // Assign job
-            entry.metadata.assign(now, prover_id.to_string());
             selected_jobs.push(entry.metadata.clone());
         }
 
         if selected_jobs.is_empty() {
             return Vec::new();
+        }
+
+        let assigned_batch_range = (
+            selected_jobs.first().unwrap().batch_number,
+            selected_jobs.last().unwrap().batch_number,
+        );
+        for metadata in &selected_jobs {
+            jobs.get_mut(&metadata.batch_number)
+                .expect("selected prover job disappeared while holding the queue lock")
+                .metadata
+                .assign(now, prover_id.to_string(), assigned_batch_range);
         }
 
         let batch_stats = JobBatchStats::new(&selected_jobs);
@@ -227,6 +298,125 @@ impl<T: Clone> ProverJobMap<T> {
             .collect()
     }
 
+    /// SYSCOIN: Atomically inspects, readiness-gates, and assigns the oldest real SNARK range.
+    ///
+    /// A real range is assigned only once it contains at least two compatible FRI proofs and
+    /// either reaches `target_fris`, its oldest proof reaches `max_wait`, or it contains a V32
+    /// InteropCenter bundle whose settlement should not wait for the normal amortization window.
+    pub async fn pick_ready_snark_jobs<F>(
+        &self,
+        limit: usize,
+        target_fris: usize,
+        max_wait: Duration,
+        prover_id: &str,
+        mut predicate: F,
+    ) -> SnarkJobPick<T>
+    where
+        F: FnMut(&JobEntry<T>) -> bool,
+    {
+        assert_eq!(self.prover_stage, ProverStage::Snark);
+        assert!(limit >= 2);
+        assert!((2..=limit).contains(&target_fris));
+
+        let now = Instant::now();
+        let mut jobs = self.lock_with_tracking(JobMapMethod::PickJobsWhile).await;
+        let mut candidate_jobs = Vec::<JobMetadata>::new();
+
+        for entry in jobs.values() {
+            let is_assignable = match entry.metadata.assigned_at {
+                None => true,
+                Some(assigned_at) => now.duration_since(assigned_at) >= self.assignment_timeout,
+            };
+
+            if candidate_jobs.is_empty() {
+                if !is_assignable || !predicate(entry) {
+                    continue;
+                }
+                candidate_jobs.push(entry.metadata.clone());
+                continue;
+            }
+
+            if candidate_jobs.len() >= limit {
+                break;
+            }
+
+            let last = candidate_jobs.last().unwrap();
+            if last.batch_number + 1 != entry.metadata.batch_number {
+                break;
+            }
+
+            if entry.metadata.proving_version != last.proving_version
+                || !is_assignable
+                || !predicate(entry)
+            {
+                break;
+            }
+
+            candidate_jobs.push(entry.metadata.clone());
+        }
+
+        let Some(oldest_candidate) = candidate_jobs.first() else {
+            return SnarkJobPick::Empty;
+        };
+        let oldest_eligible_age = now.duration_since(oldest_candidate.added_at);
+        // SYSCOIN: Preserve Airbender's two-FRI minimum, but let a contiguous compatible range
+        // carrying a V32 InteropCenter bundle bypass only the target/age aggregation delay.
+        let contains_interop_bundle = candidate_jobs
+            .iter()
+            .any(|metadata| metadata.contains_interop_bundle);
+        let ready = candidate_jobs.len() >= 2
+            && (candidate_jobs.len() >= target_fris
+                || oldest_eligible_age >= max_wait
+                || contains_interop_bundle);
+
+        if !ready {
+            return SnarkJobPick::Waiting(SnarkReadinessWait {
+                eligible_fris: candidate_jobs.len(),
+                oldest_eligible_age,
+            });
+        }
+
+        let assigned_batch_range = (
+            candidate_jobs.first().unwrap().batch_number,
+            candidate_jobs.last().unwrap().batch_number,
+        );
+        for metadata in &candidate_jobs {
+            jobs.get_mut(&metadata.batch_number)
+                .expect("candidate SNARK job disappeared while holding the queue lock")
+                .metadata
+                .assign(now, prover_id.to_string(), assigned_batch_range);
+        }
+
+        let batch_stats = JobBatchStats::new(&candidate_jobs);
+        let queue_statistics = self.compute_and_record_statistics(&jobs);
+        tracing::info!(
+            ?batch_stats,
+            ?queue_statistics,
+            prover_id,
+            ?self.prover_stage,
+            target_fris,
+            max_wait_seconds = max_wait.as_secs(),
+            contains_interop_bundle,
+            "Ready SNARK job assigned",
+        );
+
+        SnarkJobPick::Assigned(
+            candidate_jobs
+                .into_iter()
+                .map(|metadata| {
+                    let entry = jobs.get(&metadata.batch_number).unwrap();
+                    (
+                        FriJob {
+                            batch_number: metadata.batch_number,
+                            vk_hash: metadata.proving_version.vk_hash().to_string(),
+                        },
+                        entry.batch_envelope.data.clone(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     pub async fn has_assignable_job<F>(&self, mut predicate: F) -> bool
     where
         F: FnMut(&JobEntry<T>) -> bool,
@@ -242,7 +432,6 @@ impl<T: Clone> ProverJobMap<T> {
     /// - Being either pending or timed out
     /// - Passing the external predicate
     /// - Maintaining consecutive batch numbers and matching proving version
-    /// - Keeping SNARK proof range boundaries around protocol upgrade batches
     fn is_job_eligible<F>(
         &self,
         already_selected_jobs: &[JobMetadata],
@@ -270,19 +459,6 @@ impl<T: Clone> ProverJobMap<T> {
 
         // Predicate passed from outside should return `true`
         if !predicate(next_job_entry) {
-            return false;
-        }
-
-        // SYSCOIN: Upgrade batches carry an upgrade public input that must be proven as its own
-        // L1 range. A normal SNARK range stops before an upgrade batch, and an upgrade range stops
-        // after that batch.
-        if self.prover_stage == ProverStage::Snark
-            && !already_selected_jobs.is_empty()
-            && (next_job_entry.metadata.requires_standalone_snark_proof
-                || already_selected_jobs
-                    .iter()
-                    .any(|job| job.requires_standalone_snark_proof))
-        {
             return false;
         }
 
@@ -324,7 +500,7 @@ impl<T: Clone> ProverJobMap<T> {
             .map(|entry| entry.batch_envelope.batch.clone())
     }
 
-    // SYSCOIN
+    // SYSCOIN: Return the signed canonical batch metadata used to validate a submitted FRI proof.
     pub async fn get_job_batch_metadata_and_signature(
         &self,
         batch_number: u64,
@@ -391,6 +567,45 @@ impl<T: Clone> ProverJobMap<T> {
         prover_type: ProverType,
         prover_id: &str,
     ) -> Option<Vec<SignedBatchEnvelope<T>>> {
+        self.complete_many_jobs_inner(
+            batch_number_from,
+            batch_number_to,
+            prover_type,
+            prover_id,
+            false,
+        )
+        .await
+    }
+
+    /// SYSCOIN: Completes only the exact range most recently assigned to `prover_id`.
+    ///
+    /// External SNARK submission uses this boundary so a prover cannot consume a subset of an
+    /// assigned aggregate by choosing a larger range that merely happens to exist in the queue.
+    pub async fn complete_assigned_many_jobs(
+        &self,
+        batch_number_from: u64,
+        batch_number_to: u64,
+        prover_type: ProverType,
+        prover_id: &str,
+    ) -> Option<Vec<SignedBatchEnvelope<T>>> {
+        self.complete_many_jobs_inner(
+            batch_number_from,
+            batch_number_to,
+            prover_type,
+            prover_id,
+            true,
+        )
+        .await
+    }
+
+    async fn complete_many_jobs_inner(
+        &self,
+        batch_number_from: u64,
+        batch_number_to: u64,
+        prover_type: ProverType,
+        prover_id: &str,
+        require_exact_assignment: bool,
+    ) -> Option<Vec<SignedBatchEnvelope<T>>> {
         // SYSCOIN: Inverted external SNARK submit ranges must not reach JobBatchStats::new with
         // an empty metadata list.
         if batch_number_from > batch_number_to {
@@ -411,7 +626,7 @@ impl<T: Clone> ProverJobMap<T> {
         // First, verify all jobs exist -
         // it's possible a different job with an overlapping set of proofs was submitted.
         for batch_number in batch_number_from..=batch_number_to {
-            if !jobs.contains_key(&batch_number) {
+            let Some(entry) = jobs.get(&batch_number) else {
                 tracing::warn!(
                     batch_number_from,
                     batch_number_to,
@@ -420,6 +635,23 @@ impl<T: Clone> ProverJobMap<T> {
                     ?prover_type,
                     ?self.prover_stage,
                     "Cannot complete job: job missing from map (race condition)"
+                );
+                return None;
+            };
+            if require_exact_assignment
+                && (entry.metadata.assigned_to_prover_id.as_deref() != Some(prover_id)
+                    || entry.metadata.assigned_batch_range
+                        != Some((batch_number_from, batch_number_to)))
+            {
+                tracing::warn!(
+                    batch_number_from,
+                    batch_number_to,
+                    rejected_at_batch_number = batch_number,
+                    prover_id,
+                    assigned_to_prover_id = ?entry.metadata.assigned_to_prover_id,
+                    assigned_batch_range = ?entry.metadata.assigned_batch_range,
+                    ?self.prover_stage,
+                    "Cannot complete jobs: submitted range does not match the current prover assignment"
                 );
                 return None;
             }
@@ -582,7 +814,13 @@ impl<T: Clone> ProverJobMap<T> {
 mod tests {
     use super::*;
     use crate::prover_api::metrics::ProverStage;
+    use crate::prover_api::test_util::mark_test_batch_as_interop_bundle;
+    use alloy::primitives::{Address, B256, keccak256};
     use std::time::Duration;
+    use zksync_os_batch_types::{PendingBatchInfo, batcher_model::BatchForSigning};
+    use zksync_os_contract_interface::models::{
+        CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
+    };
     use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion, PubdataMode};
 
     fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
@@ -606,7 +844,7 @@ mod tests {
     ) -> SignedBatchEnvelope<Vec<u8>> {
         create_test_batch_envelope_with_protocol_version_and_upgrade(
             batch_number,
-            ProtocolSemanticVersion::legacy_genesis_version(),
+            ProtocolSemanticVersion::canonical_genesis_version(),
             upgrade_tx_hash,
         )
     }
@@ -637,14 +875,14 @@ mod tests {
                     priority_operations_hash: B256::ZERO,
                     dependency_roots_rolling_hash: B256::ZERO,
                     l2_to_l1_logs_root_hash: B256::ZERO,
-                    l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-                    da_commitment: B256::ZERO,
+                    l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+                    da_commitment: keccak256([0u8; 32]),
                     first_block_timestamp: 0,
                     first_block_number: Some(batch_number),
                     last_block_timestamp: 0,
                     last_block_number: Some(batch_number),
                     chain_id: 1,
-                    operator_da_input: vec![],
+                    operator_da_input: vec![0u8; 32],
                     // SYSCOIN: dummy batches do not include compact edge DA ref openings.
                     edge_da_refs_input: vec![],
                     // SYSCOIN: dummy batches do not include compact edge DA refs.
@@ -653,14 +891,12 @@ mod tests {
                 },
                 protocol_version,
                 upgrade_tx_hash,
-                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
-            blob_sidecar: None,
             first_block_number: batch_number,
             last_block_number: batch_number,
             last_block_hash: None,
-            pubdata_mode: PubdataMode::Calldata,
+            pubdata_mode: PubdataMode::Blobs,
             tx_count: 10,
             computational_native_used: None,
             logs: vec![],
@@ -695,6 +931,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_duplicate_waiters_preserve_earliest_queue_age() {
+        let map = std::sync::Arc::new(ProverJobMap::new(
+            Duration::from_secs(60),
+            2,
+            ProverStage::Snark,
+        ));
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope(3)).await;
+
+        // Both additions block while the queue spans its configured range. Once batch 1 is
+        // removed they wake together; whichever inserts first, the other must re-check the key
+        // under the lock and merge only the earlier age instead of replacing the entry.
+        let aged_map = map.clone();
+        let aged_add = tokio::spawn(async move {
+            aged_map
+                .add_job_with_age(create_test_batch_envelope(2), Duration::from_secs(5))
+                .await;
+        });
+        let fresh_map = map.clone();
+        let fresh_add = tokio::spawn(async move {
+            fresh_map.add_job(create_test_batch_envelope(2)).await;
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        map.complete_job(1, ProverType::Real, "test")
+            .await
+            .expect("the head job must be removable");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            aged_add.await.unwrap();
+            fresh_add.await.unwrap();
+        })
+        .await
+        .expect("both duplicate waiters must finish");
+
+        let status = map.status().await;
+        let batch_2 = status
+            .iter()
+            .find(|job| job.fri_job.batch_number == 2)
+            .expect("batch 2 must be queued exactly once");
+        assert!(batch_2.added_seconds_ago >= 5);
+        assert_eq!(
+            status
+                .iter()
+                .filter(|job| job.fri_job.batch_number == 2)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "conflicting same-number prover job metadata")]
+    async fn conflicting_same_number_job_fails_closed() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+
+        let mut conflicting = create_test_batch_envelope(1);
+        conflicting.batch.tx_count += 1;
+        map.add_job(conflicting).await;
+    }
+
+    #[tokio::test]
     async fn test_pick_job() {
         let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Fri);
 
@@ -718,35 +1015,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_pick_job_with_proving_version_filter() {
+    async fn test_pick_job_with_canonical_proving_version_filter() {
         let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Fri);
 
         map.add_job(create_test_batch_envelope(1)).await;
         map.add_job(create_test_batch_envelope_with_protocol_version(
             2,
-            ProtocolSemanticVersion::new(0, 31, 0),
+            ProtocolSemanticVersion::new(0, 32, 0),
         ))
         .await;
 
         let job = map
-            .pick_job(Duration::ZERO, "prover-v7", |job| {
-                job.metadata.proving_version == ProvingVersion::V7
+            .pick_job(Duration::ZERO, "prover-v8", |job| {
+                job.metadata.proving_version == ProvingVersion::V8
             })
             .await;
 
         assert!(job.is_some());
         let (fri_job, _data) = job.unwrap();
-        assert_eq!(fri_job.batch_number, 2);
-        assert_eq!(fri_job.vk_hash, ProvingVersion::V7.vk_hash());
+        assert_eq!(fri_job.batch_number, 1);
+        assert_eq!(fri_job.vk_hash, ProvingVersion::V8.vk_hash());
 
         let status = map.status().await;
         assert_eq!(status[0].fri_job.batch_number, 1);
-        assert_eq!(status[0].assigned_to_prover_id, None);
-        assert_eq!(status[1].fri_job.batch_number, 2);
         assert_eq!(
-            status[1].assigned_to_prover_id,
-            Some("prover-v7".to_string())
+            status[0].assigned_to_prover_id,
+            Some("prover-v8".to_string())
         );
+        assert_eq!(status[1].fri_job.batch_number, 2);
+        assert_eq!(status[1].assigned_to_prover_id, None);
     }
 
     #[tokio::test]
@@ -804,26 +1101,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_snark_pick_keeps_upgrade_batch_standalone() {
-        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
-
-        map.add_job(create_test_batch_envelope_with_upgrade(
-            1,
-            Some(B256::from([1; 32])),
-        ))
-        .await;
-        map.add_job(create_test_batch_envelope(2)).await;
-        map.add_job(create_test_batch_envelope(3)).await;
-
-        let jobs = map
-            .pick_jobs_while_with_limit(5, "prover-1", |_| true)
-            .await;
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].0.batch_number, 1);
-    }
-
-    #[tokio::test]
-    async fn test_snark_pick_stops_before_upgrade_batch() {
+    async fn test_snark_pick_aggregates_upgrade_metadata_with_same_version_neighbors() {
         let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
 
         map.add_job(create_test_batch_envelope(1)).await;
@@ -837,8 +1115,297 @@ mod tests {
         let jobs = map
             .pick_jobs_while_with_limit(5, "prover-1", |_| true)
             .await;
-        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            jobs.iter()
+                .map(|(job, _)| job.batch_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn real_snark_aged_singleton_waits_and_remains_visible() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job_with_age(create_test_batch_envelope(1), Duration::from_secs(3601))
+            .await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Waiting(wait) = pick else {
+            panic!("an aged singleton must still wait for a second compatible proof")
+        };
+        assert_eq!(wait.eligible_fris, 1);
+        assert!(wait.oldest_eligible_age >= Duration::from_secs(3600));
+
+        let status = map.status().await;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].fri_job.batch_number, 1);
+        assert_eq!(status[0].assigned_to_prover_id, None);
+    }
+
+    #[tokio::test]
+    async fn real_snark_target_count_is_assigned() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope_with_upgrade(
+            2,
+            Some(B256::from([2; 32])),
+        ))
+        .await;
+        map.add_job(create_test_batch_envelope(3)).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 3, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(jobs) = pick else {
+            panic!("target-sized range must be assigned")
+        };
+        assert_eq!(
+            jobs.iter()
+                .map(|(job, _)| job.batch_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    // SYSCOIN: The production range default must retain a complete next 100-FRI aggregate while
+    // the separate CPU SNARK worker holds the preceding 100-FRI lease. Otherwise the SNARK queue
+    // backpressures all three resident FRI GPUs for most of a long combine/wrap job.
+    #[tokio::test]
+    async fn range_256_buffers_two_full_hundred_fri_snark_ranges() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 256, ProverStage::Snark);
+        for batch_number in 1..=100 {
+            map.add_job(create_test_batch_envelope(batch_number)).await;
+        }
+
+        let first_pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "cpu-snark-1", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(first_jobs) = first_pick else {
+            panic!("the first 100-FRI range must be assigned")
+        };
+        assert_eq!(first_jobs.len(), 100);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            for batch_number in 101..=200 {
+                map.add_job(create_test_batch_envelope(batch_number)).await;
+            }
+        })
+        .await
+        .expect("the next complete 100-FRI aggregate must fit behind the active lease");
+
+        let second_pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "cpu-snark-2", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(second_jobs) = second_pick else {
+            panic!("the buffered second 100-FRI range must be ready")
+        };
+        assert_eq!(second_jobs.len(), 100);
+        assert_eq!(second_jobs.first().unwrap().0.batch_number, 101);
+        assert_eq!(second_jobs.last().unwrap().0.batch_number, 200);
+    }
+
+    #[tokio::test]
+    async fn interop_bundle_releases_two_proof_range_before_target_or_age() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+        let mut interop_batch = create_test_batch_envelope(2);
+        mark_test_batch_as_interop_bundle(&mut interop_batch);
+        map.add_job(interop_batch).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(jobs) = pick else {
+            panic!("a two-proof range carrying interop must bypass the target/age delay")
+        };
+        assert_eq!(
+            jobs.iter()
+                .map(|(job, _)| job.batch_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[tokio::test]
+    async fn interop_bundle_singleton_still_waits() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        let mut interop_batch = create_test_batch_envelope(1);
+        mark_test_batch_as_interop_bundle(&mut interop_batch);
+        map.add_job(interop_batch).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::ZERO, "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Waiting(wait) = pick else {
+            panic!("interop priority must not weaken the two-FRI minimum")
+        };
+        assert_eq!(wait.eligible_fris, 1);
+        assert_eq!(map.status().await[0].assigned_to_prover_id, None);
+    }
+
+    #[tokio::test]
+    async fn spoofed_bundle_prefix_does_not_trigger_interop_priority() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+        let mut spoofed_batch = create_test_batch_envelope(2);
+        mark_test_batch_as_interop_bundle(&mut spoofed_batch);
+        // A direct caller can submit the same prefix to the messenger, but its caller key cannot
+        // equal the InteropCenter system-contract address.
+        spoofed_batch.batch.logs[0].key = B256::ZERO;
+        map.add_job(spoofed_batch).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Waiting(wait) = pick else {
+            panic!("an arbitrary messenger payload must not trigger interop priority")
+        };
+        assert_eq!(wait.eligible_fris, 2);
+        assert!(
+            map.status()
+                .await
+                .iter()
+                .all(|job| job.assigned_to_prover_id.is_none())
+        );
+    }
+
+    #[tokio::test]
+    async fn real_snark_oldest_age_releases_two_proof_range() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job_with_age(create_test_batch_envelope(1), Duration::from_secs(3601))
+            .await;
+        map.add_job(create_test_batch_envelope(2)).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 100, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(jobs) = pick else {
+            panic!("aged two-proof range must be assigned")
+        };
+        assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].0.batch_number, 1);
+        assert_eq!(jobs[1].0.batch_number, 2);
+    }
+
+    #[tokio::test]
+    async fn real_snark_pick_never_crosses_gap() {
+        let gap_map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        gap_map.add_job(create_test_batch_envelope(1)).await;
+        gap_map.add_job(create_test_batch_envelope(3)).await;
+
+        let gap_pick = gap_map
+            .pick_ready_snark_jobs(100, 100, Duration::ZERO, "prover-1", |_| true)
+            .await;
+        let SnarkJobPick::Waiting(wait) = gap_pick else {
+            panic!("a gap must not be crossed to satisfy the two-proof minimum")
+        };
+        assert_eq!(wait.eligible_fris, 1);
+        let status = gap_map.status().await;
+        assert!(status.iter().all(|job| job.assigned_to_prover_id.is_none()));
+    }
+
+    #[tokio::test]
+    async fn concurrent_ready_snark_picks_assign_range_once() {
+        let map = std::sync::Arc::new(ProverJobMap::new(
+            Duration::from_secs(60),
+            100,
+            ProverStage::Snark,
+        ));
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope(2)).await;
+
+        let first_map = map.clone();
+        let second_map = map.clone();
+        let (first, second) = tokio::join!(
+            async move {
+                first_map
+                    .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-1", |_| true)
+                    .await
+            },
+            async move {
+                second_map
+                    .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-2", |_| true)
+                    .await
+            }
+        );
+
+        let assigned_counts = [first, second]
+            .into_iter()
+            .map(|pick| match pick {
+                SnarkJobPick::Assigned(jobs) => jobs.len(),
+                SnarkJobPick::Waiting(_) | SnarkJobPick::Empty => 0,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(assigned_counts.iter().sum::<usize>(), 2);
+        assert_eq!(
+            assigned_counts.iter().filter(|&&count| count > 0).count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_snark_assignment_is_reclaimed_after_timeout() {
+        let map = ProverJobMap::new(Duration::from_millis(10), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope(2)).await;
+
+        let first = map
+            .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        assert!(matches!(first, SnarkJobPick::Assigned(_)));
+
+        let premature_retry = map
+            .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-2", |_| true)
+            .await;
+        assert!(matches!(premature_retry, SnarkJobPick::Empty));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let reclaimed = map
+            .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-2", |_| true)
+            .await;
+        let SnarkJobPick::Assigned(jobs) = reclaimed else {
+            panic!("timed-out SNARK assignment must be reclaimed")
+        };
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].0.batch_number, 1);
+        assert_eq!(jobs[1].0.batch_number, 2);
+    }
+
+    #[tokio::test]
+    async fn exact_snark_assignment_rejects_subrange_without_consuming_jobs() {
+        let map = ProverJobMap::new(Duration::from_secs(60), 100, ProverStage::Snark);
+        map.add_job(create_test_batch_envelope(1)).await;
+        map.add_job(create_test_batch_envelope(2)).await;
+
+        let pick = map
+            .pick_ready_snark_jobs(100, 2, Duration::from_secs(3600), "prover-1", |_| true)
+            .await;
+        assert!(matches!(pick, SnarkJobPick::Assigned(_)));
+
+        let rejected = map
+            .complete_assigned_many_jobs(
+                1,
+                1,
+                crate::prover_api::metrics::ProverType::Real,
+                "prover-1",
+            )
+            .await;
+        assert!(rejected.is_none());
+        assert!(map.get_job_batch_metadata(1).await.is_some());
+        assert!(map.get_job_batch_metadata(2).await.is_some());
+
+        let completed = map
+            .complete_assigned_many_jobs(
+                1,
+                2,
+                crate::prover_api::metrics::ProverType::Real,
+                "prover-1",
+            )
+            .await
+            .expect("the exact assigned range must remain completable");
+        assert_eq!(completed.len(), 2);
     }
 
     #[tokio::test]

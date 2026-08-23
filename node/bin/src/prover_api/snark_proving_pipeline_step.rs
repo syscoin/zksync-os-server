@@ -35,7 +35,10 @@ pub struct SnarkProvingPipelineStep {
 impl SnarkProvingPipelineStep {
     pub fn new(
         proof_storage: ProofStorage,
+        // SYSCOIN: Configure the two-proof, target-or-age aggregation policy end to end.
         max_fris_per_snark: usize,
+        target_fris_per_snark: usize,
+        max_snark_batch_wait: Duration,
         last_proved_batch_number: u64,
         last_committed_batch_number: u64,
         assignment_timeout: Duration,
@@ -47,6 +50,8 @@ impl SnarkProvingPipelineStep {
         let snark_job_manager = Arc::new(SnarkJobManager::new(
             proof_commands_sender,
             max_fris_per_snark,
+            target_fris_per_snark,
+            max_snark_batch_wait,
             assignment_timeout,
             max_assigned_batch_range,
         ));
@@ -63,7 +68,7 @@ impl SnarkProvingPipelineStep {
         (result, snark_job_manager)
     }
 }
-// SYSCOIN
+// SYSCOIN: Restore committed, unproved FRI jobs without losing durable acceptance age.
 impl SnarkProvingPipelineStep {
     fn can_rehydrate_batch(
         committed_batch_provider: &CommittedBatchProvider,
@@ -99,7 +104,7 @@ impl SnarkProvingPipelineStep {
             );
             return false;
         }
-        // SYSCOIN
+        // SYSCOIN: Re-verify every durable real FRI proof before adding it to SNARK aggregation.
         if let FriProof::Real(real) = &batch.data
             && let Err(err) =
                 fri_proof_verifier::verify_real_fri_proof_bytes(&batch.batch, real.proof())
@@ -115,7 +120,7 @@ impl SnarkProvingPipelineStep {
         true
     }
 
-    // SYSCOIN
+    // SYSCOIN: Rebuild the real-SNARK queue from durable committed FRI proofs after restart.
     async fn rehydrate_snark_queue(
         proof_storage: &ProofStorage,
         committed_batch_provider: &CommittedBatchProvider,
@@ -123,13 +128,18 @@ impl SnarkProvingPipelineStep {
         last_proved_batch_number: u64,
         last_committed_batch_number: u64,
     ) {
-        // SYSCOIN On restart, rehydrate SNARK queue from stored FRI proofs that are already committed but not proved.
+        // SYSCOIN: On restart, rehydrate stored FRI proofs that are committed but not proved.
         let mut rehydrated_jobs = 0u64;
         for batch_number in (last_proved_batch_number + 1)..=last_committed_batch_number {
-            match proof_storage.get_batch_with_proof(batch_number).await {
-                Ok(Some(batch)) => {
+            match proof_storage
+                .get_batch_with_proof_and_age(batch_number)
+                .await
+            {
+                Ok(Some((batch, accepted_age))) => {
                     if Self::can_rehydrate_batch(committed_batch_provider, batch_number, &batch) {
-                        snark_job_manager.add_job(batch).await;
+                        snark_job_manager
+                            .add_rehydrated_job(batch, accepted_age)
+                            .await;
                         rehydrated_jobs += 1;
                     }
                 }
@@ -176,7 +186,7 @@ impl PipelineComponent for SnarkProvingPipelineStep {
         let proof_output = output.clone();
         let proof_state_reporter = state_reporter.clone();
 
-        // SYSCOIN Keep completed SNARK proofs draining while startup rehydration may wait for job-map space.
+        // SYSCOIN: Keep completed SNARK proofs draining while rehydration may wait for queue space.
         let mut proof_forwarder = tokio::spawn(async move {
             while let Some(proof_command) = proof_commands_receiver.recv().await {
                 proof_output

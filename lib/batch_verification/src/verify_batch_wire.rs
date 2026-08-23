@@ -1,15 +1,16 @@
 use crate::main_node::component::BatchVerificationError;
-use alloy::primitives::B256;
 use alloy::sol_types::SolValue;
 use anyhow::anyhow;
 use zksync_os_batch_types::batcher_model::BatchForSigning;
+use zksync_os_contract_interface::IExecutor;
 use zksync_os_contract_interface::models::{CommitBatchInfo, StoredBatchInfo};
-use zksync_os_contract_interface::{IExecutor, IExecutorV29, IExecutorV30};
 use zksync_os_network::VerifyBatch;
 use zksync_os_types::PubdataMode;
 
+// SYSCOIN: This fresh-only server accepts the sole protocol V32 commit-data ABI.
+const CANONICAL_PROTOCOL_MINOR: u16 = 32;
+
 pub(crate) struct VerificationRequest {
-    pub execution_protocol_version: u16,
     pub batch_number: u64,
     pub first_block_number: u64,
     pub last_block_number: u64,
@@ -23,6 +24,12 @@ impl TryFrom<VerifyBatch> for VerificationRequest {
     type Error = anyhow::Error;
 
     fn try_from(request: VerifyBatch) -> Result<Self, Self::Error> {
+        anyhow::ensure!(
+            request.first_block_number <= request.last_block_number,
+            "invalid empty batch block range: {}..={}",
+            request.first_block_number,
+            request.last_block_number,
+        );
         let commit_data = decode_commit_data(
             &request.commit_data,
             request.execution_protocol_version,
@@ -34,7 +41,6 @@ impl TryFrom<VerifyBatch> for VerificationRequest {
             .map_err(|err| anyhow!("Failed to decode previous commit data: {err}"))?;
 
         Ok(Self {
-            execution_protocol_version: request.execution_protocol_version,
             batch_number: request.batch_number,
             first_block_number: request.first_block_number,
             last_block_number: request.last_block_number,
@@ -44,6 +50,30 @@ impl TryFrom<VerifyBatch> for VerificationRequest {
             commit_data,
             prev_commit_data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::Bytes;
+
+    #[test]
+    fn verification_request_rejects_inverted_block_range_before_decoding() {
+        let result = VerificationRequest::try_from(VerifyBatch {
+            request_id: 1,
+            batch_number: 1,
+            first_block_number: 2,
+            last_block_number: 1,
+            pubdata_mode: PubdataMode::Blobs.to_u8(),
+            commit_data: Bytes::new(),
+            prev_commit_data: Bytes::new(),
+            execution_protocol_version: CANONICAL_PROTOCOL_MINOR,
+        });
+        let Err(err) = result else {
+            panic!("inverted batch range was accepted");
+        };
+        assert!(err.to_string().contains("invalid empty batch block range"));
     }
 }
 
@@ -74,73 +104,35 @@ pub(crate) fn encode_verify_batch_request<E>(
     })
 }
 
-pub(crate) fn normalized_commit_data(
-    mut commit_data: CommitBatchInfo,
-    execution_protocol_version: u16,
-) -> CommitBatchInfo {
-    if execution_protocol_version <= 30 {
-        commit_data.number_of_layer2_txs = 0;
-        commit_data.sl_chain_id = 0;
-    }
-    commit_data
-}
-
 fn decode_commit_data(
     commit_data: &[u8],
     execution_protocol_version: u16,
     first_block_number: u64,
     last_block_number: u64,
 ) -> anyhow::Result<CommitBatchInfo> {
-    Ok(match execution_protocol_version {
-        29 => {
-            let decoded = IExecutorV29::CommitBatchInfoZKsyncOS::abi_decode(commit_data)
-                .map_err(|err| anyhow!("Failed to decode v29 commit data: {err}"))?;
-            CommitBatchInfo {
-                batch_number: decoded.batchNumber,
-                new_state_commitment: decoded.newStateCommitment,
-                number_of_layer1_txs: decoded.numberOfLayer1Txs.to::<u64>(),
-                number_of_layer2_txs: 0,
-                priority_operations_hash: decoded.priorityOperationsHash,
-                dependency_roots_rolling_hash: decoded.dependencyRootsRollingHash,
-                l2_to_l1_logs_root_hash: decoded.l2LogsTreeRoot,
-                l2_da_commitment_scheme:
-                    zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256,
-                da_commitment: decoded.daCommitment,
-                first_block_timestamp: decoded.firstBlockTimestamp,
-                first_block_number: Some(first_block_number),
-                last_block_timestamp: decoded.lastBlockTimestamp,
-                last_block_number: Some(last_block_number),
-                chain_id: decoded.chainId.to::<u64>(),
-                operator_da_input: decoded.operatorDAInput.as_ref().to_vec(),
-                // SYSCOIN: v29 batches predate compact edge DA ref openings.
-                edge_da_refs_input: Vec::new(),
-                // SYSCOIN: v29 batches predate compact edge DA ref binding.
-                edge_da_refs_root: B256::ZERO,
-                sl_chain_id: 0,
-            }
-        }
-        30 => IExecutorV30::CommitBatchInfoZKsyncOS::abi_decode(commit_data)
-            .map(Into::into)
-            .map_err(|err| anyhow!("Failed to decode v30 commit data: {err}"))?,
-        31 | 32 => IExecutor::CommitBatchInfoZKsyncOS::abi_decode(commit_data)
-            .map(Into::into)
-            .map_err(|err| anyhow!("Failed to decode v31+ commit data: {err}"))?,
-        version => return Err(anyhow!("Unsupported execution protocol version: {version}")),
-    })
+    anyhow::ensure!(
+        execution_protocol_version == CANONICAL_PROTOCOL_MINOR,
+        "unsupported execution protocol version: {execution_protocol_version}"
+    );
+    let decoded: CommitBatchInfo = IExecutor::CommitBatchInfoZKsyncOS::abi_decode(commit_data)
+        .map(Into::into)
+        .map_err(|err| anyhow!("failed to decode canonical commit data: {err}"))?;
+    anyhow::ensure!(
+        decoded.first_block_number == Some(first_block_number)
+            && decoded.last_block_number == Some(last_block_number),
+        "commit block range does not match request"
+    );
+    Ok(decoded)
 }
 
 fn encode_commit_data(
     commit_info: CommitBatchInfo,
     protocol_version_minor: u16,
 ) -> Result<Vec<u8>, BatchVerificationError> {
-    Ok(match protocol_version_minor {
-        29 => IExecutorV29::CommitBatchInfoZKsyncOS::from(commit_info).abi_encode(),
-        30 => IExecutorV30::CommitBatchInfoZKsyncOS::from(commit_info).abi_encode(),
-        31 | 32 => IExecutor::CommitBatchInfoZKsyncOS::from(commit_info).abi_encode(),
-        version => {
-            return Err(BatchVerificationError::Internal(format!(
-                "Unsupported protocol version: {version}"
-            )));
-        }
-    })
+    if protocol_version_minor != CANONICAL_PROTOCOL_MINOR {
+        return Err(BatchVerificationError::Internal(format!(
+            "unsupported protocol version: {protocol_version_minor}"
+        )));
+    }
+    Ok(IExecutor::CommitBatchInfoZKsyncOS::from(commit_info).abi_encode())
 }

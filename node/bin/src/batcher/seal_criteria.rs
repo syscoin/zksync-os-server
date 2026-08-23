@@ -1,10 +1,10 @@
 use std::collections::HashSet;
-use zk_ee_prev::{common_structs::MAX_NUMBER_OF_LOGS, system::MAX_NATIVE_COMPUTATIONAL};
+use zk_ee::{common_structs::MAX_NUMBER_OF_LOGS, system::MAX_NATIVE_COMPUTATIONAL};
 use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_storage_api::ReplayRecord;
 use zksync_os_types::{BlockOutput, ProtocolSemanticVersion, SystemTxType, ZkTxType};
 
-/// SYSCOIN Reserved headroom (in bytes) between the batch's accumulated raw pubdata and
+/// SYSCOIN: Reserved headroom (in bytes) between the batch's accumulated raw pubdata and
 /// the configured `batch_pubdata_limit_bytes`, used to guarantee that the
 /// commit transaction carrying the batch still fits within a settlement-layer
 /// block configured with the same pubdata limit.
@@ -127,17 +127,15 @@ impl BatchInfoAccumulator {
                 .any(|tx| tx.tx_type() == ZkTxType::Upgrade)
         {
             // Sanity check: upgrade tx must be either the only tx in the block,
-            // or followed by exactly one placeholder SetSLChainId tx on post-v31
-            // protocols.
+            // or followed by exactly one placeholder SetSLChainId tx on the canonical protocol.
             assert!(
                 replay_record.transactions.len() == 1
                     || (replay_record.transactions.len() == 2
-                        && replay_record.protocol_version.is_post_v31()
                         && matches!(
                             replay_record.transactions[1].as_system_tx_type(),
                             Some(SystemTxType::SetSLChainId(_, u64::MAX))
                         )),
-                "upgrade tx must be the only tx in the block (or followed by a single placeholder SetSLChainId tx on post-v31 protocols): {replay_record:?}"
+                "upgrade tx must be the only tx in the block or followed by a single placeholder SetSLChainId tx: {replay_record:?}"
             );
             self.has_upgrade_tx = true;
         }
@@ -199,7 +197,7 @@ impl BatchInfoAccumulator {
             return true;
         }
 
-        // SYSCOIN Seal early to reserve space for the commit-transaction framing overhead so the
+        // SYSCOIN: Seal early to reserve space for the commit-transaction framing overhead so the
         // settlement layer (L1 or gateway) never rejects the commit tx as exceeding its
         // block pubdata limit when it is configured identically to this limit. Only
         // enforced once the batch already has more than one block so that a single block
@@ -315,7 +313,6 @@ mod tests {
             ProtocolSemanticVersion::new(0, 32, 0),
             B256::ZERO,
             vec![],
-            B256::ZERO,
             BlockStartCursors::default(),
         )
     }
@@ -325,7 +322,7 @@ mod tests {
         let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100);
 
         accumulator.add(
-            &dummy_block_output(BlockPubdata::Length(7)),
+            &dummy_block_output(BlockPubdata::new(7)),
             &dummy_replay_record(),
         );
 
@@ -338,11 +335,11 @@ mod tests {
         let mut accumulator = BatchInfoAccumulator::new(100, 20, 100, 100);
 
         accumulator.add(
-            &dummy_block_output(BlockPubdata::Length(21)),
+            &dummy_block_output(BlockPubdata::new(21)),
             &dummy_replay_record(),
         );
         accumulator.add(
-            &dummy_block_output(BlockPubdata::Length(0)),
+            &dummy_block_output(BlockPubdata::new(0)),
             &dummy_replay_record(),
         );
 

@@ -1,6 +1,6 @@
 ---
 name: generate-zksync-local-state
-description: Generate and verify DB-free, single-chain ZKsync OS local-chain fixtures with zk-deployer for arbitrary protocol versions and era-contracts Git revisions. Use when creating or regenerating local-chains/v31, v32, or later fixture directories; changing the contracts revision or chain ID; producing compact Anvil l1-state.json.gz snapshots; or replacing Gateway/multi-chain fixtures with a direct-L1 single-chain setup.
+description: Generate and verify DB-free, single-chain ZKsync OS local-chain fixtures with zk-deployer for the canonical v32.0 protocol and a selected era-contracts Git revision. Use when regenerating local-chains/v32.0; changing the contracts revision or chain ID; producing compact Anvil l1-state.json.gz snapshots; or replacing Gateway/multi-chain fixtures with a direct-L1 single-chain setup.
 ---
 
 # Generate ZKsync Local State
@@ -25,9 +25,8 @@ Determine:
 
 - ZKsync OS server repository root.
 - era-contracts commit hash. Require the user to provide or confirm this value.
-- Protocol version such as `v31`, `v31.0`, or `v32`. The fixture directory and the
-  `protocol_version` recorded in `versions.yaml` are both `v<minor>.<patch>` (patch defaults
-  to `0`).
+- Protocol version `v32.0`. The fixture directory and the `protocol_version` recorded in
+  `versions.yaml` must both use this exact canonical identity.
 - L2 chain ID; default to `506` only when the user does not specify one.
 - zk-deployer repository and revision. Default to the sibling
   `zksync-os-integration-tests` checkout at `HEAD`; select a compatible revision if the chosen

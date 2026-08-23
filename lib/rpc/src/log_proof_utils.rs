@@ -1,9 +1,11 @@
 //! Builds the settlement-layer extension of an L2-to-L1 log proof.
 //!
-//! The base proof ends at the source chain's batch root. A `MessageRoot` proof must continue
-//! through two append-only trees: the batch root into that chain's tree, then the chain root into
-//! L1's shared interop tree. This module reconstructs those two proof segments from historical
-//! `MessageRoot` state and events.
+//! The base proof ends at the source chain's batch root. A `MessageRoot` proof continues through
+//! two append-only trees on the settlement layer recorded for that batch: the batch root into that
+//! chain's tree, then the chain root into the settlement layer's shared interop tree. Direct-L1
+//! batches use L1 `MessageRoot`; Gateway batches terminate at Gateway's `L2MessageRoot`, whose
+//! aggregate root is settled to L1 by Gateway itself. This module reconstructs those proof segments
+//! from historical `MessageRoot` state and events.
 
 use alloy::primitives::{Address, B256, U256, address, keccak256};
 use alloy::providers::{DynProvider, Provider};
@@ -20,18 +22,16 @@ use zksync_os_storage_api::PersistedBatch;
 const LOG_PROOF_SUPPORTED_METADATA_VERSION: u8 = 1;
 const L2_MESSAGE_ROOT_ADDRESS: Address = address!("0x0000000000000000000000000000000000010005");
 
-mod v31_gateway {
-    use alloy::sol;
-
-    sol! {
-        /// SYSCOIN: V31 Gateway leaves predate the V32 `l1Timestamp` field. Its distinct event
-        /// signature must remain explicit; filtering with the V32 interface silently returns no logs.
-        event AppendedChainBatchRoot(
-            uint256 indexed chainId,
-            uint256 indexed batchNumber,
-            bytes32 chainBatchRoot
-        );
-    }
+/// Mirrors `MessageHashing.batchLeafHash` in the pinned Era contracts.
+fn message_root_batch_leaf_hash(batch_root: B256, batch_number: B256) -> B256 {
+    keccak256(
+        [
+            keccak256(b"zkSync:BatchLeaf").0,
+            batch_root.0,
+            batch_number.0,
+        ]
+        .concat(),
+    )
 }
 
 /// Reconstructs the sibling path for one newly appended batch leaf.
@@ -260,8 +260,8 @@ fn chain_proof_vector(
 ///
 /// The tree is read immediately before `settlement_block_number`; matching
 /// `AppendedChainBatchRoot` events from that block are then replayed in order. The returned words are
-/// `[l1 timestamp, absolute leaf index, sibling path...]`; the separate length counts only the
-/// sibling path because the outer proof metadata needs that value.
+/// `[absolute leaf index, sibling path...]`; the separate length counts only the sibling path because
+/// the outer proof metadata needs that value.
 async fn batch_tree_proof(
     settlement_block_number: u64,
     l2_chain_id: u64,
@@ -305,38 +305,27 @@ async fn batch_tree_proof(
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    let batch_leaf_padding: B256 = keccak256(b"zkSync:BatchLeaf");
     let batch_idx = events
         .iter()
         .position(|event| event.batchNumber == U256::from(batch_number))
         .ok_or_else(|| anyhow::anyhow!("Batch number {} not found in logs", batch_number))?;
     let absolute_batch_idx = tree._nextLeafIndex.to::<usize>() + batch_idx;
 
-    // The timestamp is part of `MessageHashing.batchLeafHash`, so the proof must carry the exact
-    // value emitted with the proven batch root.
-    let proven_l1_timestamp = B256::from(events[batch_idx].l1Timestamp.to_be_bytes::<32>());
     let new_hashes: Vec<B256> = events
         .into_iter()
         .map(|event| {
-            let preimage = [
-                batch_leaf_padding.0,
-                event.chainBatchRoot.0,
-                event.batchNumber.to_be_bytes::<32>(),
-                event.l1Timestamp.to_be_bytes::<32>(),
-            ]
-            .concat();
-            keccak256(preimage)
+            message_root_batch_leaf_hash(
+                event.chainBatchRoot,
+                B256::from(event.batchNumber.to_be_bytes::<32>()),
+            )
         })
         .collect();
 
     let batch_proof = calculate_batch_tree_proof(tree, new_hashes, batch_idx);
     let batch_proof_len = batch_proof.len() as u8;
 
-    // `_getProofData` reads the timestamp and leaf index before consuming the sibling path.
-    let mut proof = vec![
-        proven_l1_timestamp,
-        B256::from(U256::from(absolute_batch_idx).to_be_bytes()),
-    ];
+    // `_getProofData` reads the leaf index before consuming the sibling path.
+    let mut proof = vec![B256::from(U256::from(absolute_batch_idx).to_be_bytes())];
     proof.extend(batch_proof);
 
     Ok((proof, batch_proof_len))
@@ -348,7 +337,8 @@ pub(crate) struct MessageRootProofExtension {
     words: Vec<B256>,
 }
 
-/// Reconstructs both MessageRoot aggregation segments at the source batch's L1 execution block.
+/// SYSCOIN: Reconstructs both no-timestamp MessageRoot aggregation segments at the source batch's
+/// L1 execution block, matching the exact pinned Era V32 contracts.
 pub(crate) async fn build_message_root_proof_extension(
     l2_chain_id: u64,
     batch_number: u64,
@@ -387,8 +377,8 @@ pub(crate) async fn build_message_root_proof_extension(
     })
 }
 
-/// SYSCOIN: Reconstructs the production v31 Gateway proof format. Its batch leaves omit the L1
-/// timestamp, so it must remain separate from the v32 L1 MessageRoot path above.
+/// SYSCOIN: Reconstructs the Gateway proof using the same canonical MessageRoot batch-leaf format
+/// as the direct-L1 path, over the exact Gateway execution-block range.
 async fn gateway_batch_tree_proof(
     gateway_block_range: ops::RangeInclusive<u64>,
     l2_chain_id: u64,
@@ -411,7 +401,7 @@ async fn gateway_batch_tree_proof(
     let filter = Filter::new()
         .from_block(*gateway_block_range.start())
         .to_block(*gateway_block_range.end())
-        .event_signature(v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH)
+        .event_signature(AppendedChainBatchRoot::SIGNATURE_HASH)
         .topic1(U256::from(l2_chain_id))
         .address(L2_MESSAGE_ROOT_ADDRESS);
     let logs_future = gateway_provider
@@ -437,19 +427,18 @@ async fn gateway_batch_tree_proof(
             .collect::<Vec<_>>()
             .join(", ");
         anyhow::bail!(
-            "batch #{batch_number} not found in v31 Gateway MessageRoot logs for blocks \
+            "batch #{batch_number} not found in V32 Gateway MessageRoot logs for blocks \
              {gateway_block_range:?} and chain {l2_chain_id}; observed matching batches \
              [{observed_batches}]"
         );
     };
     let absolute_batch_idx = tree._nextLeafIndex.to::<usize>() + batch_idx;
-    let batch_leaf_padding = keccak256(b"zkSync:BatchLeaf");
     let new_hashes = logs
         .into_iter()
         .map(|log| {
             let batch_root = B256::from_slice(&log.inner.data.data);
             let batch_number = log.inner.topics()[2];
-            keccak256([batch_leaf_padding.0, batch_root.0, batch_number.0].concat())
+            message_root_batch_leaf_hash(batch_root, batch_number)
         })
         .collect();
     let batch_proof = calculate_batch_tree_proof(tree, new_hashes, batch_idx);
@@ -459,7 +448,7 @@ async fn gateway_batch_tree_proof(
     Ok((words, batch_proof_len))
 }
 
-/// SYSCOIN: Extends a v31 source-chain proof through its Gateway settlement segment.
+/// SYSCOIN: Extends a V32 source-chain proof through its Gateway settlement segment.
 pub(crate) async fn build_gateway_proof_extension(
     l2_chain_id: u64,
     batch_number: u64,
@@ -570,16 +559,23 @@ mod tests {
     use alloy::primitives::b256;
 
     #[test]
-    fn v31_gateway_batch_root_event_signature_is_immutable() {
-        // SYSCOIN: adding the V32 timestamp changes topic0 and would silently hide every v31
-        // Gateway batch-root event from proof reconstruction.
+    fn canonical_batch_root_event_signature_is_immutable() {
+        // This is the exact signature emitted by the pinned Era IMessageRoot on both direct L1
+        // and Gateway. Adding a timestamp changes topic0 and hides every canonical event.
         assert_eq!(
-            v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH,
+            AppendedChainBatchRoot::SIGNATURE_HASH,
             b256!("0x4f7fd9ed016150a623d5a2cf43053fe313a56293a77e060a05db49ed22579520")
         );
-        assert_ne!(
-            v31_gateway::AppendedChainBatchRoot::SIGNATURE_HASH,
-            AppendedChainBatchRoot::SIGNATURE_HASH
+    }
+
+    #[test]
+    fn canonical_batch_leaf_hash_matches_pinned_era_contract() {
+        assert_eq!(
+            message_root_batch_leaf_hash(
+                B256::repeat_byte(0x11),
+                B256::from(U256::from(42).to_be_bytes()),
+            ),
+            b256!("0x74b7992b6908f6e7c58378abc88a8344a960ebeb389c885900c2127036d501b2")
         );
     }
 

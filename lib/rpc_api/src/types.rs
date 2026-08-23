@@ -83,7 +83,8 @@ pub fn raw_transaction_rlp_item_length(raw_tx: &[u8]) -> usize {
     }
 }
 
-/// Proof that an L2-to-L1 log belongs to a source batch and, optionally, L1's MessageRoot.
+/// Proof that an L2-to-L1 log belongs to a source batch and, optionally, its settlement layer's
+/// MessageRoot.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct L2ToL1LogProof {
@@ -102,9 +103,8 @@ pub struct L2ToL1LogProof {
     ///
     /// It is `None` for [`LogProofTarget::L1BatchRoot`] proofs, which do not include a MessageRoot
     /// extension.
-    // SYSCOIN: Keep the v31 JSON-RPC wire key consumed by production relayers while allowing the
-    // generalized v32 spelling on input. The Rust name can describe either settlement layer.
-    #[serde(rename = "gatewayBlockNumber", alias = "settlementLayerBlockNumber")]
+    // SYSCOIN: Use the settlement-layer-neutral V32 key because proofs may route through Gateway
+    // or directly through L1 MessageRoot.
     pub settlement_layer_block_number: Option<u64>,
 }
 
@@ -150,14 +150,15 @@ pub enum LogProofTarget {
     /// This is the default used by L1 verification flows such as withdrawal finalization.
     #[default]
     L1BatchRoot,
-    /// Extends the source batch-root proof through the source chain's batch tree and then L1's
-    /// shared chain tree in MessageRoot.
+    /// SYSCOIN: Extends the source batch-root proof through the source chain's batch tree and then
+    /// the recorded settlement layer's shared chain tree in MessageRoot.
     ///
-    /// MessageRoot appends the source chain's batch root when the batch executes on L1. Reading it
-    /// at that execution block selects the historical shared root containing the append; later
-    /// blocks may contain a different root. Other chains import the shared root keyed by this L1
-    /// block. This target is available only for batches produced under a protocol version that
-    /// supports L1 interop.
+    /// MessageRoot appends the source chain's batch root when the batch executes on its settlement
+    /// layer. Reading it at that execution block selects the historical shared root containing the
+    /// append; later blocks may contain a different root. For a Gateway batch, this proof stops at
+    /// Gateway's `L2MessageRoot`, and other edge chains import the shared root keyed by the Gateway
+    /// chain ID and block. Gateway settles its own aggregate root to L1. Direct-L1 batches use L1's
+    /// MessageRoot instead.
     MessageRoot,
 }
 
@@ -389,7 +390,7 @@ mod tests {
     use alloy_rlp::BufMut;
 
     #[test]
-    fn l2_to_l1_log_proof_preserves_v31_gateway_block_wire_key() {
+    fn l2_to_l1_log_proof_uses_settlement_layer_block_wire_key() {
         let proof = L2ToL1LogProof {
             batch_number: 11,
             proof: vec![B256::repeat_byte(1)],
@@ -398,17 +399,11 @@ mod tests {
             settlement_layer_block_number: Some(42),
         };
 
-        // SYSCOIN: Existing v31 relayers read `gatewayBlockNumber`; changing only the Rust field
-        // name must not silently remove that response value.
         let serialized = serde_json::to_value(&proof).unwrap();
-        assert_eq!(serialized["gatewayBlockNumber"], 42);
-        assert!(serialized.get("settlementLayerBlockNumber").is_none());
+        assert_eq!(serialized["settlementLayerBlockNumber"], 42);
+        assert!(serialized.get("gatewayBlockNumber").is_none());
 
-        let mut generalized = serialized;
-        let object = generalized.as_object_mut().unwrap();
-        let block_number = object.remove("gatewayBlockNumber").unwrap();
-        object.insert("settlementLayerBlockNumber".to_owned(), block_number);
-        let decoded: L2ToL1LogProof = serde_json::from_value(generalized).unwrap();
+        let decoded: L2ToL1LogProof = serde_json::from_value(serialized).unwrap();
         assert_eq!(decoded.settlement_layer_block_number, Some(42));
     }
 

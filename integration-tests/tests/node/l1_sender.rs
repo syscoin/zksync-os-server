@@ -27,9 +27,6 @@ use zksync_os_server::config::Config;
 fn fast_batches_config(config: &mut Config) {
     make_full_pipeline_config(config);
     config.prover_api_config.fake_fri_provers.compute_time = Duration::ZERO;
-    // Both prover stages are faked, so prover inputs may be faked too (independent of the
-    // NEXTEST_PROFILE the suite happens to run under).
-    config.prover_input_generator_config.enable_input_generation = false;
     config.sequencer_config.block_time = Duration::from_millis(50);
     config.batcher_config.tx_per_batch_limit = 1;
     config.batcher_config.batch_timeout = Duration::from_secs(2);

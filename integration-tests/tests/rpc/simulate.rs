@@ -1,10 +1,7 @@
-use alloy::consensus::{
-    BlobTransactionSidecar, BlobTransactionSidecarVariant, SidecarBuilder, SimpleCoder,
-    Transaction as _,
-};
+use alloy::consensus::Transaction as _;
 use alloy::eips::eip1559::Eip1559Estimation;
+use alloy::network::TransactionBuilder;
 use alloy::network::primitives::BlockTransactions;
-use alloy::network::{TransactionBuilder, TransactionBuilder4844};
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::providers::Provider;
 use alloy::providers::utils::Eip1559Estimator;
@@ -145,7 +142,7 @@ async fn simulate_state_carries_across_blocks(tester: Tester) -> anyhow::Result<
 
 /// Simulate the transaction shape used by the settlement-layer sender through `eth_simulateV1`.
 ///
-/// L1 commit transactions carry blob sidecars.
+/// Syscoin settlement transactions are ordinary EIP-1559 calls; DA is committed separately.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn simulate_settlement_sender_tx_shape(tester: Tester) -> anyhow::Result<()> {
     let provider = tester.sl_provider();
@@ -175,23 +172,13 @@ async fn simulate_settlement_sender_tx_shape(tester: Tester) -> anyhow::Result<(
         .await?;
     let max_fee_per_gas = fees.max_fee_per_gas + max_priority_fee_per_gas;
 
-    let mut request = TransactionRequest::default()
+    let request = TransactionRequest::default()
         .with_from(sender)
         .with_to(recipient)
         .with_max_fee_per_gas(max_fee_per_gas)
         .with_max_priority_fee_per_gas(max_priority_fee_per_gas)
         .with_nonce(nonce)
         .with_gas_limit(30_000_000);
-
-    if !settles_on_gateway {
-        let blob_sidecar: BlobTransactionSidecar =
-            SidecarBuilder::<SimpleCoder>::from_slice(b"simulate-v1 blob sidecar")
-                .build()
-                .expect("test blob sidecar should be buildable");
-        request.max_fee_per_blob_gas = Some(1_000_000_000u128);
-        request.set_blob_sidecar(BlobTransactionSidecarVariant::Eip4844(blob_sidecar));
-        request.transaction_type = Some(3);
-    }
 
     let results = provider
         .simulate(&settlement_sender_simulate_payload(sender, request))
@@ -203,19 +190,10 @@ async fn simulate_settlement_sender_tx_shape(tester: Tester) -> anyhow::Result<(
         panic!("expected full transaction response for simulated settlement tx");
     };
     assert_eq!(transactions.len(), 1, "expected one full transaction");
-    if settles_on_gateway {
-        assert!(
-            transactions[0].blob_versioned_hashes().is_none(),
-            "gateway settlement tx should not carry blobs",
-        );
-    } else {
-        assert!(
-            transactions[0]
-                .blob_versioned_hashes()
-                .is_some_and(|hashes| !hashes.is_empty()),
-            "direct-L1 settlement tx should carry blob hashes",
-        );
-    }
+    assert!(
+        transactions[0].blob_versioned_hashes().is_none(),
+        "Syscoin settlement transactions must not carry Ethereum blob sidecars",
+    );
     let call = &results[0].calls[0];
     assert!(call.status, "settlement sender simulation should succeed");
     assert!(

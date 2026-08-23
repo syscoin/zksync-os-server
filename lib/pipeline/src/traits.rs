@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use zksync_os_observability::ComponentStateReporter;
 
 /// A component that transforms messages in the pipeline.
-/// Examples: ProverInputGenerator, Batcher, L1 senders
+/// Examples: Batcher and L1 senders.
 ///
 /// Components construct themselves with all needed parameters, then get consumed by `run()`.
 #[async_trait]

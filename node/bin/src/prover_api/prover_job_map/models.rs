@@ -13,12 +13,15 @@ pub struct JobEntry<T> {
 pub struct JobMetadata {
     pub batch_number: u64,
     pub proving_version: ProvingVersion,
-    pub requires_standalone_snark_proof: bool,
+    // SYSCOIN: Release a real SNARK aggregation early once this range can advance interop.
+    pub contains_interop_bundle: bool,
     pub tx_count: usize,
     pub computational_native_used: Option<u64>,
     pub added_at: Instant,
     pub assigned_to_prover_id: Option<String>,
     pub assigned_at: Option<Instant>,
+    /// SYSCOIN: Exact aggregate lease; a prover may submit only this complete range.
+    pub assigned_batch_range: Option<(u64, u64)>,
     pub current_attempt: usize, // 0 = never assigned, 1+ = assigned N times
 }
 
@@ -54,33 +57,51 @@ impl Debug for QueueStatistics {
 
 impl JobMetadata {
     pub fn new_from_batch<T>(batch_envelope: &SignedBatchEnvelope<T>) -> Self {
+        Self::new_from_batch_with_age(batch_envelope, Duration::ZERO)
+    }
+
+    /// SYSCOIN: Reconstructs queue age for a job loaded from durable proof storage.
+    pub fn new_from_batch_with_age<T>(
+        batch_envelope: &SignedBatchEnvelope<T>,
+        existing_age: Duration,
+    ) -> Self {
         let batch_number = batch_envelope.batch_number();
         let proving_version = batch_envelope
             .batch
             .proving_version()
             .expect("Must be valid execution as set by the server");
+        let contains_interop_bundle = batch_envelope.batch.contains_interop_bundle();
         let tx_count = batch_envelope.batch.tx_count;
         let computational_native_used = batch_envelope.batch.computational_native_used;
-        let requires_standalone_snark_proof =
-            batch_envelope.batch.requires_standalone_snark_proof();
+        let now = Instant::now();
 
         Self {
             batch_number,
             proving_version,
-            requires_standalone_snark_proof,
+            contains_interop_bundle,
             tx_count,
             computational_native_used,
-            added_at: Instant::now(),
+            // `existing_age` originates from a file timestamp and is expected to be small enough
+            // to represent on the platform's monotonic clock. Falling back to `now` is defensive
+            // for corrupt / unrepresentable timestamps; normal files preserve their prior age.
+            added_at: now.checked_sub(existing_age).unwrap_or(now),
             assigned_to_prover_id: None,
             assigned_at: None,
+            assigned_batch_range: None,
             current_attempt: 0,
         }
     }
 
     /// Assign (or reassign) this job to a prover.
-    pub fn assign(&mut self, assigned_at: Instant, assigned_to_prover_id: String) {
+    pub fn assign(
+        &mut self,
+        assigned_at: Instant,
+        assigned_to_prover_id: String,
+        assigned_batch_range: (u64, u64),
+    ) {
         self.assigned_at = Some(assigned_at);
         self.assigned_to_prover_id = Some(assigned_to_prover_id);
+        self.assigned_batch_range = Some(assigned_batch_range);
         self.current_attempt += 1;
     }
 
@@ -90,6 +111,7 @@ impl JobMetadata {
     pub fn unassign(&mut self) {
         self.assigned_at = None;
         self.assigned_to_prover_id = None;
+        self.assigned_batch_range = None;
     }
 }
 

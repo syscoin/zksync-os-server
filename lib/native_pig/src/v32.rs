@@ -1,32 +1,48 @@
 use crate::tree::{EfficientTreeAdapter, RawLeafProof, TREE_DEPTH, VersionedMerkleTree};
 use crate::{NativeBatchBlock, NativeBatchRunOutput};
-use alloy::primitives::{B256, ruint::aliases::B160};
+use alloy::primitives::{Address, B256, ruint::aliases::B160};
 use anyhow::Context as _;
 use std::collections::VecDeque;
-use zk_ee_0_4_0::common_structs::{ProofData, da_commitment_scheme::DACommitmentScheme};
-use zk_ee_0_4_0::system::metadata::chain_config::{ChainConfig, DEFAULT_MAX_TX_GAS_LIMIT};
-use zk_ee_0_4_0::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
-use zk_ee_0_4_0::utils::Bytes32;
-use zk_os_basic_system_0_4_0::system_implementation::flat_storage_model::FlatStorageLeaf;
-use zk_os_forward_system_0_4_0::run::{
+use zk_ee::common_structs::{ProofData, da_commitment_scheme::DACommitmentScheme};
+use zk_ee::system::metadata::chain_config::{ChainConfig, DEFAULT_MAX_TX_GAS_LIMIT};
+use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
+use zk_ee::utils::Bytes32;
+use zk_os_basic_system::system_implementation::flat_storage_model::FlatStorageLeaf;
+use zk_os_forward_system::run::{
     BatchBlockInput, BatchState as ForwardBatchState, LeafProof,
     PreimageSource as ForwardPreimageSource, ReadStorage as ForwardReadStorage, ReadStorageTree,
     StorageCommitment, generate_batch_proof_input,
 };
+use zksync_os_batch_types::syscoin_edge_da_refs_for_blocks;
 use zksync_os_interface::traits::TxListSource;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_storage_api::{ReadStateHistory, ReplayRecord, ViewState};
-use zksync_os_types::{PubdataMode, ZksyncOsEncode};
+use zksync_os_types::{
+    ProtocolSemanticVersion, PubdataMode, SYSCOIN_MAX_TX_GAS_LIMIT, ZksyncOsEncode,
+    syscoin_chain_config_hash,
+};
 
-/// The chain config all v32 native batch runs are executed with. Its hash is part of the batch
-/// public input, so proof verification must reconstruct it identically.
+/// SYSCOIN: The fixed chain config all canonical V32 native batch runs use. Its hash is part of
+/// the batch public input, so proof verification must reconstruct it identically.
 pub(crate) fn chain_config(chain_id: u64) -> anyhow::Result<ChainConfig> {
-    ChainConfig::new(chain_id, false, DEFAULT_MAX_TX_GAS_LIMIT)
+    anyhow::ensure!(
+        DEFAULT_MAX_TX_GAS_LIMIT == SYSCOIN_MAX_TX_GAS_LIMIT,
+        "zksync-os default max transaction gas limit changed: expected {}, found {}",
+        SYSCOIN_MAX_TX_GAS_LIMIT,
+        DEFAULT_MAX_TX_GAS_LIMIT,
+    );
+    ChainConfig::new(chain_id, false, SYSCOIN_MAX_TX_GAS_LIMIT)
         .map_err(|err| anyhow::anyhow!("invalid chain config: {err:?}"))
 }
 
 pub(crate) fn chain_config_hash(chain_id: u64) -> anyhow::Result<B256> {
-    Ok(B256::from(chain_config(chain_id)?.hash()))
+    let native_hash = B256::from(chain_config(chain_id)?.hash());
+    let canonical_hash = syscoin_chain_config_hash(chain_id);
+    anyhow::ensure!(
+        native_hash == canonical_hash,
+        "zksync-os chain config hash drift: native {native_hash}, canonical {canonical_hash}",
+    );
+    Ok(canonical_hash)
 }
 
 pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
@@ -34,6 +50,7 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
     read_state: &ReadState,
     merkle_tree: MerkleTree<RocksDBWrapper>,
     pubdata_mode: PubdataMode,
+    compact_edge_da_commit_target: Address,
 ) -> anyhow::Result<NativeBatchRunOutput> {
     anyhow::ensure!(
         !blocks.is_empty(),
@@ -44,6 +61,18 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
     // The chain config is frozen for the whole batch; chain id lives there now rather than in
     // per-block metadata. All blocks in a batch share the same chain.
     let chain_id = first_replay_record.block_context.chain_id;
+    // SYSCOIN: Reject metadata drift that final-v0.4 no longer repeats in each block input.
+    validate_batch_replay_identity(
+        chain_id,
+        &first_replay_record.protocol_version,
+        blocks.iter().enumerate().map(|(index, block)| {
+            (
+                index,
+                block.replay_record.block_context.chain_id,
+                &block.replay_record.protocol_version,
+            )
+        }),
+    )?;
     let chain_config = chain_config(chain_id)?;
     let first_state_version = first_replay_record
         .block_context
@@ -52,7 +81,7 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
         .context("batch prover input requires a parent state version")?;
     let (root_hash, leaf_count) = merkle_tree
         .root_info(first_state_version)?
-        .context("missing Merkle tree state for the first v32 batch block")?;
+        .context("missing Merkle tree state for the first V32 batch block")?;
 
     let initial_proof_data = ProofData {
         state_root_view: StorageCommitment {
@@ -113,6 +142,20 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
     let batch_public_input = batch_run.batch_public_input;
     let upgrade_tx_hash = b256_from_bytes32(batch_output.upgrade_tx_hash);
     let upgrade_tx_hash = (upgrade_tx_hash != B256::ZERO).then_some(upgrade_tx_hash);
+    let (edge_da_refs_input, edge_da_refs_root) = syscoin_edge_da_refs_for_blocks(
+        blocks.iter().map(|block| {
+            (
+                block.block_output,
+                block.replay_record.transactions.as_slice(),
+            )
+        }),
+        compact_edge_da_commit_target,
+    )?;
+    let proven_edge_da_refs_root = b256_from_bytes32(batch_output.edge_da_refs_root);
+    anyhow::ensure!(
+        proven_edge_da_refs_root == edge_da_refs_root,
+        "native batch edge-DA root mismatch: batch program produced {proven_edge_da_refs_root}, replay reconstruction produced {edge_da_refs_root}",
+    );
 
     Ok(NativeBatchRunOutput {
         prover_input: batch_run.prover_input,
@@ -140,7 +183,27 @@ pub(crate) fn generate_batch_run<ReadState: ReadStateHistory>(
             batch_output.settlement_layer_chain_id,
         )?,
         upgrade_tx_hash,
+        edge_da_refs_input,
+        edge_da_refs_root,
     })
+}
+
+fn validate_batch_replay_identity<'a>(
+    chain_id: u64,
+    protocol_version: &ProtocolSemanticVersion,
+    identities: impl IntoIterator<Item = (usize, u64, &'a ProtocolSemanticVersion)>,
+) -> anyhow::Result<()> {
+    for (index, block_chain_id, block_protocol_version) in identities {
+        anyhow::ensure!(
+            block_chain_id == chain_id,
+            "batch block {index} chain id mismatch: expected {chain_id}, found {block_chain_id}",
+        );
+        anyhow::ensure!(
+            block_protocol_version == protocol_version,
+            "batch block {index} protocol version mismatch: expected {protocol_version}, found {block_protocol_version}",
+        );
+    }
+    Ok(())
 }
 
 fn batch_block_input(replay_record: &ReplayRecord) -> BatchBlockInput<TxListSource> {
@@ -254,10 +317,54 @@ fn map_leaf_proof(proof: RawLeafProof) -> LeafProof {
 impl<SV: ViewState> ForwardBatchState for HistoricalBatchState<SV> {
     fn apply_block_output(
         &mut self,
-        _block_output: &zk_os_forward_system_0_4_0::run::output::BlockOutput,
+        _block_output: &zk_os_forward_system::run::output::BlockOutput,
     ) {
         if self.cursor + 1 < self.state_views.len() {
             self.cursor += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chain_config_hash, validate_batch_replay_identity};
+    use zksync_os_types::{ProtocolSemanticVersion, syscoin_chain_config_hash};
+
+    #[test]
+    fn native_chain_config_matches_the_canonical_server_commitment() {
+        let chain_id = 57;
+        assert_eq!(
+            chain_config_hash(chain_id).unwrap(),
+            syscoin_chain_config_hash(chain_id)
+        );
+    }
+
+    #[test]
+    fn batch_replay_identity_rejects_later_chain_or_protocol_drift() {
+        let canonical = ProtocolSemanticVersion::canonical_genesis_version();
+        let other_protocol = ProtocolSemanticVersion::new(0, 31, 1);
+
+        validate_batch_replay_identity(57, &canonical, [(0, 57, &canonical), (1, 57, &canonical)])
+            .unwrap();
+
+        let chain_err = validate_batch_replay_identity(
+            57,
+            &canonical,
+            [(0, 57, &canonical), (1, 58, &canonical)],
+        )
+        .unwrap_err();
+        assert!(chain_err.to_string().contains("chain id mismatch"));
+
+        let protocol_err = validate_batch_replay_identity(
+            57,
+            &canonical,
+            [(0, 57, &canonical), (1, 57, &other_protocol)],
+        )
+        .unwrap_err();
+        assert!(
+            protocol_err
+                .to_string()
+                .contains("protocol version mismatch")
+        );
     }
 }

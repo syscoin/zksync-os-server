@@ -55,7 +55,8 @@ impl FriProvingPipelineStep {
 
         (result, fri_job_manager)
     }
-    // SYSCOIN
+    // SYSCOIN: Reuse a durable FRI proof only when it matches the canonical rebuilt batch and
+    // passes the current V8 proof verifier.
     fn can_rehydrate_batch(
         expected_batch: &SignedBatchEnvelope<ProverInput>,
         stored_batch: &SignedBatchEnvelope<FriProof>,
@@ -162,7 +163,7 @@ impl FriProvingPipelineStep {
         }
     }
 
-    // SYSCOIN
+    // SYSCOIN: Recover an accepted-but-unforwarded FRI proof before scheduling fresh proving.
     async fn try_rehydrate_pending_batch(
         proof_storage: &ProofStorage,
         batch: &SignedBatchEnvelope<ProverInput>,
@@ -267,7 +268,7 @@ impl PipelineComponent for FriProvingPipelineStep {
             result = async {
                 while let Some(batch) = input.recv_and_record_picked(&state_reporter).await {
                     if batch.batch_number() > last_proved_batch_number {
-                        // SYSCOIN
+                        // SYSCOIN: Prefer durable pending/canonical proofs before adding a new FRI job.
                         if let Some(stored_batch) = Self::try_rehydrate_pending_batch(&proof_storage, &batch).await {
                             output.send_and_record(stored_batch, &state_reporter).await?;
                             continue;
@@ -321,7 +322,7 @@ mod tests {
     use super::*;
     use crate::config::ProofStorageConfig;
     use crate::prover_api::proof_storage::StoredBatch;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::{Address, B256, keccak256};
     use tempfile::TempDir;
     use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, BatchSignatureData};
@@ -340,14 +341,14 @@ mod tests {
             priority_operations_hash: B256::ZERO,
             dependency_roots_rolling_hash: B256::ZERO,
             l2_to_l1_logs_root_hash: B256::ZERO,
-            l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-            da_commitment: B256::ZERO,
+            l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+            da_commitment: keccak256([0u8; 32]),
             first_block_timestamp: 0,
             first_block_number: Some(from),
             last_block_timestamp: 0,
             last_block_number: Some(to),
             chain_id: 270,
-            operator_da_input: Vec::new(),
+            operator_da_input: vec![0u8; 32],
             // SYSCOIN: dummy batches do not include compact edge DA ref openings.
             edge_da_refs_input: Vec::new(),
             // SYSCOIN: dummy batches do not include compact edge DA refs.
@@ -370,16 +371,14 @@ mod tests {
             },
             batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
+                protocol_version: ProtocolSemanticVersion::new(0, 32, 0),
                 upgrade_tx_hash: None,
-                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
-            blob_sidecar: None,
             first_block_number: from,
             last_block_number: to,
             last_block_hash: None,
-            pubdata_mode: PubdataMode::Calldata,
+            pubdata_mode: PubdataMode::Blobs,
             tx_count: 0,
             computational_native_used: None,
             logs: vec![],
@@ -410,7 +409,7 @@ mod tests {
     async fn run_does_not_reuse_stored_fake_fri_proof_after_restart() -> anyhow::Result<()> {
         let proof_storage = proof_storage_for_test().await?;
         let input_batch = dummy_input_batch(1);
-        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         proof_storage.save_batch_with_proof(&stored_batch).await?;
 
         let (step, job_manager) =
@@ -443,7 +442,7 @@ mod tests {
         let mismatched_batch = BatchEnvelope::new(mismatched_metadata, FriProof::Fake)
             .with_signatures(BatchSignatureData::NotNeeded);
         proof_storage
-            .save_batch_with_proof(&StoredBatch::V1(mismatched_batch))
+            .save_batch_with_proof(&StoredBatch(mismatched_batch))
             .await?;
 
         let (step, _job_manager) =

@@ -1,17 +1,19 @@
 use crate::commands::SendToL1;
 use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolCall;
-use std::collections::HashMap;
 use std::fmt::Display;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope, SnarkProof};
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_contract_interface::IExecutor;
 use zksync_os_contract_interface::IExecutor::{proofPayloadCall, proveBatchesSharedBridgeCall};
 use zksync_os_contract_interface::models::StoredBatchInfo;
+use zksync_os_types::syscoin_chain_config_hash;
 
 const OHBENDER_PROOF_TYPE: u32 = 2;
 const FAKE_PROOF_TYPE: u32 = 3;
 const FAKE_PROOF_MAGIC_VALUE: u32 = 13;
+// SYSCOIN: Fresh deployments use only the regenerated app-bound V8 verifier slot.
+const CANONICAL_VERIFIER_VERSION: u32 = 8;
 
 #[derive(Debug)]
 pub struct ProofCommand {
@@ -83,14 +85,8 @@ impl ProofCommand {
         proving_execution_version: Option<u32>,
     ) -> u32 {
         match proving_execution_version {
-            // Use default verifier for fake proofs.
-            None => 0,
-            Some(4) => 4,
-            Some(5) => 5,
-            Some(6) => 6,
-            Some(7) => 0,
-            // Switch to 0 once the L1 default verifier becomes the V8 one (as done for V7).
-            Some(8) => 8,
+            // Fake and real proofs are both bound to the sole canonical V8 verifier slot.
+            None | Some(CANONICAL_VERIFIER_VERSION) => CANONICAL_VERIFIER_VERSION,
             Some(execution_version) => panic!(
                 "unsupported or old execution version: {execution_version}; there's no verifier defined for it"
             ),
@@ -103,30 +99,9 @@ impl ProofCommand {
         B256::from_slice(&bytes)
     }
 
-    fn get_batch_public_input(prev_batch: &StoredBatchInfo, batch: &StoredBatchInfo) -> B256 {
-        let mut bytes = Vec::with_capacity(32 * 3);
-        bytes.extend_from_slice(prev_batch.state_commitment.as_slice());
-        bytes.extend_from_slice(batch.state_commitment.as_slice());
-        bytes.extend_from_slice(batch.commitment.as_slice());
-        keccak256(&bytes)
-    }
-
-    /// `keccak(chainId | 0 | maxTxGasLimit)`, matching era-contracts#2323 and
-    /// `zksync_os_native_pig::v32_chain_config_hash`. Middle word is
-    /// `fri_proof_verification_enabled`, always disabled from L1.
-    fn zksync_os_chain_config_hash(chain_id: u64) -> B256 {
-        // EIP-7825 default cap (2^24), matching L1 and zk_ee.
-        const DEFAULT_MAX_TX_GAS_LIMIT: u64 = 1 << 24;
-        let mut bytes = Vec::with_capacity(32 * 3);
-        bytes.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
-        bytes.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
-        bytes.extend_from_slice(&U256::from(DEFAULT_MAX_TX_GAS_LIMIT).to_be_bytes::<32>());
-        keccak256(&bytes)
-    }
-
-    /// v32 batch public input: chain config hash folded between the state commitments and the
-    /// batch output hash (`batch.commitment`, chain-id-less for v32).
-    fn get_batch_public_input_v32(
+    /// Canonical batch public input: chain config hash folded between the state commitments and
+    /// the chain-id-less batch-output hash (`batch.commitment`).
+    fn batch_public_input(
         prev_batch: &StoredBatchInfo,
         batch: &StoredBatchInfo,
         chain_config_hash: &B256,
@@ -141,52 +116,35 @@ impl ProofCommand {
     fn snark_public_input(
         previous_batch: &StoredBatchInfo,
         batches: &[StoredBatchInfo],
-        chain_config_hash: Option<B256>,
+        chain_config_hash: B256,
     ) -> B256 {
-        let mut hash_map: HashMap<usize, &StoredBatchInfo> = HashMap::new();
-        hash_map.insert(previous_batch.batch_number as usize, previous_batch);
+        let mut elements = Vec::with_capacity(batches.len());
+        let mut previous = previous_batch;
         for batch in batches {
-            hash_map.insert(batch.batch_number as usize, batch);
-        }
-        let start = batches.first().unwrap().batch_number as usize;
-        let end = batches.last().unwrap().batch_number as usize;
-
-        // Pre-v32 folds a rolling chain of truncated hashes; v32 concatenates the full
-        // per-batch hashes and hashes ONCE (a rolling fold coincides for N <= 2 but diverges
-        // from N == 3 on). Single-batch ranges are the bare hash in both.
-        let mut elements: Vec<B256> = Vec::with_capacity(end - start + 1);
-        for i in start..=end {
-            let batch = hash_map.get(&i).expect("Batch not found");
-            let prev_batch = hash_map.get(&(i - 1)).expect("Previous batch not found");
-            elements.push(match &chain_config_hash {
-                Some(cch) => Self::get_batch_public_input_v32(prev_batch, batch, cch),
-                None => Self::shift_b256_right(&Self::get_batch_public_input(prev_batch, batch)),
-            });
+            assert_eq!(
+                batch.batch_number,
+                previous.batch_number + 1,
+                "proof batches must be contiguous"
+            );
+            elements.push(Self::batch_public_input(
+                previous,
+                batch,
+                &chain_config_hash,
+            ));
+            previous = batch;
         }
 
-        if chain_config_hash.is_some() {
-            let folded = if elements.len() == 1 {
-                elements[0]
-            } else {
-                keccak256(elements.iter().flat_map(|e| e.0).collect::<Vec<u8>>())
-            };
-            Self::shift_b256_right(&folded)
+        let folded = if elements.len() == 1 {
+            elements[0]
         } else {
-            // taken from https://github.com/mm-zk/zksync_tools/blob/cf2c47d61fa8399a030d0b31d4396832f802489b/prove_execute/src/main.rs
-            let mut result: Option<B256> = None;
-            for element in elements {
-                match result {
-                    Some(ref mut res) => {
-                        let mut combined = [0_u8; 64];
-                        combined[..32].copy_from_slice(&res.0);
-                        combined[32..].copy_from_slice(&element.0);
-                        *res = Self::shift_b256_right(&keccak256(combined));
-                    }
-                    None => result = Some(element),
-                }
-            }
-            result.unwrap()
-        }
+            keccak256(
+                elements
+                    .iter()
+                    .flat_map(|element| element.0)
+                    .collect::<Vec<u8>>(),
+            )
+        };
+        Self::shift_b256_right(&folded)
     }
 
     fn to_calldata_suffix(&self) -> Vec<u8> {
@@ -206,30 +164,10 @@ impl ProofCommand {
             self.proof.proving_execution_version(),
         );
 
-        // todo: remove tostring
-        // v32.0 (proving V8) folds the chain config hash into the batch public input.
-        let chain_config_hash = if self
-            .batches
-            .first()
-            .unwrap()
-            .batch
-            .batch_info
-            .protocol_version
-            .minor
-            >= 32
-        {
-            Some(Self::zksync_os_chain_config_hash(
-                self.batches
-                    .first()
-                    .unwrap()
-                    .batch
-                    .batch_info
-                    .commit_info
-                    .chain_id,
-            ))
-        } else {
-            None
-        };
+        let first_batch = self.batches.first().unwrap();
+        // SYSCOIN: Use the same fixed-gas-limit chain-config commitment as native PIG.
+        let chain_config_hash =
+            syscoin_chain_config_hash(first_batch.batch.batch_info.commit_info.chain_id);
         let public_input =
             Self::snark_public_input(previous_batch_info, &stored_batch_infos, chain_config_hash);
 
@@ -238,8 +176,8 @@ impl ProofCommand {
         let proof: Vec<U256> = match &self.proof {
             SnarkProof::Fake => {
                 vec![
-                    // Fake proof type
-                    U256::from(FAKE_PROOF_TYPE),
+                    // Fake proof type, bound to the canonical V8 verifier slot.
+                    U256::from(FAKE_PROOF_TYPE | (verifier_version << 8)),
                     // OhBender 'previous hash' - for fake proof, we can always assume that it matches the range perfectly.
                     U256::from(0),
                     // Fake proof magic value (just for sanity)
@@ -291,22 +229,22 @@ impl ProofCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{OHBENDER_PROOF_TYPE, ProofCommand};
+    use super::{FAKE_PROOF_TYPE, OHBENDER_PROOF_TYPE, ProofCommand};
 
     #[test]
-    fn v7_proofs_use_default_verifier_slot() {
+    fn real_proofs_use_v8_verifier_slot() {
         let verifier_version =
-            ProofCommand::verifier_version_for_proving_execution_version(Some(7));
+            ProofCommand::verifier_version_for_proving_execution_version(Some(8));
 
-        assert_eq!(verifier_version, 0);
-        assert_eq!(OHBENDER_PROOF_TYPE | (verifier_version << 8), 0x02);
+        assert_eq!(verifier_version, 8);
+        assert_eq!(OHBENDER_PROOF_TYPE | (verifier_version << 8), 0x802);
     }
 
     #[test]
-    fn fake_proofs_keep_default_verifier_slot() {
-        assert_eq!(
-            ProofCommand::verifier_version_for_proving_execution_version(None),
-            0
-        );
+    fn fake_proofs_use_v8_verifier_slot() {
+        let verifier_version = ProofCommand::verifier_version_for_proving_execution_version(None);
+
+        assert_eq!(verifier_version, 8);
+        assert_eq!(FAKE_PROOF_TYPE | (verifier_version << 8), 0x803);
     }
 }

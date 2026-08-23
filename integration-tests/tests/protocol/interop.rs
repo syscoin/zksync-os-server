@@ -1,4 +1,4 @@
-//! SYSCOIN: Interop integration tests retaining the production v31 Gateway proof topology.
+//! SYSCOIN: Interop integration tests retaining the production V32 Gateway proof topology.
 
 use alloy::{
     eips::eip1559::Eip1559Estimation,
@@ -353,7 +353,10 @@ async fn deposit_erc20_to_chain(
         .context("L1 ERC20 deposit transaction")
 }
 
-/// Relayer functionality: wait for finalization and obtain message proof (MessageRoot variant).
+/// Relayer functionality: wait for local inclusion and obtain a Gateway MessageRoot proof.
+///
+/// The proof becomes available after the source batch is proven and executed on Gateway; it does
+/// not wait for the Gateway batch containing that execution to settle to L1.
 async fn relayer_get_message_proof(
     provider: &impl ZksyncApi,
     tx_hash: FixedBytes<32>,
@@ -363,14 +366,14 @@ async fn relayer_get_message_proof(
     let timeout = tokio::time::Duration::from_secs(300); // 5 minutes
     let start = tokio::time::Instant::now();
 
-    // Wait for the block to be finalized
+    // Wait for the source block to be visible at the local latest head.
     loop {
         if start.elapsed() > timeout {
-            anyhow::bail!("Block was not finalized in time");
+            anyhow::bail!("Source block was not included in time");
         }
 
-        if let Ok(finalized_block) = provider.get_block_number().await
-            && finalized_block >= block_number
+        if let Ok(latest_block) = provider.get_block_number().await
+            && latest_block >= block_number
         {
             break;
         }
@@ -379,7 +382,7 @@ async fn relayer_get_message_proof(
     }
 
     // Get the log proof
-    // SYSCOIN: retain the last v31 Gateway RPC error so a proof-construction regression is not
+    // SYSCOIN: retain the last V32 Gateway RPC error so a proof-construction regression is not
     // misreported as a generic five-minute timeout.
     let mut last_error = None;
     let log_proof = loop {
@@ -402,7 +405,7 @@ async fn relayer_get_message_proof(
             Err(err) => {
                 let error = err.to_string();
                 if !error.contains("has not been executed on Gateway yet") {
-                    return Err(err).context("construct v31 Gateway MessageRoot proof");
+                    return Err(err).context("construct V32 Gateway MessageRoot proof");
                 }
                 last_error = Some(error);
             }
@@ -495,7 +498,7 @@ async fn fund_wallet_via_l1_deposit(tester: &Tester, wallet: Address, amount: U2
 #[test_log::test(tokio::test)]
 async fn test_interop_l2_to_l1_message_verification() -> anyhow::Result<()> {
     // 1. Send an L2->L1 message ("hello interop") on chain A
-    // 2. Wait for block finalization and obtain the log proof
+    // 2. Wait for the source batch to be proven/executed on Gateway and obtain the log proof
     // 3. Wait for the interop root to appear on chain B
     // 4. Call proveL2MessageInclusionShared on chain B and assert it returns true
 
@@ -531,7 +534,7 @@ async fn test_interop_l2_to_l1_message_verification() -> anyhow::Result<()> {
     let block_number = receipt.block_number.expect("Block number not found");
     let tx_hash = receipt.transaction_hash;
 
-    // Wait for block finalization and get the L2->L1 log proof (MessageRoot variant)
+    // Wait for Gateway execution (not Gateway -> L1 finality) and get the MessageRoot proof.
     let log_proof =
         relayer_get_message_proof(&chain_a.l2_zk_provider, tx_hash, block_number).await?;
 
@@ -600,7 +603,7 @@ async fn test_interop_bundle_send() -> Result<()> {
 
     token
         .approve(L2_NATIVE_TOKEN_VAULT_ADDRESS, amount_to_send)
-        // fixme: temporary measure while v31 zksync-os does not support estimation with gasPrice=0
+        // fixme: temporary measure while V32 zksync-os does not support estimation with gasPrice=0
         .max_fee_per_gas(1_000_000_000)
         .max_priority_fee_per_gas(0)
         .send()

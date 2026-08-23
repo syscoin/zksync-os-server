@@ -1,18 +1,20 @@
 //! Support for representing the version of the `zks` protocol.
 //!
+//! SYSCOIN: The fresh V32 binary removes retired runtime versions while retaining upstream's
+//! canonical `zks/5` -> v3 replay mapping.
+//!
 //! Version history:
 //! - `zks/0` — test-only, never registered in production.
 //! - `zks/1`–`zks/4` — retired and removed. `zks/1`/`zks/2` were replay-only on older record
 //!   encodings; `zks/3`/`zks/4` additionally carried the verifier messages inline (message IDs
 //!   0x02–0x06) before those moved to the standalone `zks_2fa` subprotocol.
-//! - `zks/5` — current version; replay-only, using Syscoin's `v4` record encoding to carry the
-//!   canonical upgrade transaction hash required by v31.
+//! - `zks/5` — current version; replay-only, using the upstream `v3` record encoding.
 //!
 //! Versions evolve additively and are removed only in a later breaking release once the whole
 //! fleet speaks a newer one; retired version numbers are never reused. See the "Version
 //! lifecycle" section in `docs/src/design/devp2p.md` before touching this file.
 
-use crate::wire::replays::{WireReplayRecord, v0, v4};
+use crate::wire::replays::{WireReplayRecord, v0, v3};
 use std::fmt::Debug;
 
 /// Type-level specification for a `zks` protocol version and its pinned wire formats.
@@ -39,15 +41,11 @@ impl ZksProtocolVersionSpec for ZksProtocolV0 {
 
 /// Protocol version 5 supports replay streaming only via `GetBlockReplays` and `BlockReplays`.
 /// The verifier handshake and batch verification live in the standalone `zks_2fa` subprotocol.
-///
-/// SYSCOIN: No Syscoin release used upstream's v3 replay shape for `zks/5`; the controlled,
-/// unreleased v31 testnet upgrades all nodes together from `zks/4`, so `zks/5` pins the existing
-/// immutable v4 replay record and preserves `canonical_upgrade_tx_hash`.
 #[derive(Debug, Clone)]
 pub struct ZksProtocolV5;
 
 impl ZksProtocolVersionSpec for ZksProtocolV5 {
-    type Record = v4::ReplayRecord;
+    type Record = v3::ReplayRecord;
 
     const VERSION: ZksVersion = ZksVersion::Zks5;
 }

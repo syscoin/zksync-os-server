@@ -26,7 +26,7 @@ For the filesystem backend, the full path is:
 
 S3 and GCS use the same session-prefixed value as the object key.
 
-> **SYSCOIN rollout:** Flat `<block_number>/<block_hash>` archives are deliberately not read because
+> **SYSCOIN:** Flat `<block_number>/<block_hash>` archives are deliberately not read because
 > they do not carry trustworthy writer provenance. This format has not been released; production
 > deployments must start with an empty archive bucket or prefix. Experimental flat archives must be
 > recovered with the pre-session tooling and re-archived, never copied into the session namespace.
@@ -335,7 +335,7 @@ configured credentials file, `endpoint` overrides S3 API endpoint for S3-compati
 providers, and `region` is used as the first region provider before falling back to the SDK
 defaults and then `auto`.
 
-> **SYSCOIN rollout:** An S3-compatible endpoint must support SHA-256 checksums on `PutObject` and
+> **SYSCOIN:** An S3-compatible endpoint must support SHA-256 checksums on `PutObject` and
 > checksum mode on `HeadObject`. When bucket-level SSE-KMS is enabled, grant the node the KMS
 > permissions required by the provider to retrieve object checksums; AWS S3 general-purpose
 > buckets require `kms:Decrypt`.

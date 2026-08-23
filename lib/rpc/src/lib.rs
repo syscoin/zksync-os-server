@@ -66,6 +66,7 @@ use reth_tasks::Runtime;
 use tower_http::cors::{Any, CorsLayer};
 use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
 use zksync_os_genesis::GenesisInputSource;
+use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::debug::DebugApiServer;
 use zksync_os_rpc_api::eth::EthApiServer;
@@ -97,6 +98,8 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     l1_provider: DynProvider,
     gateway_provider: Option<DynProvider>,
     settlement_layer_intervals: SettlementLayerIntervals,
+    optimistic_gateway_head: bool,
+    committed_batch_provider: CommittedBatchProvider,
     policy_client: Option<PolicyClient>,
     runtime: &Runtime,
     wait_for_db: impl Future<Output = ()> + Send + 'static,
@@ -140,6 +143,8 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             l1_provider,
             gateway_provider,
             settlement_layer_intervals,
+            optimistic_gateway_head,
+            committed_batch_provider,
             eth_call_handler.clone(),
         )
         .into_rpc(),

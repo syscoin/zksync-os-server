@@ -24,8 +24,7 @@ use zksync_os_contract_interface::l1_discovery::L1State;
 use zksync_os_genesis::Genesis;
 use zksync_os_interface::types::AccountDiff;
 use zksync_os_l1_watcher::{
-    InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig, SegmentResolver,
-    StartResolver,
+    InteropWatcher, L1TxWatcher, L1UpgradeTxWatcher, L1WatcherConfig, StartResolver,
 };
 use zksync_os_provider::NodeProvider;
 use zksync_os_storage_api::ReplayRecord;
@@ -33,6 +32,16 @@ use zksync_os_types::{
     FeeParams, L1TxSerialId, NodeRole, ProtocolSemanticVersion, SystemTxType, UpgradeInfo,
     UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
+
+/// SYSCOIN: Selection constraint while an authenticated interop bundle still needs a distinct
+/// FRI companion under Airbender's stock minimum-two SNARK aggregation rule.
+#[derive(Debug, Clone, Copy)]
+pub struct InteropCompanionRequest {
+    /// Empty zero/zero batches are not commit-valid in Era priority mode. This is `Some` only
+    /// when the caller can rule priority mode out (currently: an edge settling on Gateway), and
+    /// gives ordinary/system traffic a short grace period before the empty fallback becomes ready.
+    pub empty_after: Option<Instant>,
+}
 
 /// General pool that provides unified access to all transaction sources in the system.
 ///
@@ -52,7 +61,7 @@ pub struct Pool<T> {
 struct Subcomponents {
     upgrade_watcher: Option<StartResolver<ProtocolSemanticVersion, L1UpgradeTxWatcher>>,
     l1_tx_watcher: Option<StartResolver<u64, L1TxWatcher>>,
-    interop_watcher: Option<SegmentResolver<u64, InteropWatcher>>,
+    interop_watcher: Option<StartResolver<u64, InteropWatcher>>,
     /// Polls local + gateway state and enqueues interop-fee-update system txs into
     /// `interop_fee_subpool`.
     /// `None` unless this node is responsible for interop fee updates (main node settling on
@@ -70,7 +79,23 @@ pub struct Config {
     // polling the live provider.
     pub archive_lookup_diamond_proxy_l1: Option<ZkChain<NodeProvider>>,
     pub l1_watcher_config: L1WatcherConfig,
+    /// SYSCOIN: Explicitly trust the active Gateway head for interop-root ingestion. This is
+    /// topology-scoped: it has no effect while the chain settles directly on L1.
+    pub optimistic_gateway_head: bool,
     pub interop_fee_updater_config: InteropFeeUpdaterConfig,
+}
+
+// SYSCOIN: Keep the irreversible Gateway-head trust decision explicit and scoped to the active
+// Gateway topology. Direct-L1 interop always retains the configured confirmation depth.
+fn interop_watcher_config(
+    mut config: L1WatcherConfig,
+    settles_on_gateway: bool,
+    optimistic_gateway_head: bool,
+) -> L1WatcherConfig {
+    if settles_on_gateway && optimistic_gateway_head {
+        config.confirmations = 0;
+    }
+    config
 }
 
 impl<T: L2Subpool> Pool<T> {
@@ -116,13 +141,21 @@ impl<T: L2Subpool> Pool<T> {
         .await
         .context("failed to start L1 upgrade transaction watcher")?;
 
-        let interop_watcher = InteropWatcher::create_watcher(
-            l1_state.settlement_layer_intervals.clone(),
+        // SYSCOIN: The active Bridgehub selects the canonical interop-root source: Gateway L2MessageRoot
+        // for an edge chain, or L1 MessageRoot for a V32 chain settling directly on L1.
+        let interop_watcher_config = interop_watcher_config(
             config.l1_watcher_config.clone(),
-            l1_state.bridgehub_l1.clone(),
-            config.chain_id,
-            interop_roots_subpool.clone(),
+            l1_state.settles_on_gateway(),
+            config.optimistic_gateway_head,
         );
+        let interop_watcher = InteropWatcher::create_watcher(
+            interop_watcher_config,
+            l1_state.bridgehub_sl.clone(),
+            l1_state.sl_chain_id,
+            interop_roots_subpool.clone(),
+        )
+        .await
+        .context("failed to create active settlement-layer interop root watcher")?;
 
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -172,9 +205,6 @@ impl<T: L2Subpool> Pool<T> {
                     protocol_version: genesis_upgrade.protocol_version.clone(),
                     timestamp: 0, // No restrictions on timestamp.
                     force_preimages: genesis_upgrade.force_deploy_preimages.clone(),
-                    // SYSCOIN: batch verification rebuilds upgrade batches from replay records;
-                    // use the actual genesis upgrade tx hash loaded from the L1 GenesisUpgrade event.
-                    canonical_tx_hash: *genesis_upgrade.tx.hash(),
                 },
             };
             self.upgrade_subpool.insert(upgrade_tx).await;
@@ -196,20 +226,16 @@ impl<T: L2Subpool> Pool<T> {
                 l1_tx_watcher.run(replay.starting_cursors.l1_priority_id),
             );
         }
-        if current_protocol_version >= &ProtocolSemanticVersion::new(0, 31, 0) {
-            // SYSCOIN: upstream removed the restart/gate path required for safe live
-            // Gateway migrations. Syscoin deploys directly on v31, so do not emit live
-            // SetSLChainId migration txs without the corresponding restart machinery.
-            if let Some(interop_watcher) = self.subcomponents.interop_watcher.take() {
-                self.runtime.spawn_critical_task(
-                    "interop roots watcher",
-                    interop_watcher.run(replay.starting_cursors.interop_root_id),
-                );
-            }
-            if let Some(interop_fee_updater) = self.subcomponents.interop_fee_updater.take() {
-                self.runtime
-                    .spawn_critical_task("interop fee updater", interop_fee_updater.run());
-            }
+        // SYSCOIN: Fresh V32 deployments always consume roots from their active settlement layer.
+        if let Some(interop_watcher) = self.subcomponents.interop_watcher.take() {
+            self.runtime.spawn_critical_task(
+                "interop roots watcher",
+                interop_watcher.run(replay.starting_cursors.interop_root_id),
+            );
+        }
+        if let Some(interop_fee_updater) = self.subcomponents.interop_fee_updater.take() {
+            self.runtime
+                .spawn_critical_task("interop fee updater", interop_fee_updater.run());
         }
     }
 
@@ -219,10 +245,9 @@ impl<T: L2Subpool> Pool<T> {
     /// Also provides upgrade information is there is one (which is not necessarily accompanied by
     /// an upgrade transaction).
     ///
-    /// `include_interop_traffic` gates both interop-root and interop-fee system transactions; it
-    /// must only be enabled once the active protocol version supports L1-based interop. When it is
-    /// disabled, watched roots stay queued so a protocol upgrade can enable them without restarting
-    /// the watcher.
+    /// SYSCOIN: `include_interop_traffic` gates both interop-root and interop-fee system transactions. V32
+    /// consumes roots from its active settlement-layer MessageRoot; Gateway fee updates remain
+    /// topology-specific.
     ///
     /// Returns `None` if all transaction sources are closed.
     // SYSCOIN: Stream selection only needs shared access. Keeping this borrow immutable lets the
@@ -231,6 +256,7 @@ impl<T: L2Subpool> Pool<T> {
         &'a self,
         next_interop_tx_allowed_after: Instant,
         include_interop_traffic: bool,
+        interop_companion: Option<InteropCompanionRequest>,
     ) -> Option<StreamOutcome<'a>> {
         let mut upgrade_info_stream = self.upgrade_subpool.upgrade_info_stream().await;
 
@@ -277,6 +303,9 @@ impl<T: L2Subpool> Pool<T> {
                 // needs to provide transactions. This is the reason behind `loop` above (which can
                 // iterate twice at max).
                 Some(upgrade) = tokio_stream::StreamExt::next(&mut upgrade_info_stream) => {
+                    // SYSCOIN: Security/protocol upgrades retain absolute upstream priority. If
+                    // this crosses a proving-version boundary, the canonical-state transition
+                    // expires the old companion request rather than blocking the upgrade.
                     if let Some(upgrade_tx) = &upgrade.tx {
                         tracing::info!(
                             protocol_version = %upgrade.metadata.protocol_version,
@@ -294,6 +323,7 @@ impl<T: L2Subpool> Pool<T> {
                     upgrade_metadata = Some(upgrade.metadata);
                     if let Some(tx) = upgrade.tx {
                         return Some(StreamOutcome {
+                            kind: StreamOutcomeKind::Transactions,
                             upgrade_metadata,
                             // SYSCOIN: distinguish full upgrades from patch-only metadata so
                             // equal-version genesis upgrades keep their forced preimages.
@@ -308,6 +338,7 @@ impl<T: L2Subpool> Pool<T> {
                     //       in the block. In other words, we could chain it with `l1_l2_stream` as
                     //       a micro-optimization. Given how rare it is, likely not worth the trouble.
                     return Some(StreamOutcome {
+                        kind: StreamOutcomeKind::Transactions,
                         upgrade_metadata,
                         stream_contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(sl_chain_id_stream),
@@ -315,6 +346,7 @@ impl<T: L2Subpool> Pool<T> {
                 }
                 Some(_) = interop_related_stream.peek(), if include_interop_traffic => {
                     return Some(StreamOutcome {
+                        kind: StreamOutcomeKind::Transactions,
                         upgrade_metadata,
                         stream_contains_upgrade_tx: false,
                         stream: MarkingTxStream::unmarkable(interop_related_stream),
@@ -322,9 +354,29 @@ impl<T: L2Subpool> Pool<T> {
                 }
                 Some(_) = l1_l2_stream.peek() => {
                     return Some(StreamOutcome {
+                        kind: StreamOutcomeKind::Transactions,
                         upgrade_metadata,
                         stream_contains_upgrade_tx: false,
                         stream: MarkingTxStream::markable(l1_l2_stream, l2_marker),
+                    });
+                }
+
+                // SYSCOIN: A Gateway-settled edge cannot activate Era priority mode
+                // (`activatePriorityMode` is L1-only), so an empty zero/zero block is a valid,
+                // deterministic last resort there after a short grace period. Direct-L1 callers
+                // leave `empty_after` unset: priority-mode activation can race the sequencer, and
+                // Committer rejects zero/zero batches while active. Ready real transactions and
+                // upgrades always win above until the timer expires.
+                _ = async {
+                    if let Some(deadline) = interop_companion.and_then(|request| request.empty_after) {
+                        tokio::time::sleep_until(deadline).await;
+                    }
+                }, if interop_companion.and_then(|request| request.empty_after).is_some() => {
+                    return Some(StreamOutcome {
+                        kind: StreamOutcomeKind::InteropCompanionEmpty,
+                        upgrade_metadata,
+                        stream_contains_upgrade_tx: false,
+                        stream: MarkingTxStream::unmarkable(futures::stream::empty()),
                     });
                 }
 
@@ -445,9 +497,8 @@ impl<T: L2Subpool> Pool<T> {
                 update_kind: PoolUpdateKind::Commit,
             });
 
-        // Propagate the just-finalized protocol version to the L2 validator so that
-        // version-gated stateless checks (e.g. intrinsic native resources, v31+) use the
-        // correct version for incoming txs.
+        // Propagate the just-finalized protocol version to the L2 validator so version-gated
+        // stateless checks use the correct version for incoming transactions.
         self.l2_subpool
             .update_pending_protocol_version(replay_record.protocol_version.clone());
         // Refresh the validator's fee params from the executed block's context. This is the only
@@ -471,6 +522,7 @@ impl<T: L2Subpool> Pool<T> {
 }
 
 pub struct StreamOutcome<'a> {
+    pub kind: StreamOutcomeKind,
     /// Optional upgrade metadata to be applied with transactions in `stream`. Note that even if
     /// this is `Some`, `stream` is not guaranteed to contain an upgrade transaction. The stream may
     /// contain other transaction types if the upgrade is a patch upgrade.
@@ -478,8 +530,16 @@ pub struct StreamOutcome<'a> {
     /// SYSCOIN: whether `stream` contains the full upgrade transaction associated with
     /// `upgrade_metadata`, as opposed to patch-only metadata consumed alongside another tx stream.
     pub stream_contains_upgrade_tx: bool,
-    /// Non-empty stream of transactions.
+    /// Stream of transactions. This is empty only for the explicitly tagged interop companion.
     pub stream: MarkingTxStream<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamOutcomeKind {
+    Transactions,
+    /// SYSCOIN: One-shot, normal-mode-compatible empty block used to prevent an authenticated
+    /// interop bundle from remaining a single FRI forever on an idle Gateway-settled edge.
+    InteropCompanionEmpty,
 }
 
 #[derive(Debug, Default)]
@@ -550,6 +610,51 @@ impl<'a> MarkingTxStream<'a> {
                 .chain(futures::stream::once(async move { tx }))
                 .boxed(),
             marker: self.marker,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{L1WatcherConfig, interop_watcher_config};
+    use std::time::Duration;
+
+    fn watcher_config(confirmations: u64) -> L1WatcherConfig {
+        L1WatcherConfig {
+            max_blocks_to_process: 100,
+            confirmations,
+            poll_interval: Duration::from_secs(1),
+            finalized_poll_interval: Duration::from_secs(60),
+            logs_cache_capacity: 128,
+        }
+    }
+
+    // SYSCOIN: Gateway-head ingestion is an explicit trust mode, never a topology-only default.
+    #[test]
+    fn gateway_head_trust_is_explicit() {
+        let config = interop_watcher_config(watcher_config(7), true, false);
+
+        assert_eq!(config.confirmations, 7);
+    }
+
+    // SYSCOIN: The trust mode removes lag only for the active Gateway settlement topology.
+    #[test]
+    fn gateway_head_trust_topology_truth_table() {
+        for (settles_on_gateway, optimistic_gateway_head, expected_confirmations) in [
+            (false, false, 7),
+            (false, true, 7),
+            (true, false, 7),
+            (true, true, 0),
+        ] {
+            let config = interop_watcher_config(
+                watcher_config(7),
+                settles_on_gateway,
+                optimistic_gateway_head,
+            );
+            assert_eq!(
+                config.confirmations, expected_confirmations,
+                "unexpected confirmation depth for settles_on_gateway={settles_on_gateway}, optimistic_gateway_head={optimistic_gateway_head}"
+            );
         }
     }
 }

@@ -121,15 +121,12 @@ mod tests {
     }
 
     #[test]
+    // SYSCOIN: Fresh V32 remote provers advertise only the canonical V8 verification key.
     fn known_hashes_are_parsed() {
-        let q = query(Some(&format!(
-            "{}, {}",
-            ProvingVersion::V7.vk_hash(),
-            ProvingVersion::V8.vk_hash()
-        )));
+        let q = query(Some(ProvingVersion::V8.vk_hash()));
         assert_eq!(
             q.supported_proving_versions(),
-            Some(vec![ProvingVersion::V7, ProvingVersion::V8])
+            Some(vec![ProvingVersion::V8])
         );
     }
 
@@ -138,11 +135,11 @@ mod tests {
         let q = query(Some(&format!(
             "{},{}",
             UNKNOWN_VK_HASH,
-            ProvingVersion::V7.vk_hash()
+            ProvingVersion::V8.vk_hash()
         )));
         assert_eq!(
             q.supported_proving_versions(),
-            Some(vec![ProvingVersion::V7])
+            Some(vec![ProvingVersion::V8])
         );
     }
 

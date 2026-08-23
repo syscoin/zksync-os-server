@@ -421,7 +421,7 @@ impl BaseTokenPriceUpdater {
 
     /// Compares the new ratio with the current one on L1 and updates it if the deviation exceeds the configured threshold.
     async fn maybe_update_l1_ratio(&mut self, new_ratio: Ratio<BigUint>) -> anyhow::Result<()> {
-        /// SYSCOIN Timeout for L1 transaction inclusion.
+        /// SYSCOIN: Timeout for L1 transaction inclusion.
         const TRANSACTION_TIMEOUT: Duration = Duration::from_secs(3000);
 
         let Some(token_multiplier_setter_address) = self.token_multiplier_setter_address else {

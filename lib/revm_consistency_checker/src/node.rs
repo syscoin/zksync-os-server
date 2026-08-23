@@ -23,10 +23,6 @@ use zksync_os_types::{BlockOutput, ExecutionVersion, SYSTEM_CONTEXT_ADDRESS};
 
 const BLOB_BASE_FEE_UPDATE_FRACTION: u128 = alloy::eips::eip4844::BLOB_GASPRICE_UPDATE_FRACTION;
 const MIN_BASE_FEE_PER_BLOB_GAS: u128 = alloy::eips::eip4844::BLOB_TX_MIN_BLOB_GASPRICE;
-// SYSCOIN: early launch/bootstrap replay contains system transactions with legacy nonce semantics
-// that REVM's diagnostic checker rejects although ZKsync OS accepted them on the canonical path.
-const BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS: u64 = 10;
-
 pub struct RevmConsistencyChecker<State>
 where
     State: ReadStateHistory + Clone + Send + 'static,
@@ -34,7 +30,6 @@ where
     state: State,
     internal_config_manager: InternalConfigManager,
     revert_enabled: bool,
-    allow_bootstrap_skip: bool,
 }
 
 impl<State> RevmConsistencyChecker<State>
@@ -45,13 +40,11 @@ where
         state: State,
         internal_config_manager: InternalConfigManager,
         revert_enabled: bool,
-        allow_bootstrap_skip: bool,
     ) -> Self {
         Self {
             state,
             internal_config_manager,
             revert_enabled,
-            allow_bootstrap_skip,
         }
     }
 
@@ -178,7 +171,7 @@ where
 
                 // AtlasV1/V2 didn't honor `block_context.mix_hash` for prevrandao (ZKsync OS
                 // hardcoded `1`) and didn't surface blob fees. Generic AtlasV3 supports both,
-                // but Syscoin's current v31 production OS build still leaves prevrandao disabled
+                // but Syscoin's current V32 production OS build still leaves prevrandao disabled
                 // while keeping blob base fee in the OS block context.
                 //
                 // The pre-AtlasV3 `blob_excess_gas_and_price` must still be `Some`: all Atlas
@@ -247,30 +240,17 @@ where
                 match revm_txs {
                     Ok(txs) => {
                         let mut execution_error = None;
-                        // SYSCOIN: commit after each tx. If REVM rejects a replay tx that ZKsync OS already
-                        // accepted (for example a bootstrap/system tx with legacy nonce semantics),
-                        // this block is outside the checker's supported surface.
-                        for (tx_index, tx) in txs.into_iter().enumerate() {
+                        // Commit after each transaction so the diagnostic state follows the
+                        // canonical executor exactly; any execution failure is fail-closed.
+                        for tx in txs {
                             if let Err(err) = evm.transact_commit(tx) {
-                                execution_error = Some((tx_index, err));
+                                execution_error = Some(err);
                                 break;
                             }
                         }
 
-                        if let Some((tx_index, err)) = execution_error {
-                            if self.allow_bootstrap_skip
-                                && replay_record.block_context.block_number
-                                    <= BOOTSTRAP_REVM_CHECK_SKIP_BLOCKS
-                            {
-                                PUSH_METRICS.revm_blocks_skipped.inc();
-                                tracing::warn!(
-                                    block_number = replay_record.block_context.block_number,
-                                    tx_index,
-                                    "Skipping REVM consistency check for bootstrap block: failed to execute tx in REVM: {err:#}"
-                                );
-                            } else {
-                                return Err(err.into());
-                            }
+                        if let Some(err) = execution_error {
+                            return Err(err.into());
                         } else {
                             let compare_report = CompareReport::build(
                                 evm.0.db_mut(),
@@ -368,9 +348,9 @@ fn calculate_blob_base_fee_for_excess_blob_gas(
 }
 
 fn syscoin_revm_prevrandao() -> B256 {
-    // SYSCOIN: The production zksync-os v0.3.0 dependency is built without the `prevrandao`
+    // SYSCOIN: The final-v0.4 patched zksync-os dependency is built without the `prevrandao`
     // feature, so PREVRANDAO remains the legacy hardcoded value even when the checker uses the
-    // AtlasV3 REVM spec for other v31 behavior.
+    // AtlasV3 REVM spec for other V32 behavior.
     B256::from(U256::ONE)
 }
 

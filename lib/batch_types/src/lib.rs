@@ -9,8 +9,9 @@ pub use block_merkle_tree_data::BlockMerkleTreeData;
 mod batch_info;
 pub mod batcher_model;
 
+// SYSCOIN: Export the canonical compact Bitcoin DA builders and edge-reference reconstruction.
 pub use batch_info::{
     CanonicalBatchCommitData, CommittedBatchInfo, DiscoveredCommittedBatch, PendingBatchInfo,
-    SYSCOIN_DA_MAX_BLOBS_PER_BATCH, expected_upgrade_tx_hash_for_batch,
-    syscoin_blob_ids_and_chunks_from_pubdata, syscoin_edge_da_refs_from_input,
+    SYSCOIN_DA_MAX_BLOBS_PER_BATCH, syscoin_blob_ids_and_chunks_from_pubdata,
+    syscoin_edge_da_refs_for_blocks, syscoin_edge_da_refs_from_input,
 };

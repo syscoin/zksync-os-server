@@ -183,8 +183,8 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: The pinned v31 fixture starts with executed L1 history. Snapshot its frontiers so
-    // commit-only assertions cover only work produced by this test.
+    // Snapshot the initial settlement frontiers so commit-only assertions cover only work
+    // produced by this test, regardless of setup transactions finalized during launch.
     let initial_state = fetch_l1_state(&tester).await?;
     let initial_safe = block_number_by_id(&tester, BlockId::Number(BlockNumberOrTag::Safe)).await?;
     let initial_finalized =
@@ -223,9 +223,9 @@ async fn node_recovers_from_l1_batch_revert_after_restart() -> anyhow::Result<()
     .await?;
     assert!(safe_before_revert > initial_safe);
 
-    // SYSCOIN: The v31 fixture may commit its setup deposit after startup while its executed
-    // frontier stays on the preloaded history. Resolve the rollback target's exact L2 block from
-    // its surviving L1 commit instead of using either startup RPC tag as a proxy.
+    // Setup work may commit after startup while the executed frontier is unchanged. Resolve the
+    // rollback target's exact L2 block from its surviving L1 commit instead of using either RPC
+    // tag as a proxy.
     let expected_safe_after_revert = if committed_state.last_executed_batch == 0 {
         0
     } else {
@@ -335,7 +335,7 @@ async fn external_node_crashes_on_live_l1_batch_revert() -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let main_node = env.launch(config).await?;
-    // SYSCOIN: Compare against the seeded v31 L1 frontier rather than empty-genesis batch zero.
+    // SYSCOIN: Compare against the seeded V32 L1 frontier rather than empty-genesis batch zero.
     let initial_state = fetch_l1_state(&main_node).await?;
 
     // Drive a batch onto L1 so there is a committed batch to revert.
@@ -435,8 +435,8 @@ async fn tester_reports_fatal_node_error() -> anyhow::Result<()> {
     let mut config = env.default_config().await?;
     make_full_pipeline_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: The pinned v31 fixture already contains block 1. Restart after discovering its
-    // actual tip, then fail the first newly produced block deterministically.
+    // Restart after discovering the actual tip, then fail the first newly produced block
+    // deterministically.
     let failing_block = tester.l2_provider.get_block_number().await? + 1;
     let stopped = tester.stop().await?;
     configure_failing_block(stopped.config(), failing_block);

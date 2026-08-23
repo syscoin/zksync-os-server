@@ -1,0 +1,14 @@
+DO NOT LAUNCH THIS FIXTURE.
+
+Canonical Syscoin protocol v32.0 uses Execution V7, Proving V8, the final
+zksync-os v0.4.0 application with the reviewed Syscoin patch, and the Era
+contracts based on 8fb7c29a. The old upstream or Syscoin snapshots do not bind
+the regenerated application, compact Bitcoin-DA commitments, contract
+addresses, or Security100 verification key.
+
+Regenerate and attest the V32 genesis state, L1 state, databases, contract
+addresses, verification key, and metadata atomically. All repository launch
+and test helpers must refuse this fixture while this marker exists. Remove the
+marker only in the same change that installs the complete generated set.
+
+Do not copy or rename any V30, V31, or stock V32 fixture into this directory.

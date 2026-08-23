@@ -343,8 +343,9 @@ impl BitcoinDaFinalityGate {
             if input.is_empty() {
                 continue;
             }
-            // SYSCOIN: calldata-only batches do not require a Bitcoin DA RPC. Create the client
-            // lazily only once we see Gateway edge DA refs that must be finalized on L1.
+            // SYSCOIN: This pass verifies only compact edge-chain references forwarded by a Gateway
+            // batch; the batch's own Bitcoin DA chunks are checked separately. Create the
+            // client lazily once there is at least one forwarded reference to verify.
             if client.is_none() {
                 client = Some(self.client()?);
             }
@@ -370,11 +371,8 @@ impl BitcoinDaFinalityGate {
 
     async fn verify_command_da_before_commit(&self, command: &CommitCommand) -> anyhow::Result<()> {
         for batch in command.as_ref() {
-            // SYSCOIN: Pre-v31 blob-mode batches use EIP-4844 sidecars and have no Bitcoin DA
-            // publication record. Only v31+ assigns Syscoin semantics to this commitment scheme.
-            if batch.batch.batch_info.protocol_version.minor >= 31
-                && batch.batch.batch_info.commit_info.l2_da_commitment_scheme
-                    == DACommitmentScheme::BlobsZKsyncOS
+            if batch.batch.batch_info.commit_info.l2_da_commitment_scheme
+                == DACommitmentScheme::BlobsZKsyncOS
             {
                 self.verify_batch_da_before_commit(
                     batch.batch_number(),

@@ -248,7 +248,6 @@ mod tests {
             ProtocolSemanticVersion::new(4, 5, 6),
             B256::random(),
             vec![],
-            B256::ZERO,
             BlockStartCursors {
                 l1_priority_id: 42,
                 interop_root_id: 0,

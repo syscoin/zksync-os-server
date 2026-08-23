@@ -26,8 +26,8 @@ pub enum SystemTxType {
     /// Transaction subtype for importing interop roots, contains the number of interop roots imported
     ImportInteropRoots(u64),
     /// Transaction subtype for setting the settlement layer chain id; carries the target SL
-    /// chain id and the migration number. The migration number is `u64::MAX` for the v31 upgrade
-    /// placeholder (which only initialises the field, not a real migration).
+    /// chain id and the migration number. SYSCOIN: the migration number is `u64::MAX` for the
+    /// protocol-upgrade / fresh-chain placeholder, which initializes the field but is not a migration.
     SetSLChainId(ChainId, u64),
     /// Transaction subtype for setting the interop fee, contains interop fee update number.
     SetInteropFee(u64),

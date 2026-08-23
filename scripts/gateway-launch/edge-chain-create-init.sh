@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
 gl_require L1_RPC_URL
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Initialize only the canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_zksync_era_sha
 gl_path_for_zkstack

@@ -195,7 +195,7 @@ mod tests {
                 pubdata_mode: 0,
                 commit_data: Bytes::from_static(b"commit"),
                 prev_commit_data: Bytes::from_static(b"prev"),
-                execution_protocol_version: 31,
+                execution_protocol_version: 32,
             }),
             Zks2faMessage::VerifyBatchResult(VerifyBatchResult {
                 request_id: 41,

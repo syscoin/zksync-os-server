@@ -87,7 +87,7 @@ impl Drop for ActiveStorageViewGuard {
         }
     }
 }
-// SYSCOIN
+// SYSCOIN:
 
 /// Storage View valid for a specific block (`block`)
 /// It represents the state immediately after block `block`.

@@ -9,7 +9,7 @@ use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
 use serde_json::{Value, json};
 use smart_config::value::SecretString;
 use std::time::Duration;
-// SYSCOIN: Bitcoin-DA Gateway coverage stays on the v31 production topology until V8 exposes the
+// SYSCOIN: Bitcoin-DA Gateway coverage stays on the V32 production topology until V8 exposes the
 // compact edge-DA inputs required by our settlement contract.
 use zksync_os_integration_tests::CURRENT_TO_GATEWAY;
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
@@ -122,7 +122,7 @@ async fn publishes_bitcoin_da_blob_for_gateway_settling_chain() -> anyhow::Resul
         })
         .await;
     let server_url = server.base_url();
-    // SYSCOIN: Exercise the same v31 Gateway path deployed on testnet.
+    // SYSCOIN: Exercise the same V32 Gateway path deployed on testnet.
     let env = CURRENT_TO_GATEWAY.environment().await?;
     let mut config = env.default_config().await?;
     config.sequencer_config.block_time = Duration::from_millis(50);
@@ -258,7 +258,7 @@ async fn publishes_bitcoin_da_blob_with_confirmation_based_finality() -> anyhow:
 
     let server_url = server.base_url();
     let gateway_server_url = server_url.clone();
-    // SYSCOIN: Confirmation-based Bitcoin DA finality must remain covered on production v31.
+    // SYSCOIN: Confirmation-based Bitcoin DA finality must remain covered on production V32.
     let env = CURRENT_TO_GATEWAY
         .environment_with_gateway_config(move |config| {
             config.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);

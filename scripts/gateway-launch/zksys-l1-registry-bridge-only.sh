@@ -12,7 +12,8 @@ gl_require ZKSYNC_ERA_PATH
 gl_require ZKSYNC_OS_SERVER_PATH
 gl_require L1_RPC_URL
 gl_require L1_CHAIN_ID
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Registry deployment targets the canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 
 gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"

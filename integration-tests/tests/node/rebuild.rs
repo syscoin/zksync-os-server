@@ -103,7 +103,7 @@ async fn wait_for_block_hash_change(
     block_number: u64,
     original: B256,
 ) -> anyhow::Result<B256> {
-    // SYSCOIN: A preserved v31 DB can fail in the rebuild pipeline before its hash changes; report
+    // SYSCOIN: A preserved V32 DB can fail in the rebuild pipeline before its hash changes; report
     // the fatal state or pipeline coordinates instead of returning a context-free retry timeout.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -415,8 +415,7 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
     let tester = env.launch(config).await?;
 
     let receipt = send_throwaway_tx(&tester).await?;
-    // SYSCOIN: Rebuild the first block produced above the pinned v31 fixture, not its already
-    // finalized historical block 1.
+    // Rebuild the block produced by this test rather than assuming a fixed genesis height.
     let block_to_rebuild = receipt
         .block_number
         .expect("throwaway receipt should contain a block number");
@@ -424,9 +423,9 @@ async fn block_rebuild_hash_guard_prevents_double_rebuild(
 
     let stopped = tester.stop().await?;
     let mut restart_config = stopped.config().clone();
-    // SYSCOIN: Fixture-adjusted timestamps can run a few seconds ahead of wall time because each
-    // 50ms test block still advances the integer timestamp. Move this test restart forward enough
-    // that `reset_timestamps` deterministically changes the guarded block hash.
+    // Test-chain timestamps can run ahead of wall time because each 50ms block still advances the
+    // integer timestamp. Move this restart forward enough that `reset_timestamps`
+    // deterministically changes the guarded block hash.
     restart_config
         .sequencer_config
         .block_timestamp_offset_seconds += 60;
@@ -483,8 +482,8 @@ async fn rebuild_after_l1_revert_starts_successfully(env: TestEnvironment) -> an
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Preserve the executed history embedded in the pinned v31 fixture and exercise the
-    // revert/rebuild flow only on batches created by this test.
+    // Snapshot the executed frontier and exercise the revert/rebuild flow only on batches
+    // created by this test.
     let initial_state = fetch_l1_state(&tester).await?;
 
     // Unlike `rebuild_panics_if_from_block_is_already_committed` which uses a fast 50ms block
@@ -562,7 +561,7 @@ async fn danger_block_rebuild_with_l1_revert_hash_guard_prevents_double_revert(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Preserve the pinned v31 fixture's executed baseline and rebuild only the first
+    // SYSCOIN: Preserve the pinned V32 fixture's executed baseline and rebuild only the first
     // newly committed batch.
     let initial_state = fetch_l1_state(&tester).await?;
 
@@ -647,7 +646,7 @@ async fn revert_l1_commits_without_rebuild_leaves_local_blocks_intact(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Standalone L1 revert must preserve the pinned v31 executed baseline.
+    // SYSCOIN: Standalone L1 revert must preserve the pinned V32 executed baseline.
     let initial_state = fetch_l1_state(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
@@ -715,7 +714,7 @@ async fn revert_l1_commits_without_rebuild_is_idempotent_on_restart(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Revert only batches created above the pinned v31 executed baseline.
+    // SYSCOIN: Revert only batches created above the pinned V32 executed baseline.
     let initial_state = fetch_l1_state(&tester).await?;
 
     send_throwaway_tx(&tester).await?;
@@ -795,7 +794,7 @@ async fn danger_block_rebuild_with_l1_revert_from_mid_batch(
     let mut config = env.default_config().await?;
     make_commit_only_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Select non-last batches above the executed history embedded in the v31 fixture.
+    // Select non-last batches created above the initial executed frontier.
     let initial_state = fetch_l1_state(&tester).await?;
     let containing_batch = initial_state.last_committed_batch + 2;
     let target_committed_batch = containing_batch + 1;
@@ -899,8 +898,7 @@ async fn l1_revert_rejects_already_executed_batch(env: TestEnvironment) -> anyho
     let mut config = env.default_config().await?;
     make_full_pipeline_config(&mut config);
     let tester = env.launch(config).await?;
-    // SYSCOIN: Exercise rejection on a newly executed batch rather than attempting to revert the
-    // immutable executed history embedded in the v31 fixture.
+    // Exercise rejection on a newly executed batch created by this test.
     let initial_state = fetch_l1_state(&tester).await?;
     let first_new_batch = initial_state.last_executed_batch + 1;
 

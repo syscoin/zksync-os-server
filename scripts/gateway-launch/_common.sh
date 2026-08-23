@@ -275,6 +275,10 @@ gl_l1_broadcast_preflight() {
 gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
   local key="$1"
+  # SYSCOIN: Refuse to materialize the canonical lane from a placeholder fixture.
+  local pending_marker="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/CANONICAL_V8_REGENERATION_REQUIRED"
+  [ ! -f "$pending_marker" ] || \
+    gl_die "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: ${pending_marker}"
   local vf="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
   [ -f "$vf" ] || gl_die "missing ${vf}"
   VERSIONS_YAML="$vf" VERSIONS_KEY="$key" python3 - <<'PY'
@@ -440,7 +444,7 @@ PY
 }
 
 # SYSCOIN: validate the edge chain's gas-tank address against the immutable
-# value already bound to the published V7 application and VK.
+# value already bound to the canonical application and VK.
 gl_export_syscoin_gas_tank_address_from_edge_config() {
   local expected var_name var_value var_value_lc
   expected="$(gl_zksys_gas_tank_from_edge_config)"
@@ -453,7 +457,7 @@ gl_export_syscoin_gas_tank_address_from_edge_config() {
     fi
     [ -n "${SYSCOIN_GAS_TANK_ADDRESS:-}" ] ||
       gl_die "missing immutable SYSCOIN_GAS_TANK_ADDRESS during first-boot validation"
-    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; using the published V7 address before its first-boot deployment" >&2
+    echo "gateway-launch: WARNING: l2.zksys_gas_tank_addr is missing/zero; using the canonical address before its first-boot deployment" >&2
     return 0
   fi
   for var_name in SYSCOIN_GAS_TANK_ADDRESS ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS; do

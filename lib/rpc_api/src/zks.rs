@@ -21,10 +21,11 @@ pub trait ZksApi {
 
     /// Returns the merkle proof for an L2->L1 log emitted in a given transaction.
     ///
-    /// `proof_target` selects which root the proof anchors to (see [`LogProofTarget`]).
+    /// SYSCOIN: `proof_target` selects which settlement-layer root the proof anchors to (see
+    /// [`LogProofTarget`]).
     /// If omitted, [`LogProofTarget::L1BatchRoot`] is used. A `MessageRoot` proof is available only
-    /// after the source batch has executed on L1 and only for protocol versions that support L1
-    /// interop.
+    /// after the source batch has executed on its recorded settlement layer and only for protocol
+    /// versions that support interop.
     #[method(name = "getL2ToL1LogProof")]
     async fn get_l2_to_l1_log_proof(
         &self,

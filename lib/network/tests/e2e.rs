@@ -92,7 +92,6 @@ fn dummy_record<P: ZksProtocolVersionSpec>(block_number: BlockNumber) -> ReplayR
         ProtocolSemanticVersion::new(4, 5, 6),
         B256::random(),
         vec![],
-        B256::random(),
         BlockStartCursors {
             l1_priority_id: 42,
             interop_root_id: 0,
@@ -358,8 +357,7 @@ async fn send_replay_record_matching_version() {
     // Run two peers that both communicate on exactly one matching zks protocol and successfully
     // transfer one replay record from peer0 to peer1.
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
-    let mut record1 = dummy_record::<ZksProtocolV5>(1);
-    record1.canonical_upgrade_tx_hash = B256::repeat_byte(0x5a);
+    let record1 = dummy_record::<ZksProtocolV5>(1);
     let main_peer_id = net.peers_mut()[0].peer_id();
 
     let (mut from_peer0, _) = net.peers_mut()[0].add_zks_sub_protocol::<ZksProtocolV5>(

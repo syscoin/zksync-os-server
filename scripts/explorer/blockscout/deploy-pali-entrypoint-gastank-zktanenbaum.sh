@@ -38,7 +38,7 @@
 #   UPDATE_CHAIN_GAS_TANK   true by default; writes deployed gas tank to
 #                           chains/$EDGE_CHAIN_NAME/configs/contracts.yaml
 #                           as l2.zksys_gas_tank_addr after requiring it to
-#                           match the address bound to the published V7 app
+#                           match the address bound to the canonical app
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -221,7 +221,8 @@ echo "  chain:  ${CHAIN_ID}"
 echo "  token:  ${ZKSYS_TOKEN_ADDRESS}"
 echo
 
-published_v7_gas_tank=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+# SYSCOIN: This CREATE address is embedded in the canonical guest and cannot drift at deployment.
+canonical_gas_tank=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
 gas_tank_creation_code="$(
   cd "${CONTRACTS_DIR}"
   forge inspect --no-metadata src/zksys/ZkSysGasTank.sol:ZkSysGasTank bytecode
@@ -230,14 +231,14 @@ expected_gas_tank_runtime="$(
   cast call --rpc-url "${RPC_URL}" --create "${gas_tank_creation_code}" \
     "constructor(address)" "${ZKSYS_TOKEN_ADDRESS}"
 )"
-existing_gas_tank_runtime="$(rpc_code "${published_v7_gas_tank}")"
+existing_gas_tank_runtime="$(rpc_code "${canonical_gas_tank}")"
 if [[ "${existing_gas_tank_runtime}" != "0x" ]]; then
   if [[ "$(lower "${existing_gas_tank_runtime}")" != "$(lower "${expected_gas_tank_runtime}")" ]]; then
-    echo "error: existing code at ${published_v7_gas_tank} is not the exact ZkSysGasTank runtime for token ${ZKSYS_TOKEN_ADDRESS}" >&2
+    echo "error: existing code at ${canonical_gas_tank} is not the exact ZkSysGasTank runtime for token ${ZKSYS_TOKEN_ADDRESS}" >&2
     exit 1
   fi
-  echo "Using existing published V7 gas tank at ${published_v7_gas_tank}"
-  gas_tank_address="${published_v7_gas_tank}"
+  echo "Using existing canonical gas tank at ${canonical_gas_tank}"
+  gas_tank_address="${canonical_gas_tank}"
 else
   if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
     DEPLOYER_ADDRESS="$(cast wallet address "${wallet_args[@]}")"
@@ -247,9 +248,9 @@ else
     cast compute-address --nonce "${deployer_nonce}" "${DEPLOYER_ADDRESS}" |
       sed -n 's/^Computed Address: //p'
   )"
-  if [[ "$(lower "${predicted_gas_tank}")" != "${published_v7_gas_tank}" ]]; then
+  if [[ "$(lower "${predicted_gas_tank}")" != "${canonical_gas_tank}" ]]; then
     echo "error: the next ZkSysGasTank CREATE address ${predicted_gas_tank} differs from" >&2
-    echo "       the published V7 app value ${published_v7_gas_tank}; refusing to broadcast" >&2
+    echo "       the canonical app value ${canonical_gas_tank}; refusing to broadcast" >&2
     echo "error: using another address requires a new app, VK, and verifier" >&2
     exit 1
   fi
@@ -273,8 +274,8 @@ else
     echo "error: could not parse deployed ZkSysGasTank address" >&2
     exit 1
   fi
-  if [[ "$(lower "${gas_tank_address}")" != "${published_v7_gas_tank}" ]]; then
-    echo "error: deployed gas tank ${gas_tank_address} differs from its preflight address ${published_v7_gas_tank}" >&2
+  if [[ "$(lower "${gas_tank_address}")" != "${canonical_gas_tank}" ]]; then
+    echo "error: deployed gas tank ${gas_tank_address} differs from its preflight address ${canonical_gas_tank}" >&2
     exit 1
   fi
   deployed_gas_tank_runtime="$(rpc_code "${gas_tank_address}")"
@@ -351,7 +352,7 @@ path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encod
 PY
   echo "Updated ${contracts_yaml}: l2.zksys_gas_tank_addr=${gas_tank_address}"
   echo
-  echo "NOTE: this address must match the published V7 app binding"
+  echo "NOTE: this address must match the canonical app binding"
   echo "      0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb; otherwise a new app, VK, and verifier are required."
 fi
 

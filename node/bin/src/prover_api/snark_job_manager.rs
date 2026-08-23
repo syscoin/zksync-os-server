@@ -1,7 +1,7 @@
 use crate::prover_api::fri_job_manager::FriJob;
 use crate::prover_api::fri_job_manager::JobState;
 use crate::prover_api::metrics::{ProverStage, ProverType};
-use crate::prover_api::prover_job_map::{JobEntry, ProverJobMap};
+use crate::prover_api::prover_job_map::{JobEntry, ProverJobMap, SnarkJobPick};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -30,13 +30,18 @@ pub struct SnarkJobManager {
     // outbound
     prove_batches_sender: mpsc::Sender<ProofCommand>,
     // config
+    // SYSCOIN: Amortize wrapping with a two-proof floor and target-or-age release policy.
     max_fris_per_snark: usize,
+    target_fris_per_snark: usize,
+    max_snark_batch_wait: Duration,
 }
 
 impl SnarkJobManager {
     pub fn new(
         prove_batches_sender: mpsc::Sender<ProofCommand>,
         max_fris_per_snark: usize,
+        target_fris_per_snark: usize,
+        max_snark_batch_wait: Duration,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
     ) -> Self {
@@ -49,11 +54,26 @@ impl SnarkJobManager {
             jobs,
             prove_batches_sender,
             max_fris_per_snark,
+            target_fris_per_snark,
+            max_snark_batch_wait,
         }
     }
 
     pub async fn add_job(&self, batch_envelope: SignedBatchEnvelope<FriProof>) {
         self.jobs.add_job(batch_envelope).await
+    }
+
+    /// SYSCOIN: Rehydrates a stored FRI proof without resetting the aggregation wait clock.
+    pub async fn add_rehydrated_job(
+        &self,
+        batch_envelope: SignedBatchEnvelope<FriProof>,
+        accepted_age: Duration,
+    ) {
+        // Readiness only distinguishes ages below / above this threshold. Capping also keeps the
+        // reconstructed monotonic instant representable even for unexpectedly ancient files.
+        self.jobs
+            .add_job_with_age(batch_envelope, accepted_age.min(self.max_snark_batch_wait))
+            .await
     }
 
     // If there is a job pending, returns a non-empty list of tuples (`batch_number`, `verification_key_hash`, `real_fri_proof`)
@@ -65,21 +85,39 @@ impl SnarkJobManager {
         // consume/remove all fake jobs that may be in the front of the queue
         self.process_pending_fake_fri_proofs().await?;
 
-        let batches_with_real_proofs = self
+        let pick = self
             .jobs
-            .pick_jobs_while_with_limit(self.max_fris_per_snark, &prover_id, |job| {
-                !job.batch_envelope.data.is_fake()
-                    && supported_proving_versions
-                        .is_none_or(|versions| versions.contains(&job.metadata.proving_version))
-            })
+            .pick_ready_snark_jobs(
+                self.max_fris_per_snark,
+                self.target_fris_per_snark,
+                self.max_snark_batch_wait,
+                &prover_id,
+                |job| {
+                    !job.batch_envelope.data.is_fake()
+                        && supported_proving_versions
+                            .is_none_or(|versions| versions.contains(&job.metadata.proving_version))
+                },
+            )
             .await;
-
-        if batches_with_real_proofs.is_empty() {
-            tracing::trace!(prover_id, "no SNARK prove jobs are available for pick up",);
-            return Ok(None);
+        match pick {
+            SnarkJobPick::Assigned(batches) => Ok(Some(batches)),
+            SnarkJobPick::Waiting(wait) => {
+                tracing::trace!(
+                    prover_id,
+                    eligible_fris = wait.eligible_fris,
+                    minimum_fris = 2,
+                    target_fris = self.target_fris_per_snark,
+                    oldest_eligible_age_seconds = wait.oldest_eligible_age.as_secs(),
+                    max_wait_seconds = self.max_snark_batch_wait.as_secs(),
+                    "SNARK proofs are queued but intentionally waiting for the two-proof minimum and target, age, or interop readiness",
+                );
+                Ok(None)
+            }
+            SnarkJobPick::Empty => {
+                tracing::trace!(prover_id, "no SNARK prove jobs are available for pick up",);
+                Ok(None)
+            }
         }
-
-        Ok(Some(batches_with_real_proofs))
     }
 
     pub async fn submit_proof(
@@ -94,6 +132,15 @@ impl SnarkJobManager {
         anyhow::ensure!(
             batch_from <= batch_to,
             "invalid batch range: from batch {batch_from} is greater than to batch {batch_to}"
+        );
+        // SYSCOIN: `ProofCommand::to_calldata_suffix()` converts the prover payload into U256 words.
+        // Reject malformed framing before consuming the exact lease so downstream encoding can
+        // neither panic on a short final chunk nor forward an empty real proof.
+        anyhow::ensure!(!payload.is_empty(), "SNARK proof payload must not be empty");
+        anyhow::ensure!(
+            payload.len().is_multiple_of(32),
+            "SNARK proof payload length must be a multiple of 32 bytes; got {}",
+            payload.len()
         );
 
         // Prover should generate the proof with VK received from server. These must always match.
@@ -143,10 +190,10 @@ impl SnarkJobManager {
         // prove is valid - consuming proven batches
         let Some(consumed_batches_proven) = self
             .jobs
-            .complete_many_jobs(batch_from, batch_to, ProverType::Real, &prover_id)
+            .complete_assigned_many_jobs(batch_from, batch_to, ProverType::Real, &prover_id)
             .await
         else {
-            anyhow::bail!("race condition: some batches were completed earlier")
+            anyhow::bail!("submitted batch range does not match the current prover assignment")
         };
 
         let consumed_batches_proven: Vec<_> = consumed_batches_proven
@@ -156,7 +203,7 @@ impl SnarkJobManager {
 
         permit.send(ProofCommand::new(
             consumed_batches_proven,
-            SnarkProof::Real(RealSnarkProof::V2 {
+            SnarkProof::Real(RealSnarkProof {
                 proof: payload,
                 proving_execution_version: proving_version as u32,
             }),
@@ -252,7 +299,7 @@ impl SnarkJobManager {
         })
     }
 
-    // SYSCOIN
+    // SYSCOIN: Expose aggregate queue state for multi-worker prover orchestration.
     pub async fn status(&self) -> Vec<JobState> {
         self.jobs.status().await
     }
@@ -294,8 +341,309 @@ impl FakeSnarkProver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prover_api::test_util::create_test_batch_envelope_with_data;
-    use zksync_os_types::ProtocolSemanticVersion;
+    use crate::prover_api::test_util::{
+        create_test_batch_envelope_with_data, mark_test_batch_as_interop_bundle,
+    };
+    use alloy::primitives::Bytes;
+    use zksync_os_batch_types::batcher_model::RealFriProof;
+    use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion};
+
+    fn real_fri_proof() -> FriProof {
+        FriProof::Real(RealFriProof {
+            proof: Bytes::from_static(b"stored-fri-proof"),
+            proving_execution_version: ProvingVersion::V8 as u32,
+        })
+    }
+
+    #[tokio::test]
+    async fn rehydrated_acceptance_age_releases_two_proof_real_range() -> anyhow::Result<()> {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let (sender, _receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            100,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            100,
+        );
+        manager
+            .add_rehydrated_job(
+                create_test_batch_envelope_with_data(1, protocol_version.clone(), real_fri_proof()),
+                Duration::from_secs(3601),
+            )
+            .await;
+
+        // SYSCOIN: The server's atomic pick is both the readiness decision and lease. Even after
+        // the age threshold, a singleton must remain unassigned so a standalone CPU SNARK worker
+        // cannot invent a local aggregation policy or duplicate speculative wrapping.
+        assert!(
+            manager
+                .pick_real_job("cpu-snark-1".to_string(), Some(&[ProvingVersion::V8]))
+                .await?
+                .is_none()
+        );
+        assert_eq!(manager.status().await[0].assigned_to_prover_id, None);
+
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                2,
+                protocol_version,
+                real_fri_proof(),
+            ))
+            .await;
+
+        let picked = manager
+            .pick_real_job("cpu-snark-1".to_string(), Some(&[ProvingVersion::V8]))
+            .await?
+            .expect("stored acceptance age must release a two-proof range after restart");
+        assert_eq!(picked.len(), 2);
+        assert_eq!(picked[0].0.batch_number, 1);
+        assert_eq!(picked[1].0.batch_number, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rehydrated_interop_metadata_releases_fresh_two_proof_range() -> anyhow::Result<()> {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let (sender, _receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            100,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            100,
+        );
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                1,
+                protocol_version.clone(),
+                real_fri_proof(),
+            ))
+            .await;
+        let mut rehydrated_interop_batch =
+            create_test_batch_envelope_with_data(2, protocol_version, real_fri_proof());
+        mark_test_batch_as_interop_bundle(&mut rehydrated_interop_batch);
+        manager
+            .add_rehydrated_job(rehydrated_interop_batch, Duration::ZERO)
+            .await;
+
+        let picked = manager
+            .pick_real_job("snark-prover".to_string(), Some(&[ProvingVersion::V8]))
+            .await?
+            .expect("rehydrated interop metadata must retain its priority signal");
+        assert_eq!(picked.len(), 2);
+        assert_eq!(picked[0].0.batch_number, 1);
+        assert_eq!(picked[1].0.batch_number, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_after_rehydration_preserves_age_and_active_assignment() -> anyhow::Result<()>
+    {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            100,
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+            100,
+        );
+        manager
+            .add_rehydrated_job(
+                create_test_batch_envelope_with_data(1, protocol_version.clone(), real_fri_proof()),
+                Duration::from_secs(2),
+            )
+            .await;
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                2,
+                protocol_version.clone(),
+                real_fri_proof(),
+            ))
+            .await;
+
+        let assigned = manager
+            .pick_real_job("snark-prover".to_string(), Some(&[ProvingVersion::V8]))
+            .await?
+            .expect("rehydrated age must make the two-proof range ready");
+        assert_eq!(assigned.len(), 2);
+
+        // This is the normal recreated-pipeline arrival that follows startup rehydration.
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                1,
+                protocol_version,
+                real_fri_proof(),
+            ))
+            .await;
+
+        let status = manager.status().await;
+        assert_eq!(status.len(), 2);
+        assert!(status[0].added_seconds_ago >= 1);
+        assert_eq!(
+            status[0].assigned_to_prover_id.as_deref(),
+            Some("snark-prover")
+        );
+        assert_eq!(status[0].current_attempt, 1);
+
+        manager
+            .submit_proof(
+                1,
+                2,
+                ProvingVersion::V8,
+                vec![0; 32],
+                "snark-prover".to_string(),
+            )
+            .await?;
+        assert!(receiver.recv().await.is_some());
+        assert!(manager.status().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_snark_framing_is_rejected_without_consuming_assignment() -> anyhow::Result<()>
+    {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            2,
+            2,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            100,
+        );
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                1,
+                protocol_version.clone(),
+                real_fri_proof(),
+            ))
+            .await;
+        manager
+            .add_job(create_test_batch_envelope_with_data(
+                2,
+                protocol_version,
+                real_fri_proof(),
+            ))
+            .await;
+        assert!(
+            manager
+                .pick_real_job("snark-prover".to_string(), Some(&[ProvingVersion::V8]))
+                .await?
+                .is_some()
+        );
+
+        let empty_err = manager
+            .submit_proof(
+                1,
+                2,
+                ProvingVersion::V8,
+                Vec::new(),
+                "snark-prover".to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            empty_err.to_string(),
+            "SNARK proof payload must not be empty"
+        );
+
+        let unaligned_err = manager
+            .submit_proof(
+                1,
+                2,
+                ProvingVersion::V8,
+                vec![0; 31],
+                "snark-prover".to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            unaligned_err.to_string(),
+            "SNARK proof payload length must be a multiple of 32 bytes; got 31"
+        );
+        assert_eq!(manager.status().await.len(), 2);
+
+        manager
+            .submit_proof(
+                1,
+                2,
+                ProvingVersion::V8,
+                vec![0; 32],
+                "snark-prover".to_string(),
+            )
+            .await?;
+        assert!(receiver.recv().await.is_some());
+        assert!(manager.status().await.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_submit_must_match_exact_assigned_range() -> anyhow::Result<()> {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let (sender, mut receiver) = mpsc::channel(1);
+        let manager = SnarkJobManager::new(
+            sender,
+            100,
+            2,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            100,
+        );
+        for batch_number in 1..=2 {
+            manager
+                .add_job(create_test_batch_envelope_with_data(
+                    batch_number,
+                    protocol_version.clone(),
+                    real_fri_proof(),
+                ))
+                .await;
+        }
+
+        let assigned = manager
+            .pick_real_job("snark-prover".to_string(), Some(&[ProvingVersion::V8]))
+            .await?
+            .expect("target-sized range must be assigned");
+        assert_eq!(assigned.len(), 2);
+
+        let err = manager
+            .submit_proof(
+                1,
+                1,
+                ProvingVersion::V8,
+                vec![0; 32],
+                "snark-prover".to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "submitted batch range does not match the current prover assignment"
+        );
+        assert_eq!(manager.status().await.len(), 2);
+
+        manager
+            .submit_proof(
+                1,
+                2,
+                ProvingVersion::V8,
+                vec![0; 32],
+                "snark-prover".to_string(),
+            )
+            .await?;
+        let command = receiver
+            .recv()
+            .await
+            .expect("valid proof must be forwarded");
+        assert_eq!(command.as_ref().len(), 2);
+        assert!(manager.status().await.is_empty());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn backpressure_does_not_lease_fake_jobs() {
@@ -312,7 +660,14 @@ mod tests {
             ))
             .unwrap();
 
-        let manager = SnarkJobManager::new(sender, 1, Duration::from_secs(60), 100);
+        let manager = SnarkJobManager::new(
+            sender,
+            2,
+            2,
+            Duration::from_secs(3600),
+            Duration::from_secs(60),
+            100,
+        );
         manager
             .add_job(create_test_batch_envelope_with_data(
                 1,

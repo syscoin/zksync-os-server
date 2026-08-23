@@ -17,6 +17,16 @@ batcher:
   batch_timeout: 1s
 
 prover_api:
+  # SYSCOIN: Local mock proving is explicit; never expose the external real-prover API beside it.
+  enabled: false
+  # Real SNARK workers aggregate up to 100 compatible FRI proofs, waiting at most one hour.
+  # SYSCOIN: Three resident GPU FRI workers feed a separate CPU combiner/wrapper. Give its leased
+  # range two hours before reassignment and buffer the active range plus the next full aggregate.
+  snark_job_timeout: 2h
+  max_assigned_batch_range: 256
+  max_fris_per_snark: 100
+  target_fris_per_snark: 100
+  max_snark_batch_wait: 1h
   fake_fri_provers:
     enabled: true
   fake_snark_provers:

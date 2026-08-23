@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Migrations target the single canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_zksync_era_sha
 gl_path_for_zkstack
@@ -883,17 +884,16 @@ wait_for_da_pair_on_gateway() {
   return 1
 }
 
+# SYSCOIN: Require the compact-rollup validator recorded for this Gateway topology.
 get_l1_da_validator_for_edge() {
   local edge_chain_name="${1:?edge chain name required}"
   local gateway_chain_name="${2:?gateway chain name required}"
   local gateway_rpc_url="${3:?gateway rpc url required}"
 
-  local raw_candidates
-  raw_candidates="$(python3 - \
-    "${EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR:-}" \
+  local candidate
+  candidate="$(python3 - \
     "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" \
-    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/genesis.yaml" \
-    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/contracts.yaml" <<'PY'
+    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs/genesis.yaml" <<'PY'
 import sys
 from pathlib import Path
 import yaml
@@ -911,73 +911,47 @@ def norm(value):
     value = str(value).strip()
     return value if value else None
 
-def emit(value):
+def require_address(value, field):
     value = norm(value)
-    if value is None:
-        return
-    if value.lower() == "0x0000000000000000000000000000000000000000":
-        return
-    print(value)
+    if value is None or value.lower() == "0x0000000000000000000000000000000000000000":
+        raise SystemExit(f"missing canonical {field}")
+    return value
 
-# 1) Explicit override from env (highest precedence).
-emit(sys.argv[1])
+gateway_cfg_path = Path(sys.argv[1])
+genesis_cfg_path = Path(sys.argv[2])
 
-# 2) Canonical Gateway DA validator from gateway config.
-#    This mirrors zkstack migration logic:
-#    - Rollup chains use relayed_sl_da_validator
-#    - Validium chains use validium_da_validator
-gateway_cfg_path = Path(sys.argv[2])
-genesis_cfg_path = Path(sys.argv[3])
-commitment_mode = None
-if genesis_cfg_path.exists():
-    genesis_data = yaml.safe_load(genesis_cfg_path.read_text(encoding="utf-8"))
-    if isinstance(genesis_data, dict):
-        mode = genesis_data.get("l1_batch_commit_data_generator_mode")
-        if isinstance(mode, str):
-            commitment_mode = mode.strip().lower()
+if not genesis_cfg_path.exists():
+    raise SystemExit(f"missing edge genesis config: {genesis_cfg_path}")
+genesis_data = yaml.safe_load(genesis_cfg_path.read_text(encoding="utf-8"))
+if not isinstance(genesis_data, dict):
+    raise SystemExit(f"invalid edge genesis config: {genesis_cfg_path}")
+commitment_mode = genesis_data.get("l1_batch_commit_data_generator_mode", "rollup")
+if not isinstance(commitment_mode, str) or commitment_mode.strip().lower() != "rollup":
+    raise SystemExit(
+        "edge migration requires canonical compact rollup DA; "
+        f"got l1_batch_commit_data_generator_mode={commitment_mode!r}"
+    )
 
-if gateway_cfg_path.exists():
-    gateway_data = yaml.safe_load(gateway_cfg_path.read_text(encoding="utf-8"))
-    if isinstance(gateway_data, dict):
-        relayed = gateway_data.get("relayed_sl_da_validator")
-        validium = gateway_data.get("validium_da_validator")
-        # Rollup mode is the default when mode is absent.
-        if commitment_mode == "validium":
-            emit(validium)
-            emit(relayed)
-        else:
-            emit(relayed)
-            emit(validium)
-
-# 3) Legacy L1 DA validator fields (fallback only).
-contracts_path = Path(sys.argv[4])
-if contracts_path.exists():
-    data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        l1 = data.get("l1")
-        if isinstance(l1, dict):
-            emit(l1.get("blobs_zksync_os_l1_da_validator_addr"))
-            emit(l1.get("rollup_l1_da_validator_addr"))
+if not gateway_cfg_path.exists():
+    raise SystemExit(f"missing Gateway config: {gateway_cfg_path}")
+gateway_data = yaml.safe_load(gateway_cfg_path.read_text(encoding="utf-8"))
+if not isinstance(gateway_data, dict):
+    raise SystemExit(f"invalid Gateway config: {gateway_cfg_path}")
+print(require_address(gateway_data.get("relayed_sl_da_validator"), "relayed_sl_da_validator"))
 PY
 )"
 
-  [ -n "${raw_candidates}" ] || {
-    echo "missing DA validator candidates for ${edge_chain_name}" >&2
+  [ -n "${candidate}" ] || {
+    echo "missing canonical relayed_sl_da_validator for ${edge_chain_name}" >&2
     return 1
   }
 
-  local candidate
-  while IFS= read -r candidate; do
-    [ -n "${candidate}" ] || continue
-    if gateway_address_has_code "${gateway_rpc_url}" "${candidate}"; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-  done <<EOF
-${raw_candidates}
-EOF
+  if gateway_address_has_code "${gateway_rpc_url}" "${candidate}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
 
-  echo "no DA validator candidate has bytecode on the configured Gateway RPC for ${edge_chain_name}; set EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR to a Gateway-deployed IL1DAValidator contract" >&2
+  echo "canonical relayed_sl_da_validator ${candidate} has no bytecode on the configured Gateway RPC for ${edge_chain_name}" >&2
   return 1
 }
 

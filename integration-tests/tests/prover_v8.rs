@@ -1,8 +1,7 @@
-//! Live end-to-end test for the zksync-os 0.4.0 lane (protocol v32.0, execution V7,
+//! Live end-to-end test for the canonical zksync-os 0.4.0 lane (protocol v32.0, execution V7,
 //! proving V8, native batch PIG):
 //!
-//! 1. Start a v31.0 chain settling on L1 with fake FRI/SNARK provers, then perform
-//!    a protocol upgrade to v32.0.
+//! 1. Start a v32.0 chain settling on L1 with fake FRI/SNARK provers.
 //! 2. Wait for the fake pipeline to settle everything produced so far.
 //! 3. Restart the node with fake FRI provers disabled and spawn an externally built
 //!    `zksync_os_fri_prover` (zksync-airbender-prover) against the node's prover API.
@@ -22,12 +21,10 @@ use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::TransactionRequest;
-use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 use zksync_os_integration_tests::assert_traits::ReceiptAssert;
-use zksync_os_integration_tests::upgrade::UpgradeTester;
 use zksync_os_integration_tests::{SettlementLayer, TestCase};
-use zksync_os_server::default_protocol_version::PROTOCOL_VERSION_V31_0;
+use zksync_os_server::default_protocol_version::PROTOCOL_VERSION_V32_0;
 
 #[test_log::test(tokio::test)]
 #[ignore = "requires an externally built V8 zksync_os_fri_prover binary; run manually"]
@@ -44,11 +41,10 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
     );
     let cpu_worker_threads = std::env::var("V8_PROVER_CPU_THREADS").ok();
 
-    // Phase 1: v31.0 chain settling on L1; fake FRI + SNARK provers keep the
-    // pipeline moving.
+    // Phase 1: canonical v32.0 / proving V8 chain settling on L1. Fake FRI + SNARK
+    // provers keep the pipeline moving.
     let tester = TestCase {
-        protocol_version: PROTOCOL_VERSION_V31_0,
-        // SYSCOIN: V8 validation is direct-L1-only until compact Gateway DA preimages exist.
+        protocol_version: PROTOCOL_VERSION_V32_0,
         settlement_layer: SettlementLayer::L1,
     }
     .environment()
@@ -56,37 +52,7 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
     .launch_default()
     .await?;
 
-    // Upgrade v31.0 -> v32.0 (execution V7 / proving V8).
-    {
-        let upgrade_tester = UpgradeTester::for_default_upgrade(&tester).await?;
-        let protocol_upgrade = upgrade_tester
-            .protocol_upgrade_builder()
-            .await?
-            .bump_minor(1)
-            .with_force_deployments(BTreeMap::new())
-            .with_timestamp(U256::from(1))
-            .build();
-        // SYSCOIN: Our upgrade helper also accepts the optional compact-DA validator pair; this
-        // direct-L1 V8 test intentionally leaves it unset.
-        upgrade_tester
-            .execute_default_upgrade(
-                &protocol_upgrade,
-                U256::MAX,
-                U256::from(1),
-                false,
-                zksync_os_integration_tests::upgrade::v32_facet_cuts(&upgrade_tester).await?,
-                None,
-                Some(
-                    zksync_os_integration_tests::upgrade::ZKSYNC_OS_TESTNET_VERIFIER_DEPLOYED_BYTECODE
-                        .parse::<alloy::primitives::Bytes>()?,
-                ),
-            )
-            .await?;
-    }
-    tracing::info!("protocol upgrade to v32.0 executed");
-
-    // Flush the fake-proven tail: a post-upgrade tx must execute on L1 before we switch to
-    // real proving, so every batch produced so far (v31.0 and early v32.0) is settled.
+    // Flush the fake-proven tail before switching to real proving.
     tester
         .l2_provider
         .send_transaction(
@@ -97,7 +63,7 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
         .await?
         .expect_to_execute()
         .await?;
-    tracing::info!("post-upgrade tx executed on L1; all earlier batches settled");
+    tracing::info!("canonical v32.0 fake-proven tx executed on L1; earlier batches settled");
 
     // Phase 2: restart the node with real FRI proving. Fake SNARK provers stay on
     // (no GPU/CRS here), so finalization of the probe tx requires exactly one real

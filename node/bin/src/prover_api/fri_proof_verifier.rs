@@ -1,9 +1,13 @@
 use crate::prover_api::fri_job_manager::SubmitError;
 use alloy::primitives::{B256, keccak256};
+use riscv_transpiler::common_constants::{
+    BLAKE2S_DELEGATION_CSR_REGISTER, REDUCED_MACHINE_CIRCUIT_FAMILY_IDX,
+};
+use verifier_common::SecurityModel;
 use zksync_os_batch_types::batcher_model::BatchMetadata;
 use zksync_os_types::ProvingVersion;
 
-// SYSCOIN
+// SYSCOIN: Verify only the canonical V8 unrolled proof format and app commitment.
 pub fn verify_real_fri_proof_bytes(
     batch_metadata: &BatchMetadata,
     proof_bytes: &[u8],
@@ -11,98 +15,45 @@ pub fn verify_real_fri_proof_bytes(
     let proving_version = batch_metadata
         .proving_version()
         .map_err(|err| SubmitError::Other(format!("cannot determine proving version: {err:#}")))?;
-    let expected_hash_u32s = expected_public_input_registers(proving_version, batch_metadata)?;
+    debug_assert_eq!(proving_version, ProvingVersion::V8);
+    let expected_hash_u32s = expected_public_input_registers(batch_metadata)?;
     let batch_number = batch_metadata.batch_info.commit_info.batch_number;
-
-    match proving_version {
-        ProvingVersion::V6 | ProvingVersion::V7 => {
-            let program_proof =
-                bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-                    .map_err(SubmitError::DeserializationFailed)?
-                    .0;
-            verify_fri_proof(expected_hash_u32s, program_proof, batch_number)
-        }
-        ProvingVersion::V8 => {
-            let program_proof: execution_utils::unrolled::UnrolledProgramProof =
-                bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-                    .map_err(SubmitError::DeserializationFailed)?
-                    .0;
-            verify_fri_proof_v8(expected_hash_u32s, &program_proof, batch_number)
-        }
-    }
+    let program_proof: execution_utils::unrolled::UnrolledProgramProof =
+        bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+            .map_err(SubmitError::DeserializationFailed)?
+            .0;
+    verify_fri_proof(expected_hash_u32s, &program_proof, batch_number)
 }
 
 /// Expected batch public-input hash, as the final register values a valid FRI proof of this
 /// batch must expose.
 ///
-/// Pre-V8 the public input is `keccak(state_before || state_after || batch_output)`. The V8
-/// (zksync-os 0.4.0) batch public input is
+/// The final-v0.4 batch public input is
 /// `keccak(state_before || state_after || chain_config_hash || batch_output)`, where
 /// `batch_output` uses the 0.4.0 layout without the leading chain id
-/// (see [`PendingBatchInfo::v32_batch_output_hash`](zksync_os_batch_types::PendingBatchInfo)).
+/// (see [`PendingBatchInfo::batch_output_hash`](zksync_os_batch_types::PendingBatchInfo)).
 pub fn expected_public_input_registers(
-    proving_version: ProvingVersion,
     batch_metadata: &BatchMetadata,
 ) -> Result<[u32; 8], SubmitError> {
     let state_before = batch_metadata.previous_stored_batch_info.state_commitment;
-    let hash = match proving_version {
-        ProvingVersion::V8 => {
-            let batch_info = &batch_metadata.batch_info;
-            let chain_config_hash =
-                zksync_os_native_pig::v32_chain_config_hash(batch_info.commit_info.chain_id)
-                    .map_err(|err| {
-                        SubmitError::Other(format!("cannot compute V8 chain config hash: {err:#}"))
-                    })?;
-            keccak256(
-                [
-                    state_before.0,
-                    batch_info.commit_info.new_state_commitment.0,
-                    chain_config_hash.0,
-                    batch_info.v32_batch_output_hash().0,
-                ]
-                .concat(),
-            )
-        }
-        ProvingVersion::V6 | ProvingVersion::V7 => {
-            let stored = batch_metadata.batch_info.clone().into_stored();
-            keccak256(
-                [
-                    state_before.0,
-                    stored.state_commitment.0,
-                    stored.commitment.0,
-                ]
-                .concat(),
-            )
-        }
-    };
+    let batch_info = &batch_metadata.batch_info;
+    let chain_config_hash = zksync_os_native_pig::chain_config_hash(
+        batch_info.commit_info.chain_id,
+    )
+    .map_err(|err| SubmitError::Other(format!("cannot compute chain config hash: {err:#}")))?;
+    let hash = keccak256(
+        [
+            state_before.0,
+            batch_info.commit_info.new_state_commitment.0,
+            chain_config_hash.0,
+            batch_info.batch_output_hash().0,
+        ]
+        .concat(),
+    );
     Ok(hash_as_register_values(hash))
 }
 
-/// Verifies a pre-V8 (airbender 0.5.2 lane) FRI proof against the expected public input.
-pub fn verify_fri_proof(
-    expected_hash_u32s: [u32; 8],
-    proof: execution_utils_prev::ProgramProof,
-    batch_number: u64,
-) -> Result<(), SubmitError> {
-    // The statement verifier asserts (panics) on malformed proofs; catch it so a bad
-    // proof is reported - and persisted for debugging - as a verification failure.
-    let proof_final_register_values: [u32; 16] =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            extract_final_register_values(proof)
-        }))
-        .map_err(|_| {
-            tracing::warn!(batch_number, "proof verifier panicked on a malformed proof");
-            SubmitError::FriProofVerificationError {
-                expected_hash_u32s,
-                // The verifier failed before producing register values.
-                proof_final_register_values: [0u32; 16],
-            }
-        })?;
-
-    check_public_input(expected_hash_u32s, proof_final_register_values)
-}
-
-/// Verifies a V8 FRI proof (zksync-os 0.4.0 / airbender unrolled prover stack).
+/// SYSCOIN: Verifies a FRI proof from the final-v0.4 Airbender unrolled stack.
 ///
 /// V8 provers submit an `UnrolledProgramProof` recursed up to the *unified* layer. The unified
 /// recursion program is app-independent and embedded in `execution_utils`, so verification
@@ -110,11 +61,13 @@ pub fn verify_fri_proof(
 /// the final register values, check that the proof's recursion chain is rooted in the V8 batch
 /// program (registers `[8..16]`), and compare registers `[..8]` against the expected batch
 /// public input hash.
-pub fn verify_fri_proof_v8(
+pub fn verify_fri_proof(
     expected_hash_u32s: [u32; 8],
     proof: &execution_utils::unrolled::UnrolledProgramProof,
     batch_number: u64,
 ) -> Result<(), SubmitError> {
+    validate_v8_proof_shape(proof)?;
+
     // Cheap consistency check of the carried chain fields (mirrors the airbender CLI's
     // `validate_recursion_chain`).
     v8_verifier::validate_recursion_chain(proof).map_err(|msg| {
@@ -165,6 +118,83 @@ pub fn verify_fri_proof_v8(
     check_public_input(expected_hash_u32s, proof_final_register_values)
 }
 
+/// SYSCOIN: Reject shapes the native verifier may flatten but the SNARK wrapper cannot encode.
+#[derive(Clone, Copy, Debug)]
+struct V8ProofShape {
+    circuit_family_entries: usize,
+    reduced_family_proofs: Option<usize>,
+    init_and_teardown_proofs: usize,
+    delegation_entries: usize,
+    blake2s_delegation_proofs: Option<usize>,
+}
+
+impl V8ProofShape {
+    fn from_proof(proof: &execution_utils::unrolled::UnrolledProgramProof) -> Self {
+        Self {
+            circuit_family_entries: proof.circuit_families_proofs.len(),
+            reduced_family_proofs: proof
+                .circuit_families_proofs
+                .get(&REDUCED_MACHINE_CIRCUIT_FAMILY_IDX)
+                .map(Vec::len),
+            init_and_teardown_proofs: proof.inits_and_teardowns_proofs.len(),
+            delegation_entries: proof.delegation_proofs.len(),
+            blake2s_delegation_proofs: proof
+                .delegation_proofs
+                .get(&BLAKE2S_DELEGATION_CSR_REGISTER)
+                .map(Vec::len),
+        }
+    }
+
+    fn validate(self) -> Result<(), String> {
+        if self.circuit_family_entries != 1 {
+            return Err(format!(
+                "expected exactly one circuit-family entry, got {}",
+                self.circuit_family_entries
+            ));
+        }
+
+        let expected_unified_proofs =
+            execution_utils::unified_recursion_target_family_proofs(SecurityModel::Security100);
+        if self.reduced_family_proofs != Some(expected_unified_proofs) {
+            return Err(format!(
+                "expected circuit family {REDUCED_MACHINE_CIRCUIT_FAMILY_IDX} with {expected_unified_proofs} unified proofs, got {:?}",
+                self.reduced_family_proofs
+            ));
+        }
+
+        if self.init_and_teardown_proofs != 0 {
+            return Err(format!(
+                "expected no init/teardown proofs, got {}",
+                self.init_and_teardown_proofs
+            ));
+        }
+
+        if self.delegation_entries != 1 {
+            return Err(format!(
+                "expected exactly one delegation entry, got {}",
+                self.delegation_entries
+            ));
+        }
+
+        if self.blake2s_delegation_proofs != Some(1) {
+            return Err(format!(
+                "expected delegation {BLAKE2S_DELEGATION_CSR_REGISTER:#x} with one Blake2s proof, got {:?}",
+                self.blake2s_delegation_proofs
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_v8_proof_shape(
+    proof: &execution_utils::unrolled::UnrolledProgramProof,
+) -> Result<(), SubmitError> {
+    V8ProofShape::from_proof(proof)
+        .validate()
+        .map_err(SubmitError::InvalidProofShape)
+}
+
 /// Compares the expected public-input hash with the first 8 final register values.
 fn check_public_input(
     expected_hash_u32s: [u32; 8],
@@ -198,20 +228,20 @@ mod v8_verifier {
     use verifier_common::SecurityModel;
     use verifier_common::transcript::Blake2sBufferingTranscript;
 
-    /// v32 proves at 100-bit; this selects the recursion verifier binaries the chain below is
+    /// The canonical V8 lane proves at 100-bit; this selects the recursion verifier binaries the chain below is
     /// continued through, so it must match the prover's `PROVING_SECURITY_LEVEL`.
     const SECURITY: SecurityModel = SecurityModel::Security100;
 
-    /// `end_params` of the V8 `multiblock_batch.bin` (md5
-    /// `31cb9cb3b42d4a183fb858594eeb8706`), from the airbender `end_params` tool (`tools/cli`).
+    /// SYSCOIN: `end_params` of the canonical Syscoin `multiblock_batch.bin` (md5
+    /// `5117d5dac6dbd34b93fef54e04d0b41c`), from the Airbender `end_params` tool.
     /// Derived from the app binary alone, so it is level-independent - unlike `expected_chain`,
     /// which continues it through the `SECURITY` artifacts above.
     /// Every V8 FRI proof must carry a recursion chain rooted in this program. Must be
     /// regenerated together with `V8_VK_HASH` whenever the V8 app binary or the airbender pin
     /// changes.
     const V8_APP_END_PARAMS: [u32; 8] = [
-        1634684069, 1321011044, 3947845475, 1282304698, 3895515656, 1824728812, 3916768926,
-        1115552394,
+        1279059325, 2805568420, 3470771525, 2745881822, 3555572921, 452509254, 3480094053,
+        631567043,
     ];
 
     pub(super) struct UnifiedLevelData {
@@ -313,42 +343,73 @@ fn hash_as_register_values(hash: B256) -> [u32; 8] {
         .expect("Hash should be exactly 32 bytes long")
 }
 
-fn extract_final_register_values(
-    input_program_proof: execution_utils_prev::ProgramProof,
-) -> [u32; 16] {
-    let (metadata, proof_list) =
-        execution_utils_prev::ProgramProof::to_metadata_and_proof_list(input_program_proof);
-
-    let oracle_data = execution_utils_prev::generate_oracle_data_from_metadata_and_proof_list(
-        &metadata,
-        &proof_list,
-    );
-    tracing::debug!(
-        "Oracle data iterator created with {} items",
-        oracle_data.len()
-    );
-
-    let it = oracle_data.into_iter();
-
-    full_statement_verifier_prev::verifier_common::prover::nd_source_std::set_iterator(it);
-
-    // Assume that program proof has only recursion proofs.
-    tracing::debug!("Running continue recursive");
-    assert!(metadata.reduced_proof_count > 0);
-
-    let final_register_values = full_statement_verifier_prev::verify_recursion_layer();
-
-    assert!(
-        full_statement_verifier_prev::verifier_common::prover::nd_source_std::try_read_word()
-            .is_none(),
-        "Expected that all words from CSR were consumed"
-    );
-    final_register_values
-}
-
 #[cfg(test)]
 mod tests {
-    use super::v8_verifier;
+    use super::{V8ProofShape, v8_verifier};
+    use execution_utils::unified_recursion_target_family_proofs;
+    use verifier_common::SecurityModel;
+
+    fn canonical_security_100_shape() -> V8ProofShape {
+        V8ProofShape {
+            circuit_family_entries: 1,
+            reduced_family_proofs: Some(unified_recursion_target_family_proofs(
+                SecurityModel::Security100,
+            )),
+            init_and_teardown_proofs: 0,
+            delegation_entries: 1,
+            blake2s_delegation_proofs: Some(1),
+        }
+    }
+
+    #[test]
+    fn wrapper_compatible_security_100_shape_is_accepted() {
+        canonical_security_100_shape().validate().unwrap();
+    }
+
+    #[test]
+    fn extra_empty_delegation_entry_ignored_by_native_verifier_is_rejected() {
+        let malicious_shape = V8ProofShape {
+            // The canonical Blake2s entry is still valid; this models an additional unknown map
+            // entry with an empty proof vector, which Airbender's native response flattener skips.
+            delegation_entries: 2,
+            ..canonical_security_100_shape()
+        };
+
+        let err = malicious_shape.validate().unwrap_err();
+        assert_eq!(err, "expected exactly one delegation entry, got 2");
+    }
+
+    #[test]
+    fn other_wrapper_incompatible_shapes_are_rejected() {
+        let extra_empty_family = V8ProofShape {
+            circuit_family_entries: 2,
+            ..canonical_security_100_shape()
+        };
+        assert_eq!(
+            extra_empty_family.validate().unwrap_err(),
+            "expected exactly one circuit-family entry, got 2"
+        );
+
+        let nonempty_init_or_teardown = V8ProofShape {
+            init_and_teardown_proofs: 1,
+            ..canonical_security_100_shape()
+        };
+        assert_eq!(
+            nonempty_init_or_teardown.validate().unwrap_err(),
+            "expected no init/teardown proofs, got 1"
+        );
+
+        let empty_blake2s_entry = V8ProofShape {
+            blake2s_delegation_proofs: Some(0),
+            ..canonical_security_100_shape()
+        };
+        assert!(
+            empty_blake2s_entry
+                .validate()
+                .unwrap_err()
+                .contains("with one Blake2s proof")
+        );
+    }
 
     /// Cross-check that the runtime-derived expected recursion chain matches the value computed
     /// offline from the V8 app binary and the embedded recursion programs at the pinned
@@ -359,8 +420,8 @@ mod tests {
         assert_eq!(
             v8_verifier::unified_level_data().expected_chain,
             [
-                3908330635, 3818926154, 688684577, 1308736155, 1264132119, 1537631312, 358892107,
-                1291547267,
+                220972078, 4003957755, 139804345, 3784237551, 2762571289, 2606609965, 2574444425,
+                617776165,
             ],
         );
     }

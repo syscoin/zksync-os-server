@@ -25,7 +25,7 @@ pub struct BatchWorkStorage {
     run_nonce: Arc<str>,
     next_work_id: Arc<AtomicU64>,
 }
-// SYSCOIN
+// SYSCOIN:
 #[derive(Clone, Debug)]
 pub struct BatchWorkHandle {
     block_number: u64,
@@ -97,7 +97,7 @@ impl BatchWorkStorage {
         Ok(())
     }
 }
-// SYSCOIN
+// SYSCOIN:
 fn clear_stale_batch_work_files(base_dir: &Path) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(base_dir)? {
         let entry = entry?;
@@ -194,7 +194,7 @@ impl PipelineComponent for BatchWorkSource {
         state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         while let Some(handle) = self.receiver.recv().await {
-            // SYSCOIN
+            // SYSCOIN:
             let item = self.storage.load(&handle).await?;
             let (block_output, replay_record, tree) = item.into_parts();
             let block_number = replay_record.block_context.block_number;
@@ -218,7 +218,7 @@ impl PipelineComponent for BatchWorkSource {
         Ok(())
     }
 }
-// SYSCOIN
+// SYSCOIN:
 #[derive(Debug, Serialize, Deserialize)]
 struct BatchWorkItem {
     block_output: BatchWorkBlockOutput,
@@ -252,38 +252,13 @@ impl BatchWorkItem {
 struct BatchWorkBlockOutput {
     header: BatchWorkHeader,
     tx_results: Vec<Option<BatchWorkTxOutput>>,
-    pubdata: BatchWorkPubdata,
+    pubdata_used: u64,
     computational_native_used: u64,
-}
-
-// SYSCOIN: batch work is a restart buffer, and v32 block execution retains only the pubdata
-// length while v31 retains the bytes. Persist the distinction so catch-up cannot fabricate data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum BatchWorkPubdata {
-    Bytes(Vec<u8>),
-    Length(u64),
-}
-
-impl From<BlockPubdata> for BatchWorkPubdata {
-    fn from(pubdata: BlockPubdata) -> Self {
-        match pubdata {
-            BlockPubdata::Bytes(bytes) => Self::Bytes(bytes),
-            BlockPubdata::Length(length) => Self::Length(length),
-        }
-    }
-}
-
-impl From<BatchWorkPubdata> for BlockPubdata {
-    fn from(pubdata: BatchWorkPubdata) -> Self {
-        match pubdata {
-            BatchWorkPubdata::Bytes(bytes) => Self::Bytes(bytes),
-            BatchWorkPubdata::Length(length) => Self::Length(length),
-        }
-    }
 }
 
 impl From<BlockOutput> for BatchWorkBlockOutput {
     fn from(block_output: BlockOutput) -> Self {
+        let pubdata_used = block_output.pubdata_used();
         Self {
             header: BatchWorkHeader {
                 number: block_output.header.number,
@@ -295,7 +270,7 @@ impl From<BlockOutput> for BatchWorkBlockOutput {
                 .into_iter()
                 .map(|result| result.ok().map(BatchWorkTxOutput::from))
                 .collect(),
-            pubdata: block_output.pubdata.into(),
+            pubdata_used,
             computational_native_used: block_output.computational_native_used,
         }
     }
@@ -320,7 +295,7 @@ impl BatchWorkBlockOutput {
             storage_writes: Vec::<StorageWrite>::new(),
             account_diffs: Vec::<AccountDiff>::new(),
             published_preimages: Vec::new(),
-            pubdata: self.pubdata.into(),
+            pubdata: BlockPubdata::new(self.pubdata_used),
             computational_native_used: self.computational_native_used,
         }
     }

@@ -8,7 +8,7 @@ pub mod batcher;
 mod command_source;
 pub mod config;
 pub mod default_protocol_version;
-// SYSCOIN
+// SYSCOIN: External nodes may load secrets and topology overrides from the main node.
 mod en_remote_config;
 mod init_tx_forwarder;
 mod l1_revert;
@@ -18,8 +18,6 @@ pub mod pig_telemetry;
 mod ports;
 mod priority_tree_pipeline_step;
 pub mod prover_api;
-mod prover_block;
-mod prover_input_generator;
 mod provider;
 mod state_initializer;
 pub mod tree_manager;
@@ -52,12 +50,10 @@ use crate::prover_api::proof_storage::ProofStorage;
 use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
 use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
-use crate::prover_input_generator::ProverInputGenerator;
 use crate::provider::{ProviderKind, build_node_provider};
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
-use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{Address, BlockHash, BlockNumber};
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber};
 use alloy::providers::Provider;
 use anyhow::Context;
 use priority_tree_pipeline_step::PriorityTreePipelineStep;
@@ -127,8 +123,8 @@ use zksync_os_storage_api::{
     WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
-    TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProvingVersion, PubdataMode,
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, TransactionAcceptanceState,
 };
 
 use ports::BoundListeners;
@@ -140,7 +136,7 @@ const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
-// SYSCOIN
+// SYSCOIN: Bound the durable asynchronous batch-work pipeline against retained state history.
 const BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE: usize = 5;
 const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
 const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
@@ -343,8 +339,14 @@ fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificati
 #[allow(clippy::too_many_arguments)]
 pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone>(
     runtime: &Runtime,
-    config: Config,
+    mut config: Config,
 ) -> ServerPorts {
+    enforce_v8_regeneration_prover_policy(
+        ProvingVersion::V8.requires_vk_regeneration(),
+        config.general_config.node_role,
+        config.batcher_config.enabled,
+        &mut config.prover_api_config,
+    );
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
@@ -530,6 +532,18 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     .await
     .expect("failed to determine L1 state");
 
+    // SYSCOIN: Bind the configured prover mode to the verifier selected by the active settlement
+    // layer. This check runs after any startup revert and before a proving pipeline can be spawned.
+    enforce_deployed_verifier_prover_policy(
+        ProvingVersion::V8.requires_vk_regeneration(),
+        node_role,
+        config.batcher_config.enabled,
+        &config.prover_api_config,
+        &l1_state,
+    )
+    .await
+    .expect("invalid deployed verifier / prover configuration");
+
     let settles_on_gateway = l1_state.settles_on_gateway();
     let sl_provider = if l1_state.l1_chain_id == l1_state.sl_chain_id {
         l1_provider.clone()
@@ -553,8 +567,24 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     tracing::info!(?l1_state, settles_on_gateway, "L1 state");
     l1_state.report_metrics();
+    validate_canonical_da_input_mode(l1_state.da_input_mode)
+        .expect("settlement layer uses a non-canonical DA input mode");
+    if config.l1_sender_config.pubdata_mode.is_some() {
+        canonical_pubdata_mode(
+            settles_on_gateway,
+            l1_state.da_input_mode,
+            config.l1_sender_config.pubdata_mode,
+        )
+        .expect("configured pubdata mode does not match the canonical settlement topology");
+    }
+    if config.batch_verification_config.client_enabled {
+        assert!(
+            bitcoin_da_rpc_config_complete(&config),
+            "`batch_verification.client_enabled=true` requires complete Bitcoin DA RPC credentials"
+        );
+    }
     if node_role.is_main() {
-        // SYSCOIN
+        // SYSCOIN: Enforce the effective on-chain batch-verification signer policy at startup.
         validate_batch_verification_startup_policy(
             &config.batch_verification_config,
             &l1_state.batch_verification,
@@ -568,9 +598,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         }
     }
 
-    // Effective pubdata mode used by all block-producing components: read from config only when
-    // the chain settles on L1. When settling on Gateway, it is derived from the gateway's DA
-    // input mode: Rollup gateway -> RelayedL2Calldata, Validium gateway -> Validium.
+    // Effective pubdata mode used by all block-producing components: direct settlement uses
+    // compact Blobs, while Gateway settlement uses compact RelayedL2Calldata.
     let effective_pubdata_mode: Option<PubdataMode> =
         if node_role.is_main() && config.batcher_config.enabled {
             Some(effective_main_node_pubdata_mode(
@@ -582,22 +611,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             // External and replay-only main nodes do not produce blocks; pubdata mode is irrelevant.
             None
         };
-    if let (Some(pubdata_mode), true) = (effective_pubdata_mode, node_role.is_main()) {
-        match (pubdata_mode, l1_state.da_input_mode) {
-            (
-                PubdataMode::Calldata | PubdataMode::Blobs | PubdataMode::RelayedL2Calldata,
-                BatchDaInputMode::Validium,
-            )
-            | (PubdataMode::Validium, BatchDaInputMode::Rollup) => {
-                panic!(
-                    "Pubdata mode doesn't correspond to pricing mode from the l1. \
-                    L1 mode: {:?}, effective pubdata mode: {:?}",
-                    l1_state.da_input_mode, pubdata_mode
-                );
-            }
-            _ => {}
-        }
-    }
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
     tracing::info!("Initializing Tree RocksDB");
@@ -890,11 +903,23 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     let (commit_submitted_tx, commit_submitted_rx) = watch::channel(commit_submitted_init);
 
+    let mut active_sl_watcher_config: zksync_os_l1_watcher::L1WatcherConfig =
+        config.l1_watcher_config.clone().into();
+    if settles_on_gateway && config.l1_watcher_config.optimistic_gateway_head {
+        // SYSCOIN: This explicit trust mode treats Gateway execution as the optimistic interop
+        // boundary. Tailing the Gateway head makes committed/executed batches available in the
+        // same Gateway block; direct-L1 and finalized watchers remain conservative.
+        tracing::warn!(
+            "SYSCOIN: optimistic Gateway-head trust is enabled; imported interop roots are irreversible, so the Gateway RPC head must be quorum-canonized"
+        );
+        active_sl_watcher_config.confirmations = 0;
+    }
+
     tracing::info!("Initializing L1 Watchers");
     runtime.spawn_critical_task(
         "l1 commit watcher",
         L1CommitWatcher::create_watcher(
-            config.l1_watcher_config.clone().into(),
+            active_sl_watcher_config.clone(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
@@ -916,7 +941,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     runtime.spawn_critical_task(
         "l1 execute watcher",
         L1ExecuteWatcher::create_watcher(
-            config.l1_watcher_config.clone().into(),
+            active_sl_watcher_config,
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
@@ -999,40 +1024,11 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     };
     let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
         &l1_state,
-        settles_on_gateway,
         syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
     );
 
-    if config
-        .sequencer_config
-        .tx_validator
-        .deployment_filter
-        .enabled
-    {
-        let exec_version = ExecutionVersion::try_from(current_protocol_version)
-            .expect("Cannot determine execution version");
-        assert!(
-            exec_version >= ExecutionVersion::V6,
-            "Deployment filter requires execution version V6 or later (protocol >= v31.0), \
-             but current protocol version {current_protocol_version} uses {exec_version:?}"
-        );
-    }
-
-    if config
-        .sequencer_config
-        .tx_validator
-        .policy_service
-        .url
-        .is_some()
-    {
-        let exec_version = ExecutionVersion::try_from(current_protocol_version)
-            .expect("Cannot determine execution version");
-        assert!(
-            exec_version >= ExecutionVersion::V6,
-            "Policy service requires execution version V6 or later (protocol >= v31.0), \
-             but current protocol version {current_protocol_version} uses {exec_version:?}"
-        );
-    }
+    ExecutionVersion::try_from(current_protocol_version)
+        .expect("Cannot determine execution version");
 
     // Transaction acceptance state - tracks whether we're accepting new transactions
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
@@ -1069,9 +1065,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     tracing::info!("Initializing pubdata price provider");
     // Channels for GasAdjuster->BlockContextProvider communication.
     let (pubdata_price_sender, pubdata_price_receiver) = watch::channel(None);
-    let (blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
-    // Channel for Batcher->GasAdjuster communication. Batcher send sidecar to gas adjuster to estimate blob fill ratio.
-    let (sidecar_sender, sidecar_receiver) = tokio::sync::mpsc::channel(10);
     if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = effective_pubdata_mode
             .expect("effective pubdata mode must be set when the Main Node batcher is enabled");
@@ -1083,7 +1076,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         let gas_adjuster_config = gas_adjuster_config(
             config.gas_adjuster_config.clone(),
             pubdata_mode,
-            current_protocol_version.minor >= 31,
             max_priority_fee_per_gas,
             &config.batcher_config,
         );
@@ -1091,8 +1083,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             sl_provider.clone().erased(),
             gas_adjuster_config,
             pubdata_price_sender,
-            blob_fill_ratio_sender,
-            sidecar_receiver,
         )
         .await
         .unwrap();
@@ -1130,9 +1120,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let fee_provider = FeeProvider::new(
         config.fee_config.clone().into(),
         pubdata_price_receiver,
-        blob_fill_ratio_receiver,
         base_token_price_handle.clone(),
-        effective_pubdata_mode,
     );
 
     let rpc_storage = RpcStorage::new(
@@ -1172,6 +1160,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             // SYSCOIN: use the archive-capable L1 lookup chain for startup cursor resolution.
             archive_lookup_diamond_proxy_l1: archive_lookup_diamond_proxy_l1.clone(),
             l1_watcher_config: config.l1_watcher_config.clone().into(),
+            // SYSCOIN: Opting into Gateway-head interop is distinct from the general L1
+            // confirmation depth; Pool applies it only when the discovered SL is Gateway.
+            optimistic_gateway_head: config.l1_watcher_config.optimistic_gateway_head,
             interop_fee_updater_config: config.interop_fee_updater_config.clone().into(),
         },
         local_eth_call,
@@ -1193,6 +1184,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             block_time: config.sequencer_config.block_time,
             block_timestamp_offset_seconds: config.sequencer_config.block_timestamp_offset_seconds,
             service_block_delay: config.sequencer_config.service_block_delay,
+            // SYSCOIN: Give real traffic a configurable grace period before the safe
+            // Gateway-only empty interop companion fallback.
+            interop_companion_idle_delay: config.sequencer_config.interop_companion_idle_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
             interop_roots_per_block: config.batcher_config.interop_roots_per_batch_limit,
@@ -1259,7 +1253,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .await
             .expect("replay archive component stopped before accepting genesis replay record");
     }
-    // SYSCOIN: A preloaded v31 WAL does not necessarily replay its historical records through the
+    // SYSCOIN: A preloaded WAL does not necessarily replay its historical records through the
     // writer on startup, so seed every canonical record into this writer-owned archive session.
     archiving_block_replay_storage
         .backfill_initial_replay_records()
@@ -1286,7 +1280,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             finality_storage.clone(),
             chain_id,
             tx_acceptance_state_sender,
-            sidecar_sender,
             committed_batch_provider.clone(),
             canonization_engine,
             leadership,
@@ -1410,6 +1403,12 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         // SYSCOIN: RPC proof routing must use the requested batch's settlement interval rather
         // than treating a retained historical Gateway provider as the active settlement layer.
         l1_state.settlement_layer_intervals.clone(),
+        // SYSCOIN: The live Gateway MessageRoot proof path shares the explicit irreversible-head
+        // trust gate with Gateway commit, execute, and interop-root watchers.
+        settles_on_gateway && config.l1_watcher_config.optimistic_gateway_head,
+        // SYSCOIN: Supply the live batch index used only when the Gateway-head trust gate above
+        // permits a MessageRoot proof after Gateway execution.
+        committed_batch_provider.clone(),
         rpc_policy_client,
         runtime,
         wait_for_db,
@@ -1426,6 +1425,172 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         prover_api: prover_api_port,
         network,
     }
+}
+
+/// SYSCOIN: While the canonical V8 verification key is a regeneration sentinel, a batcher may be
+/// intentionally idle or use both in-process fake pools; it may never expose real prover jobs.
+/// Batcher-disabled nodes have no proving pipeline at all. Enforce this before binding listeners
+/// so library callers cannot expose pick / submit endpoints backed by the sentinel key.
+fn enforce_v8_regeneration_prover_policy(
+    regeneration_required: bool,
+    node_role: NodeRole,
+    batcher_enabled: bool,
+    prover_api_config: &mut ProverApiConfig,
+) {
+    if !regeneration_required || !node_role.is_main() {
+        return;
+    }
+
+    // A disabled batcher returns before constructing either proving pipeline, so there are no
+    // jobs for fake pools to drain. Still turn off an accidentally enabled listener before ports
+    // are bound, but do not require fake pools that this node will never start.
+    if !batcher_enabled {
+        if std::mem::replace(&mut prover_api_config.enabled, false) {
+            tracing::warn!(
+                "canonical V8 verification key regeneration is incomplete; disabling the unused external prover API on this batcher-disabled main node"
+            );
+        }
+        return;
+    }
+
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    if !uses_fake_proving && !prover_api_config.enabled {
+        // An intentionally idle proving pipeline cannot submit an incompatible proof.
+        return;
+    }
+
+    assert!(
+        !(uses_fake_proving && prover_api_config.enabled),
+        "canonical V8 VK regeneration is incomplete; external real proving and in-process fake prover pools cannot be enabled together"
+    );
+    assert!(
+        !prover_api_config.enabled,
+        "canonical Syscoin V8 verification key regeneration is incomplete; external real proving is disabled until the app-bound security-100 VK and Era verifier artifacts are installed"
+    );
+    assert!(
+        prover_api_config.fake_fri_provers.enabled && prover_api_config.fake_snark_provers.enabled,
+        "canonical V8 VK regeneration is incomplete; both fake FRI and fake SNARK pools must be enabled"
+    );
+}
+
+/// SYSCOIN: Validates the configured proof producers against the deployment mode and VK exposed
+/// by the verifier selected by the active settlement-layer diamond.
+const MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY: u64 = 8 * 1024 * 1024 * 1024;
+
+fn validate_deployed_verifier_prover_policy(
+    regeneration_required: bool,
+    prover_api_config: &ProverApiConfig,
+    deployed_is_testnet_verifier: bool,
+    deployed_vk_hash: B256,
+    compiled_vk_hash: B256,
+) -> anyhow::Result<()> {
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    let uses_real_proving = prover_api_config.enabled;
+
+    // A batcher may intentionally start without any proof producer. It will not make proving
+    // progress, but it also cannot submit a proof that conflicts with the deployed verifier.
+    if !uses_fake_proving && !uses_real_proving {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        !(uses_fake_proving && uses_real_proving),
+        "external real proving and in-process fake prover pools cannot be enabled together"
+    );
+
+    if uses_fake_proving {
+        anyhow::ensure!(
+            deployed_is_testnet_verifier,
+            "in-process fake prover pools require a deployed verifier with IS_TESTNET_VERIFIER=true"
+        );
+        if regeneration_required {
+            anyhow::ensure!(
+                prover_api_config.fake_fri_provers.enabled
+                    && prover_api_config.fake_snark_provers.enabled,
+                "canonical V8 VK regeneration is incomplete; both fake FRI and fake SNARK pools must be enabled"
+            );
+        }
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        !deployed_is_testnet_verifier,
+        "external real proving requires a production verifier with IS_TESTNET_VERIFIER=false"
+    );
+    anyhow::ensure!(
+        !regeneration_required,
+        "external real proving is disabled until canonical V8 VK regeneration is complete"
+    );
+    anyhow::ensure!(
+        compiled_vk_hash != B256::ZERO,
+        "external real proving requires a nonzero compiled canonical V8 VK hash"
+    );
+    anyhow::ensure!(
+        deployed_vk_hash == compiled_vk_hash,
+        "deployed verifier VK hash {deployed_vk_hash} does not match compiled canonical V8 VK hash {compiled_vk_hash}"
+    );
+    // SYSCOIN: The 256-batch real-prover window must remain reconstructible after restart.
+    // Accepted HTTP proof bodies may expand to roughly twice their decoded size in canonical
+    // JSON storage, so the upstream 1 GiB development cap cannot safely retain both 100-FRI
+    // aggregation windows plus headroom.
+    anyhow::ensure!(
+        prover_api_config.proof_storage.batch_with_proof_capacity.0
+            >= MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY,
+        "external real proving requires prover_api.proof_storage.batch_with_proof_capacity of at least 8 GiB"
+    );
+    Ok(())
+}
+
+/// SYSCOIN: Fetches and validates the verifier mode only for a main node whose batcher can create
+/// proving work. Missing selectors, malformed return data, reverts, and RPC failures all abort
+/// startup; a failed marker call must never be interpreted as a production verifier.
+async fn enforce_deployed_verifier_prover_policy(
+    regeneration_required: bool,
+    node_role: NodeRole,
+    batcher_enabled: bool,
+    prover_api_config: &ProverApiConfig,
+    l1_state: &L1State,
+) -> anyhow::Result<()> {
+    if !node_role.is_main() || !batcher_enabled {
+        return Ok(());
+    }
+
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    let uses_real_proving = prover_api_config.enabled;
+    if !uses_fake_proving && !uses_real_proving {
+        return Ok(());
+    }
+
+    let sl_block_id = l1_state.sl_block_number.into();
+    let verifier = l1_state
+        .diamond_proxy_sl
+        .get_verifier(sl_block_id)
+        .await
+        .context("failed to read active settlement-layer verifier")?;
+    anyhow::ensure!(
+        verifier != Address::ZERO,
+        "active settlement-layer diamond returned a zero verifier address"
+    );
+    let (deployed_is_testnet_verifier, deployed_vk_hash) = l1_state
+        .diamond_proxy_sl
+        .get_zksync_os_verifier_mode(verifier, sl_block_id)
+        .await
+        .context("failed to read explicit zkOS verifier mode and VK hash")?;
+    let compiled_vk_hash = ProvingVersion::V8
+        .vk_hash()
+        .parse::<B256>()
+        .context("compiled canonical V8 VK hash is malformed")?;
+
+    validate_deployed_verifier_prover_policy(
+        regeneration_required,
+        prover_api_config,
+        deployed_is_testnet_verifier,
+        deployed_vk_hash,
+        compiled_vk_hash,
+    )
 }
 
 /// Checks whether block `rebuild.from_block_number` currently has the expected `rebuild.from_block_hash`.
@@ -1623,7 +1788,6 @@ async fn run_main_node_pipeline(
     finality: impl ReadFinality + Clone,
     chain_id: u64,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
-    sidecar_sender: tokio::sync::mpsc::Sender<BlobTransactionSidecar>,
     committed_batch_provider: CommittedBatchProvider,
     canonization_engine: BlockCanonizationEngine,
     leadership: LeadershipSignal,
@@ -1694,9 +1858,6 @@ async fn run_main_node_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
-                        config
-                            .sequencer_config
-                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -1725,15 +1886,13 @@ async fn run_main_node_pipeline(
     }
     let pubdata_mode = pubdata_mode
         .expect("effective pubdata mode must be set when the Main Node batcher is enabled");
-    // SYSCOIN
-    let batch_work_state_history_reserve = config
-        .prover_input_generator_config
-        .maximum_in_flight_blocks
-        + <BatchWorkSource as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
-        + <TreeManager as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
-        + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
-        + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
-        + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
+    // SYSCOIN: Thread the target-or-age aggregation policy into the SNARK queue.
+    let batch_work_state_history_reserve =
+        <BatchWorkSource as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
+            + <TreeManager as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
+            + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
+            + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
+            + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
     let batch_work_channel_capacity = config
         .general_config
         .blocks_to_retain_in_memory
@@ -1752,7 +1911,7 @@ async fn run_main_node_pipeline(
         batch_work_state_history_reserve,
         "Configured async batch-work queue capacity"
     );
-    // SYSCOIN
+    // SYSCOIN: Persist execution-to-batcher work before dispatch so restart cannot lose a batch.
     let batch_work_storage =
         BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
             .expect("failed to initialize batch work storage");
@@ -1780,10 +1939,12 @@ async fn run_main_node_pipeline(
         config.prover_api_config.fri_job_timeout,
         config.prover_api_config.max_assigned_batch_range,
     );
-    // SYSCOIN
+    // SYSCOIN: Thread the two-proof, target-or-age aggregation policy into the SNARK queue.
     let (snark_proving_step, snark_job_manager) = SnarkProvingPipelineStep::new(
         proof_storage.clone(),
         config.prover_api_config.max_fris_per_snark,
+        config.prover_api_config.target_fris_per_snark,
+        config.prover_api_config.max_snark_batch_wait,
         node_state_on_startup.l1_state.last_proved_batch,
         node_state_on_startup.l1_state.last_committed_batch,
         config.prover_api_config.snark_job_timeout,
@@ -1823,19 +1984,6 @@ async fn run_main_node_pipeline(
         run_fake_snark_provers(&config.prover_api_config, runtime, snark_job_manager);
     }
 
-    if !config.prover_input_generator_config.enable_input_generation {
-        assert!(
-            config.prover_api_config.fake_fri_provers.enabled,
-            "prover_input_generator_config.enable_input_generation=false requires \
-             prover_api_config.fake_fri_provers.enabled=true"
-        );
-    }
-
-    // SYSCOIN: upstream contracts do not expose canonical upgrade marker helpers. Fresh v31
-    // deployments rely on the OS-recorded upgrade tx hash, so no startup override is required.
-    let upgrade_batch_number = 0;
-    let upgrade_tx_hash = None;
-
     // Pick the L1Sender config based on whether the chain is currently settling on Gateway:
     // when it is, gateway_sender operator keys and fee caps are used; otherwise the L1-targeted
     // l1_sender config is used.
@@ -1858,7 +2006,7 @@ async fn run_main_node_pipeline(
             config.l1_sender_config.clone().into()
         };
 
-    // SYSCOIN
+    // SYSCOIN: Decouple execution from compact-DA publication through the durable work dispatcher.
     let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
         batch_work_storage.clone(),
         batch_work_tx,
@@ -1866,23 +2014,10 @@ async fn run_main_node_pipeline(
 
     let batch_pipeline = Pipeline::new(runtime.clone())
         .pipe(BatchWorkSource::new(batch_work_storage, batch_work_rx))
-        .pipe(ProverInputGenerator {
-            enable_logging: config.prover_input_generator_config.logging_enabled,
-            maximum_in_flight_blocks: config
-                .prover_input_generator_config
-                .maximum_in_flight_blocks,
-            read_state: state.clone(),
-            pubdata_mode,
-            merkle_tree: tree.clone(),
-            runtime: runtime.clone(),
-            disabled: !config.prover_input_generator_config.enable_input_generation,
-        })
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
                 last_executed_batch: node_state_on_startup.l1_state.last_executed_batch,
-                upgrade_batch_number,
-                upgrade_tx_hash,
                 last_persisted_block: node_state_on_startup.block_replay_storage_last_block,
             },
             chain_id,
@@ -1892,7 +2027,6 @@ async fn run_main_node_pipeline(
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,
-            sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
             bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
@@ -1915,7 +2049,7 @@ async fn run_main_node_pipeline(
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
-        // SYSCOIN
+        // SYSCOIN: Block settlement until direct and forwarded Bitcoin DA refs are final.
         .pipe(BitcoinDaFinalityGate::new(
             config.batcher_config.clone(),
             bitcoin_da_status_storage.clone(),
@@ -1932,7 +2066,7 @@ async fn run_main_node_pipeline(
             commit_submitted_tx: Some(commit_submitted_tx),
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
-        // SYSCOIN
+        // SYSCOIN: Prune Bitcoin DA receipts only after the corresponding commit is durable.
         .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
         .pipe(snark_proving_step)
         .pipe(GaplessL1ProofSender::new(
@@ -2045,9 +2179,6 @@ async fn run_en_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
-                        config
-                            .sequencer_config
-                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -2167,7 +2298,8 @@ fn check_batch_verification_mismatch(
     false
 }
 
-// SYSCOIN
+// SYSCOIN: Allow on-chain signer policy to replace local signer configuration, but fail closed
+// when neither source authorizes batch-verification responses.
 fn validate_batch_verification_startup_policy(
     server_config: &config::BatchVerificationConfig,
     l1_config: &BatchVerificationSL,
@@ -2191,27 +2323,47 @@ fn validate_batch_verification_startup_policy(
     }
 }
 
-/// Returns the pubdata mode used by all block-producing components on the Main Node, taking
-/// settlement-layer discovery into account: when the chain settles on Gateway, the mode is
-/// derived from the gateway's DA input mode (`Rollup` → [`PubdataMode::RelayedL2Calldata`],
-/// `Validium` → [`PubdataMode::Validium`]); when it settles on L1, the configured
-/// `l1_sender.pubdata_mode` is used (and its presence is enforced here).
+fn validate_canonical_da_input_mode(da_input_mode: BatchDaInputMode) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(da_input_mode, BatchDaInputMode::Rollup),
+        "only the canonical Syscoin compact rollup DA input mode is supported; got {da_input_mode:?}"
+    );
+    Ok(())
+}
+
+fn canonical_pubdata_mode(
+    settles_on_gateway: bool,
+    da_input_mode: BatchDaInputMode,
+    configured_pubdata_mode: Option<PubdataMode>,
+) -> anyhow::Result<PubdataMode> {
+    validate_canonical_da_input_mode(da_input_mode)?;
+    if settles_on_gateway {
+        anyhow::ensure!(
+            configured_pubdata_mode.is_none()
+                || configured_pubdata_mode == Some(PubdataMode::RelayedL2Calldata),
+            "Gateway settlement requires `l1_sender.pubdata_mode=RelayedL2Calldata`; got {configured_pubdata_mode:?}"
+        );
+        return Ok(PubdataMode::RelayedL2Calldata);
+    }
+    anyhow::ensure!(
+        configured_pubdata_mode == Some(PubdataMode::Blobs),
+        "direct settlement requires `l1_sender.pubdata_mode=Blobs`; got {configured_pubdata_mode:?}"
+    );
+    Ok(PubdataMode::Blobs)
+}
+
+/// Returns the sole canonical pubdata mode for the discovered settlement topology.
 fn effective_main_node_pubdata_mode(
     config: &Config,
     settles_on_gateway: bool,
     da_input_mode: BatchDaInputMode,
 ) -> PubdataMode {
-    if settles_on_gateway {
-        match da_input_mode {
-            BatchDaInputMode::Rollup => PubdataMode::RelayedL2Calldata,
-            BatchDaInputMode::Validium => PubdataMode::Validium,
-        }
-    } else {
-        config
-            .l1_sender_config
-            .pubdata_mode
-            .expect("`l1_sender.pubdata_mode` is required on the Main Node when settling on L1")
-    }
+    canonical_pubdata_mode(
+        settles_on_gateway,
+        da_input_mode,
+        config.l1_sender_config.pubdata_mode,
+    )
+    .expect("invalid canonical Syscoin DA configuration")
 }
 
 /// Counts commit transactions a previous session left in the L1 mempool (pending minus latest
@@ -2292,38 +2444,48 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn resolve_syscoin_edge_da_commit_target(
-    l1_state: &L1State,
-    settles_on_gateway: bool,
+// SYSCOIN: Resolve and validate the immutable compact edge-DA target bound into the guest.
+fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> Address {
+    validate_syscoin_edge_da_commit_target(
+        l1_state.validator_timelock_sl,
+        syscoin_edge_da_commit_target_from_env(),
+        required,
+    )
+}
+
+fn validate_syscoin_edge_da_commit_target(
+    live_target: Address,
+    configured_target: Option<Address>,
     required: bool,
 ) -> Address {
-    let live_target = l1_state.validator_timelock_sl;
     if required {
         assert_ne!(
             live_target,
             Address::ZERO,
             "Gateway ValidatorTimelock must be available when compact edge DA is active"
         );
+        assert_eq!(
+            live_target, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            "SYSCOIN edge DA commit target mismatch: live settlement ValidatorTimelock is {}, \
+             but the canonical guest is bound to {}",
+            live_target, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
     }
 
-    if let Some(expected) = syscoin_edge_da_commit_target_from_env() {
+    if let Some(expected) = configured_target {
         assert_ne!(
             expected,
             Address::ZERO,
             "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
         );
-        if settles_on_gateway {
-            assert_eq!(
-                live_target, expected,
-                "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
-                 but SYSCOIN_EDGE_DA_COMMIT_TARGET is {}",
-                live_target, expected
-            );
-        }
-        return expected;
+        assert_eq!(
+            expected, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET is {}, but the canonical guest is bound to {}",
+            expected, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
     }
 
-    live_target
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET
 }
 
 fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
@@ -2602,15 +2764,330 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_batch_verification_mismatch, initial_transaction_acceptance_state,
-        validate_batch_verification_startup_policy,
+        MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, canonical_pubdata_mode,
+        check_batch_verification_mismatch, enforce_v8_regeneration_prover_policy,
+        initial_transaction_acceptance_state, validate_batch_verification_startup_policy,
+        validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
     };
-    use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use crate::config::{BatchVerificationConfig, ProverApiConfig};
+    use alloy::primitives::{B256, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
-    use zksync_os_types::{NodeRole, NotAcceptingReason, TransactionAcceptanceState};
+    use zksync_os_contract_interface::models::BatchDaInputMode;
+    use zksync_os_types::{
+        NodeRole, NotAcceptingReason, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        TransactionAcceptanceState,
+    };
+
+    #[test]
+    fn v8_regeneration_preserves_explicit_fake_only_mode() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(prover.fake_fri_provers.enabled);
+        assert!(prover.fake_snark_provers.enabled);
+    }
+
+    #[test]
+    #[should_panic(expected = "both fake FRI and fake SNARK")]
+    fn v8_regeneration_rejects_missing_fake_pool() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = false;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    #[should_panic(expected = "external real proving is disabled")]
+    fn v8_regeneration_rejects_external_real_proving() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot be enabled together")]
+    fn v8_regeneration_rejects_mixed_real_and_fake_proving() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    fn v8_regeneration_preserves_no_producer_mode() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+    }
+
+    #[test]
+    fn completed_v8_regeneration_preserves_external_api() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(false, NodeRole::MainNode, true, &mut prover);
+
+        assert!(prover.enabled);
+    }
+
+    #[test]
+    fn v8_regeneration_disables_unused_api_without_fake_pools_when_batcher_is_disabled() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, false, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+    }
+
+    // SYSCOIN: Today's mock testnet must remain usable only with its explicit testnet verifier.
+    #[test]
+    fn deployed_verifier_policy_fake_provers_require_explicit_testnet_verifier() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            true,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap();
+
+        let err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            false,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("IS_TESTNET_VERIFIER=true"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_v8_regeneration_requires_both_fake_pools() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+        prover.fake_fri_provers.enabled = true;
+
+        let err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            true,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("both fake FRI and fake SNARK"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_real_proving_requires_production_verifier_and_matching_nonzero_vk()
+    {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+        prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
+        let canonical_vk = B256::repeat_byte(0x22);
+
+        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+            .unwrap();
+
+        let testnet_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            true,
+            canonical_vk,
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(
+            testnet_err
+                .to_string()
+                .contains("IS_TESTNET_VERIFIER=false")
+        );
+
+        let sentinel_err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            false,
+            canonical_vk,
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            sentinel_err
+                .to_string()
+                .contains("regeneration is complete")
+        );
+
+        let zero_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            canonical_vk,
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            zero_err
+                .to_string()
+                .contains("nonzero compiled canonical V8 VK")
+        );
+
+        let mismatch_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            B256::repeat_byte(0x33),
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(mismatch_err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_real_proving_requires_restart_safe_proof_storage() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+        let canonical_vk = B256::repeat_byte(0x22);
+
+        let err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            canonical_vk,
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("at least 8 GiB"));
+
+        prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
+        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+            .unwrap();
+    }
+
+    #[test]
+    fn deployed_verifier_policy_mixed_fake_and_real_proving_is_rejected() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = true;
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        let err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            true,
+            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x22),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot be enabled together"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_no_proof_producer_does_not_require_a_verifier_mode() {
+        let mut prover = ProverApiConfig::default();
+        prover.enabled = false;
+
+        validate_deployed_verifier_prover_policy(true, &prover, false, B256::ZERO, B256::ZERO)
+            .unwrap();
+    }
+
+    #[test]
+    fn compact_edge_da_target_is_bound_to_the_canonical_guest() {
+        assert_eq!(
+            validate_syscoin_edge_da_commit_target(
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+                Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET),
+                true,
+            ),
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "live settlement ValidatorTimelock")]
+    fn compact_edge_da_rejects_a_live_target_not_bound_into_the_guest() {
+        validate_syscoin_edge_da_commit_target(
+            address!("0x0000000000000000000000000000000000000001"),
+            None,
+            true,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SYSCOIN_EDGE_DA_COMMIT_TARGET is")]
+    fn compact_edge_da_rejects_an_environment_override_not_bound_into_the_guest() {
+        validate_syscoin_edge_da_commit_target(
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            Some(address!("0x0000000000000000000000000000000000000001")),
+            false,
+        );
+    }
+
+    #[test]
+    fn canonical_pubdata_mode_is_topology_bound() {
+        assert_eq!(
+            canonical_pubdata_mode(false, BatchDaInputMode::Rollup, Some(PubdataMode::Blobs))
+                .unwrap(),
+            PubdataMode::Blobs
+        );
+        assert_eq!(
+            canonical_pubdata_mode(true, BatchDaInputMode::Rollup, None).unwrap(),
+            PubdataMode::RelayedL2Calldata
+        );
+        assert_eq!(
+            canonical_pubdata_mode(
+                true,
+                BatchDaInputMode::Rollup,
+                Some(PubdataMode::RelayedL2Calldata)
+            )
+            .unwrap(),
+            PubdataMode::RelayedL2Calldata
+        );
+        assert!(
+            canonical_pubdata_mode(
+                false,
+                BatchDaInputMode::Rollup,
+                Some(PubdataMode::RelayedL2Calldata)
+            )
+            .is_err()
+        );
+        assert!(
+            canonical_pubdata_mode(true, BatchDaInputMode::Rollup, Some(PubdataMode::Blobs))
+                .is_err()
+        );
+        assert!(
+            canonical_pubdata_mode(false, BatchDaInputMode::Validium, Some(PubdataMode::Blobs))
+                .is_err()
+        );
+        assert!(canonical_pubdata_mode(true, BatchDaInputMode::Validium, None).is_err());
+    }
 
     #[test]
     fn main_node_zero_block_cap_rejects_transactions_at_startup() {
@@ -2708,7 +3185,7 @@ mod tests {
         assert!(!warned);
     }
 
-    // SYSCOIN
+    // SYSCOIN: Without an on-chain policy, an enabled verifier must have local accepted signers.
     #[test]
     #[should_panic(
         expected = "`batch_verification.accepted_signers` requires at least one accepted signer"
@@ -2723,7 +3200,7 @@ mod tests {
         validate_batch_verification_startup_policy(&server_config, &BatchVerificationSL::Disabled);
     }
 
-    // SYSCOIN
+    // SYSCOIN: A non-empty on-chain policy permits an intentionally empty local signer list.
     #[test]
     fn test_batch_verification_allows_empty_local_signers_with_l1_policy() {
         let server_config = BatchVerificationConfig {

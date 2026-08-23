@@ -4,10 +4,8 @@ use crate::batcher::bitcoin_da_status_storage::{
 };
 use crate::batcher::seal_criteria::BatchInfoAccumulator;
 use crate::config::BatcherConfig;
-use crate::prover_block::ProverBlock;
-use alloy::consensus::BlobTransactionSidecar;
 use alloy::hex;
-use alloy::primitives::{Address, B256};
+use alloy::primitives::Address;
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
@@ -18,18 +16,16 @@ use tokio::time::{Instant, Sleep};
 use tracing;
 use zksync_os_batch_types::DiscoveredCommittedBatch;
 use zksync_os_batch_types::batcher_model::{
-    BatchEnvelope, BatchForSigning, MissingSignature, ProverInput,
+    BatchEnvelope, BatchForSigning, MissingSignature, ProverInput, block_contains_interop_bundle,
 };
-use zksync_os_batch_types::{
-    expected_upgrade_tx_hash_for_batch, syscoin_blob_ids_and_chunks_from_pubdata,
-};
+use zksync_os_batch_types::syscoin_blob_ids_and_chunks_from_pubdata;
 use zksync_os_batcher_metrics::BATCHER_METRICS;
 use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
-use zksync_os_storage_api::ReadStateHistory;
+use zksync_os_storage_api::{ReadStateHistory, TreeBlock};
 use zksync_os_types::{ProvingVersion, PubdataMode};
 
 pub mod batch_builder;
@@ -39,7 +35,7 @@ pub(crate) mod bitcoin_da_status_cleanup;
 pub(crate) mod bitcoin_da_status_storage;
 mod seal_criteria;
 pub mod util;
-// SYSCOIN
+// SYSCOIN: Retry the two known Bitcoin Core ancestor-limit error spellings.
 const BITCOIN_DA_ANCESTOR_LIMIT_ERRORS: &[&str] = &[
     "unconfirmed utxos are available, but spending them creates a chain of transactions that will be rejected by the mempool",
     "transaction has too long of a mempool chain",
@@ -49,10 +45,6 @@ const BITCOIN_DA_ANCESTOR_LIMIT_ERRORS: &[&str] = &[
 pub struct BatcherStartupConfig {
     pub last_committed_batch: u64,
     pub last_executed_batch: u64,
-    /// Latest L2 system-contract upgrade marker discovered on the settlement layer at startup.
-    /// If non-zero, the corresponding batch commitment must use this exact upgrade tx hash.
-    pub upgrade_batch_number: u64,
-    pub upgrade_tx_hash: Option<B256>,
     /// Last block number already known to this node. On startup, we'll replay all blocks until and including
     /// this - in other words, there will be no arbitrary delays until this block is passed through Batcher.
     /// We do not seal batches by timeout until this block is reached.
@@ -68,11 +60,11 @@ pub struct Batcher<ReadState> {
     pub chain_id: u64,
     pub sl_chain_id: u64,
     pub chain_address_sl: Address,
+    /// SYSCOIN: Guest-bound Gateway target whose successful commits yield compact edge-DA refs.
     pub compact_edge_da_commit_target: Address,
     pub pubdata_limit_bytes: u64,
     pub batcher_config: BatcherConfig,
     pub pubdata_mode: PubdataMode,
-    pub sidecar_sender: mpsc::Sender<BlobTransactionSidecar>,
     pub committed_batch_provider: CommittedBatchProvider,
     pub read_state: ReadState,
     pub bitcoin_da_status_storage: BitcoinDaStatusStorage,
@@ -86,11 +78,47 @@ fn is_bitcoin_da_ancestor_limit_error(err: &str) -> bool {
         .any(|message| err.contains(message))
 }
 
+/// SYSCOIN: Advances the batch-boundary side of the replay-derived companion marker. A different
+/// proving version cannot share a SNARK aggregation group; protocol/security upgrades keep their
+/// absolute priority and expire the old tail instead of being delayed.
+fn next_interop_companion_batch_state(
+    pending: Option<ProvingVersion>,
+    current: ProvingVersion,
+    current_contains_bundle: bool,
+) -> Option<ProvingVersion> {
+    if let Some(expected) = pending
+        && expected != current
+    {
+        tracing::warn!(
+            ?expected,
+            ?current,
+            "expiring interop FRI companion at proving-version boundary; protocol upgrade retains priority"
+        );
+    }
+    current_contains_bundle.then_some(current)
+}
+
+/// SYSCOIN: Names the two explicit batch boundaries that make an interop bundle and its one
+/// successor become distinct FRI jobs.
+fn interop_batch_seal_reason(
+    force_companion: bool,
+    added_block_count: usize,
+    contains_bundle: bool,
+) -> Option<&'static str> {
+    if contains_bundle {
+        Some("interop_bundle")
+    } else if force_companion && added_block_count == 1 {
+        Some("interop_companion")
+    } else {
+        None
+    }
+}
+
 #[async_trait]
 impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
     for Batcher<ReadState>
 {
-    type Input = ProverBlock;
+    type Input = TreeBlock;
     type Output = BatchEnvelope<ProverInput, MissingSignature>;
 
     const COMPONENT_ID: zksync_os_pipeline::ComponentId = zksync_os_pipeline::ComponentId::Batcher;
@@ -141,6 +169,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 
         // Only used for metrics/logs
         let mut last_created_batch_at: Option<Instant> = None;
+        // SYSCOIN: This marker is derived solely from batch metadata rebuilt from canonical WAL
+        // blocks. On restart, committed-but-unexecuted batches are recreated first and new batches
+        // replay the remaining blocks, so no second durable schema or dual-write is required.
+        let mut interop_companion_proving_version: Option<ProvingVersion> = None;
 
         loop {
             state_reporter.enter_state(GenericComponentState::Idle);
@@ -185,7 +217,12 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                     batch_envelope
                 } else {
                     let Some(batch_envelope) = self
-                        .create_batch(&mut input, &prev_batch_info, &state_reporter)
+                        .create_batch(
+                            &mut input,
+                            &prev_batch_info,
+                            &state_reporter,
+                            interop_companion_proving_version.is_some(),
+                        )
                         .await?
                     else {
                         return Ok(());
@@ -203,6 +240,12 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
             }
 
             last_created_batch_at = Some(Instant::now());
+
+            interop_companion_proving_version = next_interop_companion_batch_state(
+                interop_companion_proving_version,
+                batch_envelope.batch.proving_version()?,
+                batch_envelope.batch.contains_interop_bundle(),
+            );
 
             // Update prev_batch_info for the next iteration
             prev_batch_info = batch_envelope.batch.batch_info.clone().into_stored();
@@ -226,25 +269,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
                 "Batch da_input",
             );
 
-            if let Some(sidecar) = batch_envelope.batch.blob_sidecar.clone() {
-                // SYSCOIN: Blob sidecars only feed gas-adjuster fill-ratio statistics. Keep this
-                // path lossy so a full stats channel cannot backpressure sealed batch output.
-                match self.sidecar_sender.try_send(sidecar) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        tracing::debug!(
-                            batch_number = batch_envelope.batch_number(),
-                            "Dropping blob sidecar gas-adjuster sample because the channel is full"
-                        );
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        tracing::warn!(
-                            batch_number = batch_envelope.batch_number(),
-                            "Dropping blob sidecar gas-adjuster sample because the receiver is closed"
-                        );
-                    }
-                }
-            }
             let last_block_number = batch_envelope.batch.last_block_number;
             let batch_number = batch_envelope.batch_number();
             output
@@ -259,9 +283,10 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> PipelineComponent
 impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
     async fn create_batch(
         &mut self,
-        block_receiver: &mut PeekableReceiver<ProverBlock>,
+        block_receiver: &mut PeekableReceiver<TreeBlock>,
         prev_batch_info: &StoredBatchInfo,
         state_reporter: &ComponentStateReporter,
+        force_interop_companion: bool,
     ) -> anyhow::Result<Option<BatchForSigning<ProverInput>>> {
         // Armed once we reach `last_persisted_block`, using the first block's timestamp.
         let mut deadline: Option<Pin<Box<Sleep>>> = None;
@@ -293,22 +318,27 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 }
 
                 /* ---------- collect blocks ---------- */
-               should_seal = block_receiver.peek_recv(|item| {
+               seal_decision = block_receiver.peek_recv(|item| {
                     // determine if the block fits into the current batch
-                    accumulator.clone().add(&item.output, &item.record).should_seal()
+                    let exceeds_standard_limit = accumulator
+                        .clone()
+                        .add(&item.output, &item.record)
+                        .should_seal();
+                    let contains_interop_bundle = block_contains_interop_bundle(&item.output);
+                    (exceeds_standard_limit, contains_interop_bundle)
                 }) => {
                     state_reporter.enter_state(GenericComponentState::Active);
-                    match should_seal {
-                        Some(true) if !blocks.is_empty() => {
+                    match seal_decision {
+                        Some((true, _)) if !blocks.is_empty() => {
                             // some of the limits was reached, start sealing the batch
                             break;
                         }
-                        Some(seal_after_adding) => {
-                            // `seal_after_adding` means the batch is still empty and the peeked
+                        Some((exceeds_standard_limit, contains_interop_bundle)) => {
+                            // `exceeds_standard_limit` means the batch is still empty and the peeked
                             // block alone exceeds a seal limit. A batch must contain at least
                             // one block — refusing it would replay the same block forever — so
                             // accept it as a single-block batch.
-                            if seal_after_adding {
+                            if exceeds_standard_limit {
                                 tracing::warn!(
                                     batch_number,
                                     "a single block exceeds batch seal limits; sealing it as its own batch"
@@ -360,7 +390,27 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
                             blocks.push(block);
 
-                            if seal_after_adding {
+                            // SYSCOIN: An authenticated bundle must end its batch, and the first
+                            // block after a bundle must end the next batch. This creates two
+                            // distinct FRI jobs while preserving Airbender's stock min-two SNARK
+                            // aggregation. A consecutive bundle satisfies the old tail and arms a
+                            // new one through the metadata transition in `run`.
+                            if let Some(reason) = interop_batch_seal_reason(
+                                force_interop_companion,
+                                blocks.len(),
+                                contains_interop_bundle,
+                            ) {
+                                BATCHER_METRICS.seal_reason[&reason].inc();
+                                tracing::info!(
+                                    batch_number,
+                                    block_number,
+                                    reason,
+                                    "sealing interop FRI batch boundary"
+                                );
+                                break;
+                            }
+
+                            if exceeds_standard_limit {
                                 break;
                             }
                         }
@@ -377,49 +427,20 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             .observe(blocks.len() as u64);
         accumulator.report_accumulated_resources_to_metrics();
 
-        let protocol_version = &blocks.first().unwrap().record.protocol_version;
-        // SYSCOIN: Preserve protocol-version adaptation before deciding whether to publish Syscoin DA.
-        let pubdata_mode = self
-            .pubdata_mode
-            .adapt_for_protocol_version(protocol_version);
-        let proving_version = ProvingVersion::try_from(protocol_version.clone())?;
-        let uses_syscoin_da = protocol_version.minor >= 31
-            && matches!(
-                pubdata_mode,
-                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-            );
-        let legacy_pre_syscoin_da = !uses_syscoin_da
-            && matches!(
-                pubdata_mode,
-                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-            );
-
-        // SYSCOIN: V7 exposes pubdata per block. V8 exposes only lengths there, so its canonical
-        // bytes are collected from the native batch run returned by sealing below.
-        let block_pubdata = (uses_syscoin_da && proving_version < ProvingVersion::V8).then(|| {
-            blocks
-                .iter()
-                .flat_map(|block| block.output.expect_pubdata_bytes().iter().copied())
-                .collect::<Vec<_>>()
-        });
-
+        let pubdata_mode = self.pubdata_mode;
+        let uses_syscoin_da = matches!(
+            pubdata_mode,
+            PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
+        );
         /* ---------- seal the batch ---------- */
         let sealed_batch = self
-            .seal_batch_blocking(
-                blocks,
-                prev_batch_info.clone(),
-                batch_number,
-                pubdata_mode,
-                legacy_pre_syscoin_da,
-            )
+            .seal_batch_blocking(blocks, prev_batch_info.clone(), batch_number, pubdata_mode)
             .await?;
-        let mut batch_envelope = sealed_batch.batch;
+        let batch_envelope = sealed_batch.batch;
         // SYSCOIN: `RelayedL2Calldata` is a compact edge-DA reference mode when settling to
         // Gateway; it uses the same Bitcoin DA publication and hash-array commitment as blobs.
         if uses_syscoin_da {
-            let total_pubdata = block_pubdata
-                .or(sealed_batch.canonical_pubdata)
-                .context("canonical pubdata is unavailable for Syscoin DA publication")?;
+            let total_pubdata = sealed_batch.canonical_pubdata;
             let (blob_ids_from_pubdata, blob_chunks_from_pubdata) =
                 syscoin_blob_ids_and_chunks_from_pubdata(&total_pubdata)?;
             anyhow::ensure!(
@@ -432,8 +453,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 &batch_envelope.batch.batch_info.operator_da_input,
             )
             .await?;
-            // Prevent the normal L1 sender from treating this as an EIP-4844 sidecar.
-            batch_envelope.batch.blob_sidecar = None;
         }
         Ok(Some(batch_envelope))
     }
@@ -443,45 +462,15 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
     /// async runtime.
     async fn seal_batch_blocking(
         &self,
-        blocks: Vec<ProverBlock>,
+        blocks: Vec<TreeBlock>,
         prev_batch_info: StoredBatchInfo,
         batch_number: u64,
         pubdata_mode: PubdataMode,
-        legacy_pre_syscoin_da: bool,
     ) -> anyhow::Result<batch_builder::SealedBatch> {
         let chain_id = self.chain_id;
         let chain_address_sl = self.chain_address_sl;
         let sl_chain_id = self.sl_chain_id;
         let compact_edge_da_commit_target = self.compact_edge_da_commit_target;
-        let expected_upgrade_tx_hash = self.expected_upgrade_tx_hash_for_batch(batch_number);
-        let proving_version = ProvingVersion::try_from(
-            blocks
-                .first()
-                .context("cannot seal an empty batch")?
-                .record
-                .protocol_version
-                .clone(),
-        )?;
-        // SYSCOIN: Keep v31 sealing on the component task so shutdown cannot leave an
-        // uncancellable blocking task holding a cloned RocksDB lock during an immediate restart.
-        // V8 native batch execution remains isolated because it is substantially CPU-bound.
-        if proving_version < ProvingVersion::V8 {
-            return batch_builder::seal_batch(
-                &blocks,
-                prev_batch_info,
-                batch_number,
-                chain_id,
-                chain_address_sl,
-                pubdata_mode,
-                sl_chain_id,
-                compact_edge_da_commit_target,
-                expected_upgrade_tx_hash,
-                legacy_pre_syscoin_da,
-                &self.read_state,
-                &self.merkle_tree,
-            );
-        }
-
         let read_state = self.read_state.clone();
         let merkle_tree = self.merkle_tree.clone();
         tokio::task::spawn_blocking(move || {
@@ -494,8 +483,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
                 pubdata_mode,
                 sl_chain_id,
                 compact_edge_da_commit_target,
-                expected_upgrade_tx_hash,
-                legacy_pre_syscoin_da,
                 &read_state,
                 &merkle_tree,
             )
@@ -505,7 +492,7 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
     async fn recreate_existing_batch(
         &mut self,
-        block_receiver: &mut PeekableReceiver<ProverBlock>,
+        block_receiver: &mut PeekableReceiver<TreeBlock>,
         prev_batch_info: &StoredBatchInfo,
         existing_batch: DiscoveredCommittedBatch,
         state_reporter: &ComponentStateReporter,
@@ -556,52 +543,19 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
         // Rebuild the batch from blocks.
         // Assume pubdata mode does not change
-        let mut rebuilt_batch = self
+        let rebuilt_batch = self
             .seal_batch_blocking(
-                blocks.clone(),
+                blocks,
                 prev_batch_info.clone(),
                 batch_number,
                 self.pubdata_mode,
-                false,
             )
             .await?
             .batch;
 
         // Verify that the rebuilt batch matches the stored batch by comparing hashes
         if self.batcher_config.assert_rebuilt_batch_hashes {
-            let mut rebuilt_stored_batch_info =
-                rebuilt_batch.batch.batch_info.clone().into_stored();
-
-            // Before Syscoin DA, Blobs used KZG versioned hashes and RelayedL2Calldata used
-            // calldata DA fields; both omitted the trailing edge-ref root. Accept that layout
-            // only when it reproduces the exact on-chain commitment.
-            if rebuilt_stored_batch_info.hash() != existing_batch.batch_info.hash()
-                && matches!(
-                    self.pubdata_mode,
-                    PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-                )
-            {
-                let legacy_rebuilt_batch = self
-                    .seal_batch_blocking(
-                        blocks.clone(),
-                        prev_batch_info.clone(),
-                        batch_number,
-                        self.pubdata_mode,
-                        true,
-                    )
-                    .await?
-                    .batch;
-                let legacy_stored_batch_info =
-                    legacy_rebuilt_batch.batch.batch_info.clone().into_stored();
-                if legacy_stored_batch_info.hash() == existing_batch.batch_info.hash() {
-                    tracing::info!(
-                        batch_number,
-                        "Recreated batch with pre-Syscoin DA semantics"
-                    );
-                    rebuilt_batch = legacy_rebuilt_batch;
-                    rebuilt_stored_batch_info = legacy_stored_batch_info;
-                }
-            }
+            let rebuilt_stored_batch_info = rebuilt_batch.batch.batch_info.clone().into_stored();
 
             anyhow::ensure!(
                 rebuilt_stored_batch_info.hash() == existing_batch.batch_info.hash(),
@@ -619,15 +573,6 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         }
 
         Ok(Some(rebuilt_batch))
-    }
-
-    fn expected_upgrade_tx_hash_for_batch(&self, batch_number: u64) -> Option<B256> {
-        expected_upgrade_tx_hash_for_batch(
-            batch_number,
-            self.startup_config.last_committed_batch,
-            self.startup_config.upgrade_batch_number,
-            self.startup_config.upgrade_tx_hash,
-        )
     }
 
     // SYSCOIN: publish each sealed batch to Syscoin Bitcoin DA. Finality is
@@ -685,7 +630,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
             mode: self.batcher_config.bitcoin_da_finality_mode,
             confirmations: self.batcher_config.bitcoin_da_finality_confirmations,
         };
-        // SYSCOIN
+        // SYSCOIN: Resume Bitcoin DA publication only when the durable status still matches the
+        // canonical blob hashes and finality policy for this batch.
         let status_storage = &self.bitcoin_da_status_storage;
         let mut status = match status_storage.load(batch_number).await? {
             Some(status)
@@ -740,7 +686,8 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
         if status.finality_policy.is_none() {
             status.finality_policy = Some(current_finality_policy.clone());
         }
-        // SYSCOIN
+        // SYSCOIN: Publish missing 2 MiB DA chunks sequentially and persist progress so a restart
+        // does not republish chunks that Bitcoin DA already accepted.
         if !status.finalized {
             for (idx, (blob, expected_hash)) in blob_chunks
                 .iter()
@@ -801,7 +748,11 @@ impl<ReadState: ReadStateHistory + Clone + Send + 'static> Batcher<ReadState> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_bitcoin_da_ancestor_limit_error;
+    use super::{
+        interop_batch_seal_reason, is_bitcoin_da_ancestor_limit_error,
+        next_interop_companion_batch_state,
+    };
+    use zksync_os_types::ProvingVersion;
 
     #[test]
     fn detects_bitcoin_da_ancestor_limit_errors() {
@@ -814,5 +765,52 @@ mod tests {
         assert!(!is_bitcoin_da_ancestor_limit_error(
             "HTTP 500 Internal Server Error: insufficient funds",
         ));
+    }
+
+    #[test]
+    fn interop_companion_batch_state_is_replay_deterministic() {
+        let version = ProvingVersion::V8;
+        let pending = next_interop_companion_batch_state(None, version, true);
+        assert_eq!(pending, Some(version));
+        assert_eq!(
+            next_interop_companion_batch_state(pending, version, false),
+            None
+        );
+        // A consecutive bundle is a companion for the previous batch and arms one new tail.
+        assert_eq!(
+            next_interop_companion_batch_state(pending, version, true),
+            Some(version)
+        );
+    }
+
+    #[test]
+    fn interop_boundaries_seal_bundle_and_exactly_one_successor_block() {
+        assert_eq!(
+            interop_batch_seal_reason(false, 3, true),
+            Some("interop_bundle")
+        );
+        assert_eq!(
+            interop_batch_seal_reason(true, 1, false),
+            Some("interop_companion")
+        );
+        assert_eq!(interop_batch_seal_reason(true, 2, false), None);
+        assert_eq!(interop_batch_seal_reason(false, 1, false), None);
+    }
+
+    #[test]
+    fn committed_not_executed_bundle_rearms_successor_boundary_after_restart() {
+        // `run` recreates committed-but-not-settlement-executed batches before creating new
+        // ones. Rebuilt durable metadata therefore restores the marker without an auxiliary DB.
+        let recovered = next_interop_companion_batch_state(None, ProvingVersion::V8, true);
+        assert_eq!(
+            interop_batch_seal_reason(recovered.is_some(), 1, false),
+            Some("interop_companion")
+        );
+        // Observing that isolated successor clears the recovered obligation, so a third batch is
+        // not forced after another restart.
+        assert_eq!(
+            next_interop_companion_batch_state(recovered, ProvingVersion::V8, false),
+            None
+        );
     }
 }

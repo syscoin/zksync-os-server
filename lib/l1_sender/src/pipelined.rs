@@ -13,8 +13,7 @@
 //! The two watermarks:
 //!
 //! * **Unmined window** — at most `command_limit` transactions may be submitted but not yet
-//!   observed mined. This matches the L1 pool's *per-account* cap (geth blobpool
-//!   `maxTxsPerAccount` = reth `max-account-slots` = 16), which counts pooled (unmined)
+//!   observed mined. This matches the L1 pool's per-account cap, which counts pooled (unmined)
 //!   transactions only. Each submission takes a semaphore permit that the inclusion watcher
 //!   releases at the *first receipt sighting* — never at confirmation, which would keep each
 //!   window slot occupied for `required_confirmations - 1` extra blocks per transaction.
@@ -42,10 +41,9 @@
 //!   inconsistent), but each affected nonce costs wasted gas and a spurious restart.
 
 use crate::commands::{L1SenderCommand, SendToL1};
-use crate::config::L1SenderFeeConfig;
 use crate::metrics::L1_SENDER_METRICS;
 use crate::pipeline_component::L1Sender;
-use crate::{FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, PreparedSidecar, SimPrefixEntry};
+use crate::{FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, SimPrefixEntry};
 use alloy::consensus::Transaction as ConsensusTransaction;
 use alloy::eips::BlockId;
 use alloy::network::{Ethereum, Network, TransactionResponse};
@@ -100,8 +98,7 @@ struct MinedTx<Input> {
 
 /// Fee floor applying while the submitter replaces a stale in-flight suffix left by a previous
 /// session (recovery calldata mismatch or a dropped transaction). The floor is the stale
-/// transactions' actual fees bumped by the pool's price-bump rule: 100% on all three fields
-/// for blob transactions (geth and reth), 10% otherwise.
+/// transactions' actual fees bumped by the regular transaction-pool price-bump rule.
 #[derive(Clone, Copy, Debug)]
 struct ReplacementPlan {
     /// Nonces below this replace previously-submitted transactions.
@@ -383,18 +380,10 @@ where
         submitted_tx: &mpsc::Sender<InFlightTx<Input>>,
         operator_address: Address,
     ) -> anyhow::Result<()> {
-        let use_eip7594 = self.provider.capabilities().supports_eip7594;
         for seed in seeds {
-            let sidecar = match seed.command.blob_sidecar() {
-                Some(sidecar) => Some(Arc::new(
-                    PreparedSidecar::prepare(sidecar, use_eip7594).await?,
-                )),
-                None => None,
-            };
             state.in_flight_prefix.push_back(SimPrefixEntry {
                 nonce: seed.nonce,
                 calldata: seed.command.solidity_call(self.gateway, &operator_address),
-                sidecar,
                 fee_params: seed.fee_params,
                 gas_limit: seed.gas_limit,
             });
@@ -455,12 +444,10 @@ where
             .await?;
         let fee_params = self.apply_replacement_floor(state, fee_params);
 
-        let prepared_sidecars = self.prepare_sidecars(&commands).await?;
         let gas_limits = self
             .estimate_gas_limits(
                 state.in_flight_prefix.make_contiguous(),
                 &commands,
-                &prepared_sidecars,
                 operator_address,
                 fee_params,
                 state.next_nonce,
@@ -472,13 +459,7 @@ where
             ?gas_limits,
             "estimated gas limits via eth_simulateV1",
         );
-        let blob_base_fee = self
-            .fetch_blob_base_fee_if_needed(&prepared_sidecars)
-            .await?;
-
-        for ((mut command, gas_limit), prepared_sidecar) in
-            commands.into_iter().zip(gas_limits).zip(prepared_sidecars)
-        {
+        for (mut command, gas_limit) in commands.into_iter().zip(gas_limits) {
             let nonce = state.next_nonce;
             let calldata = command.solidity_call(self.gateway, &operator_address);
             let tx_request = self.build_tx_request(
@@ -487,8 +468,6 @@ where
                 nonce,
                 gas_limit,
                 fee_params,
-                prepared_sidecar.as_deref(),
-                blob_base_fee,
             );
 
             // Notify CommitWatcher before the transaction can possibly land on L1:
@@ -509,7 +488,6 @@ where
             state.in_flight_prefix.push_back(SimPrefixEntry {
                 nonce,
                 calldata,
-                sidecar: prepared_sidecar,
                 fee_params,
                 gas_limit,
             });
@@ -543,10 +521,9 @@ where
             Some(plan) if state.next_nonce < plan.until_nonce => {
                 let raised = fee_params.apply_bounded_floor(
                     plan.fee_floor,
-                    self.config.fee_config.fee_limits(
-                        self.config.force_transaction_resubmission,
-                        Input::MAY_SEND_BLOBS,
-                    ),
+                    self.config
+                        .fee_config
+                        .fee_limits(self.config.force_transaction_resubmission),
                 );
                 tracing::warn!(
                     command_name = Input::COMPONENT_ID.as_str(),
@@ -744,26 +721,17 @@ where
         // SYSCOIN: A remote RPC can falsely report an in-flight transaction as evicted; preserve
         // the replacement attempt without allowing that signal to bypass operator fee limits.
         let fee_params = resolved.apply_bounded_floor(
-            entry.fee_params.replacement_floor(entry.sidecar.is_some()),
-            self.config.fee_config.fee_limits(
-                self.config.force_transaction_resubmission,
-                Input::MAY_SEND_BLOBS,
-            ),
+            entry.fee_params.replacement_floor(),
+            self.config
+                .fee_config
+                .fee_limits(self.config.force_transaction_resubmission),
         );
-
-        let blob_base_fee = if entry.sidecar.is_some() {
-            Some(self.provider.get_blob_base_fee().await?)
-        } else {
-            None
-        };
         let tx_request = self.build_tx_request(
             entry.calldata.clone(),
             operator_address,
             entry.nonce,
             entry.gas_limit,
             fee_params,
-            entry.sidecar.as_deref(),
-            blob_base_fee,
         );
         let pending_tx = self
             .send_tx_with_retries(tx_request, &format!("resend of nonce {}", request.nonce))
@@ -825,8 +793,7 @@ where
                     pending_nonce - latest_nonce,
                 );
             }
-            // Replacement fees are applied session-wide via `resolve_fee_params`; config
-            // validation guarantees the multipliers satisfy the 100% blob-RBF bump rule.
+            // Replacement fees are applied session-wide via `resolve_fee_params`.
             return Ok(Some(PipelinedStart {
                 seeds: vec![],
                 next_nonce: latest_nonce,
@@ -947,7 +914,7 @@ where
                         tx_hash: tx.tx_hash(),
                         nonce,
                         command: cmd,
-                        fee_params: fee_params_of_tx(&tx, self.config.fee_config),
+                        fee_params: fee_params_of_tx(&tx),
                         gas_limit: ConsensusTransaction::gas_limit(&tx),
                     });
                 }
@@ -974,9 +941,8 @@ where
 
     /// Computes the replacement-fee floor for a stale in-flight suffix `[from_nonce,
     /// until_nonce)`: the per-field maximum of every still-visible stale transaction, bumped
-    /// by the pool's price-bump rule — 100% when any stale transaction carries blobs, 10%
-    /// otherwise. Returns `None` when no stale transaction is visible anymore (nothing to
-    /// outbid).
+    /// by the regular transaction-pool rule. Returns `None` when no stale transaction is
+    /// visible anymore (nothing to outbid).
     async fn build_replacement_plan(
         &self,
         operator_address: Address,
@@ -985,10 +951,8 @@ where
         first_stale: Option<&L1TxResponse>,
     ) -> Option<ReplacementPlan> {
         let mut stale_fee_max: Option<FeeParams> = None;
-        let mut any_blobs = false;
         let mut fold = |tx: &L1TxResponse| {
-            let fees = fee_params_of_tx(tx, self.config.fee_config);
-            any_blobs |= ConsensusTransaction::max_fee_per_blob_gas(tx).is_some();
+            let fees = fee_params_of_tx(tx);
             stale_fee_max = Some(match stale_fee_max {
                 Some(current) => current.max(fees),
                 None => fees,
@@ -1022,7 +986,7 @@ where
 
         stale_fee_max.map(|fees| ReplacementPlan {
             until_nonce,
-            fee_floor: fees.replacement_floor(any_blobs),
+            fee_floor: fees.replacement_floor(),
         })
     }
 
@@ -1081,14 +1045,11 @@ where
     }
 }
 
-/// Extracts the fee parameters a transaction was actually sent with. The blob fee cap falls
-/// back to the configured cap for non-blob transactions (the value is then unused).
-fn fee_params_of_tx(tx: &L1TxResponse, fee_config: L1SenderFeeConfig) -> FeeParams {
+/// Extracts the EIP-1559 fee parameters a transaction was actually sent with.
+fn fee_params_of_tx(tx: &L1TxResponse) -> FeeParams {
     FeeParams {
         max_fee_per_gas: ConsensusTransaction::max_fee_per_gas(tx),
         max_priority_fee_per_gas: ConsensusTransaction::max_priority_fee_per_gas(tx)
             .unwrap_or_default(),
-        max_fee_per_blob_gas: ConsensusTransaction::max_fee_per_blob_gas(tx)
-            .unwrap_or(fee_config.max_fee_per_blob_gas_wei),
     }
 }

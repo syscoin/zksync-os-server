@@ -268,7 +268,7 @@ impl L1State {
         gateway_provider: Option<NodeProvider>,
         bridgehub_address: Address,
         chain_id: u64,
-        // SYSCOIN: preserve the configured startup finalization wait used by the direct-v31 launch path.
+        // SYSCOIN: preserve the configured startup finalization wait used by the direct-settlement path.
         startup_sl_finalization_timeout: Duration,
     ) -> anyhow::Result<Self> {
         let this = Self::fetch(l1_provider, gateway_provider, bridgehub_address, chain_id).await?;
@@ -455,7 +455,7 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
     warning_interval: Duration,
     f: impl Fn(BlockId) -> Fut,
 ) -> anyhow::Result<(u64, T)> {
-    /// SYSCOIN We probe once per second so startup can proceed as soon as pending SL state finalizes.
+    /// SYSCOIN: We probe once per second so startup can proceed as soon as pending SL state finalizes.
     const RETRY_DELAY: Duration = Duration::from_secs(1);
     let retry_builder = ConstantBuilder::new()
         .with_delay(RETRY_DELAY)

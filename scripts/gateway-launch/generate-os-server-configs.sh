@@ -12,7 +12,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Generate only canonical fresh V32 deployment configs.
+: "${PROTOCOL_VERSION:=v32.0}"
 : "${GATEWAY_CHAIN_ID:=57001}"
 : "${EDGE_CHAIN_ID:=57057}"
 : "${GATEWAY_OS_RPC_PORT:=3052}"
@@ -28,6 +29,11 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_PROVER_API_DOMAIN:=prover-zk.dev11.top}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
 : "${PROVER_API_AUTH_USER:=${PROVER_API_AUTH_PASSWORD:+syscoin-prover}}"
+# SYSCOIN: Retain enough durable FRI data to reconstruct the full 256-batch real-prover
+# window after restart. The HTTP API accepts 10 MiB proof submissions and canonical JSON
+# hex encoding can approximately double their decoded size, so the upstream 1 GiB default
+# is too small for two 100-FRI aggregation windows plus headroom.
+: "${PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES:=8589934592}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 # SYSCOIN: Keep the generated edge limit aligned with one Syscoin DA blob and
@@ -189,6 +195,7 @@ export GATEWAY_PROVER_API_DOMAIN
 export EDGE_PROVER_API_DOMAIN
 export PROVER_API_AUTH_USER
 export PROVER_API_AUTH_PASSWORD
+export PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
 export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
@@ -360,6 +367,21 @@ prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
 if prover_mode not in {"gpu", "no-proofs"}:
     raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|no-proofs)")
 use_mock_prover = prover_mode == "no-proofs"
+try:
+    prover_batch_with_proof_capacity_bytes = int(
+        os.environ["PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES"]
+    )
+except ValueError as err:
+    raise SystemExit(
+        "invalid PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES (expected integer bytes)"
+    ) from err
+if prover_batch_with_proof_capacity_bytes <= 0:
+    raise SystemExit("PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES must be greater than zero")
+if not use_mock_prover and prover_batch_with_proof_capacity_bytes < 8 * 1024**3:
+    raise SystemExit(
+        "real proving requires PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES >= 8589934592 "
+        "for restart-safe retention of the 256-batch queue"
+    )
 materialize_edge_config = os.environ.get("MATERIALIZE_EDGE_CONFIG", "true").strip().lower()
 if materialize_edge_config not in {"true", "false"}:
     raise SystemExit("invalid MATERIALIZE_EDGE_CONFIG (expected true|false)")
@@ -597,6 +619,17 @@ def materialize_chain(
             ),
             *(
                 [
+                    "l1_watcher:",
+                    # SYSCOIN: Edge chains deliberately trust the Gateway head so interop does
+                    # not wait for Gateway-to-L1 settlement. Production Gateways should run
+                    # OpenRaft; without it this is explicit sequencer/RPC-head trust.
+                    "  optimistic_gateway_head: true",
+                ]
+                if gateway_rpc_url is not None
+                else []
+            ),
+            *(
+                [
                     "fee:",
                     f"  native_per_gas: {os.environ['EDGE_NATIVE_PER_GAS']}",
                     f"  native_price_usd: {os.environ['EDGE_NATIVE_PRICE_USD']}",
@@ -606,14 +639,6 @@ def materialize_chain(
             ),
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
-            *(
-                [
-                    "prover_input_generator:",
-                    "  enable_input_generation: false",
-                ]
-                if use_mock_prover
-                else []
-            ),
             "prover_api:",
             *(
                 ["  enabled: false"]
@@ -622,12 +647,21 @@ def materialize_chain(
             ),
             f"  address: {prover_api_bind_host}:{prover_api_port}",
             *prover_api_auth_config_lines,
+            # SYSCOIN: Three resident GPU FRI workers feed a separate CPU combiner/wrapper. The
+            # two-hour lease avoids duplicate CPU wrapping while retaining a one-hour release bound.
+            "  snark_job_timeout: 2h",
+            "  max_assigned_batch_range: 256",
+            "  max_fris_per_snark: 100",
+            "  target_fris_per_snark: 100",
+            "  max_snark_batch_wait: 1h",
             "  fake_fri_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  proof_storage:",
             f"    path: {out_dir / 'db' / 'fri_proofs'}",
+            # SYSCOIN: Keep every active/next-window FRI proof restart-recoverable.
+            f"    batch_with_proof_capacity: {prover_batch_with_proof_capacity_bytes} B",
             "status_server:",
             f"  address: 0.0.0.0:{status_port}",
             "observability:",

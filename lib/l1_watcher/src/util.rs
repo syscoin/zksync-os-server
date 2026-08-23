@@ -592,7 +592,8 @@ pub async fn find_l1_block_by_interop_root_id(
             let res = message_root.interop_root_log_id(block.into()).await?;
             Ok(res >= next_interop_root_id)
         };
-    // SYSCOIN
+    // SYSCOIN: Older MessageRoot deployments may lack the counter getter; start a log scan at
+    // genesis in that compatibility case instead of aborting interop-root ingestion.
     let latest_result = predicate(message_root.clone(), latest).await;
     let latest_matches_target = match latest_result {
         Ok(latest_matches_target) => latest_matches_target,
@@ -608,7 +609,7 @@ pub async fn find_l1_block_by_interop_root_id(
         Err(err) => return Err(err),
     };
 
-    // SYSCOIN
+    // SYSCOIN: Fail closed when the active MessageRoot has not published the requested root yet.
     if !latest_matches_target {
         anyhow::bail!(
             "Condition not satisfied up to latest block: contract not deployed yet \
@@ -619,7 +620,8 @@ pub async fn find_l1_block_by_interop_root_id(
     let (mut lo, mut hi) = (deployment_block, latest);
     while lo < hi {
         let mid = (lo + hi) / 2;
-        // SYSCOIN
+        // SYSCOIN: Preserve the legacy-getter fallback even if it appears partway through the
+        // binary search (for example, across an RPC backend boundary).
         let mid_matches_target = match predicate(message_root.clone(), mid).await {
             Ok(mid_matches_target) => mid_matches_target,
             Err(err) if should_fallback_to_genesis_log_scan(&err) => {
@@ -642,7 +644,7 @@ pub async fn find_l1_block_by_interop_root_id(
 
     Ok(lo)
 }
-// SYSCOIN
+// SYSCOIN: Only an unavailable `totalPublishedInteropRoots` call permits the genesis-scan fallback.
 fn should_fallback_to_genesis_log_scan(err: &anyhow::Error) -> bool {
     let Some(err) = err.downcast_ref::<ContractInterfaceError>() else {
         return false;

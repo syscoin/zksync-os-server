@@ -3,7 +3,7 @@ use crate::execution::metrics::EXECUTION_METRICS;
 use crate::model::blocks::{
     BlockCommand, InvalidTxPolicy, PreparedBlockCommand, RebuildCommand, SealPolicy,
 };
-use alloy::primitives::{Address, B256, BlockHash, TxHash, U256};
+use alloy::primitives::{Address, BlockHash, TxHash, U256};
 use anyhow::Context as _;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,16 +11,17 @@ use tokio::{
     sync::watch,
     time::{Instant, MissedTickBehavior},
 };
+use zksync_os_batch_types::batcher_model::block_contains_interop_bundle;
 use zksync_os_contract_interface::settlement_layer_intervals::{
     IntervalSettlementLayer, SettlementLayerIntervals,
 };
 use zksync_os_genesis::genesis_header;
 use zksync_os_mempool::subpools::l2::L2Subpool;
-use zksync_os_mempool::{MarkingTxStream, Pool};
+use zksync_os_mempool::{InteropCompanionRequest, MarkingTxStream, Pool, StreamOutcomeKind};
 use zksync_os_storage_api::{BlockContext, BlockHashes, ReplayRecord};
 use zksync_os_types::{
     BlockOutput, BlockStartCursors, ExecutionVersion, FeeParams, ProtocolSemanticVersion,
-    SystemTxEnvelope, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
+    ProvingVersion, SystemTxEnvelope, SystemTxType, UpgradeMetadata, ZkEnvelope, ZkTransaction,
 };
 
 // SYSCOIN: An idle Gateway must keep its provisional RPC context close to the timestamp that
@@ -49,6 +50,10 @@ pub struct BlockContextProvider<Subpool> {
     /// L2 chain id of the chain's currently-active settlement layer. Can change in runtime if there
     /// is a migration in the process.
     current_sl_chain_id: u64,
+    /// SYSCOIN: Rebuilt deterministically from canonical replay output. `Some` means the latest
+    /// canonical block contains an authenticated interop bundle and still needs a later block at
+    /// the same proving version, which the batcher will isolate into a distinct FRI.
+    interop_companion_proving_version: Option<ProvingVersion>,
     last_constructed_block_ctx_sender: watch::Sender<Option<BlockContext>>,
 }
 
@@ -61,6 +66,9 @@ pub struct Config {
     pub block_time: Duration,
     pub block_timestamp_offset_seconds: i64,
     pub service_block_delay: Duration,
+    /// SYSCOIN: Grace period for real traffic before an idle Gateway-settled edge produces the
+    /// one-shot empty block needed to complete an interop bundle's two-FRI proving group.
+    pub interop_companion_idle_delay: Duration,
     pub max_transactions_in_block: usize,
     pub interop_roots_per_block: u64,
 }
@@ -103,6 +111,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             pool_initialized: false,
             next_interop_tx_allowed_after: Instant::now(),
             current_sl_chain_id,
+            interop_companion_proving_version: None,
             last_constructed_block_ctx_sender,
         }
     }
@@ -110,7 +119,7 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
     /// `true` when the chain currently settles on a Gateway (i.e. its tracked SL chain id
     /// differs from L1's).
     fn settles_on_gateway(&self) -> bool {
-        self.current_sl_chain_id != self.config.l1_chain_id
+        settles_on_gateway(self.current_sl_chain_id, self.config.l1_chain_id)
     }
 
     pub fn last_block_number(&self) -> Option<u64> {
@@ -149,6 +158,12 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             .expect("tried to produce a block without replaying at least one record");
         self.ensure_pool_initialized(&previous_record).await;
         let block_number = previous_record.block_context.block_number + 1;
+        let interop_companion_empty_after = interop_companion_empty_deadline(
+            self.interop_companion_proving_version,
+            self.settles_on_gateway(),
+            Instant::now(),
+            self.config.interop_companion_idle_delay,
+        );
         let (fee_params, best_txs) = loop {
             let pending_fee_params = self.fee_provider.produce_fee_params().await?;
             self.pool
@@ -174,12 +189,23 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             // Create stream:
             // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
             // - L1 transactions first, then L2 transactions.
-            // SYSCOIN: V31 Gateway roots remain valid, while v32 enables roots imported from L1.
+            // SYSCOIN: Gateway-settled chains import Gateway roots. Protocol V32 additionally supports the
+            // upstream direct-L1 MessageRoot path for chains that settle on L1.
             let include_interop_traffic =
                 self.settles_on_gateway() || previous_record.protocol_version.supports_l1_interop();
+            let interop_companion = self.interop_companion_proving_version.map(|_| {
+                InteropCompanionRequest {
+                    // SYSCOIN: Era priority mode is L1-only and rejects zero/zero batches. A
+                    // currently Gateway-settled edge cannot activate it, so only that topology
+                    // may synthesize an empty companion. Direct-L1 tails wait for real traffic
+                    // (in priority mode, a real L1 priority tx) or mode deactivation.
+                    empty_after: interop_companion_empty_after,
+                }
+            });
             let best_txs_future = self.pool.best_transactions_stream(
                 self.next_interop_tx_allowed_after,
                 include_interop_traffic,
+                interop_companion,
             );
             let pending_context_sender = self.last_constructed_block_ctx_sender.clone();
             let best_txs = await_with_pending_context_refresh(
@@ -210,13 +236,12 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         };
 
         let timestamp = unix_timestamp_seconds(self.config.block_timestamp_offset_seconds);
+        let is_empty_interop_companion = best_txs.kind == StreamOutcomeKind::InteropCompanionEmpty;
 
         // SYSCOIN: Check if we peeked upgrade metadata.
         // Patch-only upgrades with version <= the previous record's version can be safely
         // skipped, but equal-version full genesis upgrades must keep their forced preimages.
-        let (protocol_version, force_preimages, canonical_upgrade_tx_hash) = if let Some(
-            upgrade_metadata,
-        ) =
+        let (protocol_version, force_preimages) = if let Some(upgrade_metadata) =
             best_txs.upgrade_metadata
             && should_apply_upgrade_metadata(
                 &upgrade_metadata,
@@ -241,44 +266,37 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             (
                 upgrade_metadata.protocol_version,
                 upgrade_metadata.force_preimages.clone(),
-                upgrade_metadata.canonical_tx_hash,
             )
         } else {
-            (
-                previous_record.protocol_version.clone(),
-                Vec::new(),
-                B256::ZERO,
-            )
+            (previous_record.protocol_version.clone(), Vec::new())
         };
 
         let execution_version: ExecutionVersion = (&protocol_version)
             .try_into()
             .context("Cannot instantiate a block for unsupported execution version")?;
 
-        // Insert SetSLChainId once on the first post-v31 block, including a fresh v32 chain.
-        let first_post_v31_block = previous_record.protocol_version.minor < 31
-            || previous_record.block_context.block_number == 0;
-        let (tx_source, expect_sl_chain_id_tx_after_upgrade) =
-            if protocol_version.is_post_v31() && first_post_v31_block {
-                let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
-                    self.current_sl_chain_id,
-                    // We use `u64::MAX` as a placeholder, since it is not an actual migration
-                    u64::MAX,
-                );
-                // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
-                // prepend for non-upgrade streams so live L2 traffic cannot starve the v31
-                // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
-                // rejection when the stream is markable.
-                let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
-                let tx_source = if best_txs.stream_contains_upgrade_tx {
-                    best_txs.stream.append_tx(sl_chain_id_tx)
-                } else {
-                    best_txs.stream.prepend_tx(sl_chain_id_tx)
-                };
-                (tx_source, true)
+        // SYSCOIN: Insert SetSLChainId once on the first block of a fresh canonical chain.
+        let first_block = previous_record.block_context.block_number == 0;
+        let (tx_source, expect_sl_chain_id_tx_after_upgrade) = if first_block {
+            let sl_chain_id_tx = SystemTxEnvelope::set_sl_chain_id(
+                self.current_sl_chain_id,
+                // We use `u64::MAX` as a placeholder, since it is not an actual migration
+                u64::MAX,
+            );
+            // SYSCOIN: Keep upgrade blocks ordered as upgrade -> SetSLChainId, but
+            // prepend for non-upgrade streams so live L2 traffic cannot starve the V32
+            // SetSLChainId tx. Both helpers preserve the L2 marker for invalid tx
+            // rejection when the stream is markable.
+            let sl_chain_id_tx = ZkTransaction::from(sl_chain_id_tx);
+            let tx_source = if best_txs.stream_contains_upgrade_tx {
+                best_txs.stream.append_tx(sl_chain_id_tx)
             } else {
-                (best_txs.stream, false)
+                best_txs.stream.prepend_tx(sl_chain_id_tx)
             };
+            (tx_source, true)
+        } else {
+            (best_txs.stream, false)
+        };
 
         let block_context = self.build_produced_block_context(
             &previous_record,
@@ -293,19 +311,30 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         Ok(Some(PreparedBlockCommand {
             block_context,
             tx_source,
-            seal_policy: SealPolicy::Decide(
-                self.config.block_time,
-                self.config.max_transactions_in_block,
-            ),
-            invalid_tx_policy: InvalidTxPolicy::RejectAndContinue {
-                mark_in_source: true,
+            seal_policy: if is_empty_interop_companion {
+                // SYSCOIN: An explicitly empty stream must seal successfully on exhaustion;
+                // `Decide` treats zero transactions as an unexpected closed mempool.
+                SealPolicy::UntilExhausted {
+                    allowed_to_finish_early: false,
+                }
+            } else {
+                SealPolicy::Decide(
+                    self.config.block_time,
+                    self.config.max_transactions_in_block,
+                )
             },
-            metrics_label: "produce",
+            invalid_tx_policy: InvalidTxPolicy::RejectAndContinue {
+                mark_in_source: !is_empty_interop_companion,
+            },
+            metrics_label: if is_empty_interop_companion {
+                "interop_companion"
+            } else {
+                "produce"
+            },
             protocol_version,
             expected_block_output_hash: None,
             previous_block_timestamp: previous_record.block_context.timestamp,
             force_preimages,
-            canonical_upgrade_tx_hash,
             expect_sl_chain_id_tx_after_upgrade,
             starting_cursors: next_cursors.clone(),
             interop_roots_per_block: self.config.interop_roots_per_block,
@@ -396,7 +425,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             expected_block_output_hash: Some(record.block_output_hash),
             previous_block_timestamp: record.previous_block_timestamp,
             force_preimages: record.force_preimages,
-            canonical_upgrade_tx_hash: record.canonical_upgrade_tx_hash,
             expect_sl_chain_id_tx_after_upgrade,
             starting_cursors: record.starting_cursors,
             interop_roots_per_block: self.config.interop_roots_per_block,
@@ -525,7 +553,6 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             expected_block_output_hash: None,
             previous_block_timestamp,
             force_preimages: rebuild.replay_record.force_preimages,
-            canonical_upgrade_tx_hash: rebuild.replay_record.canonical_upgrade_tx_hash,
             starting_cursors: next_cursors,
             interop_roots_per_block: self.config.interop_roots_per_block,
             strict_subpool_cleanup: false,
@@ -584,6 +611,14 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             next_cursors.interop_fee_number = last_interop_fee_number + 1;
         }
 
+        let proving_version = ProvingVersion::try_from(replay_record.protocol_version.clone())
+            .context("canonical block has an unsupported proving version")?;
+        self.interop_companion_proving_version = next_interop_companion_state(
+            self.interop_companion_proving_version,
+            proving_version,
+            block_contains_interop_bundle(block_output),
+        );
+
         self.fee_provider.on_canonical_state_change(replay_record);
         self.last_block = Some(LastBlock {
             record: replay_record.clone(),
@@ -592,6 +627,44 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         });
         Ok(())
     }
+}
+
+/// SYSCOIN: One later canonical block at the same proving version satisfies the previous bundle's
+/// companion requirement. A consecutive bundle satisfies the previous one and arms exactly one
+/// new tail. Security/protocol upgrades retain absolute priority: crossing a proving-version
+/// boundary expires an impossible old-version tail. Replaying the same canonical outputs therefore
+/// reconstructs this state without a second database or protocol schema.
+fn next_interop_companion_state(
+    pending: Option<ProvingVersion>,
+    current: ProvingVersion,
+    current_contains_bundle: bool,
+) -> Option<ProvingVersion> {
+    if let Some(expected) = pending {
+        if expected != current {
+            tracing::warn!(
+                ?expected,
+                ?current,
+                "expiring interop FRI companion at proving-version boundary; protocol upgrade retains priority"
+            );
+        }
+    }
+    current_contains_bundle.then_some(current)
+}
+
+/// SYSCOIN: Runtime topology predicate used to keep the zero/zero fallback off direct-L1 chains.
+fn settles_on_gateway(current_sl_chain_id: u64, l1_chain_id: u64) -> bool {
+    current_sl_chain_id != l1_chain_id
+}
+
+/// SYSCOIN: Arms a one-shot empty-companion deadline only where Gateway settlement structurally
+/// rules out Era's L1-only priority mode.
+fn interop_companion_empty_deadline(
+    pending: Option<ProvingVersion>,
+    settles_on_gateway: bool,
+    now: Instant,
+    delay: Duration,
+) -> Option<Instant> {
+    (pending.is_some() && settles_on_gateway).then(|| now + delay)
 }
 
 pub fn millis_since_epoch() -> u128 {
@@ -641,7 +714,7 @@ where
 }
 
 // SYSCOIN: full upgrade transactions can be valid at the current protocol version on a fresh
-// v31 genesis start; patch-only equal/lower metadata should remain skippable.
+// V32 genesis start; patch-only equal/lower metadata should remain skippable.
 fn should_apply_upgrade_metadata(
     upgrade_metadata: &UpgradeMetadata,
     current_protocol_version: &ProtocolSemanticVersion,
@@ -717,6 +790,7 @@ fn validate_next_replay_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::B256;
 
     fn block_context(block_number: u64, timestamp: u64, block_hashes: BlockHashes) -> BlockContext {
         BlockContext {
@@ -747,10 +821,9 @@ mod tests {
             Vec::new(),
             previous_block_timestamp,
             semver::Version::new(0, 0, 0),
-            ProtocolSemanticVersion::new(0, 31, 0),
+            ProtocolSemanticVersion::new(0, 32, 0),
             B256::ZERO,
             Vec::new(),
-            B256::ZERO,
             Default::default(),
         )
     }
@@ -760,13 +833,12 @@ mod tests {
             timestamp: 0,
             protocol_version,
             force_preimages: Vec::new(),
-            canonical_tx_hash: B256::ZERO,
         }
     }
 
     #[test]
     fn applies_equal_version_full_upgrade_metadata() {
-        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
         let upgrade_metadata = upgrade_metadata(current_protocol_version.clone());
 
         assert!(should_apply_upgrade_metadata(
@@ -778,7 +850,7 @@ mod tests {
 
     #[test]
     fn skips_equal_version_patch_upgrade_metadata() {
-        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
         let upgrade_metadata = upgrade_metadata(current_protocol_version.clone());
 
         assert!(!should_apply_upgrade_metadata(
@@ -790,14 +862,56 @@ mod tests {
 
     #[test]
     fn applies_newer_patch_upgrade_metadata() {
-        let current_protocol_version = ProtocolSemanticVersion::new(0, 31, 0);
-        let upgrade_metadata = upgrade_metadata(ProtocolSemanticVersion::new(0, 31, 1));
+        let current_protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let upgrade_metadata = upgrade_metadata(ProtocolSemanticVersion::new(0, 32, 1));
 
         assert!(should_apply_upgrade_metadata(
             &upgrade_metadata,
             &current_protocol_version,
             false,
         ));
+    }
+
+    #[test]
+    fn interop_companion_state_is_replay_deterministic() {
+        let version = ProvingVersion::V8;
+
+        let pending = next_interop_companion_state(None, version, true);
+        assert_eq!(pending, Some(version));
+
+        let cleared = next_interop_companion_state(pending, version, false);
+        assert_eq!(cleared, None);
+
+        // A consecutive bundle is the previous bundle's companion and creates one new tail.
+        let rearmed = next_interop_companion_state(pending, version, true);
+        assert_eq!(rearmed, Some(version));
+    }
+
+    #[test]
+    fn empty_companion_is_gated_off_for_direct_l1_settlement() {
+        // Era Committer rejects zero-L1 / zero-L2 batches while priority mode is active.
+        // Since activation can race a direct-L1 sequencer, only a Gateway-settled edge is
+        // structurally safe to synthesize an empty companion without a priority-mode watcher.
+        assert!(!settles_on_gateway(1, 1));
+        assert!(settles_on_gateway(270, 1));
+    }
+
+    #[test]
+    fn empty_companion_waits_for_configured_idle_grace() {
+        let now = Instant::now();
+        let delay = Duration::from_millis(250);
+        assert_eq!(
+            interop_companion_empty_deadline(Some(ProvingVersion::V8), true, now, delay),
+            Some(now + delay)
+        );
+        assert_eq!(
+            interop_companion_empty_deadline(Some(ProvingVersion::V8), false, now, delay),
+            None
+        );
+        assert_eq!(
+            interop_companion_empty_deadline(None, true, now, delay),
+            None
+        );
     }
 
     #[test]

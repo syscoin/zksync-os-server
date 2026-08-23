@@ -439,10 +439,10 @@ ZKSYS_L2_GAS_TANK_ADDRESS="$(
     --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
     --init-code "${gas_tank_init_code}"
 )"
-PUBLISHED_V7_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+PUBLISHED_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
 [ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
-  "${PUBLISHED_V7_GAS_TANK_ADDRESS}" ] || \
-  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the published V7 app value ${PUBLISHED_V7_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
+  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
+  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
 
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
@@ -512,7 +512,7 @@ zksys-l2-bootstrap: complete
 EOF
 
 # SYSCOIN: persist the already-attested gas-tank address so launchers can
-# validate deployment state against the published V7 app.
+# validate deployment state against the canonical app.
 # Resolve the target file with the same priority as the reader
 # (gl_zksys_gas_tank_from_edge_config): canonical contracts.yaml first, then
 # the zkstack-emitted contracts_<chain-id>.yaml layout.
@@ -553,7 +553,7 @@ l2["zksys_gas_tank_addr"] = address
 path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 PY
   echo "zksys-l2-bootstrap: updated ${zksys_contracts_yaml}: l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS}"
-  echo "zksys-l2-bootstrap: address matches the published V7 app binding"
+  echo "zksys-l2-bootstrap: address matches the canonical app binding"
 else
   echo "zksys-l2-bootstrap: warning: ${zksys_contracts_yaml} not found; set l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS} manually" >&2
 fi

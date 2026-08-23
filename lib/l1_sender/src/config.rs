@@ -36,7 +36,7 @@ pub struct L1SenderConfig<Input> {
     /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
     /// In pipelined mode this is the in-flight window size: the max number of
     /// submitted-but-not-yet-mined L1 transactions. Must not exceed the L1 node's
-    /// per-account pool cap (16 for both geth's blobpool and reth's default account slots).
+    /// per-account pool cap (16 for reth's default account slots).
     pub command_limit: usize,
 
     /// When true (default), transactions are submitted through a bounded in-flight window and
@@ -96,15 +96,9 @@ pub struct L1SenderFeeConfig {
     /// Max priority fee per gas we are willing to spend (in wei).
     pub max_priority_fee_per_gas_wei: u128,
 
-    /// Max fee per blob gas we are willing to spend (in wei).
-    pub max_fee_per_blob_gas_wei: u128,
-
     /// Multiplier applied to `max_fee_per_gas_wei` when forcing transaction resubmission.
     pub max_fee_per_gas_replacement_multiplier: f64,
 
     /// Multiplier applied to `max_priority_fee_per_gas_wei` when forcing transaction resubmission.
     pub max_priority_fee_per_gas_replacement_multiplier: f64,
-
-    /// Multiplier applied to `max_fee_per_blob_gas_wei` when forcing transaction resubmission.
-    pub max_fee_per_blob_gas_replacement_multiplier: f64,
 }

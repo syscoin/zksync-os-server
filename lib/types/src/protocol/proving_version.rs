@@ -10,8 +10,6 @@ use super::ProtocolSemanticVersion;
 #[derive(Debug, Clone, Copy, TryFromPrimitive, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ProvingVersion {
-    V6 = 6,
-    V7 = 7,
     V8 = 8,
 }
 
@@ -20,8 +18,8 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 
     fn try_from(version: ProtocolSemanticVersion) -> Result<Self, Self::Error> {
         match (version.major, version.minor, version.patch) {
-            (0, 30, 1) | (0, 30, 2) => Ok(ProvingVersion::V6),
-            (0, 31, 0) | (0, 31, 1) => Ok(ProvingVersion::V7),
+            // SYSCOIN: Use one canonical proving lane, matching upstream protocol V32:
+            // patched final zksync-os v0.4.0 with Airbender V8 / 100-bit parameters.
             (0, 32, 0) => Ok(ProvingVersion::V8),
             _ => Err(ProvingVersionError::UnsupportedVersion(version)),
         }
@@ -29,32 +27,23 @@ impl TryFrom<ProtocolSemanticVersion> for ProvingVersion {
 }
 
 impl ProvingVersion {
-    /// verification key hash generated from zksync-os v0.2.5, zksync-airbender v0.5.2 and zkos-wrapper v0.5.4
-    const V6_VK_HASH: &'static str =
-        "0x124ebcd537a1e1c152774dd18f67660e35625bba0b669bf3b4836d636b105337";
-
-    /// Verification key hash generated from the Syscoin zksync-os v0.3.2 portable SLH-DSA
-    /// multiblock proving binary.
-    const V7_VK_HASH: &'static str =
-        "0x54bcb6abdcb4c8d8e088cc9f2ea9cc3505a8187a45b69e19e830590df6c9b0df";
-
-    /// verification key hash generated from zksync-airbender v0.6.0-rc.2 and zkos-wrapper
-    /// v0.6.0-rc.2; matches the V8 entry in zksync-airbender-prover.
-    /// App-SPECIFIC: the SNARK wrapper runs with `check_aux_params`, constraining the FRI
-    /// proof's registers 18..=25 to the app program's commitment in-circuit, so the VK
-    /// binds `multiblock_batch.bin` (md5 31cb9cb3b42d4a183fb858594eeb8706, built from the
-    /// zksync-os v0.4.0 release tag) and must be regenerated whenever that binary changes.
-    /// **100-bit security**: the level selects the `*_security_100_bits` recursion verifier
-    /// binaries and so changes the recursion chain; the 80-bit hash for the same binary is a
-    /// different value and is not interchangeable with this one.
+    /// SYSCOIN: Fail-closed sentinel until external security-100 keygen binds the canonical
+    /// Syscoin app. The stock upstream V8 hash is deliberately not accepted: it binds a
+    /// different program. Replace this value atomically with the generated Era verifier
+    /// artifacts before enabling real proving.
     const V8_VK_HASH: &'static str =
-        "0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a";
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
+    const V8_VK_REGENERATION_REQUIRED: bool = true;
+
+    pub const fn requires_vk_regeneration(&self) -> bool {
+        match self {
+            Self::V8 => Self::V8_VK_REGENERATION_REQUIRED,
+        }
+    }
 
     /// Get the verification key hash associated with this execution version.
     pub fn vk_hash(&self) -> &'static str {
         match self {
-            Self::V6 => Self::V6_VK_HASH,
-            Self::V7 => Self::V7_VK_HASH,
             Self::V8 => Self::V8_VK_HASH,
         }
     }
@@ -62,8 +51,6 @@ impl ProvingVersion {
     /// Try to get ExecutionVersion from verification key hash.
     pub fn try_from_vk_hash(vk_hash: &str) -> Result<Self, ProvingVersionError> {
         match vk_hash {
-            Self::V6_VK_HASH => Ok(Self::V6),
-            Self::V7_VK_HASH => Ok(Self::V7),
             Self::V8_VK_HASH => Ok(Self::V8),
             val => Err(ProvingVersionError::UnsupportedVkHash(val.to_string())),
         }
@@ -85,13 +72,7 @@ mod tests {
 
     #[test]
     fn version_mapping() {
-        let test_vector = [
-            ((0, 30, 1), ProvingVersion::V6),
-            ((0, 30, 2), ProvingVersion::V6),
-            ((0, 31, 0), ProvingVersion::V7),
-            ((0, 31, 1), ProvingVersion::V7),
-            ((0, 32, 0), ProvingVersion::V8),
-        ];
+        let test_vector = [((0, 32, 0), ProvingVersion::V8)];
 
         for ((major, minor, patch), expected) in test_vector.iter() {
             let version = ProtocolSemanticVersion::new(*major, *minor, *patch);
@@ -103,7 +84,11 @@ mod tests {
         let unknown_versions = [
             (0, 29, 1),
             (0, 30, 0),
+            (0, 30, 1),
+            (0, 30, 2),
             (0, 30, 3),
+            (0, 31, 1),
+            (0, 31, 2),
             (0, 32, 1),
             (0, 33, 0),
             (1, 30, 1),
@@ -122,11 +107,7 @@ mod tests {
 
     #[test]
     fn vk_hash_mapping() {
-        let test_vector = [
-            (ProvingVersion::V6, ProvingVersion::V6_VK_HASH),
-            (ProvingVersion::V7, ProvingVersion::V7_VK_HASH),
-            (ProvingVersion::V8, ProvingVersion::V8_VK_HASH),
-        ];
+        let test_vector = [(ProvingVersion::V8, ProvingVersion::V8_VK_HASH)];
 
         for (proving_version, expected_vk_hash) in test_vector.iter() {
             let vk_hash = proving_version.vk_hash();
@@ -145,5 +126,10 @@ mod tests {
             proving_version,
             Err(ProvingVersionError::UnsupportedVkHash(_))
         ));
+    }
+
+    #[test]
+    fn canonical_v8_vk_is_explicitly_blocked_until_keygen() {
+        assert!(ProvingVersion::V8.requires_vk_regeneration());
     }
 }

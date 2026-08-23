@@ -215,6 +215,7 @@ pub(super) async fn submit_fri_proof(
         Err(SubmitError::DeserializationFailed(err)) => {
             Err((StatusCode::BAD_REQUEST, err.to_string()))
         }
+        Err(SubmitError::InvalidProofShape(err)) => Err((StatusCode::BAD_REQUEST, err)),
         Err(SubmitError::ShuttingDown) => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "server is shutting down".to_string(),
@@ -433,7 +434,7 @@ pub(super) async fn peek_snark_job(
     })
     .into_response()
 }
-// SYSCOIN
+// SYSCOIN: Expose each proving stage independently for remote fleet monitoring.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(super) enum StatusStage {

@@ -51,7 +51,7 @@ impl<Ok> ToRpcResult<Ok, EthError> for Result<Ok, EthError> {
             EthError::BlockNotFound(_)
             | EthError::NonceMaxValue
             | EthError::InvalidRewardPercentiles
-            // SYSCOIN
+            // SYSCOIN:
             | EthError::PageSizeTooLarge { .. } => invalid_params_rpc_err(err.to_string()),
             EthError::RpcStorage(RpcStorageError::BlockNotFound(_)) => {
                 invalid_params_rpc_err(err.to_string())
