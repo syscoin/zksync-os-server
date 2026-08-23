@@ -582,7 +582,14 @@ impl<T: Clone> ProverJobMap<T> {
 mod tests {
     use super::*;
     use crate::prover_api::metrics::ProverStage;
+    // SYSCOIN: these fixtures exercise downstream upgrade-hash and compact edge-DA metadata.
+    use alloy::primitives::{Address, B256};
     use std::time::Duration;
+    use zksync_os_batch_types::PendingBatchInfo;
+    use zksync_os_batch_types::batcher_model::BatchForSigning;
+    use zksync_os_contract_interface::models::{
+        CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
+    };
     use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion, PubdataMode};
 
     fn create_test_batch_envelope(batch_number: u64) -> SignedBatchEnvelope<Vec<u8>> {
@@ -606,7 +613,9 @@ mod tests {
     ) -> SignedBatchEnvelope<Vec<u8>> {
         create_test_batch_envelope_with_protocol_version_and_upgrade(
             batch_number,
-            ProtocolSemanticVersion::legacy_genesis_version(),
+            // SYSCOIN: synthetic jobs must use the fresh-chain V8 proving lane; the legacy
+            // genesis version intentionally has no proving-version mapping.
+            ProtocolSemanticVersion::new(0, 32, 0),
             upgrade_tx_hash,
         )
     }

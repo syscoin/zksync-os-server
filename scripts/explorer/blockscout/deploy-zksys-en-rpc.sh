@@ -735,7 +735,6 @@ for instance in (public, debug):
     lines = [
         "general:",
         "  node_role: external",
-        "  state_backend: FullDiffs",
         f"  main_node_rpc_url: {q(main_node_rpc_url)}",
         f"  rocks_db_path: {db_dir}",
         "  run_priority_tree: true",

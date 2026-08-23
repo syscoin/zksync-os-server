@@ -17226,7 +17226,6 @@ dependencies = [
  "zksync_os_rocksdb",
  "zksync_os_rpc_api",
  "zksync_os_server",
- "zksync_os_state_full_diffs",
  "zksync_os_status_server",
  "zksync_os_storage",
  "zksync_os_storage_api",
@@ -17963,32 +17962,12 @@ dependencies = [
  "zksync_os_rpc",
  "zksync_os_rpc_api",
  "zksync_os_sequencer",
- "zksync_os_state",
  "zksync_os_state_full_diffs",
  "zksync_os_status_server",
  "zksync_os_storage",
  "zksync_os_storage_api",
  "zksync_os_tx_validators",
  "zksync_os_types",
-]
-
-[[package]]
-name = "zksync_os_state"
-version = "0.22.0"
-dependencies = [
- "alloy",
- "anyhow",
- "dashmap 6.2.1",
- "forward_system 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.2-interface-v0.1.3)",
- "ruint",
- "tokio",
- "tracing",
- "vise",
- "zk_ee 0.1.0 (git+https://github.com/matter-labs/zksync-os?tag=v0.3.2-interface-v0.1.3)",
- "zksync_os_genesis",
- "zksync_os_interface",
- "zksync_os_rocksdb",
- "zksync_os_storage_api",
 ]
 
 [[package]]

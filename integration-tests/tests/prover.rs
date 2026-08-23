@@ -1,9 +1,11 @@
 #![cfg(feature = "prover-tests")]
 
-use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, V30_TO_L1, test_multisetup};
+use zksync_os_integration_tests::{
+    CURRENT_TO_L1, SettlementLayer, TestCase, TestEnvironment, V30_TO_L1, test_multisetup,
+};
 
 #[test_multisetup([CURRENT_TO_L1, V30_TO_L1])]
-async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
+async fn prover(test_case: TestCase, env: TestEnvironment) -> anyhow::Result<()> {
     // Test that prover can successfully prove at least one batch
     let mut config = env.default_config().await?;
     config.prover_api_config.fake_fri_provers.enabled = false;
@@ -11,6 +13,7 @@ async fn prover(env: TestEnvironment) -> anyhow::Result<()> {
     config.prover_input_generator_config.logging_enabled = true;
     let tester = env.launch(config).await?;
 
+    // SYSCOIN: preserve the Gateway proof assertion when this matrix regains a Gateway fixture.
     if matches!(test_case.settlement_layer, SettlementLayer::Gateway) {
         // Gateway comes with a pre-baked state and some batches are already fake-proven there.
         // So we expect the next batch to be proven with real flow.
