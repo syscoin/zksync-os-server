@@ -60,7 +60,8 @@ tower-http = { workspace = true, features = ["cors"] }
 governor.workspace = true
 hyper.workspace = true
 
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.13" }
+# SYSCOIN: Share the fail-closed v0.1.13 Blake2s Bitcoin DA client pinned by the batcher.
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "23de0d4ff35dd448b86216e78d2c87e86e0e4a5b" }
 
 boa_engine.workspace = true
 boa_gc.workspace = true
