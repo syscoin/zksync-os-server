@@ -1,7 +1,8 @@
 use super::MAX_BLOCKS_PER_MESSAGE;
 use super::ProtocolEvent;
 use super::config::ExternalNodeProtocolConfig;
-use super::connection::OutboundMessage;
+// SYSCOIN: EN replay publication is gated by the exact accepted connection lifecycle.
+use super::connection::{OutboundMessage, ReplayConnectionLifecycle};
 use crate::version::ZksProtocolVersionSpec;
 use crate::wire::message::ZksMessage;
 use crate::wire::replays::{RecordOverride, WireReplayRecord};
@@ -21,15 +22,19 @@ use zksync_os_storage_api::ReplayRecord;
 ///
 /// SYSCOIN: once the replay request is out, the connection has a progress timeout: if no valid
 /// replay record is forwarded within `replay_inactivity_timeout` (or the message stream terminates
-/// while the RLPx session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted so the
-/// service can disconnect the peer and let a fresh session re-request replays. Ignored or empty
-/// messages do not count as progress and cannot keep a stalled connection alive.
+/// while the RLPx session stays up), a [`ProtocolEvent::ReplayStreamStalled`] is emitted for
+/// observability and this exact mandatory wrapper closes, letting a fresh session re-request
+/// replays. Unexpected typed messages close immediately; empty responses do not count as progress
+/// and cannot keep a stalled connection alive. SYSCOIN: Recovery never uses a delayed PeerId-wide
+/// disconnect that could hit a reconnect.
 pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
     conn: impl Stream<Item = ZksMessage<P>> + Unpin,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     events_sender: mpsc::UnboundedSender<ProtocolEvent>,
     peer_id: PeerId,
     config: ExternalNodeProtocolConfig,
+    // SYSCOIN: Exact lifecycle is present for production and omitted only by direct unit tests.
+    mut lifecycle: Option<&mut ReplayConnectionLifecycle>,
 ) {
     let ExternalNodeProtocolConfig {
         starting_block,
@@ -63,6 +68,12 @@ pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
     {
         return;
     }
+    // SYSCOIN: The EN must initiate replay (and verifier auth), but sending alone is not mutual
+    // acceptance proof. Start 2FA now and defer replay lifecycle until the first MN response.
+    if let Some(lifecycle) = lifecycle.as_deref_mut() {
+        lifecycle.activate_twofa();
+    }
+    // SYSCOIN: Carry exact lifecycle proof state into all stream termination paths.
     receive_replays(
         conn,
         starting_block,
@@ -70,6 +81,8 @@ pub(super) async fn run_en_connection<P: ZksProtocolVersionSpec>(
         events_sender,
         peer_id,
         replay_inactivity_timeout,
+        // SYSCOIN: Preserve exact owner proof through the receive loop.
+        lifecycle,
     )
     .await;
 }
@@ -93,6 +106,7 @@ async fn send_replay_request<P: ZksProtocolVersionSpec>(
         .map_err(|_| ())
 }
 
+// SYSCOIN: Production supplies exact lifecycle state; direct unit tests may omit it.
 async fn receive_replays<P: ZksProtocolVersionSpec>(
     mut conn: impl Stream<Item = ZksMessage<P>> + Unpin,
     starting_block: Arc<RwLock<BlockNumber>>,
@@ -100,6 +114,8 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
     events_sender: mpsc::UnboundedSender<ProtocolEvent>,
     peer_id: PeerId,
     inactivity_timeout: Duration,
+    // SYSCOIN: The token owner distinguishes mutual replay from a crossed tentative stream.
+    mut lifecycle: Option<&mut ReplayConnectionLifecycle>,
 ) {
     let report_stalled = || {
         let next_block = *starting_block.read().unwrap();
@@ -132,14 +148,30 @@ async fn receive_replays<P: ZksProtocolVersionSpec>(
             // still be alive; report a stall so the session gets torn down instead of lingering
             // half-dead with no replay flow.
             tracing::info!("replay message stream ended; reporting stall");
-            report_stalled();
+            // SYSCOIN: A crossed simultaneous dial ends before any MN response and never became a
+            // mutual replay session. Its mandatory wrapper already closes RLPx; do not emit a stale
+            // PeerId-only stall that could disconnect a replacement.
+            if lifecycle
+                .as_deref()
+                .is_none_or(ReplayConnectionLifecycle::is_established)
+            {
+                report_stalled();
+            }
             return;
         };
         match msg {
             ZksMessage::GetBlockReplays(_) => {
-                tracing::info!("ignoring request as local node is also waiting for records");
+                // SYSCOIN: Same-role traffic is a typed protocol fault. Close this exact mandatory
+                // wrapper immediately instead of letting a trusted peer retain it until timeout.
+                tracing::warn!("received replay request while waiting for records; terminating");
+                report_stalled();
+                return;
             }
             ZksMessage::BlockReplays(response) => {
+                // SYSCOIN: Any well-typed replay response proves the MN retained this same stream.
+                if let Some(lifecycle) = lifecycle.as_deref_mut() {
+                    lifecycle.establish();
+                }
                 for record in response.records {
                     let block_number = record.block_number();
                     tracing::debug!(block_number, "received block replay");
@@ -224,6 +256,7 @@ mod tests {
             events_tx,
             peer_id,
             config,
+            None,
         ));
         (
             task,
@@ -322,7 +355,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn ignored_replay_request_does_not_reset_inactivity_timeout() {
+    async fn unexpected_replay_request_terminates_immediately() {
         let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
         let conn = Box::pin(futures::stream::poll_fn(move |cx| msg_rx.poll_recv(cx)));
         let (task, mut handles) = run_test_en_connection(conn);
@@ -339,12 +372,9 @@ mod tests {
             .send(ZksMessage::get_block_replays(1, Some(64), vec![]))
             .expect("connection task must still be reading");
         tokio::task::yield_now().await;
-
-        tokio::time::advance(Duration::from_millis(301)).await;
-        tokio::task::yield_now().await;
         assert!(
             task.is_finished(),
-            "an ignored request must not extend the progress deadline"
+            "same-role replay traffic must close without waiting for inactivity"
         );
         task.await.expect("connection task must finish on its own");
         assert_matches!(
@@ -394,7 +424,8 @@ mod tests {
     #[tokio::test]
     async fn stream_end_emits_stalled_event() {
         // A decode error terminates the message stream while the RLPx session stays up; the EN
-        // must report the stall so the session gets torn down instead of lingering half-dead.
+        // must report the stall and return so its exact mandatory wrapper closes instead of
+        // lingering half-dead or disconnecting a replacement by PeerId.
         let conn = futures::stream::empty::<ZksMessage<ZksProtocolV5>>();
         let (task, mut handles) = run_test_en_connection(conn);
 

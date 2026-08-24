@@ -31,7 +31,7 @@ Required env:
   L1_RPC_URL=http(s)://...  (HTTP(S) only)
 
 Optional env:
-  GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for os-server historical startup reads (defaults to L1_RPC_URL)
+  GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for startup history and settlement proofs (defaults to L1_RPC_URL)
   BITCOIN_DA_MIN_BALANCE_SYS    target DA wallet balance, default 10 on Tanenbaum, 0 on mainnet
   PROTOCOL_VERSION             default v32.0
   GATEWAY_DIR                  default ~/gateway

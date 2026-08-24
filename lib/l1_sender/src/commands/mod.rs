@@ -83,6 +83,10 @@ pub trait SendToL1:
     /// We use `Bytes` instead of `SolCall`, because SolCall is a trait that cannot be dyn
     fn solidity_call(&self, gateway: bool, operator: &Address) -> Bytes;
 
+    // SYSCOIN: Proof commands use this post-confirmation hook to retire a node-local durable
+    // wrapper journal. Other upstream command types have no durable handoff and remain no-op.
+    fn notify_confirmed(&self) {}
+
     /// Only used for logging - as we send commands in bulk, it's natural to print a single range
     /// for the whole group, e.g. "1-3, 4, 5-6" instead of "1, 2, 3, 4, 5, 6"
     /// Note that one `L1SenderCommand` is still always a single L1 transaction.

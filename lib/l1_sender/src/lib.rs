@@ -692,6 +692,9 @@ where
                     .observe(submitted_at.elapsed().as_secs_f64());
                 let receipt = receipt?;
                 self.validate_tx_receipt(&command, receipt).await?;
+                // SYSCOIN: A validated depth-confirmed prove receipt makes its local wrapper
+                // journal redundant. Notification failure deliberately leaves the record intact.
+                command.notify_confirmed();
                 completed.push(command);
             }
             anyhow::Ok(completed)
@@ -728,7 +731,11 @@ where
 
     pub(crate) fn wait_for_confirmed_receipt(&self, tx_hash: B256) -> TransactionReceiptFuture {
         let provider = self.provider.clone();
-        let required_confirmations = self.config.required_confirmations;
+        // SYSCOIN: Startup journal recovery uses this exact inclusive depth policy too; keep the
+        // arithmetic centralized so zero/one-confirmation deployments cannot drift.
+        let confirmation_policy =
+            config::ConfirmationPolicy::new(self.config.required_confirmations);
+        let required_confirmations = confirmation_policy.required_confirmations();
         let timeout = self.config.transaction_timeout;
         let poll_interval = self.config.poll_interval;
         async move {
@@ -761,9 +768,7 @@ where
                     let receipt_block_number = receipt
                         .block_number
                         .context("transaction receipt missing block number")?;
-                    let confirmed_at = receipt_block_number
-                        .saturating_add(required_confirmations.saturating_sub(1));
-                    if latest_block >= confirmed_at {
+                    if confirmation_policy.is_confirmed(receipt_block_number, latest_block) {
                         return Ok(receipt.clone());
                     }
                 }
@@ -774,8 +779,8 @@ where
                 {
                     let receipt_block_number =
                         receipt.as_ref().and_then(|receipt| receipt.block_number);
-                    let confirmed_at = receipt_block_number
-                        .map(|block| block + required_confirmations.saturating_sub(1));
+                    let confirmed_at =
+                        receipt_block_number.map(|block| confirmation_policy.confirmed_at(block));
                     tracing::warn!(
                         "Still waiting for L1 transaction confirmation for tx {tx_hash}. \
                  required_confirmations={required_confirmations}, \

@@ -426,13 +426,29 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
         Ok(())
     }
 
-    async fn handle_verification_message(
-        &self,
-        request: VerifyBatch,
-    ) -> Result<VerifyBatchResult, anyhow::Error> {
+    async fn handle_verification_message(&self, request: VerifyBatch) -> VerifyBatchResult {
         let request_id = request.request_id;
         let batch_number = request.batch_number;
-        let request = VerificationRequest::try_from(request)?;
+        // SYSCOIN: A malformed peer request is one bounded refusal, not a responder-wide error.
+        // Keep the diagnostic local so the same authenticated lane can process its next request.
+        let request = match VerificationRequest::try_from(request) {
+            Ok(request) => request,
+            Err(error) => {
+                BATCH_VERIFICATION_RESPONDER_METRICS
+                    .record_request_failure(request_id, batch_number);
+                tracing::warn!(
+                    %error,
+                    request_id,
+                    batch_number,
+                    "refusing malformed batch verification request"
+                );
+                return VerifyBatchResult {
+                    request_id,
+                    batch_number,
+                    result: VerifyBatchOutcome::Refused("invalid verification request".to_owned()),
+                };
+            }
+        };
         let result = match self.handle_verification_request(request).await {
             Ok(signature) => {
                 BATCH_VERIFICATION_RESPONDER_METRICS
@@ -442,14 +458,17 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
             Err(reason) => {
                 BATCH_VERIFICATION_RESPONDER_METRICS
                     .record_request_failure(request_id, batch_number);
-                VerifyBatchOutcome::Refused(reason.to_string())
+                // SYSCOIN: Every refusal producer shares the wire's exact UTF-8-safe byte ceiling.
+                VerifyBatchOutcome::Refused(zksync_os_network::bounded_verify_batch_refusal_reason(
+                    reason.to_string(),
+                ))
             }
         };
-        Ok(VerifyBatchResult {
+        VerifyBatchResult {
             request_id,
             batch_number,
             result,
-        })
+        }
     }
 }
 
@@ -501,12 +520,16 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone> PipelineCompon
                     };
                     state_reporter.enter_state(GenericComponentState::Active);
                     let peer_id = request.peer_id;
+                    // SYSCOIN: Echo the exact EN connection generation so delayed work cannot
+                    // cross into a replacement lane for the same RLPx peer identity.
+                    let lane_id = request.lane_id;
                     let request_id = request.message.request_id;
                     let batch_number = request.message.batch_number;
-                    let result = self.handle_verification_message(request.message).await?;
+                    let result = self.handle_verification_message(request.message).await;
                     tracing::info!(%peer_id, request_id, batch_number, "handled batch verification request");
                     let _ = self.outgoing_verify_results.send(PeerVerifyBatchResult {
                         peer_id,
+                        lane_id,
                         message: result,
                     });
                 }
@@ -785,6 +808,70 @@ mod tests {
         ));
     }
 
+    // SYSCOIN: A malformed wire request receives one generic bounded refusal and cannot terminate
+    // the authenticated responder; a subsequent structurally valid request is still processed.
+    #[tokio::test]
+    async fn malformed_request_is_refused_and_same_responder_continues() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tree = MerkleTree::new(RocksDBWrapper::new(temp_dir.path()).unwrap()).unwrap();
+        let read_state = MemoryStateHistory {
+            view: MemoryStateView {
+                storage: Arc::new(HashMap::new()),
+                preimages: Arc::new(HashMap::new()),
+            },
+            block_range: 0..=1,
+        };
+        let (_verify_request_tx, verify_request_rx) = mpsc::channel(1);
+        let (outgoing_verify_results, _) = broadcast::channel(1);
+        let responder = BatchVerificationResponder::new(
+            CHAIN_ID,
+            DIAMOND_PROXY_SL,
+            SecretString::from(PRIVATE_KEY.to_owned()),
+            None,
+            DummyFinality::zero(),
+            test_l1_state().await,
+            Address::ZERO,
+            read_state,
+            tree,
+            verify_request_rx,
+            outgoing_verify_results,
+        );
+
+        let commit_info = dummy_commit_batch_info(BATCH_NUMBER, 1, 1);
+        let previous_info = dummy_batch_metadata(BATCH_NUMBER, 1, 1).previous_stored_batch_info;
+        let request = VerifyBatch {
+            request_id: REQUEST_ID,
+            batch_number: BATCH_NUMBER,
+            first_block_number: 1,
+            last_block_number: 1,
+            // A direct-L1 responder expects Blobs, making this validly decoded follow-up a cheap
+            // deterministic policy refusal before any state or DA work.
+            pubdata_mode: PubdataMode::RelayedL2Calldata.to_u8(),
+            commit_data: IExecutor::CommitBatchInfoZKsyncOS::from(commit_info)
+                .abi_encode()
+                .into(),
+            prev_commit_data: IExecutor::StoredBatchInfo::from(&previous_info)
+                .abi_encode()
+                .into(),
+            execution_protocol_version: 32,
+        };
+
+        let mut malformed = request.clone();
+        malformed.commit_data = Bytes::new();
+        let malformed_result = responder.handle_verification_message(malformed).await;
+        assert!(matches!(
+            malformed_result.result,
+            VerifyBatchOutcome::Refused(reason) if reason == "invalid verification request"
+        ));
+
+        let follow_up = responder.handle_verification_message(request).await;
+        assert!(matches!(
+            follow_up.result,
+            VerifyBatchOutcome::Refused(reason)
+                if reason.contains("Non-canonical pubdata mode for settlement topology")
+        ));
+    }
+
     #[tokio::test]
     #[ignore = "requires the regenerated canonical v32.0/V8 genesis state"]
     async fn v8_verifier_approves_batch_built_from_native_run() {
@@ -851,8 +938,7 @@ mod tests {
         wrong_topology_request.pubdata_mode = PubdataMode::RelayedL2Calldata.to_u8();
         let wrong_topology_result = responder
             .handle_verification_message(wrong_topology_request)
-            .await
-            .unwrap();
+            .await;
         assert!(matches!(
             wrong_topology_result.result,
             VerifyBatchOutcome::Refused(reason)
@@ -860,10 +946,7 @@ mod tests {
         ));
 
         responder.l1_state.da_input_mode = BatchDaInputMode::Validium;
-        let validium_result = responder
-            .handle_verification_message(request.clone())
-            .await
-            .unwrap();
+        let validium_result = responder.handle_verification_message(request.clone()).await;
         assert!(matches!(
             validium_result.result,
             VerifyBatchOutcome::Refused(reason)
@@ -880,8 +963,7 @@ mod tests {
                 .into();
         let non_contiguous_result = responder
             .handle_verification_message(non_contiguous_request)
-            .await
-            .unwrap();
+            .await;
         assert!(matches!(
             non_contiguous_result.result,
             VerifyBatchOutcome::Refused(reason)
@@ -904,18 +986,14 @@ mod tests {
                 .into();
         let wrong_previous_state_result = responder
             .handle_verification_message(wrong_previous_state_request)
-            .await
-            .unwrap();
+            .await;
         assert!(matches!(
             wrong_previous_state_result.result,
             VerifyBatchOutcome::Refused(reason)
                 if reason.contains("Previous state commitment mismatch")
         ));
 
-        let result = responder
-            .handle_verification_message(request)
-            .await
-            .unwrap();
+        let result = responder.handle_verification_message(request).await;
 
         assert_eq!(result.request_id, REQUEST_ID);
         assert_eq!(result.batch_number, BATCH_NUMBER);

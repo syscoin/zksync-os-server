@@ -157,11 +157,16 @@ export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet --migrate-edge
 ```
 
+<!-- SYSCOIN: Keep historical startup and settlement-proof authentication on the configured
+archive trust boundary instead of silently falling back to a potentially pruned live provider. -->
 `L1_RPC_URL` is written as the normal OS-server L1 provider and can point at the
 local sysgeth used for live traffic. `GATEWAY_ARCHIVE_L1_RPC_URL` is written as
-the archive L1 provider used only for historical committed-batch startup reads;
-point it at an archive-capable Syscoin L1 RPC unless the local `L1_RPC_URL` node
-was synced in archive mode from genesis.
+the archive L1 provider used for historical committed-batch startup reads and
+hash-pinned Gateway-to-L1 settlement-proof authentication. Point it at an
+archive-capable Syscoin L1 RPC unless the local `L1_RPC_URL` node was synced in
+archive mode from genesis. When this archive URL is configured, historical
+proof reads fail closed on that endpoint rather than retrying against the live
+provider; the live provider is the fallback only when no archive is configured.
 
 Do not pass production private keys as raw command-line arguments. Import the
 launch signer into Foundry's keystore first with
@@ -450,11 +455,47 @@ Then start Airbender provers with a credentialed HTTPS sequencer URL, for
 example `https://syscoin-prover:...@prover-gw.dev11.top` for Gateway and
 `https://syscoin-prover:...@prover-zk.dev11.top` for zksys.
 
-Generated configs bind the prover API to `127.0.0.1` by default. If you need
-direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
-when generating configs and give provers a URL such as
-`http://syscoin-prover:...@node-host:3124`. This is not recommended over the
-public internet because Basic Auth is not encrypted without HTTPS.
+<!-- SYSCOIN: Remote prover admission requires an explicit protected transport boundary. -->
+Generated configs bind the prover API to `127.0.0.1` by default. A non-loopback
+plaintext bind now fails closed even when Basic Auth is configured. For an
+isolated private container network only, explicitly set both
+`PROVER_API_BIND_HOST=0.0.0.0` and `ALLOW_INSECURE_PROVER_HTTP=true`; the
+Airbender worker also requires `--allow-insecure-sequencer-http`. Never use
+that override on the public internet: Basic credentials, live lease
+capabilities, and proofs are not encrypted without HTTPS.
+
+### Prover restart recovery
+
+<!-- SYSCOIN: Operators must preserve the durable prover authority while bounded recovery uses the
+protected worker surface before public node readiness. -->
+On a proving-node restart, expect the node to advance through
+`Recovering -> Drainable -> Ready`:
+
+1. `Recovering` reserves the prover address without listening while canonical committed metadata,
+   accepted-wrapper journal records, and their replay ownership are validated. Public node
+   readiness remains HTTP 503.
+2. `Drainable` opens only the loopback-protected or authenticated prover service, when that service
+   is enabled. Public readiness remains HTTP 503 while durable FRI files are fed in canonical order
+   through the bounded RAM job map and external Airbender or in-process fake workers drain them.
+3. `Ready` means every startup batch has a canonical classification and explicit owner or recovery
+   disposition. It does not require every recovered FRI to have completed SNARK wrapping; public
+   readiness may leave HTTP 503 only after this phase and the independent database gate are ready.
+
+The default `prover_api.max_assigned_batch_range: 256` is an in-memory operating-span bound. It
+does not need to cover the complete restart backlog: the configured proof-storage directory is the
+durable overflow queue, and recovery admits more work as workers free RAM-map capacity.
+
+Preserve each chain's complete configured `prover_api.proof_storage.path` across ordinary restarts,
+including its `snark_journal` subdirectory. Back up and restore that tree as one unit; do not delete
+FRI files to force readiness or restore the journal without its companion proof storage. Do not
+change `PROVER_MODE`, the effective `GATEWAY_PROVER_MODE`, or the underlying fake-prover flags while
+retaining this chain and recovery state. Clearing launcher checkpoints alone is not a proving-mode
+migration.
+
+Recovery fails closed instead of publishing `Ready` when canonical metadata or ownership is
+inconsistent, a future non-V32 proving-version boundary is unsupported, or a real singleton can
+never acquire a compatible companion. A normal V32 tail singleton remains pending for its next
+canonical same-version batch.
 
 If the explorer runs on a separate host, keep sequencer/node RPC bound locally
 or behind the host reverse proxy and allowlist only the explorer server's public
@@ -595,24 +636,28 @@ If the script cannot raise the limit high enough, increase the shell / service h
 
 ## Important env vars
 
+<!-- SYSCOIN: Generated prover settings separate durable restart overflow from bounded resident
+work and bind recovery to one verifier mode. -->
+
 | Variable | Purpose |
 |---|---|
 | `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint used for broadcasts (expected: local Syscoin node/proxy, e.g. `http://127.0.0.1:8545`) |
 | `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
 | `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
 | `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
-| `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
+| `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node startup/migration reads and historical settlement-proof authentication (if unset, falls back to `L1_RPC_URL`) |
 | `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; defaults to `127.0.0.1` so public access should go through HTTPS/VPN/reverse proxy termination |
+| `ALLOW_INSECURE_PROVER_HTTP` | Explicit isolated-network acknowledgement required with any generated non-loopback plaintext prover bind; never enable for public-internet traffic |
 | `GATEWAY_PROVER_API_DOMAIN` / `EDGE_PROVER_API_DOMAIN` | Hostnames for generated nginx prover API vhosts; defaults are `prover-gw.dev11.top` and `prover-zk.dev11.top` |
 | `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; generated configs require a password of at least 32 characters (use a URL-safe secret such as `openssl rand -hex 32`) |
-| `PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES` | Durable accepted-FRI storage cap; defaults to 8 GiB and cannot be lower in GPU mode so the 256-batch queue remains restart-recoverable |
+| `PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES` | Durable accepted-FRI overflow cap; defaults to 8 GiB and cannot be lower in GPU mode. Size it for the expected disk backlog independently of the `max_assigned_batch_range: 256` RAM-span bound. |
 | `FUNDER_SIGNER` | Funder signer backend: `account` (default on Tanenbaum/Mainnet), `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
 | `FUNDER_ACCOUNT_NAME` | Foundry keystore account name when `FUNDER_SIGNER=account` (default `funder`) |
 | `FUNDER_KEYSTORE` | Keystore file path when `FUNDER_SIGNER=keystore` |
 | `FUNDER_PASSWORD_FILE` | Optional keystore password file passed to Cast without exposing the password in argv |
 | `FUNDER_PRIVATE_KEY` | Local/disposable-network fallback for `FUNDER_SIGNER=private-key`; rejected on Tanenbaum/Mainnet by default |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
-| `PROVER_MODE` | `gpu` (default) or `no-proofs` |
+| `PROVER_MODE` | `gpu` (default) or `no-proofs`; do not change it across a restart that retains chain and proof-recovery state |
 | `SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER` | Explicit upgrade-script opt-in for retaining the zkOS type-3 mock wrapper; defaults to `false` and must never be set for production |
 | `PROTOCOL_VERSION` | Default `v32.0` |
 | `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
@@ -675,7 +720,8 @@ If the script cannot raise the limit high enough, increase the shell / service h
 - The membership registry mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. The L1 registry bridge derives each Sentry Node's seniority-weighted reward weight from raw Syscoin collateral age (`nNEVMStartBlock + block.number - collateralHeight`) and sends that final weight to L2. For mainnet, use effective post-NEVM seniority thresholds `210240` and `525600` blocks with levels `3500` and `10000` bps. Native SYS staking is handled by the L2 staking vault.
 - Reward weight increases are not active immediately: native SYS deposits, Sentry Node additions, and Sentry Node seniority increases are queued for `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` periods and require the account to call `activatePendingWeight()` after the delay. Weight decreases and removals apply immediately. This prevents a stake or Sentry weight increase submitted just before a period boundary from earning the completed period.
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.
-- If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf "${GATEWAY_DIR:-${HOME}/gateway}/.gateway-launch"`.
+<!-- SYSCOIN: Fake/real mode is part of durable prover recovery authority, not launcher cache state. -->
+- Do not switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) while retaining a chain's proof storage or journal. Clearing `$GATEWAY_DIR/.gateway-launch` is not sufficient; use an explicitly planned verifier/config/chain-state transition instead of treating a production restart as a fake/real mode change.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
 - For `v32.x`, launcher build/run commands copy the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrite only the `*_dev` `zksync-os` deps to the patched upstream checkout, and use that isolated workspace for Cargo.

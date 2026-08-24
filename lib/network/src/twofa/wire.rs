@@ -16,8 +16,21 @@ use reth_eth_wire::protocol::Protocol;
 use reth_network::types::Capability;
 
 pub const ZKS_2FA_PROTOCOL: &str = "zks_2fa";
+// SYSCOIN: zks_2fa/1 is unreleased pre-mainnet; its first released semantics will use the secure
+// V2 chain-and-peer-bound auth transcript. Keep capability v1 rather than inventing a compatibility
+// lane for draft behavior that was never deployed.
 pub(crate) const ZKS_2FA_PROTOCOL_VERSION: usize = 1;
 pub(crate) const ZKS_2FA_MESSAGE_COUNT: u8 = 5;
+
+// SYSCOIN: Reject each raw protocol frame by variant before any RLP decoder can allocate a peer-
+// declared Bytes/String payload. Control/auth/result frames remain tiny; VerifyBatch allows ample
+// headroom over the canonical V32 ABI (32 operator hashes, 32 compact DA refs, and stored-batch
+// data) without admitting an unbounded commit-data allocation.
+const MAX_VERIFIER_ROLE_REQUEST_FRAME_BYTES: usize = 8;
+const MAX_VERIFIER_CHALLENGE_FRAME_BYTES: usize = 64;
+const MAX_VERIFIER_AUTH_FRAME_BYTES: usize = 128;
+const MAX_VERIFY_BATCH_FRAME_BYTES: usize = 128 * 1024;
+const MAX_VERIFY_BATCH_RESULT_FRAME_BYTES: usize = 512;
 
 /// A `zks_2fa` wire-protocol message.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,8 +86,16 @@ impl Zks2faMessage {
 
     /// Decodes a `Zks2faMessage` from the given message buffer.
     pub fn decode_message(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        // SYSCOIN: Read only the fixed one-byte discriminant before applying the variant's raw
+        // frame cap, so an oversized peer-controlled Bytes/String is never handed to its decoder.
+        let frame_len = buf.len();
         let message_type = Zks2faMessageId::decode(buf)?;
-        Ok(match message_type {
+        if frame_len > message_type.max_frame_bytes() {
+            return Err(RlpError::Custom(
+                "zks_2fa frame exceeds message-specific size limit",
+            ));
+        }
+        let message = match message_type {
             Zks2faMessageId::VerifierRoleRequest => {
                 Self::VerifierRoleRequest(VerifierRoleRequest::decode(buf)?)
             }
@@ -86,7 +107,13 @@ impl Zks2faMessage {
             Zks2faMessageId::VerifyBatchResult => {
                 Self::VerifyBatchResult(VerifyBatchResult::decode(buf)?)
             }
-        })
+        };
+        // SYSCOIN: Each RLPx frame contains exactly one canonical message; ignored suffixes could
+        // otherwise create transcript ambiguity or smuggle unbounded data past payload validation.
+        if !buf.is_empty() {
+            return Err(RlpError::Custom("trailing bytes in zks_2fa frame"));
+        }
+        Ok(message)
     }
 }
 
@@ -135,6 +162,18 @@ impl Zks2faMessageId {
     pub const fn as_u8(&self) -> u8 {
         *self as u8
     }
+
+    // SYSCOIN: Variant lookup occurs immediately after the single-byte message ID and before any
+    // payload decoder, keeping attacker-controlled allocation bounded by the narrowest safe cap.
+    const fn max_frame_bytes(self) -> usize {
+        match self {
+            Self::VerifierRoleRequest => MAX_VERIFIER_ROLE_REQUEST_FRAME_BYTES,
+            Self::VerifierChallenge => MAX_VERIFIER_CHALLENGE_FRAME_BYTES,
+            Self::VerifierAuth => MAX_VERIFIER_AUTH_FRAME_BYTES,
+            Self::VerifyBatch => MAX_VERIFY_BATCH_FRAME_BYTES,
+            Self::VerifyBatchResult => MAX_VERIFY_BATCH_RESULT_FRAME_BYTES,
+        }
+    }
 }
 
 impl Encodable for Zks2faMessageId {
@@ -172,10 +211,17 @@ impl TryFrom<u8> for Zks2faMessageId {
 
 #[cfg(test)]
 mod tests {
-    use super::Zks2faMessage;
+    use super::{
+        MAX_VERIFIER_AUTH_FRAME_BYTES, MAX_VERIFIER_CHALLENGE_FRAME_BYTES,
+        MAX_VERIFIER_ROLE_REQUEST_FRAME_BYTES, MAX_VERIFY_BATCH_FRAME_BYTES,
+        MAX_VERIFY_BATCH_RESULT_FRAME_BYTES, Zks2faMessage, Zks2faMessageId,
+    };
     use crate::wire::auth::{VerifierAuth, VerifierChallenge, VerifierRoleRequest};
     use crate::wire::verification::{VerifyBatch, VerifyBatchOutcome, VerifyBatchResult};
-    use alloy::primitives::{B256, Bytes};
+    use alloy::primitives::{B256, Bytes, U256};
+    use alloy::sol_types::SolValue;
+    use zksync_os_batch_types::{SYSCOIN_DA_MAX_BLOBS_PER_BATCH, SYSCOIN_DA_MAX_REFS_PER_BATCH};
+    use zksync_os_contract_interface::{IExecutor, L2DACommitmentScheme};
 
     #[test]
     fn round_trips_all_messages() {
@@ -220,6 +266,114 @@ mod tests {
         assert_eq!(
             err,
             alloy_rlp::Error::Custom("unrecognized zks_2fa message id")
+        );
+    }
+
+    // SYSCOIN: Canonical payload decoding must consume the entire RLPx frame.
+    #[test]
+    fn rejects_trailing_frame_bytes() {
+        let mut encoded = Zks2faMessage::verifier_role_request().encoded();
+        encoded.extend_from_slice(&[0_u8]);
+
+        assert_eq!(
+            Zks2faMessage::decode_message(&mut encoded.as_ref()).unwrap_err(),
+            alloy_rlp::Error::Custom("trailing bytes in zks_2fa frame")
+        );
+    }
+
+    // SYSCOIN: Every wire variant enforces its own pre-decode raw-frame allocation boundary.
+    #[test]
+    fn rejects_each_variant_above_its_raw_frame_cap() {
+        for (message_id, max_frame_bytes) in [
+            (
+                Zks2faMessageId::VerifierRoleRequest,
+                MAX_VERIFIER_ROLE_REQUEST_FRAME_BYTES,
+            ),
+            (
+                Zks2faMessageId::VerifierChallenge,
+                MAX_VERIFIER_CHALLENGE_FRAME_BYTES,
+            ),
+            (Zks2faMessageId::VerifierAuth, MAX_VERIFIER_AUTH_FRAME_BYTES),
+            (Zks2faMessageId::VerifyBatch, MAX_VERIFY_BATCH_FRAME_BYTES),
+            (
+                Zks2faMessageId::VerifyBatchResult,
+                MAX_VERIFY_BATCH_RESULT_FRAME_BYTES,
+            ),
+        ] {
+            let mut frame = vec![0_u8; max_frame_bytes + 1];
+            frame[0] = message_id.as_u8();
+            assert_eq!(
+                Zks2faMessage::decode_message(&mut frame.as_slice()).unwrap_err(),
+                alloy_rlp::Error::Custom("zks_2fa frame exceeds message-specific size limit"),
+                "message {message_id:?} was not rejected at its raw cap",
+            );
+        }
+    }
+
+    #[test]
+    fn verify_batch_cap_covers_exact_canonical_v32_maximum_with_headroom() {
+        // SYSCOIN: Generate the actual pinned contract structs at the production Syscoin limits.
+        // One hash per edge-ref message maximizes ABI fragmentation and therefore wire size.
+        let edge_ref_message = (
+            U256::from(1),
+            U256::MAX,
+            U256::MAX,
+            B256::repeat_byte(0xff),
+            Bytes::from(vec![0xff; 32]),
+        )
+            .abi_encode_params();
+        let edge_da_refs_input = edge_ref_message.repeat(SYSCOIN_DA_MAX_REFS_PER_BATCH);
+        let commit_data = IExecutor::CommitBatchInfoZKsyncOS::from((
+            u64::MAX,
+            B256::repeat_byte(0xff),
+            U256::MAX,
+            U256::MAX,
+            B256::repeat_byte(0xff),
+            B256::repeat_byte(0xff),
+            B256::repeat_byte(0xff),
+            L2DACommitmentScheme::BLOBS_ZKSYNC_OS,
+            B256::repeat_byte(0xff),
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            U256::MAX,
+            Bytes::from(vec![0xff; SYSCOIN_DA_MAX_BLOBS_PER_BATCH * 32]),
+            Bytes::from(edge_da_refs_input),
+            B256::repeat_byte(0xff),
+            U256::MAX,
+        ))
+        .abi_encode();
+        let prev_commit_data = IExecutor::StoredBatchInfo::from((
+            u64::MAX,
+            B256::repeat_byte(0xff),
+            u64::MAX,
+            U256::MAX,
+            B256::repeat_byte(0xff),
+            B256::repeat_byte(0xff),
+            B256::repeat_byte(0xff),
+            U256::MAX,
+            B256::repeat_byte(0xff),
+        ))
+        .abi_encode();
+        assert_eq!(commit_data.len(), 8_864);
+        assert_eq!(prev_commit_data.len(), 288);
+        let message = Zks2faMessage::VerifyBatch(VerifyBatch {
+            request_id: u64::MAX,
+            batch_number: u64::MAX,
+            first_block_number: u64::MAX,
+            last_block_number: u64::MAX,
+            pubdata_mode: u8::MAX,
+            commit_data: commit_data.into(),
+            prev_commit_data: prev_commit_data.into(),
+            execution_protocol_version: u16::MAX,
+        });
+        let encoded = message.encoded();
+        assert_eq!(encoded.len(), 9_203);
+        assert!(encoded.len() < MAX_VERIFY_BATCH_FRAME_BYTES);
+        assert_eq!(
+            Zks2faMessage::decode_message(&mut encoded.as_ref()).unwrap(),
+            message
         );
     }
 }

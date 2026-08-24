@@ -90,6 +90,9 @@ fn is_heavy_rpc_method(method: &str) -> bool {
             | "ots_searchTransactionsAfter"
             | "ots_searchTransactionsBefore"
             | "unstable_getLocalRoot"
+            // SYSCOIN: Gateway MessageRoot proof construction scans/rebuilds bounded but large
+            // ancestry, receipt, event, and Merkle inputs; share the process-wide heavy-work gate.
+            | "zks_getL2ToL1LogProof"
             | "zks_getProof"
     )
 }
@@ -358,9 +361,25 @@ where
         let request_size = n.params.as_ref().map_or(0, |p| p.get().len());
         let method = method_label(&self.known_methods, n.method_name());
         let inner = self.inner.clone();
+        // SYSCOIN: Notifications execute the same registered handlers as calls even though they
+        // produce no response. Share the process-wide permit so an attacker cannot bypass the
+        // heavy-work ceiling by omitting the JSON-RPC request ID.
+        let blocking_rpcs_semaphore = self.blocking_rpcs_semaphore.clone();
 
         async move {
-            let handler = async move { inner.notification(n).await };
+            let handler = async move {
+                let _permit: Option<OwnedSemaphorePermit> = if is_heavy_rpc_method(method) {
+                    match blocking_rpcs_semaphore.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        // SYSCOIN: Notifications cannot return an error response. A closed
+                        // process-wide gate therefore fails closed without running the handler.
+                        Err(_) => return MethodResponse::notification(),
+                    }
+                } else {
+                    None
+                };
+                inner.notification(n).await
+            };
             CallGuard::new(CallKind::Notification, method, request_size)
                 .handle_result(handler, MethodResponse::notification)
                 .await
@@ -485,8 +504,75 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    use super::{Monitoring, UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    use jsonrpsee::MethodResponse;
+    use jsonrpsee::core::middleware::{Batch, Notification};
+    use jsonrpsee::server::middleware::rpc::RpcServiceT;
+    use jsonrpsee::types::Request;
+    use std::borrow::Cow;
     use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Notify, Semaphore};
+
+    #[derive(Clone)]
+    struct NotificationTestService {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl RpcServiceT for NotificationTestService {
+        type MethodResponse = MethodResponse;
+        type NotificationResponse = MethodResponse;
+        type BatchResponse = MethodResponse;
+
+        #[allow(clippy::manual_async_fn)]
+        fn call<'a>(
+            &self,
+            _request: Request<'a>,
+        ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
+            async { MethodResponse::notification() }
+        }
+
+        #[allow(clippy::manual_async_fn)]
+        fn batch<'a>(
+            &self,
+            _batch: Batch<'a>,
+        ) -> impl Future<Output = Self::BatchResponse> + Send + 'a {
+            async { MethodResponse::notification() }
+        }
+
+        fn notification<'a>(
+            &self,
+            _notification: Notification<'a>,
+        ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            async move {
+                started.notify_one();
+                release.notified().await;
+                MethodResponse::notification()
+            }
+        }
+    }
+
+    fn notification_test_monitoring(
+        semaphore: Arc<Semaphore>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> Monitoring<NotificationTestService> {
+        Monitoring::new(
+            NotificationTestService { started, release },
+            1_000_000,
+            semaphore,
+            Arc::new(
+                ["zks_getL2ToL1LogProof", "eth_blockNumber"]
+                    .into_iter()
+                    .collect(),
+            ),
+            false,
+        )
+    }
 
     #[test]
     fn registered_methods_pass_through_unknown_methods_collapse() {
@@ -513,9 +599,61 @@ mod tests {
         assert!(is_heavy_rpc_method("eth_estimateGas"));
         assert!(is_heavy_rpc_method("eth_getLogs"));
         assert!(is_heavy_rpc_method("debug_traceTransaction"));
+        assert!(is_heavy_rpc_method("zks_getL2ToL1LogProof"));
         assert!(is_heavy_rpc_method("zks_getProof"));
         assert!(is_heavy_rpc_method("unstable_getLocalRoot"));
         assert!(!is_heavy_rpc_method("eth_blockNumber"));
         assert!(!is_heavy_rpc_method(UNKNOWN_METHOD));
+    }
+
+    // SYSCOIN: Omitting a JSON-RPC request ID must not bypass the shared heavy-work ceiling, and
+    // cancelling a waiting/running notification must return its owned permit immediately.
+    #[tokio::test]
+    async fn heavy_notification_waits_for_and_releases_owned_permit_on_cancellation() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let monitoring = notification_test_monitoring(semaphore.clone(), started.clone(), release);
+        let notification = Notification::new(Cow::Borrowed("zks_getL2ToL1LogProof"), None);
+        let task = tokio::spawn(async move { monitoring.notification(notification).await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), started.notified())
+                .await
+                .is_err(),
+            "heavy notification ran without a permit"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("heavy notification did not run after a permit became available");
+        assert_eq!(semaphore.available_permits(), 0);
+
+        task.abort();
+        let _ = task.await;
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    // SYSCOIN: The security gate is method-specific; ordinary notifications retain their existing
+    // behavior and do not wait behind unrelated heavy work.
+    #[tokio::test]
+    async fn ordinary_notification_does_not_wait_for_heavy_permit() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let monitoring = notification_test_monitoring(semaphore.clone(), started.clone(), release);
+        let notification = Notification::new(Cow::Borrowed("eth_blockNumber"), None);
+        let task = tokio::spawn(async move { monitoring.notification(notification).await });
+
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("ordinary notification incorrectly waited for the heavy-work permit");
+        task.abort();
+        let _ = task.await;
+        assert_eq!(semaphore.available_permits(), 0);
+        drop(held);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 }

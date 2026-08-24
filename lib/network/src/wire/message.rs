@@ -74,12 +74,35 @@ impl<P: ZksProtocolVersionSpec> ZksMessage<P> {
     /// Decodes a `ZksMessage` from the given message buffer.
     pub fn decode_message(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let message_type = ZksMessageId::decode(buf)?;
-        Ok(match message_type {
+        let message = match message_type {
             ZksMessageId::GetBlockReplays => Self::GetBlockReplays(GetBlockReplays::decode(buf)?),
             ZksMessageId::BlockReplays => {
                 Self::BlockReplays(BlockReplays::<P::Record>::decode(buf)?)
             }
-        })
+        };
+        // SYSCOIN: One RLPx frame is exactly one replay message. Reject ignored suffixes so peers
+        // cannot create transcript ambiguity or retain oversized trailing data.
+        if !buf.is_empty() {
+            return Err(RlpError::Custom("trailing bytes in zks frame"));
+        }
+        Ok(message)
+    }
+
+    /// SYSCOIN: Decode only the request variant accepted by the main-node role. Inspecting the
+    /// fixed discriminant first prevents an untrusted EN from forcing nested replay-record decode
+    /// and allocation for an unexpected `BlockReplays` payload.
+    pub(crate) fn decode_main_node_message(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let message_type = ZksMessageId::decode(buf)?;
+        if message_type != ZksMessageId::GetBlockReplays {
+            return Err(RlpError::Custom(
+                "unexpected zks message id for main-node role",
+            ));
+        }
+        let message = Self::GetBlockReplays(GetBlockReplays::decode(buf)?);
+        if !buf.is_empty() {
+            return Err(RlpError::Custom("trailing bytes in zks frame"));
+        }
+        Ok(message)
     }
 }
 
@@ -154,7 +177,7 @@ impl TryFrom<u8> for ZksMessageId {
 
 #[cfg(test)]
 mod tests {
-    use super::ZksMessage;
+    use super::{ZksMessage, ZksMessageId};
     use crate::version::ZksProtocolV5;
     use crate::wire::replays::{
         MAX_REPLAY_OVERRIDE_DB_KEY_BYTES, MAX_REPLAY_OVERRIDE_PAYLOAD_BYTES,
@@ -195,6 +218,33 @@ mod tests {
             let err = ZksMessage::<ZksProtocolV5>::decode_message(&mut slice).unwrap_err();
             assert_eq!(err, alloy_rlp::Error::Custom("unrecognized zks message id"));
         }
+    }
+
+    // SYSCOIN: The MN rejects a response by its fixed message ID without parsing attacker-owned
+    // replay records, while both role decoders enforce exact frame consumption.
+    #[test]
+    fn main_node_decoder_rejects_responses_and_trailing_bytes() {
+        let oversized_fake_response = [ZksMessageId::BlockReplays.as_u8(), 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            ZksMessage::<ZksProtocolV5>::decode_main_node_message(
+                &mut oversized_fake_response.as_ref()
+            )
+            .unwrap_err(),
+            alloy_rlp::Error::Custom("unexpected zks message id for main-node role")
+        );
+
+        let mut request =
+            ZksMessage::<ZksProtocolV5>::get_block_replays(1, Some(1), vec![]).encoded();
+        request.extend_from_slice(&[0]);
+        assert_eq!(
+            ZksMessage::<ZksProtocolV5>::decode_main_node_message(&mut request.as_ref())
+                .unwrap_err(),
+            alloy_rlp::Error::Custom("trailing bytes in zks frame")
+        );
+        assert_eq!(
+            ZksMessage::<ZksProtocolV5>::decode_message(&mut request.as_ref()).unwrap_err(),
+            alloy_rlp::Error::Custom("trailing bytes in zks frame")
+        );
     }
 
     #[test]

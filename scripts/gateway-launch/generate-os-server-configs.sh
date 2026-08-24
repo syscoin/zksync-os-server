@@ -25,6 +25,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
 : "${PROVER_API_BIND_HOST:=127.0.0.1}"
+# SYSCOIN: Require an explicit operator acknowledgement before generating a plaintext remote bind.
+: "${ALLOW_INSECURE_PROVER_HTTP:=false}"
 : "${GATEWAY_PROVER_API_DOMAIN:=prover-gw.dev11.top}"
 : "${EDGE_PROVER_API_DOMAIN:=prover-zk.dev11.top}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
@@ -191,6 +193,8 @@ export EDGE_STATUS_PORT
 export GATEWAY_PROMETHEUS_PORT
 export EDGE_PROMETHEUS_PORT
 export PROVER_API_BIND_HOST
+# SYSCOIN: Forward the plaintext-bind acknowledgement into the fail-closed YAML generator.
+export ALLOW_INSECURE_PROVER_HTTP
 export GATEWAY_PROVER_API_DOMAIN
 export EDGE_PROVER_API_DOMAIN
 export PROVER_API_AUTH_USER
@@ -400,7 +404,19 @@ prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip(
 prover_api_bind_host = os.environ.get("PROVER_API_BIND_HOST", "").strip()
 if not prover_api_bind_host:
     raise SystemExit("missing prover API bind host: set PROVER_API_BIND_HOST")
-prover_api_bind_is_loopback = prover_api_bind_host in {"127.0.0.1", "localhost", "::1"}
+# SYSCOIN: Keep this literal-only policy aligned with the node's SocketAddr loopback check.
+prover_api_bind_is_loopback = prover_api_bind_host in {"127.0.0.1", "::1"}
+# SYSCOIN: Do not infer permission to expose reusable HTTP capabilities from Basic Auth alone.
+allow_insecure_prover_http = os.environ.get(
+    "ALLOW_INSECURE_PROVER_HTTP", "false"
+).strip().lower()
+if allow_insecure_prover_http not in {"true", "false"}:
+    raise SystemExit("invalid ALLOW_INSECURE_PROVER_HTTP (expected true|false)")
+if not prover_api_bind_is_loopback and allow_insecure_prover_http != "true":
+    raise SystemExit(
+        "non-loopback prover HTTP requires explicit ALLOW_INSECURE_PROVER_HTTP=true; "
+        "production should keep PROVER_API_BIND_HOST=127.0.0.1 and terminate HTTPS at nginx"
+    )
 if (not prover_api_auth_user or not prover_api_auth_password) and (
     not use_mock_prover or not prover_api_bind_is_loopback
 ):
@@ -420,6 +436,9 @@ if prover_api_auth_user and prover_api_auth_password:
         f"  auth_user: {yaml_scalar(prover_api_auth_user)}",
         f"  auth_password: {yaml_scalar(prover_api_auth_password)}",
     ]
+if not prover_api_bind_is_loopback:
+    # SYSCOIN: Mirror the node's fail-closed plaintext-bind acknowledgement in generated YAML.
+    prover_api_auth_config_lines.append("  allow_insecure_public_bind: true")
 prover_api_nginx_enabled = bool(prover_api_auth_config_lines)
 
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
@@ -450,10 +469,16 @@ server {{
     # SYSCOIN: Match the node's 10 MiB request limit. An unlimited nginx buffer lets an
     # unauthenticated internet client consume proxy disk before node-side auth can reject it.
     client_max_body_size 10m;
+    # SYSCOIN: Bound slow upload gaps at the public edge consistently with the node's total
+    # authenticated body deadline; neither limit changes the longer proof-verification timeout.
+    client_body_timeout 120s;
 
     location / {{
         proxy_pass http://127.0.0.1:{prover_api_port};
         proxy_http_version 1.1;
+        # SYSCOIN: Stream request bodies so node-side Basic Auth runs before buffering and the
+        # node's 120-second total body deadline covers the public upload, not only nginx-to-node.
+        proxy_request_buffering off;
         # SYSCOIN: The prover client has a 600-second request backstop. Keep the public proxy
         # alive slightly longer so native FRI verification / SNARK preflight, not nginx's
         # 60-second default, determines the response and lease-retry semantics.

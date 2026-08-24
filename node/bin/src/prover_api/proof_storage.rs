@@ -10,9 +10,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_pipeline::HasBlockRangeEnd;
+
+// SYSCOIN: Unique same-directory transaction files make accepted-proof publication atomic while
+// retaining stale crash artifacts for explicit startup quarantine.
+static STORAGE_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
+const STORAGE_TRANSACTION_PREFIX: &str = ".syscoin-proof-txn-";
+const STORAGE_TRANSACTION_SUFFIX: &str = ".tmp";
 
 /// Persists FRI proofs to disk together with the batch if proof is successful
 #[derive(Clone, Debug)]
@@ -107,6 +114,11 @@ impl ProofStorage {
                 .await?,
             )),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pending_batch_proof_count_for_test(&self) -> usize {
+        self.pending_batches_with_proof.lock().await.len()
     }
 
     /// Persist a BatchWithProof. Overwrites any existing entry for the same batch.
@@ -522,6 +534,17 @@ impl BoundedFileStorage {
     ) -> anyhow::Result<Self> {
         // Create the directory if it doesn't exist already
         fs::create_dir_all(&base_dir).await?;
+        // SYSCOIN: Proof files may contain unpublished execution data. Restrict a freshly created
+        // or pre-existing storage directory before scanning/recovering transactional artifacts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o700)).await?;
+        }
+        // SYSCOIN: A crash before atomic publication can leave a partial or fully-synced temp.
+        // Its generic payload type is unavailable here, so fail safely by quarantining it rather
+        // than treating it as accepted proof state; the retained prover lease can replay it.
+        quarantine_stale_storage_transactions(&base_dir).await?;
         // List all files sorted by timestamp (descending)
         let mut entries = fs::read_dir(&base_dir).await?;
         let mut files = Vec::new();
@@ -670,16 +693,15 @@ impl BoundedFileStorage {
             "not enough storage capacity for {key}; remaining files are protected"
         );
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let tmp_key = format!("{key}.tmp_{now}");
-        let tmp_path = self.base_dir.join(&tmp_key);
-        fs::write(&tmp_path, data).await?;
-        fs::rename(&tmp_path, &path).await?;
+        // SYSCOIN: File fsync precedes atomic replacement. Update in-memory accounting immediately
+        // after publication, then require parent fsync before reporting success.
+        self.durable_atomic_write(&path, &data).await?;
 
         self.current_size = self.current_size - old_len + count;
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&path).await?;
         self.remove_queue.push_back((key.to_string(), meta));
+        sync_storage_directory(&self.base_dir).await?;
         Ok(self.current_size)
     }
 
@@ -716,6 +738,9 @@ impl BoundedFileStorage {
         fs::remove_file(path).await?;
         self.current_size = self.current_size.saturating_sub(meta.len());
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        // SYSCOIN: Keep process accounting truthful even if directory fsync fails and forces the
+        // caller to restart/recover; success still requires the durable unlink boundary.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(())
     }
 
@@ -749,6 +774,9 @@ impl BoundedFileStorage {
         *self.outdated_count.entry(from_key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&to_path).await?;
         self.remove_queue.push_back((to_key.to_string(), meta));
+        // SYSCOIN: Persist the pending-to-canonical namespace transition before downstream ack;
+        // accounting is already reconciled if this fsync itself fails.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(self.current_size)
     }
 
@@ -766,6 +794,8 @@ impl BoundedFileStorage {
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&quarantine_path).await?;
         self.remove_queue.push_back((quarantine_key.clone(), meta));
+        // SYSCOIN: Make quarantine durable after reconciling the already-visible rename.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(Some(quarantine_key))
     }
 
@@ -801,6 +831,9 @@ impl BoundedFileStorage {
                 fs::remove_file(self.base_dir.join(key)).await?;
                 self.current_size -= meta.len();
                 removed_any = true;
+                // SYSCOIN: Persist every capacity-eviction unlink after reflecting it in memory;
+                // a directory-fsync failure is returned without leaving live accounting stale.
+                sync_storage_directory(&self.base_dir).await?;
 
                 if self.current_size + new_file_size <= self.capacity_bytes {
                     break;
@@ -838,11 +871,13 @@ impl BoundedFileStorage {
             // no longer exists under that name. Increment the counter so that
             // `enforce_capacity` knows to skip that entry rather than deleting the
             // newly-written file.
-            *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
             // Rename and add to the back of the queue
             fs::rename(path, new_path.clone()).await?;
+            *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
             let meta = fs::metadata(&new_path).await?;
             self.remove_queue.push_back((new_key.to_string(), meta));
+            // SYSCOIN: Preserve the duplicate after reconciling its visible queue identity.
+            sync_storage_directory(&self.base_dir).await?;
         }
         Ok(())
     }
@@ -851,12 +886,89 @@ impl BoundedFileStorage {
     async fn write_file(&mut self, key: &str, data: Vec<u8>) -> anyhow::Result<()> {
         let path = self.base_dir.join(key);
         let len = data.len() as u64;
-        fs::write(&path, data).await?;
+        // SYSCOIN: Required accepted proofs and best-effort diagnostics share one crash-safe
+        // publication primitive; callers decide whether a write failure is terminal or retryable.
+        self.durable_atomic_write(&path, &data).await?;
         self.current_size += len;
         let meta = fs::metadata(&path).await?;
         self.remove_queue.push_back((key.to_string(), meta));
+        sync_storage_directory(&self.base_dir).await?;
         Ok(())
     }
+
+    // SYSCOIN: Publish one owner-only file via same-directory temp -> file fsync -> atomic rename.
+    // The caller updates capacity/queue accounting before performing the required directory fsync.
+    async fn durable_atomic_write(
+        &self,
+        path: &std::path::Path,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let transaction_id = STORAGE_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let temporary_path = self.base_dir.join(format!(
+            "{STORAGE_TRANSACTION_PREFIX}{}-{now}-{transaction_id}{STORAGE_TRANSACTION_SUFFIX}",
+            std::process::id()
+        ));
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temporary_path).await?;
+        if let Err(error) = file.write_all(data).await {
+            drop(file);
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        if let Err(error) = file.sync_all().await {
+            drop(file);
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        drop(file);
+
+        if let Err(error) = fs::rename(&temporary_path, path).await {
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
+// SYSCOIN: Linux directory fsync is the durability boundary for rename/unlink operations.
+async fn sync_storage_directory(directory: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(directory).await?.sync_all().await?;
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
+}
+
+// SYSCOIN: Transaction temps are never silently accepted after a crash. Quarantine each one with
+// a durable rename; a client-owned envelope or reconstructed FRI job remains the recovery source.
+async fn quarantine_stale_storage_transactions(directory: &std::path::Path) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(STORAGE_TRANSACTION_PREFIX)
+            || !name.ends_with(STORAGE_TRANSACTION_SUFFIX)
+        {
+            continue;
+        }
+        let source = entry.path();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let destination = directory.join(format!("{name}.quarantined_{now}"));
+        fs::rename(source, destination).await?;
+        sync_storage_directory(directory).await?;
+    }
+    Ok(())
 }
 
 // Since this data isn't used by the node itself, I added some tests
@@ -868,6 +980,34 @@ mod tests {
     };
     use tempfile::TempDir;
     use zksync_os_types::ProtocolSemanticVersion;
+
+    // SYSCOIN: A crash-surviving transaction temp is never mistaken for accepted proof state.
+    #[tokio::test]
+    async fn stale_transaction_temp_is_durably_quarantined_on_restart() -> anyhow::Result<()> {
+        let dir = TempDir::new()?;
+        let temporary_name =
+            format!("{STORAGE_TRANSACTION_PREFIX}crash{STORAGE_TRANSACTION_SUFFIX}");
+        fs::write(dir.path().join(&temporary_name), b"partial proof").await?;
+
+        let storage = BoundedFileStorage::new(dir.path().to_owned(), 1024).await?;
+        assert!(
+            storage
+                .load::<serde_json::Value>(&temporary_name)
+                .await?
+                .is_none()
+        );
+
+        let mut entries = fs::read_dir(dir.path()).await?;
+        let mut quarantined = false;
+        while let Some(entry) = entries.next_entry().await? {
+            quarantined |= entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&format!("{temporary_name}.quarantined_")));
+        }
+        assert!(quarantined, "stale transaction temp was not quarantined");
+        Ok(())
+    }
 
     #[tokio::test]
     async fn canonical_proof_age_survives_pending_promotion_and_restart() -> anyhow::Result<()> {

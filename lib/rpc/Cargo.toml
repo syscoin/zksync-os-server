@@ -69,7 +69,8 @@ boa_gc.workspace = true
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+# SYSCOIN: Deterministically advance the complete Gateway settlement-proof deadline in unit tests.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
 
 [features]
 jemalloc = ["dep:tikv-jemalloc-ctl", "tikv-jemalloc-ctl/stats"]

@@ -219,6 +219,9 @@ alloy::sol! {
     interface IZKsyncOSVerifierMode {
         function IS_TESTNET_VERIFIER() external view returns (bool);
         function verificationKeyHash() external view returns (bytes32);
+        // SYSCOIN: Real wrapper admission preflights the exact public inputs and proof against
+        // the settlement-layer verifier before publishing durable local proof authority.
+        function verify(uint256[] calldata _publicInputs, uint256[] calldata _proof) external view returns (bool);
     }
 
     // `IChainTypeManager.sol`
@@ -913,6 +916,23 @@ impl<P: Provider> ZkChain<P> {
             .await
             .enrich("verificationKeyHash", Some(block_id))?;
         Ok((is_testnet, vk_hash))
+    }
+
+    /// SYSCOIN: Calls the exact zkOS wrapper selected by the diamond at a caller-supplied,
+    /// hash-pinned settlement block. Preserve Alloy's contract error so proof admission can
+    /// distinguish a definitive EVM revert from an unavailable or malformed RPC response.
+    pub async fn verify_zksync_os_proof_at_block(
+        &self,
+        verifier: Address,
+        public_inputs: Vec<U256>,
+        proof: Vec<U256>,
+        block_id: BlockId,
+    ) -> alloy::contract::Result<bool> {
+        IZKsyncOSVerifierMode::new(verifier, self.provider())
+            .verify(public_inputs, proof)
+            .block(block_id)
+            .call()
+            .await
     }
 
     /// Returns the current protocol version of the chain.

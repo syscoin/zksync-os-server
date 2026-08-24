@@ -49,7 +49,8 @@ use crate::prover_api::gapless_l1_proof_sender::GaplessL1ProofSender;
 use crate::prover_api::proof_storage::ProofStorage;
 use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
-use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
+use crate::prover_api::snark_proof_journal::SnarkProofJournal;
+use crate::prover_api::snark_proving_pipeline_step::{SnarkProvingPipelineStep, SnarkStartupPhase};
 use crate::provider::{ProviderKind, build_node_provider};
 use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
@@ -62,7 +63,6 @@ use secrecy::ExposeSecret;
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpListener;
 use tokio::sync::watch;
 use zksync_os_backpressure::{BackpressureMonitor, PipelineSnapshot, PipelineTracker};
 use zksync_os_base_token_adjuster::{BaseTokenPriceHandle, BaseTokenPriceUpdater};
@@ -92,7 +92,8 @@ use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_metadata::NODE_VERSION;
 use zksync_os_network::RecordOverride;
-use zksync_os_network::VerifyBatch;
+// SYSCOIN: Batch-verifier dispatches retain their collector-created absolute deadline.
+use zksync_os_network::VerifyBatchDispatch;
 use zksync_os_network::protocol::{
     ExternalNodeProtocolConfig, ExternalNodeVerifierConfig, MainNodeProtocolConfig,
     ZksProtocolConfig,
@@ -127,8 +128,8 @@ use zksync_os_types::{
     SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, TransactionAcceptanceState,
 };
 
-use ports::BoundListeners;
 pub use ports::ServerPorts;
+use ports::{BoundListeners, ReservedTcpSocket};
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
 const RAFT_DB_NAME: &str = "raft";
@@ -350,7 +351,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
-        prover_api: prebound_prover_api_listener,
+        // SYSCOIN: The prover address is reserved now but remains non-listening until durable
+        // SNARK recovery publishes a live readiness signal.
+        prover_api: reserved_prover_api_socket,
     } = BoundListeners::bind_from_config(&config)
         .await
         .expect("failed to prebind node ports");
@@ -423,7 +426,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         ProviderKind::L1,
     )
     .await;
-    // SYSCOIN: Optional archive-capable L1 provider for startup historical batch reads only.
+    // SYSCOIN: Optional archive-capable L1 provider for startup history and hash-pinned historical
+    // settlement-proof authentication. Live traffic continues to use the normal L1 provider.
     let l1_archive_provider = if let Some(archive_config) = &config.l1_archive_provider_config {
         Some(
             build_node_provider(
@@ -555,8 +559,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     // or after migration while the chain still settles directly on L1.
     //
     // SYSCOIN: Startup cursor resolution can require historical L1 state. Keep
-    // live watchers on the configured live providers, but use the archive L1
-    // provider for startup-only L1 binary searches when available.
+    // live watchers on the configured live providers, but use this archive-backed
+    // lookup handle for the startup L1 binary searches when available.
     let archive_lookup_diamond_proxy_l1 = l1_archive_provider
         .as_ref()
         .map(|provider| ZkChain::new(*l1_state.diamond_proxy_l1.address(), provider.clone()));
@@ -755,8 +759,10 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         "Node state on startup"
     );
 
-    // MN sends `VerifyBatch` requests to the network and receives `PeerVerifyBatchResult`s back.
-    let (verify_request_tx, verify_request_rx) = tokio::sync::mpsc::channel::<VerifyBatch>(16);
+    // SYSCOIN: MN sends deadline-bound `VerifyBatch` requests to the network and receives
+    // exact-lane `PeerVerifyBatchResult`s back.
+    let (verify_request_tx, verify_request_rx) =
+        tokio::sync::mpsc::channel::<VerifyBatchDispatch>(16);
     let (verify_result_tx, verify_result_rx) =
         tokio::sync::mpsc::channel::<PeerVerifyBatchResult>(128);
     // `replay_*` carries replay records from the network service into the EN pipeline.
@@ -1207,7 +1213,8 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             .settlement_layer_intervals
             .clone();
         let persistent_batch_storage = persistent_batch_storage.clone();
-        // SYSCOIN: archive provider for startup-only historical cursor lookups.
+        // SYSCOIN: This watcher clone is used for its historical startup cursor lookups; the same
+        // configured archive provider also serves settlement-proof RPC reads below.
         let archive_l1_provider = l1_archive_provider.clone();
         async move {
             L1PersistBatchWatcher::create_watcher(
@@ -1264,6 +1271,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         backpressure_acceptance_rx,
         pipeline_snapshot_rx,
         prover_api_port,
+        startup_readiness: mut prover_startup_readiness,
     } = if node_role.is_main() {
         run_main_node_pipeline(
             &config,
@@ -1291,7 +1299,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
             syscoin_edge_da_commit_target,
             effective_pubdata_mode,
             replay_archiver,
-            prebound_prover_api_listener,
+            reserved_prover_api_socket,
         )
         .await
     } else {
@@ -1363,6 +1371,7 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
 
     let repositories_for_wait = repositories.clone();
     let l2_subpool_for_wait = l2_subpool.clone();
+    let (db_ready_sender, mut db_ready_receiver) = watch::channel(false);
     let wait_for_db = async move {
         // Wait for repositories to be ready to be used in RPC.
         repositories_for_wait
@@ -1371,9 +1380,56 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         // Enable gas rate limiter when the node is ready to process blocks, so that the limiter is not active
         // during the startup phase.
         l2_subpool_for_wait.arm_gas_rate_limiter();
-        // `rpc::spawn` awaits this future before serving.
-        let _ = rpc_ready.set(());
+        // SYSCOIN: RPC may serve after its database is ready, but public node readiness remains
+        // gated on the separate durable-prover recovery signal below.
+        db_ready_sender.send_replace(true);
     };
+    let node_ready = rpc_ready.clone();
+    runtime.spawn_critical_with_graceful_shutdown_signal(
+        "node startup readiness gate",
+        |shutdown| async move {
+            let mut shutdown = Box::pin(shutdown);
+            tokio::select! {
+                biased;
+                shutdown_guard = &mut shutdown => {
+                    drop(shutdown_guard);
+                    return;
+                }
+                result = wait_for_node_startup(
+                    &mut db_ready_receiver,
+                    &mut prover_startup_readiness,
+                ) => {
+                    // SYSCOIN: A live proving pipeline disappearing before readiness is a critical
+                    // node failure, never a reason to leave the process running indefinitely at 503.
+                    result.expect("startup readiness source closed before initialization completed");
+                }
+            }
+
+            // SYSCOIN: Close the final scheduler gap between the async conjunction and the
+            // irreversible status latch. A retained Ready value from a dead sender is rejected.
+            if let PipelineStartupReadiness::Snark(receiver) = &mut prover_startup_readiness {
+                ensure_liveness_bound_startup_signal(receiver, SnarkStartupPhase::Ready)
+                    .expect("SNARK readiness source exited before node-ready publication");
+            }
+            let _ = node_ready.set(());
+
+            // SYSCOIN: Unlike EN / disabled-batcher startup, production proving readiness is a
+            // lifetime lease. If its owning SNARK stage exits, the critical task panics and the
+            // status server is torn down rather than retaining a stale irreversible ready latch.
+            if let PipelineStartupReadiness::Snark(receiver) = &mut prover_startup_readiness {
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut shutdown => drop(shutdown_guard),
+                    result = monitor_liveness_bound_startup_signal(
+                        receiver,
+                        SnarkStartupPhase::Ready,
+                    ) => {
+                        result.expect("SNARK readiness source exited after node became ready");
+                    }
+                }
+            }
+        },
+    );
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     rpc_config.block_timestamp_offset_seconds =
         config.sequencer_config.block_timestamp_offset_seconds;
@@ -1390,6 +1446,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         rpc_config,
         rpc_listener,
         chain_id,
+        // SYSCOIN: Settlement proofs must retain the canonical L1 identity discovered at startup;
+        // a fresh provider `eth_chainId` response is validation, never topology selection.
+        l1_state.l1_chain_id,
         bridgehub_address,
         bytecode_supplier_address,
         rpc_storage,
@@ -1399,6 +1458,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         last_constructed_block_ctx_receiver,
         tx_forwarder,
         l1_provider.clone().erased(),
+        // SYSCOIN: Recursive Gateway withdrawal proofs require historical L1 contract state long
+        // after the execution block may have been pruned from the live provider.
+        l1_archive_provider.map(|provider| provider.erased()),
         gateway_provider.map(|p| p.erased()),
         // SYSCOIN: RPC proof routing must use the requested batch's settlement interval rather
         // than treating a retained historical Gateway provider as the active settlement layer.
@@ -1771,6 +1833,176 @@ struct PipelineHandles {
     pipeline_snapshot_rx: watch::Receiver<PipelineSnapshot>,
     /// Prover API port, reported by the status server. `None` on external nodes.
     prover_api_port: Option<u16>,
+    /// SYSCOIN: Production proving owns a live readiness lease after every durable SNARK record
+    /// and stored FRI has been validated, replayed, retired, or rehydrated. Pipelines without a
+    /// proving stage explicitly require no such lease.
+    startup_readiness: PipelineStartupReadiness,
+}
+
+/// SYSCOIN: Database startup and no-prover topologies are one-shot, while the monotonic SNARK phase
+/// sender proves both task liveness and whether prover draining or public readiness is permitted.
+enum PipelineStartupReadiness {
+    NotRequired,
+    Snark(watch::Receiver<SnarkStartupPhase>),
+}
+
+// SYSCOIN: One-shot sources intentionally retain their final true value after their producer
+// future completes. A closed channel is accepted only when that retained value is already true.
+async fn wait_for_one_shot_startup_signal(
+    receiver: &mut watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    loop {
+        if *receiver.borrow_and_update() {
+            return Ok(());
+        }
+        receiver
+            .changed()
+            .await
+            .context("one-shot startup source closed before publishing readiness")?;
+    }
+}
+
+// SYSCOIN: Read the newest stable phase while proving the sole stage sender is still alive. If a
+// closed channel retains one unseen phase, consume it and then reject closure on the second check.
+fn observe_liveness_bound_startup_phase(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+) -> anyhow::Result<SnarkStartupPhase> {
+    loop {
+        receiver
+            .has_changed()
+            .context("SNARK startup phase source closed while readiness was pending")?;
+        let phase = *receiver.borrow_and_update();
+        match receiver.has_changed() {
+            Ok(true) => continue,
+            Ok(false) => return Ok(phase),
+            Err(error) => {
+                return Err(error)
+                    .context("SNARK startup phase source closed while publishing a phase");
+            }
+        }
+    }
+}
+
+// SYSCOIN: Receiver-side monotonic validation remains required even though the trusted stage also
+// asserts its transitions; it turns wiring mistakes or future extra senders into critical errors.
+fn ensure_startup_phase_did_not_regress(
+    previous: SnarkStartupPhase,
+    current: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        current.satisfies(previous),
+        "SNARK startup phase regressed from {previous:?} to {current:?}"
+    );
+    Ok(())
+}
+
+// SYSCOIN: Production phase authority is valid only while its SNARK-stage sender remains alive.
+// A required floor lets the prover listener open at Drainable without releasing public readiness.
+async fn wait_for_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    let mut previous = observe_liveness_bound_startup_phase(receiver)?;
+    loop {
+        if previous.satisfies(required) {
+            return Ok(());
+        }
+        receiver.changed().await.with_context(|| {
+            format!("SNARK startup phase source closed before publishing {required:?}")
+        })?;
+        let current = observe_liveness_bound_startup_phase(receiver)?;
+        ensure_startup_phase_did_not_regress(previous, current)?;
+        previous = current;
+    }
+}
+
+// SYSCOIN: Once a required phase is published, any regression or sender exit is a critical
+// production failure. This future returns only with an error.
+async fn monitor_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    let mut previous = observe_liveness_bound_startup_phase(receiver)?;
+    anyhow::ensure!(
+        previous.satisfies(required),
+        "SNARK startup phase {previous:?} is below required {required:?}"
+    );
+    loop {
+        receiver.changed().await.with_context(|| {
+            format!("SNARK startup phase source closed after publishing {required:?}")
+        })?;
+        let current = observe_liveness_bound_startup_phase(receiver)?;
+        ensure_startup_phase_did_not_regress(previous, current)?;
+        anyhow::ensure!(
+            current.satisfies(required),
+            "SNARK startup phase {current:?} fell below required {required:?}"
+        );
+        previous = current;
+    }
+}
+
+// SYSCOIN: This synchronous check is used immediately before irreversible listen/readiness
+// publication and rejects a closed sender even when its retained phase satisfies the floor.
+fn ensure_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<SnarkStartupPhase> {
+    let current = observe_liveness_bound_startup_phase(receiver)?;
+    anyhow::ensure!(
+        current.satisfies(required),
+        "SNARK startup phase {current:?} is below required {required:?}"
+    );
+    Ok(current)
+}
+
+// SYSCOIN: The public node-ready latch requires both database/RPC initialization and, when
+// present, durable prover recovery. Continue polling SNARK liveness after it first becomes true so
+// a slow database cannot create a closed-true publication window.
+async fn wait_for_node_startup(
+    db_ready: &mut watch::Receiver<bool>,
+    prover_readiness: &mut PipelineStartupReadiness,
+) -> anyhow::Result<()> {
+    match prover_readiness {
+        PipelineStartupReadiness::NotRequired => wait_for_one_shot_startup_signal(db_ready).await,
+        PipelineStartupReadiness::Snark(prover_ready) => {
+            let mut database_is_ready = false;
+            let mut previous_prover_phase = SnarkStartupPhase::Recovering;
+            loop {
+                if !database_is_ready {
+                    database_is_ready = *db_ready.borrow_and_update();
+                    if !database_is_ready {
+                        db_ready.has_changed().context(
+                            "database startup source closed before publishing readiness",
+                        )?;
+                    }
+                }
+
+                let current_prover_phase = observe_liveness_bound_startup_phase(prover_ready)?;
+                ensure_startup_phase_did_not_regress(previous_prover_phase, current_prover_phase)?;
+                previous_prover_phase = current_prover_phase;
+
+                if database_is_ready && current_prover_phase.satisfies(SnarkStartupPhase::Ready) {
+                    // SYSCOIN: The helper checks sender liveness before returning; the caller
+                    // repeats this immediately before setting its irreversible ready latch.
+                    ensure_liveness_bound_startup_signal(prover_ready, SnarkStartupPhase::Ready)?;
+                    return Ok(());
+                }
+
+                tokio::select! {
+                    result = db_ready.changed(), if !database_is_ready => {
+                        result.context(
+                            "database startup source closed before publishing readiness"
+                        )?;
+                    }
+                    result = prover_ready.changed() => {
+                        result.context(
+                            "SNARK startup phase source closed while database readiness was pending"
+                        )?;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1794,13 +2026,15 @@ async fn run_main_node_pipeline(
     leadership: LeadershipSignal,
     stop_receiver: watch::Receiver<bool>,
     commit_submitted_tx: watch::Sender<u64>,
-    verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
+    // SYSCOIN: Preserve the collector's absolute request budget through the network channel.
+    verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatchDispatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
     settles_on_gateway: bool,
     syscoin_edge_da_commit_target: Address,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
-    prebound_prover_api_listener: Option<TcpListener>,
+    // SYSCOIN: This socket reserves the prover address but is not a listener until recovery is live.
+    reserved_prover_api_socket: Option<ReservedTcpSocket>,
 ) -> PipelineHandles {
     let priority_tree_db_path = config
         .general_config
@@ -1883,6 +2117,8 @@ async fn run_main_node_pipeline(
             backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
             pipeline_snapshot_rx: snapshot_rx,
             prover_api_port: None,
+            // SYSCOIN: A disabled batcher has no SNARK stage whose lifetime could gate readiness.
+            startup_readiness: PipelineStartupReadiness::NotRequired,
         };
     }
     let pubdata_mode = pubdata_mode
@@ -1933,45 +2169,142 @@ async fn run_main_node_pipeline(
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
         .await
         .expect("Failed to initialize ProofStorage");
+    // SYSCOIN: Open and validate the non-evicting wrapper journal before either prover workers or
+    // the L1 proof pipeline can accept work. Any corrupt/conflicting record fails startup closed.
+    let (snark_proof_journal, snark_journal_confirmations) =
+        SnarkProofJournal::open(&config.prover_api_config.proof_storage.path)
+            .await
+            .expect("Failed to initialize durable SNARK proof journal");
 
-    let (fri_proving_step, fri_job_manager) = FriProvingPipelineStep::new(
-        proof_storage.clone(),
-        node_state_on_startup.l1_state.last_proved_batch,
-        config.prover_api_config.fri_job_timeout,
-        config.prover_api_config.max_assigned_batch_range,
-    );
+    let (fri_proving_step, fri_job_manager, accepted_fri_proof_forwarder) =
+        FriProvingPipelineStep::new(
+            proof_storage.clone(),
+            node_state_on_startup.l1_state.last_proved_batch,
+            config.prover_api_config.fri_job_timeout,
+            config.prover_api_config.max_assigned_batch_range,
+        );
+    // SYSCOIN: A terminal accepted-proof forwarder failure is node-critical: continuing could
+    // leave completed proofs durable but unforwarded until restart while the API appears healthy.
+    runtime.spawn_critical_task("accepted FRI proof forwarder", accepted_fri_proof_forwarder);
+    // SYSCOIN: Live and recovered real wrappers must match the same compiled app-bound VK that
+    // startup compared with the active settlement-layer verifier.
+    let expected_v8_vk_hash = ProvingVersion::V8
+        .vk_hash()
+        .parse::<B256>()
+        .expect("compiled canonical V8 VK hash must be valid bytes32");
+    // SYSCOIN: Startup journal cleanup must use the exact prove sender selected for the active
+    // settlement layer, including Gateway's intentionally different confirmation depth.
+    let prove_required_confirmations = if settles_on_gateway {
+        config.gateway_sender_config.required_confirmations
+    } else {
+        config.l1_sender_config.required_confirmations
+    };
     // SYSCOIN: Thread the two-proof, target-or-age aggregation policy into the SNARK queue.
-    let (snark_proving_step, snark_job_manager) = SnarkProvingPipelineStep::new(
-        proof_storage.clone(),
-        config.prover_api_config.max_fris_per_snark,
-        config.prover_api_config.target_fris_per_snark,
-        config.prover_api_config.max_snark_batch_wait,
-        node_state_on_startup.l1_state.last_proved_batch,
-        node_state_on_startup.l1_state.last_committed_batch,
-        config.prover_api_config.snark_job_timeout,
-        config.prover_api_config.max_assigned_batch_range,
-        committed_batch_provider.clone(),
-    );
+    let (snark_proving_step, snark_job_manager, snark_startup_ready_rx) =
+        SnarkProvingPipelineStep::new(
+            proof_storage.clone(),
+            config.prover_api_config.max_fris_per_snark,
+            config.prover_api_config.target_fris_per_snark,
+            config.prover_api_config.max_snark_batch_wait,
+            // SYSCOIN: The ordered recovery cursor begins after execution, while queue recovery
+            // begins after proving; both independently discovered frontiers remain explicit.
+            node_state_on_startup.l1_state.last_executed_batch,
+            node_state_on_startup.l1_state.last_proved_batch,
+            node_state_on_startup.l1_state.last_committed_batch,
+            config.prover_api_config.snark_job_timeout,
+            config.prover_api_config.max_assigned_batch_range,
+            committed_batch_provider.clone(),
+            snark_proof_journal,
+            snark_journal_confirmations,
+            chain_id,
+            // SYSCOIN: Reject a durable wrapper whose local chain target differs after restart.
+            node_state_on_startup.l1_state.diamond_proxy_address_sl(),
+            sl_provider.clone(),
+            node_state_on_startup.l1_state.sl_chain_id,
+            prove_required_confirmations,
+            expected_v8_vk_hash,
+            // SYSCOIN: Bind restart recovery to the same fake/real lane validated at startup.
+            config.prover_api_config.fake_snark_provers.enabled,
+        );
 
     let prover_api_port = if config.prover_api_config.enabled {
         // SYSCOIN: `prover_server` enforces this header when remote Basic Auth is configured.
         let prover_api_basic_auth = config.prover_api_config.basic_auth_header();
-        let prover_listener = prebound_prover_api_listener
-            .expect("prover API is enabled but prover API listener was not prebound");
-        let port = prover_listener
+        let prover_socket = reserved_prover_api_socket
+            .expect("prover API is enabled but prover API socket was not reserved");
+        let port = prover_socket
             .local_addr()
-            .expect("prover server local_addr")
+            .expect("reserved prover socket local_addr")
             .port();
-        runtime.spawn_critical_with_graceful_shutdown_signal("prover server", |shutdown| {
-            prover_server::run(
-                fri_job_manager.clone(),
-                snark_job_manager.clone(),
-                proof_storage.clone(),
-                prover_listener,
-                prover_api_basic_auth.clone(),
-                shutdown,
-            )
-        });
+        let mut prover_startup_ready = snark_startup_ready_rx.clone();
+        let max_fris_per_snark = config.prover_api_config.max_fris_per_snark;
+        let prover_fri_job_manager = fri_job_manager.clone();
+        let prover_snark_job_manager = snark_job_manager.clone();
+        let prover_proof_storage = proof_storage.clone();
+        runtime.spawn_critical_with_graceful_shutdown_signal(
+            "prover server",
+            move |shutdown| async move {
+                // SYSCOIN: The address is reserved but remains non-listening until the live SNARK
+                // source confirms durable wrapper replay and supervised drain tasks are available.
+                let server_shutdown = shutdown.clone();
+                let mut lifecycle_shutdown = Box::pin(shutdown);
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut lifecycle_shutdown => {
+                        drop(shutdown_guard);
+                        return;
+                    }
+                    result = wait_for_liveness_bound_startup_signal(
+                        &mut prover_startup_ready,
+                        SnarkStartupPhase::Drainable,
+                    ) => {
+                        result.expect("SNARK startup phase source exited before prover draining became safe");
+                    }
+                }
+
+                // SYSCOIN: Only the live readiness transition may create an accept backlog. A
+                // listen failure is node-critical because the reserved port was already reported.
+                ensure_liveness_bound_startup_signal(
+                    &mut prover_startup_ready,
+                    SnarkStartupPhase::Drainable,
+                )
+                .expect("SNARK readiness source exited before prover listen");
+                let prover_listener = prover_socket
+                    .listen()
+                    .expect("failed to promote reserved prover socket to listener");
+                let server = prover_server::run(
+                    prover_fri_job_manager,
+                    prover_snark_job_manager,
+                    prover_proof_storage,
+                    prover_listener,
+                    prover_api_basic_auth,
+                    // SYSCOIN: Apply the configured production aggregation bound to diagnostic peeks.
+                    max_fris_per_snark,
+                    server_shutdown,
+                );
+                tokio::pin!(server);
+
+                // SYSCOIN: Keep serving conditional on both the process lifetime and the SNARK
+                // stage lifetime. Biased shutdown prevents a simultaneous failure from being
+                // misreported as an unexpected production exit during graceful teardown.
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut lifecycle_shutdown => {
+                        (&mut server).await;
+                        drop(shutdown_guard);
+                    }
+                    result = monitor_liveness_bound_startup_signal(
+                        &mut prover_startup_ready,
+                        SnarkStartupPhase::Drainable,
+                    ) => {
+                        result.expect("SNARK readiness source exited while prover API was serving");
+                    }
+                    _ = &mut server => {
+                        panic!("prover API server exited outside graceful shutdown");
+                    }
+                }
+            },
+        );
         Some(port)
     } else {
         None
@@ -2111,6 +2444,8 @@ async fn run_main_node_pipeline(
         backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
         pipeline_snapshot_rx: snapshot_rx,
         prover_api_port,
+        // SYSCOIN: Production readiness remains leased to the live SNARK recovery/queue stage.
+        startup_readiness: PipelineStartupReadiness::Snark(snark_startup_ready_rx),
     }
 }
 
@@ -2249,6 +2584,8 @@ async fn run_en_pipeline(
         backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
         pipeline_snapshot_rx: snapshot_rx,
         prover_api_port: None, // EN has no prover server
+        // SYSCOIN: External nodes have no local SNARK stage whose lifetime could gate readiness.
+        startup_readiness: PipelineStartupReadiness::NotRequired,
     }
 }
 
@@ -2765,12 +3102,15 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, canonical_pubdata_mode,
+        MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
         check_batch_verification_mismatch, enforce_v8_regeneration_prover_policy,
-        initial_transaction_acceptance_state, validate_batch_verification_startup_policy,
-        validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        initial_transaction_acceptance_state, monitor_liveness_bound_startup_signal,
+        validate_batch_verification_startup_policy, validate_deployed_verifier_prover_policy,
+        validate_syscoin_edge_da_commit_target, wait_for_liveness_bound_startup_signal,
+        wait_for_node_startup, wait_for_one_shot_startup_signal,
     };
     use crate::config::{BatchVerificationConfig, ProverApiConfig};
+    use crate::prover_api::snark_proving_pipeline_step::SnarkStartupPhase;
     use alloy::primitives::{B256, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
@@ -2781,10 +3121,172 @@ mod tests {
         TransactionAcceptanceState,
     };
 
+    // SYSCOIN: Drainable releases the prover-listener waiter, but database readiness cannot release
+    // the public node latch until the same live phase source advances to Ready.
+    #[tokio::test]
+    async fn node_readiness_waits_for_database_and_snark_recovery() {
+        let (db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(false);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        let mut listener_receiver = prover_ready_receiver.clone();
+        let listener = tokio::spawn(async move {
+            wait_for_liveness_bound_startup_signal(
+                &mut listener_receiver,
+                SnarkStartupPhase::Drainable,
+            )
+            .await
+        });
+        let readiness = tokio::spawn(async move {
+            let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness).await
+        });
+
+        db_ready_sender.send_replace(true);
+        tokio::task::yield_now().await;
+        assert!(
+            !readiness.is_finished(),
+            "database readiness bypassed durable SNARK recovery"
+        );
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Drainable);
+        assert!(listener.await.unwrap().is_ok());
+        tokio::task::yield_now().await;
+        assert!(
+            !readiness.is_finished(),
+            "Drainable released public node readiness before Ready"
+        );
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Ready);
+        assert!(readiness.await.unwrap().is_ok());
+    }
+
+    // SYSCOIN: A failed pipeline that drops its Recovering channel cannot accidentally make the
+    // status or prover listener ready.
+    #[tokio::test]
+    async fn node_readiness_fails_closed_when_snark_recovery_exits() {
+        let (_db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(true);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        drop(prover_ready_sender);
+        let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+
+        assert!(
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness)
+                .await
+                .is_err()
+        );
+    }
+
+    // SYSCOIN: EN and disabled-batcher nodes have no SNARK lifetime to monitor; their explicit
+    // no-prover variant preserves the original completed database one-shot behavior.
+    #[tokio::test]
+    async fn node_readiness_without_proving_accepts_completed_database_startup() {
+        let (db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(true);
+        drop(db_ready_sender);
+        let mut prover_readiness = PipelineStartupReadiness::NotRequired;
+
+        assert!(
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness)
+                .await
+                .is_ok()
+        );
+    }
+
+    // SYSCOIN: Closed-true is valid for completed one-shot startup work, but neither retained
+    // Drainable nor Ready may impersonate the live SNARK task whose lifetime gates production.
+    #[tokio::test]
+    async fn startup_signal_distinguishes_one_shot_from_live_closed_true() {
+        let (one_shot_sender, mut one_shot_receiver) = tokio::sync::watch::channel(true);
+        drop(one_shot_sender);
+        assert!(
+            wait_for_one_shot_startup_signal(&mut one_shot_receiver)
+                .await
+                .is_ok()
+        );
+
+        for retained_phase in [SnarkStartupPhase::Drainable, SnarkStartupPhase::Ready] {
+            let (live_sender, mut live_receiver) = tokio::sync::watch::channel(retained_phase);
+            drop(live_sender);
+            assert!(
+                wait_for_liveness_bound_startup_signal(
+                    &mut live_receiver,
+                    SnarkStartupPhase::Drainable,
+                )
+                .await
+                .is_err(),
+                "closed {retained_phase:?} phase retained a false liveness lease"
+            );
+        }
+    }
+
+    // SYSCOIN: The prover monitor accepts the monotonic Drainable-to-Ready advance, while dropping
+    // the sender still wakes the serving lifetime lease with an error.
+    #[tokio::test]
+    async fn live_startup_signal_fails_after_post_ready_source_closure() {
+        let (live_sender, mut live_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        live_sender.send_replace(SnarkStartupPhase::Drainable);
+        wait_for_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+            .await
+            .unwrap();
+        let monitor = tokio::spawn(async move {
+            monitor_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+                .await
+        });
+        live_sender.send_replace(SnarkStartupPhase::Ready);
+        tokio::task::yield_now().await;
+        assert!(
+            !monitor.is_finished(),
+            "the Drainable monitor rejected the monotonic Ready advance"
+        );
+        drop(live_sender);
+
+        assert!(monitor.await.unwrap().is_err());
+    }
+
+    // SYSCOIN: A receiver-side regression is critical even though the production stage-owned
+    // publisher independently prevents it.
+    #[tokio::test]
+    async fn live_startup_signal_rejects_phase_regression() {
+        let (live_sender, mut live_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Drainable);
+        wait_for_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+            .await
+            .unwrap();
+
+        let monitor = tokio::spawn(async move {
+            monitor_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+                .await
+        });
+        live_sender.send_replace(SnarkStartupPhase::Recovering);
+        assert!(monitor.await.unwrap().is_err());
+    }
+
+    // SYSCOIN: SNARK may reach Ready before the database. Its sender is still monitored during that
+    // delay, so a retained closed Ready value cannot release readiness when the database catches up.
+    #[tokio::test]
+    async fn node_readiness_monitors_snark_liveness_while_database_is_pending() {
+        let (_db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(false);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        let readiness = tokio::spawn(async move {
+            let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness).await
+        });
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Ready);
+        tokio::task::yield_now().await;
+        assert!(!readiness.is_finished());
+        drop(prover_ready_sender);
+        assert!(readiness.await.unwrap().is_err());
+    }
+
     #[test]
     fn v8_regeneration_preserves_explicit_fake_only_mode() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = true;
 
@@ -2798,8 +3300,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "both fake FRI and fake SNARK")]
     fn v8_regeneration_rejects_missing_fake_pool() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = false;
 
@@ -2809,8 +3313,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "external real proving is disabled")]
     fn v8_regeneration_rejects_external_real_proving() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
 
         enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
     }
@@ -2818,8 +3324,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "cannot be enabled together")]
     fn v8_regeneration_rejects_mixed_real_and_fake_proving() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = true;
 
@@ -2828,8 +3336,10 @@ mod tests {
 
     #[test]
     fn v8_regeneration_preserves_no_producer_mode() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
 
         enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
 
@@ -2840,8 +3350,10 @@ mod tests {
 
     #[test]
     fn completed_v8_regeneration_preserves_external_api() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
 
         enforce_v8_regeneration_prover_policy(false, NodeRole::MainNode, true, &mut prover);
 
@@ -2850,8 +3362,10 @@ mod tests {
 
     #[test]
     fn v8_regeneration_disables_unused_api_without_fake_pools_when_batcher_is_disabled() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         assert!(!prover.fake_fri_provers.enabled);
         assert!(!prover.fake_snark_provers.enabled);
 
@@ -2865,8 +3379,10 @@ mod tests {
     // SYSCOIN: Today's mock testnet must remain usable only with its explicit testnet verifier.
     #[test]
     fn deployed_verifier_policy_fake_provers_require_explicit_testnet_verifier() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = true;
 
@@ -2892,8 +3408,10 @@ mod tests {
 
     #[test]
     fn deployed_verifier_policy_v8_regeneration_requires_both_fake_pools() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
 
         let err = validate_deployed_verifier_prover_policy(
@@ -2911,8 +3429,10 @@ mod tests {
     #[test]
     fn deployed_verifier_policy_completed_regeneration_rejects_either_partial_fake_pipeline() {
         for (fake_fri_enabled, fake_snark_enabled) in [(true, false), (false, true)] {
-            let mut prover = ProverApiConfig::default();
-            prover.enabled = false;
+            let mut prover = ProverApiConfig {
+                enabled: false,
+                ..Default::default()
+            };
             prover.fake_fri_provers.enabled = fake_fri_enabled;
             prover.fake_snark_provers.enabled = fake_snark_enabled;
 
@@ -2931,8 +3451,10 @@ mod tests {
     #[test]
     fn deployed_verifier_policy_real_proving_requires_production_verifier_and_matching_nonzero_vk()
     {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
         let canonical_vk = B256::repeat_byte(0x22);
 
@@ -2994,8 +3516,10 @@ mod tests {
 
     #[test]
     fn deployed_verifier_policy_real_proving_requires_restart_safe_proof_storage() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         let canonical_vk = B256::repeat_byte(0x22);
 
         let err = validate_deployed_verifier_prover_policy(
@@ -3015,8 +3539,10 @@ mod tests {
 
     #[test]
     fn deployed_verifier_policy_mixed_fake_and_real_proving_is_rejected() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = true;
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
         prover.fake_fri_provers.enabled = true;
         prover.fake_snark_provers.enabled = true;
 
@@ -3033,8 +3559,10 @@ mod tests {
 
     #[test]
     fn deployed_verifier_policy_no_proof_producer_does_not_require_a_verifier_mode() {
-        let mut prover = ProverApiConfig::default();
-        prover.enabled = false;
+        let prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
 
         validate_deployed_verifier_prover_policy(true, &prover, false, B256::ZERO, B256::ZERO)
             .unwrap();

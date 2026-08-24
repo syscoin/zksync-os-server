@@ -1,4 +1,5 @@
 use alloy::primitives::{Address, B256, BlockNumber, Bytes, U256};
+use alloy::signers::SignerSync;
 use alloy::signers::local::PrivateKeySigner;
 use assert_matches::assert_matches;
 use futures::StreamExt;
@@ -15,12 +16,16 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use zksync_os_metadata::NODE_SEMVER_VERSION;
 use zksync_os_network::protocol::{
-    ExternalNodeProtocolConfig, HandlerSharedState, ProtocolEvent, ZksProtocolHandler,
+    ExternalNodeProtocolConfig, HandlerSharedState, ProtocolEvent, SessionActivationRegistry,
+    ZksProtocolHandler,
 };
-use zksync_os_network::twofa::{ExternalNode2faConfig, MainNode2faConfig, Zks2faProtocolHandler};
+use zksync_os_network::twofa::{
+    ExternalNode2faConfig, MainNode2faConfig, Zks2faConnectionRegistry, Zks2faProtocolHandler,
+};
 use zksync_os_network::version::{ZksProtocolV0, ZksProtocolV5, ZksProtocolVersionSpec};
 use zksync_os_network::{
-    PeerVerifyBatchResult, RecordOverride, VerifyBatchOutcome, VerifyBatchResult,
+    PeerVerifyBatch, PeerVerifyBatchResult, RecordOverride, VerifyBatch, VerifyBatchOutcome,
+    VerifyBatchResult,
 };
 use zksync_os_storage_api::BlockContext;
 use zksync_os_storage_api::{ReadReplay, ReplayRecord};
@@ -113,6 +118,9 @@ fn alternate_verifier_signing_key() -> SecretString {
     SecretString::from("0x59c6995e998f97a5a0044966f094538e5f7d918e2f8b3bf3f1e9465d9b38787e")
 }
 
+const TEST_CHAIN_ID: u64 = 57_057;
+const TEST_VERIFY_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn accepted_verifier_signers() -> Vec<Address> {
     vec![
         PrivateKeySigner::from_str(default_verifier_signing_key().expose_secret())
@@ -122,10 +130,30 @@ fn accepted_verifier_signers() -> Vec<Address> {
 }
 
 fn dummy_verify_batch_result() -> VerifyBatchResult {
+    // SYSCOIN: Network admission enforces the same canonical recoverable encoding as the batch
+    // collector; use a real low-s signature even though this transport test does not recover it.
+    let signature = PrivateKeySigner::from_str(default_verifier_signing_key().expose_secret())
+        .unwrap()
+        .sign_hash_sync(&B256::repeat_byte(0xA5))
+        .unwrap()
+        .as_bytes();
     VerifyBatchResult {
         request_id: 41,
         batch_number: 7,
-        result: VerifyBatchOutcome::Approved(Bytes::from(vec![9u8; 65])),
+        result: VerifyBatchOutcome::Approved(Bytes::copy_from_slice(&signature)),
+    }
+}
+
+fn dummy_verify_batch() -> VerifyBatch {
+    VerifyBatch {
+        request_id: 41,
+        batch_number: 7,
+        first_block_number: 1,
+        last_block_number: 1,
+        pubdata_mode: 0,
+        commit_data: Bytes::from_static(b"commit"),
+        prev_commit_data: Bytes::from_static(b"prev"),
+        execution_protocol_version: 32,
     }
 }
 
@@ -133,10 +161,16 @@ struct TestPeerProtocolHandles {
     protocol_rx: mpsc::UnboundedReceiver<ProtocolEvent>,
     replay_rx: mpsc::Receiver<ReplayRecord>,
     verify_result_rx: Option<mpsc::Receiver<PeerVerifyBatchResult>>,
+    verify_batch_rx: Option<mpsc::Receiver<PeerVerifyBatch>>,
     outgoing_verify_results_tx: Option<broadcast::Sender<PeerVerifyBatchResult>>,
+    zks_2fa_registry: Option<Zks2faConnectionRegistry>,
 }
 
 trait PeerExt {
+    /// SYSCOIN: Test peers mirror production by activating tentative handlers only from Reth's
+    /// exact post-deduplication accepted-session event.
+    fn install_session_activation_bridge(&self, registry: SessionActivationRegistry);
+
     fn add_zks_sub_protocol<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
@@ -187,6 +221,17 @@ impl<C> PeerExt for Peer<C>
 where
     C: BlockReader + HeaderProvider + Clone + 'static,
 {
+    fn install_session_activation_bridge(&self, registry: SessionActivationRegistry) {
+        let mut events = self.peer_handle().event_listener();
+        tokio::spawn(async move {
+            while let Some(event) = events.next().await {
+                if let NetworkEvent::ActivePeerSession { info, .. } = event {
+                    registry.activate(info.peer_id, info.remote_addr);
+                }
+            }
+        });
+    }
+
     fn add_zks_sub_protocol<P: ZksProtocolVersionSpec>(
         &mut self,
         node_role: NodeRole,
@@ -241,8 +286,14 @@ where
     ) -> TestPeerProtocolHandles {
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let (replay_tx, replay_rx) = mpsc::channel(8);
-        let state =
-            HandlerSharedState::new(protocol_tx, max_active_connections, trusted_peers.clone());
+        let session_activations = SessionActivationRegistry::default();
+        self.install_session_activation_bridge(session_activations.clone());
+        let state = HandlerSharedState::new_with_session_activations(
+            protocol_tx,
+            max_active_connections,
+            trusted_peers.clone(),
+            session_activations,
+        );
         let handler = if node_role.is_main() {
             ZksProtocolHandler::<P, _>::for_main_node(replays, state)
         } else {
@@ -267,7 +318,9 @@ where
             protocol_rx,
             replay_rx,
             verify_result_rx: None,
+            verify_batch_rx: None,
             outgoing_verify_results_tx: None,
+            zks_2fa_registry: None,
         }
     }
 
@@ -280,41 +333,52 @@ where
         verifier_signing_key: Option<SecretString>,
         trusted_main_node_peers: HashSet<PeerId>,
     ) -> TestPeerProtocolHandles {
+        // SYSCOIN: Bind verifier authentication to this exact local RLPx identity.
+        let local_peer_id = self.peer_id();
         let (protocol_tx, protocol_rx) = mpsc::unbounded_channel();
         let (replay_tx, replay_rx) = mpsc::channel(8);
+        // SYSCOIN: One accepted physical session releases both replay and verifier waiters.
+        let session_activations = SessionActivationRegistry::default();
+        self.install_session_activation_bridge(session_activations.clone());
         // Both subprotocols share one event stream, exactly as in production.
-        let zks_state = HandlerSharedState::new(
+        let zks_state = HandlerSharedState::new_with_session_activations(
             protocol_tx.clone(),
             max_active_connections.0,
             trusted_main_node_peers.clone(),
+            session_activations.clone(),
         );
         // SYSCOIN: Match production by applying trusted-peer admission to both independent caps.
-        let twofa_state = HandlerSharedState::new(
+        let twofa_state = HandlerSharedState::new_with_session_activations(
             protocol_tx,
             max_active_connections.1,
             trusted_main_node_peers.clone(),
+            session_activations,
         );
         let zks_2fa_registry = Arc::new(RwLock::new(HashMap::new()));
         let replays = InMemReplay::new(replays);
 
-        let (verify_result_rx, outgoing_verify_results_tx) = if node_role.is_main() {
+        let (verify_result_rx, verify_batch_rx, outgoing_verify_results_tx) = if node_role.is_main()
+        {
             let (verify_result_tx, verify_result_rx) = mpsc::channel(8);
             self.add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV5, _>::for_main_node(
                 replays, zks_state,
             ));
             self.add_rlpx_sub_protocol(Zks2faProtocolHandler::for_main_node(
                 MainNode2faConfig {
+                    chain_id: TEST_CHAIN_ID,
+                    local_peer_id,
                     accepted_verifier_signers: accepted_verifier_signers(),
                     verify_result_tx,
                 },
                 twofa_state,
-                zks_2fa_registry,
+                zks_2fa_registry.clone(),
             ));
-            (Some(verify_result_rx), None)
+            (Some(verify_result_rx), None, None)
         } else {
             let signing_key =
                 verifier_signing_key.expect("external verifier node requires a signing key");
-            let (verify_batch_tx, _verify_batch_rx) = mpsc::channel(8);
+            let trusted_main_node_peers: Vec<_> = trusted_main_node_peers.iter().copied().collect();
+            let (verify_batch_tx, verify_batch_rx) = mpsc::channel(8);
             let (outgoing_verify_results, _outgoing_verify_results_rx) = broadcast::channel(8);
             self.add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV5, _>::for_external_node(
                 replays,
@@ -323,7 +387,7 @@ where
                     record_overrides: vec![],
                     max_blocks_per_message: 64,
                     // SYSCOIN: Test ENs must explicitly authorize the main-node RLPx identity.
-                    trusted_main_node_peers: trusted_main_node_peers.into_iter().collect(),
+                    trusted_main_node_peers: trusted_main_node_peers.clone(),
                     replay_sender: replay_tx,
                     verification: None,
                     // Generous enough that the inactivity timeout never affects these tests.
@@ -333,21 +397,26 @@ where
             ));
             self.add_rlpx_sub_protocol(Zks2faProtocolHandler::for_external_node(
                 ExternalNode2faConfig {
+                    chain_id: TEST_CHAIN_ID,
+                    local_peer_id,
+                    trusted_main_node_peers,
                     signing_key,
                     verify_batch_tx,
                     outgoing_verify_results: outgoing_verify_results.clone(),
                 },
                 twofa_state,
-                zks_2fa_registry,
+                zks_2fa_registry.clone(),
             ));
-            (None, Some(outgoing_verify_results))
+            (None, Some(verify_batch_rx), Some(outgoing_verify_results))
         };
 
         TestPeerProtocolHandles {
             protocol_rx,
             replay_rx,
             verify_result_rx,
+            verify_batch_rx,
             outgoing_verify_results_tx,
+            zks_2fa_registry: Some(zks_2fa_registry),
         }
     }
 }
@@ -468,7 +537,6 @@ async fn emits_replay_session_events() {
 async fn external_node_rejects_replay_from_untrusted_peer() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV5>(1);
-    let main_peer_id = net.peers_mut()[0].peer_id();
     let external_peer_id = net.peers_mut()[1].peer_id();
     let external_peer_addr = net.peers_mut()[1].local_addr();
 
@@ -512,44 +580,22 @@ async fn external_node_rejects_replay_from_untrusted_peer() {
     .await
     .expect("untrusted-peer test dial was not registered");
 
-    let mut established = false;
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            match external_events.recv().await {
-                Some(ProtocolEvent::Established { peer_id, .. }) => {
-                    assert_eq!(peer_id, main_peer_id);
-                    established = true;
-                }
-                Some(ProtocolEvent::Closed { peer_id }) => {
-                    assert_eq!(peer_id, main_peer_id);
-                    break;
-                }
-                Some(event) => panic!("unexpected external-node protocol event: {event:?}"),
-                None => panic!("external-node event stream closed before connection rejection"),
-            }
-        }
-    })
-    .await
-    .expect("external node did not reject its untrusted replay source");
-    assert!(established, "test connection never negotiated zks/5");
-
-    let forbidden_replay_event =
-        tokio::time::timeout(std::time::Duration::from_millis(250), async {
-            loop {
-                match from_main.recv().await {
-                    Some(
-                        event @ (ProtocolEvent::ReplayRequested { .. }
-                        | ProtocolEvent::ReplayBlockSent { .. }),
-                    ) => return Some(event),
-                    Some(_) => {}
-                    None => return None,
-                }
-            }
-        })
-        .await;
+    // SYSCOIN: Rejection occurs before the EN sends a replay request, which is the MN's mutual
+    // stream proof. Neither endpoint may publish tentative lifecycle or replay side effects.
     assert!(
-        !matches!(forbidden_replay_event, Ok(Some(_))),
-        "untrusted peer must not request or receive replay records"
+        tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            external_events.recv()
+        )
+        .await
+        .is_err(),
+        "untrusted replay source must not publish EN protocol lifecycle"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), from_main.recv())
+            .await
+            .is_err(),
+        "untrusted replay source must not publish MN protocol lifecycle"
     );
     assert!(
         !matches!(
@@ -562,6 +608,8 @@ async fn external_node_rejects_replay_from_untrusted_peer() {
         ),
         "untrusted peer must not receive a replay record"
     );
+    assert_eq!(handle.peers()[0].network().num_connected_peers(), 0);
+    assert_eq!(handle.peers()[1].network().num_connected_peers(), 0);
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -884,6 +932,67 @@ async fn trusted_peer_bypasses_max_active_connections() {
     });
 }
 
+// SYSCOIN: Deferred incoming admission must still enforce the mandatory replay cap for an
+// untrusted PeerId, and a rejected tentative handler must publish no session lifecycle state.
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn untrusted_incoming_peer_at_zero_cap_has_no_replay_lifecycle_events() {
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let main_peer_id = net.peers_mut()[0].peer_id();
+    let main_addr = net.peers_mut()[0].local_addr();
+    let external_peer_id = net.peers_mut()[1].peer_id();
+    let mut main_events = net.peers_mut()[0]
+        .add_zks_sub_protocol_with_test_handles::<ZksProtocolV5>(
+            NodeRole::MainNode,
+            1,
+            [],
+            0,
+            HashSet::new(),
+        )
+        .protocol_rx;
+    net.peers_mut()[1].add_zks_sub_protocol::<ZksProtocolV5>(
+        NodeRole::ExternalNode,
+        1,
+        [],
+        100,
+        HashSet::from([main_peer_id]),
+    );
+
+    let handle = net.spawn();
+    handle.peers()[1]
+        .network()
+        .add_peer(main_peer_id, main_addr);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match main_events.recv().await {
+                Some(ProtocolEvent::MaxActiveConnectionsExceeded { max_connections }) => {
+                    assert_eq!(max_connections, 0);
+                    break;
+                }
+                Some(ProtocolEvent::Established { .. } | ProtocolEvent::ReplayRequested { .. }) => {
+                    panic!("cap-rejected replay handler emitted lifecycle state")
+                }
+                Some(_) => {}
+                None => panic!("main event stream closed before cap rejection"),
+            }
+        }
+    })
+    .await
+    .expect("incoming untrusted peer did not reach deferred cap admission");
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    while let Ok(event) = main_events.try_recv() {
+        assert!(
+            !matches!(
+                event,
+                ProtocolEvent::Established { peer_id, .. }
+                    | ProtocolEvent::ReplayRequested { peer_id, .. }
+                    if peer_id == external_peer_id
+            ),
+            "rejected untrusted peer must not appear in replay lifecycle state"
+        );
+    }
+}
+
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
 async fn zks_2fa_authorizes_verifier_and_replays() {
     // A trusted verifier uses independent lanes: replay over `zks/5` and authentication over
@@ -904,7 +1013,7 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
         NodeRole::MainNode,
         0,
         [(1, record1.clone())],
-        (100, 0),
+        (0, 0),
         None,
         HashSet::from([external_peer_id]),
     );
@@ -929,7 +1038,9 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
 
     while !(saw_verifier_authorized && saw_replay_requested) {
         match main.protocol_rx.recv().await {
-            Some(ProtocolEvent::VerifierAuthorized { peer_id, signer }) => {
+            Some(ProtocolEvent::VerifierAuthorized {
+                peer_id, signer, ..
+            }) => {
                 assert_eq!(peer_id, peer1_id);
                 assert_eq!(signer, expected_signer);
                 saw_verifier_authorized = true;
@@ -964,6 +1075,136 @@ async fn zks_2fa_authorizes_verifier_and_replays() {
 
     let received_replay_record = external.replay_rx.recv().await.unwrap();
     assert_eq!(received_replay_record, record1);
+}
+
+// SYSCOIN: Both sides may dial a boot peer at the same time. Reth constructs both protocol
+// handlers before rejecting one RLPx duplicate, so loser teardown must not emit replay lifecycle
+// events or replace the accepted verifier lane.
+#[test_log::test(tokio::test(flavor = "multi_thread", worker_threads = 4))]
+async fn simultaneous_dial_keeps_first_exact_replay_and_verifier_owners() {
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let record1 = dummy_record::<ZksProtocolV5>(1);
+    let main_peer_id = net.peers_mut()[0].peer_id();
+    let main_addr = net.peers_mut()[0].local_addr();
+    let external_peer_id = net.peers_mut()[1].peer_id();
+    let external_addr = net.peers_mut()[1].local_addr();
+
+    let mut main = net.peers_mut()[0].add_zks_2fa_sub_protocol(
+        NodeRole::MainNode,
+        0,
+        [(1, record1.clone())],
+        (0, 0),
+        None,
+        HashSet::from([external_peer_id]),
+    );
+    let mut external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
+        NodeRole::ExternalNode,
+        1,
+        [(1, record1.clone())],
+        (0, 0),
+        Some(default_verifier_signing_key()),
+        HashSet::from([main_peer_id]),
+    );
+
+    let handle = net.spawn();
+    let main_network = handle.peers()[0].network().clone();
+    let external_network = handle.peers()[1].network().clone();
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let main_barrier = Arc::clone(&barrier);
+    let main_dial = tokio::spawn(async move {
+        main_barrier.wait().await;
+        main_network.add_peer(external_peer_id, external_addr);
+    });
+    let external_barrier = Arc::clone(&barrier);
+    let external_dial = tokio::spawn(async move {
+        external_barrier.wait().await;
+        external_network.add_peer(main_peer_id, main_addr);
+    });
+    barrier.wait().await;
+    main_dial.await.unwrap();
+    external_dial.await.unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut authorized = false;
+        let mut replay_requested = false;
+        while !(authorized && replay_requested) {
+            match main.protocol_rx.recv().await {
+                Some(ProtocolEvent::VerifierAuthorized { peer_id, .. }) => {
+                    assert_eq!(peer_id, external_peer_id);
+                    authorized = true;
+                }
+                Some(ProtocolEvent::ReplayRequested { peer_id, .. }) => {
+                    assert_eq!(peer_id, external_peer_id);
+                    replay_requested = true;
+                }
+                Some(ProtocolEvent::Closed { peer_id }) if peer_id == external_peer_id => {
+                    panic!("tentative duplicate emitted a replay Closed event")
+                }
+                Some(_) => {}
+                None => panic!("event stream closed during simultaneous-dial authentication"),
+            }
+        }
+    })
+    .await
+    .expect("simultaneous dials did not converge on one authenticated owner");
+
+    let lane = main
+        .zks_2fa_registry
+        .as_ref()
+        .unwrap()
+        .read()
+        .unwrap()
+        .get(&external_peer_id)
+        .expect("accepted simultaneous-dial lane is registered")
+        .clone();
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    while let Ok(event) = main.protocol_rx.try_recv() {
+        assert!(
+            !matches!(event, ProtocolEvent::Closed { peer_id } if peer_id == external_peer_id),
+            "duplicate teardown must not close the accepted replay lifecycle"
+        );
+    }
+    while let Ok(event) = external.protocol_rx.try_recv() {
+        assert!(
+            !matches!(event, ProtocolEvent::Closed { peer_id } if peer_id == main_peer_id),
+            "duplicate teardown must not close the accepted reverse replay lifecycle"
+        );
+    }
+    assert!(
+        main.zks_2fa_registry
+            .as_ref()
+            .unwrap()
+            .read()
+            .unwrap()
+            .contains_key(&external_peer_id),
+        "accepted lane survives duplicate teardown"
+    );
+    assert!(
+        external
+            .zks_2fa_registry
+            .as_ref()
+            .unwrap()
+            .read()
+            .unwrap()
+            .contains_key(&main_peer_id),
+        "accepted reverse lane survives duplicate teardown"
+    );
+
+    let request = dummy_verify_batch();
+    lane.try_send_verify_batch(
+        request.clone(),
+        tokio::time::Instant::now() + TEST_VERIFY_REQUEST_TIMEOUT,
+    )
+    .unwrap();
+    let admitted = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        external.verify_batch_rx.as_mut().unwrap().recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(admitted.message, request);
+    assert_eq!(external.replay_rx.recv().await.unwrap(), record1);
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
@@ -1055,7 +1296,9 @@ async fn zks_2fa_emits_verifier_unauthorized() {
 
     while !(saw_verifier_unauthorized && saw_replay_requested) {
         match main.protocol_rx.recv().await {
-            Some(ProtocolEvent::VerifierUnauthorized { peer_id, signer }) => {
+            Some(ProtocolEvent::VerifierUnauthorized {
+                peer_id, signer, ..
+            }) => {
                 assert_eq!(peer_id, peer1_id);
                 assert!(signer.is_some());
                 saw_verifier_unauthorized = true;
@@ -1093,7 +1336,115 @@ async fn zks_2fa_emits_verifier_unauthorized() {
 }
 
 #[test_log::test(tokio::test(flavor = "multi_thread"))]
-async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
+async fn zks_2fa_forwards_owned_verify_batch_result_and_keeps_replay() {
+    let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
+    let record1 = dummy_record::<ZksProtocolV5>(1);
+    let configured_main_peer_id = net.peers_mut()[0].peer_id();
+    let main_addr = net.peers_mut()[0].local_addr();
+    let external_peer_id = net.peers_mut()[1].peer_id();
+
+    let mut main = net.peers_mut()[0].add_zks_2fa_sub_protocol(
+        NodeRole::MainNode,
+        0,
+        [(1, record1.clone())],
+        // SYSCOIN: Both mandatory replay and optional verifier admission are deferred until the
+        // incoming EN PeerId is known, so this trusted EN must bypass both zero-sized caps.
+        (0, 0),
+        None,
+        HashSet::from([external_peer_id]),
+    );
+    let mut external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
+        NodeRole::ExternalNode,
+        1,
+        [(1, record1.clone())],
+        (100, 100),
+        Some(default_verifier_signing_key()),
+        HashSet::from([configured_main_peer_id]),
+    );
+
+    let handle = net.spawn();
+    // SYSCOIN: Exercise the production direction explicitly: the verifier EN dials the MN.
+    handle.peers()[1]
+        .network()
+        .add_peer(configured_main_peer_id, main_addr);
+
+    let main_peer_id = *handle.peers()[0].peer_id();
+    let external_peer_id = *handle.peers()[1].peer_id();
+    loop {
+        match main.protocol_rx.recv().await {
+            Some(ProtocolEvent::VerifierAuthorized { peer_id, .. }) => {
+                assert_eq!(peer_id, external_peer_id);
+                break;
+            }
+            Some(ProtocolEvent::VerifierUnauthorized { signer, .. }) => {
+                panic!("unexpected verifier unauthorized event: {signer:?}")
+            }
+            Some(_) => {}
+            None => panic!("event stream closed before verifier was authorized"),
+        }
+    }
+
+    let main_lane = main
+        .zks_2fa_registry
+        .as_ref()
+        .unwrap()
+        .read()
+        .unwrap()
+        .get(&external_peer_id)
+        .expect("authenticated verifier lane is registered")
+        .clone();
+    let request = dummy_verify_batch();
+    main_lane
+        .try_send_verify_batch(
+            request.clone(),
+            tokio::time::Instant::now() + TEST_VERIFY_REQUEST_TIMEOUT,
+        )
+        .expect("owned request dispatch succeeds");
+
+    let admitted = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        external.verify_batch_rx.as_mut().unwrap().recv(),
+    )
+    .await
+    .expect("EN did not receive the transported request")
+    .expect("EN verifier request channel closed");
+    assert_eq!(admitted.peer_id, main_peer_id);
+    assert_ne!(admitted.lane_id, 0);
+    assert_eq!(admitted.message, request);
+
+    let expected = dummy_verify_batch_result();
+    external
+        .outgoing_verify_results_tx
+        .as_ref()
+        .unwrap()
+        .send(PeerVerifyBatchResult {
+            peer_id: admitted.peer_id,
+            lane_id: admitted.lane_id,
+            message: expected.clone(),
+        })
+        .unwrap();
+
+    let forwarded = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        main.verify_result_rx.as_mut().unwrap().recv(),
+    )
+    .await
+    .expect("MN did not receive the transported result")
+    .expect("MN verifier result channel closed");
+    assert_eq!(forwarded.peer_id, external_peer_id);
+    assert_ne!(forwarded.lane_id, 0);
+    assert_eq!(forwarded.message, expected);
+
+    let received_replay_record =
+        tokio::time::timeout(std::time::Duration::from_secs(5), external.replay_rx.recv())
+            .await
+            .expect("owned verification traffic must not close replay")
+            .unwrap();
+    assert_eq!(received_replay_record, record1);
+}
+
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn zks_2fa_drops_unowned_local_result_without_closing_replay() {
     let mut net = Testnet::create_with(2, MockEthProvider::default()).await;
     let record1 = dummy_record::<ZksProtocolV5>(1);
     let configured_main_peer_id = net.peers_mut()[0].peer_id();
@@ -1106,7 +1457,7 @@ async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
         None,
         HashSet::new(),
     );
-    let external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
+    let mut external = net.peers_mut()[1].add_zks_2fa_sub_protocol(
         NodeRole::ExternalNode,
         1,
         [(1, record1.clone())],
@@ -1121,7 +1472,8 @@ async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
     let main_peer_id = *handle.peers()[0].peer_id();
     let external_peer_id = *handle.peers()[1].peer_id();
 
-    // Wait for authentication to complete before injecting a verification result.
+    // Wait for authentication to complete before injecting a local result that is not owned by
+    // the live EN connection generation.
     loop {
         match main.protocol_rx.recv().await {
             Some(ProtocolEvent::VerifierAuthorized { peer_id, .. }) => {
@@ -1143,17 +1495,25 @@ async fn zks_2fa_forwards_verify_batch_result_to_main_node() {
         .unwrap()
         .send(PeerVerifyBatchResult {
             peer_id: main_peer_id,
+            lane_id: 0,
             message: result.clone(),
         })
         .unwrap();
 
-    let forwarded = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        main.verify_result_rx.as_mut().unwrap().recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(forwarded.peer_id, external_peer_id);
-    assert_eq!(forwarded.message, result);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            main.verify_result_rx.as_mut().unwrap().recv(),
+        )
+        .await
+        .is_err(),
+        "a result not owned by the live EN lane must not enter the main-node channel"
+    );
+
+    let received_replay_record =
+        tokio::time::timeout(std::time::Duration::from_secs(5), external.replay_rx.recv())
+            .await
+            .expect("dropping an unowned local result must not close replay")
+            .unwrap();
+    assert_eq!(received_replay_record, record1);
 }

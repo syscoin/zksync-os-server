@@ -1,10 +1,12 @@
 use crate::config::NetworkConfig;
 use crate::protocol::{
     ExternalNodeProtocolConfig, HandlerSharedState, MainNodeProtocolConfig, ProtocolEvent,
-    ZksProtocolConfig, ZksProtocolHandler,
+    SessionActivationRegistry, ZksProtocolConfig, ZksProtocolHandler,
 };
 use crate::raft::protocol::RaftProtocolHandler;
 use crate::session::PeerSessionStore;
+// SYSCOIN: Dispatch reports exact lane-admission failures without exposing raw senders.
+use crate::twofa::protocol::VerifyDispatchError;
 use crate::twofa::wire::Zks2faMessage;
 use crate::twofa::{
     ExternalNode2faConfig, MainNode2faConfig, Zks2faConnectionRegistry, Zks2faProtocolHandler,
@@ -12,15 +14,18 @@ use crate::twofa::{
 use crate::version::ZksProtocolV5;
 use crate::{VerifyBatch, VerifyBatchResult};
 use alloy::eips::eip2124::Head;
+// SYSCOIN: Service-side signer ownership is keyed by recovered validator address.
+use alloy::primitives::Address;
 use backon::{ConstantBuilder, Retryable};
-use futures::future::join_all;
+use futures::{StreamExt, future::join_all};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, Hardforks};
 use reth_discv5::discv5;
-use reth_eth_wire::{DisconnectReason, HelloMessageWithProtocols};
+use reth_eth_wire::HelloMessageWithProtocols;
 use reth_network::error::NetworkError;
 use reth_network::types::peers::config::PeerBackoffDurations;
 use reth_network::{
-    NetworkConfig as RethNetworkConfig, NetworkConfigBuilder, NetworkManager, Peers, PeersConfig,
+    NetworkConfig as RethNetworkConfig, NetworkConfigBuilder, NetworkEvent,
+    NetworkEventListenerProvider, NetworkManager, PeersConfig,
 };
 use reth_network_peers::PeerId;
 use reth_network_peers::{NodeRecord, TrustedPeer};
@@ -221,18 +226,53 @@ pub struct NetworkService {
     peer_sessions: Arc<RwLock<PeerSessionStore>>,
     /// Registry of live `zks_2fa` connections used to dispatch `VerifyBatch` to verifier peers.
     zks_2fa_registry: Zks2faConnectionRegistry,
+    // SYSCOIN: Releases only protocol handlers belonging to Reth's exact accepted RLPx session.
+    session_activations: SessionActivationRegistry,
 }
 
 #[derive(Debug, Clone)]
 pub struct PeerVerifyBatch {
     pub peer_id: PeerId,
+    /// SYSCOIN: Bind locally processed work to the exact connection generation so a delayed
+    /// result from a superseded lane cannot be routed through its replacement.
+    pub lane_id: u64,
     pub message: VerifyBatch,
 }
 
 #[derive(Debug, Clone)]
 pub struct PeerVerifyBatchResult {
     pub peer_id: PeerId,
+    /// SYSCOIN: Echo the connection generation that admitted the request; EN routing requires
+    /// both this value and `peer_id` to match the live lane.
+    pub lane_id: u64,
     pub message: VerifyBatchResult,
+}
+
+/// SYSCOIN: Collector-to-network envelope carrying the single absolute verification-attempt
+/// deadline. Queueing, peer selection, lane reservation, and response collection share this budget.
+#[derive(Debug, Clone)]
+pub struct VerifyBatchDispatch {
+    pub message: VerifyBatch,
+    pub deadline: tokio::time::Instant,
+}
+
+// SYSCOIN: Keep the chain and reth-generated RLPx identity together while registering both sides
+// of the peer-bound verifier-auth protocol.
+#[derive(Debug, Clone, Copy)]
+struct Zks2faLocalIdentity {
+    chain_id: u64,
+    peer_id: PeerId,
+}
+
+// SYSCOIN: Keep the shared replay/2FA registration boundary together so both handlers receive the
+// same trusted set, event channel, live-lane registry, and accepted-session activation bridge.
+#[derive(Debug, Clone)]
+struct ZksRlpxRegistrationContext {
+    identity: Zks2faLocalIdentity,
+    protocol_tx: mpsc::UnboundedSender<ProtocolEvent>,
+    zks_2fa_registry: Zks2faConnectionRegistry,
+    trusted_peers: HashSet<PeerId>,
+    session_activations: SessionActivationRegistry,
 }
 
 impl NetworkService {
@@ -330,6 +370,8 @@ impl NetworkService {
             port: config.port,
         };
         let chain_spec = client.chain_spec();
+        // SYSCOIN: Bind verifier authentication to the execution chain, not just reusable keys.
+        let chain_id = chain_spec.chain_id();
         let genesis = Head {
             hash: chain_spec.genesis_hash(),
             number: 0,
@@ -409,30 +451,42 @@ impl NetworkService {
             // Do not require any block hashes in `eth` RLPx protocol as it is unused
             .required_block_hashes(vec![])
             // Set network id to ZKsync OS chain's id, otherwise we might connect to unrelated peers
-            .network_id(Some(chain_spec.chain_id()))
+            .network_id(Some(chain_id))
             // Use genesis as chain head
             .set_head(genesis);
+        // SYSCOIN: Bind the verifier-auth transcript to the exact local RLPx identity generated
+        // by reth's network builder; config callers must not supply or duplicate this identity.
+        let local_peer_id = cfg_builder.get_peer_id();
+        let twofa_identity = Zks2faLocalIdentity {
+            chain_id,
+            peer_id: local_peer_id,
+        };
         // Boot nodes double as trusted peers, exempt from the connection cap on outgoing dials.
         let trusted_peer_ids: HashSet<PeerId> =
             config.boot_nodes.iter().map(|peer| peer.id).collect();
         let zks_2fa_registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::new()));
+        // SYSCOIN: Replay and verifier handlers must observe the same exact accepted-session key.
+        let session_activations = SessionActivationRegistry::default();
+        let registration = ZksRlpxRegistrationContext {
+            identity: twofa_identity,
+            protocol_tx,
+            zks_2fa_registry: zks_2fa_registry.clone(),
+            trusted_peers: trusted_peer_ids,
+            session_activations: session_activations.clone(),
+        };
         let mut cfg_builder = match protocol_config {
             ZksProtocolConfig::MainNode(protocol) => Self::register_main_node_rlpx_sub_protocols(
                 cfg_builder,
                 protocol,
                 replay,
-                protocol_tx,
-                zks_2fa_registry.clone(),
-                trusted_peer_ids,
+                registration,
             ),
             ZksProtocolConfig::ExternalNode(protocol) => {
                 Self::register_external_node_rlpx_sub_protocols(
                     cfg_builder,
                     protocol,
                     replay,
-                    protocol_tx,
-                    zks_2fa_registry.clone(),
-                    trusted_peer_ids,
+                    registration,
                 )
             }
         };
@@ -460,6 +514,8 @@ impl NetworkService {
                 protocol_rx,
                 peer_sessions: Arc::new(RwLock::new(PeerSessionStore::default())),
                 zks_2fa_registry,
+                // SYSCOIN: Preserve the bridge installed into both protocol handlers.
+                session_activations,
             },
             NetworkPorts {
                 tcp: bound_tcp_port,
@@ -472,21 +528,36 @@ impl NetworkService {
         builder: NetworkConfigBuilder,
         protocol: MainNodeProtocolConfig,
         replay: impl ReadReplay + Clone,
-        protocol_tx: mpsc::UnboundedSender<ProtocolEvent>,
-        zks_2fa_registry: Zks2faConnectionRegistry,
-        trusted_peers: HashSet<PeerId>,
+        registration: ZksRlpxRegistrationContext,
     ) -> NetworkConfigBuilder {
-        let state = HandlerSharedState::new(
+        // SYSCOIN: Both verifier-auth roles use the exact builder-derived identity and node-wide
+        // accepted-session bridge carried by this one registration context.
+        let ZksRlpxRegistrationContext {
+            identity,
+            protocol_tx,
+            zks_2fa_registry,
+            trusted_peers,
+            session_activations,
+        } = registration;
+        let state = HandlerSharedState::new_with_session_activations(
             protocol_tx.clone(),
             MAX_ACTIVE_CONNECTIONS,
             trusted_peers.clone(),
+            session_activations.clone(),
         );
         let twofa_config = MainNode2faConfig {
+            // SYSCOIN: Never accept peer-supplied substitutes for either transcript input.
+            chain_id: identity.chain_id,
+            local_peer_id: identity.peer_id,
             accepted_verifier_signers: protocol.accepted_verifier_signers,
             verify_result_tx: protocol.verify_result_tx,
         };
-        let twofa_state =
-            HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS, trusted_peers);
+        let twofa_state = HandlerSharedState::new_with_session_activations(
+            protocol_tx,
+            MAX_ACTIVE_CONNECTIONS,
+            trusted_peers,
+            session_activations,
+        );
         builder
             .add_rlpx_sub_protocol(ZksProtocolHandler::<ZksProtocolV5, _>::for_main_node(
                 replay, state,
@@ -502,20 +573,33 @@ impl NetworkService {
         builder: NetworkConfigBuilder,
         protocol: ExternalNodeProtocolConfig,
         replay: impl ReadReplay + Clone,
-        protocol_tx: mpsc::UnboundedSender<ProtocolEvent>,
-        zks_2fa_registry: Zks2faConnectionRegistry,
-        trusted_peers: HashSet<PeerId>,
+        registration: ZksRlpxRegistrationContext,
     ) -> NetworkConfigBuilder {
-        let state = HandlerSharedState::new(
+        // SYSCOIN: Both verifier-auth roles use the exact builder-derived identity and node-wide
+        // accepted-session bridge carried by this one registration context.
+        let ZksRlpxRegistrationContext {
+            identity,
+            protocol_tx,
+            zks_2fa_registry,
+            trusted_peers,
+            session_activations,
+        } = registration;
+        let state = HandlerSharedState::new_with_session_activations(
             protocol_tx.clone(),
             MAX_ACTIVE_CONNECTIONS,
             trusted_peers.clone(),
+            session_activations.clone(),
         );
         // Only verifier ENs advertise `zks_2fa`; replay-only ENs leave `verification` unset.
         let twofa_config = protocol
             .verification
             .clone()
             .map(|verifier| ExternalNode2faConfig {
+                chain_id: identity.chain_id,
+                local_peer_id: identity.peer_id,
+                // SYSCOIN: Reuse the replay allowlist as the verifier-work authorization boundary;
+                // an RLPx peer outside it must never reach the EN handshake or local verifier.
+                trusted_main_node_peers: protocol.trusted_main_node_peers.clone(),
                 signing_key: verifier.signing_key,
                 verify_batch_tx: verifier.verify_batch_tx,
                 outgoing_verify_results: verifier.outgoing_verify_results,
@@ -525,8 +609,13 @@ impl NetworkService {
         );
         match twofa_config {
             Some(twofa_config) => {
-                let twofa_state =
-                    HandlerSharedState::new(protocol_tx, MAX_ACTIVE_CONNECTIONS, trusted_peers);
+                // SYSCOIN: Optional EN 2FA shares replay's exact accepted-session bridge.
+                let twofa_state = HandlerSharedState::new_with_session_activations(
+                    protocol_tx,
+                    MAX_ACTIVE_CONNECTIONS,
+                    trusted_peers,
+                    session_activations,
+                );
                 builder.add_rlpx_sub_protocol(Zks2faProtocolHandler::for_external_node(
                     twofa_config,
                     twofa_state,
@@ -543,21 +632,35 @@ impl NetworkService {
     /// When `verify_request_rx` is provided, an additional main-node-only dispatcher task is
     /// spawned to forward outgoing `VerifyBatch` requests to eligible peers. Passing `None`
     /// disables that dispatcher while keeping the core network and protocol event tasks running.
+    /// SYSCOIN: Each receiver item retains the collector-created absolute attempt deadline.
     pub fn spawn(
         mut self,
         runtime: &Runtime,
-        verify_request_rx: Option<mpsc::Receiver<VerifyBatch>>,
+        verify_request_rx: Option<mpsc::Receiver<VerifyBatchDispatch>>,
     ) {
         let peer_sessions = Arc::clone(&self.peer_sessions);
         let zks_2fa_registry = Arc::clone(&self.zks_2fa_registry);
+        // SYSCOIN: Verifier events are applied only while their exact lane generation is current.
+        let zks_2fa_event_registry = Arc::clone(&self.zks_2fa_registry);
+        let network_handle = self.network_manager.handle().clone();
+        // SYSCOIN: Protocol handlers are installed during a tentative handshake. Activate work only
+        // from Reth's post-deduplication `ActivePeerSession` event for the exact remote socket.
+        let mut accepted_session_events = network_handle.event_listener();
+        let session_activations = self.session_activations.clone();
+        runtime.spawn_critical_task("p2p accepted session activator", async move {
+            while let Some(event) = accepted_session_events.next().await {
+                if let NetworkEvent::ActivePeerSession { info, .. } = event {
+                    session_activations.activate(info.peer_id, info.remote_addr);
+                }
+            }
+        });
         if let Some(mut verify_request_rx) = verify_request_rx {
             runtime.spawn_critical_task("p2p verify dispatcher", async move {
-                while let Some(request) = verify_request_rx.recv().await {
-                    dispatch_verify_batch(&peer_sessions, &zks_2fa_registry, request).await;
+                while let Some(dispatch) = verify_request_rx.recv().await {
+                    dispatch_verify_batch(&peer_sessions, &zks_2fa_registry, dispatch).await;
                 }
             });
         }
-        let network_handle = self.network_manager.handle().clone();
         runtime.spawn_critical_with_graceful_shutdown_signal(
             "p2p network task",
             |shutdown| async move {
@@ -605,32 +708,92 @@ impl NetworkService {
                             "peer replay requested"
                         );
                     }
-                    ProtocolEvent::VerifierRoleRequested { peer_id } => {
+                    ProtocolEvent::VerifierRoleRequested { peer_id, lane_id } => {
+                        // SYSCOIN: A delayed event from a losing or closed lane cannot mutate the
+                        // verifier state associated with the accepted replay connection.
+                        let registry = zks_2fa_event_registry.read().unwrap();
+                        let applied = registry.get(&peer_id).is_some_and(|handle| {
+                            handle.lane_id() == lane_id && handle.is_open()
+                        });
+                        if !applied {
+                            tracing::debug!(%peer_id, lane_id, "ignoring stale verifier role event");
+                            continue;
+                        }
                         peer_sessions.verifier_role_requested(peer_id);
+                        drop(registry);
                         tracing::debug!(
                             peer_id = %peer_id,
                             session = ?peer_sessions.get(peer_id),
                             "peer verifier role requested"
                         );
                     }
-                    ProtocolEvent::VerifierChallengeSent { peer_id, nonce } => {
+                    ProtocolEvent::VerifierChallengeSent {
+                        peer_id,
+                        lane_id,
+                        nonce,
+                    } => {
+                        // SYSCOIN: Challenge state is accepted only from the exact live lane that
+                        // generated its nonce, preventing stale-generation authorization state.
+                        let registry = zks_2fa_event_registry.read().unwrap();
+                        let applied = registry.get(&peer_id).is_some_and(|handle| {
+                            handle.lane_id() == lane_id && handle.is_open()
+                        });
+                        if !applied {
+                            tracing::debug!(%peer_id, lane_id, "ignoring stale verifier challenge event");
+                            continue;
+                        }
                         peer_sessions.verifier_challenged(peer_id, nonce);
+                        drop(registry);
                         tracing::debug!(
                             peer_id = %peer_id,
                             session = ?peer_sessions.get(peer_id),
                             "peer verifier challenge sent"
                         );
                     }
-                    ProtocolEvent::VerifierAuthorized { peer_id, signer } => {
-                        peer_sessions.verifier_authorized(peer_id, signer);
+                    ProtocolEvent::VerifierAuthorized {
+                        peer_id,
+                        lane_id,
+                        signer,
+                    } => {
+                        // SYSCOIN: Apply signer ownership and exact-handle closure while the session
+                        // write lock remains held, so dispatch can never observe two eligible
+                        // PeerIds authenticated by the same accepted signer.
+                        let applied = apply_current_verifier_authorization(
+                            &mut peer_sessions,
+                            &zks_2fa_event_registry,
+                            peer_id,
+                            lane_id,
+                            signer,
+                        );
+                        if !applied {
+                            tracing::debug!(%peer_id, lane_id, "ignoring stale verifier authorization event");
+                            continue;
+                        }
                         tracing::debug!(
                             peer_id = %peer_id,
+                            lane_id,
+                            %signer,
                             session = ?peer_sessions.get(peer_id),
                             "peer verifier authorized"
                         );
                     }
-                    ProtocolEvent::VerifierUnauthorized { peer_id, signer } => {
+                    ProtocolEvent::VerifierUnauthorized {
+                        peer_id,
+                        lane_id,
+                        signer,
+                    } => {
+                        // SYSCOIN: Rejection from a stale lane cannot downgrade a newer verifier
+                        // authorization for the same authenticated RLPx PeerId.
+                        let registry = zks_2fa_event_registry.read().unwrap();
+                        let applied = registry
+                            .get(&peer_id)
+                            .is_some_and(|handle| handle.lane_id() == lane_id);
+                        if !applied {
+                            tracing::debug!(%peer_id, lane_id, "ignoring stale verifier rejection event");
+                            continue;
+                        }
                         peer_sessions.verifier_unauthorized(peer_id, signer);
+                        drop(registry);
                         tracing::debug!(
                             peer_id = %peer_id,
                             session = ?peer_sessions.get(peer_id),
@@ -655,21 +818,67 @@ impl NetworkService {
                         peer_id,
                         next_block,
                     } => {
-                        // A dead replay flow can hide behind a healthy-looking RLPx session, so
-                        // force the session down; the peer is redialed with the configured short
-                        // backoffs and the new session re-requests replays from `next_block`.
+                        // SYSCOIN: `run_en_connection` returns immediately after this event, which
+                        // closes its exact mandatory zks wrapper and therefore its owning RLPx
+                        // session. Never perform a delayed PeerId-wide disconnect here: the old
+                        // event could otherwise tear down a replacement session after reconnect.
                         tracing::warn!(
                             peer_id = %peer_id,
                             next_block,
-                            "replay stream stalled; disconnecting peer to force a fresh session"
+                            "replay stream stalled; exact protocol connection is closing"
                         );
-                        network_handle
-                            .disconnect_peer_with_reason(peer_id, DisconnectReason::PingTimeout);
                     }
                 }
             }
         });
     }
+}
+
+// SYSCOIN: Linearize accepted-signer ownership at the service event boundary. The caller owns the
+// `PeerSessionStore` write lock; this helper additionally holds the registry write lock while it
+// makes prior same-signer sessions ineligible and closes only their recorded lane generations.
+fn apply_current_verifier_authorization(
+    peer_sessions: &mut PeerSessionStore,
+    zks_2fa_registry: &Zks2faConnectionRegistry,
+    peer_id: PeerId,
+    lane_id: u64,
+    signer: Address,
+) -> bool {
+    let registry = zks_2fa_registry
+        .write()
+        .expect("zks_2fa connection registry lock poisoned");
+    let is_current = registry
+        .get(&peer_id)
+        .is_some_and(|handle| handle.lane_id() == lane_id && handle.is_authorized());
+    if !is_current {
+        return false;
+    }
+
+    // SYSCOIN: Refuse a stale authorization event before it can displace the exact current owner
+    // of the same signer; the replay session is the lifecycle authority.
+    let Some(displaced) = peer_sessions.verifier_authorized(peer_id, lane_id, signer) else {
+        return false;
+    };
+    for (displaced_peer_id, displaced_lane_id) in displaced {
+        let closed = registry
+            .get(&displaced_peer_id)
+            .filter(|handle| handle.lane_id() == displaced_lane_id)
+            .map(|handle| {
+                handle.close();
+                true
+            })
+            .unwrap_or(false);
+        tracing::warn!(
+            peer_id = %displaced_peer_id,
+            lane_id = displaced_lane_id,
+            %signer,
+            closed,
+            replacement_peer_id = %peer_id,
+            replacement_lane_id = lane_id,
+            "superseded duplicate verifier signer lane"
+        );
+    }
+    true
 }
 
 /// Dispatches a verify request to all currently eligible verifier peers.
@@ -680,9 +889,23 @@ impl NetworkService {
 async fn dispatch_verify_batch(
     peer_sessions: &Arc<RwLock<PeerSessionStore>>,
     zks_2fa_registry: &Zks2faConnectionRegistry,
-    request: VerifyBatch,
+    dispatch: VerifyBatchDispatch,
 ) {
+    let VerifyBatchDispatch {
+        message: request,
+        deadline,
+    } = dispatch;
     let required_block = request.last_block_number;
+    // SYSCOIN: A collector that already exhausted its attempt budget must not create stale lane
+    // reservations. The per-lane check repeats this after peer-selection work to close the race.
+    if deadline <= tokio::time::Instant::now() {
+        tracing::warn!(
+            request_id = request.request_id,
+            batch_number = request.batch_number,
+            "skipping expired verify request"
+        );
+        return;
+    }
     let eligible_peers: Vec<_> = {
         let peer_sessions = peer_sessions.read().unwrap();
         peer_sessions
@@ -700,21 +923,29 @@ async fn dispatch_verify_batch(
         return;
     }
 
-    let dispatch_targets: Vec<_> = {
-        let zks_2fa_registry = zks_2fa_registry.read().unwrap();
-        eligible_peers
-            .into_iter()
-            .map(|peer_id| {
-                let outbound_tx = zks_2fa_registry
-                    .get(&peer_id)
-                    .map(|handle| handle.outbound_tx.clone());
-                (peer_id, outbound_tx)
-            })
-            .collect()
-    };
+    // SYSCOIN: Encode the local request before entering per-peer registry critical sections.
+    let encoded_request = Zks2faMessage::VerifyBatch(request.clone()).encoded();
     let mut sent = 0usize;
-    for (peer_id, outbound_tx) in dispatch_targets {
-        let Some(outbound_tx) = outbound_tx else {
+    for (peer_id, authorized_lane_id) in eligible_peers {
+        let encoded_request = encoded_request.clone();
+        // SYSCOIN: Keep the registry read lock through the nonblocking reservation+enqueue so a
+        // replacement lane cannot race this dispatch. Never await a slow or wedged peer.
+        let dispatch_result = {
+            let zks_2fa_registry = zks_2fa_registry.read().unwrap();
+            zks_2fa_registry.get(&peer_id).and_then(|handle| {
+                // SYSCOIN: PeerId alone is insufficient across teardown/event races. Dispatch may
+                // use only the exact lane generation recorded by successful authorization.
+                (handle.lane_id() == authorized_lane_id).then(|| {
+                    handle.try_enqueue_verify_batch(
+                        request.request_id,
+                        request.batch_number,
+                        encoded_request,
+                        deadline,
+                    )
+                })
+            })
+        };
+        let Some(dispatch_result) = dispatch_result else {
             tracing::warn!(
                 peer_id = %peer_id,
                 request_id = request.request_id,
@@ -723,24 +954,37 @@ async fn dispatch_verify_batch(
             );
             continue;
         };
-        let encoded = Zks2faMessage::VerifyBatch(request.clone()).encoded();
-        if outbound_tx.send(encoded).await.is_err() {
-            tracing::warn!(
-                peer_id = %peer_id,
-                request_id = request.request_id,
-                batch_number = request.batch_number,
-                "failed to dispatch verify request"
-            );
-            continue;
+        // SYSCOIN: Typed admission failures remain peer-local and never stall other lanes.
+        match dispatch_result {
+            Ok(()) => {
+                sent += 1;
+                tracing::info!(
+                    peer_id = %peer_id,
+                    request_id = request.request_id,
+                    batch_number = request.batch_number,
+                    required_block,
+                    "dispatched verify request"
+                );
+            }
+            Err(error) => {
+                let severity = match error {
+                    VerifyDispatchError::OutboundClosed => "closed",
+                    VerifyDispatchError::OutboundFull => "full",
+                    VerifyDispatchError::LaneClosed => "lane closed",
+                    VerifyDispatchError::LaneNotAuthorized => "lane not authorized",
+                    VerifyDispatchError::Outstanding { .. } => "request already outstanding",
+                    VerifyDispatchError::RequestExpired => "request expired",
+                };
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    request_id = request.request_id,
+                    batch_number = request.batch_number,
+                    ?error,
+                    severity,
+                    "skipping verify request for unavailable verifier lane"
+                );
+            }
         }
-        sent += 1;
-        tracing::info!(
-            peer_id = %peer_id,
-            request_id = request.request_id,
-            batch_number = request.batch_number,
-            required_block,
-            "dispatched verify request"
-        );
     }
 
     tracing::info!(
@@ -758,13 +1002,16 @@ mod tests {
     use super::BOOT_NODE_RESOLUTION_RETRY_BUILDER;
     use super::BOOT_NODE_RESOLUTION_RETRY_DELAY;
     use super::BootNodeResolutionState;
+    use super::VerifyBatchDispatch;
+    use super::apply_current_verifier_authorization;
     use super::dispatch_verify_batch;
     use super::resolve_boot_nodes_once;
     use crate::VerifyBatch;
     use crate::session::PeerSessionStore;
+    use crate::twofa::protocol::VerifyDispatchError;
     use crate::twofa::wire::Zks2faMessage;
     use crate::twofa::{Zks2faConnectionRegistry, Zks2faPeerHandle};
-    use alloy::primitives::{Address, B512, Bytes};
+    use alloy::primitives::{Address, B512, Bytes, bytes::BytesMut};
     use backon::{Retryable, Sleeper};
     use reth_network::error::NetworkError;
     use reth_network_peers::PeerId;
@@ -998,9 +1245,24 @@ mod tests {
         }
     }
 
+    fn verify_dispatch(message: VerifyBatch) -> VerifyBatchDispatch {
+        VerifyBatchDispatch {
+            message,
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+        }
+    }
+
+    fn authorized_peer_handle(outbound_tx: mpsc::Sender<BytesMut>) -> Zks2faPeerHandle {
+        let handle = Zks2faPeerHandle::new(outbound_tx);
+        assert!(handle.begin_authentication());
+        assert!(handle.authorize());
+        handle
+    }
+
     fn add_authorized_peer(
         store: &mut PeerSessionStore,
         peer_id: PeerId,
+        lane_id: u64,
         last_block_sent: u64,
         signer: Address,
     ) {
@@ -1008,7 +1270,13 @@ mod tests {
         store.insert(now, peer_id, socket_addr(30_300 + u16::from(peer_id[0])));
         store.replay_requested(peer_id, 1);
         store.replay_block_sent(now, peer_id, last_block_sent);
-        store.verifier_authorized(peer_id, signer);
+        assert!(
+            store
+                .verifier_authorized(peer_id, lane_id, signer)
+                .unwrap()
+                .is_empty(),
+            "test helper requires one signer per peer unless displacement is under test"
+        );
     }
 
     #[test_log::test(tokio::test(flavor = "current_thread"))]
@@ -1018,9 +1286,28 @@ mod tests {
         let unauthorized_peer = peer_id(0x44);
         let signer = Address::repeat_byte(0xAA);
 
+        let (eligible_tx, mut eligible_rx) = mpsc::channel(1);
+        let eligible_handle = authorized_peer_handle(eligible_tx);
+        let (lagging_tx, mut lagging_rx) = mpsc::channel(1);
+        let lagging_handle = authorized_peer_handle(lagging_tx);
+        let (unauthorized_tx, mut unauthorized_rx) = mpsc::channel(1);
+        let unauthorized_handle = authorized_peer_handle(unauthorized_tx);
+
         let mut store = PeerSessionStore::default();
-        add_authorized_peer(&mut store, eligible_peer, 120, signer);
-        add_authorized_peer(&mut store, lagging_peer, 119, signer);
+        add_authorized_peer(
+            &mut store,
+            eligible_peer,
+            eligible_handle.lane_id(),
+            120,
+            signer,
+        );
+        add_authorized_peer(
+            &mut store,
+            lagging_peer,
+            lagging_handle.lane_id(),
+            119,
+            Address::repeat_byte(0xBB),
+        );
         let now = Instant::now();
         store.insert(now, unauthorized_peer, socket_addr(30_368));
         store.replay_requested(unauthorized_peer, 1);
@@ -1030,34 +1317,20 @@ mod tests {
         let peer_sessions = Arc::new(RwLock::new(store));
         let zks_2fa_registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::new()));
 
-        let (eligible_tx, mut eligible_rx) = mpsc::channel(1);
-        let (lagging_tx, mut lagging_rx) = mpsc::channel(1);
-        let (unauthorized_tx, mut unauthorized_rx) = mpsc::channel(1);
-
         {
             let mut registry = zks_2fa_registry.write().unwrap();
-            registry.insert(
-                eligible_peer,
-                Zks2faPeerHandle {
-                    outbound_tx: eligible_tx,
-                },
-            );
-            registry.insert(
-                lagging_peer,
-                Zks2faPeerHandle {
-                    outbound_tx: lagging_tx,
-                },
-            );
-            registry.insert(
-                unauthorized_peer,
-                Zks2faPeerHandle {
-                    outbound_tx: unauthorized_tx,
-                },
-            );
+            registry.insert(eligible_peer, eligible_handle);
+            registry.insert(lagging_peer, lagging_handle);
+            registry.insert(unauthorized_peer, unauthorized_handle);
         }
 
         let request = verify_request();
-        dispatch_verify_batch(&peer_sessions, &zks_2fa_registry, request.clone()).await;
+        dispatch_verify_batch(
+            &peer_sessions,
+            &zks_2fa_registry,
+            verify_dispatch(request.clone()),
+        )
+        .await;
 
         let encoded =
             tokio::time::timeout(std::time::Duration::from_millis(250), eligible_rx.recv())
@@ -1085,6 +1358,73 @@ mod tests {
         );
     }
 
+    // SYSCOIN: One accepted signing key cannot multiply voting/admission weight by authenticating
+    // under two RLPx PeerIds. The later authorization wins atomically and closes the exact prior
+    // lane before any dispatcher can observe both sessions as eligible.
+    #[test_log::test(tokio::test(flavor = "current_thread"))]
+    async fn same_signer_authorization_leaves_only_one_live_dispatch_lane() {
+        let first_peer = peer_id(0x51);
+        let second_peer = peer_id(0x52);
+        let signer = Address::repeat_byte(0xAA);
+        let now = Instant::now();
+        let mut store = PeerSessionStore::default();
+        for (peer_id, port) in [(first_peer, 30_351), (second_peer, 30_352)] {
+            store.insert(now, peer_id, socket_addr(port));
+            store.replay_requested(peer_id, 1);
+            store.replay_block_sent(now, peer_id, 120);
+        }
+
+        let (first_tx, mut first_rx) = mpsc::channel(1);
+        let first_handle = authorized_peer_handle(first_tx);
+        let (second_tx, mut second_rx) = mpsc::channel(1);
+        let second_handle = authorized_peer_handle(second_tx);
+        let registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::from([
+            (first_peer, first_handle.clone()),
+            (second_peer, second_handle.clone()),
+        ])));
+
+        assert!(apply_current_verifier_authorization(
+            &mut store,
+            &registry,
+            first_peer,
+            first_handle.lane_id(),
+            signer,
+        ));
+        assert!(apply_current_verifier_authorization(
+            &mut store,
+            &registry,
+            second_peer,
+            second_handle.lane_id(),
+            signer,
+        ));
+        assert_eq!(
+            first_handle.try_enqueue_verify_batch(
+                1,
+                1,
+                BytesMut::from(&b"superseded"[..]),
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
+            Err(VerifyDispatchError::LaneClosed),
+        );
+        assert_eq!(
+            store.authorized_verifier_peers(120).collect::<Vec<_>>(),
+            vec![(second_peer, second_handle.lane_id())],
+        );
+
+        let peer_sessions = Arc::new(RwLock::new(store));
+        let request = verify_request();
+        dispatch_verify_batch(&peer_sessions, &registry, verify_dispatch(request.clone())).await;
+        assert!(first_rx.try_recv().is_err());
+        let encoded = second_rx
+            .try_recv()
+            .expect("the sole current signer lane receives the request");
+        let mut encoded = encoded.as_ref();
+        assert!(matches!(
+            Zks2faMessage::decode_message(&mut encoded).unwrap(),
+            Zks2faMessage::VerifyBatch(actual) if actual == request
+        ));
+    }
+
     #[test_log::test(tokio::test(flavor = "current_thread"))]
     async fn dispatch_verify_batch_returns_when_no_eligible_peers_exist() {
         let peer_sessions = Arc::new(RwLock::new(PeerSessionStore::default()));
@@ -1092,10 +1432,94 @@ mod tests {
 
         tokio::time::timeout(
             std::time::Duration::from_millis(250),
-            dispatch_verify_batch(&peer_sessions, &zks_2fa_registry, verify_request()),
+            dispatch_verify_batch(
+                &peer_sessions,
+                &zks_2fa_registry,
+                verify_dispatch(verify_request()),
+            ),
         )
         .await
         .expect("dispatch should return immediately when there are no eligible peers");
+    }
+
+    // SYSCOIN: Dispatcher backlog cannot turn an expired collector attempt into a stale lane
+    // reservation; a later live attempt must still be admitted on the same lane.
+    #[test_log::test(tokio::test(start_paused = true))]
+    async fn expired_dispatch_reserves_nothing_and_next_attempt_remains_eligible() {
+        let peer = peer_id(0x61);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(1);
+        let handle = authorized_peer_handle(outbound_tx);
+        let mut store = PeerSessionStore::default();
+        add_authorized_peer(
+            &mut store,
+            peer,
+            handle.lane_id(),
+            120,
+            Address::repeat_byte(0xAA),
+        );
+        let peer_sessions = Arc::new(RwLock::new(store));
+        let registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::new()));
+        registry.write().unwrap().insert(peer, handle);
+
+        let expired = VerifyBatchDispatch {
+            message: verify_request(),
+            deadline: tokio::time::Instant::now(),
+        };
+        dispatch_verify_batch(&peer_sessions, &registry, expired).await;
+        assert!(outbound_rx.try_recv().is_err());
+
+        let mut live_request = verify_request();
+        live_request.request_id += 1;
+        dispatch_verify_batch(
+            &peer_sessions,
+            &registry,
+            verify_dispatch(live_request.clone()),
+        )
+        .await;
+        let encoded = outbound_rx
+            .try_recv()
+            .expect("expired dispatch must not retain a reservation");
+        let mut encoded = encoded.as_ref();
+        assert!(matches!(
+            Zks2faMessage::decode_message(&mut encoded).unwrap(),
+            Zks2faMessage::VerifyBatch(actual) if actual == live_request
+        ));
+    }
+
+    // SYSCOIN: A stale session event may retain the PeerId after a lane turnover. Eligibility must
+    // exact-join its authenticated generation and leave the current handle unreserved on mismatch.
+    #[test_log::test(tokio::test(flavor = "current_thread"))]
+    async fn dispatch_rejects_session_and_registry_lane_mismatch() {
+        let peer = peer_id(0x62);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel(1);
+        let handle = authorized_peer_handle(outbound_tx);
+        let stale_lane_id = handle.lane_id().checked_add(1).unwrap();
+        let mut store = PeerSessionStore::default();
+        add_authorized_peer(
+            &mut store,
+            peer,
+            stale_lane_id,
+            120,
+            Address::repeat_byte(0xAA),
+        );
+        let sessions = Arc::new(RwLock::new(store));
+        let registry: Zks2faConnectionRegistry =
+            Arc::new(RwLock::new(HashMap::from([(peer, handle.clone())])));
+
+        dispatch_verify_batch(&sessions, &registry, verify_dispatch(verify_request())).await;
+        assert!(outbound_rx.try_recv().is_err());
+        handle
+            .try_enqueue_verify_batch(
+                99,
+                10,
+                BytesMut::from(&b"current lane remains free"[..]),
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(
+            outbound_rx.try_recv().unwrap(),
+            &b"current lane remains free"[..]
+        );
     }
 
     #[test_log::test(tokio::test(flavor = "current_thread"))]
@@ -1105,26 +1529,41 @@ mod tests {
         let connected_peer = peer_id(0x11);
         let disconnected_peer = peer_id(0x22);
         let signer = Address::repeat_byte(0xAA);
+        let (twofa_tx, mut twofa_rx) = mpsc::channel(1);
+        let connected_handle = authorized_peer_handle(twofa_tx);
 
         let mut store = PeerSessionStore::default();
-        add_authorized_peer(&mut store, connected_peer, 120, signer);
-        add_authorized_peer(&mut store, disconnected_peer, 120, signer);
+        add_authorized_peer(
+            &mut store,
+            connected_peer,
+            connected_handle.lane_id(),
+            120,
+            signer,
+        );
+        add_authorized_peer(
+            &mut store,
+            disconnected_peer,
+            99,
+            120,
+            Address::repeat_byte(0xBB),
+        );
 
         let peer_sessions = Arc::new(RwLock::new(store));
         let zks_2fa_registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::new()));
 
-        let (twofa_tx, mut twofa_rx) = mpsc::channel(1);
-        zks_2fa_registry.write().unwrap().insert(
-            connected_peer,
-            Zks2faPeerHandle {
-                outbound_tx: twofa_tx,
-            },
-        );
+        zks_2fa_registry
+            .write()
+            .unwrap()
+            .insert(connected_peer, connected_handle);
 
         let request = verify_request();
         tokio::time::timeout(
             std::time::Duration::from_millis(250),
-            dispatch_verify_batch(&peer_sessions, &zks_2fa_registry, request.clone()),
+            dispatch_verify_batch(
+                &peer_sessions,
+                &zks_2fa_registry,
+                verify_dispatch(request.clone()),
+            ),
         )
         .await
         .expect("dispatch should not block on the disconnected peer");
@@ -1138,5 +1577,78 @@ mod tests {
             Zks2faMessage::VerifyBatch(actual) => assert_eq!(actual, request),
             other => panic!("unexpected zks_2fa message dispatched: {other:?}"),
         }
+    }
+
+    #[test_log::test(tokio::test(flavor = "current_thread"))]
+    async fn full_peer_does_not_block_dispatch_to_other_peers_and_rolls_back() {
+        let full_peer = peer_id(0x11);
+        let open_peer = peer_id(0x22);
+        let signer = Address::repeat_byte(0xAA);
+        let (full_tx, mut full_rx) = mpsc::channel(1);
+        full_tx
+            .try_send(BytesMut::from(&b"already queued"[..]))
+            .unwrap();
+        let full_handle = authorized_peer_handle(full_tx);
+        let (open_tx, mut open_rx) = mpsc::channel(1);
+        let open_handle = authorized_peer_handle(open_tx);
+        let mut store = PeerSessionStore::default();
+        add_authorized_peer(&mut store, full_peer, full_handle.lane_id(), 120, signer);
+        add_authorized_peer(
+            &mut store,
+            open_peer,
+            open_handle.lane_id(),
+            120,
+            Address::repeat_byte(0xBB),
+        );
+        let peer_sessions = Arc::new(RwLock::new(store));
+        let zks_2fa_registry: Zks2faConnectionRegistry = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let mut registry = zks_2fa_registry.write().unwrap();
+            registry.insert(full_peer, full_handle);
+            registry.insert(open_peer, open_handle);
+        }
+
+        let first_request = verify_request();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            dispatch_verify_batch(
+                &peer_sessions,
+                &zks_2fa_registry,
+                verify_dispatch(first_request.clone()),
+            ),
+        )
+        .await
+        .expect("a full peer must not block dispatcher progress");
+        assert_eq!(full_rx.try_recv().unwrap(), &b"already queued"[..]);
+        let first_encoded = open_rx
+            .try_recv()
+            .expect("open peer receives first request");
+        let mut first_slice = first_encoded.as_ref();
+        assert!(matches!(
+            Zks2faMessage::decode_message(&mut first_slice).unwrap(),
+            Zks2faMessage::VerifyBatch(actual) if actual == first_request
+        ));
+
+        let mut second_request = verify_request();
+        second_request.request_id = 42;
+        second_request.batch_number = 8;
+        dispatch_verify_batch(
+            &peer_sessions,
+            &zks_2fa_registry,
+            verify_dispatch(second_request.clone()),
+        )
+        .await;
+        let second_encoded = full_rx
+            .try_recv()
+            .expect("full-peer reservation must roll back after failed enqueue");
+        let mut second_slice = second_encoded.as_ref();
+        assert!(matches!(
+            Zks2faMessage::decode_message(&mut second_slice).unwrap(),
+            Zks2faMessage::VerifyBatch(actual) if actual == second_request
+        ));
+        assert!(
+            open_rx.try_recv().is_err(),
+            "open peer still owns first request"
+        );
     }
 }

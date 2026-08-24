@@ -12,17 +12,40 @@ pub fn verify_real_fri_proof_bytes(
     batch_metadata: &BatchMetadata,
     proof_bytes: &[u8],
 ) -> Result<(), SubmitError> {
-    let proving_version = batch_metadata
-        .proving_version()
-        .map_err(|err| SubmitError::Other(format!("cannot determine proving version: {err:#}")))?;
+    let proving_version = batch_metadata.proving_version().map_err(|err| {
+        SubmitError::TemporaryInternal(format!("cannot determine proving version: {err:#}"))
+    })?;
     debug_assert_eq!(proving_version, ProvingVersion::V8);
     let expected_hash_u32s = expected_public_input_registers(batch_metadata)?;
     let batch_number = batch_metadata.batch_info.commit_info.batch_number;
-    let program_proof: execution_utils::unrolled::UnrolledProgramProof =
-        bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-            .map_err(SubmitError::DeserializationFailed)?
-            .0;
+    let program_proof = decode_canonical_real_fri_proof(proof_bytes)?;
     verify_fri_proof(expected_hash_u32s, &program_proof, batch_number)
+}
+
+/// SYSCOIN: Bincode decoders accept a valid prefix by design. Prover proofs are capabilities and
+/// durable artifacts, so require full consumption to prevent authenticated storage/response
+/// amplification with an otherwise-valid proof plus arbitrary trailing bytes.
+pub fn decode_canonical_real_fri_proof(
+    proof_bytes: &[u8],
+) -> Result<execution_utils::unrolled::UnrolledProgramProof, SubmitError> {
+    decode_canonical_bincode(proof_bytes)
+}
+
+// SYSCOIN: Keep canonical-consumption enforcement independently regression-testable without a
+// multi-megabyte cryptographic fixture; the production wrapper above fixes `T` to the V8 proof.
+fn decode_canonical_bincode<T: serde::de::DeserializeOwned>(
+    proof_bytes: &[u8],
+) -> Result<T, SubmitError> {
+    let (proof, consumed) =
+        bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+            .map_err(SubmitError::DeserializationFailed)?;
+    if consumed != proof_bytes.len() {
+        return Err(SubmitError::InvalidProofShape(format!(
+            "canonical proof consumed {consumed} of {} bytes",
+            proof_bytes.len()
+        )));
+    }
+    Ok(proof)
 }
 
 /// Expected batch public-input hash, as the final register values a valid FRI proof of this
@@ -37,10 +60,12 @@ pub fn expected_public_input_registers(
 ) -> Result<[u32; 8], SubmitError> {
     let state_before = batch_metadata.previous_stored_batch_info.state_commitment;
     let batch_info = &batch_metadata.batch_info;
-    let chain_config_hash = zksync_os_native_pig::chain_config_hash(
-        batch_info.commit_info.chain_id,
-    )
-    .map_err(|err| SubmitError::Other(format!("cannot compute chain config hash: {err:#}")))?;
+    let chain_config_hash =
+        zksync_os_native_pig::chain_config_hash(batch_info.commit_info.chain_id)
+            // SYSCOIN: A local chain-config lookup failure is retryable and must retain the FRI lease.
+            .map_err(|err| {
+                SubmitError::TemporaryInternal(format!("cannot compute chain config hash: {err:#}"))
+            })?;
     let hash = keccak256(
         [
             state_before.0,
@@ -76,7 +101,9 @@ pub fn verify_fri_proof(
             msg,
             "V8 proof carries an invalid recursion chain"
         );
-        SubmitError::Other(format!("invalid V8 proof recursion chain: {msg}"))
+        // SYSCOIN: This is authenticated prover input, not a transient server fault; classify it
+        // as a definitive shape rejection so the exact lease is revoked for immediate repick.
+        SubmitError::InvalidProofShape(format!("invalid V8 proof recursion chain: {msg}"))
     })?;
 
     // The unified-layer verifier returns Err on invalid proofs, but its internals can
@@ -345,7 +372,7 @@ fn hash_as_register_values(hash: B256) -> [u32; 8] {
 
 #[cfg(test)]
 mod tests {
-    use super::{V8ProofShape, v8_verifier};
+    use super::{V8ProofShape, decode_canonical_bincode, v8_verifier};
     use execution_utils::unified_recursion_target_family_proofs;
     use verifier_common::SecurityModel;
 
@@ -364,6 +391,21 @@ mod tests {
     #[test]
     fn wrapper_compatible_security_100_shape_is_accepted() {
         canonical_security_100_shape().validate().unwrap();
+    }
+
+    // SYSCOIN: Bincode accepts a valid prefix; authenticated proof storage must not accept it.
+    #[test]
+    fn canonical_decoder_rejects_trailing_bytes() {
+        let mut encoded = bincode::serde::encode_to_vec(42_u64, bincode::config::standard())
+            .expect("u64 encoding succeeds");
+        assert_eq!(decode_canonical_bincode::<u64>(&encoded).unwrap(), 42);
+        encoded.push(0xaa);
+        assert!(
+            decode_canonical_bincode::<u64>(&encoded)
+                .unwrap_err()
+                .to_string()
+                .contains("canonical proof consumed")
+        );
     }
 
     #[test]

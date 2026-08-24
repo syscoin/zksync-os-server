@@ -83,8 +83,8 @@ pub fn raw_transaction_rlp_item_length(raw_tx: &[u8]) -> usize {
     }
 }
 
-/// Proof that an L2-to-L1 log belongs to a source batch and, optionally, its settlement layer's
-/// MessageRoot.
+/// SYSCOIN: Proof that an L2-to-L1 log belongs to a source batch and, for Gateway settlement,
+/// optionally continues through Gateway's MessageRoot aggregation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct L2ToL1LogProof {
@@ -98,13 +98,13 @@ pub struct L2ToL1LogProof {
     pub id: u32,
     /// Source batch root reached by the first proof segment.
     pub root: B256,
-    /// Settlement-layer block where the source batch was executed for a
-    /// [`LogProofTarget::MessageRoot`] proof.
+    /// SYSCOIN: Gateway block where the source batch was executed for either Gateway proof target.
     ///
-    /// It is `None` for [`LogProofTarget::L1BatchRoot`] proofs, which do not include a MessageRoot
-    /// extension.
-    // SYSCOIN: Use the settlement-layer-neutral V32 key because proofs may route through Gateway
-    // or directly through L1 MessageRoot.
+    /// It is `None` for the final [`LogProofTarget::L1BatchRoot`] proof returned for a batch that
+    /// settled directly on L1. [`LogProofTarget::MessageRoot`] is unsupported for direct-L1
+    /// settlement.
+    // SYSCOIN: Use the settlement-layer-neutral V32 key while documenting its topology-dependent
+    // presence: both Gateway targets return the source batch's Gateway execution block.
     pub settlement_layer_block_number: Option<u64>,
 }
 
@@ -123,8 +123,8 @@ pub struct ImtLeaf {
 
 /// Membership proof for one commit value in a chain's atomic-interop commitment tree.
 ///
-/// This response authenticates the commit leaf against the IMT root at one L2 block. To execute an
-/// atomic bundle, the caller pairs it with a `MessageRoot` proof from
+/// SYSCOIN: This response authenticates the commit leaf against the IMT root at one L2 block. To
+/// execute an atomic bundle, the caller pairs it with a Gateway-settled `MessageRoot` proof from
 /// `zks_getL2ToL1LogProof`; that second proof authenticates the IMT root across chains.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -145,20 +145,22 @@ pub struct ImtInclusionProof {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LogProofTarget {
-    /// Stops at the source chain's batch root without reading or adding any MessageRoot state.
+    /// SYSCOIN: Selects the batch root used by L1 verification flows such as withdrawal
+    /// finalization.
     ///
-    /// This is the default used by L1 verification flows such as withdrawal finalization.
+    /// For direct-L1 settlement, the source batch root is already final and no MessageRoot segment
+    /// is added. For Gateway settlement, the proof recursively extends through Gateway's
+    /// `L2MessageRoot` to the containing Gateway batch root and is returned only after that root is
+    /// authenticated against L1.
     #[default]
     L1BatchRoot,
-    /// SYSCOIN: Extends the source batch-root proof through the source chain's batch tree and then
-    /// the recorded settlement layer's shared chain tree in MessageRoot.
+    /// SYSCOIN: Extends a Gateway-settled source batch-root proof through its batch tree and the
+    /// shared chain tree in Gateway's `L2MessageRoot`.
     ///
-    /// MessageRoot appends the source chain's batch root when the batch executes on its settlement
-    /// layer. Reading it at that execution block selects the historical shared root containing the
-    /// append; later blocks may contain a different root. For a Gateway batch, this proof stops at
-    /// Gateway's `L2MessageRoot`, and other edge chains import the shared root keyed by the Gateway
-    /// chain ID and block. Gateway settles its own aggregate root to L1. Direct-L1 batches use L1's
-    /// MessageRoot instead.
+    /// Reading Gateway's tree at the source batch's execution block selects the historical shared
+    /// root containing that append; later Gateway blocks may contain a different root. Other edge
+    /// chains import this root keyed by Gateway chain ID and block, while Gateway later settles its
+    /// aggregate roots to L1. This target is unsupported for batches settled directly on L1.
     MessageRoot,
 }
 

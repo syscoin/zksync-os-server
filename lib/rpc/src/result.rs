@@ -42,8 +42,49 @@ macro_rules! impl_to_rpc_result {
     };
 }
 
-impl_to_rpc_result!(ZksError);
 impl_to_rpc_result!(UnstableError);
+
+// SYSCOIN: An explicitly unsupported proof target is a stable client/topology error, not an
+// internal provider failure. Every other ZKS failure is public only as a fixed generic error;
+// provider transport errors may embed credential-bearing request URLs in their Display output.
+const ZKS_INTERNAL_ERROR_MESSAGE: &str = "Internal error";
+
+// SYSCOIN: Preserve an operator-useful failure category without formatting nested provider,
+// repository, or state errors. In particular, reqwest documents that its Display output may
+// contain the full URL, including userinfo or query-string API keys.
+fn zks_internal_error_log_summary(err: &ZksError) -> &'static str {
+    match err {
+        ZksError::BlockNotAvailable(_) => "historical block unavailable",
+        ZksError::TxNotAvailable(_) => "historical transaction unavailable",
+        ZksError::TransactionNotInBatch { .. } => "transaction/batch index inconsistency",
+        ZksError::IndexOutOfBounds(..) => "L2-to-L1 log index out of bounds",
+        ZksError::UnsupportedProofTargetForDirectL1 { .. } => "unsupported direct-L1 proof target",
+        ZksError::CommitmentTree(_) => "interop commitment-tree proof failed",
+        ZksError::Batch(_) => "batch or settlement-proof construction failed",
+        ZksError::Repository(_) => "repository read failed",
+        ZksError::GenesisSource(_) => "genesis input read failed",
+        ZksError::State(_) => "historical state read failed",
+    }
+}
+
+impl<Ok> ToRpcResult<Ok, ZksError> for Result<Ok, ZksError> {
+    fn to_rpc_result(self) -> RpcResult<Ok> {
+        self.map_err(|err| match err {
+            err @ ZksError::UnsupportedProofTargetForDirectL1 { .. } => {
+                invalid_params_rpc_err(err.to_string())
+            }
+            err => {
+                // SYSCOIN: Never attach the raw error to a public response or log field; both
+                // paths could otherwise expose a provider URL secret during a transport failure.
+                tracing::error!(
+                    zks_error_summary = zks_internal_error_log_summary(&err),
+                    "ZKS RPC request failed"
+                );
+                internal_rpc_err(ZKS_INTERNAL_ERROR_MESSAGE)
+            }
+        })
+    }
+}
 
 impl<Ok> ToRpcResult<Ok, EthError> for Result<Ok, EthError> {
     fn to_rpc_result(self) -> RpcResult<Ok> {
@@ -333,5 +374,58 @@ impl fmt::Display for RevertError {
             write!(f, ": {error}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zksync_os_rpc_api::types::LogProofTarget;
+
+    // SYSCOIN: Freeze the public distinction between an unsupported topology/target request and
+    // an actual internal proof-provider failure so clients do not retry the former indefinitely.
+    #[test]
+    fn direct_l1_message_root_is_an_invalid_params_error() {
+        let unsupported: Result<(), ZksError> = Err(ZksError::UnsupportedProofTargetForDirectL1 {
+            batch_number: 7,
+            proof_target: LogProofTarget::MessageRoot,
+        });
+        let expected_message = unsupported.as_ref().unwrap_err().to_string();
+        let unsupported = unsupported.to_rpc_result().unwrap_err();
+        assert_eq!(
+            unsupported.code(),
+            jsonrpsee::types::error::INVALID_PARAMS_CODE
+        );
+        assert_eq!(unsupported.message(), expected_message);
+
+        let internal: Result<(), ZksError> =
+            Err(ZksError::Batch(anyhow::anyhow!("provider failed")));
+        assert_eq!(
+            internal.to_rpc_result().unwrap_err().code(),
+            jsonrpsee::types::error::INTERNAL_ERROR_CODE
+        );
+    }
+
+    // SYSCOIN: Provider failures may carry credentials in reqwest's URL-bearing Display output.
+    // Neither the public JSON-RPC error nor the deliberately coarse operator summary may retain it.
+    #[test]
+    fn zks_internal_errors_redact_provider_url_secrets_from_response_and_log_summary() {
+        let secret_url =
+            "https://rpc-user:rpc-password@example.invalid/v3/project?api_key=super-secret";
+        let error = ZksError::Batch(anyhow::anyhow!(
+            "error sending request for url ({secret_url})"
+        ));
+        let summary = zks_internal_error_log_summary(&error);
+        assert_eq!(summary, "batch or settlement-proof construction failed");
+        assert!(!summary.contains(secret_url));
+        assert!(!summary.contains("rpc-password"));
+        assert!(!summary.contains("super-secret"));
+
+        let public = Result::<(), _>::Err(error).to_rpc_result().unwrap_err();
+        assert_eq!(public.code(), jsonrpsee::types::error::INTERNAL_ERROR_CODE);
+        assert_eq!(public.message(), ZKS_INTERNAL_ERROR_MESSAGE);
+        assert!(!public.to_string().contains(secret_url));
+        assert!(!public.to_string().contains("rpc-password"));
+        assert!(!public.to_string().contains("super-secret"));
     }
 }

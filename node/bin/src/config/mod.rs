@@ -996,6 +996,11 @@ impl RebuildConfig {
     }
 }
 
+// SYSCOIN: Interop chunking must always make forward progress within the batch-wide cap.
+fn interop_root_limits_are_executable(per_tx: usize, per_batch: u64) -> bool {
+    per_tx > 0 && u64::try_from(per_tx).is_ok_and(|per_tx| per_tx <= per_batch)
+}
+
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct SequencerConfig {
@@ -1063,6 +1068,15 @@ pub struct SequencerConfig {
 
     /// Max number of interop roots to be included in a single transaction
     #[config(default_t = 100)]
+    // SYSCOIN: Zero panics chunking and a chunk larger than the batch cap can seal empty blocks
+    // forever. Reject both before topology construction or watcher traffic can begin.
+    #[config_validate(custom(
+        |root: &Config, value: &usize| interop_root_limits_are_executable(
+            *value,
+            root.batcher_config.interop_roots_per_batch_limit,
+        ),
+        "must be greater than zero and no larger than `batcher.interop_roots_per_batch_limit`"
+    ))]
     pub interop_roots_per_tx: usize,
 
     /// Delay between 2 consecutive service blocks.
@@ -1740,7 +1754,8 @@ pub struct MempoolTxValidatorConfig {
 }
 
 /// Only used on the Main Node.
-#[derive(Clone, Debug, DescribeConfig, DeserializeConfig)]
+// SYSCOIN: Batcher-owned interop limits participate in root configuration validation.
+#[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
 pub struct BatcherConfig {
     /// Whether to run the batcher subsystem and all downstream components (prover input
@@ -1776,6 +1791,11 @@ pub struct BatcherConfig {
 
     /// Max number of interop roots per batch
     #[config(default_t = 1000)]
+    // SYSCOIN: Zero would make every interop-root transaction unexecutable.
+    #[config_validate(custom(
+        |_root: &Config, value: &u64| *value > 0,
+        "must be greater than zero"
+    ))]
     pub interop_roots_per_batch_limit: u64,
 
     /// Whether to verify that rebuilt batches match stored batches by comparing hashes.
@@ -1840,7 +1860,7 @@ pub struct BatcherConfig {
 }
 
 /// SYSCOIN: Hard upper bound for amortized real-SNARK aggregation on the main node.
-const MAX_FRIS_PER_SNARK_HARD_CAP: usize = 100;
+pub(crate) const MAX_FRIS_PER_SNARK_HARD_CAP: usize = 100;
 
 #[derive(Clone, Debug, DescribeConfig, DeserializeConfig, ConfigValidate)]
 #[config(derive(Default))]
@@ -1849,19 +1869,25 @@ pub struct ProverApiConfig {
     #[config(default_t = true)]
     pub enabled: bool,
 
-    /// Prover API address to listen on.
-    // SYSCOIN: keep unauthenticated defaults local-only. Non-loopback binds are allowed only when
-    // Basic Auth credentials are configured, because pick requests lease proving jobs.
+    /// Prover API address to listen on. Terminate HTTPS at a loopback reverse proxy by default.
+    // SYSCOIN: Plain HTTP carries reusable Basic credentials and proof capabilities. A non-loopback
+    // bind therefore requires both credentials and an explicit insecure-transport acknowledgement.
     #[config(default_t = "127.0.0.1:3124".into())]
     #[config_validate(custom(
         |root: &Config, value: &String| {
             !root.prover_api_config.enabled
                 || prover_api_bind_is_loopback(value)
-                || root.prover_api_config.basic_auth_header().is_some()
+                || (root.prover_api_config.allow_insecure_public_bind
+                    && root.prover_api_config.basic_auth_header().is_some())
         },
-        "requires `prover_api.auth_user` and `prover_api.auth_password` when binding to a non-loopback address"
+        "requires HTTPS termination on loopback, or both Basic Auth and explicit `prover_api.allow_insecure_public_bind=true` when binding plaintext HTTP to a non-loopback address"
     ))]
     pub address: String,
+
+    /// SYSCOIN: Explicitly acknowledge that a non-loopback prover listener is plaintext HTTP.
+    /// Keep false in production and terminate HTTPS on a loopback reverse proxy instead.
+    #[config(default_t = false)]
+    pub allow_insecure_public_bind: bool,
 
     /// SYSCOIN: Basic Auth username for remote prover API access.
     #[config(secret)]
@@ -2312,6 +2338,11 @@ pub struct BatchVerificationConfig {
     pub accepted_signers: Vec<String>,
     /// [main node] Iteration timeout.
     #[config(default_t = Duration::from_secs(5))]
+    // SYSCOIN: The same value arms exact 2FA request deadlines; zero would expire immediately.
+    #[config_validate(custom(
+        |_root: &Config, value: &Duration| !value.is_zero(),
+        "must be greater than zero"
+    ))]
     pub request_timeout: Duration,
     /// [main node] Retry delay between attempts.
     #[config(default_t = Duration::from_secs(1))]
@@ -3315,7 +3346,44 @@ mod tests {
         config.validate().await.unwrap();
     }
 
-    // SYSCOIN: Remote prover binds must reject missing Basic Auth credentials.
+    #[tokio::test]
+    async fn interop_chunk_limits_reject_zero_and_unexecutable_transactions() {
+        let mut zero_tx = base_config(NodeRole::MainNode);
+        zero_tx.sequencer_config.interop_roots_per_tx = 0;
+        assert!(
+            zero_tx
+                .validate()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("sequencer.interop_roots_per_tx")
+        );
+
+        let mut zero_batch = base_config(NodeRole::MainNode);
+        zero_batch.batcher_config.interop_roots_per_batch_limit = 0;
+        assert!(
+            zero_batch
+                .validate()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("batcher.interop_roots_per_batch_limit")
+        );
+
+        let mut oversized_tx = base_config(NodeRole::MainNode);
+        oversized_tx.sequencer_config.interop_roots_per_tx = 101;
+        oversized_tx.batcher_config.interop_roots_per_batch_limit = 100;
+        assert!(
+            oversized_tx
+                .validate()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("sequencer.interop_roots_per_tx")
+        );
+    }
+
+    // SYSCOIN: Remote plaintext prover binds require an explicit acknowledgement and credentials.
     #[tokio::test]
     async fn prover_api_non_loopback_bind_requires_auth() {
         let mut config = base_config(NodeRole::MainNode);
@@ -3324,13 +3392,13 @@ mod tests {
         let err = config.validate().await.unwrap_err().to_string();
 
         assert!(err.contains(
-            "`prover_api.address` requires `prover_api.auth_user` and `prover_api.auth_password` when binding to a non-loopback address"
+            "`prover_api.address` requires HTTPS termination on loopback, or both Basic Auth and explicit `prover_api.allow_insecure_public_bind=true`"
         ));
     }
 
-    // SYSCOIN: A remote prover bind is permitted once paired Basic Auth is configured.
+    // SYSCOIN: Basic Auth alone does not make a plaintext remote listener safe.
     #[tokio::test]
-    async fn prover_api_non_loopback_bind_allows_basic_auth() {
+    async fn prover_api_non_loopback_bind_rejects_basic_auth_without_insecure_acknowledgement() {
         let mut config = base_config(NodeRole::MainNode);
         config.prover_api_config.address = "0.0.0.0:3124".into();
         config.prover_api_config.auth_user = Some("user".into());
@@ -3340,6 +3408,19 @@ mod tests {
             config.prover_api_config.basic_auth_header().as_deref(),
             Some("Basic dXNlcjpwYXNz")
         );
+        config.validate().await.unwrap_err();
+    }
+
+    // SYSCOIN: Container-only deployments may opt into plaintext explicitly, but never without
+    // paired authentication; production deployments should keep the listener on loopback.
+    #[tokio::test]
+    async fn prover_api_non_loopback_bind_requires_explicit_insecure_acknowledgement() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.prover_api_config.address = "0.0.0.0:3124".into();
+        config.prover_api_config.auth_user = Some("user".into());
+        config.prover_api_config.auth_password = Some("pass".into());
+        config.prover_api_config.allow_insecure_public_bind = true;
+
         config.validate().await.unwrap();
     }
 
@@ -3658,6 +3739,17 @@ mod tests {
         assert!(
             err.contains("`batch_verification.client_enabled` requires `network.enabled=true`")
         );
+    }
+
+    // SYSCOIN: Zero cannot be a safe shared component/network request deadline.
+    #[tokio::test]
+    async fn batch_verification_request_timeout_must_be_positive() {
+        let mut config = base_config(NodeRole::MainNode);
+        config.batch_verification_config.request_timeout = Duration::ZERO;
+
+        let err = config.validate().await.unwrap_err().to_string();
+
+        assert!(err.contains("`batch_verification.request_timeout` must be greater than zero"));
     }
 
     // SYSCOIN: L1 policy may supply signer authorization when local signers are intentionally empty.

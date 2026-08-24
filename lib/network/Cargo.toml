@@ -51,6 +51,11 @@ reth-provider.workspace = true
 reth-tasks.workspace = true
 
 [dev-dependencies]
+# SYSCOIN: Frame-bound regressions construct the generated canonical V32 ABI at the production DA
+# limits instead of duplicating contract layout or policy constants in the network crate.
+zksync_os_batch_types.workspace = true
+zksync_os_contract_interface.workspace = true
+
 assert_matches.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 test-log = { workspace = true, default-features = false, features = ["trace", "color"] }

@@ -87,6 +87,8 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     config: RpcConfig,
     listener: tokio::net::TcpListener,
     chain_id: u64,
+    // SYSCOIN: Carry the exact startup-discovered L1 identity into proof construction.
+    l1_chain_id: u64,
     bridgehub_address: Address,
     bytecode_supplier_address: Address,
     storage: RpcStorage,
@@ -96,8 +98,12 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     tx_forwarder: Option<TxForwarder>,
     l1_provider: DynProvider,
+    // SYSCOIN: Historical Gateway-to-L1 proof authentication prefers archive state when present.
+    l1_archive_provider: Option<DynProvider>,
     gateway_provider: Option<DynProvider>,
     settlement_layer_intervals: SettlementLayerIntervals,
+    // SYSCOIN: Wire the explicit Gateway-head trust gate and live committed-batch source only into
+    // the zkSYS namespace; withdrawal and direct-L1 proof paths remain finalized-store-backed.
     optimistic_gateway_head: bool,
     committed_batch_provider: CommittedBatchProvider,
     policy_client: Option<PolicyClient>,
@@ -140,9 +146,15 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             storage.clone(),
             genesis_input_source,
             chain_id,
+            // SYSCOIN: Proof RPCs reject any selected L1 endpoint whose identity drifts from
+            // discovery.
+            l1_chain_id,
             l1_provider,
+            l1_archive_provider,
             gateway_provider,
             settlement_layer_intervals,
+            // SYSCOIN: Preserve the operator's Gateway-head trust decision and the exact live
+            // committed-batch index when constructing the V32 proof RPC namespace.
             optimistic_gateway_head,
             committed_batch_provider,
             eth_call_handler.clone(),

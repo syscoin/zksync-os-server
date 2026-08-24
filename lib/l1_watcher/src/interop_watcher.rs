@@ -1,16 +1,16 @@
 //! Settlement-layer `MessageRoot` event ingestion for interop-root system transactions.
 //!
 //! Each `NewInteropRoot` carries a shared root that chains must import before they can verify
-//! cross-chain proofs against it. SYSCOIN: The active settlement layer is the root source: edge chains read
-//! Gateway's `L2MessageRoot`, while a V32 chain currently settling on L1 reads L1 `MessageRoot`.
-//! This watcher resumes near the persisted interop cursor, drops roots that were already imported,
-//! and forwards new roots to the mempool sink.
+//! cross-chain proofs against it. SYSCOIN: Pinned V32 aggregation roots exist only in Gateway's
+//! `L2MessageRoot`; L1 `MessageRoot` records verification roots but does not update the shared tree.
+//! This Gateway-only watcher resumes near the persisted interop cursor, drops roots that were
+//! already imported, and forwards new roots to the mempool sink.
 
-use alloy::primitives::ruint::FromUintError;
+use alloy::primitives::{B256, ruint::FromUintError};
 use alloy::rpc::types::{Log, Topic};
 use alloy::sol_types::SolEvent;
 use anyhow::Context;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use zksync_os_contract_interface::Bridgehub;
 use zksync_os_contract_interface::IMessageRoot::NewInteropRoot;
 use zksync_os_contract_interface::InteropRoot;
@@ -27,8 +27,109 @@ pub struct InteropWatcher {
     sink: Box<dyn EventSink<IndexedInteropRoot>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanonicalLogPosition {
+    block_number: u64,
+    block_hash: B256,
+    transaction_index: u64,
+    transaction_hash: B256,
+    log_index: u64,
+}
+
+impl CanonicalLogPosition {
+    fn order_in_block(self) -> (u64, u64) {
+        (self.transaction_index, self.log_index)
+    }
+}
+
+// SYSCOIN: A provider response is security-relevant input: V32 intentionally emits multiple roots
+// under one ID within a block, and importing anything but the last would permanently advance the
+// local cursor past the final cumulative root. Select by canonical metadata, never response order.
+fn canonicalize_interop_logs(logs: Vec<Log>) -> anyhow::Result<Vec<Log>> {
+    let mut by_id: BTreeMap<u64, (CanonicalLogPosition, Log)> = BTreeMap::new();
+
+    for log in logs {
+        let event = NewInteropRoot::decode_log(&log.inner)
+            .context("failed to decode interop root log while canonicalizing provider response")?
+            .data;
+        let log_id: u64 = event
+            .logId
+            .try_into()
+            .context("interop root log ID does not fit in u64")?;
+        let event_block_number: u64 = event
+            .blockNumber
+            .try_into()
+            .context("interop root event block number does not fit in u64")?;
+        anyhow::ensure!(
+            !log.removed,
+            "provider returned removed interop root log ID {log_id} in a canonical range"
+        );
+        let position = CanonicalLogPosition {
+            block_number: log
+                .block_number
+                .context("interop root log is missing block_number")?,
+            block_hash: log
+                .block_hash
+                .context("interop root log is missing block_hash")?,
+            transaction_index: log
+                .transaction_index
+                .context("interop root log is missing transaction_index")?,
+            transaction_hash: log
+                .transaction_hash
+                .context("interop root log is missing transaction_hash")?,
+            log_index: log
+                .log_index
+                .context("interop root log is missing log_index")?,
+        };
+        anyhow::ensure!(
+            position.block_number == event_block_number,
+            "interop root log ID {log_id} metadata block {} disagrees with event block {event_block_number}",
+            position.block_number
+        );
+
+        let Some((current_position, current_log)) = by_id.get_mut(&log_id) else {
+            by_id.insert(log_id, (position, log));
+            continue;
+        };
+        anyhow::ensure!(
+            current_position.block_number == position.block_number
+                && current_position.block_hash == position.block_hash,
+            "interop root log ID {log_id} appears in multiple canonical blocks"
+        );
+
+        let current_order = current_position.order_in_block();
+        let new_order = position.order_in_block();
+        if current_order == new_order {
+            anyhow::ensure!(
+                current_position.transaction_hash == position.transaction_hash
+                    && current_log.inner == log.inner,
+                "provider returned conflicting interop root logs at the same canonical position for ID {log_id}"
+            );
+            continue;
+        }
+
+        // The transaction index and block-global log index must describe the same ordering. Reject
+        // internally inconsistent metadata instead of letting either field choose an arbitrary root.
+        let transaction_order = position
+            .transaction_index
+            .cmp(&current_position.transaction_index);
+        let log_order = position.log_index.cmp(&current_position.log_index);
+        anyhow::ensure!(
+            transaction_order.is_eq() || transaction_order == log_order,
+            "provider returned inconsistent transaction/log indexes for interop root ID {log_id}"
+        );
+        if new_order > current_order {
+            *current_position = position;
+            *current_log = log;
+        }
+    }
+
+    Ok(by_id.into_values().map(|(_, log)| log).collect())
+}
+
 impl InteropWatcher {
-    /// SYSCOIN: Creates a resolver for the currently active settlement layer.
+    /// SYSCOIN: Creates a resolver for Gateway's `L2MessageRoot` only. Direct-L1 topology has no
+    /// aggregation-root stream and must not construct this watcher.
     ///
     /// `interop_root_id` is local to one `MessageRoot` contract, so this supports only a fresh/static
     /// settlement-layer identity. Live settlement-layer migration remains unsupported until the
@@ -42,7 +143,7 @@ impl InteropWatcher {
         let message_root = active_bridgehub
             .message_root_address()
             .await
-            .context("failed to fetch active settlement-layer MessageRoot address")?;
+            .context("failed to fetch Gateway L2MessageRoot address")?;
         let provider = active_bridgehub.provider().clone();
 
         let resolve_start = move |starting_interop_root_id: u64| async move {
@@ -53,7 +154,7 @@ impl InteropWatcher {
             .await
             .with_context(|| {
                 format!(
-                    "failed to resolve interop_root_id={starting_interop_root_id} on the active settlement layer"
+                    "failed to resolve interop_root_id={starting_interop_root_id} on Gateway L2MessageRoot"
                 )
             })?;
             let processor = Self {
@@ -63,8 +164,8 @@ impl InteropWatcher {
             Ok((start_block, processor))
         };
 
-        // SYSCOIN: Validate the active settlement-layer provider (Gateway for an edge chain) against
-        // the chain ID discovered at startup instead of assuming that the configured client matches.
+        // SYSCOIN: Validate the Gateway provider against the chain ID discovered at startup instead
+        // of assuming that the configured client matches. Direct-L1 topology creates no watcher.
         StartResolver::new(
             config,
             provider,
@@ -88,22 +189,10 @@ impl ProcessRawEvents for InteropWatcher {
     }
 
     fn filter_events(&self, logs: Vec<Log>) -> Vec<Log> {
-        // A polling range may contain repeated updates for one log id. Only its latest root should
-        // reach the subpool.
-        let mut indexes = HashMap::new();
-
-        for log in logs {
-            let event = match NewInteropRoot::decode_log(&log.inner) {
-                Ok(event) => event.data,
-                Err(err) => {
-                    tracing::error!(?log, error = ?err, "failed to decode interop root log");
-                    continue;
-                }
-            };
-            indexes.insert(event.logId, log);
-        }
-
-        indexes.into_values().collect()
+        // SYSCOIN: Invalid or conflicting canonical metadata must stop the critical watcher before
+        // it can advance past the final cumulative root for an ID.
+        canonicalize_interop_logs(logs)
+            .unwrap_or_else(|error| panic!("invalid interop root provider response: {error:#}"))
     }
 
     async fn process_raw_event(
@@ -148,7 +237,7 @@ impl ProcessRawEvents for InteropWatcher {
 mod tests {
     use super::*;
     use alloy::network::EthereumWallet;
-    use alloy::primitives::{Bytes, U64, address};
+    use alloy::primitives::{Address, B256, Bytes, U64, U256, address};
     use alloy::providers::ProviderBuilder;
     use alloy::rpc::types::Header;
     use alloy::sol_types::SolValue;
@@ -160,9 +249,83 @@ mod tests {
 
     struct NoopSink;
 
+    fn interop_log_at(log_id: u64, marker: u8, transaction_index: u64, log_index: u64) -> Log {
+        let block_number = 100 + log_id;
+        let event = NewInteropRoot {
+            chainId: U256::from(L2_CHAIN_ID),
+            blockNumber: U256::from(block_number),
+            logId: U256::from(log_id),
+            sides: vec![B256::repeat_byte(marker)],
+        };
+        Log {
+            inner: alloy::primitives::Log {
+                address: Address::ZERO,
+                data: event.encode_log_data(),
+            },
+            block_hash: Some(B256::repeat_byte(log_id as u8)),
+            block_number: Some(block_number),
+            transaction_hash: Some(B256::repeat_byte(transaction_index as u8)),
+            transaction_index: Some(transaction_index),
+            log_index: Some(log_index),
+            ..Default::default()
+        }
+    }
+
+    fn interop_log(log_id: u64, marker: u8) -> Log {
+        interop_log_at(log_id, marker, u64::from(marker), u64::from(marker))
+    }
+
     #[async_trait::async_trait]
     impl EventSink<IndexedInteropRoot> for NoopSink {
         async fn push(&mut self, _item: IndexedInteropRoot) {}
+    }
+
+    #[test]
+    fn deduplicated_interop_logs_are_strictly_ascending_and_keep_latest_value() {
+        let watcher = InteropWatcher {
+            starting_interop_root_id: 0,
+            sink: Box::new(NoopSink),
+        };
+        let filtered = watcher.filter_events(vec![
+            // SYSCOIN: Deliberately place the latest duplicate first; response order cannot select
+            // the intermediate root.
+            interop_log(3, 31),
+            interop_log(2, 20),
+            interop_log(1, 10),
+            interop_log(3, 30),
+        ]);
+        let decoded: Vec<_> = filtered
+            .iter()
+            .map(|log| NewInteropRoot::decode_log(&log.inner).unwrap().data)
+            .collect();
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|event| u64::try_from(event.logId).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(decoded[2].sides, vec![B256::repeat_byte(31)]);
+        assert_eq!(filtered[2].log_index, Some(31));
+    }
+
+    #[test]
+    fn conflicting_or_incomplete_duplicate_metadata_is_rejected() {
+        let conflict = canonicalize_interop_logs(vec![
+            interop_log_at(3, 30, 7, 9),
+            interop_log_at(3, 31, 7, 9),
+        ])
+        .unwrap_err();
+        assert!(
+            conflict
+                .to_string()
+                .contains("conflicting interop root logs")
+        );
+
+        let mut missing_position = interop_log(3, 30);
+        missing_position.log_index = None;
+        let missing = canonicalize_interop_logs(vec![missing_position]).unwrap_err();
+        assert!(missing.to_string().contains("missing log_index"));
     }
 
     fn header_with_number(number: u64) -> Header<alloy::consensus::Header> {

@@ -189,19 +189,19 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
             // Create stream:
             // - If available, upgrade tx goes first (expected to be the only tx in the block, enforced by sequencer).
             // - L1 transactions first, then L2 transactions.
-            // SYSCOIN: Gateway-settled chains import Gateway roots. Protocol V32 additionally supports the
-            // upstream direct-L1 MessageRoot path for chains that settle on L1.
-            let include_interop_traffic =
-                self.settles_on_gateway() || previous_record.protocol_version.supports_l1_interop();
-            let interop_companion = self.interop_companion_proving_version.map(|_| {
-                InteropCompanionRequest {
-                    // SYSCOIN: Era priority mode is L1-only and rejects zero/zero batches. A
-                    // currently Gateway-settled edge cannot activate it, so only that topology
-                    // may synthesize an empty companion. Direct-L1 tails wait for real traffic
-                    // (in priority mode, a real L1 priority tx) or mode deactivation.
-                    empty_after: interop_companion_empty_after,
-                }
-            });
+            // SYSCOIN: Pinned V32 updates the aggregation trees only in Gateway's L2MessageRoot;
+            // direct-L1 MessageRoot records verification roots but cannot produce interop traffic.
+            let include_interop_traffic = self.settles_on_gateway();
+            let interop_companion = self
+                .interop_companion_proving_version
+                .filter(|_| include_interop_traffic)
+                .map(|_| {
+                    InteropCompanionRequest {
+                        // SYSCOIN: A Gateway-settled edge cannot activate Era's L1-only priority mode,
+                        // so it may synthesize the bounded empty companion after the grace period.
+                        empty_after: interop_companion_empty_after,
+                    }
+                });
             let best_txs_future = self.pool.best_transactions_stream(
                 self.next_interop_tx_allowed_after,
                 include_interop_traffic,
@@ -587,7 +587,9 @@ impl<Subpool: L2Subpool> BlockContextProvider<Subpool> {
         }
         if let Some(last_interop_log_id) = outcome.last_interop_log_id {
             self.next_interop_tx_allowed_after = Instant::now() + self.config.service_block_delay;
-            next_cursors.interop_root_id = last_interop_log_id + 1;
+            // SYSCOIN: The persisted cursor is the next unconsumed Gateway log ID; advance with
+            // checked arithmetic so a terminal canonical salt cannot wrap it to the fresh sentinel.
+            next_cursors.interop_root_id = next_interop_root_cursor(last_interop_log_id)?;
         }
 
         if let Some(last_migration_number) = outcome.last_migration_number {
@@ -639,14 +641,14 @@ fn next_interop_companion_state(
     current: ProvingVersion,
     current_contains_bundle: bool,
 ) -> Option<ProvingVersion> {
-    if let Some(expected) = pending {
-        if expected != current {
-            tracing::warn!(
-                ?expected,
-                ?current,
-                "expiring interop FRI companion at proving-version boundary; protocol upgrade retains priority"
-            );
-        }
+    if let Some(expected) = pending
+        && expected != current
+    {
+        tracing::warn!(
+            ?expected,
+            ?current,
+            "expiring interop FRI companion at proving-version boundary; protocol upgrade retains priority"
+        );
     }
     current_contains_bundle.then_some(current)
 }
@@ -654,6 +656,14 @@ fn next_interop_companion_state(
 /// SYSCOIN: Runtime topology predicate used to keep the zero/zero fallback off direct-L1 chains.
 fn settles_on_gateway(current_sl_chain_id: u64, l1_chain_id: u64) -> bool {
     current_sl_chain_id != l1_chain_id
+}
+
+// SYSCOIN: The canonical system-tx salt is the consumed source ID. Refuse an impossible wrap
+// instead of persisting a zero cursor that would rescan Gateway from genesis.
+fn next_interop_root_cursor(last_interop_log_id: u64) -> anyhow::Result<u64> {
+    last_interop_log_id
+        .checked_add(1)
+        .context("canonical interop root ID overflow while advancing replay cursor")
 }
 
 /// SYSCOIN: Arms a one-shot empty-companion deadline only where Gateway settlement structurally
@@ -911,6 +921,17 @@ mod tests {
         assert_eq!(
             interop_companion_empty_deadline(None, true, now, delay),
             None
+        );
+    }
+
+    #[test]
+    fn interop_root_cursor_advance_is_checked() {
+        assert_eq!(next_interop_root_cursor(41).unwrap(), 42);
+        assert!(
+            next_interop_root_cursor(u64::MAX)
+                .unwrap_err()
+                .to_string()
+                .contains("overflow")
         );
     }
 

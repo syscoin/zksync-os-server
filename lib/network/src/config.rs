@@ -15,5 +15,7 @@ pub struct NetworkConfig {
     /// All boot nodes to start network discovery with. Expected format is
     /// `enode://<node ID>@<IP address-or-DNS host>:<port>`. Boot nodes are also treated as trusted
     /// peers: always kept connected and admitted to the zks subprotocol regardless of the cap.
+    /// SYSCOIN: A main node should list every production verifier EN here as well; signer
+    /// acceptance authenticates a lane but does not exempt an unknown PeerId from the connection cap.
     pub boot_nodes: Vec<TrustedPeer>,
 }

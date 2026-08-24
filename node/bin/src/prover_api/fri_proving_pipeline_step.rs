@@ -2,6 +2,7 @@ use super::proof_storage::{ProofStorage, ProvenBatch};
 use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proof_verifier;
 use async_trait::async_trait;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -29,22 +30,29 @@ pub struct FriProvingPipelineStep {
 }
 
 impl FriProvingPipelineStep {
+    /// SYSCOIN: Returns the durable accepted-proof forwarder separately so the node runtime can
+    /// supervise it as critical instead of silently detaching it.
     pub fn new(
         proof_storage: ProofStorage,
         last_proved_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
-    ) -> (Self, Arc<FriJobManager>) {
+    ) -> (
+        Self,
+        Arc<FriJobManager>,
+        impl Future<Output = ()> + Send + 'static,
+    ) {
         // Create channel for completed proofs - between FriProveManager and GaplessCommitter
         let (batches_with_proof_sender, batches_with_proof_receiver) =
             mpsc::channel::<ProvenBatch>(5);
 
-        let fri_job_manager = Arc::new(FriJobManager::new(
+        let (fri_job_manager, accepted_proof_forwarder) = FriJobManager::new(
             batches_with_proof_sender,
             proof_storage.clone(),
             assignment_timeout,
             max_assigned_batch_range,
-        ));
+        );
+        let fri_job_manager = Arc::new(fri_job_manager);
 
         let result = Self {
             last_proved_batch_number,
@@ -53,7 +61,8 @@ impl FriProvingPipelineStep {
             batches_with_proof_receiver,
         };
 
-        (result, fri_job_manager)
+        // SYSCOIN: The caller must register the accepted-proof forwarder as a critical task.
+        (result, fri_job_manager, accepted_proof_forwarder)
     }
     // SYSCOIN: Reuse a durable FRI proof only when it matches the canonical rebuilt batch and
     // passes the current V8 proof verifier.
@@ -412,8 +421,9 @@ mod tests {
         let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         proof_storage.save_batch_with_proof(&stored_batch).await?;
 
-        let (step, job_manager) =
+        let (step, job_manager, forwarder) =
             FriProvingPipelineStep::new(proof_storage, 0, Duration::from_secs(30), 16);
+        let _forwarder = tokio::spawn(forwarder);
 
         let (input_tx, input_rx) = mpsc::channel(1);
         let (output_tx, mut output_rx) = mpsc::channel(1);
@@ -445,8 +455,9 @@ mod tests {
             .save_batch_with_proof(&StoredBatch(mismatched_batch))
             .await?;
 
-        let (step, _job_manager) =
+        let (step, _job_manager, forwarder) =
             FriProvingPipelineStep::new(proof_storage, 0, Duration::from_secs(30), 16);
+        let _forwarder = tokio::spawn(forwarder);
 
         let (input_tx, input_rx) = mpsc::channel(1);
         let (output_tx, mut output_rx) = mpsc::channel(1);

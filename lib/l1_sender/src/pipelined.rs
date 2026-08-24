@@ -343,6 +343,9 @@ where
                     .observe(mined.submitted_at.elapsed().as_secs_f64());
                 let receipt = receipt?;
                 self.validate_tx_receipt(&mined.command, receipt).await?;
+                // SYSCOIN: Retire durable wrapper ownership only after the same validated,
+                // depth-confirmed receipt gate used for downstream pipeline progress.
+                mined.command.notify_confirmed();
                 tracing::info!(
                     command_name,
                     nonce = mined.nonce,

@@ -17,6 +17,7 @@ use reth_execution_types::ChangedAccount;
 use reth_primitives_traits::SealedBlock;
 use reth_tasks::Runtime;
 use reth_transaction_pool::{CanonicalStateUpdate, PoolUpdateKind};
+use std::num::NonZeroUsize;
 use tokio::time::Instant;
 use zksync_os_base_token_adjuster::BaseTokenPriceHandle;
 use zksync_os_contract_interface::ZkChain;
@@ -85,8 +86,8 @@ pub struct Config {
     pub interop_fee_updater_config: InteropFeeUpdaterConfig,
 }
 
-// SYSCOIN: Keep the irreversible Gateway-head trust decision explicit and scoped to the active
-// Gateway topology. Direct-L1 interop always retains the configured confirmation depth.
+// SYSCOIN: Keep the irreversible Gateway-head trust decision explicit and scoped to Gateway.
+// Direct-L1 topology creates no aggregation-root watcher under the pinned V32 contracts.
 fn interop_watcher_config(
     mut config: L1WatcherConfig,
     settles_on_gateway: bool,
@@ -96,6 +97,12 @@ fn interop_watcher_config(
         config.confirmations = 0;
     }
     config
+}
+
+// SYSCOIN: Pinned V32 L1 MessageRoot does not update the shared aggregation trees. Only a chain
+// currently settling on Gateway has a meaningful interop-root stream to import.
+fn should_start_interop_watcher(settles_on_gateway: bool) -> bool {
+    settles_on_gateway
 }
 
 impl<T: L2Subpool> Pool<T> {
@@ -111,7 +118,11 @@ impl<T: L2Subpool> Pool<T> {
         let upgrade_subpool = UpgradeSubpool::default();
         let sl_chain_id_subpool = SlChainIdSubpool::default();
         let interop_fee_subpool = InteropFeeSubpool::default();
-        let interop_roots_subpool = InteropRootsSubpool::new(config.interop_roots_per_tx);
+        // SYSCOIN: Keep the library boundary fail-closed even if a caller bypasses node config
+        // validation; zero-sized chunks would panic without consuming the FIFO head.
+        let interop_roots_per_tx = NonZeroUsize::new(config.interop_roots_per_tx)
+            .context("interop_roots_per_tx must be greater than zero")?;
+        let interop_roots_subpool = InteropRootsSubpool::new(interop_roots_per_tx);
         let l1_subpool = L1Subpool::new(10);
 
         // The interop fee updater only runs on the main node and only when it is settling on Gateway.
@@ -141,21 +152,27 @@ impl<T: L2Subpool> Pool<T> {
         .await
         .context("failed to start L1 upgrade transaction watcher")?;
 
-        // SYSCOIN: The active Bridgehub selects the canonical interop-root source: Gateway L2MessageRoot
-        // for an edge chain, or L1 MessageRoot for a V32 chain settling directly on L1.
-        let interop_watcher_config = interop_watcher_config(
-            config.l1_watcher_config.clone(),
-            l1_state.settles_on_gateway(),
-            config.optimistic_gateway_head,
-        );
-        let interop_watcher = InteropWatcher::create_watcher(
-            interop_watcher_config,
-            l1_state.bridgehub_sl.clone(),
-            l1_state.sl_chain_id,
-            interop_roots_subpool.clone(),
-        )
-        .await
-        .context("failed to create active settlement-layer interop root watcher")?;
+        // SYSCOIN: Pinned V32 has an aggregation-root stream only while this chain settles on
+        // Gateway; direct-L1 startup must not create a watcher against L1 MessageRoot.
+        let interop_watcher = if should_start_interop_watcher(l1_state.settles_on_gateway()) {
+            let interop_watcher_config = interop_watcher_config(
+                config.l1_watcher_config.clone(),
+                true,
+                config.optimistic_gateway_head,
+            );
+            Some(
+                InteropWatcher::create_watcher(
+                    interop_watcher_config,
+                    l1_state.bridgehub_sl.clone(),
+                    l1_state.sl_chain_id,
+                    interop_roots_subpool.clone(),
+                )
+                .await
+                .context("failed to create Gateway interop root watcher")?,
+            )
+        } else {
+            None
+        };
 
         let l1_tx_watcher = L1TxWatcher::create_watcher(
             config.l1_watcher_config.clone(),
@@ -170,7 +187,7 @@ impl<T: L2Subpool> Pool<T> {
         let subcomponents = Subcomponents {
             upgrade_watcher: Some(upgrade_watcher),
             l1_tx_watcher: Some(l1_tx_watcher),
-            interop_watcher: Some(interop_watcher),
+            interop_watcher,
             interop_fee_updater,
         };
 
@@ -213,6 +230,10 @@ impl<T: L2Subpool> Pool<T> {
         self.interop_fee_subpool
             .init(replay.starting_cursors.interop_fee_number)
             .await;
+        // SYSCOIN: Canonical replay cleanup must know the exact source cursor even when direct-L1
+        // topology intentionally has no Gateway watcher available to refill historical roots.
+        self.interop_roots_subpool
+            .init(replay.starting_cursors.interop_root_id);
 
         if let Some(upgrade_watcher) = self.subcomponents.upgrade_watcher.take() {
             self.runtime.spawn_critical_task(
@@ -226,7 +247,7 @@ impl<T: L2Subpool> Pool<T> {
                 l1_tx_watcher.run(replay.starting_cursors.l1_priority_id),
             );
         }
-        // SYSCOIN: Fresh V32 deployments always consume roots from their active settlement layer.
+        // SYSCOIN: Only Gateway topology owns a V32 interop-root watcher.
         if let Some(interop_watcher) = self.subcomponents.interop_watcher.take() {
             self.runtime.spawn_critical_task(
                 "interop roots watcher",
@@ -245,9 +266,8 @@ impl<T: L2Subpool> Pool<T> {
     /// Also provides upgrade information is there is one (which is not necessarily accompanied by
     /// an upgrade transaction).
     ///
-    /// SYSCOIN: `include_interop_traffic` gates both interop-root and interop-fee system transactions. V32
-    /// consumes roots from its active settlement-layer MessageRoot; Gateway fee updates remain
-    /// topology-specific.
+    /// SYSCOIN: `include_interop_traffic` gates both interop-root and interop-fee system
+    /// transactions. Pinned V32 consumes aggregation roots only from Gateway's L2MessageRoot.
     ///
     /// Returns `None` if all transaction sources are closed.
     // SYSCOIN: Stream selection only needs shared access. Keeping this borrow immutable lets the
@@ -457,10 +477,12 @@ impl<T: L2Subpool> Pool<T> {
         self.upgrade_subpool
             .on_canonical_state_change(&replay_record.protocol_version, upgrade_txs)
             .await;
+        // SYSCOIN: Replay/rebuild must advance from canonical tx data without waiting for a
+        // topology-specific watcher; newly produced blocks retain exact live-queue comparison.
         let last_interop_log_id = self
             .interop_roots_subpool
-            .on_canonical_state_change(interop_txs)
-            .await;
+            .on_canonical_state_change(interop_txs, strict_subpool_cleanup)
+            .await?;
         let last_interop_fee_number = self
             .interop_fee_subpool
             .on_canonical_state_change(interop_fee_txs, strict_subpool_cleanup)
@@ -616,7 +638,7 @@ impl<'a> MarkingTxStream<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{L1WatcherConfig, interop_watcher_config};
+    use super::{L1WatcherConfig, interop_watcher_config, should_start_interop_watcher};
     use std::time::Duration;
 
     fn watcher_config(confirmations: u64) -> L1WatcherConfig {
@@ -635,6 +657,12 @@ mod tests {
         let config = interop_watcher_config(watcher_config(7), true, false);
 
         assert_eq!(config.confirmations, 7);
+    }
+
+    #[test]
+    fn direct_l1_topology_has_no_interop_root_watcher() {
+        assert!(should_start_interop_watcher(true));
+        assert!(!should_start_interop_watcher(false));
     }
 
     // SYSCOIN: The trust mode removes lag only for the active Gateway settlement topology.

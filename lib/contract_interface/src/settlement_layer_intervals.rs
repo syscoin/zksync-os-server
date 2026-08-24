@@ -67,10 +67,122 @@ impl fmt::Display for SettlementLayerInterval {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct RawSettlementLayerInterval {
     settlement_layer: IntervalSettlementLayer,
     first_batch: u64,
     last_batch: Option<u64>,
+}
+
+// SYSCOIN: The pinned V32 contract permits exactly two migration operations: one L1→Gateway and
+// one Gateway→L1 return. It stores that round-trip in slot 1; slot 2 remains unpopulated.
+const MAX_ALLOWED_MIGRATION_OPERATIONS: u64 = 2;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MigrationSlot {
+    settlement_layer_chain_id: u64,
+    migrate_to_gateway_batch: u64,
+    migrate_from_gateway_batch: u64,
+    settlement_layer_batch_lower_bound: u64,
+    settlement_layer_batch_upper_bound: u64,
+    is_active: bool,
+}
+
+fn validate_migration_count(total_migrations: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        total_migrations <= MAX_ALLOWED_MIGRATION_OPERATIONS,
+        "migrationNumber {total_migrations} exceeds pinned V32 maximum {MAX_ALLOWED_MIGRATION_OPERATIONS}"
+    );
+    Ok(())
+}
+
+// SYSCOIN: Convert the pinned one-round-trip storage layout into non-overlapping, ordered batch
+// intervals with checked cursor arithmetic. Faulty RPC values fail closed before routing proofs.
+fn build_raw_intervals(
+    total_migrations: u64,
+    slots: Vec<Option<MigrationSlot>>,
+) -> anyhow::Result<Vec<RawSettlementLayerInterval>> {
+    validate_migration_count(total_migrations)?;
+    anyhow::ensure!(
+        slots.len() == total_migrations as usize,
+        "migration slot count does not match migrationNumber"
+    );
+    if total_migrations == 0 {
+        return Ok(vec![RawSettlementLayerInterval {
+            settlement_layer: IntervalSettlementLayer::L1,
+            first_batch: 1,
+            last_batch: None,
+        }]);
+    }
+
+    let first = slots[0]
+        .as_ref()
+        .context("pinned V32 migration slot 1 is unpopulated")?;
+    anyhow::ensure!(
+        slots.iter().skip(1).all(Option::is_none),
+        "pinned V32 stores the sole round-trip in migration slot 1; later slots must be empty"
+    );
+    anyhow::ensure!(
+        (total_migrations == 1 && first.is_active) || (total_migrations == 2 && !first.is_active),
+        "migration slot activity contradicts migrationNumber {total_migrations}"
+    );
+    if first.is_active {
+        anyhow::ensure!(
+            first.migrate_from_gateway_batch == 0 && first.settlement_layer_batch_upper_bound == 0,
+            "active migration slot contains return-migration bounds"
+        );
+    } else {
+        anyhow::ensure!(
+            first.settlement_layer_batch_upper_bound >= first.settlement_layer_batch_lower_bound,
+            "completed migration has inverted settlement-layer batch bounds"
+        );
+    }
+
+    let gateway_first = first
+        .migrate_to_gateway_batch
+        .checked_add(1)
+        .context("migrateToGWBatchNumber overflows the next batch cursor")?;
+    let mut intervals = Vec::with_capacity(3);
+    if first.migrate_to_gateway_batch >= 1 {
+        intervals.push(RawSettlementLayerInterval {
+            settlement_layer: IntervalSettlementLayer::L1,
+            first_batch: 1,
+            last_batch: Some(first.migrate_to_gateway_batch),
+        });
+    }
+
+    if first.is_active {
+        intervals.push(RawSettlementLayerInterval {
+            settlement_layer: IntervalSettlementLayer::Gateway(first.settlement_layer_chain_id),
+            first_batch: gateway_first,
+            last_batch: None,
+        });
+        return Ok(intervals);
+    }
+
+    let l1_return_first = first
+        .migrate_from_gateway_batch
+        .checked_add(1)
+        .context("migrateFromGWBatchNumber overflows the next batch cursor")?;
+    anyhow::ensure!(
+        l1_return_first >= gateway_first,
+        "completed Gateway interval ends before it begins: {} < {}",
+        first.migrate_from_gateway_batch,
+        gateway_first
+    );
+    if first.migrate_from_gateway_batch >= gateway_first {
+        intervals.push(RawSettlementLayerInterval {
+            settlement_layer: IntervalSettlementLayer::Gateway(first.settlement_layer_chain_id),
+            first_batch: gateway_first,
+            last_batch: Some(first.migrate_from_gateway_batch),
+        });
+    }
+    intervals.push(RawSettlementLayerInterval {
+        settlement_layer: IntervalSettlementLayer::L1,
+        first_batch: l1_return_first,
+        last_batch: None,
+    });
+    Ok(intervals)
 }
 
 /// Settlement layer intervals for a chain. Each entry carries the diamond proxy needed to route
@@ -214,7 +326,8 @@ impl SettlementLayerIntervals {
 ///   chain has not returned yet).
 /// - Slot `0` is reserved for the legacy Gateway and is intentionally skipped — legacy-GW chains
 ///   are not supported here.
-/// - `MAX_ALLOWED_NUMBER_OF_MIGRATIONS = 2` on-chain, so at most two cycles are supported.
+/// - `MAX_ALLOWED_NUMBER_OF_MIGRATIONS = 2` on-chain means one L1→Gateway→L1 round-trip (two
+///   migration operations). The interval itself is stored in slot `1`; slot `2` is empty.
 async fn find_settlement_layer_intervals(
     chain_asset_handler: Address,
     provider: NodeProvider,
@@ -240,6 +353,8 @@ async fn find_settlement_layer_intervals(
         }
         Err(e) => return Err(anyhow::Error::new(e).context("failed to fetch migrationNumber")),
     };
+    // SYSCOIN: Bound allocation and RPC fan-out before materializing the migration-slot futures.
+    validate_migration_count(total_migrations)?;
 
     let raw = futures::future::try_join_all((1..=total_migrations).map(|i| {
         let cah = &cah;
@@ -253,67 +368,54 @@ async fn find_settlement_layer_intervals(
         }
     }))
     .await?;
-
-    let mut intervals = Vec::new();
-    let mut cursor: u64 = 1;
-    let mut on_active_gw = false;
-    for raw in raw {
-        // Uninitialized slots have all fields zero; skip them.
-        if raw.settlementLayerChainId.is_zero() {
-            continue;
-        }
-        let sl_chain_id: u64 = raw
-            .settlementLayerChainId
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("settlementLayerChainId overflow: {e}"))?;
-        let to_batch: u64 = raw
-            .migrateToGWBatchNumber
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("migrateToGWBatchNumber overflow: {e}"))?;
-
-        // L1 interval leading up to this migration (if the chain committed any batches to L1
-        // before it).
-        anyhow::ensure!(
-            to_batch + 1 >= cursor,
-            "settlement layer interval is not in order: {} < {}",
-            to_batch + 1,
-            cursor
-        );
-        intervals.push(RawSettlementLayerInterval {
-            settlement_layer: IntervalSettlementLayer::L1,
-            first_batch: cursor,
-            last_batch: Some(to_batch),
-        });
-        cursor = to_batch + 1;
-
-        if raw.isActive {
-            intervals.push(RawSettlementLayerInterval {
-                settlement_layer: IntervalSettlementLayer::Gateway(sl_chain_id),
-                first_batch: cursor,
-                last_batch: None,
-            });
-            on_active_gw = true;
-            break;
-        }
-        let from_batch: u64 = raw
-            .migrateFromGWBatchNumber
-            .try_into()
-            .map_err(|e| anyhow::anyhow!("migrateFromGWBatchNumber overflow: {e}"))?;
-        intervals.push(RawSettlementLayerInterval {
-            settlement_layer: IntervalSettlementLayer::Gateway(sl_chain_id),
-            first_batch: cursor,
-            last_batch: Some(from_batch),
-        });
-        cursor = from_batch + 1;
-    }
-    if !on_active_gw {
-        intervals.push(RawSettlementLayerInterval {
-            settlement_layer: IntervalSettlementLayer::L1,
-            first_batch: cursor,
-            last_batch: None,
-        });
-    }
-    Ok(intervals)
+    let slots = raw
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let slot_number = index + 1;
+            let all_numeric_zero = raw.migrateToGWBatchNumber.is_zero()
+                && raw.migrateFromGWBatchNumber.is_zero()
+                && raw.settlementLayerBatchLowerBound.is_zero()
+                && raw.settlementLayerBatchUpperBound.is_zero()
+                && raw.settlementLayerChainId.is_zero();
+            if raw.settlementLayerChainId.is_zero() {
+                anyhow::ensure!(
+                    all_numeric_zero && !raw.isActive,
+                    "migration slot {slot_number} is partially populated"
+                );
+                return Ok(None);
+            }
+            let convert = |value: U256, field: &str| -> anyhow::Result<u64> {
+                value.try_into().map_err(|error| {
+                    anyhow::anyhow!("migration slot {slot_number} {field} overflow: {error}")
+                })
+            };
+            Ok(Some(MigrationSlot {
+                settlement_layer_chain_id: convert(
+                    raw.settlementLayerChainId,
+                    "settlementLayerChainId",
+                )?,
+                migrate_to_gateway_batch: convert(
+                    raw.migrateToGWBatchNumber,
+                    "migrateToGWBatchNumber",
+                )?,
+                migrate_from_gateway_batch: convert(
+                    raw.migrateFromGWBatchNumber,
+                    "migrateFromGWBatchNumber",
+                )?,
+                settlement_layer_batch_lower_bound: convert(
+                    raw.settlementLayerBatchLowerBound,
+                    "settlementLayerBatchLowerBound",
+                )?,
+                settlement_layer_batch_upper_bound: convert(
+                    raw.settlementLayerBatchUpperBound,
+                    "settlementLayerBatchUpperBound",
+                )?,
+                is_active: raw.isActive,
+            }))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    build_raw_intervals(total_migrations, slots)
 }
 
 // SYSCOIN: Anvil reports an unknown selector against the pre-V31 ChainAssetHandler as an empty
@@ -335,4 +437,124 @@ fn is_pre_v31_migration_number_error(err: &alloy::contract::Error) -> bool {
                 .as_ref()
                 .is_some_and(|data| data.get() == "\"0x\"")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(to: u64, from: u64, active: bool) -> MigrationSlot {
+        MigrationSlot {
+            settlement_layer_chain_id: 506,
+            migrate_to_gateway_batch: to,
+            migrate_from_gateway_batch: from,
+            settlement_layer_batch_lower_bound: 7,
+            settlement_layer_batch_upper_bound: if active { 0 } else { 9 },
+            is_active: active,
+        }
+    }
+
+    #[test]
+    fn migration_count_is_bounded_before_slot_materialization() {
+        let error = validate_migration_count(3).unwrap_err();
+        assert!(error.to_string().contains("exceeds pinned V32 maximum"));
+    }
+
+    #[test]
+    fn active_and_completed_round_trips_are_ordered_and_open_ended() {
+        let active = build_raw_intervals(1, vec![Some(slot(10, 0, true))]).unwrap();
+        assert_eq!(
+            active,
+            vec![
+                RawSettlementLayerInterval {
+                    settlement_layer: IntervalSettlementLayer::L1,
+                    first_batch: 1,
+                    last_batch: Some(10),
+                },
+                RawSettlementLayerInterval {
+                    settlement_layer: IntervalSettlementLayer::Gateway(506),
+                    first_batch: 11,
+                    last_batch: None,
+                },
+            ]
+        );
+
+        let completed = build_raw_intervals(2, vec![Some(slot(10, 20, false)), None]).unwrap();
+        assert_eq!(
+            completed,
+            vec![
+                RawSettlementLayerInterval {
+                    settlement_layer: IntervalSettlementLayer::L1,
+                    first_batch: 1,
+                    last_batch: Some(10),
+                },
+                RawSettlementLayerInterval {
+                    settlement_layer: IntervalSettlementLayer::Gateway(506),
+                    first_batch: 11,
+                    last_batch: Some(20),
+                },
+                RawSettlementLayerInterval {
+                    settlement_layer: IntervalSettlementLayer::L1,
+                    first_batch: 21,
+                    last_batch: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_at_batch_zero_has_no_inverted_l1_prefix() {
+        assert_eq!(
+            build_raw_intervals(1, vec![Some(slot(0, 0, true))]).unwrap(),
+            vec![RawSettlementLayerInterval {
+                settlement_layer: IntervalSettlementLayer::Gateway(506),
+                first_batch: 1,
+                last_batch: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn malformed_migration_slots_fail_closed() {
+        let mut overflow_to = slot(u64::MAX, 0, true);
+        assert!(
+            build_raw_intervals(1, vec![Some(overflow_to.clone())])
+                .unwrap_err()
+                .to_string()
+                .contains("migrateToGWBatchNumber overflows")
+        );
+
+        overflow_to.is_active = false;
+        overflow_to.migrate_to_gateway_batch = 10;
+        overflow_to.migrate_from_gateway_batch = u64::MAX;
+        overflow_to.settlement_layer_batch_upper_bound = 9;
+        assert!(
+            build_raw_intervals(2, vec![Some(overflow_to), None])
+                .unwrap_err()
+                .to_string()
+                .contains("migrateFromGWBatchNumber overflows")
+        );
+
+        assert!(
+            build_raw_intervals(2, vec![Some(slot(10, 9, false)), None])
+                .unwrap_err()
+                .to_string()
+                .contains("ends before it begins")
+        );
+        assert!(
+            build_raw_intervals(
+                2,
+                vec![Some(slot(10, 20, false)), Some(slot(30, 40, false))]
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("later slots must be empty")
+        );
+        assert!(
+            build_raw_intervals(2, vec![Some(slot(10, 0, true)), None])
+                .unwrap_err()
+                .to_string()
+                .contains("activity contradicts")
+        );
+    }
 }

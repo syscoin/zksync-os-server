@@ -37,6 +37,8 @@ impl Deref for ProtocolSemanticVersion {
 }
 
 impl ProtocolSemanticVersion {
+    // SYSCOIN: Fresh V32 deployment retires the upstream historical L1-interop version threshold;
+    // only reliable upgrade-log compatibility remains in this reset protocol surface.
     /// Smallest version such that upgrading to that version uses the current log format
     /// In other words: if replay record has protocol version this or greater,
     /// we can expect the watcher to pick up the logs.
@@ -45,9 +47,6 @@ impl ProtocolSemanticVersion {
     /// For 30.1 -> 30.2, 30.1 -> 31.0 we expect to find a log
     /// For 30.0 -> 30.1 or 30.1 -> 30.1 we don't
     pub const MIN_VERSION_WITH_RELIABLE_UPGRADE_LOGS: Self = Self::new(0, 30, 2);
-
-    /// Activation version for the upstream direct-L1 interop-root path.
-    pub const MIN_VERSION_WITH_L1_INTEROP: Self = Self::new(0, 32, 0);
 
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
         Self(semver::Version {
@@ -72,13 +71,6 @@ impl ProtocolSemanticVersion {
     /// identities are intentionally unsupported by this server binary.
     pub const fn canonical_genesis_version() -> Self {
         Self::new(0, 32, 0)
-    }
-
-    /// SYSCOIN: Whether this version supports importing interoperability roots and constructing
-    /// `MessageRoot` proofs. Syscoin intentionally supports one fresh protocol identity, matching
-    /// the upstream final-v0.4 / Execution-V7 / Proving-V8 release.
-    pub fn supports_l1_interop(&self) -> bool {
-        self == &Self::MIN_VERSION_WITH_L1_INTEROP
     }
 
     /// Packs the semantic version into a `U256` according to the protocol encoding.
@@ -249,13 +241,5 @@ mod tests {
             let version = ProtocolSemanticVersion::new(*major, *minor, *patch);
             assert_eq!(version.is_live(), *expected);
         }
-    }
-
-    #[test]
-    fn only_canonical_v32_supports_l1_interop() {
-        assert!(ProtocolSemanticVersion::new(0, 32, 0).supports_l1_interop());
-        assert!(!ProtocolSemanticVersion::new(0, 31, 0).supports_l1_interop());
-        assert!(!ProtocolSemanticVersion::new(0, 32, 1).supports_l1_interop());
-        assert!(!ProtocolSemanticVersion::new(0, 33, 0).supports_l1_interop());
     }
 }

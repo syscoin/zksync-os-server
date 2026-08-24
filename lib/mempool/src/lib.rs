@@ -11,6 +11,7 @@ mod interop_fee_updater;
 pub use interop_fee_updater::{InteropFeeUpdaterConfig, LocalEthCall};
 
 mod pool;
+// SYSCOIN: Re-export the interop companion selection contract used by the V32 sequencer.
 pub use pool::{Config, InteropCompanionRequest, MarkingTxStream, Pool, StreamOutcomeKind};
 
 mod metrics;
