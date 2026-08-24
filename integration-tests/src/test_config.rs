@@ -44,12 +44,6 @@ pub fn make_full_pipeline_config(config: &mut Config) {
     config.prover_api_config.fake_snark_provers.max_batch_age = Duration::ZERO;
 }
 
-pub(crate) fn disable_prover_input_generation(config: &mut Config) {
-    if config.prover_api_config.fake_fri_provers.enabled {
-        config.prover_input_generator_config.enable_input_generation = false;
-    }
-}
-
 pub(crate) async fn build_node_config(
     l1: &AnvilL1,
     chain_layout: ChainLayout<'static>,
@@ -66,12 +60,6 @@ pub(crate) async fn build_node_config(
     config.l1_sender_config.poll_interval = TEST_PROVIDER_POLL_INTERVAL;
     config.sequencer_config.fee_collector_address = Address::random();
     config.sequencer_config.block_timestamp_offset_seconds = l1.timestamp_offset_seconds;
-    // SYSCOIN: the pinned v31 L1 snapshot replays bootstrap/system transactions whose legacy
-    // nonce semantics are outside REVM's diagnostic surface. The canonical ZKsync OS executor
-    // still validates them; only allow the existing bounded checker skip in local fixtures.
-    config
-        .sequencer_config
-        .revm_consistency_checker_allow_bootstrap_skip = true;
     config.rpc_config.send_raw_transaction_sync_timeout = Duration::from_secs(10);
     // SYSCOIN: integration tests intentionally exercise debug tracing on local RPC.
     config.rpc_config.enable_debug_namespace = true;

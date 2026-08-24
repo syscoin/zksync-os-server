@@ -13,7 +13,9 @@ use zksync_os_storage_api::ReplayRecord;
 /// storage dependency separately.
 #[derive(Debug, Clone)]
 pub struct MainNodeProtocolConfig {
-    /// Accepted verifier signers for this main node.
+    /// Accepted verifier signers for this main node. SYSCOIN: Each signer owns at most one current
+    /// PeerId lane, and production verifier PeerIds should also be configured as trusted boot nodes
+    /// so connection-cap pressure cannot exclude them before authentication.
     pub accepted_verifier_signers: Vec<Address>,
     /// Channel used to forward batch verification results back into the node.
     pub verify_result_tx: mpsc::Sender<PeerVerifyBatchResult>,

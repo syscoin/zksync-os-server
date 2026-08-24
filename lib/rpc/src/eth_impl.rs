@@ -1061,7 +1061,7 @@ pub enum EthError {
     /// When the percentile array is invalid
     #[error("invalid reward percentiles")]
     InvalidRewardPercentiles,
-    /// SYSCOIN OTS page size is too large.
+    /// SYSCOIN: OTS page size is too large.
     #[error("page size {page_size} exceeds max page size {max_page_size}")]
     PageSizeTooLarge {
         /// Requested page size.

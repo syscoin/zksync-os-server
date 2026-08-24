@@ -38,7 +38,7 @@
 #   UPDATE_CHAIN_GAS_TANK   true by default; writes deployed gas tank to
 #                           chains/$EDGE_CHAIN_NAME/configs/contracts.yaml
 #                           as l2.zksys_gas_tank_addr after requiring it to
-#                           match the address bound to the published V7 app
+#                           match the address bound to the canonical app
 #   VERIFY                  true by default; set false to skip Blockscout verification
 #
 # Example:
@@ -56,9 +56,16 @@ AA_DIR="${REPO_ROOT}/integration-tests/test-contracts/lib/account-abstraction"
 # (eth-infinitism/account-abstraction v0.9.0 release).
 CANONICAL_ENTRYPOINT_V09="0x433709009B8330FDa32311DF1C2AFA402eD8D009"
 CREATE2_DEPLOYER_ADDRESS="0x4e59b44847b379578588920cA78FbF26c0B4956C"
+CREATE2_DEPLOYER_RUNTIME="0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
+CREATE2_DEPLOYER_RUNTIME_HASH="0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989"
 # Official deployment salt from the account-abstraction v0.9.0 release
 # (hardhat.config.ts SALT default).
 ENTRYPOINT_V09_SALT="0x7702864008ddeab30aa67b7adc3d2653bc8d162714b1fe8fe4582df814f3bf61"
+# SYSCOIN: these compiler-output commitments are part of the released app/VK.
+GAS_TANK_SALT="0x7a6b7379732d6761732d74616e6b000000000000000000000000000000000000"
+GAS_TANK_INIT_CODE_HASH="0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561"
+GAS_TANK_RUNTIME_HASH="0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
+CANONICAL_GAS_TANK="0xb49943ea232624dd4aa63e18186076c6c99a68ef"
 
 RPC_URL="${ZKTANENBAUM_RPC_URL:-https://rpc-zk.tanenbaum.io}"
 EXPLORER_BASE="${EXPLORER_BASE:-https://explorer-zk.tanenbaum.io}"
@@ -117,11 +124,6 @@ if [[ "${UPDATE_CHAIN_GAS_TANK}" != "true" && "${UPDATE_CHAIN_GAS_TANK}" != "fal
   exit 1
 fi
 
-verify_args=()
-if [[ "${VERIFY}" == "true" ]]; then
-  verify_args+=(--verify --verifier blockscout --verifier-url "${EXPLORER_BASE%/}/api/")
-fi
-
 lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
@@ -129,6 +131,22 @@ lower() {
 rpc_code() {
   cast code --rpc-url "${RPC_URL}" "${1:?address required}"
 }
+
+require_canonical_create2_deployer() {
+  local runtime runtime_hash
+  runtime="$(rpc_code "${CREATE2_DEPLOYER_ADDRESS}")"
+  if [[ "$(lower "${runtime}")" != "$(lower "${CREATE2_DEPLOYER_RUNTIME}")" ]]; then
+    echo "error: code at ${CREATE2_DEPLOYER_ADDRESS} is not the exact canonical Arachnid runtime" >&2
+    exit 1
+  fi
+  runtime_hash="$(cast keccak "${runtime}")"
+  if [[ "$(lower "${runtime_hash}")" != "$(lower "${CREATE2_DEPLOYER_RUNTIME_HASH}")" ]]; then
+    echo "error: Arachnid runtime hash ${runtime_hash} does not match ${CREATE2_DEPLOYER_RUNTIME_HASH}" >&2
+    exit 1
+  fi
+}
+
+require_canonical_create2_deployer
 
 # ---------------------------------------------------------------------------
 # 1. Standard EntryPoint v0.9 at the canonical global address.
@@ -221,67 +239,89 @@ echo "  chain:  ${CHAIN_ID}"
 echo "  token:  ${ZKSYS_TOKEN_ADDRESS}"
 echo
 
-published_v7_gas_tank=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+# SYSCOIN: use the same deterministic constructor/salt and exact compiler
+# output as production bootstrap; this address is embedded in the guest.
+canonical_gas_tank="${CANONICAL_GAS_TANK}"
 gas_tank_creation_code="$(
   cd "${CONTRACTS_DIR}"
-  forge inspect --no-metadata src/zksys/ZkSysGasTank.sol:ZkSysGasTank bytecode
+  FOUNDRY_EVM_VERSION=cancun forge inspect --no-metadata \
+    src/zksys/ZkSysGasTank.sol:ZkSysGasTank bytecode
 )"
+gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_TOKEN_ADDRESS}")"
+gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
+gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
+if [[ "$(lower "${gas_tank_init_code_hash}")" != "$(lower "${GAS_TANK_INIT_CODE_HASH}")" ]]; then
+  echo "error: gas tank init-code hash ${gas_tank_init_code_hash} does not match canonical ${GAS_TANK_INIT_CODE_HASH}" >&2
+  exit 1
+fi
+predicted_gas_tank="$(
+  cast create2 \
+    --deployer "${CREATE2_DEPLOYER_ADDRESS}" \
+    --salt "${GAS_TANK_SALT}" \
+    --init-code "${gas_tank_init_code}"
+)"
+if [[ "$(lower "${predicted_gas_tank}")" != "$(lower "${canonical_gas_tank}")" ]]; then
+  echo "error: gas tank CREATE2 address ${predicted_gas_tank} differs from canonical ${canonical_gas_tank}" >&2
+  exit 1
+fi
 expected_gas_tank_runtime="$(
   cast call --rpc-url "${RPC_URL}" --create "${gas_tank_creation_code}" \
     "constructor(address)" "${ZKSYS_TOKEN_ADDRESS}"
 )"
-existing_gas_tank_runtime="$(rpc_code "${published_v7_gas_tank}")"
+expected_gas_tank_runtime_hash="$(cast keccak "${expected_gas_tank_runtime}")"
+if [[ "$(lower "${expected_gas_tank_runtime_hash}")" != "$(lower "${GAS_TANK_RUNTIME_HASH}")" ]]; then
+  echo "error: gas tank runtime hash ${expected_gas_tank_runtime_hash} does not match canonical ${GAS_TANK_RUNTIME_HASH}" >&2
+  exit 1
+fi
+existing_gas_tank_runtime="$(rpc_code "${canonical_gas_tank}")"
 if [[ "${existing_gas_tank_runtime}" != "0x" ]]; then
   if [[ "$(lower "${existing_gas_tank_runtime}")" != "$(lower "${expected_gas_tank_runtime}")" ]]; then
-    echo "error: existing code at ${published_v7_gas_tank} is not the exact ZkSysGasTank runtime for token ${ZKSYS_TOKEN_ADDRESS}" >&2
+    echo "error: existing code at ${canonical_gas_tank} is not the exact ZkSysGasTank runtime for token ${ZKSYS_TOKEN_ADDRESS}" >&2
     exit 1
   fi
-  echo "Using existing published V7 gas tank at ${published_v7_gas_tank}"
-  gas_tank_address="${published_v7_gas_tank}"
+  echo "Using existing canonical gas tank at ${canonical_gas_tank}"
+  gas_tank_address="${canonical_gas_tank}"
 else
-  if [[ -z "${DEPLOYER_ADDRESS:-}" ]]; then
-    DEPLOYER_ADDRESS="$(cast wallet address "${wallet_args[@]}")"
-  fi
-  deployer_nonce="$(cast nonce --rpc-url "${RPC_URL}" "${DEPLOYER_ADDRESS}")"
-  predicted_gas_tank="$(
-    cast compute-address --nonce "${deployer_nonce}" "${DEPLOYER_ADDRESS}" |
-      sed -n 's/^Computed Address: //p'
-  )"
-  if [[ "$(lower "${predicted_gas_tank}")" != "${published_v7_gas_tank}" ]]; then
-    echo "error: the next ZkSysGasTank CREATE address ${predicted_gas_tank} differs from" >&2
-    echo "       the published V7 app value ${published_v7_gas_tank}; refusing to broadcast" >&2
-    echo "error: using another address requires a new app, VK, and verifier" >&2
-    exit 1
-  fi
-
-  output="$(
-    cd "${CONTRACTS_DIR}"
-    forge create src/zksys/ZkSysGasTank.sol:ZkSysGasTank \
-      --rpc-url "${RPC_URL}" \
-      --chain "${CHAIN_ID}" \
-      --nonce "${deployer_nonce}" \
-      --no-metadata \
-      --broadcast \
-      "${verify_args[@]}" \
-      "${wallet_args[@]}" \
-      --constructor-args "${ZKSYS_TOKEN_ADDRESS}"
-  )"
-
-  printf '%s\n' "${output}"
-  gas_tank_address="$(printf '%s\n' "${output}" | sed -n 's/^Deployed to: //p' | tail -n 1)"
-  if [[ -z "${gas_tank_address}" ]]; then
-    echo "error: could not parse deployed ZkSysGasTank address" >&2
-    exit 1
-  fi
-  if [[ "$(lower "${gas_tank_address}")" != "${published_v7_gas_tank}" ]]; then
-    echo "error: deployed gas tank ${gas_tank_address} differs from its preflight address ${published_v7_gas_tank}" >&2
-    exit 1
-  fi
+  echo "Deploying canonical gas tank through Arachnid CREATE2"
+  cast send "${CREATE2_DEPLOYER_ADDRESS}" \
+    "${GAS_TANK_SALT}${gas_tank_init_code#0x}" \
+    --rpc-url "${RPC_URL}" \
+    --chain "${CHAIN_ID}" \
+    "${wallet_args[@]}" >/dev/null
+  gas_tank_address="${canonical_gas_tank}"
   deployed_gas_tank_runtime="$(rpc_code "${gas_tank_address}")"
   if [[ "$(lower "${deployed_gas_tank_runtime}")" != "$(lower "${expected_gas_tank_runtime}")" ]]; then
     echo "error: deployed gas tank runtime does not match the exact locally built contract" >&2
     exit 1
   fi
+fi
+
+actual_gas_tank_runtime_hash="$(cast keccak "$(rpc_code "${gas_tank_address}")")"
+if [[ "$(lower "${actual_gas_tank_runtime_hash}")" != "$(lower "${GAS_TANK_RUNTIME_HASH}")" ]]; then
+  echo "error: deployed gas tank runtime hash ${actual_gas_tank_runtime_hash} does not match canonical ${GAS_TANK_RUNTIME_HASH}" >&2
+  exit 1
+fi
+
+if [[ "${VERIFY}" == "true" ]]; then
+  (
+    cd "${CONTRACTS_DIR}"
+    FOUNDRY_EVM_VERSION=cancun \
+    FOUNDRY_BYTECODE_HASH=none \
+    FOUNDRY_CBOR_METADATA=false \
+      forge verify-contract \
+        "${gas_tank_address}" \
+        src/zksys/ZkSysGasTank.sol:ZkSysGasTank \
+        --constructor-args "${gas_tank_ctor_args}" \
+        --compiler-version 0.8.28 \
+        --num-of-optimizations 200 \
+        --via-ir \
+        --evm-version cancun \
+        --rpc-url "${RPC_URL}" \
+        --chain "${CHAIN_ID}" \
+        --verifier blockscout \
+        --verifier-url "${EXPLORER_BASE%/}/api/" \
+        --watch
+  )
 fi
 
 echo
@@ -351,8 +391,8 @@ path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encod
 PY
   echo "Updated ${contracts_yaml}: l2.zksys_gas_tank_addr=${gas_tank_address}"
   echo
-  echo "NOTE: this address must match the published V7 app binding"
-  echo "      0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb; otherwise a new app, VK, and verifier are required."
+  echo "NOTE: this address must match the canonical app binding"
+  echo "      0xb49943ea232624dd4aa63e18186076c6c99a68ef; otherwise a new app, VK, and verifier are required."
 fi
 
 echo

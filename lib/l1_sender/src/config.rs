@@ -19,6 +19,44 @@ pub const DEFAULT_NONCE_ERROR_MAX_ATTEMPTS: usize = 10;
 /// Default backoff between attempts after a nonce-class rejection.
 pub const DEFAULT_NONCE_ERROR_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
+/// SYSCOIN: One inclusive confirmation-depth policy shared by live receipt handling and durable
+/// startup recovery. A configured value of zero intentionally matches the existing runtime
+/// behavior: the inclusion block itself is sufficient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfirmationPolicy {
+    required_confirmations: u64,
+}
+
+impl ConfirmationPolicy {
+    pub const fn new(required_confirmations: u64) -> Self {
+        Self {
+            required_confirmations,
+        }
+    }
+
+    pub const fn required_confirmations(self) -> u64 {
+        self.required_confirmations
+    }
+
+    /// Additional blocks after the inclusion block required by the inclusive policy.
+    pub const fn confirmation_offset(self) -> u64 {
+        self.required_confirmations.saturating_sub(1)
+    }
+
+    pub const fn confirmed_at(self, inclusion_block: u64) -> u64 {
+        inclusion_block.saturating_add(self.confirmation_offset())
+    }
+
+    /// Latest historical state block whose transitions have the configured depth at `tip`.
+    pub const fn safe_state_block(self, tip: u64) -> u64 {
+        tip.saturating_sub(self.confirmation_offset())
+    }
+
+    pub const fn is_confirmed(self, inclusion_block: u64, tip: u64) -> bool {
+        tip >= self.confirmed_at(inclusion_block)
+    }
+}
+
 /// Configuration of L1 sender.
 #[derive(Clone, Debug)]
 pub struct L1SenderConfig<Input> {
@@ -36,7 +74,7 @@ pub struct L1SenderConfig<Input> {
     /// Max number of commands (to commit/prove/execute one batch) to be processed at a time.
     /// In pipelined mode this is the in-flight window size: the max number of
     /// submitted-but-not-yet-mined L1 transactions. Must not exceed the L1 node's
-    /// per-account pool cap (16 for both geth's blobpool and reth's default account slots).
+    /// per-account pool cap (16 for reth's default account slots).
     pub command_limit: usize,
 
     /// When true (default), transactions are submitted through a bounded in-flight window and
@@ -96,15 +134,39 @@ pub struct L1SenderFeeConfig {
     /// Max priority fee per gas we are willing to spend (in wei).
     pub max_priority_fee_per_gas_wei: u128,
 
-    /// Max fee per blob gas we are willing to spend (in wei).
-    pub max_fee_per_blob_gas_wei: u128,
-
     /// Multiplier applied to `max_fee_per_gas_wei` when forcing transaction resubmission.
     pub max_fee_per_gas_replacement_multiplier: f64,
 
     /// Multiplier applied to `max_priority_fee_per_gas_wei` when forcing transaction resubmission.
     pub max_priority_fee_per_gas_replacement_multiplier: f64,
+}
 
-    /// Multiplier applied to `max_fee_per_blob_gas_wei` when forcing transaction resubmission.
-    pub max_fee_per_blob_gas_replacement_multiplier: f64,
+#[cfg(test)]
+mod tests {
+    use super::ConfirmationPolicy;
+
+    // SYSCOIN: Receipt confirmation and historical-state recovery are dual views of the same
+    // inclusive depth. Exercise zero/one explicitly and a broad range to prevent an off-by-one
+    // from deleting a durable proof earlier than the live sender would acknowledge it.
+    #[test]
+    fn inclusive_confirmation_and_safe_state_math_are_dual() {
+        for required in 0..=32 {
+            let policy = ConfirmationPolicy::new(required);
+            for inclusion in [0, 1, 2, 17, u64::MAX - 64] {
+                let confirmed_at = policy.confirmed_at(inclusion);
+                assert!(policy.is_confirmed(inclusion, confirmed_at));
+                if confirmed_at > 0 {
+                    assert!(!policy.is_confirmed(inclusion, confirmed_at - 1));
+                }
+                assert!(policy.safe_state_block(confirmed_at) >= inclusion);
+            }
+        }
+
+        for required in [0, 1] {
+            let policy = ConfirmationPolicy::new(required);
+            assert_eq!(policy.confirmation_offset(), 0);
+            assert_eq!(policy.confirmed_at(42), 42);
+            assert_eq!(policy.safe_state_block(42), 42);
+        }
+    }
 }

@@ -48,7 +48,7 @@ impl PipelineComponent for GaplessCommitter {
                 Some(proven_batch) => {
                     state_reporter.enter_state(GenericComponentState::Active);
                     let batch_number = proven_batch.batch.batch_number();
-                    // SYSCOIN
+                    // SYSCOIN: Release stale durable leases instead of leaving protected files behind.
                     if batch_number < next_expected_batch_number {
                         if let Some(pending_proof_key) = proven_batch.pending_proof_key {
                             tracing::warn!(
@@ -70,7 +70,7 @@ impl PipelineComponent for GaplessCommitter {
                         continue;
                     }
 
-                    // SYSCOIN Multiple pending files for the same batch may be replayed after
+                    // SYSCOIN: Multiple pending files for the same batch may be replayed after
                     // restart. Keep the latest proof in the gap buffer and release the replaced
                     // pending file so it does not remain protected forever.
                     if let Some(replaced_batch) = buffer.insert(batch_number, proven_batch)
@@ -81,7 +81,7 @@ impl PipelineComponent for GaplessCommitter {
                             .await;
                     }
 
-                    // SYSCOIN Flush ready batches
+                    // SYSCOIN: Flush only the contiguous ready prefix.
                     let mut ready: Vec<ProvenBatch> = Vec::new();
                     while let Some(next_batch) = buffer.remove(&next_expected_batch_number) {
                         ready.push(next_batch);
@@ -101,7 +101,7 @@ impl PipelineComponent for GaplessCommitter {
                             let batch = proven_batch
                                 .batch
                                 .with_stage(BatchExecutionStage::FriProofStored);
-                            let stored_batch = StoredBatch::V1(batch);
+                            let stored_batch = StoredBatch(batch);
                             if let Some(pending_proof_key) = pending_proof_key {
                                 self.proof_storage
                                     .promote_pending_batch_with_proof(&pending_proof_key)

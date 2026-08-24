@@ -12,7 +12,8 @@ gl_require ZKSYNC_ERA_PATH
 gl_require ZKSYNC_OS_SERVER_PATH
 gl_require L1_RPC_URL
 gl_require L1_CHAIN_ID
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Deploy the pinned L1 contracts for the canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_contracts_sha
@@ -276,7 +277,7 @@ derive_and_export_zksys_zk_token_asset_id() {
       --init-code "${token_proxy_init_code}"
   )"
 
-  # v31 InteropCenter resolves the fixed-fee token via
+  # V32 InteropCenter resolves the fixed-fee token via
   # L2NativeTokenVault.tokenAddress(keccak256(abi.encode(originChainId, L2_NTV, token))).
   encoded_asset_id_inputs="$(
     cast abi-encode \

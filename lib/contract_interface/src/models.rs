@@ -1,4 +1,4 @@
-use crate::{IExecutor, IExecutorV29, IExecutorV30, IExecutorV31Legacy};
+use crate::IExecutor;
 use alloy::primitives::{Address, B256, Bytes, U256, keccak256};
 use alloy::sol_types::SolValue;
 use serde::{Deserialize, Serialize};
@@ -187,7 +187,6 @@ pub struct CommitBatchInfo {
     pub priority_operations_hash: B256,
     pub dependency_roots_rolling_hash: B256,
     pub l2_to_l1_logs_root_hash: B256,
-    #[serde(default = "default_l2_da_commitment_scheme")]
     pub l2_da_commitment_scheme: DACommitmentScheme,
     pub da_commitment: B256,
     pub first_block_timestamp: u64,
@@ -206,12 +205,6 @@ pub struct CommitBatchInfo {
     pub edge_da_refs_root: B256,
     #[serde(default)]
     pub sl_chain_id: u64,
-}
-
-// `l2_da_commitment_scheme` is not present in storage for old batches, by default we use `BlobsAndPubdataKeccak256`.
-// It corresponds to da commitment used in these batches before adding different DACommitmentScheme options
-fn default_l2_da_commitment_scheme() -> DACommitmentScheme {
-    DACommitmentScheme::BlobsAndPubdataKeccak256
 }
 
 impl From<CommitBatchInfo> for IExecutor::CommitBatchInfoZKsyncOS {
@@ -241,49 +234,6 @@ impl From<CommitBatchInfo> for IExecutor::CommitBatchInfoZKsyncOS {
     }
 }
 
-impl From<CommitBatchInfo> for IExecutorV29::CommitBatchInfoZKsyncOS {
-    fn from(value: CommitBatchInfo) -> Self {
-        IExecutorV29::CommitBatchInfoZKsyncOS::from((
-            value.batch_number,
-            value.new_state_commitment,
-            U256::from(value.number_of_layer1_txs),
-            value.priority_operations_hash,
-            value.dependency_roots_rolling_hash,
-            value.l2_to_l1_logs_root_hash,
-            // we always set l2 da validator address
-            alloy::primitives::Address::ZERO,
-            value.da_commitment,
-            value.first_block_timestamp,
-            value.last_block_timestamp,
-            U256::from(value.chain_id),
-            Bytes::from(value.operator_da_input),
-        ))
-    }
-}
-
-impl From<CommitBatchInfo> for IExecutorV30::CommitBatchInfoZKsyncOS {
-    fn from(value: CommitBatchInfo) -> Self {
-        IExecutorV30::CommitBatchInfoZKsyncOS::from((
-            value.batch_number,
-            value.new_state_commitment,
-            U256::from(value.number_of_layer1_txs),
-            value.priority_operations_hash,
-            value.dependency_roots_rolling_hash,
-            value.l2_to_l1_logs_root_hash,
-            value.l2_da_commitment_scheme.into(),
-            value.da_commitment,
-            value.first_block_timestamp,
-            // It is expected that for all the newly sent batches this field is always present.
-            value.first_block_number.unwrap(),
-            value.last_block_timestamp,
-            // It is expected that for all the newly sent batches this field is always present.
-            value.last_block_number.unwrap(),
-            U256::from(value.chain_id),
-            Bytes::from(value.operator_da_input),
-        ))
-    }
-}
-
 impl From<IExecutor::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
     fn from(value: IExecutor::CommitBatchInfoZKsyncOS) -> Self {
         Self {
@@ -304,56 +254,6 @@ impl From<IExecutor::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
             operator_da_input: value.operatorDAInput.as_ref().to_vec(),
             edge_da_refs_input: value.edgeDARefsInput.as_ref().to_vec(),
             edge_da_refs_root: value.edgeDARefsRoot,
-            sl_chain_id: value.slChainId.to::<u64>(),
-        }
-    }
-}
-
-impl From<IExecutorV30::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
-    fn from(value: IExecutorV30::CommitBatchInfoZKsyncOS) -> Self {
-        Self {
-            batch_number: value.batchNumber,
-            new_state_commitment: value.newStateCommitment,
-            number_of_layer1_txs: value.numberOfLayer1Txs.to::<u64>(),
-            number_of_layer2_txs: 0,
-            priority_operations_hash: value.priorityOperationsHash,
-            dependency_roots_rolling_hash: value.dependencyRootsRollingHash,
-            l2_to_l1_logs_root_hash: value.l2LogsTreeRoot,
-            l2_da_commitment_scheme: value.daCommitmentScheme.into(),
-            da_commitment: value.daCommitment,
-            first_block_timestamp: value.firstBlockTimestamp,
-            first_block_number: Some(value.firstBlockNumber),
-            last_block_timestamp: value.lastBlockTimestamp,
-            last_block_number: Some(value.lastBlockNumber),
-            chain_id: value.chainId.to::<u64>(),
-            operator_da_input: value.operatorDAInput.as_ref().to_vec(),
-            edge_da_refs_input: Vec::new(),
-            edge_da_refs_root: B256::ZERO,
-            sl_chain_id: 0,
-        }
-    }
-}
-
-impl From<IExecutorV31Legacy::CommitBatchInfoZKsyncOS> for CommitBatchInfo {
-    fn from(value: IExecutorV31Legacy::CommitBatchInfoZKsyncOS) -> Self {
-        Self {
-            batch_number: value.batchNumber,
-            new_state_commitment: value.newStateCommitment,
-            number_of_layer1_txs: value.numberOfLayer1Txs.to::<u64>(),
-            number_of_layer2_txs: value.numberOfLayer2Txs.to::<u64>(),
-            priority_operations_hash: value.priorityOperationsHash,
-            dependency_roots_rolling_hash: value.dependencyRootsRollingHash,
-            l2_to_l1_logs_root_hash: value.l2LogsTreeRoot,
-            l2_da_commitment_scheme: value.daCommitmentScheme.into(),
-            da_commitment: value.daCommitment,
-            first_block_timestamp: value.firstBlockTimestamp,
-            first_block_number: Some(value.firstBlockNumber),
-            last_block_timestamp: value.lastBlockTimestamp,
-            last_block_number: Some(value.lastBlockNumber),
-            chain_id: value.chainId.to::<u64>(),
-            operator_da_input: value.operatorDAInput.as_ref().to_vec(),
-            edge_da_refs_input: Vec::new(),
-            edge_da_refs_root: B256::ZERO,
             sl_chain_id: value.slChainId.to::<u64>(),
         }
     }

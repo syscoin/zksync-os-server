@@ -3,8 +3,8 @@ use crate::config::{
     Config, ConsensusConfig, ExternalPriceApiClientConfig, FeeConfig, GasAdjusterConfig,
     GatewaySenderConfig, GeneralConfig, GenesisConfig, InteropFeeUpdaterConfig, L1SenderConfig,
     L1WatcherConfig, MempoolConfig, MempoolTxValidatorConfig, NetworkConfig, ObservabilityConfig,
-    ProverApiConfig, ProverInputGeneratorConfig, ProviderConfig, ReplayArchiveConfig, RpcConfig,
-    SequencerConfig, StatusServerConfig,
+    ProverApiConfig, ProviderConfig, ReplayArchiveConfig, RpcConfig, SequencerConfig,
+    StatusServerConfig,
 };
 use smart_config::{ConfigRepository, ConfigSources, Json, Yaml};
 use std::fs;
@@ -108,12 +108,6 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse L1 watcher config");
 
-    let prover_input_generator_config = repo
-        .single::<ProverInputGeneratorConfig>()
-        .expect("Failed to load ProverInputGenerator config")
-        .parse()
-        .expect("Failed to parse ProverInputGenerator config");
-
     let prover_api_config = repo
         .single::<ProverApiConfig>()
         .expect("Failed to load prover api config")
@@ -196,7 +190,6 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         gateway_sender_config,
         l1_watcher_config,
         batcher_config,
-        prover_input_generator_config,
         prover_api_config,
         status_server_config,
         observability_config,

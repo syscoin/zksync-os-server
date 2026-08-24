@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -10,10 +11,25 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
 PUBLISHED_PATCH_TARGET = "0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19"
-PUBLISHED_GAS_TANK = "0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb"
-PUBLISHED_EDGE_SOURCE_SHA256 = (
-    "1eb8dc0da30570626a860968140c41663b9a40077f2c420665196b7506d7a7cb"
+PUBLISHED_GAS_TANK = "0xb49943ea232624dd4aa63e18186076c6c99a68ef"
+PUBLISHED_GAS_TANK_INIT_CODE_HASH = (
+    "0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561"
 )
+PUBLISHED_GAS_TANK_RUNTIME_HASH = (
+    "0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
+)
+PUBLISHED_EDGE_SOURCE_SHA256 = (
+    "00ede058520ad12356fb2137f9d59673828d0bd7fa99c859f86b623681c369c6"
+)
+PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
+    "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
+)
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "20dc217bbd535877f600df88bd7e2966d3d9b43a"
+OFFICIAL_OS_URL = "https://github.com/matter-labs/zksync-os"
+FINAL_OS_TAG = "v0.4.0"
+OTHER_OS_TAG = "v0.2.10-interface-v0.1.3-2026-02-10"
+FINAL_LOCKED_REV = "3" * 40
+FINAL_PATCHED_REV = "4" * 40
 
 
 def rust_address_bytes(address: str) -> str:
@@ -22,6 +38,70 @@ def rust_address_bytes(address: str) -> str:
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
+        manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
+        self.assertIn('tag = "v0.6.0-rc.2"', manifest)
+        self.assertNotIn('tag = "v0.6.0-rc.1"', manifest)
+        self.assertIn(
+            "?tag=v0.6.0-rc.2#03454c7a41053a4b88bb421e97fb9efe893a92f5",
+            lock,
+        )
+        self.assertNotIn("?tag=v0.6.0-rc.1", lock)
+
+    def test_pre_keygen_app_identity_is_explicitly_fail_closed(self) -> None:
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
+        ).read_text(encoding="utf-8")
+        verifier = (
+            REPO_ROOT
+            / "node"
+            / "bin"
+            / "src"
+            / "prover_api"
+            / "fri_proof_verifier.rs"
+        ).read_text(encoding="utf-8")
+
+        for source in (workflow, verifier):
+            self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, source)
+            self.assertNotIn("5117d5dac6dbd34b93fef54e04d0b41c", source)
+            self.assertNotIn("1279059325", source)
+            self.assertNotIn("220972078", source)
+
+        self.assertIn("APP_IDENTITY_STATUS: regeneration-required", workflow)
+        self.assertIn('APP_BIN_SIZE: "0"', workflow)
+        self.assertIn('APP_TEXT_SIZE: "0"', workflow)
+        self.assertIn('APP_END_PARAMS: "[0, 0, 0, 0, 0, 0, 0, 0]"', workflow)
+        self.assertIn('SECURITY100_WORDS: "[0, 0, 0, 0, 0, 0, 0, 0]"', workflow)
+        status_gate = workflow.index(
+            'if [[ "${APP_IDENTITY_STATUS}" != "attested" ]]; then'
+        )
+        self.assertLess(status_gate, workflow.index("  syscoin-keygen:"))
+        self.assertIn(
+            '[[ "${APP_IDENTITY_SOURCE_TREE}" == "${ZKSYNC_OS_PATCHED_TREE}" ]]',
+            workflow,
+        )
+        self.assertIn(
+            'require_words("V8_APP_END_PARAMS", os.environ["APP_END_PARAMS"])',
+            workflow,
+        )
+        self.assertIn(
+            'require_words("V8_SECURITY100_EXPECTED_CHAIN", os.environ["SECURITY100_WORDS"])',
+            workflow,
+        )
+
+        self.assertIn(
+            "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = true;", verifier
+        )
+        self.assertIn("const V8_APP_END_PARAMS: [u32; 8] = [0; 8];", verifier)
+        self.assertIn(
+            "const V8_SECURITY100_EXPECTED_CHAIN: [u32; 8] = [0; 8];", verifier
+        )
+        self.assertLess(
+            verifier.index("if v8_verifier::V8_APP_IDENTITY_REGENERATION_REQUIRED"),
+            verifier.index("validate_v8_proof_shape(proof)?;"),
+        )
+
     def test_gateway_launcher_sources_shared_workspace_helper(self) -> None:
         launcher = (
             REPO_ROOT
@@ -36,6 +116,12 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertNotIn("extract_zksync_os_tag()", launcher)
         self.assertIn("extract_zksync_os_tag()", helper)
         self.assertIn("prepare_run_workspace()", helper)
+        self.assertIn("ZKSYNC_OS_ALIAS=zk_os_forward_system", launcher)
+        self.assertIn("apply-zksync-os-syscoin-v0.4.0-patch.sh", launcher)
+        self.assertNotIn("ZKSYNC_OS_V8_DEV_PATH", launcher)
+        self.assertNotIn("V7_ZKSYNC_OS", launcher)
+        self.assertNotIn("V8_ZKSYNC_OS", launcher)
+        self.assertNotIn("zk_os_forward_system_prev", helper)
 
     def test_run_local_builds_one_patched_prebuilt_and_executes_it(self) -> None:
         script = (REPO_ROOT / "run_local.sh").read_text(encoding="utf-8")
@@ -50,6 +136,66 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertIn('exit "$exit_status"', script)
         self.assertIn("trap cleanup EXIT", script)
 
+    def test_generated_real_prover_storage_covers_the_full_queue_window(self) -> None:
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES:=8589934592', generator)
+        self.assertIn('prover_batch_with_proof_capacity_bytes < 8 * 1024**3', generator)
+        self.assertIn(
+            'batch_with_proof_capacity: {prover_batch_with_proof_capacity_bytes} B',
+            generator,
+        )
+
+    def test_generated_prover_proxy_bounds_request_and_response_buffering(self) -> None:
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+
+        # SYSCOIN: The public proxy must reject oversized bodies before an unauthenticated
+        # client can fill nginx temporary storage; the node enforces the same 10 MiB ceiling.
+        self.assertIn("client_max_body_size 10m;", generator)
+        self.assertNotIn("client_max_body_size 0;", generator)
+        self.assertIn("proxy_connect_timeout 5s;", generator)
+        self.assertIn("proxy_send_timeout 650s;", generator)
+        self.assertIn("proxy_read_timeout 650s;", generator)
+        # SYSCOIN: The complete bounded response must drain from the node into nginx even if an
+        # authenticated remote prover stops reading, releasing the node's scarce pick permit.
+        self.assertIn("proxy_buffering on;", generator)
+        self.assertIn("proxy_max_temp_file_size 384m;", generator)
+        self.assertIn("proxy_ignore_headers X-Accel-Buffering;", generator)
+        self.assertIn(
+            "location ~ ^/prover-jobs/v1/(?:FRI/[^/]+/(?:peek|failed)|SNARK/[^/]+/[^/]+/peek)/?$",
+            generator,
+        )
+        self.assertNotIn("ALLOW_INSECURE_PROVER_HTTP", generator)
+        self.assertNotIn("allow_insecure_public_bind", generator)
+        self.assertIn('if prover_api_bind_host != "127.0.0.1":', generator)
+        self.assertIn("len(prover_api_auth_password) < 32", generator)
+        self.assertIn("openssl rand -hex 32", generator)
+
+    def test_generated_and_local_configs_allow_the_cpu_snark_lease(self) -> None:
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+        local_config = (REPO_ROOT / "local-chains" / "local_dev.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        # SYSCOIN: CPU combine/wrap can exceed the former ten-minute lease; both generated
+        # deployments and the local overlay must exercise the conservative production default.
+        self.assertIn('"  snark_job_timeout: 2h"', generator)
+        self.assertIn("  snark_job_timeout: 2h", local_config)
+
     def test_generic_cargo_wrapper_uses_official_source_and_static_app_inputs(self) -> None:
         wrapper = (
             REPO_ROOT / "scripts" / "cargo-with-patched-zksync-os.sh"
@@ -60,16 +206,48 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertIn(PUBLISHED_GAS_TANK, wrapper)
         self.assertIn("ZKSYNC_OS_FORCE_PATCHED_WORKSPACE=true", wrapper)
         self.assertIn("ZKSYNC_OS_STATIC_BUILD_CONTEXT=true", wrapper)
-        self.assertIn("differs from the published V7 app value", wrapper)
+        self.assertIn("differs from the published zksync-os app value", wrapper)
+        self.assertIn("${CARGO_TARGET_DIR}/syscoin-zksync-os-server-build", wrapper)
+        self.assertNotIn("${TMPDIR:-/tmp}/syscoin-zksync-os-server-build", wrapper)
 
     def test_os_applicator_does_not_regenerate_consensus_constants(self) -> None:
         applicator = (
-            REPO_ROOT / "scripts" / "apply-zksync-os-syscoin-patch.sh"
+            REPO_ROOT / "scripts" / "apply-zksync-os-syscoin-v0.4.0-patch.sh"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("write_syscoin_edge_da_commit_target", applicator)
-        self.assertNotIn("SYSCOIN_EDGE_DA_COMMIT_TARGET", applicator)
-        self.assertNotIn("SYSCOIN_GAS_TANK_ADDRESS", applicator)
         self.assertIn("apply --reverse --check --recount", applicator)
+        self.assertIn("--unidiff-zero", applicator)
+        self.assertNotIn("EXPECTED_BASE_TAG", applicator)
+        for expected in (
+            'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
+            'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
+            'EXPECTED_PATCHED_TREE="20dc217bbd535877f600df88bd7e2966d3d9b43a"',
+            'EXPECTED_PATCH_SIZE="266203"',
+            'EXPECTED_PATCH_SHA256="b2c9a187b18d2e16ba20066a0fe297dc4946e4e6cf00bec7eb4ad365076487ff"',
+            'EXPECTED_PATCH_PATH_COUNT="63"',
+            'EXPECTED_PATCH_PATHS_SHA256="b6278e874bb760d1da002f7824bb7e6424ccdcb4b1a0c36e74cfd90802c68094"',
+        ):
+            self.assertIn(expected, applicator)
+        workspace_helper = (
+            REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="20dc217bbd535877f600df88bd7e2966d3d9b43a"',
+            workspace_helper,
+        )
+        self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
+        self.assertIn('*.rs | *.toml | *.sh)', applicator)
+
+        patch = (
+            REPO_ROOT
+            / "scripts"
+            / "patches"
+            / "zksync-os-syscoin-v0.4.0.patch"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("canonical_upgrade_tx_hash", patch)
+        self.assertNotIn("canonical upgrade tx hash", patch)
+        self.assertNotIn("blob_data_id_advice", patch)
+        self.assertNotIn("callable_oracles/src/blob_data_id", patch)
+        self.assertIn("host advice is neither", patch)
 
     def test_published_consensus_constants_are_consistent(self) -> None:
         deploy_en = (
@@ -104,10 +282,18 @@ class LauncherStaticTests(unittest.TestCase):
                 self.assertIn(PUBLISHED_GAS_TANK, path.read_text(encoding="utf-8"))
 
         patch = (
-            REPO_ROOT / "scripts" / "patches" / "zksync-os-syscoin.patch"
+            REPO_ROOT
+            / "scripts"
+            / "patches"
+            / "zksync-os-syscoin-v0.4.0.patch"
         ).read_text(encoding="utf-8")
-        self.assertIn(rust_address_bytes(PUBLISHED_PATCH_TARGET), patch)
-        self.assertIn(rust_address_bytes(PUBLISHED_GAS_TANK), patch)
+        patch_postimage = "\n".join(
+            line[1:] if line.startswith("+") and not line.startswith("+++") else line
+            for line in patch.splitlines()
+        )
+        normalized_patch = " ".join(patch_postimage.split())
+        self.assertIn(rust_address_bytes(PUBLISHED_PATCH_TARGET), normalized_patch)
+        self.assertIn(rust_address_bytes(PUBLISHED_GAS_TANK), normalized_patch)
 
         deploy_en_text = deploy_en.read_text(encoding="utf-8")
         self.assertLess(
@@ -121,55 +307,443 @@ class LauncherStaticTests(unittest.TestCase):
             / "blockscout"
             / "deploy-pali-entrypoint-gastank-zktanenbaum.sh"
         ).read_text(encoding="utf-8")
-        self.assertLess(
-            deploy_gas_tank.index("cast compute-address --nonce"),
-            deploy_gas_tank.index("forge create src/zksys/ZkSysGasTank.sol"),
+        self.assertNotIn("cast compute-address --nonce", deploy_gas_tank)
+        self.assertNotIn("forge create src/zksys/ZkSysGasTank.sol", deploy_gas_tank)
+        self.assertIn("require_canonical_create2_deployer", deploy_gas_tank)
+        self.assertIn(
+            f'GAS_TANK_INIT_CODE_HASH="{PUBLISHED_GAS_TANK_INIT_CODE_HASH}"',
+            deploy_gas_tank,
         )
+        self.assertIn(
+            f'GAS_TANK_RUNTIME_HASH="{PUBLISHED_GAS_TANK_RUNTIME_HASH}"',
+            deploy_gas_tank,
+        )
+        self.assertIn(
+            "cast create2 \\\n"
+            '    --deployer "${CREATE2_DEPLOYER_ADDRESS}"',
+            deploy_gas_tank,
+        )
+        self.assertIn('"${GAS_TANK_SALT}${gas_tank_init_code#0x}"', deploy_gas_tank)
         self.assertIn("cast call --rpc-url", deploy_gas_tank)
         self.assertIn("--create \"${gas_tank_creation_code}\"", deploy_gas_tank)
-        self.assertGreaterEqual(deploy_gas_tank.count("--no-metadata"), 2)
+        self.assertIn("FOUNDRY_EVM_VERSION=cancun forge inspect --no-metadata", deploy_gas_tank)
         self.assertIn("existing_gas_tank_runtime", deploy_gas_tank)
         self.assertIn("expected_gas_tank_runtime", deploy_gas_tank)
+
+    def test_zksys_bootstrap_attests_factory_and_tank_before_burn_role(self) -> None:
+        bootstrap = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
+        ).read_text(encoding="utf-8")
+
+        # SYSCOIN: a nonempty-code check is insufficient on custom genesis.
+        # Pin both Arachnid runtime bytes and their independently fixed hash.
+        self.assertIn(
+            "ARACHNID_CREATE2_RUNTIME=0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3",
+            bootstrap,
+        )
+        self.assertIn(
+            "ARACHNID_CREATE2_RUNTIME_HASH=0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989",
+            bootstrap,
+        )
+        self.assertIn('actual_runtime="$(rpc_code "${address}")"', bootstrap)
+        self.assertIn('actual_runtime_hash="$(cast keccak "${actual_runtime}")"', bootstrap)
+        self.assertIn("does not match the exact canonical bytecode", bootstrap)
+        self.assertLess(
+            bootstrap.index("require_create2_deployer\n"),
+            bootstrap.index('deploy_create2 "zkSYS proxy admin"'),
+        )
+
+        # SYSCOIN: pin the constructor-specific compiler output independently
+        # of its CREATE2 address as part of the app/VK release surface.
+        self.assertIn(
+            f"PUBLISHED_GAS_TANK_INIT_CODE_HASH={PUBLISHED_GAS_TANK_INIT_CODE_HASH}",
+            bootstrap,
+        )
+        self.assertIn(
+            f"PUBLISHED_GAS_TANK_RUNTIME_HASH={PUBLISHED_GAS_TANK_RUNTIME_HASH}",
+            bootstrap,
+        )
+        self.assertIn(f"PUBLISHED_GAS_TANK_ADDRESS={PUBLISHED_GAS_TANK}", bootstrap)
+        init_hash_check = bootstrap.index(
+            'gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash}'
+        )
+        address_check = bootstrap.index(
+            'gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS}'
+        )
+        self.assertLess(init_hash_check, address_check)
+
+        # Constructor execution specializes immutable token references. Its
+        # byte-for-byte runtime attestation must precede the first burn grant.
+        runtime_build = bootstrap.index('expected_gas_tank_runtime="$(')
+        canonical_runtime_check = bootstrap.index(
+            'gl_die "derived gas tank runtime hash ${expected_gas_tank_runtime_hash}'
+        )
+        tank_deploy = bootstrap.index('deploy_create2 "zkSYS gas tank"')
+        tank_attestation = bootstrap.index('assert_exact_runtime \\\n  "zkSYS gas tank"')
+        burner_grant = bootstrap.index(
+            'send_l2 "${ZKSYS_L2_TOKEN_ADDRESS}" "grantRole(bytes32,address)" "${BURNER_ROLE}"'
+        )
+        self.assertLess(runtime_build, tank_deploy)
+        self.assertLess(runtime_build, canonical_runtime_check)
+        self.assertLess(canonical_runtime_check, tank_deploy)
+        self.assertLess(tank_deploy, tank_attestation)
+        self.assertLess(tank_attestation, burner_grant)
+
+        # Execute the production assertion helper with mocked RPC/hash output:
+        # wrong bytecode and wrong hashes must both fail closed.
+        function_start = bootstrap.index("assert_exact_runtime() {")
+        function_end = bootstrap.index(
+            "\n}\n\nrequire_create2_deployer()", function_start
+        ) + len("\n}")
+        assertion_function = bootstrap[function_start:function_end]
+        probe = f"""
+set -euo pipefail
+gl_to_lower() {{ printf '%s' "${{1:-}}" | tr '[:upper:]' '[:lower:]'; }}
+gl_die() {{ echo "$*" >&2; exit 1; }}
+rpc_code() {{ printf '%s\n' "$MOCK_RUNTIME"; }}
+cast() {{
+  [ "$1" = "keccak" ] || exit 90
+  printf '%s\n' "$MOCK_HASH"
+}}
+{assertion_function}
+assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
+"""
+
+        def run_probe(runtime: str, runtime_hash: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", "-c", probe],
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "MOCK_RUNTIME": runtime,
+                    "MOCK_HASH": runtime_hash,
+                },
+                check=False,
+            )
+
+        self.assertEqual(run_probe("0xaaaa", "0xhash").returncode, 0)
+        wrong_runtime = run_probe("0xbbbb", "0xhash")
+        self.assertNotEqual(wrong_runtime.returncode, 0)
+        self.assertIn("does not match the exact canonical bytecode", wrong_runtime.stderr)
+        wrong_hash = run_probe("0xaaaa", "0xwrong")
+        self.assertNotEqual(wrong_hash.returncode, 0)
+        self.assertIn("runtime hash", wrong_hash.stderr)
 
     def test_multivm_build_fails_closed_on_unpatched_execution_source(self) -> None:
         build_rs = (REPO_ROOT / "lib" / "multivm" / "build.rs").read_text(
             encoding="utf-8"
         )
-        self.assertIn("verify_syscoin_execution_source", build_rs)
-        self.assertIn("system_hooks/slh_dsa_precompile", build_rs)
-        self.assertIn("SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW", build_rs)
-        self.assertIn("require_patched_source_sha256", build_rs)
+        self.assertIn("verify_syscoin_source", build_rs)
+        self.assertIn("require_source_sha256", build_rs)
+        self.assertIn("expected one canonical forward_system source", build_rs)
         self.assertIn(PUBLISHED_EDGE_SOURCE_SHA256, build_rs)
-        self.assertIn("Use run_local.sh", build_rs)
+        self.assertIn(PUBLISHED_GAS_TANK_SOURCE_SHA256, build_rs)
+        self.assertIn("syscoin_gas_tank.rs", build_rs)
+        self.assertIn("scripts/cargo-with-patched-zksync-os.sh", build_rs)
 
 
 class EraAttestationStaticTests(unittest.TestCase):
-    def test_era_helper_requires_reverse_applicability_and_exact_artifacts(self) -> None:
+    def test_era_helper_attests_canonical_source_patch_and_excludes_verifier_artifacts(
+        self,
+    ) -> None:
         helper = (
             REPO_ROOT / "scripts" / "apply-era-contracts-syscoin-patch.sh"
         ).read_text(encoding="utf-8")
+        patch = (
+            REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        ).read_text(encoding="utf-8")
+
         self.assertIn("apply --reverse --check --recount", helper)
         self.assertNotIn("base_patch_core_applied", helper)
-        for size, digest in (
+        for expected in (
+            'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
+            'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
+            'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
+            'EXPECTED_PATCH_SIZE="314725"',
+            'EXPECTED_PATCH_SHA256="c8a9ac36c270c43dcff3ce33dd3178e41cbf4a07757c83ef54e9cbdf7f57f17c"',
+            'EXPECTED_PATCH_PATH_COUNT="57"',
+            'EXPECTED_PATCH_PATHS_SHA256="2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183"',
+            'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
+            "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
+            "if (version != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {",
+            "_verifySyscoinEdgeDARefs(_newBatch.edgeDARefsInput, _newBatch.edgeDARefsRoot);",
+            "uint256 totalRefs;",
+            "if (totalRefs > SYSCOIN_DA_MAX_REFS_PER_BATCH) {",
+            "_l1ChainId != SYSCOIN_MAINNET_CHAIN_ID &&",
+            "constructor(GatewayVerifiersDeployerConfig memory _config, uint256 _l1ChainId)",
+            "return abi.encode(_fflonk, _plonk, _owner, _l1ChainId);",
+            "? abi.encode(verifiersConfig, config.l1ChainId)",
+            "testGatewayVerifierDeployerZKsyncOSRejectsSyscoinMainnetRootForTestnetRoute",
+            "testGatewayVerifierDeployerZKsyncOSRejectsEthereumMainnetRootForTestnetRoute",
+            '*.sol | *.toml | *.gitignore)',
+            'done <<< "${PATCH_PATHS}"',
+            "postimage manifest does not exactly match the canonical patch path set",
+            "canonical source patch unexpectedly deletes an upstream path",
+            "fflonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION] = _fflonkVerifier;",
+            "function replaceVerifier(uint32 version, IVerifier newPlonkVerifier) external override onlyOwner",
+            "function addVerifier(",
+            "function removeVerifier(",
+            "stock verifier artifact rejected",
+            "canonical V8 VK regeneration required",
+            "no app-bound security100 verifier hashes are approved",
+            "SYSCOIN_EDGE_DA_RELAY_ADDRESS = 0x758b06cDA80BDD016F79AFd0df1A984039067A21",
+            "actualRelayCodeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
+            "deployerCalldata.syscoinEdgeDARelayCalldata = _prepareSyscoinEdgeDARelayDeployment();",
+            "actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH",
+            "actualRuntimeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
+        ):
+            self.assertIn(expected, helper)
+
+        patch_paths = sorted(
+            line.split(" b/", 1)[1]
+            for line in patch.splitlines()
+            if line.startswith("diff --git a/")
+        )
+        self.assertEqual(len(patch_paths), 57)
+        self.assertEqual(
+            hashlib.sha256(
+                "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
+            ).hexdigest(),
+            "2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183",
+        )
+        manifest_body = helper.split(
+            "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
+        )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
+        manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
+        self.assertEqual(len(manifest_entries), 57)
+        self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
+        for size, digest, path in manifest_entries:
+            self.assertGreater(int(size), 0, path)
+            self.assertEqual(len(digest), 64, path)
+
+        for forbidden_envelope in (
+            "deleted file mode ",
+            "GIT binary patch",
+            "Binary files ",
+        ):
+            self.assertNotIn(forbidden_envelope, patch)
+
+        for index, path in enumerate(patch_paths):
+            if not path.endswith((".sol", ".toml", ".gitignore")):
+                continue
+            start = patch.index(f"diff --git a/{path} b/{path}")
+            end = (
+                patch.index("\ndiff --git a/", start + 1)
+                if index + 1 < len(patch_paths)
+                else len(patch)
+            )
+            self.assertIn("SYSCOIN:", patch[start:end], path)
+
+        pending_gate = helper.rindex("\nverify_verifier_artifacts_pending\n")
+        self.assertLess(pending_gate, helper.index("submodule sync\n"))
+        self.assertLess(
+            pending_gate,
+            helper.index('apply --recount --unidiff-zero --whitespace'),
+        )
+
+        for path, digest in (
             (
-                "95217",
-                "6302e7132a53c1895bf6ee9ede83a2c4e7bdddc5eedbffaabbe69fb043ee7e2f",
+                "da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol",
+                "24fcd082bee0ef29de5b4bd09b8e493a1bb1ef6759235ec71120668a19c417f4",
             ),
             (
-                "8082",
-                "f2805b9ef334f61c874e152b183035cb1d31172d48c6b125f0e6047c9aaa5168",
+                "l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol",
+                "c7f49220b06784bd67d73166fd9fb4e2329d7699d493b4342dfbcabfde683a10",
             ),
             (
-                "77746",
-                "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
+                "l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol",
+                "a7a77cf790b20e91573ab5d5c30458b4aa1dc06f550e211d74e7f4afb448c04f",
             ),
             (
-                "1920",
-                "a1d093cf2bb0f5331c4a6bbf0e40d5f4888cc850324e8b9e406bde6686f07f77",
+                "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol",
+                "c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77",
+            ),
+            (
+                "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol",
+                "99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3",
+            ),
+            (
+                "l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol",
+                "e5d289cbcb0bbd9f77b7a89f01fba3cc6bcb07f847754517c56d60b2f6c194bd",
+            ),
+            (
+                "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol",
+                "a7257c0a6d2bd596c93cf7a168d2460d958d339ed8eaf405ce4e6864cebfbd32",
+            ),
+            (
+                "l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol",
+                "c2138ea375da32973ecf228abd97adcf0c7099b48a38162bf9a223d81a7361b7",
+            ),
+            (
+                "l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol",
+                "b8afdf177f76cb229a5a98c3367775d3def34e7d7868b567bd08efb742d0698e",
             ),
         ):
-            self.assertIn(size, helper)
+            self.assertIn(path, helper)
             self.assertIn(digest, helper)
+
+        for pending_verifier_artifact in (
+            "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol",
+            "tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json",
+        ):
+            self.assertIn(pending_verifier_artifact, helper)
+            self.assertNotIn(f"diff --git a/{pending_verifier_artifact}", patch)
+
+        # SYSCOIN: preserve exact pinned-upstream build/test, FFLONK, generator,
+        # deployment-CI, and review-tool bytes outside the downstream patch.
+        for size, digest, retained_upstream_path in (
+            (
+                4895,
+                "cfa792fc502364d12c855c02724ceef0843aa193b711630fb87326e16197e4bd",
+                "l1-contracts/foundry.toml",
+            ),
+            (
+                58881,
+                "4e272ef47b1ba6fbbdd546e8da4b97a130463b54ad48eb03431dfb59e6e44b2e",
+                "l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/Committing.t.sol",
+            ),
+            (
+                77746,
+                "9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48",
+                "l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierFflonk.sol",
+            ),
+            (
+                1920,
+                "a1d093cf2bb0f5331c4a6bbf0e40d5f4888cc850324e8b9e406bde6686f07f77",
+                "tools/verifier-gen/data/ZKsyncOS_fflonk_scheduler_key.json",
+            ),
+            (
+                75842,
+                "b2b292b85a7f676d18bee0a0e98af3dbbd4bc05bcaccef1b8260e195652db647",
+                "tools/verifier-gen/data/fflonk_verifier_contract_template.txt",
+            ),
+            (
+                5122,
+                "7f015b5fbaebf4e21357c56db3282507256b0eb0bb44ed33f49b3d4be0c4c098",
+                "tools/verifier-gen/src/fflonk.rs",
+            ),
+            (
+                5962,
+                "f63ab6897dd986a6f5f36e1759d1d032f573c4aea9fcba42bc45a33c85df0e65",
+                "tools/verifier-gen/src/main.rs",
+            ),
+            (
+                1812,
+                "29736c7e0ad4a2e8e5b67e4f2de3064a05aef12db19783bb08635fbb2ed43cdc",
+                "tools/verifier-gen/README.md",
+            ),
+            (
+                18272,
+                "315661d42cad03e6dbddf995f5f7f9fd3a5716518274d3c620e37922cae3490c",
+                ".github/workflows/l1-contracts-ci.yaml",
+            ),
+            (
+                2656,
+                "e4c067ed467721e54b967fc57d1342f523c8690f7a5bb5726b348a449529c444",
+                ".github/workflows/slither.yaml",
+            ),
+            (
+                1510,
+                "18c4ad86772fc5e41d8241d1a7b2dc5f510610d99af44325ddb0ce98977b39bf",
+                ".prettierignore",
+            ),
+        ):
+            self.assertIn(
+                f"{size} {digest} {retained_upstream_path}", helper
+            )
+            self.assertNotIn(f"diff --git a/{retained_upstream_path}", patch)
+
+        self.assertIn(
+            '"contractName": "l1-contracts/ZKsyncOSVerifierFflonk"', helper
+        )
+        self.assertIn("ZKSYNC_OS_FFLONK_VERIFICATION_TYPE", helper)
+        self.assertIn("fflonkVerifiers[verifierVersion].verify", helper)
+
+        self.assertIn(
+            "diff --git a/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol",
+            patch,
+        )
+        self.assertIn(
+            "diff --git a/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol",
+            patch,
+        )
+        self.assertIn(
+            "diff --git a/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol",
+            patch,
+        )
+        self.assertIn(
+            "diff --git a/l1-contracts/script-config/syscoin-edge-da-relay-v1.json",
+            patch,
+        )
+        self.assertNotIn(
+            "diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/Committing.t.sol",
+            patch,
+        )
+
+    def test_era_keygen_workflow_attests_current_source_inputs(self) -> None:
+        helper_path = REPO_ROOT / "scripts" / "apply-era-contracts-syscoin-patch.sh"
+        patch_path = REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
+        ).read_text(encoding="utf-8")
+        helper = helper_path.read_bytes()
+        patch = patch_path.read_bytes()
+
+        for expected in (
+            f'ERA_PATCH_SIZE: "{len(patch)}"',
+            f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
+            'ERA_PATCH_PATH_COUNT: "57"',
+            "ERA_PATCH_PATHS_SHA256: "
+            "2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183",
+            "ERA_SOURCE_PATCHED_TREE: "
+            "04eed331c8729a179b237063906d30b27d86bfe3",
+            'ERA_CONTRACT_HASH_ENTRY_COUNT: "278"',
+            f'ERA_HELPER_SIZE: "{len(helper)}"',
+            f"ERA_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
+            "zksync_os_fflonk_artifact_or_deployer_present: true",
+            "zksync_os_fflonk_proof_route_present: false",
+        ):
+            self.assertIn(expected, workflow)
+
+
+class CanonicalFixtureGateStaticTests(unittest.TestCase):
+    def test_canonical_v32_fixture_is_blocked_until_atomic_v8_regeneration(
+        self,
+    ) -> None:
+        marker_name = "CANONICAL_V8_REGENERATION_REQUIRED"
+        marker = REPO_ROOT / "local-chains" / "v32.0" / marker_name
+        self.assertTrue(marker.is_file())
+        marker_text = marker.read_text(encoding="utf-8")
+        self.assertIn("DO NOT LAUNCH THIS FIXTURE", marker_text)
+        self.assertIn("Execution V7, Proving V8", marker_text)
+        self.assertIn(PUBLISHED_ZKSYNC_OS_PATCHED_TREE, marker_text)
+        self.assertIn("zero values in the server and keygen workflow", marker_text)
+
+        guarded_paths = (
+            REPO_ROOT / "run_local.sh",
+            REPO_ROOT / "integration-tests" / "src" / "config.rs",
+            REPO_ROOT / "integration-tests" / "build.rs",
+            REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh",
+            REPO_ROOT / ".github" / "scripts" / "test-configs.sh",
+            REPO_ROOT / ".github" / "workflows" / "spec-tests.yaml",
+        )
+        for path in guarded_paths:
+            with self.subTest(path=path):
+                self.assertIn(marker_name, path.read_text(encoding="utf-8"))
+
+        build_script = (REPO_ROOT / "integration-tests" / "build.rs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('join("versions.yaml").is_file()', build_script)
+        self.assertIn("Ignore local materializations left behind", build_script)
+
+        self.assertFalse(
+            (REPO_ROOT / "local-chains" / "v31.0" / "versions.yaml").exists()
+        )
+        self.assertFalse(
+            (REPO_ROOT / "local-chains" / "v32.0" / "versions.yaml").exists()
+        )
 
 
 class RunLocalBehaviorTests(unittest.TestCase):
@@ -211,6 +785,98 @@ printf '%s\n' "$SYSCOIN_GAS_TANK_ADDRESS"
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertIn("does not match l2.zksys_gas_tank_addr", mismatch.stderr)
 
+    def test_gas_tank_requirement_promotion_is_main_node_only(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        launcher = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "run-os-server-with-patched-zksync-os.sh"
+        ).read_text(encoding="utf-8")
+
+        main_case = launcher.index('"${EDGE_CHAIN_NAME:-zksys}")')
+        main_promotion = launcher.index(
+            "gl_export_syscoin_gas_tank_address_from_edge_config true",
+            main_case,
+        )
+        external_case = launcher.index('"${EDGE_CHAIN_NAME:-zksys}"-*)', main_promotion)
+        external_policy = launcher.index(
+            "gl_export_syscoin_gas_tank_address_from_edge_config false",
+            external_case,
+        )
+        self.assertLess(main_case, main_promotion)
+        self.assertLess(main_promotion, external_case)
+        self.assertLess(external_case, external_policy)
+        self.assertEqual(
+            launcher.count(
+                "gl_export_syscoin_gas_tank_address_from_edge_config true"
+            ),
+            1,
+        )
+        self.assertEqual(
+            launcher.count(
+                "gl_export_syscoin_gas_tank_address_from_edge_config false"
+            ),
+            1,
+        )
+
+        command = r'''
+source "$COMMON"
+gl_zksys_gas_tank_from_edge_config() { printf '%s\n' "$CONFIGURED_TANK"; }
+gl_export_syscoin_gas_tank_address_from_edge_config "$AUTO_REQUIRE"
+printf '%s|%s\n' "$SYSCOIN_GAS_TANK_ADDRESS" "${SYSCOIN_REQUIRE_GAS_TANK:-unset}"
+'''
+
+        def run_policy(
+            auto_require: str, require_tank: str
+        ) -> subprocess.CompletedProcess[str]:
+            env = os.environ.copy()
+            env.update(
+                {
+                    "AUTO_REQUIRE": auto_require,
+                    "COMMON": str(common),
+                    "CONFIGURED_TANK": PUBLISHED_GAS_TANK,
+                    "SYSCOIN_GAS_TANK_ADDRESS": PUBLISHED_GAS_TANK,
+                    "SYSCOIN_REQUIRE_GAS_TANK": require_tank,
+                }
+            )
+            return subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        # Once the canonical main node sees the nonzero, bootstrap-attested
+        # address in persisted config, even an explicit first-boot override is
+        # retired. This prevents production from silently retaining fallback.
+        canonical_main = run_policy("true", "0")
+        self.assertEqual(canonical_main.returncode, 0, canonical_main.stderr)
+        self.assertEqual(canonical_main.stdout.strip(), f"{PUBLISHED_GAS_TANK}|1")
+        self.assertIn(
+            "ignoring SYSCOIN_REQUIRE_GAS_TANK=0", canonical_main.stderr
+        )
+
+        # An external node may have the nonzero address in config before local
+        # state has caught up to deployment, so its explicit catch-up policy is
+        # preserved. Runtime validation can be required after catch-up.
+        external = run_policy("false", "0")
+        self.assertEqual(external.returncode, 0, external.stderr)
+        self.assertEqual(external.stdout.strip(), f"{PUBLISHED_GAS_TANK}|0")
+        self.assertNotIn("ignoring SYSCOIN_REQUIRE_GAS_TANK=0", external.stderr)
+
+        malformed_requirement = run_policy("false", "true")
+        self.assertNotEqual(malformed_requirement.returncode, 0)
+        self.assertIn(
+            "SYSCOIN_REQUIRE_GAS_TANK must be exactly 0 or 1",
+            malformed_requirement.stderr,
+        )
+
+        malformed_role_policy = run_policy("sometimes", "0")
+        self.assertNotEqual(malformed_role_policy.returncode, 0)
+        self.assertIn("invalid gas-tank auto-require policy", malformed_role_policy.stderr)
+
     def test_cargo_wrapper_rejects_nonpublished_consensus_inputs(self) -> None:
         wrapper = REPO_ROOT / "scripts" / "cargo-with-patched-zksync-os.sh"
         for name in (
@@ -229,7 +895,9 @@ printf '%s\n' "$SYSCOIN_GAS_TANK_ADDRESS"
                     env=env,
                 )
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("differs from the published V7 app value", result.stderr)
+                self.assertIn(
+                    "differs from the published zksync-os app value", result.stderr
+                )
 
     def test_setup_failure_is_not_hidden_by_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -245,6 +913,237 @@ printf '%s\n' "$SYSCOIN_GAS_TANK_ADDRESS"
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(list(temp_path.iterdir()), [])
+
+
+class PatchedWorkspaceRewriteTests(unittest.TestCase):
+    @staticmethod
+    def fixture_cargo_toml(*, canonical_tag: str = FINAL_OS_TAG) -> str:
+        return f'''\
+[workspace]
+members = []
+
+[workspace.dependencies]
+zk_os_forward_system = {{ package = "forward_system", git = "{OFFICIAL_OS_URL}.git", tag = "{canonical_tag}", features = [
+    "production",
+    "no_print",
+], default-features = false }}
+zk_ee = {{ git = "{OFFICIAL_OS_URL}.git", tag = "{FINAL_OS_TAG}" }}
+zk_os_basic_system = {{ package = "basic_system", git = "{OFFICIAL_OS_URL}.git", tag = "{FINAL_OS_TAG}" }}
+zk_os_api = {{ package = "zksync_os_api", git = "{OFFICIAL_OS_URL}.git", tag = "{FINAL_OS_TAG}" }}
+zk_os_evm_interpreter = {{ package = "evm_interpreter", git = "{OFFICIAL_OS_URL}.git", tag = "{FINAL_OS_TAG}" }}
+'''
+
+    @staticmethod
+    def fixture_cargo_lock(*, locked_rev: str = FINAL_LOCKED_REV) -> str:
+        return f'''\
+version = 3
+
+[[package]]
+name = "basic_system"
+version = "0.1.0"
+source = "git+{OFFICIAL_OS_URL}.git?tag={FINAL_OS_TAG}#{locked_rev}"
+dependencies = [
+ "canonical-helper 0.1.0 (git+{OFFICIAL_OS_URL}.git?tag={FINAL_OS_TAG})",
+ "serde",
+ "storage_models",
+]
+
+[[package]]
+name = "callable_oracles"
+version = "0.1.0"
+source = "git+{OFFICIAL_OS_URL}.git?tag={FINAL_OS_TAG}#{locked_rev}"
+dependencies = [
+ "basic_system",
+ "c-kzg",
+]
+
+[[package]]
+name = "c-kzg"
+version = "2.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+'''
+
+    def run_rewrite(
+        self,
+        temp_path: Path,
+        *,
+        cargo_toml: str | None = None,
+        cargo_lock: str | None = None,
+        git_url: str = f"{OFFICIAL_OS_URL}.git",
+        copied_marker_mtime_ns: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        source = temp_path / "source"
+        source.mkdir()
+        (source / "Cargo.toml").write_text(
+            cargo_toml or self.fixture_cargo_toml(), encoding="utf-8"
+        )
+        (source / "Cargo.lock").write_text(
+            cargo_lock or self.fixture_cargo_lock(), encoding="utf-8"
+        )
+        copied_marker = source / "copied-marker"
+        copied_marker.write_text("yes\n", encoding="utf-8")
+        if copied_marker_mtime_ns is not None:
+            os.utime(
+                copied_marker,
+                ns=(copied_marker_mtime_ns, copied_marker_mtime_ns),
+            )
+        patched_path = temp_path / "patched-final-os"
+        patched_path.mkdir()
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "HELPER": str(
+                    REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
+                ),
+                "SERVER": str(source),
+                "RUN": str(temp_path / "run"),
+                "PATCHED_PATH": str(patched_path),
+                "SOURCE_URL": git_url,
+            }
+        )
+        command = f'''\
+set -euo pipefail
+gl_die() {{ printf 'error: %s\\n' "$*" >&2; exit 1; }}
+export ZKSYNC_OS_SERVER_PATH="$SERVER"
+source "$HELPER"
+prepare_run_workspace \\
+  "$RUN" "$PATCHED_PATH" "{FINAL_OS_TAG}" "$SOURCE_URL" \\
+  "{FINAL_LOCKED_REV}" "{FINAL_PATCHED_REV}"
+'''
+        return subprocess.run(
+            ["bash", "-c", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_rewrites_only_canonical_final_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            result = self.run_rewrite(temp_path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            run = temp_path / "run"
+            rewritten_toml = (run / "Cargo.toml").read_text(encoding="utf-8")
+            rewritten_lock = (run / "Cargo.lock").read_text(encoding="utf-8")
+            local_uri = (temp_path / "patched-final-os").resolve().as_uri()
+
+            self.assertEqual(rewritten_toml.count(f'git = "{local_uri}"'), 5)
+            self.assertEqual(
+                rewritten_lock.count(
+                    f"git+{local_uri}?tag={FINAL_OS_TAG}#{FINAL_PATCHED_REV}"
+                ),
+                2,
+            )
+            self.assertIn(
+                f"git+{local_uri}?tag={FINAL_OS_TAG})", rewritten_lock
+            )
+            self.assertIn(' "sha2 0.10.9",\n "storage_models",', rewritten_lock)
+            callable_block = rewritten_lock.split(
+                'name = "callable_oracles"', 1
+            )[1].split("[[package]]", 1)[0]
+            self.assertNotIn(' "c-kzg",', callable_block)
+            self.assertIn('name = "c-kzg"\nversion = "2.1.8"', rewritten_lock)
+            self.assertNotIn(
+                f"git+{OFFICIAL_OS_URL}.git?tag={FINAL_OS_TAG}#{FINAL_LOCKED_REV}",
+                rewritten_lock,
+            )
+            self.assertEqual((run / "copied-marker").read_text(), "yes\n")
+
+    def test_recreated_workspace_does_not_preserve_stale_source_mtime(self) -> None:
+        # Cargo's freshness logic can otherwise reuse build-script output that
+        # names deleted generated files when the source snapshot looks older
+        # than a cached artifact. The production helper must perform a content
+        # copy with a fresh destination mtime, not metadata-preserving copy2.
+        stale_mtime_ns = 946_684_800_000_000_000  # 2000-01-01T00:00:00Z
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            result = self.run_rewrite(
+                temp_path,
+                copied_marker_mtime_ns=stale_mtime_ns,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            source_marker = temp_path / "source" / "copied-marker"
+            recreated_marker = temp_path / "run" / "copied-marker"
+            self.assertEqual(source_marker.stat().st_mtime_ns, stale_mtime_ns)
+            self.assertNotEqual(recreated_marker.stat().st_mtime_ns, stale_mtime_ns)
+            self.assertGreater(recreated_marker.stat().st_mtime_ns, stale_mtime_ns)
+
+    def test_rejects_nonofficial_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.run_rewrite(
+                Path(temp), git_url="https://github.com/syscoin/zksync-os"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not official matter-labs/zksync-os", result.stderr)
+
+    def test_rejects_canonical_alias_tag_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.run_rewrite(
+                Path(temp),
+                cargo_toml=self.fixture_cargo_toml(canonical_tag="v0.4.0-rc.2"),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("noncanonical zksync-os dependency remains", result.stderr)
+
+    def test_rejects_locked_revision_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            result = self.run_rewrite(
+                Path(temp), cargo_lock=self.fixture_cargo_lock(locked_rev="6" * 40)
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("does not match canonical locked revision", result.stderr)
+
+    def test_rejects_noncanonical_direct_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cargo_toml = self.fixture_cargo_toml() + f'''\
+zk_os_forward_system_old = {{ package = "forward_system", git = "{OFFICIAL_OS_URL}", tag = "{OTHER_OS_TAG}" }}
+'''
+            result = self.run_rewrite(Path(temp), cargo_toml=cargo_toml)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("noncanonical zksync-os dependency remains", result.stderr)
+
+    def test_rejects_noncanonical_lock_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cargo_lock = self.fixture_cargo_lock() + f'''\
+[[package]]
+name = "old-os"
+version = "0.1.0"
+source = "git+{OFFICIAL_OS_URL}?tag={OTHER_OS_TAG}#{'5' * 40}"
+'''
+            result = self.run_rewrite(Path(temp), cargo_lock=cargo_lock)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("noncanonical zksync-os tag remains", result.stderr)
+
+    def test_rejects_missing_patched_lock_dependency_package(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cargo_lock = self.fixture_cargo_lock().replace(
+                '''\
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+''',
+                "",
+            )
+            result = self.run_rewrite(Path(temp), cargo_lock=cargo_lock)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("required sha2 0.10.9 package", result.stderr)
+
+    def test_rejects_unexpected_callable_oracles_lock_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            cargo_lock = self.fixture_cargo_lock().replace(' "c-kzg",\n', "")
+            result = self.run_rewrite(Path(temp), cargo_lock=cargo_lock)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("exactly one direct c-kzg edge", result.stderr)
 
 
 if __name__ == "__main__":

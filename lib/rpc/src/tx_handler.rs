@@ -509,9 +509,6 @@ fn compact_edge_da_refs_from_commit_calldata(
     })?;
     match commit.commit_batch_info.l2_da_commitment_scheme {
         DACommitmentScheme::BlobsZKsyncOS => {}
-        // SYSCOIN: Validium child chains have no Bitcoin DA refs to check at Gateway admission.
-        // Their scheme-specific validity remains enforced by the configured onchain DA validator.
-        DACommitmentScheme::EmptyNoDA => return Ok(None),
         scheme => {
             return Err(EthSendRawTransactionError::EdgeDaAdmissionCheckFailed(
                 format!("unsupported child-chain DA commitment scheme for Gateway: {scheme:?}"),
@@ -865,7 +862,7 @@ mod tests {
     }
 
     fn commit_call_data(commit_info: CommitBatchInfo) -> Vec<u8> {
-        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 31);
+        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 32);
         IExecutor::commitBatchesSharedBridgeCall {
             _chainAddress: Address::ZERO,
             _processFrom: U256::ZERO,
@@ -876,7 +873,7 @@ mod tests {
     }
 
     fn multisig_commit_call_data(commit_info: CommitBatchInfo) -> Vec<u8> {
-        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 31);
+        let commit_data = encode_commit_batch_data(&dummy_stored_batch_info(), commit_info, 32);
         IMultisigCommitter::commitBatchesMultisigCall {
             chainAddress: Address::ZERO,
             _processBatchFrom: U256::ZERO,
@@ -955,16 +952,19 @@ mod tests {
     }
 
     #[test]
-    fn compact_edge_da_refs_allows_validium_without_refs() {
+    fn compact_edge_da_refs_rejects_validium() {
         let input = commit_call_data(dummy_commit_batch_info(
             DACommitmentScheme::EmptyNoDA,
             B256::ZERO,
             vec![0; 32],
         ));
 
-        let refs = compact_edge_da_refs_from_commit_calldata(&input).unwrap();
+        let err = compact_edge_da_refs_from_commit_calldata(&input).unwrap_err();
 
-        assert!(refs.is_none());
+        assert!(
+            err.to_string()
+                .contains("unsupported child-chain DA commitment scheme")
+        );
     }
 
     #[test]

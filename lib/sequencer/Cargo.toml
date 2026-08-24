@@ -11,6 +11,8 @@ categories.workspace = true
 
 [dependencies]
 zksync_os_base_token_adjuster.workspace = true
+# SYSCOIN: Native V32 sequencing consumes canonical whole-batch metadata.
+zksync_os_batch_types.workspace = true
 zksync_os_genesis.workspace = true
 zksync_os_mempool.workspace = true
 zksync_os_observability.workspace = true

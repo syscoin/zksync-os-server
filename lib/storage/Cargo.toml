@@ -31,3 +31,5 @@ roaring.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# SYSCOIN: Startup persistence tests derive the exact V32 deployment identity from contract data.
+zksync_os_contract_interface.workspace = true

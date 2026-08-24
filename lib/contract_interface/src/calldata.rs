@@ -1,11 +1,11 @@
 use crate::models::{CommitBatchInfo, StoredBatchInfo};
-use crate::{IExecutor, IExecutorV29, IExecutorV30, IExecutorV31Legacy, IMultisigCommitter};
+use crate::{IExecutor, IMultisigCommitter};
 use alloy::primitives::Address;
 use alloy::sol_types::{SolCall, SolValue};
 
-const V29_ENCODING_VERSION: u8 = 2;
-const V30_ENCODING_VERSION: u8 = 3;
-const V31_ENCODING_VERSION: u8 = 4;
+const COMMIT_ENCODING_VERSION: u8 = 4;
+// SYSCOIN: This fresh-only contract interface emits the sole protocol V32 commit ABI.
+const CANONICAL_PROTOCOL_MINOR: u64 = 32;
 
 pub struct CommitCalldata {
     pub chain_address: Address,
@@ -58,76 +58,23 @@ impl CommitCalldata {
             anyhow::bail!("commit data is empty");
         };
 
-        if encoding_version != V30_ENCODING_VERSION && encoding_version != V31_ENCODING_VERSION {
+        if encoding_version != COMMIT_ENCODING_VERSION {
             anyhow::bail!("unexpected encoding version: {}", encoding_version);
         }
 
-        let (stored_batch_info, commit_batch_info) = match encoding_version {
-            V30_ENCODING_VERSION => {
-                let (stored_batch_info, mut commit_batch_infos) =
-                    <(
-                        IExecutor::StoredBatchInfo,
-                        Vec<IExecutorV30::CommitBatchInfoZKsyncOS>,
-                    )>::abi_decode_params(&commit_data[1..])?;
-                if commit_batch_infos.len() != 1 {
-                    anyhow::bail!(
-                        "unexpected number of committed batch infos: {}",
-                        commit_batch_infos.len()
-                    );
-                }
-                (
-                    StoredBatchInfo::from(stored_batch_info),
-                    CommitBatchInfo::from(commit_batch_infos.remove(0)),
-                )
-            }
-            V31_ENCODING_VERSION => {
-                // SYSCOIN: current v31 payloads contain compact edge DA fields. Historical v31
-                // fixtures do not, so fall back to the legacy v31 layout when the full decode
-                // cannot consume the payload.
-                let decoded_current = <(
-                    IExecutor::StoredBatchInfo,
-                    Vec<IExecutor::CommitBatchInfoZKsyncOS>,
-                )>::abi_decode_params(&commit_data[1..]);
-                let (stored_batch_info, commit_batch_info) = match decoded_current {
-                    Ok((stored_batch_info, mut commit_batch_infos)) => {
-                        if commit_batch_infos.len() != 1 {
-                            anyhow::bail!(
-                                "unexpected number of committed batch infos: {}",
-                                commit_batch_infos.len()
-                            );
-                        }
-                        (
-                            StoredBatchInfo::from(stored_batch_info),
-                            CommitBatchInfo::from(commit_batch_infos.remove(0)),
-                        )
-                    }
-                    Err(current_err) => {
-                        let (stored_batch_info, mut commit_batch_infos) =
-                            <(
-                                IExecutor::StoredBatchInfo,
-                                Vec<IExecutorV31Legacy::CommitBatchInfoZKsyncOS>,
-                            )>::abi_decode_params(&commit_data[1..])
-                            .map_err(|legacy_err| {
-                                anyhow::anyhow!(
-                                    "failed to decode v31 commit data with current layout ({current_err}) or legacy layout ({legacy_err})"
-                                )
-                            })?;
-                        if commit_batch_infos.len() != 1 {
-                            anyhow::bail!(
-                                "unexpected number of committed batch infos: {}",
-                                commit_batch_infos.len()
-                            );
-                        }
-                        (
-                            StoredBatchInfo::from(stored_batch_info),
-                            CommitBatchInfo::from(commit_batch_infos.remove(0)),
-                        )
-                    }
-                };
-                (stored_batch_info, commit_batch_info)
-            }
-            _ => unreachable!("encoding version pre-validated"),
-        };
+        let (stored_batch_info, mut commit_batch_infos) =
+            <(
+                IExecutor::StoredBatchInfo,
+                Vec<IExecutor::CommitBatchInfoZKsyncOS>,
+            )>::abi_decode_params(&commit_data[1..])?;
+        if commit_batch_infos.len() != 1 {
+            anyhow::bail!(
+                "unexpected number of committed batch infos: {}",
+                commit_batch_infos.len()
+            );
+        }
+        let stored_batch_info = StoredBatchInfo::from(stored_batch_info);
+        let commit_batch_info = CommitBatchInfo::from(commit_batch_infos.remove(0));
         Ok(Self {
             chain_address,
             process_from,
@@ -146,47 +93,17 @@ pub fn encode_commit_batch_data(
     protocol_version_minor: u64,
 ) -> Vec<u8> {
     let stored_batch_info = IExecutor::StoredBatchInfo::from(prev_batch_info);
-    match protocol_version_minor {
-        29 => {
-            let commit_batch_info = IExecutorV29::CommitBatchInfoZKsyncOS::from(commit_info);
-            tracing::debug!(
-                last_batch_hash = ?prev_batch_info.hash(),
-                last_batch_number = ?prev_batch_info.batch_number,
-                new_batch_number = ?commit_batch_info.batchNumber,
-                "preparing commit calldata"
-            );
-            let encoded_data = (stored_batch_info, vec![commit_batch_info]).abi_encode_params();
-
-            // Prefixed by current encoding version as expected by protocol
-            [[V29_ENCODING_VERSION].to_vec(), encoded_data].concat()
-        }
-        30 => {
-            let commit_batch_info =
-                IExecutorV30::CommitBatchInfoZKsyncOS::from(commit_info.clone());
-            tracing::debug!(
-                last_batch_hash = ?prev_batch_info.hash(),
-                last_batch_number = ?prev_batch_info.batch_number,
-                new_batch_number = ?commit_batch_info.batchNumber,
-                "preparing commit calldata"
-            );
-            let encoded_data = (stored_batch_info, vec![commit_batch_info]).abi_encode_params();
-
-            // Prefixed by current encoding version as expected by protocol
-            [[V30_ENCODING_VERSION].to_vec(), encoded_data].concat()
-        }
-        31 | 32 => {
-            let commit_batch_info = IExecutor::CommitBatchInfoZKsyncOS::from(commit_info.clone());
-            tracing::debug!(
-                last_batch_hash = ?prev_batch_info.hash(),
-                last_batch_number = ?prev_batch_info.batch_number,
-                new_batch_number = ?commit_batch_info.batchNumber,
-                "preparing commit calldata"
-            );
-            let encoded_data = (stored_batch_info, vec![commit_batch_info]).abi_encode_params();
-
-            // Prefixed by current encoding version as expected by protocol
-            [[V31_ENCODING_VERSION].to_vec(), encoded_data].concat()
-        }
-        _ => panic!("Unsupported protocol version: {protocol_version_minor}"),
-    }
+    assert_eq!(
+        protocol_version_minor, CANONICAL_PROTOCOL_MINOR,
+        "unsupported protocol version"
+    );
+    let commit_batch_info = IExecutor::CommitBatchInfoZKsyncOS::from(commit_info);
+    tracing::debug!(
+        last_batch_hash = ?prev_batch_info.hash(),
+        last_batch_number = ?prev_batch_info.batch_number,
+        new_batch_number = ?commit_batch_info.batchNumber,
+        "preparing commit calldata"
+    );
+    let encoded_data = (stored_batch_info, vec![commit_batch_info]).abi_encode_params();
+    [[COMMIT_ENCODING_VERSION].to_vec(), encoded_data].concat()
 }

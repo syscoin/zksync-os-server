@@ -1,5 +1,4 @@
-use alloy::consensus::{BlobTransactionSidecar, SidecarBuilder, SimpleCoder};
-use alloy::primitives::{Address, B256, BlockNumber, Bytes, U256, keccak256};
+use alloy::primitives::{Address, B256, BlockNumber, Bytes, U256, address, keccak256};
 use alloy::sol_types::{SolCall, SolValue};
 use anyhow::ensure;
 use blake2::{Blake2s256, Digest};
@@ -9,19 +8,19 @@ use std::ops::{Deref, DerefMut};
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::models::{CommitBatchInfo, DACommitmentScheme, StoredBatchInfo};
 use zksync_os_contract_interface::{IExecutor, IMultisigCommitter};
-use zksync_os_merkle_tree_api::TreeBatchOutput;
-use zksync_os_mini_merkle_tree::MiniMerkleTree;
+use zksync_os_interface::types::TxOutput;
 use zksync_os_types::{
-    BlockOutput, L2_TO_L1_TREE_SIZE, L2ToL1Log, ProtocolSemanticVersion, PubdataMode, ZkEnvelope,
-    ZkTransaction,
+    BlockOutput, ProtocolSemanticVersion, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+    SYSCOIN_GATEWAY_CHAIN_ID, ZkTransaction,
 };
-
-const PUBDATA_SOURCE_CALLDATA: u8 = 0;
 
 const BLOB_CHUNK_SIZE: usize = 31;
 // SYSCOIN: Syscoin Bitcoin DA accepts up to 2 MiB per blob and up to 32 blobs per block.
 pub const SYSCOIN_DA_BYTES_PER_BLOB: usize = 2 * 1024 * 1024;
 pub const SYSCOIN_DA_MAX_BLOBS_PER_BATCH: usize = 32;
+// SYSCOIN: Final-L1 settlement performs one Bitcoin-DA opening per forwarded hash, so a
+// Gateway batch uses the same 32-opening ceiling for each message and for their aggregate.
+pub const SYSCOIN_DA_MAX_REFS_PER_BATCH: usize = SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
 pub const SYSCOIN_DA_MAX_ENCODED_BYTES_PER_BATCH: usize =
     SYSCOIN_DA_BYTES_PER_BLOB * SYSCOIN_DA_MAX_BLOBS_PER_BATCH;
 pub const SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES: usize =
@@ -30,10 +29,14 @@ pub const SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES: usize =
 const SYSCOIN_EDGE_DA_REFS_DOMAIN: &[u8] = b"SYSCOIN_EDGE_DA_REFS_V1";
 // SYSCOIN: RelayedSLDAValidator compact-ref message version.
 const SYSCOIN_RELAYED_EDGE_DA_VALIDATOR_VERSION: u8 = 1;
-// SYSCOIN: v31 commit encoding decoded by the compact-ref replay fallback.
+// SYSCOIN: V32 commit encoding decoded by the compact-ref replay fallback.
 const SYSCOIN_COMPACT_EDGE_COMMIT_ENCODING_VERSION: u8 = 4;
 const ABI_WORD: usize = 32;
 const SYSCOIN_EDGE_DA_REF_HEAD_BYTES: usize = ABI_WORD * 5;
+// SYSCOIN: User messages must come from the canonical L1Messenger system hook; the log key then
+// binds the original message emitter to the frozen relay address.
+const SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS: Address =
+    address!("0x0000000000000000000000000000000000008008");
 
 // SYSCOIN: compact reference to edge-chain pubdata that was published directly to Bitcoin DA.
 pub struct SyscoinEdgeDaRef<'a> {
@@ -49,6 +52,10 @@ fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
     assert!(
         edge_ref.blob_version_hashes.len().is_multiple_of(32),
         "Syscoin edge DA refs must be a concatenation of 32-byte blob hashes"
+    );
+    assert!(
+        edge_ref.blob_version_hashes.len() / ABI_WORD <= SYSCOIN_DA_MAX_REFS_PER_BATCH,
+        "Syscoin edge DA ref exceeds the per-message opening limit"
     );
 
     let mut preimage = Vec::with_capacity(
@@ -68,8 +75,14 @@ fn syscoin_edge_da_ref_hash(edge_ref: SyscoinEdgeDaRef<'_>) -> B256 {
 pub fn syscoin_edge_da_refs_from_input(input: &[u8]) -> Option<Vec<SyscoinEdgeDaRef<'_>>> {
     let mut refs = Vec::new();
     let mut remaining = input;
+    let mut total_refs = 0usize;
     while !remaining.is_empty() {
         let (edge_ref, consumed) = parse_syscoin_edge_da_ref_message_prefix(remaining)?;
+        let message_refs = edge_ref.blob_version_hashes.len() / ABI_WORD;
+        total_refs = total_refs.checked_add(message_refs)?;
+        if total_refs > SYSCOIN_DA_MAX_REFS_PER_BATCH {
+            return None;
+        }
         refs.push(edge_ref);
         remaining = &remaining[consumed..];
     }
@@ -108,7 +121,10 @@ fn parse_syscoin_edge_da_ref_message_prefix(
         return None;
     }
     let blob_hashes_len = u256_word_to_usize(&message[blob_hashes_len_offset..blob_hashes_start])?;
-    if blob_hashes_len == 0 || blob_hashes_len % ABI_WORD != 0 {
+    if blob_hashes_len == 0
+        || blob_hashes_len % ABI_WORD != 0
+        || blob_hashes_len / ABI_WORD > SYSCOIN_DA_MAX_REFS_PER_BATCH
+    {
         return None;
     }
     let blob_hashes_end = blob_hashes_start.checked_add(blob_hashes_len)?;
@@ -137,6 +153,13 @@ fn is_compact_edge_da_commit_tx(
             || tx_input[..4] == IMultisigCommitter::commitBatchesMultisigCall::SELECTOR)
 }
 
+/// SYSCOIN: The zkOS guest collects compact edge-DA references only for successful calls.
+/// Native replay must apply the same status gate because reverted outputs may retain diagnostic
+/// L2-to-L1 logs in the host execution result.
+fn collects_syscoin_edge_da_refs(tx_output: &TxOutput) -> bool {
+    tx_output.is_success()
+}
+
 // SYSCOIN: Replay execution retains transaction calldata and the emitted message hash, but the
 // messenger output does not retain its preimage. Recreate the validator's canonical message from
 // the child-chain commit calldata so Gateway batch commitments remain stable across restarts.
@@ -163,8 +186,9 @@ fn compact_edge_da_ref_message_from_commit_calldata(
     let commit_info = commit.commit_batch_info;
     match commit_info.l2_da_commitment_scheme {
         DACommitmentScheme::BlobsZKsyncOS => {}
-        // Non-compact v31 and validium commits do not emit this Syscoin Bitcoin DA message.
-        _ => return Ok(None),
+        scheme => anyhow::bail!(
+            "unsupported compact edge DA commitment scheme: {scheme:?}; expected BlobsZKsyncOS"
+        ),
     }
 
     let blob_hashes = commit_info.operator_da_input;
@@ -191,6 +215,133 @@ fn compact_edge_da_ref_message_from_commit_calldata(
     ))
 }
 
+/// SYSCOIN: Authenticate the single raw relay log for one successful authorized commit. Count
+/// logs by canonical messenger metadata before looking at preimages, so malformed or missing
+/// preimages cannot hide a duplicate. Replay may omit a preimage, but then calldata reconstruction
+/// and the exact logged hash remain mandatory.
+fn authenticate_syscoin_edge_da_relay_log(
+    tx_output: &TxOutput,
+    expected_message: &[u8],
+) -> anyhow::Result<()> {
+    let expected_key = B256::left_padding_from(SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER.as_slice());
+    let canonical_logs = tx_output
+        .l2_to_l1_logs
+        .iter()
+        .filter(|log| {
+            log.log.l2_shard_id == 0
+                && log.log.is_service
+                && log.log.sender == SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS
+                && log.log.key == expected_key
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        canonical_logs.len() == 1,
+        "compact edge DA commit must emit exactly one canonical relay message; found {}",
+        canonical_logs.len(),
+    );
+
+    let canonical_log = canonical_logs[0];
+    ensure!(
+        canonical_log.log.value == keccak256(expected_message),
+        "compact edge DA canonical relay log hash does not match commit calldata"
+    );
+    if let Some(preimage) = canonical_log.preimage.as_deref() {
+        ensure!(
+            preimage == expected_message,
+            "compact edge DA canonical relay preimage does not match commit calldata"
+        );
+    }
+    Ok(())
+}
+
+/// SYSCOIN: Reconstructs compact edge-DA messages and their ordered, context-bound root from
+/// successfully executed calls to the configured Gateway commit target.
+///
+/// Native batch replay uses this function so restart cannot disagree about which messages are
+/// opened to L1.
+pub fn syscoin_edge_da_refs_for_blocks<'a>(
+    blocks: impl IntoIterator<Item = (&'a BlockOutput, &'a [ZkTransaction])>,
+    compact_edge_da_commit_target: Address,
+    chain_id: u64,
+) -> anyhow::Result<(Vec<u8>, B256)> {
+    // SYSCOIN: This application runs on Gateway and edge chains. Only the canonical Gateway role
+    // may interpret ValidatorTimelock calls as forwarded Edge-DA commitments.
+    if chain_id != SYSCOIN_GATEWAY_CHAIN_ID {
+        return Ok((Vec::new(), B256::ZERO));
+    }
+
+    let mut edge_da_refs_input = Vec::new();
+    let mut edge_da_refs_root = B256::ZERO;
+    let mut total_refs = 0usize;
+
+    for (block_output, transactions) in blocks {
+        ensure!(
+            transactions.len() == block_output.tx_results.len(),
+            "transaction/output count mismatch while reconstructing compact edge-DA refs: {} transactions, {} outputs",
+            transactions.len(),
+            block_output.tx_results.len(),
+        );
+        for (tx, tx_output) in transactions.iter().zip(&block_output.tx_results) {
+            let Ok(tx_output) = tx_output else {
+                continue;
+            };
+            if !collects_syscoin_edge_da_refs(tx_output) {
+                continue;
+            }
+            if !is_compact_edge_da_commit_tx(
+                tx.to(),
+                tx.input().as_ref(),
+                compact_edge_da_commit_target,
+            ) {
+                continue;
+            }
+
+            // SYSCOIN: Reconstruct the one canonical message from the authenticated commit call.
+            // A successful authorized call without the V32 compact envelope is invalid.
+            let expected_message = compact_edge_da_ref_message_from_commit_calldata(
+                tx.input().as_ref(),
+            )?
+            .ok_or_else(|| {
+                anyhow::anyhow!("compact edge DA commit has no canonical V32 relay envelope")
+            })?;
+            authenticate_syscoin_edge_da_relay_log(tx_output, &expected_message)?;
+
+            let edge_ref = parse_syscoin_edge_da_ref_message(&expected_message)
+                .expect("locally encoded compact edge DA ref must parse");
+            let message_refs = edge_ref.blob_version_hashes.len() / ABI_WORD;
+            total_refs = total_refs
+                .checked_add(message_refs)
+                .ok_or_else(|| anyhow::anyhow!("compact edge DA ref count overflow"))?;
+            ensure!(
+                total_refs <= SYSCOIN_DA_MAX_REFS_PER_BATCH,
+                "compact edge DA refs exceed the per-Gateway-batch limit of {SYSCOIN_DA_MAX_REFS_PER_BATCH}"
+            );
+            edge_da_refs_root =
+                keccak256([edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat());
+            edge_da_refs_input.extend_from_slice(&expected_message);
+        }
+    }
+
+    Ok((edge_da_refs_input, edge_da_refs_root))
+}
+
+// SYSCOIN: Batcher peeking must use the exact same successful-target-call semantics as native
+// replay, while avoiding an oversized-first-block exception for settlement-critical openings.
+pub fn syscoin_edge_da_ref_count_for_blocks<'a>(
+    blocks: impl IntoIterator<Item = (&'a BlockOutput, &'a [ZkTransaction])>,
+    compact_edge_da_commit_target: Address,
+    chain_id: u64,
+) -> anyhow::Result<usize> {
+    let (input, _) =
+        syscoin_edge_da_refs_for_blocks(blocks, compact_edge_da_commit_target, chain_id)?;
+    let refs = syscoin_edge_da_refs_from_input(&input)
+        .ok_or_else(|| anyhow::anyhow!("canonical compact edge DA input is malformed"))?;
+    Ok(refs
+        .iter()
+        .map(|edge_ref| edge_ref.blob_version_hashes.len() / ABI_WORD)
+        .sum())
+}
+
 fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
     if word.len() != ABI_WORD || word[..24] != [0u8; 24] {
         return None;
@@ -200,38 +351,6 @@ fn u256_word_to_u64(word: &[u8]) -> Option<u64> {
 
 fn u256_word_to_usize(word: &[u8]) -> Option<usize> {
     usize::try_from(u256_word_to_u64(word)?).ok()
-}
-
-/// Returns the canonical upgrade tx hash to use for a specific batch number.
-///
-/// `upgrade_batch_number == 0` means an upgrade tx hash is present in contract storage and will
-/// be consumed by the next committed batch.
-pub fn expected_upgrade_tx_hash_for_batch(
-    batch_number: u64,
-    last_committed_batch: u64,
-    upgrade_batch_number: u64,
-    upgrade_tx_hash: Option<B256>,
-) -> Option<B256> {
-    let upgrade_tx_hash = upgrade_tx_hash?;
-    if upgrade_batch_number == 0 {
-        return (batch_number == last_committed_batch + 1).then_some(upgrade_tx_hash);
-    }
-    (batch_number == upgrade_batch_number).then_some(upgrade_tx_hash)
-}
-
-// SYSCOIN: Settlement-layer upgrade metadata may provide the canonical hash expected for the
-// upgrade batch. Keep the batch commitment tied to the actually executed upgrade transaction.
-fn checked_upgrade_tx_hash(
-    expected_upgrade_tx_hash: Option<B256>,
-    actual_upgrade_tx_hash: B256,
-) -> anyhow::Result<B256> {
-    if let Some(expected_upgrade_tx_hash) = expected_upgrade_tx_hash {
-        ensure!(
-            expected_upgrade_tx_hash == actual_upgrade_tx_hash,
-            "canonical upgrade tx hash mismatch: expected {expected_upgrade_tx_hash}, actual {actual_upgrade_tx_hash}"
-        );
-    }
-    Ok(actual_upgrade_tx_hash)
 }
 
 fn blob_data_id(data: &[u8]) -> [u8; 32] {
@@ -280,15 +399,10 @@ pub struct PendingBatchInfo {
     /// majority of batches.
     pub upgrade_tx_hash: Option<B256>,
     pub protocol_version: ProtocolSemanticVersion,
-    /// Reproduces commitments made before blob modes were assigned Syscoin DA semantics.
-    /// This is set only after a rebuilt committed batch matches the historical layout exactly.
-    #[serde(skip)]
-    #[doc(hidden)]
-    pub use_legacy_v31_commitment: bool,
 }
 
-/// Batch-level commit values produced canonically by the native batch run: from protocol v32.0
-/// the batch program itself computes pubdata, DA/state commitments and L1/L2 tx counters, so
+/// Batch-level commit values produced canonically by the V8 native batch run. The batch program
+/// itself computes pubdata, DA/state commitments and L1/L2 tx counters, so
 /// [`PendingBatchInfo::build_from_canonical_output`] consumes this instead of the server
 /// re-accumulating per-block outputs ([`PendingBatchInfo::build`]).
 #[derive(Debug, Clone)]
@@ -308,290 +422,36 @@ pub struct CanonicalBatchCommitData {
     pub chain_id: u64,
     pub sl_chain_id: u64,
     pub pubdata: Vec<u8>,
+    /// SYSCOIN: Canonical compact edge-DA messages that open [`Self::edge_da_refs_root`].
+    pub edge_da_refs_input: Vec<u8>,
+    /// SYSCOIN: Ordered, context-bound root emitted by the patched V8 batch program.
+    pub edge_da_refs_root: B256,
 }
 
 impl PendingBatchInfo {
-    #[allow(clippy::too_many_arguments)]
-    pub fn build(
-        blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
-        chain_id: u64,
-        batch_number: u64,
-        pubdata_mode: PubdataMode,
-        sl_chain_id: u64,
-        multichain_root: B256,
-        protocol_version: &ProtocolSemanticVersion,
-        expected_upgrade_tx_hash: Option<B256>,
-        compact_edge_da_commit_target: Option<Address>,
-        last_256_block_hashes: &[U256; 256],
-    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
-        Self::build_with_compatibility(
-            blocks,
-            chain_id,
-            batch_number,
-            pubdata_mode,
-            sl_chain_id,
-            multichain_root,
-            protocol_version,
-            expected_upgrade_tx_hash,
-            compact_edge_da_commit_target,
-            last_256_block_hashes,
-            false,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn build_legacy_pre_syscoin_da(
-        blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
-        chain_id: u64,
-        batch_number: u64,
-        pubdata_mode: PubdataMode,
-        sl_chain_id: u64,
-        multichain_root: B256,
-        protocol_version: &ProtocolSemanticVersion,
-        expected_upgrade_tx_hash: Option<B256>,
-        compact_edge_da_commit_target: Option<Address>,
-        last_256_block_hashes: &[U256; 256],
-    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
-        ensure!(
-            matches!(
-                pubdata_mode,
-                PubdataMode::Blobs | PubdataMode::RelayedL2Calldata
-            ),
-            "legacy pre-Syscoin DA compatibility requires Blobs or RelayedL2Calldata"
-        );
-        Self::build_with_compatibility(
-            blocks,
-            chain_id,
-            batch_number,
-            pubdata_mode,
-            sl_chain_id,
-            multichain_root,
-            protocol_version,
-            expected_upgrade_tx_hash,
-            compact_edge_da_commit_target,
-            last_256_block_hashes,
-            true,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn build_with_compatibility(
-        blocks: Vec<(&BlockOutput, &[ZkTransaction], &TreeBatchOutput)>,
-        chain_id: u64,
-        batch_number: u64,
-        pubdata_mode: PubdataMode,
-        sl_chain_id: u64,
-        multichain_root: B256,
-        protocol_version: &ProtocolSemanticVersion,
-        expected_upgrade_tx_hash: Option<B256>,
-        compact_edge_da_commit_target: Option<Address>,
-        last_256_block_hashes: &[U256; 256],
-        use_legacy_v31_commitment: bool,
-    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
-        let mut priority_operations_hash = keccak256([]);
-        let mut number_of_layer1_txs = 0;
-        let mut number_of_layer2_txs = 0;
-        let mut total_pubdata = vec![];
-        let mut encoded_l2_l1_logs = vec![];
-
-        let (first_block_output, _, _) = *blocks.first().unwrap();
-        let (last_block_output, _, last_block_tree) = *blocks.last().unwrap();
-
-        let mut upgrade_tx_hash = None;
-
-        let mut dependency_roots_rolling_hash = B256::ZERO;
-        // SYSCOIN: accumulated compact edge DA refs emitted by chains settling to Gateway.
-        let mut edge_da_refs_root = B256::ZERO;
-        // SYSCOIN: compact edge DA ref messages used as final-L1 root openings.
-        let mut edge_da_refs_input = Vec::new();
-
-        for (block_output, transactions, _) in blocks {
-            total_pubdata.extend_from_slice(block_output.expect_pubdata_bytes());
-
-            for tx in transactions {
-                match tx.envelope() {
-                    ZkEnvelope::System(envelope) => {
-                        number_of_layer2_txs += 1;
-
-                        if let Some(roots) = envelope.interop_roots() {
-                            for root in roots {
-                                dependency_roots_rolling_hash = keccak256(
-                                    (
-                                        dependency_roots_rolling_hash,
-                                        root.chainId,
-                                        root.blockOrBatchNumber,
-                                        root.sides,
-                                    )
-                                        .abi_encode_packed(),
-                                );
-                            }
-                        }
-                    }
-                    ZkEnvelope::L2(_) => {
-                        number_of_layer2_txs += 1;
-                    }
-                    ZkEnvelope::L1(l1_tx) => {
-                        let onchain_data_hash = l1_tx.hash();
-                        priority_operations_hash =
-                            keccak256([priority_operations_hash.0, onchain_data_hash.0].concat());
-                        number_of_layer1_txs += 1;
-                    }
-                    ZkEnvelope::Upgrade(_) => {
-                        ensure!(
-                            upgrade_tx_hash.is_none(),
-                            "more than one upgrade tx in a batch: first {upgrade_tx_hash:?}, second {}",
-                            tx.hash()
-                        );
-                        upgrade_tx_hash = Some(checked_upgrade_tx_hash(
-                            expected_upgrade_tx_hash,
-                            *tx.hash(),
-                        )?);
-                    }
-                }
-            }
-
-            for (tx, tx_output) in transactions.iter().zip(&block_output.tx_results) {
-                let Ok(tx_output) = tx_output else {
-                    continue;
-                };
-                let collect_edge_da_refs = compact_edge_da_commit_target.is_some_and(|target| {
-                    is_compact_edge_da_commit_tx(tx.to(), tx.input().as_ref(), target)
-                });
-                let mut collected_edge_da_ref_from_preimage = false;
-                encoded_l2_l1_logs.extend(tx_output.l2_to_l1_logs.iter().map(
-                    |log_with_preimage| {
-                        if let Some(preimage) = log_with_preimage.preimage.as_deref()
-                            && collect_edge_da_refs
-                            && let Some(edge_ref) = parse_syscoin_edge_da_ref_message(preimage)
-                        {
-                            edge_da_refs_root = keccak256(
-                                [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0]
-                                    .concat(),
-                            );
-                            edge_da_refs_input.extend_from_slice(preimage);
-                            collected_edge_da_ref_from_preimage = true;
-                        }
-                        let log = L2ToL1Log {
-                            l2_shard_id: log_with_preimage.log.l2_shard_id,
-                            is_service: log_with_preimage.log.is_service,
-                            tx_number_in_block: log_with_preimage.log.tx_number_in_block,
-                            sender: log_with_preimage.log.sender,
-                            key: log_with_preimage.log.key,
-                            value: log_with_preimage.log.value,
-                        };
-                        log.encode()
-                    },
-                ));
-
-                if collect_edge_da_refs
-                    && !collected_edge_da_ref_from_preimage
-                    && let Some(message) =
-                        compact_edge_da_ref_message_from_commit_calldata(tx.input().as_ref())?
-                {
-                    let message_hash = keccak256(&message);
-                    ensure!(
-                        tx_output
-                            .l2_to_l1_logs
-                            .iter()
-                            .any(|log| log.log.value == message_hash),
-                        "compact edge DA commit did not emit its canonical message"
-                    );
-                    let edge_ref = parse_syscoin_edge_da_ref_message(&message)
-                        .expect("locally encoded compact edge DA ref must parse");
-                    edge_da_refs_root = keccak256(
-                        [edge_da_refs_root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat(),
-                    );
-                    edge_da_refs_input.extend_from_slice(&message);
-                }
-            }
-        }
-
-        let last_256_block_hashes_blake = {
-            let mut blocks_hasher = Blake2s256::new();
-            for block_hash in &last_256_block_hashes[1..] {
-                blocks_hasher.update(block_hash.to_be_bytes::<32>());
-            }
-            blocks_hasher.update(last_block_output.header.hash());
-
-            blocks_hasher.finalize()
-        };
-
-        /* ---------- operator DA input ---------- */
-        let da_fields = calculate_da_fields_with_compatibility(
-            &total_pubdata,
-            pubdata_mode,
-            use_legacy_v31_commitment,
-        )?;
-
-        /* ---------- new state commitment ---------- */
-        // FIXME: extract to a type common batch types?
-        let mut hasher = Blake2s256::new();
-        hasher.update(last_block_tree.root_hash.as_slice());
-        hasher.update(last_block_tree.leaf_count.to_be_bytes());
-        hasher.update(last_block_output.header.number.to_be_bytes());
-        hasher.update(last_256_block_hashes_blake);
-        hasher.update(last_block_output.header.timestamp.to_be_bytes());
-        let new_state_commitment = B256::from_slice(&hasher.finalize());
-
-        /* ---------- root hash of l2->l1 logs ---------- */
-        let l2_l1_local_root = MiniMerkleTree::new(
-            encoded_l2_l1_logs.clone().into_iter(),
-            Some(L2_TO_L1_TREE_SIZE),
-        )
-        .merkle_root();
-
-        let l2_to_l1_logs_root_hash = if protocol_version.is_post_v31() {
-            // The result should be Keccak(l2_l1_local_root, multichain_root).
-            keccak256([l2_l1_local_root.0, multichain_root.0].concat())
-        } else {
-            // For older protocol versions, multichain root should be set to zero.
-            keccak256([l2_l1_local_root.0, [0u8; 32]].concat())
-        };
-
-        let commit_info = CommitBatchInfo {
-            batch_number,
-            new_state_commitment,
-            number_of_layer1_txs,
-            number_of_layer2_txs,
-            priority_operations_hash,
-            dependency_roots_rolling_hash,
-            l2_to_l1_logs_root_hash,
-            l2_da_commitment_scheme: pubdata_mode.da_commitment_scheme(),
-            da_commitment: da_fields.da_commitment,
-            first_block_timestamp: first_block_output.header.timestamp,
-            first_block_number: Some(first_block_output.header.number),
-            last_block_timestamp: last_block_output.header.timestamp,
-            last_block_number: Some(last_block_output.header.number),
-            chain_id,
-            operator_da_input: da_fields.operator_da_input,
-            edge_da_refs_input,
-            edge_da_refs_root,
-            sl_chain_id,
-        };
-        Ok((
-            Self {
-                commit_info,
-                protocol_version: protocol_version.clone(),
-                upgrade_tx_hash,
-                use_legacy_v31_commitment,
-            },
-            da_fields.blob_sidecar,
-        ))
-    }
-
     pub fn build_from_canonical_output(
         batch_number: u64,
         pubdata_mode: PubdataMode,
         protocol_version: &ProtocolSemanticVersion,
         batch: CanonicalBatchCommitData,
-    ) -> anyhow::Result<(Self, Option<BlobTransactionSidecar>)> {
-        let da_fields =
-            calculate_da_fields_with_compatibility(&batch.pubdata, pubdata_mode, false)?;
+    ) -> anyhow::Result<Self> {
+        let da_fields = calculate_da_fields(&batch.pubdata, pubdata_mode)?;
         anyhow::ensure!(
             da_fields.da_commitment == batch.da_commitment,
             "canonical batch DA commitment mismatch: expected {}, got {}",
             batch.da_commitment,
             da_fields.da_commitment,
+        );
+        let edge_refs = syscoin_edge_da_refs_from_input(&batch.edge_da_refs_input)
+            .ok_or_else(|| anyhow::anyhow!("canonical batch edge-DA input is malformed"))?;
+        let reconstructed_edge_root = edge_refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+            keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+        });
+        anyhow::ensure!(
+            reconstructed_edge_root == batch.edge_da_refs_root,
+            "canonical batch edge-DA root mismatch: expected {}, got {}",
+            batch.edge_da_refs_root,
+            reconstructed_edge_root,
         );
 
         let commit_info = CommitBatchInfo {
@@ -610,97 +470,22 @@ impl PendingBatchInfo {
             last_block_number: Some(batch.last_block_number),
             chain_id: batch.chain_id,
             operator_da_input: da_fields.operator_da_input,
-            // SYSCOIN: upstream V8 does not yet expose the per-transaction preimages needed to
-            // derive compact Gateway edge-DA openings. Keep v32 direct-L1 construction explicit;
-            // Gateway activation remains blocked until the Syscoin V8 app emits these values.
-            edge_da_refs_input: Vec::new(),
-            edge_da_refs_root: B256::ZERO,
+            edge_da_refs_input: batch.edge_da_refs_input,
+            edge_da_refs_root: batch.edge_da_refs_root,
             sl_chain_id: batch.sl_chain_id,
         };
 
-        Ok((
-            Self {
-                commit_info,
-                upgrade_tx_hash: batch.upgrade_tx_hash,
-                protocol_version: protocol_version.clone(),
-                use_legacy_v31_commitment: false,
-            },
-            da_fields.blob_sidecar,
-        ))
+        Ok(Self {
+            commit_info,
+            upgrade_tx_hash: batch.upgrade_tx_hash,
+            protocol_version: protocol_version.clone(),
+        })
     }
 
-    /// Calculate keccak256 hash of BatchOutput part of public input (the batch commitment).
-    fn public_input_hash(&self) -> B256 {
-        let commit_info = &self.commit_info;
-        let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
-        match self.protocol_version.minor {
-            // v31 inserts the L2 transaction count and settlement-layer chain ID. Syscoin's
-            // current layout additionally binds the compact edge DA references below.
-            30 => B256::from(keccak256(
-                (
-                    U256::from(commit_info.chain_id),
-                    commit_info.first_block_timestamp,
-                    commit_info.last_block_timestamp,
-                    U256::from(commit_info.l2_da_commitment_scheme as u8),
-                    commit_info.da_commitment,
-                    U256::from(commit_info.number_of_layer1_txs),
-                    commit_info.priority_operations_hash,
-                    commit_info.l2_to_l1_logs_root_hash,
-                    upgrade_tx_hash,
-                    commit_info.dependency_roots_rolling_hash,
-                )
-                    .abi_encode_packed(),
-            )),
-            31 if self.use_legacy_v31_commitment => B256::from(keccak256(
-                (
-                    U256::from(commit_info.chain_id),
-                    commit_info.first_block_timestamp,
-                    commit_info.last_block_timestamp,
-                    U256::from(commit_info.l2_da_commitment_scheme as u8),
-                    commit_info.da_commitment,
-                    U256::from(commit_info.number_of_layer1_txs),
-                    U256::from(commit_info.number_of_layer2_txs),
-                    commit_info.priority_operations_hash,
-                    commit_info.l2_to_l1_logs_root_hash,
-                    upgrade_tx_hash,
-                    commit_info.dependency_roots_rolling_hash,
-                    U256::from(commit_info.sl_chain_id),
-                )
-                    .abi_encode_packed(),
-            )),
-            31 => B256::from(keccak256(
-                (
-                    U256::from(commit_info.chain_id),
-                    commit_info.first_block_timestamp,
-                    commit_info.last_block_timestamp,
-                    U256::from(commit_info.l2_da_commitment_scheme as u8),
-                    commit_info.da_commitment,
-                    U256::from(commit_info.number_of_layer1_txs),
-                    U256::from(commit_info.number_of_layer2_txs),
-                    commit_info.priority_operations_hash,
-                    commit_info.l2_to_l1_logs_root_hash,
-                    upgrade_tx_hash,
-                    commit_info.dependency_roots_rolling_hash,
-                    U256::from(commit_info.sl_chain_id),
-                    // SYSCOIN: bind compact edge DA refs into the proven Gateway batch output.
-                    commit_info.edge_da_refs_root,
-                )
-                    .abi_encode_packed(),
-            )),
-            // v32 drops the leading chain_id - it is committed through the chain config hash
-            // in the outer public input instead (era-contracts#2323 does the same on-chain).
-            32 => self.v32_batch_output_hash(),
-            _ => panic!("Unsupported protocol version: {}", self.protocol_version),
-        }
-    }
-
-    /// Batch output hash exactly as the zksync-os 0.4.0 (proving V8) batch program computes it
-    /// (`BatchOutput::hash` in `basic_bootloader/.../post_tx_op/public_input.rs`): unlike the
-    /// pre-V8 [`Self::public_input_hash`] layout, it does NOT include the leading `chain_id` —
-    /// the chain id is committed through the chain config hash in the outer batch public input
-    /// instead. Used for server-side verification of V8 FRI proofs and as the v32 arm of
-    /// [`Self::public_input_hash`] — era-contracts#2323 defines the same layout on-chain.
-    pub fn v32_batch_output_hash(&self) -> B256 {
+    /// SYSCOIN: Canonical batch-output hash computed by the patched final-v0.4 guest. The chain id is
+    /// committed through the outer chain-config hash; Syscoin additionally binds the compact
+    /// edge-DA root as the final field.
+    pub fn batch_output_hash(&self) -> B256 {
         let commit_info = &self.commit_info;
         let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);
         B256::from(keccak256(
@@ -716,6 +501,7 @@ impl PendingBatchInfo {
                 upgrade_tx_hash,
                 commit_info.dependency_roots_rolling_hash,
                 U256::from(commit_info.sl_chain_id),
+                commit_info.edge_da_refs_root,
             )
                 .abi_encode_packed(),
         ))
@@ -723,7 +509,7 @@ impl PendingBatchInfo {
 
     /// Computes the batch commitment and turns this into its committed form.
     pub fn into_committed(self) -> CommittedBatchInfo {
-        let commitment = self.public_input_hash();
+        let commitment = self.batch_output_hash();
         CommittedBatchInfo {
             commit_info: self.commit_info,
             commitment,
@@ -779,68 +565,10 @@ impl CommittedBatchInfo {
 struct DAFields {
     pub da_commitment: B256,
     pub operator_da_input: Vec<u8>,
-    pub blob_sidecar: Option<BlobTransactionSidecar>,
 }
 
-#[cfg(test)]
 fn calculate_da_fields(pubdata: &[u8], pubdata_mode: PubdataMode) -> anyhow::Result<DAFields> {
-    calculate_da_fields_with_compatibility(pubdata, pubdata_mode, false)
-}
-
-fn calculate_da_fields_with_compatibility(
-    pubdata: &[u8],
-    pubdata_mode: PubdataMode,
-    legacy_pre_syscoin_da: bool,
-) -> anyhow::Result<DAFields> {
-    if legacy_pre_syscoin_da && pubdata_mode == PubdataMode::Blobs {
-        let blob_sidecar: BlobTransactionSidecar =
-            SidecarBuilder::<SimpleCoder>::from_slice(pubdata).build()?;
-        let versioned_hashes: Vec<u8> = blob_sidecar
-            .versioned_hashes()
-            .flat_map(|hash| hash.0.to_vec())
-            .collect();
-        return Ok(DAFields {
-            da_commitment: keccak256(&versioned_hashes),
-            operator_da_input: vec![0u8; versioned_hashes.len()],
-            blob_sidecar: Some(blob_sidecar),
-        });
-    }
-
-    let da_fields_mode = if legacy_pre_syscoin_da && pubdata_mode == PubdataMode::RelayedL2Calldata
-    {
-        PubdataMode::Calldata
-    } else {
-        pubdata_mode
-    };
-    let (da_commitment, operator_da_input, blob_sidecar) = match da_fields_mode {
-        PubdataMode::Calldata => {
-            let mut operator_da_input = Vec::with_capacity(32 * 3 + 1 + pubdata.len() + 1 + 32);
-
-            // reference for this header is taken from zk_ee: https://github.com/matter-labs/zk_ee/blob/ad-aggregation-program/aggregator/src/aggregation/da_commitment.rs#L27
-            // consider reusing that code instead:
-            //
-            // hasher.update([0u8; 32]); // we don't have to validate state diffs hash
-            // hasher.update(Keccak256::digest(&pubdata)); // full pubdata keccak
-            // hasher.update([1u8]); // with calldata we should provide 1 blob
-            // hasher.update([0u8; 32]); // its hash will be ignored on the settlement layer
-            // Ok(hasher.finalize().into())
-
-            operator_da_input.extend(B256::ZERO.as_slice());
-            operator_da_input.extend(keccak256(pubdata));
-            operator_da_input.push(1);
-            operator_da_input.extend(B256::ZERO.as_slice());
-
-            //     bytes32 daCommitment; - we compute hash of the first part of the operator_da_input (see above)
-            let da_commitment = keccak256(&operator_da_input);
-
-            operator_da_input.extend([PUBDATA_SOURCE_CALLDATA]);
-            operator_da_input.extend(pubdata);
-            // blob_commitment should be set to zero in ZK OS
-            operator_da_input.extend(B256::ZERO.as_slice());
-
-            (da_commitment, operator_da_input, None)
-        }
-        PubdataMode::Validium => (B256::ZERO, vec![0u8; 32], None),
+    let (da_commitment, operator_da_input) = match pubdata_mode {
         PubdataMode::Blobs | PubdataMode::RelayedL2Calldata => {
             // SYSCOIN: edge chains that settle to Gateway publish pubdata directly to Bitcoin
             // DA and commit only the compact ordered blob hash array to Gateway.
@@ -849,13 +577,12 @@ fn calculate_da_fields_with_compatibility(
             let blob_ids = blob_ids_from_pubdata;
             let da_commitment = keccak256(&blob_ids);
             let operator_da_input = blob_ids;
-            (da_commitment, operator_da_input, None)
+            (da_commitment, operator_da_input)
         }
     };
     Ok(DAFields {
         da_commitment,
         operator_da_input,
-        blob_sidecar,
     })
 }
 
@@ -863,10 +590,14 @@ fn calculate_da_fields_with_compatibility(
 mod canonical_output_tests {
     use super::calculate_da_fields;
     use super::{
-        SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES, SyscoinEdgeDaRef,
-        blob_data_id, checked_upgrade_tx_hash, compact_edge_da_ref_message_from_commit_calldata,
-        is_compact_edge_da_commit_tx, syscoin_edge_da_ref_hash, syscoin_edge_da_refs_from_input,
+        SYSCOIN_DA_BYTES_PER_BLOB, SYSCOIN_DA_MAX_BLOB_PUBDATA_BYTES,
+        SYSCOIN_DA_MAX_REFS_PER_BATCH, SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS, SyscoinEdgeDaRef,
+        authenticate_syscoin_edge_da_relay_log, blob_data_id, collects_syscoin_edge_da_refs,
+        compact_edge_da_ref_message_from_commit_calldata, is_compact_edge_da_commit_tx,
+        syscoin_edge_da_ref_hash, syscoin_edge_da_refs_for_blocks, syscoin_edge_da_refs_from_input,
     };
+    use alloy::consensus::transaction::Recovered;
+    use alloy::consensus::{Header, Sealable, SignableTransaction, TxLegacy};
     use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
     use alloy::sol_types::SolCall;
     use zksync_os_contract_interface::IExecutor;
@@ -874,7 +605,42 @@ mod canonical_output_tests {
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
-    use zksync_os_types::PubdataMode;
+    use zksync_os_interface::types::{
+        ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage, TxOutput,
+    };
+    use zksync_os_types::{
+        BlockOutput, BlockPubdata, L2Envelope, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+        SYSCOIN_GATEWAY_CHAIN_ID, ZkTransaction,
+    };
+
+    fn output_with_result(execution_result: ExecutionResult) -> TxOutput {
+        TxOutput {
+            execution_result,
+            gas_used: 0,
+            gas_refunded: 0,
+            computational_native_used: 0,
+            native_used: 0,
+            pubdata_used: 0,
+            contract_address: None,
+            logs: Vec::new(),
+            l2_to_l1_logs: Vec::new(),
+            storage_writes: Vec::new(),
+        }
+    }
+
+    fn canonical_relay_log(message: &[u8], retain_preimage: bool) -> L2ToL1LogWithPreimage {
+        L2ToL1LogWithPreimage {
+            log: L2ToL1Log {
+                l2_shard_id: 0,
+                is_service: true,
+                tx_number_in_block: 0,
+                sender: SYSCOIN_L2_TO_L1_MESSENGER_ADDRESS,
+                key: B256::left_padding_from(SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER.as_slice()),
+                value: keccak256(message),
+            },
+            preimage: retain_preimage.then(|| message.to_vec()),
+        }
+    }
 
     fn expected_blob_ids(pubdata: &[u8]) -> Vec<u8> {
         let mut encoded = vec![0u8; 31];
@@ -951,6 +717,79 @@ mod canonical_output_tests {
         .abi_encode()
     }
 
+    // SYSCOIN: Only Gateway may interpret a successful ValidatorTimelock-shaped call as a
+    // forwarded Edge-DA opening; the identical edge-chain execution must retain the zero root.
+    #[test]
+    fn compact_edge_da_reconstruction_is_gateway_role_bound() {
+        let commit_target = address!("0000000000000000000000000000000000001234");
+        let edge_chain_id = 57_057;
+        let edge_batch_number = 2_839;
+        let blob_hashes = vec![0x11; 32];
+        let commit_input = compact_edge_commit_call_data(
+            edge_chain_id,
+            edge_batch_number,
+            DACommitmentScheme::BlobsZKsyncOS,
+            blob_hashes.clone(),
+            32,
+        );
+        let expected_message = compact_edge_da_ref_message(
+            edge_chain_id,
+            edge_batch_number,
+            keccak256(&blob_hashes),
+            &blob_hashes,
+        );
+        let signature =
+            alloy::primitives::Signature::new(Default::default(), Default::default(), false);
+        let signed = TxLegacy {
+            chain_id: Some(edge_chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 1_000_000,
+            to: commit_target.into(),
+            value: U256::ZERO,
+            input: Bytes::from(commit_input),
+        }
+        .into_signed(signature);
+        let transaction = ZkTransaction::from(Recovered::new_unchecked(
+            L2Envelope::from(signed),
+            Address::ZERO,
+        ));
+
+        let mut tx_output =
+            output_with_result(ExecutionResult::Success(ExecutionOutput::Call(Vec::new())));
+        tx_output
+            .l2_to_l1_logs
+            .push(canonical_relay_log(&expected_message, true));
+        let block_output = BlockOutput {
+            header: Header::default().seal_slow(),
+            tx_results: vec![Ok(tx_output)],
+            storage_writes: Vec::new(),
+            account_diffs: Vec::new(),
+            published_preimages: Vec::new(),
+            pubdata: BlockPubdata::new(0),
+            computational_native_used: 0,
+        };
+        let transactions = [transaction];
+
+        let (gateway_input, gateway_root) = syscoin_edge_da_refs_for_blocks(
+            [(&block_output, transactions.as_slice())],
+            commit_target,
+            SYSCOIN_GATEWAY_CHAIN_ID,
+        )
+        .unwrap();
+        assert_eq!(gateway_input, expected_message);
+        assert_ne!(gateway_root, B256::ZERO);
+
+        let (edge_input, edge_root) = syscoin_edge_da_refs_for_blocks(
+            [(&block_output, transactions.as_slice())],
+            commit_target,
+            edge_chain_id,
+        )
+        .unwrap();
+        assert!(edge_input.is_empty());
+        assert_eq!(edge_root, B256::ZERO);
+    }
+
     #[test]
     fn blob_da_fields_match_os_chunk_ids_for_single_blob() {
         let pubdata = b"hello-syscoin-da";
@@ -960,7 +799,6 @@ mod canonical_output_tests {
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert!(fields.blob_sidecar.is_none());
     }
 
     #[test]
@@ -972,7 +810,6 @@ mod canonical_output_tests {
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert!(fields.blob_sidecar.is_none());
     }
 
     #[test]
@@ -984,7 +821,6 @@ mod canonical_output_tests {
 
         assert_eq!(fields.operator_da_input, expected_blob_ids);
         assert_eq!(fields.da_commitment, keccak256(&fields.operator_da_input));
-        assert!(fields.blob_sidecar.is_none());
     }
 
     #[test]
@@ -998,35 +834,6 @@ mod canonical_output_tests {
         assert!(
             err.to_string()
                 .contains("Syscoin DA blob pubdata exceeds 32-blob capacity"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn upgrade_tx_hash_uses_actual_hash_when_expected_missing() {
-        let actual = B256::from([1; 32]);
-
-        assert_eq!(checked_upgrade_tx_hash(None, actual).unwrap(), actual);
-    }
-
-    #[test]
-    fn upgrade_tx_hash_accepts_matching_expected_hash() {
-        let actual = B256::from([2; 32]);
-
-        assert_eq!(
-            checked_upgrade_tx_hash(Some(actual), actual).unwrap(),
-            actual
-        );
-    }
-
-    #[test]
-    fn upgrade_tx_hash_rejects_mismatched_expected_hash_without_panicking() {
-        let err = checked_upgrade_tx_hash(Some(B256::from([3; 32])), B256::from([4; 32]))
-            .expect_err("mismatched upgrade tx hashes must be rejected");
-
-        assert!(
-            err.to_string()
-                .contains("canonical upgrade tx hash mismatch"),
             "{err}"
         );
     }
@@ -1084,6 +891,56 @@ mod canonical_output_tests {
     }
 
     #[test]
+    fn edge_da_refs_accept_exact_aggregate_limit_split_across_messages() {
+        let first_hashes = vec![0x11; 16 * 32];
+        let second_hashes = vec![0x22; 16 * 32];
+        let first = compact_edge_da_ref_message(10, 1, keccak256(&first_hashes), &first_hashes);
+        let second = compact_edge_da_ref_message(11, 2, keccak256(&second_hashes), &second_hashes);
+        let input = [first, second].concat();
+
+        let refs = syscoin_edge_da_refs_from_input(&input).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            refs.iter()
+                .map(|edge_ref| edge_ref.blob_version_hashes.len() / 32)
+                .sum::<usize>(),
+            SYSCOIN_DA_MAX_REFS_PER_BATCH
+        );
+        let root = refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+            keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+        });
+        assert_ne!(root, B256::ZERO);
+    }
+
+    #[test]
+    fn edge_da_refs_reject_aggregate_limit_across_messages() {
+        let first_hashes = vec![0x11; 16 * 32];
+        let second_hashes = vec![0x22; 17 * 32];
+        let first = compact_edge_da_ref_message(10, 1, keccak256(&first_hashes), &first_hashes);
+        let second = compact_edge_da_ref_message(11, 2, keccak256(&second_hashes), &second_hashes);
+
+        assert!(syscoin_edge_da_refs_from_input(&[first, second].concat()).is_none());
+    }
+
+    #[test]
+    fn edge_da_refs_reject_single_message_above_limit() {
+        let hashes = vec![0x33; (SYSCOIN_DA_MAX_REFS_PER_BATCH + 1) * 32];
+        let input = compact_edge_da_ref_message(10, 1, keccak256(&hashes), &hashes);
+
+        assert!(syscoin_edge_da_refs_from_input(&input).is_none());
+    }
+
+    #[test]
+    fn empty_edge_da_refs_remain_the_canonical_zero_root() {
+        let refs = syscoin_edge_da_refs_from_input(&[]).unwrap();
+        let root = refs.into_iter().fold(B256::ZERO, |root, edge_ref| {
+            keccak256([root.0, syscoin_edge_da_ref_hash(edge_ref).0].concat())
+        });
+
+        assert_eq!(root, B256::ZERO);
+    }
+
+    #[test]
     fn edge_da_ref_message_is_recreated_from_commit_calldata() {
         let chain_id = 57_057;
         let batch_number = 2_839;
@@ -1094,7 +951,7 @@ mod canonical_output_tests {
             batch_number,
             DACommitmentScheme::BlobsZKsyncOS,
             blob_hashes.clone(),
-            31,
+            32,
         );
 
         let message = compact_edge_da_ref_message_from_commit_calldata(&input)
@@ -1113,36 +970,98 @@ mod canonical_output_tests {
     }
 
     #[test]
-    fn validium_commit_has_no_compact_edge_ref_message() {
+    fn canonical_edge_da_relay_log_is_exactly_bound_with_or_without_preimage() {
+        let message = compact_edge_da_ref_message(57_057, 7, keccak256([0x11; 32]), &[0x11; 32]);
+        for retain_preimage in [true, false] {
+            let mut output =
+                output_with_result(ExecutionResult::Success(ExecutionOutput::Call(Vec::new())));
+            output
+                .l2_to_l1_logs
+                .push(canonical_relay_log(&message, retain_preimage));
+            authenticate_syscoin_edge_da_relay_log(&output, &message).unwrap();
+        }
+    }
+
+    #[test]
+    fn canonical_edge_da_relay_log_rejects_missing_spoofed_and_duplicate_logs() {
+        let message = compact_edge_da_ref_message(57_057, 7, keccak256([0x11; 32]), &[0x11; 32]);
+        let successful = ExecutionResult::Success(ExecutionOutput::Call(Vec::new()));
+
+        let missing = output_with_result(successful.clone());
+        assert!(
+            authenticate_syscoin_edge_da_relay_log(&missing, &message)
+                .unwrap_err()
+                .to_string()
+                .contains("found 0")
+        );
+
+        let mut spoofed = output_with_result(successful.clone());
+        let mut spoofed_log = canonical_relay_log(&message, true);
+        spoofed_log.log.key = B256::ZERO;
+        spoofed.l2_to_l1_logs.push(spoofed_log);
+        assert!(
+            authenticate_syscoin_edge_da_relay_log(&spoofed, &message)
+                .unwrap_err()
+                .to_string()
+                .contains("found 0")
+        );
+
+        let mut duplicate = output_with_result(successful);
+        duplicate.l2_to_l1_logs = vec![
+            canonical_relay_log(&message, true),
+            canonical_relay_log(&message, false),
+        ];
+        assert!(
+            authenticate_syscoin_edge_da_relay_log(&duplicate, &message)
+                .unwrap_err()
+                .to_string()
+                .contains("found 2")
+        );
+    }
+
+    #[test]
+    fn canonical_edge_da_relay_log_rejects_hash_and_preimage_mismatch() {
+        let message = compact_edge_da_ref_message(57_057, 7, keccak256([0x11; 32]), &[0x11; 32]);
+        let successful = ExecutionResult::Success(ExecutionOutput::Call(Vec::new()));
+
+        let mut wrong_hash = output_with_result(successful.clone());
+        let mut wrong_hash_log = canonical_relay_log(&message, false);
+        wrong_hash_log.log.value = B256::ZERO;
+        wrong_hash.l2_to_l1_logs.push(wrong_hash_log);
+        assert!(
+            authenticate_syscoin_edge_da_relay_log(&wrong_hash, &message)
+                .unwrap_err()
+                .to_string()
+                .contains("log hash")
+        );
+
+        let mut wrong_preimage = output_with_result(successful);
+        let mut wrong_preimage_log = canonical_relay_log(&message, true);
+        wrong_preimage_log.preimage = Some(vec![0x99]);
+        wrong_preimage.l2_to_l1_logs.push(wrong_preimage_log);
+        assert!(
+            authenticate_syscoin_edge_da_relay_log(&wrong_preimage, &message)
+                .unwrap_err()
+                .to_string()
+                .contains("preimage")
+        );
+    }
+
+    #[test]
+    fn validium_commit_is_rejected_as_compact_edge_ref_message() {
         let input = compact_edge_commit_call_data(
             57_057,
             2_839,
             DACommitmentScheme::EmptyNoDA,
             vec![0; 32],
-            31,
+            32,
         );
+
+        let err = compact_edge_da_ref_message_from_commit_calldata(&input).unwrap_err();
 
         assert!(
-            compact_edge_da_ref_message_from_commit_calldata(&input)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn unsupported_commit_encoding_has_no_compact_edge_ref_message() {
-        let input = compact_edge_commit_call_data(
-            57_057,
-            2_839,
-            DACommitmentScheme::BlobsZKsyncOS,
-            vec![0x11; 32],
-            29,
-        );
-
-        assert!(
-            compact_edge_da_ref_message_from_commit_calldata(&input)
-                .unwrap()
-                .is_none()
+            err.to_string()
+                .contains("unsupported compact edge DA commitment scheme")
         );
     }
 
@@ -1168,6 +1087,16 @@ mod canonical_output_tests {
             b"abcd",
             commit_target
         ));
+    }
+
+    #[test]
+    fn reverted_commit_output_cannot_contribute_compact_edge_da_refs() {
+        let successful =
+            output_with_result(ExecutionResult::Success(ExecutionOutput::Call(Vec::new())));
+        let reverted = output_with_result(ExecutionResult::Revert(Vec::new()));
+
+        assert!(collects_syscoin_edge_da_refs(&successful));
+        assert!(!collects_syscoin_edge_da_refs(&reverted));
     }
 }
 
@@ -1226,19 +1155,20 @@ mod tests {
             chain_id: 270,
             sl_chain_id: 123,
             pubdata,
+            edge_da_refs_input: Vec::new(),
+            edge_da_refs_root: B256::ZERO,
         }
     }
 
     #[test]
     fn builds_commit_info_from_canonical_batch_output() {
         let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
-        let batch = canonical_batch_data(PubdataMode::Calldata);
-        let expected_da_fields =
-            calculate_da_fields(&batch.pubdata, PubdataMode::Calldata).unwrap();
+        let batch = canonical_batch_data(PubdataMode::Blobs);
+        let expected_da_fields = calculate_da_fields(&batch.pubdata, PubdataMode::Blobs).unwrap();
 
-        let (batch_info, blob_sidecar) = PendingBatchInfo::build_from_canonical_output(
+        let batch_info = PendingBatchInfo::build_from_canonical_output(
             42,
-            PubdataMode::Calldata,
+            PubdataMode::Blobs,
             &protocol_version,
             batch,
         )
@@ -1261,12 +1191,13 @@ mod tests {
         assert_eq!(batch_info.last_block_timestamp, 120);
         assert_eq!(batch_info.chain_id, 270);
         assert_eq!(batch_info.sl_chain_id, 123);
+        assert!(batch_info.edge_da_refs_input.is_empty());
+        assert_eq!(batch_info.edge_da_refs_root, B256::ZERO);
         assert_eq!(batch_info.da_commitment, expected_da_fields.da_commitment);
         assert_eq!(
             batch_info.operator_da_input,
             expected_da_fields.operator_da_input
         );
-        assert!(blob_sidecar.is_none());
     }
 
     #[test]
@@ -1286,6 +1217,26 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("canonical batch DA commitment mismatch")
+        );
+    }
+
+    #[test]
+    fn detects_canonical_edge_da_root_mismatch() {
+        let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
+        let mut batch = canonical_batch_data(PubdataMode::Blobs);
+        batch.edge_da_refs_root = B256::repeat_byte(0x42);
+
+        let err = PendingBatchInfo::build_from_canonical_output(
+            42,
+            PubdataMode::Blobs,
+            &protocol_version,
+            batch,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("canonical batch edge-DA root mismatch")
         );
     }
 }

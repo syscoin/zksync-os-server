@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, keccak256};
 /// This module is for sharing various testing utilities and helpers.
 use tokio::sync::watch;
 use zksync_os_batch_types::PendingBatchInfo;
@@ -47,14 +47,14 @@ pub fn dummy_commit_batch_info(batch_number: u64, from: u64, to: u64) -> CommitB
         priority_operations_hash: B256::ZERO,
         dependency_roots_rolling_hash: B256::ZERO,
         l2_to_l1_logs_root_hash: B256::ZERO,
-        l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-        da_commitment: B256::ZERO,
+        l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+        da_commitment: keccak256([0u8; 32]),
         first_block_timestamp: 0,
         first_block_number: Some(from),
         last_block_timestamp: 0,
         last_block_number: Some(to),
         chain_id: 270,
-        operator_da_input: Vec::new(),
+        operator_da_input: vec![0u8; 32],
         // SYSCOIN: dummy batches do not include compact edge DA ref openings.
         edge_da_refs_input: Vec::new(),
         // SYSCOIN: dummy batches do not include compact edge DA refs.
@@ -78,16 +78,14 @@ pub fn dummy_batch_metadata(batch_number: u64, from: u64, to: u64) -> BatchMetad
         },
         batch_info: PendingBatchInfo {
             commit_info: dummy_commit_batch_info(batch_number, from, to),
-            protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
+            protocol_version: ProtocolSemanticVersion::canonical_genesis_version(),
             upgrade_tx_hash: None,
-            use_legacy_v31_commitment: false,
         },
         chain_address: Address::ZERO,
-        blob_sidecar: None,
         first_block_number: from,
         last_block_number: to,
         last_block_hash: None,
-        pubdata_mode: zksync_os_types::PubdataMode::Calldata,
+        pubdata_mode: zksync_os_types::PubdataMode::Blobs,
         tx_count: 0,
         computational_native_used: None,
         logs: vec![],

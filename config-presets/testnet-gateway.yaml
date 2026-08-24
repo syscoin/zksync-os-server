@@ -8,6 +8,9 @@ l1_sender:
 
 l1_watcher:
   poll_interval: 10s
+  # SYSCOIN: Edge chains may opt into Gateway-head interop explicitly. This preset documents the
+  # trust model; the setting is ignored by the Gateway itself while it settles directly on L1.
+  optimistic_gateway_head: true
 
 api:
   # This is for eth_sendRawTransactionSync (L2 inclusion wait), not L1 finality.

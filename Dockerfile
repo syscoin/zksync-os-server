@@ -39,18 +39,15 @@ RUN useradd -m -u ${UID} app && \
 # ---- copy binary + genesis.json ----
 COPY --from=builder /app/target/release/zksync-os-server /usr/local/bin/
 
-COPY --from=builder /app/local-chains/v31.0/default/genesis.json /app/local-chains/v31.0/default/genesis.json
-# Chains that were genesis'd on v30.2 still need the original genesis input (e.g. a fresh
-# external-node sync).
-COPY --from=builder /app/local-chains/v30.2/default/genesis.json /app/local-chains/v30.2/default/genesis.json
-
 USER app
 WORKDIR /app
 
 ENV general_rocks_db_path=/db/node1
 ENV prover_api_proof_storage_path=/db/fri_proofs/
 
-EXPOSE 3050 3124 3312 3060
+# SYSCOIN: The prover API is loopback-only and must not be published directly from this container;
+# remote workers enter through a buffering HTTPS proxy sharing the node's network namespace.
+EXPOSE 3050 3312 3060
 VOLUME ["/db"]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "zksync-os-server"]

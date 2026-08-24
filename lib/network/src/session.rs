@@ -51,7 +51,9 @@ pub struct VerifierSession {
 pub enum VerifierAuthState {
     RoleRequested,
     Challenged { nonce: B256 },
-    Authorized { signer: Address },
+    // SYSCOIN: Preserve the exact authenticated lane generation so signer de-duplication closes
+    // only the handle whose authorization made the prior PeerId eligible.
+    Authorized { signer: Address, lane_id: u64 },
     Unauthorized { signer: Option<Address> },
 }
 
@@ -128,15 +130,52 @@ impl PeerSessionStore {
         }
     }
 
-    /// Records that `peer_id` proved control of an accepted verifier signer.
-    pub fn verifier_authorized(&mut self, peer_id: PeerId, signer: Address) {
-        if let Some(session) = self.sessions.get_mut(&peer_id) {
-            session.verifier = Some(VerifierSession {
-                auth_state: VerifierAuthState::Authorized { signer },
-                last_verified_batch: None,
-                last_verified_at: None,
-            });
+    /// SYSCOIN: Records that `peer_id` proved control of an accepted verifier signer and makes any
+    /// distinct PeerId currently authorized by that signer ineligible in the same store mutation.
+    /// Returns the displaced `(PeerId, lane_id)` pairs so the service can close their exact live
+    /// registry handles before releasing its session-store write lock.
+    pub fn verifier_authorized(
+        &mut self,
+        peer_id: PeerId,
+        lane_id: u64,
+        signer: Address,
+    ) -> Option<Vec<(PeerId, u64)>> {
+        // SYSCOIN: Never revoke the current owner for an authorization event whose target replay
+        // session disappeared. Handler events can race exact connection teardown.
+        if !self.sessions.contains_key(&peer_id) {
+            return None;
         }
+        let displaced = self
+            .sessions
+            .iter_mut()
+            .filter_map(|(other_peer_id, session)| {
+                if *other_peer_id == peer_id {
+                    return None;
+                }
+                let verifier = session.verifier.as_mut()?;
+                let (other_signer, other_lane_id) = match &verifier.auth_state {
+                    VerifierAuthState::Authorized { signer, lane_id } => (*signer, *lane_id),
+                    _ => return None,
+                };
+                if other_signer != signer {
+                    return None;
+                }
+                verifier.auth_state = VerifierAuthState::Unauthorized {
+                    signer: Some(signer),
+                };
+                Some((*other_peer_id, other_lane_id))
+            })
+            .collect();
+        let session = self
+            .sessions
+            .get_mut(&peer_id)
+            .expect("target session existence checked before signer displacement");
+        session.verifier = Some(VerifierSession {
+            auth_state: VerifierAuthState::Authorized { signer, lane_id },
+            last_verified_batch: None,
+            last_verified_at: None,
+        });
+        Some(displaced)
     }
 
     /// Records that `peer_id` failed verifier authorization.
@@ -155,7 +194,7 @@ impl PeerSessionStore {
         self.sessions.get(&peer_id)
     }
 
-    /// Returns peer IDs that are currently eligible to receive batch-verification requests.
+    /// SYSCOIN: Returns exact `(PeerId, lane_id)` pairs currently eligible for verification.
     ///
     /// A peer is eligible only if it has both:
     /// - replayed at least through `required_block`
@@ -167,15 +206,19 @@ impl PeerSessionStore {
     pub fn authorized_verifier_peers(
         &self,
         required_block: BlockNumber,
-    ) -> impl Iterator<Item = PeerId> + '_ {
+        // SYSCOIN: Eligibility exports the exact authenticated connection generation.
+    ) -> impl Iterator<Item = (PeerId, u64)> + '_ {
         self.sessions.values().filter_map(move |session| {
             let replay = session.replay.as_ref()?;
             let verifier = session.verifier.as_ref()?;
             if !replay.can_verify(required_block) {
                 return None;
             }
+            // SYSCOIN: PeerId equality alone cannot authorize a replacement 2FA lane.
             match verifier.auth_state {
-                VerifierAuthState::Authorized { .. } => Some(session.identity.peer_id),
+                VerifierAuthState::Authorized { lane_id, .. } => {
+                    Some((session.identity.peer_id, lane_id))
+                }
                 _ => None,
             }
         })
@@ -260,11 +303,16 @@ mod tests {
         ));
 
         let authorized_signer = signer(0x11);
-        store.verifier_authorized(peer_id, authorized_signer);
+        assert!(
+            store
+                .verifier_authorized(peer_id, 7, authorized_signer)
+                .unwrap()
+                .is_empty()
+        );
         let session = store.get(peer_id).unwrap();
         assert!(matches!(
             session.verifier.as_ref().unwrap().auth_state,
-            VerifierAuthState::Authorized { signer } if signer == authorized_signer
+            VerifierAuthState::Authorized { signer, lane_id: 7 } if signer == authorized_signer
         ));
 
         let unauthorized_signer = signer(0x22);
@@ -285,7 +333,12 @@ mod tests {
 
         // EN already had blocks 0..=10 locally; connects requesting from 11.
         store.replay_requested(peer_id, 11);
-        store.verifier_authorized(peer_id, signer(0x11));
+        assert!(
+            store
+                .verifier_authorized(peer_id, 7, signer(0x11))
+                .unwrap()
+                .is_empty()
+        );
 
         // No blocks have been streamed this session, but the EN is still eligible
         // for any batch whose last block is <= 10.
@@ -296,7 +349,7 @@ mod tests {
         assert!(!replay.can_verify(11));
 
         let peers: Vec<_> = store.authorized_verifier_peers(10).collect();
-        assert_eq!(peers, vec![peer_id]);
+        assert_eq!(peers, vec![(peer_id, 7)]);
 
         let peers: Vec<_> = store.authorized_verifier_peers(11).collect();
         assert!(peers.is_empty());
@@ -327,11 +380,55 @@ mod tests {
         store.replay_block_sent(now + Duration::from_secs(1), lagging_peer, 9);
         store.replay_block_sent(now + Duration::from_secs(1), unauthorized_peer, 10);
 
-        store.verifier_authorized(eligible_peer, signer(0x11));
-        store.verifier_authorized(lagging_peer, signer(0x22));
+        assert!(
+            store
+                .verifier_authorized(eligible_peer, 7, signer(0x11))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .verifier_authorized(lagging_peer, 8, signer(0x22))
+                .unwrap()
+                .is_empty()
+        );
         store.verifier_unauthorized(unauthorized_peer, Some(signer(0x33)));
 
         let peers: Vec<_> = store.authorized_verifier_peers(10).collect();
-        assert_eq!(peers, vec![eligible_peer]);
+        assert_eq!(peers, vec![(eligible_peer, 7)]);
+    }
+
+    // SYSCOIN: A stale authorization event for a vanished target must not revoke a live session
+    // that already owns the signer.
+    #[test]
+    fn absent_authorization_target_does_not_displace_signer_owner() {
+        let mut store = PeerSessionStore::default();
+        let owner = peer_id();
+        let missing = b512!(
+            "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004"
+        );
+        let signer = signer(0x44);
+        store.insert(Instant::now(), owner, socket_addr(30310));
+        assert!(
+            store
+                .verifier_authorized(owner, 9, signer)
+                .unwrap()
+                .is_empty()
+        );
+
+        assert_eq!(store.verifier_authorized(missing, 10, signer), None);
+        assert!(matches!(
+            store
+                .get(owner)
+                .unwrap()
+                .verifier
+                .as_ref()
+                .unwrap()
+                .auth_state,
+            VerifierAuthState::Authorized {
+                signer: observed,
+                lane_id: 9,
+            } if observed == signer
+        ));
     }
 }

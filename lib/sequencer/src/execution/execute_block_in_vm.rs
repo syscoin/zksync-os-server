@@ -75,8 +75,10 @@ pub async fn execute_block_in_vm<V: ViewState>(
         && tx_limit < 2
     {
         command.seal_policy = SealPolicy::Decide(duration, 2);
+        // SYSCOIN: the fresh V32 lane retains the upgrade-plus-SL-initialization ordering without
+        // presenting it as a current V31 protocol lane.
         tracing::warn!(
-            "Upgrade v31 requires two txs (Upgrade and SetSLChainId) to be included in the first v31 block. \
+            "Canonical zkOS upgrade requires two txs (Upgrade and SetSLChainId) in the first upgraded block. \
                 `max_transactions_in_block` is ignored"
         );
     }
@@ -465,7 +467,6 @@ pub async fn execute_block_in_vm<V: ViewState>(
             command.protocol_version,
             block_hash_output,
             command.force_preimages,
-            command.canonical_upgrade_tx_hash,
             command.starting_cursors,
         ),
         purged_txs,

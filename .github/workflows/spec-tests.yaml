@@ -187,11 +187,20 @@ jobs:
       - name: Setup runner
         uses: ./.github/actions/runner-setup
 
+      # SYSCOIN: Never exercise a stale fixture against the app-bound V8 execution and verifier lane.
+      - name: Require canonical v32.0/V8 fixture
+        run: |
+          marker=./local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          if [[ -f "${marker}" ]]; then
+            echo "error: canonical v32.0/V8 fixture regeneration is required: ${marker}" >&2
+            exit 1
+          fi
+
       - name: Decompress anvil state
-        run: gzip -dfk ./local-chains/v31.0/l1-state.json.gz
+        run: gzip -dfk ./local-chains/v32.0/l1-state.json.gz
 
       - name: Run anvil L1
-        run: anvil --load-state ./local-chains/v31.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 &
+        run: anvil --load-state ./local-chains/v32.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 &
 
       - name: Build server
         env:

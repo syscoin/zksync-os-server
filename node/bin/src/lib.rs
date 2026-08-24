@@ -7,8 +7,10 @@ mod batch_work;
 pub mod batcher;
 mod command_source;
 pub mod config;
+// SYSCOIN: Bind every persistent database root to the exact V32 deployment before opening it.
+mod database_identity;
 pub mod default_protocol_version;
-// SYSCOIN
+// SYSCOIN: External nodes may load secrets and topology overrides from the main node.
 mod en_remote_config;
 mod init_tx_forwarder;
 mod l1_revert;
@@ -18,8 +20,6 @@ pub mod pig_telemetry;
 mod ports;
 mod priority_tree_pipeline_step;
 pub mod prover_api;
-mod prover_block;
-mod prover_input_generator;
 mod provider;
 pub mod tree_manager;
 pub mod util;
@@ -37,6 +37,8 @@ use crate::config::{
     Config, ProverApiConfig, RebuildConfig, base_token_price_updater_config, gas_adjuster_config,
     report_static_config_metrics,
 };
+use crate::database_identity::{DatabaseIdentity, ensure_database_identity};
+use crate::default_protocol_version::PROTOCOL_VERSION;
 use crate::en_remote_config::load_remote_config;
 use crate::init_tx_forwarder::{build_consensus_tx_forwarder, build_static_tx_forwarder};
 use crate::l1_revert::revert_l1_on_startup;
@@ -50,27 +52,28 @@ use crate::prover_api::gapless_l1_proof_sender::GaplessL1ProofSender;
 use crate::prover_api::proof_storage::ProofStorage;
 use crate::prover_api::prover_server;
 use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
-use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
-use crate::prover_input_generator::ProverInputGenerator;
-use crate::provider::{ProviderKind, build_node_provider};
+use crate::prover_api::snark_proof_journal::SnarkProofJournal;
+use crate::prover_api::snark_proving_pipeline_step::{SnarkProvingPipelineStep, SnarkStartupPhase};
+use crate::provider::{ProviderKind, ProviderResponseByteBudget, build_node_provider};
 use crate::tree_manager::TreeManager;
-use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{Address, BlockHash, BlockNumber};
+use alloy::eips::BlockNumberOrTag;
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber, keccak256};
 use alloy::providers::Provider;
 use anyhow::Context;
 use priority_tree_pipeline_step::PriorityTreePipelineStep;
 use reth_tasks::Runtime;
 use secrecy::ExposeSecret;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpListener;
 use tokio::sync::watch;
 use zksync_os_backpressure::{BackpressureMonitor, PipelineSnapshot, PipelineTracker};
 use zksync_os_base_token_adjuster::{BaseTokenPriceHandle, BaseTokenPriceUpdater};
 use zksync_os_batch_verification::{
     BatchVerificationConfig as BatchVerificationPolicyConfig, BatchVerificationPipelineStep,
     BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
+    effective_verification_policy_for_settlement,
 };
 use zksync_os_contract_interface::ZkChain;
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
@@ -94,7 +97,8 @@ use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_metadata::NODE_VERSION;
 use zksync_os_network::RecordOverride;
-use zksync_os_network::VerifyBatch;
+// SYSCOIN: Batch-verifier dispatches retain their collector-created absolute deadline.
+use zksync_os_network::VerifyBatchDispatch;
 use zksync_os_network::protocol::{
     ExternalNodeProtocolConfig, ExternalNodeVerifierConfig, MainNodeProtocolConfig,
     ZksProtocolConfig,
@@ -123,15 +127,18 @@ use zksync_os_storage::in_memory::Finality;
 use zksync_os_storage::lazy::RepositoryManager;
 use zksync_os_storage_api::{
     FinalityStatus, ReadFinality, ReadReplay, ReadRepository, ReadStateHistory, ReplayRecord,
-    WriteReplay, WriteRepository, WriteState,
+    ViewState, WriteReplay, WriteRepository, WriteState,
 };
 use zksync_os_types::{
-    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, PubdataMode,
-    TransactionAcceptanceState,
+    BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProvingVersion, PubdataMode,
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+    SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH, SYSCOIN_EDGE_DA_RELAY_FACTORY,
+    SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_ADDRESS,
+    SYSCOIN_GAS_TANK_RUNTIME_HASH, SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
 };
 
-use ports::BoundListeners;
 pub use ports::ServerPorts;
+use ports::{BoundListeners, ReservedTcpSocket};
 
 const BLOCK_REPLAY_WAL_DB_NAME: &str = "block_replay_wal";
 const RAFT_DB_NAME: &str = "raft";
@@ -139,7 +146,8 @@ const STATE_TREE_DB_NAME: &str = "tree";
 const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
-// SYSCOIN
+// SYSCOIN: Bound the durable FullDiffs execution-to-batching handoff independently of repository
+// retention; FullDiffs owns the historical state needed by queued batch work.
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
@@ -336,11 +344,21 @@ fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificati
     })
 }
 
-pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
+pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
+    // SYSCOIN: Refuse to expose real proving while the canonical V8 verifier artifacts remain
+    // regeneration sentinels, including for library callers that bypass the CLI entry point.
+    enforce_v8_regeneration_prover_policy(
+        ProvingVersion::V8.requires_vk_regeneration(),
+        config.general_config.node_role,
+        config.batcher_config.enabled,
+        &mut config.prover_api_config,
+    );
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
-        prover_api: prebound_prover_api_listener,
+        // SYSCOIN: The prover address is reserved now but remains non-listening until durable
+        // SNARK recovery publishes a live readiness signal.
+        prover_api: reserved_prover_api_socket,
     } = BoundListeners::bind_from_config(&config)
         .await
         .expect("failed to prebind node ports");
@@ -403,6 +421,10 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
                 .expect("Cannot load remote config from Main Node")
         };
 
+    // SYSCOIN: Create one process-wide weighted response-byte budget before any L1, archive-L1,
+    // or Gateway transport. Provider and transport clones retain this same shared budget.
+    let provider_response_byte_budget = ProviderResponseByteBudget::new();
+
     // This is the only place where we initialize L1 provider, every component shares the same
     // cloned provider.
     let l1_provider = build_node_provider(
@@ -411,9 +433,11 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         config.l1_watcher_config.finalized_poll_interval,
         config.l1_watcher_config.logs_cache_capacity,
         ProviderKind::L1,
+        &provider_response_byte_budget,
     )
     .await;
-    // SYSCOIN: Optional archive-capable L1 provider for startup historical batch reads only.
+    // SYSCOIN: Optional archive-capable L1 provider for startup history and hash-pinned historical
+    // settlement-proof authentication. Live traffic continues to use the normal L1 provider.
     let l1_archive_provider = if let Some(archive_config) = &config.l1_archive_provider_config {
         Some(
             build_node_provider(
@@ -422,6 +446,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
                 config.l1_watcher_config.finalized_poll_interval,
                 config.l1_watcher_config.logs_cache_capacity,
                 ProviderKind::L1Archive,
+                &provider_response_byte_budget,
             )
             .await,
         )
@@ -436,6 +461,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
                 config.l1_watcher_config.finalized_poll_interval,
                 config.l1_watcher_config.logs_cache_capacity,
                 ProviderKind::Gateway,
+                &provider_response_byte_budget,
             )
             .await,
         )
@@ -451,18 +477,46 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     } else {
         0
     };
-    // Genesis and the repository manager are initialized here (before the startup revert) so
-    // that the `from_block_hash` guard can read the current local block hash.
-    let diamond_proxy_l1 =
-        L1State::resolve_diamond_proxy_l1(l1_provider.clone(), bridgehub_address, chain_id)
-            .await
-            .expect("failed to resolve L1 diamond proxy");
+    // SYSCOIN: Complete and revalidate the full provider/topology snapshot before a fresh
+    // database identity becomes durable. Batch counters may be invalidated by the optional
+    // startup revert below, but chain/genesis/proxy identity is now authenticated as one unit.
+    tracing::info!("Reading initial L1 state");
+    let use_finalized = node_role.is_main() && config.batcher_config.enabled;
+    let initial_l1_state = L1State::fetch_with_finality(
+        use_finalized,
+        l1_provider.clone(),
+        gateway_provider.clone(),
+        bridgehub_address,
+        chain_id,
+        config.general_config.startup_sl_finalization_timeout,
+    )
+    .await
+    .expect("failed to determine initial L1 state");
+
+    // Genesis and the repository manager are initialized before the startup revert so that the
+    // `from_block_hash` guard can read the current local block hash.
+    let diamond_proxy_l1 = initial_l1_state.diamond_proxy_l1.clone();
 
     let genesis = Genesis::new(
         genesis_input_source.clone(),
         diamond_proxy_l1.clone(),
         chain_id,
     );
+
+    // SYSCOIN: Bind every child database to the exact fresh V32 deployment before any RocksDB is
+    // opened. This makes reuse of the retired V31 testnet directory fail closed even when its L2
+    // chain ID was retained for the replacement deployment.
+    let l2_genesis_block_hash = genesis.state().await.header.hash();
+    let database_identity = DatabaseIdentity::new(
+        PROTOCOL_VERSION,
+        initial_l1_state.l1_chain_id,
+        initial_l1_state.l1_genesis_block_hash,
+        chain_id,
+        *diamond_proxy_l1.address(),
+        l2_genesis_block_hash,
+    );
+    ensure_database_identity(&config.general_config.rocks_db_path, &database_identity)
+        .expect("database root does not match the active V32 deployment");
 
     tracing::info!("Initializing RepositoryManager");
     let repositories = RepositoryManager::new(
@@ -508,9 +562,8 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     // What the local block-rebuild stage (stage 2) should replay, if anything.
     let rebuild_options = rebuild_config.as_ref().and_then(|r| r.rebuild_options());
 
-    // Fetch the L1 state, performing the configured startup L1 revert first.
-    tracing::info!("Reading L1 state");
-    let l1_state = fetch_l1_state_with_startup_revert(
+    // Apply the configured startup L1 revert and refresh only the counters it can invalidate.
+    let l1_state = apply_startup_l1_revert_and_refetch(
         &config,
         node_role,
         rebuild_config.as_ref(),
@@ -518,9 +571,38 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         gateway_provider.as_ref(),
         bridgehub_address,
         chain_id,
+        initial_l1_state,
     )
     .await
     .expect("failed to determine L1 state");
+
+    // SYSCOIN: A startup revert must not change deployment identity. Re-check the already
+    // published marker against the post-revert snapshot before any downstream component sees it.
+    let post_revert_database_identity = DatabaseIdentity::new(
+        PROTOCOL_VERSION,
+        l1_state.l1_chain_id,
+        l1_state.l1_genesis_block_hash,
+        chain_id,
+        *l1_state.diamond_proxy_l1.address(),
+        l2_genesis_block_hash,
+    );
+    ensure_database_identity(
+        &config.general_config.rocks_db_path,
+        &post_revert_database_identity,
+    )
+    .expect("post-revert L1 state does not match the active V32 database identity");
+
+    // SYSCOIN: Bind the configured prover mode to the verifier selected by the active settlement
+    // layer. This check runs after any startup revert and before a proving pipeline can be spawned.
+    enforce_deployed_verifier_prover_policy(
+        ProvingVersion::V8.requires_vk_regeneration(),
+        node_role,
+        config.batcher_config.enabled,
+        &config.prover_api_config,
+        &l1_state,
+    )
+    .await
+    .expect("invalid deployed verifier / prover configuration");
 
     let settles_on_gateway = l1_state.settles_on_gateway();
     let sl_provider = if l1_state.l1_chain_id == l1_state.sl_chain_id {
@@ -533,8 +615,8 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     // or after migration while the chain still settles directly on L1.
     //
     // SYSCOIN: Startup cursor resolution can require historical L1 state. Keep
-    // live watchers on the configured live providers, but use the archive L1
-    // provider for startup-only L1 binary searches when available.
+    // live watchers on the configured live providers, but use this archive-backed
+    // lookup handle for the startup L1 binary searches when available.
     let archive_lookup_diamond_proxy_l1 = l1_archive_provider
         .as_ref()
         .map(|provider| ZkChain::new(*l1_state.diamond_proxy_l1.address(), provider.clone()));
@@ -545,11 +627,28 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     };
     tracing::info!(?l1_state, settles_on_gateway, "L1 state");
     l1_state.report_metrics();
+    validate_canonical_da_input_mode(l1_state.da_input_mode)
+        .expect("settlement layer uses a non-canonical DA input mode");
+    if config.l1_sender_config.pubdata_mode.is_some() {
+        canonical_pubdata_mode(
+            settles_on_gateway,
+            l1_state.da_input_mode,
+            config.l1_sender_config.pubdata_mode,
+        )
+        .expect("configured pubdata mode does not match the canonical settlement topology");
+    }
+    if config.batch_verification_config.client_enabled {
+        assert!(
+            bitcoin_da_rpc_config_complete(&config),
+            "`batch_verification.client_enabled=true` requires complete Bitcoin DA RPC credentials"
+        );
+    }
     if node_role.is_main() {
-        // SYSCOIN
+        // SYSCOIN: Enforce the effective on-chain batch-verification signer policy at startup.
         validate_batch_verification_startup_policy(
             &config.batch_verification_config,
             &l1_state.batch_verification,
+            block_production_enabled(&config),
         );
         check_batch_verification_mismatch(
             &config.batch_verification_config,
@@ -560,9 +659,8 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         }
     }
 
-    // Effective pubdata mode used by all block-producing components: read from config only when
-    // the chain settles on L1. When settling on Gateway, it is derived from the gateway's DA
-    // input mode: Rollup gateway -> RelayedL2Calldata, Validium gateway -> Validium.
+    // Effective pubdata mode used by all block-producing components: direct settlement uses
+    // compact Blobs, while Gateway settlement uses compact RelayedL2Calldata.
     let effective_pubdata_mode: Option<PubdataMode> =
         if node_role.is_main() && config.batcher_config.enabled {
             Some(effective_main_node_pubdata_mode(
@@ -574,22 +672,6 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             // External and replay-only main nodes do not produce blocks; pubdata mode is irrelevant.
             None
         };
-    if let (Some(pubdata_mode), true) = (effective_pubdata_mode, node_role.is_main()) {
-        match (pubdata_mode, l1_state.da_input_mode) {
-            (
-                PubdataMode::Calldata | PubdataMode::Blobs | PubdataMode::RelayedL2Calldata,
-                BatchDaInputMode::Validium,
-            )
-            | (PubdataMode::Validium, BatchDaInputMode::Rollup) => {
-                panic!(
-                    "Pubdata mode doesn't correspond to pricing mode from the l1. \
-                    L1 mode: {:?}, effective pubdata mode: {:?}",
-                    l1_state.da_input_mode, pubdata_mode
-                );
-            }
-            _ => {}
-        }
-    }
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
     tracing::info!("Initializing Tree RocksDB");
@@ -624,6 +706,15 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     )
     .await
     .expect("failed to init CommittedBatchProvider");
+    // SYSCOIN: CommittedBatchProvider has now reconstructed genesis from the local tree and
+    // verified its hash against the live L1 contract. Persist that exact canonical record before
+    // RpcStorage can expose `zks_batchNumber` / batch lookup methods on any startup generation.
+    let canonical_genesis = committed_batch_provider
+        .get(0)
+        .expect("committed batch provider did not retain canonical genesis");
+    persistent_batch_storage
+        .ensure_genesis(canonical_genesis)
+        .expect("failed to initialize canonical genesis in executed batch storage");
 
     let state = FullDiffsState::new(config.general_config.rocks_db_path.clone(), &genesis)
         .await
@@ -675,6 +766,14 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     };
 
     node_startup_state.assert_consistency();
+
+    // SYSCOIN: Authenticate the consensus-pinned fee tank from the latest executed local state
+    // before networking, transaction acceptance, or block production can start. First boot may
+    // legitimately precede deployment; production restarts opt into mandatory presence.
+    let syscoin_gas_tank_required = syscoin_require_gas_tank_from_env()
+        .expect("invalid SYSCOIN_REQUIRE_GAS_TANK startup policy");
+    validate_syscoin_gas_tank_local_state(&state, syscoin_gas_tank_required)
+        .expect("failed to authenticate the canonical zkSYS gas-tank deployment");
 
     if let Some(from_block_number) = rebuild_options.as_ref().map(|o| o.from_block_number)
         && node_role.is_main()
@@ -736,8 +835,10 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         "Node state on startup"
     );
 
-    // MN sends `VerifyBatch` requests to the network and receives `PeerVerifyBatchResult`s back.
-    let (verify_request_tx, verify_request_rx) = tokio::sync::mpsc::channel::<VerifyBatch>(16);
+    // SYSCOIN: MN sends deadline-bound `VerifyBatch` requests to the network and receives
+    // exact-lane `PeerVerifyBatchResult`s back.
+    let (verify_request_tx, verify_request_rx) =
+        tokio::sync::mpsc::channel::<VerifyBatchDispatch>(16);
     let (verify_result_tx, verify_result_rx) =
         tokio::sync::mpsc::channel::<PeerVerifyBatchResult>(128);
     // `replay_*` carries replay records from the network service into the EN pipeline.
@@ -884,11 +985,23 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     };
     let (commit_submitted_tx, commit_submitted_rx) = watch::channel(commit_submitted_init);
 
+    let mut active_sl_watcher_config: zksync_os_l1_watcher::L1WatcherConfig =
+        config.l1_watcher_config.clone().into();
+    if settles_on_gateway && config.l1_watcher_config.optimistic_gateway_head {
+        // SYSCOIN: This explicit trust mode treats Gateway execution as the optimistic interop
+        // boundary. Tailing the Gateway head makes committed/executed batches available in the
+        // same Gateway block; direct-L1 and finalized watchers remain conservative.
+        tracing::warn!(
+            "SYSCOIN: optimistic Gateway-head trust is enabled; imported interop roots are irreversible, so the Gateway RPC head must be quorum-canonized"
+        );
+        active_sl_watcher_config.confirmations = 0;
+    }
+
     tracing::info!("Initializing L1 Watchers");
     runtime.spawn_critical_task(
         "l1 commit watcher",
         L1CommitWatcher::create_watcher(
-            config.l1_watcher_config.clone().into(),
+            active_sl_watcher_config.clone(),
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
@@ -910,7 +1023,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     runtime.spawn_critical_task(
         "l1 execute watcher",
         L1ExecuteWatcher::create_watcher(
-            config.l1_watcher_config.clone().into(),
+            active_sl_watcher_config,
             node_startup_state.l1_state.diamond_proxy_sl.clone(),
             archive_lookup_diamond_proxy_sl.clone(),
             committed_batch_provider.clone(),
@@ -991,42 +1104,16 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     } else {
         &genesis.genesis_upgrade_tx().await.protocol_version
     };
-    let syscoin_edge_da_commit_target = resolve_syscoin_edge_da_commit_target(
-        &l1_state,
-        settles_on_gateway,
-        syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode),
-    );
+    let syscoin_edge_da_required =
+        syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode);
+    let syscoin_edge_da_commit_target =
+        resolve_syscoin_edge_da_commit_target(&l1_state, syscoin_edge_da_required);
+    validate_syscoin_edge_da_relay_identity(&l1_state, &state, chain_id, syscoin_edge_da_required)
+        .await
+        .expect("failed to authenticate the canonical compact Edge-DA relay deployment");
 
-    if config
-        .sequencer_config
-        .tx_validator
-        .deployment_filter
-        .enabled
-    {
-        let exec_version = ExecutionVersion::try_from(current_protocol_version)
-            .expect("Cannot determine execution version");
-        assert!(
-            exec_version >= ExecutionVersion::V6,
-            "Deployment filter requires execution version V6 or later (protocol >= v31.0), \
-             but current protocol version {current_protocol_version} uses {exec_version:?}"
-        );
-    }
-
-    if config
-        .sequencer_config
-        .tx_validator
-        .policy_service
-        .url
-        .is_some()
-    {
-        let exec_version = ExecutionVersion::try_from(current_protocol_version)
-            .expect("Cannot determine execution version");
-        assert!(
-            exec_version >= ExecutionVersion::V6,
-            "Policy service requires execution version V6 or later (protocol >= v31.0), \
-             but current protocol version {current_protocol_version} uses {exec_version:?}"
-        );
-    }
+    ExecutionVersion::try_from(current_protocol_version)
+        .expect("Cannot determine execution version");
 
     // Transaction acceptance state - tracks whether we're accepting new transactions
     // Main nodes: accepts, but may switch to reject when `sequencer_max_blocks_to_produce` blocks are produced
@@ -1063,9 +1150,6 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     tracing::info!("Initializing pubdata price provider");
     // Channels for GasAdjuster->BlockContextProvider communication.
     let (pubdata_price_sender, pubdata_price_receiver) = watch::channel(None);
-    let (blob_fill_ratio_sender, blob_fill_ratio_receiver) = watch::channel(None);
-    // Channel for Batcher->GasAdjuster communication. Batcher send sidecar to gas adjuster to estimate blob fill ratio.
-    let (sidecar_sender, sidecar_receiver) = tokio::sync::mpsc::channel(10);
     if node_role.is_main() && config.batcher_config.enabled {
         let pubdata_mode = effective_pubdata_mode
             .expect("effective pubdata mode must be set when the Main Node batcher is enabled");
@@ -1077,7 +1161,6 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         let gas_adjuster_config = gas_adjuster_config(
             config.gas_adjuster_config.clone(),
             pubdata_mode,
-            current_protocol_version.minor >= 31,
             max_priority_fee_per_gas,
             &config.batcher_config,
         );
@@ -1085,8 +1168,6 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             sl_provider.clone().erased(),
             gas_adjuster_config,
             pubdata_price_sender,
-            blob_fill_ratio_sender,
-            sidecar_receiver,
         )
         .await
         .unwrap();
@@ -1124,9 +1205,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     let fee_provider = FeeProvider::new(
         config.fee_config.clone().into(),
         pubdata_price_receiver,
-        blob_fill_ratio_receiver,
         base_token_price_handle.clone(),
-        effective_pubdata_mode,
     );
 
     let rpc_storage = RpcStorage::new(
@@ -1166,6 +1245,9 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             // SYSCOIN: use the archive-capable L1 lookup chain for startup cursor resolution.
             archive_lookup_diamond_proxy_l1: archive_lookup_diamond_proxy_l1.clone(),
             l1_watcher_config: config.l1_watcher_config.clone().into(),
+            // SYSCOIN: Opting into Gateway-head interop is distinct from the general L1
+            // confirmation depth; Pool applies it only when the discovered SL is Gateway.
+            optimistic_gateway_head: config.l1_watcher_config.optimistic_gateway_head,
             interop_fee_updater_config: config.interop_fee_updater_config.clone().into(),
         },
         local_eth_call,
@@ -1187,6 +1269,9 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             block_time: config.sequencer_config.block_time,
             block_timestamp_offset_seconds: config.sequencer_config.block_timestamp_offset_seconds,
             service_block_delay: config.sequencer_config.service_block_delay,
+            // SYSCOIN: Give real traffic a configurable grace period before the safe
+            // Gateway-only empty interop companion fallback.
+            interop_companion_idle_delay: config.sequencer_config.interop_companion_idle_delay,
             max_transactions_in_block: config.sequencer_config.max_transactions_in_block,
             // We set the value to the same as for the batch, since it should be enforced by batcher, but don't want to exceed it for the block
             interop_roots_per_block: config.batcher_config.interop_roots_per_batch_limit,
@@ -1207,7 +1292,8 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             .settlement_layer_intervals
             .clone();
         let persistent_batch_storage = persistent_batch_storage.clone();
-        // SYSCOIN: archive provider for startup-only historical cursor lookups.
+        // SYSCOIN: This watcher clone is used for its historical startup cursor lookups; the same
+        // configured archive provider also serves settlement-proof RPC reads below.
         let archive_l1_provider = l1_archive_provider.clone();
         async move {
             L1PersistBatchWatcher::create_watcher(
@@ -1247,7 +1333,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             .await
             .expect("replay archive component stopped before accepting genesis replay record");
     }
-    // SYSCOIN: A preloaded v31 WAL does not necessarily replay its historical records through the
+    // SYSCOIN: A preloaded WAL does not necessarily replay its historical records through the
     // writer on startup, so seed every canonical record into this writer-owned archive session.
     archiving_block_replay_storage
         .backfill_initial_replay_records()
@@ -1258,6 +1344,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         backpressure_acceptance_rx,
         pipeline_snapshot_rx,
         prover_api_port,
+        startup_readiness: mut prover_startup_readiness,
     } = if node_role.is_main() {
         run_main_node_pipeline(
             &config,
@@ -1274,7 +1361,6 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             finality_storage.clone(),
             chain_id,
             tx_acceptance_state_sender,
-            sidecar_sender,
             committed_batch_provider.clone(),
             canonization_engine,
             leadership,
@@ -1286,7 +1372,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
             syscoin_edge_da_commit_target,
             effective_pubdata_mode,
             replay_archiver,
-            prebound_prover_api_listener,
+            reserved_prover_api_socket,
         )
         .await
     } else {
@@ -1358,6 +1444,7 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
 
     let repositories_for_wait = repositories.clone();
     let l2_subpool_for_wait = l2_subpool.clone();
+    let (db_ready_sender, mut db_ready_receiver) = watch::channel(false);
     let wait_for_db = async move {
         // Wait for repositories to be ready to be used in RPC.
         repositories_for_wait
@@ -1366,9 +1453,56 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         // Enable gas rate limiter when the node is ready to process blocks, so that the limiter is not active
         // during the startup phase.
         l2_subpool_for_wait.arm_gas_rate_limiter();
-        // `rpc::spawn` awaits this future before serving.
-        let _ = rpc_ready.set(());
+        // SYSCOIN: RPC may serve after its database is ready, but public node readiness remains
+        // gated on the separate durable-prover recovery signal below.
+        db_ready_sender.send_replace(true);
     };
+    let node_ready = rpc_ready.clone();
+    runtime.spawn_critical_with_graceful_shutdown_signal(
+        "node startup readiness gate",
+        |shutdown| async move {
+            let mut shutdown = Box::pin(shutdown);
+            tokio::select! {
+                biased;
+                shutdown_guard = &mut shutdown => {
+                    drop(shutdown_guard);
+                    return;
+                }
+                result = wait_for_node_startup(
+                    &mut db_ready_receiver,
+                    &mut prover_startup_readiness,
+                ) => {
+                    // SYSCOIN: A live proving pipeline disappearing before readiness is a critical
+                    // node failure, never a reason to leave the process running indefinitely at 503.
+                    result.expect("startup readiness source closed before initialization completed");
+                }
+            }
+
+            // SYSCOIN: Close the final scheduler gap between the async conjunction and the
+            // irreversible status latch. A retained Ready value from a dead sender is rejected.
+            if let PipelineStartupReadiness::Snark(receiver) = &mut prover_startup_readiness {
+                ensure_liveness_bound_startup_signal(receiver, SnarkStartupPhase::Ready)
+                    .expect("SNARK readiness source exited before node-ready publication");
+            }
+            let _ = node_ready.set(());
+
+            // SYSCOIN: Unlike EN / disabled-batcher startup, production proving readiness is a
+            // lifetime lease. If its owning SNARK stage exits, the critical task panics and the
+            // status server is torn down rather than retaining a stale irreversible ready latch.
+            if let PipelineStartupReadiness::Snark(receiver) = &mut prover_startup_readiness {
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut shutdown => drop(shutdown_guard),
+                    result = monitor_liveness_bound_startup_signal(
+                        receiver,
+                        SnarkStartupPhase::Ready,
+                    ) => {
+                        result.expect("SNARK readiness source exited after node became ready");
+                    }
+                }
+            }
+        },
+    );
     let mut rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     rpc_config.block_timestamp_offset_seconds =
         config.sequencer_config.block_timestamp_offset_seconds;
@@ -1385,6 +1519,9 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         rpc_config,
         rpc_listener,
         chain_id,
+        // SYSCOIN: Settlement proofs must retain the canonical L1 identity discovered at startup;
+        // a fresh provider `eth_chainId` response is validation, never topology selection.
+        l1_state.l1_chain_id,
         bridgehub_address,
         bytecode_supplier_address,
         rpc_storage,
@@ -1394,10 +1531,19 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         last_constructed_block_ctx_receiver,
         tx_forwarder,
         l1_provider.clone().erased(),
+        // SYSCOIN: Recursive Gateway withdrawal proofs require historical L1 contract state long
+        // after the execution block may have been pruned from the live provider.
+        l1_archive_provider.map(|provider| provider.erased()),
         gateway_provider.map(|p| p.erased()),
         // SYSCOIN: RPC proof routing must use the requested batch's settlement interval rather
         // than treating a retained historical Gateway provider as the active settlement layer.
         l1_state.settlement_layer_intervals.clone(),
+        // SYSCOIN: The live Gateway MessageRoot proof path shares the explicit irreversible-head
+        // trust gate with Gateway commit, execute, and interop-root watchers.
+        settles_on_gateway && config.l1_watcher_config.optimistic_gateway_head,
+        // SYSCOIN: Supply the live batch index used only when the Gateway-head trust gate above
+        // permits a MessageRoot proof after Gateway execution.
+        committed_batch_provider.clone(),
         rpc_policy_client,
         runtime,
         wait_for_db,
@@ -1414,6 +1560,173 @@ pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
         prover_api: prover_api_port,
         network,
     }
+}
+
+/// SYSCOIN: While the canonical V8 verification key is a regeneration sentinel, a batcher may be
+/// intentionally idle or use both in-process fake pools; it may never expose real prover jobs.
+/// Batcher-disabled nodes have no proving pipeline at all. Enforce this before binding listeners
+/// so library callers cannot expose pick / submit endpoints backed by the sentinel key.
+fn enforce_v8_regeneration_prover_policy(
+    regeneration_required: bool,
+    node_role: NodeRole,
+    batcher_enabled: bool,
+    prover_api_config: &mut ProverApiConfig,
+) {
+    if !regeneration_required || !node_role.is_main() {
+        return;
+    }
+
+    // A disabled batcher returns before constructing either proving pipeline, so there are no
+    // jobs for fake pools to drain. Still turn off an accidentally enabled listener before ports
+    // are bound, but do not require fake pools that this node will never start.
+    if !batcher_enabled {
+        if std::mem::replace(&mut prover_api_config.enabled, false) {
+            tracing::warn!(
+                "canonical V8 verification key regeneration is incomplete; disabling the unused external prover API on this batcher-disabled main node"
+            );
+        }
+        return;
+    }
+
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    if !uses_fake_proving && !prover_api_config.enabled {
+        // An intentionally idle proving pipeline cannot submit an incompatible proof.
+        return;
+    }
+
+    assert!(
+        !(uses_fake_proving && prover_api_config.enabled),
+        "canonical V8 VK regeneration is incomplete; external real proving and in-process fake prover pools cannot be enabled together"
+    );
+    assert!(
+        !prover_api_config.enabled,
+        "canonical Syscoin V8 verification key regeneration is incomplete; external real proving is disabled until the app-bound security-100 VK and Era verifier artifacts are installed"
+    );
+    assert!(
+        prover_api_config.fake_fri_provers.enabled && prover_api_config.fake_snark_provers.enabled,
+        "canonical V8 VK regeneration is incomplete; both fake FRI and fake SNARK pools must be enabled"
+    );
+}
+
+/// SYSCOIN: Validates the configured proof producers against the deployment mode and VK exposed
+/// by the verifier selected by the active settlement-layer diamond.
+const MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY: u64 = 8 * 1024 * 1024 * 1024;
+
+fn validate_deployed_verifier_prover_policy(
+    regeneration_required: bool,
+    prover_api_config: &ProverApiConfig,
+    deployed_is_testnet_verifier: bool,
+    deployed_vk_hash: B256,
+    compiled_vk_hash: B256,
+) -> anyhow::Result<()> {
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    let uses_real_proving = prover_api_config.enabled;
+
+    // A batcher may intentionally start without any proof producer. It will not make proving
+    // progress, but it also cannot submit a proof that conflicts with the deployed verifier.
+    if !uses_fake_proving && !uses_real_proving {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        !(uses_fake_proving && uses_real_proving),
+        "external real proving and in-process fake prover pools cannot be enabled together"
+    );
+
+    if uses_fake_proving {
+        anyhow::ensure!(
+            deployed_is_testnet_verifier,
+            "in-process fake prover pools require a deployed verifier with IS_TESTNET_VERIFIER=true"
+        );
+        // SYSCOIN: Fake proving is an in-process two-stage pipeline. A lone FRI pool cannot
+        // produce the SNARK submitted to settlement, and a lone SNARK pool has no FRI input;
+        // fail at startup instead of silently wedging batches in either configuration.
+        anyhow::ensure!(
+            prover_api_config.fake_fri_provers.enabled
+                && prover_api_config.fake_snark_provers.enabled,
+            "in-process fake proving requires both fake FRI and fake SNARK pools to be enabled"
+        );
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        !deployed_is_testnet_verifier,
+        "external real proving requires a production verifier with IS_TESTNET_VERIFIER=false"
+    );
+    anyhow::ensure!(
+        !regeneration_required,
+        "external real proving is disabled until canonical V8 VK regeneration is complete"
+    );
+    anyhow::ensure!(
+        compiled_vk_hash != B256::ZERO,
+        "external real proving requires a nonzero compiled canonical V8 VK hash"
+    );
+    anyhow::ensure!(
+        deployed_vk_hash == compiled_vk_hash,
+        "deployed verifier VK hash {deployed_vk_hash} does not match compiled canonical V8 VK hash {compiled_vk_hash}"
+    );
+    // SYSCOIN: The 256-batch real-prover window must remain reconstructible after restart.
+    // Accepted HTTP proof bodies may expand to roughly twice their decoded size in canonical
+    // JSON storage, so the upstream 1 GiB development cap cannot safely retain both 100-FRI
+    // aggregation windows plus headroom.
+    anyhow::ensure!(
+        prover_api_config.proof_storage.batch_with_proof_capacity.0
+            >= MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY,
+        "external real proving requires prover_api.proof_storage.batch_with_proof_capacity of at least 8 GiB"
+    );
+    Ok(())
+}
+
+/// SYSCOIN: Fetches and validates the verifier mode only for a main node whose batcher can create
+/// proving work. Missing selectors, malformed return data, reverts, and RPC failures all abort
+/// startup; a failed marker call must never be interpreted as a production verifier.
+async fn enforce_deployed_verifier_prover_policy(
+    regeneration_required: bool,
+    node_role: NodeRole,
+    batcher_enabled: bool,
+    prover_api_config: &ProverApiConfig,
+    l1_state: &L1State,
+) -> anyhow::Result<()> {
+    if !node_role.is_main() || !batcher_enabled {
+        return Ok(());
+    }
+
+    let uses_fake_proving =
+        prover_api_config.fake_fri_provers.enabled || prover_api_config.fake_snark_provers.enabled;
+    let uses_real_proving = prover_api_config.enabled;
+    if !uses_fake_proving && !uses_real_proving {
+        return Ok(());
+    }
+
+    let sl_block_id = l1_state.sl_block_number.into();
+    let verifier = l1_state
+        .diamond_proxy_sl
+        .get_verifier(sl_block_id)
+        .await
+        .context("failed to read active settlement-layer verifier")?;
+    anyhow::ensure!(
+        verifier != Address::ZERO,
+        "active settlement-layer diamond returned a zero verifier address"
+    );
+    let (deployed_is_testnet_verifier, deployed_vk_hash) = l1_state
+        .diamond_proxy_sl
+        .get_zksync_os_verifier_mode(verifier, sl_block_id)
+        .await
+        .context("failed to read explicit zkOS verifier mode and VK hash")?;
+    let compiled_vk_hash = ProvingVersion::V8
+        .vk_hash()
+        .parse::<B256>()
+        .context("compiled canonical V8 VK hash is malformed")?;
+
+    validate_deployed_verifier_prover_policy(
+        regeneration_required,
+        prover_api_config,
+        deployed_is_testnet_verifier,
+        deployed_vk_hash,
+        compiled_vk_hash,
+    )
 }
 
 /// Checks whether block `rebuild.from_block_number` currently has the expected `rebuild.from_block_hash`.
@@ -1523,9 +1836,9 @@ fn replay_wal_is_linked_from(
     true
 }
 
-/// Fetches the L1 state, performing any configured startup L1 revert first, and returns the
-/// post-revert state.
-async fn fetch_l1_state_with_startup_revert(
+/// Applies any configured startup L1 revert to a fully validated initial snapshot and returns the
+/// post-revert state. A revert changes batch counters, so only that case requires a fresh snapshot.
+async fn apply_startup_l1_revert_and_refetch(
     config: &Config,
     node_role: NodeRole,
     rebuild: Option<&RebuildConfig>,
@@ -1533,24 +1846,8 @@ async fn fetch_l1_state_with_startup_revert(
     gateway_provider: Option<&NodeProvider>,
     bridgehub_address: Address,
     chain_id: u64,
+    l1_state: L1State,
 ) -> anyhow::Result<L1State> {
-    // The batcher node must wait for any pending L1 commit/prove/execute transactions (from a
-    // prior run) to be mined before starting, so it doesn't conflict with itself. Non-batcher
-    // consensus nodes never submit L1 transactions, so they don't need this wait: calling
-    // fetch_finalized on them would spuriously fail when a concurrently running batcher node keeps
-    // submitting new batch transactions.
-    let use_finalized = node_role.is_main() && config.batcher_config.enabled;
-    let l1_state = L1State::fetch_with_finality(
-        use_finalized,
-        l1_provider.clone(),
-        gateway_provider.cloned(),
-        bridgehub_address,
-        chain_id,
-        config.general_config.startup_sl_finalization_timeout,
-    )
-    .await
-    .context("failed to fetch L1 state")?;
-
     if node_role.is_main()
         && let Some(rebuild) = rebuild
     {
@@ -1569,6 +1866,9 @@ async fn fetch_l1_state_with_startup_revert(
         if l1_revert_ran {
             // The revert invalidated the batch-finality numbers; re-fetch so the returned state
             // reflects the post-revert chain.
+            // SYSCOIN: Reuse the initial role-specific finality policy after a revert; downstream
+            // components must receive post-revert counters from a fully revalidated snapshot.
+            let use_finalized = node_role.is_main() && config.batcher_config.enabled;
             return L1State::fetch_with_finality(
                 use_finalized,
                 l1_provider.clone(),
@@ -1593,6 +1893,176 @@ struct PipelineHandles {
     pipeline_snapshot_rx: watch::Receiver<PipelineSnapshot>,
     /// Prover API port, reported by the status server. `None` on external nodes.
     prover_api_port: Option<u16>,
+    /// SYSCOIN: Production proving owns a live readiness lease after every durable SNARK record
+    /// and stored FRI has been validated, replayed, retired, or rehydrated. Pipelines without a
+    /// proving stage explicitly require no such lease.
+    startup_readiness: PipelineStartupReadiness,
+}
+
+/// SYSCOIN: Database startup and no-prover topologies are one-shot, while the monotonic SNARK phase
+/// sender proves both task liveness and whether prover draining or public readiness is permitted.
+enum PipelineStartupReadiness {
+    NotRequired,
+    Snark(watch::Receiver<SnarkStartupPhase>),
+}
+
+// SYSCOIN: One-shot sources intentionally retain their final true value after their producer
+// future completes. A closed channel is accepted only when that retained value is already true.
+async fn wait_for_one_shot_startup_signal(
+    receiver: &mut watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    loop {
+        if *receiver.borrow_and_update() {
+            return Ok(());
+        }
+        receiver
+            .changed()
+            .await
+            .context("one-shot startup source closed before publishing readiness")?;
+    }
+}
+
+// SYSCOIN: Read the newest stable phase while proving the sole stage sender is still alive. If a
+// closed channel retains one unseen phase, consume it and then reject closure on the second check.
+fn observe_liveness_bound_startup_phase(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+) -> anyhow::Result<SnarkStartupPhase> {
+    loop {
+        receiver
+            .has_changed()
+            .context("SNARK startup phase source closed while readiness was pending")?;
+        let phase = *receiver.borrow_and_update();
+        match receiver.has_changed() {
+            Ok(true) => continue,
+            Ok(false) => return Ok(phase),
+            Err(error) => {
+                return Err(error)
+                    .context("SNARK startup phase source closed while publishing a phase");
+            }
+        }
+    }
+}
+
+// SYSCOIN: Receiver-side monotonic validation remains required even though the trusted stage also
+// asserts its transitions; it turns wiring mistakes or future extra senders into critical errors.
+fn ensure_startup_phase_did_not_regress(
+    previous: SnarkStartupPhase,
+    current: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        current.satisfies(previous),
+        "SNARK startup phase regressed from {previous:?} to {current:?}"
+    );
+    Ok(())
+}
+
+// SYSCOIN: Production phase authority is valid only while its SNARK-stage sender remains alive.
+// A required floor lets the prover listener open at Drainable without releasing public readiness.
+async fn wait_for_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    let mut previous = observe_liveness_bound_startup_phase(receiver)?;
+    loop {
+        if previous.satisfies(required) {
+            return Ok(());
+        }
+        receiver.changed().await.with_context(|| {
+            format!("SNARK startup phase source closed before publishing {required:?}")
+        })?;
+        let current = observe_liveness_bound_startup_phase(receiver)?;
+        ensure_startup_phase_did_not_regress(previous, current)?;
+        previous = current;
+    }
+}
+
+// SYSCOIN: Once a required phase is published, any regression or sender exit is a critical
+// production failure. This future returns only with an error.
+async fn monitor_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<()> {
+    let mut previous = observe_liveness_bound_startup_phase(receiver)?;
+    anyhow::ensure!(
+        previous.satisfies(required),
+        "SNARK startup phase {previous:?} is below required {required:?}"
+    );
+    loop {
+        receiver.changed().await.with_context(|| {
+            format!("SNARK startup phase source closed after publishing {required:?}")
+        })?;
+        let current = observe_liveness_bound_startup_phase(receiver)?;
+        ensure_startup_phase_did_not_regress(previous, current)?;
+        anyhow::ensure!(
+            current.satisfies(required),
+            "SNARK startup phase {current:?} fell below required {required:?}"
+        );
+        previous = current;
+    }
+}
+
+// SYSCOIN: This synchronous check is used immediately before irreversible listen/readiness
+// publication and rejects a closed sender even when its retained phase satisfies the floor.
+fn ensure_liveness_bound_startup_signal(
+    receiver: &mut watch::Receiver<SnarkStartupPhase>,
+    required: SnarkStartupPhase,
+) -> anyhow::Result<SnarkStartupPhase> {
+    let current = observe_liveness_bound_startup_phase(receiver)?;
+    anyhow::ensure!(
+        current.satisfies(required),
+        "SNARK startup phase {current:?} is below required {required:?}"
+    );
+    Ok(current)
+}
+
+// SYSCOIN: The public node-ready latch requires both database/RPC initialization and, when
+// present, durable prover recovery. Continue polling SNARK liveness after it first becomes true so
+// a slow database cannot create a closed-true publication window.
+async fn wait_for_node_startup(
+    db_ready: &mut watch::Receiver<bool>,
+    prover_readiness: &mut PipelineStartupReadiness,
+) -> anyhow::Result<()> {
+    match prover_readiness {
+        PipelineStartupReadiness::NotRequired => wait_for_one_shot_startup_signal(db_ready).await,
+        PipelineStartupReadiness::Snark(prover_ready) => {
+            let mut database_is_ready = false;
+            let mut previous_prover_phase = SnarkStartupPhase::Recovering;
+            loop {
+                if !database_is_ready {
+                    database_is_ready = *db_ready.borrow_and_update();
+                    if !database_is_ready {
+                        db_ready.has_changed().context(
+                            "database startup source closed before publishing readiness",
+                        )?;
+                    }
+                }
+
+                let current_prover_phase = observe_liveness_bound_startup_phase(prover_ready)?;
+                ensure_startup_phase_did_not_regress(previous_prover_phase, current_prover_phase)?;
+                previous_prover_phase = current_prover_phase;
+
+                if database_is_ready && current_prover_phase.satisfies(SnarkStartupPhase::Ready) {
+                    // SYSCOIN: The helper checks sender liveness before returning; the caller
+                    // repeats this immediately before setting its irreversible ready latch.
+                    ensure_liveness_bound_startup_signal(prover_ready, SnarkStartupPhase::Ready)?;
+                    return Ok(());
+                }
+
+                tokio::select! {
+                    result = db_ready.changed(), if !database_is_ready => {
+                        result.context(
+                            "database startup source closed before publishing readiness"
+                        )?;
+                    }
+                    result = prover_ready.changed() => {
+                        result.context(
+                            "SNARK startup phase source closed while database readiness was pending"
+                        )?;
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1611,19 +2081,20 @@ async fn run_main_node_pipeline(
     finality: impl ReadFinality + Clone,
     chain_id: u64,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
-    sidecar_sender: tokio::sync::mpsc::Sender<BlobTransactionSidecar>,
     committed_batch_provider: CommittedBatchProvider,
     canonization_engine: BlockCanonizationEngine,
     leadership: LeadershipSignal,
     stop_receiver: watch::Receiver<bool>,
     commit_submitted_tx: watch::Sender<u64>,
-    verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatch>,
+    // SYSCOIN: Preserve the collector's absolute request budget through the network channel.
+    verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatchDispatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
     settles_on_gateway: bool,
     syscoin_edge_da_commit_target: Address,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
-    prebound_prover_api_listener: Option<TcpListener>,
+    // SYSCOIN: This socket reserves the prover address but is not a listener until recovery is live.
+    reserved_prover_api_socket: Option<ReservedTcpSocket>,
 ) -> PipelineHandles {
     let priority_tree_db_path = config
         .general_config
@@ -1682,9 +2153,6 @@ async fn run_main_node_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
-                        config
-                            .sequencer_config
-                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -1709,6 +2177,8 @@ async fn run_main_node_pipeline(
             backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
             pipeline_snapshot_rx: snapshot_rx,
             prover_api_port: None,
+            // SYSCOIN: A disabled batcher has no SNARK stage whose lifetime could gate readiness.
+            startup_readiness: PipelineStartupReadiness::NotRequired,
         };
     }
     let pubdata_mode = pubdata_mode
@@ -1721,7 +2191,7 @@ async fn run_main_node_pipeline(
         batch_work_channel_capacity,
         "Configured async batch-work queue capacity"
     );
-    // SYSCOIN
+    // SYSCOIN: Persist execution-to-batcher work before dispatch so restart cannot lose a batch.
     let batch_work_storage =
         BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
             .expect("failed to initialize batch work storage");
@@ -1742,43 +2212,142 @@ async fn run_main_node_pipeline(
     let proof_storage = ProofStorage::new(config.prover_api_config.proof_storage.clone())
         .await
         .expect("Failed to initialize ProofStorage");
+    // SYSCOIN: Open and validate the non-evicting wrapper journal before either prover workers or
+    // the L1 proof pipeline can accept work. Any corrupt/conflicting record fails startup closed.
+    let (snark_proof_journal, snark_journal_confirmations) =
+        SnarkProofJournal::open(&config.prover_api_config.proof_storage.path)
+            .await
+            .expect("Failed to initialize durable SNARK proof journal");
 
-    let (fri_proving_step, fri_job_manager) = FriProvingPipelineStep::new(
-        proof_storage.clone(),
-        node_state_on_startup.l1_state.last_proved_batch,
-        config.prover_api_config.fri_job_timeout,
-        config.prover_api_config.max_assigned_batch_range,
-    );
-    // SYSCOIN
-    let (snark_proving_step, snark_job_manager) = SnarkProvingPipelineStep::new(
-        proof_storage.clone(),
-        config.prover_api_config.max_fris_per_snark,
-        node_state_on_startup.l1_state.last_proved_batch,
-        node_state_on_startup.l1_state.last_committed_batch,
-        config.prover_api_config.snark_job_timeout,
-        config.prover_api_config.max_assigned_batch_range,
-        committed_batch_provider.clone(),
-    );
+    let (fri_proving_step, fri_job_manager, accepted_fri_proof_forwarder) =
+        FriProvingPipelineStep::new(
+            proof_storage.clone(),
+            node_state_on_startup.l1_state.last_proved_batch,
+            config.prover_api_config.fri_job_timeout,
+            config.prover_api_config.max_assigned_batch_range,
+        );
+    // SYSCOIN: A terminal accepted-proof forwarder failure is node-critical: continuing could
+    // leave completed proofs durable but unforwarded until restart while the API appears healthy.
+    runtime.spawn_critical_task("accepted FRI proof forwarder", accepted_fri_proof_forwarder);
+    // SYSCOIN: Live and recovered real wrappers must match the same compiled app-bound VK that
+    // startup compared with the active settlement-layer verifier.
+    let expected_v8_vk_hash = ProvingVersion::V8
+        .vk_hash()
+        .parse::<B256>()
+        .expect("compiled canonical V8 VK hash must be valid bytes32");
+    // SYSCOIN: Startup journal cleanup must use the exact prove sender selected for the active
+    // settlement layer, including Gateway's intentionally different confirmation depth.
+    let prove_required_confirmations = if settles_on_gateway {
+        config.gateway_sender_config.required_confirmations
+    } else {
+        config.l1_sender_config.required_confirmations
+    };
+    // SYSCOIN: Thread the two-proof, target-or-age aggregation policy into the SNARK queue.
+    let (snark_proving_step, snark_job_manager, snark_startup_ready_rx) =
+        SnarkProvingPipelineStep::new(
+            proof_storage.clone(),
+            config.prover_api_config.max_fris_per_snark,
+            config.prover_api_config.target_fris_per_snark,
+            config.prover_api_config.max_snark_batch_wait,
+            // SYSCOIN: The ordered recovery cursor begins after execution, while queue recovery
+            // begins after proving; both independently discovered frontiers remain explicit.
+            node_state_on_startup.l1_state.last_executed_batch,
+            node_state_on_startup.l1_state.last_proved_batch,
+            node_state_on_startup.l1_state.last_committed_batch,
+            config.prover_api_config.snark_job_timeout,
+            config.prover_api_config.max_assigned_batch_range,
+            committed_batch_provider.clone(),
+            snark_proof_journal,
+            snark_journal_confirmations,
+            chain_id,
+            // SYSCOIN: Reject a durable wrapper whose local chain target differs after restart.
+            node_state_on_startup.l1_state.diamond_proxy_address_sl(),
+            sl_provider.clone(),
+            node_state_on_startup.l1_state.sl_chain_id,
+            prove_required_confirmations,
+            expected_v8_vk_hash,
+            // SYSCOIN: Bind restart recovery to the same fake/real lane validated at startup.
+            config.prover_api_config.fake_snark_provers.enabled,
+        );
 
     let prover_api_port = if config.prover_api_config.enabled {
         // SYSCOIN: `prover_server` enforces this header when remote Basic Auth is configured.
         let prover_api_basic_auth = config.prover_api_config.basic_auth_header();
-        let prover_listener = prebound_prover_api_listener
-            .expect("prover API is enabled but prover API listener was not prebound");
-        let port = prover_listener
+        let prover_socket = reserved_prover_api_socket
+            .expect("prover API is enabled but prover API socket was not reserved");
+        let port = prover_socket
             .local_addr()
-            .expect("prover server local_addr")
+            .expect("reserved prover socket local_addr")
             .port();
-        runtime.spawn_critical_with_graceful_shutdown_signal("prover server", |shutdown| {
-            prover_server::run(
-                fri_job_manager.clone(),
-                snark_job_manager.clone(),
-                proof_storage.clone(),
-                prover_listener,
-                prover_api_basic_auth.clone(),
-                shutdown,
-            )
-        });
+        let mut prover_startup_ready = snark_startup_ready_rx.clone();
+        let max_fris_per_snark = config.prover_api_config.max_fris_per_snark;
+        let prover_fri_job_manager = fri_job_manager.clone();
+        let prover_snark_job_manager = snark_job_manager.clone();
+        let prover_proof_storage = proof_storage.clone();
+        runtime.spawn_critical_with_graceful_shutdown_signal(
+            "prover server",
+            move |shutdown| async move {
+                // SYSCOIN: The address is reserved but remains non-listening until the live SNARK
+                // source confirms durable wrapper replay and supervised drain tasks are available.
+                let server_shutdown = shutdown.clone();
+                let mut lifecycle_shutdown = Box::pin(shutdown);
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut lifecycle_shutdown => {
+                        drop(shutdown_guard);
+                        return;
+                    }
+                    result = wait_for_liveness_bound_startup_signal(
+                        &mut prover_startup_ready,
+                        SnarkStartupPhase::Drainable,
+                    ) => {
+                        result.expect("SNARK startup phase source exited before prover draining became safe");
+                    }
+                }
+
+                // SYSCOIN: Only the live readiness transition may create an accept backlog. A
+                // listen failure is node-critical because the reserved port was already reported.
+                ensure_liveness_bound_startup_signal(
+                    &mut prover_startup_ready,
+                    SnarkStartupPhase::Drainable,
+                )
+                .expect("SNARK readiness source exited before prover listen");
+                let prover_listener = prover_socket
+                    .listen()
+                    .expect("failed to promote reserved prover socket to listener");
+                let server = prover_server::run(
+                    prover_fri_job_manager,
+                    prover_snark_job_manager,
+                    prover_proof_storage,
+                    prover_listener,
+                    prover_api_basic_auth,
+                    // SYSCOIN: Apply the configured production aggregation bound to diagnostic peeks.
+                    max_fris_per_snark,
+                    server_shutdown,
+                );
+                tokio::pin!(server);
+
+                // SYSCOIN: Keep serving conditional on both the process lifetime and the SNARK
+                // stage lifetime. Biased shutdown prevents a simultaneous failure from being
+                // misreported as an unexpected production exit during graceful teardown.
+                tokio::select! {
+                    biased;
+                    shutdown_guard = &mut lifecycle_shutdown => {
+                        (&mut server).await;
+                        drop(shutdown_guard);
+                    }
+                    result = monitor_liveness_bound_startup_signal(
+                        &mut prover_startup_ready,
+                        SnarkStartupPhase::Drainable,
+                    ) => {
+                        result.expect("SNARK readiness source exited while prover API was serving");
+                    }
+                    _ = &mut server => {
+                        panic!("prover API server exited outside graceful shutdown");
+                    }
+                }
+            },
+        );
         Some(port)
     } else {
         None
@@ -1791,19 +2360,6 @@ async fn run_main_node_pipeline(
     if config.prover_api_config.fake_snark_provers.enabled {
         run_fake_snark_provers(&config.prover_api_config, runtime, snark_job_manager);
     }
-
-    if !config.prover_input_generator_config.enable_input_generation {
-        assert!(
-            config.prover_api_config.fake_fri_provers.enabled,
-            "prover_input_generator_config.enable_input_generation=false requires \
-             prover_api_config.fake_fri_provers.enabled=true"
-        );
-    }
-
-    // SYSCOIN: upstream contracts do not expose canonical upgrade marker helpers. Fresh v31
-    // deployments rely on the OS-recorded upgrade tx hash, so no startup override is required.
-    let upgrade_batch_number = 0;
-    let upgrade_tx_hash = None;
 
     // Pick the L1Sender config based on whether the chain is currently settling on Gateway:
     // when it is, gateway_sender operator keys and fee caps are used; otherwise the L1-targeted
@@ -1827,7 +2383,7 @@ async fn run_main_node_pipeline(
             config.l1_sender_config.clone().into()
         };
 
-    // SYSCOIN
+    // SYSCOIN: Decouple execution from compact-DA publication through the durable work dispatcher.
     let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
         batch_work_storage.clone(),
         batch_work_tx,
@@ -1835,23 +2391,10 @@ async fn run_main_node_pipeline(
 
     let batch_pipeline = Pipeline::new(runtime.clone())
         .pipe(BatchWorkSource::new(batch_work_storage, batch_work_rx))
-        .pipe(ProverInputGenerator {
-            enable_logging: config.prover_input_generator_config.logging_enabled,
-            maximum_in_flight_blocks: config
-                .prover_input_generator_config
-                .maximum_in_flight_blocks,
-            read_state: state.clone(),
-            pubdata_mode,
-            merkle_tree: tree.clone(),
-            runtime: runtime.clone(),
-            disabled: !config.prover_input_generator_config.enable_input_generation,
-        })
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
                 last_executed_batch: node_state_on_startup.l1_state.last_executed_batch,
-                upgrade_batch_number,
-                upgrade_tx_hash,
                 last_persisted_block: node_state_on_startup.block_replay_storage_last_block,
             },
             chain_id,
@@ -1861,7 +2404,6 @@ async fn run_main_node_pipeline(
             pubdata_limit_bytes: config.sequencer_config.block_pubdata_limit_bytes,
             batcher_config: config.batcher_config.clone(),
             pubdata_mode,
-            sidecar_sender,
             committed_batch_provider: committed_batch_provider.clone(),
             read_state: state.clone(),
             bitcoin_da_status_storage: bitcoin_da_status_storage.clone(),
@@ -1884,7 +2426,7 @@ async fn run_main_node_pipeline(
         .pipe(UpgradeGatekeeper::new(
             node_state_on_startup.l1_state.diamond_proxy_sl.clone(),
         ))
-        // SYSCOIN
+        // SYSCOIN: Block settlement until direct and forwarded Bitcoin DA refs are final.
         .pipe(BitcoinDaFinalityGate::new(
             config.batcher_config.clone(),
             bitcoin_da_status_storage.clone(),
@@ -1901,7 +2443,7 @@ async fn run_main_node_pipeline(
             commit_submitted_tx: Some(commit_submitted_tx),
             sl_block_number: node_state_on_startup.l1_state.sl_block_number,
         })
-        // SYSCOIN
+        // SYSCOIN: Prune Bitcoin DA receipts only after the corresponding commit is durable.
         .pipe(BitcoinDaStatusCleanup::new(bitcoin_da_status_storage))
         .pipe(snark_proving_step)
         .pipe(GaplessL1ProofSender::new(
@@ -1945,6 +2487,8 @@ async fn run_main_node_pipeline(
         backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
         pipeline_snapshot_rx: snapshot_rx,
         prover_api_port,
+        // SYSCOIN: Production readiness remains leased to the live SNARK recovery/queue stage.
+        startup_readiness: PipelineStartupReadiness::Snark(snark_startup_ready_rx),
     }
 }
 
@@ -2014,9 +2558,6 @@ async fn run_en_pipeline(
                         config
                             .sequencer_config
                             .revm_consistency_checker_revert_on_divergence,
-                        config
-                            .sequencer_config
-                            .revm_consistency_checker_allow_bootstrap_skip,
                     )
                 }),
         )
@@ -2034,6 +2575,8 @@ async fn run_en_pipeline(
             node_state_on_startup.l1_state.diamond_proxy_address_sl(),
             config.batch_verification_config.signing_key.clone(),
             syscoin_da_verification_config(config),
+            // SYSCOIN: Verifier admission uses the same batch-size ceiling as local construction.
+            config.batcher_config.blocks_per_batch_limit,
             finality.clone(),
             node_state_on_startup.l1_state.clone(),
             syscoin_edge_da_commit_target,
@@ -2086,6 +2629,8 @@ async fn run_en_pipeline(
         backpressure_acceptance_rx: monitor.spawn(runtime, snapshot_rx.clone()),
         pipeline_snapshot_rx: snapshot_rx,
         prover_api_port: None, // EN has no prover server
+        // SYSCOIN: External nodes have no local SNARK stage whose lifetime could gate readiness.
+        startup_readiness: PipelineStartupReadiness::NotRequired,
     }
 }
 
@@ -2136,51 +2681,103 @@ fn check_batch_verification_mismatch(
     false
 }
 
-// SYSCOIN
+// SYSCOIN: Allow on-chain signer policy to replace local signer configuration, but fail closed
+// when neither source authorizes batch-verification responses.
 fn validate_batch_verification_startup_policy(
     server_config: &config::BatchVerificationConfig,
     l1_config: &BatchVerificationSL,
+    block_producing_main: bool,
 ) {
-    if !server_config.server_enabled {
+    // SYSCOIN: Replay-only main nodes and external nodes never create a batch whose settlement can
+    // be wedged by an impossible signature policy. Validate the actual production predicate, not
+    // merely `NodeRole::MainNode` or `batcher.enabled` in isolation.
+    if !block_producing_main {
         return;
     }
 
-    let l1_policy_overrides_local_signers = match l1_config {
-        BatchVerificationSL::Enabled(config) => {
-            !config.validators.is_empty() || config.threshold > 0
-        }
-        BatchVerificationSL::Disabled => false,
+    let (l1_policy_overrides_local_signers, l1_threshold) = match l1_config {
+        BatchVerificationSL::Enabled(config) => (
+            !config.validators.is_empty() || config.threshold > 0,
+            config.threshold,
+        ),
+        BatchVerificationSL::Disabled => (false, 0),
     };
 
-    if !l1_policy_overrides_local_signers && server_config.accepted_signers.is_empty() {
+    if server_config.server_enabled
+        && !l1_policy_overrides_local_signers
+        && server_config.accepted_signers.is_empty()
+    {
         panic!(
             "`batch_verification.accepted_signers` requires at least one accepted signer when \
              `batch_verification.server_enabled=true` and no L1 batch-verification policy is configured"
         );
     }
+
+    // SYSCOIN: A disabled local collector is valid only while settlement requires no signatures.
+    // Treat it as having zero effective validators when L1 nevertheless advertises a positive
+    // threshold; counting configured/on-chain addresses would claim capacity this process cannot exercise.
+    if !server_config.server_enabled && l1_threshold == 0 {
+        return;
+    }
+    let policy_config: BatchVerificationPolicyConfig = server_config.clone().into();
+    let (effective_threshold, effective_validators) =
+        effective_verification_policy_for_settlement(&policy_config, l1_config);
+    let unique_effective_validators = if server_config.server_enabled {
+        effective_validators
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .len()
+    } else {
+        0
+    };
+    assert!(
+        effective_threshold <= unique_effective_validators as u64,
+        "effective batch-verification threshold {effective_threshold} exceeds the \
+         {unique_effective_validators} unique validators available to this block-producing main"
+    );
 }
 
-/// Returns the pubdata mode used by all block-producing components on the Main Node, taking
-/// settlement-layer discovery into account: when the chain settles on Gateway, the mode is
-/// derived from the gateway's DA input mode (`Rollup` → [`PubdataMode::RelayedL2Calldata`],
-/// `Validium` → [`PubdataMode::Validium`]); when it settles on L1, the configured
-/// `l1_sender.pubdata_mode` is used (and its presence is enforced here).
+fn validate_canonical_da_input_mode(da_input_mode: BatchDaInputMode) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(da_input_mode, BatchDaInputMode::Rollup),
+        "only the canonical Syscoin compact rollup DA input mode is supported; got {da_input_mode:?}"
+    );
+    Ok(())
+}
+
+fn canonical_pubdata_mode(
+    settles_on_gateway: bool,
+    da_input_mode: BatchDaInputMode,
+    configured_pubdata_mode: Option<PubdataMode>,
+) -> anyhow::Result<PubdataMode> {
+    validate_canonical_da_input_mode(da_input_mode)?;
+    if settles_on_gateway {
+        anyhow::ensure!(
+            configured_pubdata_mode.is_none()
+                || configured_pubdata_mode == Some(PubdataMode::RelayedL2Calldata),
+            "Gateway settlement requires `l1_sender.pubdata_mode=RelayedL2Calldata`; got {configured_pubdata_mode:?}"
+        );
+        return Ok(PubdataMode::RelayedL2Calldata);
+    }
+    anyhow::ensure!(
+        configured_pubdata_mode == Some(PubdataMode::Blobs),
+        "direct settlement requires `l1_sender.pubdata_mode=Blobs`; got {configured_pubdata_mode:?}"
+    );
+    Ok(PubdataMode::Blobs)
+}
+
+/// Returns the sole canonical pubdata mode for the discovered settlement topology.
 fn effective_main_node_pubdata_mode(
     config: &Config,
     settles_on_gateway: bool,
     da_input_mode: BatchDaInputMode,
 ) -> PubdataMode {
-    if settles_on_gateway {
-        match da_input_mode {
-            BatchDaInputMode::Rollup => PubdataMode::RelayedL2Calldata,
-            BatchDaInputMode::Validium => PubdataMode::Validium,
-        }
-    } else {
-        config
-            .l1_sender_config
-            .pubdata_mode
-            .expect("`l1_sender.pubdata_mode` is required on the Main Node when settling on L1")
-    }
+    canonical_pubdata_mode(
+        settles_on_gateway,
+        da_input_mode,
+        config.l1_sender_config.pubdata_mode,
+    )
+    .expect("invalid canonical Syscoin DA configuration")
 }
 
 /// Counts commit transactions a previous session left in the L1 mempool (pending minus latest
@@ -2261,38 +2858,48 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
-fn resolve_syscoin_edge_da_commit_target(
-    l1_state: &L1State,
-    settles_on_gateway: bool,
+// SYSCOIN: Resolve and validate the immutable compact edge-DA target bound into the guest.
+fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> Address {
+    validate_syscoin_edge_da_commit_target(
+        l1_state.validator_timelock_sl,
+        syscoin_edge_da_commit_target_from_env(),
+        required,
+    )
+}
+
+fn validate_syscoin_edge_da_commit_target(
+    live_target: Address,
+    configured_target: Option<Address>,
     required: bool,
 ) -> Address {
-    let live_target = l1_state.validator_timelock_sl;
     if required {
         assert_ne!(
             live_target,
             Address::ZERO,
             "Gateway ValidatorTimelock must be available when compact edge DA is active"
         );
+        assert_eq!(
+            live_target, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            "SYSCOIN edge DA commit target mismatch: live settlement ValidatorTimelock is {}, \
+             but the canonical guest is bound to {}",
+            live_target, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
     }
 
-    if let Some(expected) = syscoin_edge_da_commit_target_from_env() {
+    if let Some(expected) = configured_target {
         assert_ne!(
             expected,
             Address::ZERO,
             "SYSCOIN_EDGE_DA_COMMIT_TARGET must be nonzero"
         );
-        if settles_on_gateway {
-            assert_eq!(
-                live_target, expected,
-                "SYSCOIN edge DA commit target mismatch: live Gateway ValidatorTimelock is {}, \
-                 but SYSCOIN_EDGE_DA_COMMIT_TARGET is {}",
-                live_target, expected
-            );
-        }
-        return expected;
+        assert_eq!(
+            expected, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            "SYSCOIN_EDGE_DA_COMMIT_TARGET is {}, but the canonical guest is bound to {}",
+            expected, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
     }
 
-    live_target
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET
 }
 
 fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
@@ -2300,6 +2907,174 @@ fn syscoin_edge_da_commit_target_from_env() -> Option<Address> {
         .or_else(|_| std::env::var("ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET"))
         .ok()
         .map(|value| parse_syscoin_edge_da_commit_target(&value))
+}
+
+// SYSCOIN: Preserve the launcher's established 0/1 policy and reject malformed values rather than
+// silently disabling a production startup gate.
+fn syscoin_require_gas_tank_from_env() -> anyhow::Result<bool> {
+    match std::env::var("SYSCOIN_REQUIRE_GAS_TANK") {
+        Ok(value) => parse_syscoin_require_gas_tank(Some(&value)),
+        Err(std::env::VarError::NotPresent) => parse_syscoin_require_gas_tank(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("SYSCOIN_REQUIRE_GAS_TANK must be valid UTF-8 and exactly `0` or `1`");
+        }
+    }
+}
+
+// SYSCOIN: Kept pure so malformed launch policy cannot escape focused unit coverage.
+fn parse_syscoin_require_gas_tank(value: Option<&str>) -> anyhow::Result<bool> {
+    match value {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) => {
+            anyhow::bail!("SYSCOIN_REQUIRE_GAS_TANK must be exactly `0` or `1`, got `{value}`")
+        }
+    }
+}
+
+// SYSCOIN: Read the FullDiffs head directly so startup does not depend on an RPC server that this
+// process has not started yet. Any nonempty code must always match the guest-pinned runtime; only
+// an explicitly non-required first boot may observe no deployment.
+fn validate_syscoin_gas_tank_local_state(
+    state: &impl ReadStateHistory,
+    required: bool,
+) -> anyhow::Result<()> {
+    let latest_state_block = *state.block_range_available().end();
+    let mut view = state
+        .state_view_at(latest_state_block)
+        .context("failed to open latest local state for zkSYS gas-tank attestation")?;
+    let observed = view.get_account(SYSCOIN_GAS_TANK_ADDRESS).map(|account| {
+        (
+            account.observable_bytecode_len,
+            B256::from(account.observable_bytecode_hash.as_u8_array()),
+        )
+    });
+    validate_syscoin_gas_tank_observed_runtime(observed, required)?;
+    Ok(())
+}
+
+// SYSCOIN: Validate the observable EVM EXTCODEHASH, not zkOS's internal padded-bytecode hash.
+fn validate_syscoin_gas_tank_observed_runtime(
+    observed: Option<(u32, B256)>,
+    required: bool,
+) -> anyhow::Result<bool> {
+    let Some((runtime_len, actual_hash)) = observed.filter(|(runtime_len, _)| *runtime_len != 0)
+    else {
+        anyhow::ensure!(
+            !required,
+            "canonical zkSYS gas tank is missing at {SYSCOIN_GAS_TANK_ADDRESS}"
+        );
+        return Ok(false);
+    };
+
+    anyhow::ensure!(
+        actual_hash == SYSCOIN_GAS_TANK_RUNTIME_HASH,
+        "canonical zkSYS gas-tank runtime mismatch at {SYSCOIN_GAS_TANK_ADDRESS}: expected {SYSCOIN_GAS_TANK_RUNTIME_HASH}, found {actual_hash} ({runtime_len} bytes)"
+    );
+    Ok(true)
+}
+
+// SYSCOIN: Authenticate both the frozen relay and Arachnid factory before any component may
+// reconstruct settlement-critical compact Edge-DA roots. Gateway nodes read their canonical local
+// state; edge nodes read the exact settlement-layer snapshot already selected by L1 discovery.
+async fn validate_syscoin_edge_da_relay_identity(
+    l1_state: &L1State,
+    state: &impl ReadStateHistory,
+    chain_id: u64,
+    required: bool,
+) -> anyhow::Result<()> {
+    if !required {
+        return Ok(());
+    }
+
+    let mut authenticated = false;
+    if chain_id == SYSCOIN_GATEWAY_CHAIN_ID {
+        let latest_state_block = *state.block_range_available().end();
+        let mut view = state
+            .state_view_at(latest_state_block)
+            .context("failed to open Gateway state for compact Edge-DA relay attestation")?;
+        validate_syscoin_edge_da_local_account(
+            &mut view,
+            SYSCOIN_EDGE_DA_RELAY_FACTORY,
+            SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
+            "Arachnid CREATE2 factory",
+        )?;
+        validate_syscoin_edge_da_local_account(
+            &mut view,
+            SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+            SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
+            "compact Edge-DA relay",
+        )?;
+        authenticated = true;
+    }
+
+    if l1_state.sl_chain_id == SYSCOIN_GATEWAY_CHAIN_ID {
+        let snapshot =
+            alloy::eips::BlockId::Number(BlockNumberOrTag::Number(l1_state.sl_block_number));
+        let provider = l1_state.diamond_proxy_sl.provider();
+        for (address, expected_hash, name) in [
+            (
+                SYSCOIN_EDGE_DA_RELAY_FACTORY,
+                SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
+                "Arachnid CREATE2 factory",
+            ),
+            (
+                SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+                SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
+                "compact Edge-DA relay",
+            ),
+        ] {
+            let code = provider
+                .get_code_at(address)
+                .block_id(snapshot)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to read canonical {name} at {address} from Gateway block {}",
+                        l1_state.sl_block_number
+                    )
+                })?;
+            anyhow::ensure!(
+                !code.is_empty(),
+                "canonical {name} has no code at {address}"
+            );
+            let actual_hash = keccak256(code.as_ref());
+            anyhow::ensure!(
+                actual_hash == expected_hash,
+                "canonical {name} runtime mismatch at {address}: expected {expected_hash}, found {actual_hash}"
+            );
+        }
+        authenticated = true;
+    }
+
+    anyhow::ensure!(
+        authenticated,
+        "compact Edge-DA is active but neither this chain nor its settlement layer is canonical Gateway chain {SYSCOIN_GATEWAY_CHAIN_ID}"
+    );
+    Ok(())
+}
+
+// SYSCOIN: `observable_bytecode_hash` is the EVM EXTCODEHASH (Keccak of raw deployed runtime),
+// unlike zkOS's internal padded bytecode hash.
+fn validate_syscoin_edge_da_local_account(
+    view: &mut impl ViewState,
+    address: Address,
+    expected_hash: B256,
+    name: &str,
+) -> anyhow::Result<()> {
+    let account = view
+        .get_account(address)
+        .with_context(|| format!("canonical {name} is missing at {address}"))?;
+    anyhow::ensure!(
+        account.observable_bytecode_len != 0,
+        "canonical {name} has empty runtime at {address}"
+    );
+    let actual_hash = B256::from(account.observable_bytecode_hash.as_u8_array());
+    anyhow::ensure!(
+        actual_hash == expected_hash,
+        "canonical {name} runtime mismatch at {address}: expected {expected_hash}, found {actual_hash}"
+    );
+    Ok(())
 }
 
 fn parse_syscoin_edge_da_commit_target(value: &str) -> Address {
@@ -2551,15 +3326,576 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_batch_verification_mismatch, initial_transaction_acceptance_state,
-        validate_batch_verification_startup_policy,
+        MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
+        check_batch_verification_mismatch, enforce_v8_regeneration_prover_policy,
+        initial_transaction_acceptance_state, monitor_liveness_bound_startup_signal,
+        parse_syscoin_require_gas_tank, validate_batch_verification_startup_policy,
+        validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        validate_syscoin_gas_tank_observed_runtime, wait_for_liveness_bound_startup_signal,
+        wait_for_node_startup, wait_for_one_shot_startup_signal,
     };
-    use crate::config::BatchVerificationConfig;
-    use alloy::primitives::address;
+    use crate::config::{BatchVerificationConfig, ProverApiConfig};
+    use crate::prover_api::snark_proving_pipeline_step::SnarkStartupPhase;
+    use alloy::primitives::{B256, address};
     use zksync_os_contract_interface::l1_discovery::{
         BatchVerificationSL, BatchVerificationSLConfig,
     };
-    use zksync_os_types::{NodeRole, NotAcceptingReason, TransactionAcceptanceState};
+    use zksync_os_contract_interface::models::BatchDaInputMode;
+    use zksync_os_types::{
+        NodeRole, NotAcceptingReason, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        SYSCOIN_GAS_TANK_RUNTIME_HASH, TransactionAcceptanceState,
+    };
+
+    // SYSCOIN: Production presence policy accepts only the launcher's documented 0/1 values.
+    #[test]
+    fn gas_tank_startup_policy_is_fail_closed() {
+        assert!(!parse_syscoin_require_gas_tank(None).unwrap());
+        assert!(!parse_syscoin_require_gas_tank(Some("0")).unwrap());
+        assert!(parse_syscoin_require_gas_tank(Some("1")).unwrap());
+        for malformed in ["", "true", "false", "2", " 1 "] {
+            assert!(
+                parse_syscoin_require_gas_tank(Some(malformed)).is_err(),
+                "accepted malformed gas-tank startup policy {malformed:?}"
+            );
+        }
+    }
+
+    // SYSCOIN: First boot alone may omit the tank; wrong nonempty code is never accepted.
+    #[test]
+    fn gas_tank_runtime_policy_distinguishes_first_boot_from_mismatch() {
+        assert!(!validate_syscoin_gas_tank_observed_runtime(None, false).unwrap());
+        assert!(validate_syscoin_gas_tank_observed_runtime(None, true).is_err());
+        assert!(!validate_syscoin_gas_tank_observed_runtime(Some((0, B256::ZERO)), false).unwrap());
+        assert!(
+            validate_syscoin_gas_tank_observed_runtime(Some((1, B256::repeat_byte(0x11))), false)
+                .is_err()
+        );
+        assert!(
+            validate_syscoin_gas_tank_observed_runtime(
+                Some((2_801, SYSCOIN_GAS_TANK_RUNTIME_HASH)),
+                true,
+            )
+            .unwrap()
+        );
+    }
+
+    // SYSCOIN: Drainable releases the prover-listener waiter, but database readiness cannot release
+    // the public node latch until the same live phase source advances to Ready.
+    #[tokio::test]
+    async fn node_readiness_waits_for_database_and_snark_recovery() {
+        let (db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(false);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        let mut listener_receiver = prover_ready_receiver.clone();
+        let listener = tokio::spawn(async move {
+            wait_for_liveness_bound_startup_signal(
+                &mut listener_receiver,
+                SnarkStartupPhase::Drainable,
+            )
+            .await
+        });
+        let readiness = tokio::spawn(async move {
+            let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness).await
+        });
+
+        db_ready_sender.send_replace(true);
+        tokio::task::yield_now().await;
+        assert!(
+            !readiness.is_finished(),
+            "database readiness bypassed durable SNARK recovery"
+        );
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Drainable);
+        assert!(listener.await.unwrap().is_ok());
+        tokio::task::yield_now().await;
+        assert!(
+            !readiness.is_finished(),
+            "Drainable released public node readiness before Ready"
+        );
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Ready);
+        assert!(readiness.await.unwrap().is_ok());
+    }
+
+    // SYSCOIN: A failed pipeline that drops its Recovering channel cannot accidentally make the
+    // status or prover listener ready.
+    #[tokio::test]
+    async fn node_readiness_fails_closed_when_snark_recovery_exits() {
+        let (_db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(true);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        drop(prover_ready_sender);
+        let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+
+        assert!(
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness)
+                .await
+                .is_err()
+        );
+    }
+
+    // SYSCOIN: EN and disabled-batcher nodes have no SNARK lifetime to monitor; their explicit
+    // no-prover variant preserves the original completed database one-shot behavior.
+    #[tokio::test]
+    async fn node_readiness_without_proving_accepts_completed_database_startup() {
+        let (db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(true);
+        drop(db_ready_sender);
+        let mut prover_readiness = PipelineStartupReadiness::NotRequired;
+
+        assert!(
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness)
+                .await
+                .is_ok()
+        );
+    }
+
+    // SYSCOIN: Closed-true is valid for completed one-shot startup work, but neither retained
+    // Drainable nor Ready may impersonate the live SNARK task whose lifetime gates production.
+    #[tokio::test]
+    async fn startup_signal_distinguishes_one_shot_from_live_closed_true() {
+        let (one_shot_sender, mut one_shot_receiver) = tokio::sync::watch::channel(true);
+        drop(one_shot_sender);
+        assert!(
+            wait_for_one_shot_startup_signal(&mut one_shot_receiver)
+                .await
+                .is_ok()
+        );
+
+        for retained_phase in [SnarkStartupPhase::Drainable, SnarkStartupPhase::Ready] {
+            let (live_sender, mut live_receiver) = tokio::sync::watch::channel(retained_phase);
+            drop(live_sender);
+            assert!(
+                wait_for_liveness_bound_startup_signal(
+                    &mut live_receiver,
+                    SnarkStartupPhase::Drainable,
+                )
+                .await
+                .is_err(),
+                "closed {retained_phase:?} phase retained a false liveness lease"
+            );
+        }
+    }
+
+    // SYSCOIN: The prover monitor accepts the monotonic Drainable-to-Ready advance, while dropping
+    // the sender still wakes the serving lifetime lease with an error.
+    #[tokio::test]
+    async fn live_startup_signal_fails_after_post_ready_source_closure() {
+        let (live_sender, mut live_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        live_sender.send_replace(SnarkStartupPhase::Drainable);
+        wait_for_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+            .await
+            .unwrap();
+        let monitor = tokio::spawn(async move {
+            monitor_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+                .await
+        });
+        live_sender.send_replace(SnarkStartupPhase::Ready);
+        tokio::task::yield_now().await;
+        assert!(
+            !monitor.is_finished(),
+            "the Drainable monitor rejected the monotonic Ready advance"
+        );
+        drop(live_sender);
+
+        assert!(monitor.await.unwrap().is_err());
+    }
+
+    // SYSCOIN: A receiver-side regression is critical even though the production stage-owned
+    // publisher independently prevents it.
+    #[tokio::test]
+    async fn live_startup_signal_rejects_phase_regression() {
+        let (live_sender, mut live_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Drainable);
+        wait_for_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+            .await
+            .unwrap();
+
+        let monitor = tokio::spawn(async move {
+            monitor_liveness_bound_startup_signal(&mut live_receiver, SnarkStartupPhase::Drainable)
+                .await
+        });
+        live_sender.send_replace(SnarkStartupPhase::Recovering);
+        assert!(monitor.await.unwrap().is_err());
+    }
+
+    // SYSCOIN: SNARK may reach Ready before the database. Its sender is still monitored during that
+    // delay, so a retained closed Ready value cannot release readiness when the database catches up.
+    #[tokio::test]
+    async fn node_readiness_monitors_snark_liveness_while_database_is_pending() {
+        let (_db_ready_sender, mut db_ready_receiver) = tokio::sync::watch::channel(false);
+        let (prover_ready_sender, prover_ready_receiver) =
+            tokio::sync::watch::channel(SnarkStartupPhase::Recovering);
+        let readiness = tokio::spawn(async move {
+            let mut prover_readiness = PipelineStartupReadiness::Snark(prover_ready_receiver);
+            wait_for_node_startup(&mut db_ready_receiver, &mut prover_readiness).await
+        });
+
+        prover_ready_sender.send_replace(SnarkStartupPhase::Ready);
+        tokio::task::yield_now().await;
+        assert!(!readiness.is_finished());
+        drop(prover_ready_sender);
+        assert!(readiness.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn v8_regeneration_preserves_explicit_fake_only_mode() {
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(prover.fake_fri_provers.enabled);
+        assert!(prover.fake_snark_provers.enabled);
+    }
+
+    #[test]
+    #[should_panic(expected = "both fake FRI and fake SNARK")]
+    fn v8_regeneration_rejects_missing_fake_pool() {
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = false;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    #[should_panic(expected = "external real proving is disabled")]
+    fn v8_regeneration_rejects_external_real_proving() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot be enabled together")]
+    fn v8_regeneration_rejects_mixed_real_and_fake_proving() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+    }
+
+    #[test]
+    fn v8_regeneration_preserves_no_producer_mode() {
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, true, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+    }
+
+    #[test]
+    fn completed_v8_regeneration_preserves_external_api() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        enforce_v8_regeneration_prover_policy(false, NodeRole::MainNode, true, &mut prover);
+
+        assert!(prover.enabled);
+    }
+
+    #[test]
+    fn v8_regeneration_disables_unused_api_without_fake_pools_when_batcher_is_disabled() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+
+        enforce_v8_regeneration_prover_policy(true, NodeRole::MainNode, false, &mut prover);
+
+        assert!(!prover.enabled);
+        assert!(!prover.fake_fri_provers.enabled);
+        assert!(!prover.fake_snark_provers.enabled);
+    }
+
+    // SYSCOIN: Today's mock testnet must remain usable only with its explicit testnet verifier.
+    #[test]
+    fn deployed_verifier_policy_fake_provers_require_explicit_testnet_verifier() {
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            true,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap();
+
+        let err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            false,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("IS_TESTNET_VERIFIER=true"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_v8_regeneration_requires_both_fake_pools() {
+        let mut prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+
+        let err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            true,
+            B256::repeat_byte(0x11),
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("both fake FRI and fake SNARK"));
+    }
+
+    // SYSCOIN: Installing the real VK does not make a partial mock pipeline operational.
+    #[test]
+    fn deployed_verifier_policy_completed_regeneration_rejects_either_partial_fake_pipeline() {
+        for (fake_fri_enabled, fake_snark_enabled) in [(true, false), (false, true)] {
+            let mut prover = ProverApiConfig {
+                enabled: false,
+                ..Default::default()
+            };
+            prover.fake_fri_provers.enabled = fake_fri_enabled;
+            prover.fake_snark_provers.enabled = fake_snark_enabled;
+
+            let err = validate_deployed_verifier_prover_policy(
+                false,
+                &prover,
+                true,
+                B256::repeat_byte(0x11),
+                B256::repeat_byte(0x11),
+            )
+            .expect_err("either partial fake-prover topology must fail closed");
+            assert!(err.to_string().contains("both fake FRI and fake SNARK"));
+        }
+    }
+
+    #[test]
+    fn deployed_verifier_policy_real_proving_requires_production_verifier_and_matching_nonzero_vk()
+    {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
+        let canonical_vk = B256::repeat_byte(0x22);
+
+        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+            .unwrap();
+
+        let testnet_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            true,
+            canonical_vk,
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(
+            testnet_err
+                .to_string()
+                .contains("IS_TESTNET_VERIFIER=false")
+        );
+
+        let sentinel_err = validate_deployed_verifier_prover_policy(
+            true,
+            &prover,
+            false,
+            canonical_vk,
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            sentinel_err
+                .to_string()
+                .contains("regeneration is complete")
+        );
+
+        let zero_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            canonical_vk,
+            B256::ZERO,
+        )
+        .unwrap_err();
+        assert!(
+            zero_err
+                .to_string()
+                .contains("nonzero compiled canonical V8 VK")
+        );
+
+        let mismatch_err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            B256::repeat_byte(0x33),
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(mismatch_err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_real_proving_requires_restart_safe_proof_storage() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let canonical_vk = B256::repeat_byte(0x22);
+
+        let err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            false,
+            canonical_vk,
+            canonical_vk,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("at least 8 GiB"));
+
+        prover.proof_storage.batch_with_proof_capacity.0 = MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY;
+        validate_deployed_verifier_prover_policy(false, &prover, false, canonical_vk, canonical_vk)
+            .unwrap();
+    }
+
+    #[test]
+    fn deployed_verifier_policy_mixed_fake_and_real_proving_is_rejected() {
+        let mut prover = ProverApiConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        prover.fake_fri_provers.enabled = true;
+        prover.fake_snark_provers.enabled = true;
+
+        let err = validate_deployed_verifier_prover_policy(
+            false,
+            &prover,
+            true,
+            B256::repeat_byte(0x22),
+            B256::repeat_byte(0x22),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cannot be enabled together"));
+    }
+
+    #[test]
+    fn deployed_verifier_policy_no_proof_producer_does_not_require_a_verifier_mode() {
+        let prover = ProverApiConfig {
+            enabled: false,
+            ..Default::default()
+        };
+
+        validate_deployed_verifier_prover_policy(true, &prover, false, B256::ZERO, B256::ZERO)
+            .unwrap();
+    }
+
+    #[test]
+    fn compact_edge_da_target_is_bound_to_the_canonical_guest() {
+        assert_eq!(
+            validate_syscoin_edge_da_commit_target(
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+                Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET),
+                true,
+            ),
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "live settlement ValidatorTimelock")]
+    fn compact_edge_da_rejects_a_live_target_not_bound_into_the_guest() {
+        validate_syscoin_edge_da_commit_target(
+            address!("0x0000000000000000000000000000000000000001"),
+            None,
+            true,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SYSCOIN_EDGE_DA_COMMIT_TARGET is")]
+    fn compact_edge_da_rejects_an_environment_override_not_bound_into_the_guest() {
+        validate_syscoin_edge_da_commit_target(
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            Some(address!("0x0000000000000000000000000000000000000001")),
+            false,
+        );
+    }
+
+    #[test]
+    fn canonical_pubdata_mode_is_topology_bound() {
+        assert_eq!(
+            canonical_pubdata_mode(false, BatchDaInputMode::Rollup, Some(PubdataMode::Blobs))
+                .unwrap(),
+            PubdataMode::Blobs
+        );
+        assert_eq!(
+            canonical_pubdata_mode(true, BatchDaInputMode::Rollup, None).unwrap(),
+            PubdataMode::RelayedL2Calldata
+        );
+        assert_eq!(
+            canonical_pubdata_mode(
+                true,
+                BatchDaInputMode::Rollup,
+                Some(PubdataMode::RelayedL2Calldata)
+            )
+            .unwrap(),
+            PubdataMode::RelayedL2Calldata
+        );
+        assert!(
+            canonical_pubdata_mode(
+                false,
+                BatchDaInputMode::Rollup,
+                Some(PubdataMode::RelayedL2Calldata)
+            )
+            .is_err()
+        );
+        assert!(
+            canonical_pubdata_mode(true, BatchDaInputMode::Rollup, Some(PubdataMode::Blobs))
+                .is_err()
+        );
+        assert!(
+            canonical_pubdata_mode(false, BatchDaInputMode::Validium, Some(PubdataMode::Blobs))
+                .is_err()
+        );
+        assert!(canonical_pubdata_mode(true, BatchDaInputMode::Validium, None).is_err());
+    }
 
     #[test]
     fn main_node_zero_block_cap_rejects_transactions_at_startup() {
@@ -2657,7 +3993,7 @@ mod tests {
         assert!(!warned);
     }
 
-    // SYSCOIN
+    // SYSCOIN: Without an on-chain policy, an enabled verifier must have local accepted signers.
     #[test]
     #[should_panic(
         expected = "`batch_verification.accepted_signers` requires at least one accepted signer"
@@ -2669,10 +4005,14 @@ mod tests {
             ..Default::default()
         };
 
-        validate_batch_verification_startup_policy(&server_config, &BatchVerificationSL::Disabled);
+        validate_batch_verification_startup_policy(
+            &server_config,
+            &BatchVerificationSL::Disabled,
+            true,
+        );
     }
 
-    // SYSCOIN
+    // SYSCOIN: A non-empty on-chain policy permits an intentionally empty local signer list.
     #[test]
     fn test_batch_verification_allows_empty_local_signers_with_l1_policy() {
         let server_config = BatchVerificationConfig {
@@ -2685,6 +4025,77 @@ mod tests {
             validators: vec![address!("0x0000000000000000000000000000000000000001")],
         });
 
-        validate_batch_verification_startup_policy(&server_config, &l1_config);
+        validate_batch_verification_startup_policy(&server_config, &l1_config, true);
+    }
+
+    // SYSCOIN: Duplicate addresses cannot satisfy distinct signature slots in BatchSignatureSet.
+    #[test]
+    #[should_panic(expected = "effective batch-verification threshold 2 exceeds the 1 unique")]
+    fn batch_verification_rejects_threshold_above_unique_effective_validators() {
+        let duplicate = address!("0x0000000000000000000000000000000000000001");
+        let server_config = BatchVerificationConfig {
+            server_enabled: true,
+            threshold: 1,
+            ..Default::default()
+        };
+        let l1_config = BatchVerificationSL::Enabled(BatchVerificationSLConfig {
+            threshold: 2,
+            validators: vec![duplicate, duplicate],
+        });
+
+        validate_batch_verification_startup_policy(&server_config, &l1_config, true);
+    }
+
+    // SYSCOIN: A positive settlement threshold is impossible when the producing process has
+    // explicitly disabled its collector, even if L1 publishes enough validator addresses.
+    #[test]
+    #[should_panic(expected = "effective batch-verification threshold 1 exceeds the 0 unique")]
+    fn batch_verification_rejects_positive_l1_threshold_when_server_is_disabled() {
+        let server_config = BatchVerificationConfig {
+            server_enabled: false,
+            ..Default::default()
+        };
+        let l1_config = BatchVerificationSL::Enabled(BatchVerificationSLConfig {
+            threshold: 1,
+            validators: vec![address!("0x0000000000000000000000000000000000000001")],
+        });
+
+        validate_batch_verification_startup_policy(&server_config, &l1_config, true);
+    }
+
+    // SYSCOIN: Replay-only mains inspect the same L1 state but cannot wedge settlement by
+    // producing an unsigned batch, so an impossible live policy must not reject their startup.
+    #[test]
+    fn batch_verification_policy_does_not_reject_non_producing_main() {
+        let server_config = BatchVerificationConfig {
+            server_enabled: false,
+            ..Default::default()
+        };
+        let l1_config = BatchVerificationSL::Enabled(BatchVerificationSLConfig {
+            threshold: 2,
+            validators: vec![],
+        });
+
+        validate_batch_verification_startup_policy(&server_config, &l1_config, false);
+    }
+
+    // SYSCOIN: Equality at the unique-validator boundary is satisfiable and must remain valid.
+    #[test]
+    fn batch_verification_allows_threshold_equal_to_unique_validators() {
+        let server_config = BatchVerificationConfig {
+            server_enabled: true,
+            threshold: 2,
+            accepted_signers: vec![
+                "0x0000000000000000000000000000000000000001".to_owned(),
+                "0x0000000000000000000000000000000000000002".to_owned(),
+            ],
+            ..Default::default()
+        };
+
+        validate_batch_verification_startup_policy(
+            &server_config,
+            &BatchVerificationSL::Disabled,
+            true,
+        );
     }
 }

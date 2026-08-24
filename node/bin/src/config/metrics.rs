@@ -44,10 +44,6 @@ pub(crate) fn report_static_config_metrics(config: &Config) {
     report_flat_config_metrics(&config.gateway_sender_config, "gateway_sender");
     report_flat_config_metrics(&config.l1_watcher_config, "l1_watcher");
     report_flat_config_metrics(&config.batcher_config, "batcher");
-    report_flat_config_metrics(
-        &config.prover_input_generator_config,
-        "prover_input_generator",
-    );
     report_flat_config_metrics(&config.prover_api_config, "prover_api");
     report_flat_config_metrics(&config.status_server_config, "status_server");
     report_flat_config_metrics(&config.observability_config, "observability");

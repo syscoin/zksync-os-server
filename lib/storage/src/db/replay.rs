@@ -9,7 +9,7 @@ use zksync_os_metadata::NODE_SEMVER_VERSION;
 use zksync_os_rocksdb::RocksDB;
 use zksync_os_rocksdb::db::{NamedColumnFamily, WriteBatch};
 use zksync_os_storage_api::{BlockContext, BlockHashes, ReadReplay, ReplayRecord, WriteReplay};
-use zksync_os_types::{BlockStartCursors, ProtocolSemanticVersion};
+use zksync_os_types::BlockStartCursors;
 
 /// A write-ahead log storing [`ReplayRecord`]s.
 ///
@@ -36,6 +36,9 @@ pub struct BlockReplayStorage {
 
 /// Column families for storage of block replay commands.
 ///
+/// SYSCOIN: Fresh V32 storage omits legacy-only side channels and requires every row to carry its
+/// canonical protocol identity.
+///
 /// TODO(RocksDB migration): The four `Starting*` column families below correspond to fields
 /// in [`BlockStartCursors`]. They are stored separately for historical reasons (each was added
 /// independently). A future migration should consolidate them into a single column family
@@ -57,7 +60,6 @@ pub enum BlockReplayColumnFamily {
     NodeVersion,
     ProtocolVersion,
     ForcePreimages,
-    CanonicalUpgradeTxHash,
     BlockOutputHash,
     StartingInteropRootId,
     StartingMigrationNumber,
@@ -79,7 +81,6 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
         BlockReplayColumnFamily::ProtocolVersion,
         BlockReplayColumnFamily::BlockOutputHash,
         BlockReplayColumnFamily::ForcePreimages,
-        BlockReplayColumnFamily::CanonicalUpgradeTxHash,
         BlockReplayColumnFamily::StartingInteropRootId,
         BlockReplayColumnFamily::StartingMigrationNumber,
         BlockReplayColumnFamily::StartingInteropFeeNumber,
@@ -97,7 +98,6 @@ impl NamedColumnFamily for BlockReplayColumnFamily {
             BlockReplayColumnFamily::ProtocolVersion => "protocol_version",
             BlockReplayColumnFamily::BlockOutputHash => "block_output_hash",
             BlockReplayColumnFamily::ForcePreimages => "force_preimages",
-            BlockReplayColumnFamily::CanonicalUpgradeTxHash => "canonical_upgrade_tx_hash",
             BlockReplayColumnFamily::StartingInteropRootId => "starting_interop_root_id",
             BlockReplayColumnFamily::StartingMigrationNumber => "starting_migration_number",
             BlockReplayColumnFamily::StartingInteropFeeNumber => "starting_interop_fee_number",
@@ -135,7 +135,6 @@ impl BlockReplayStorage {
                 protocol_version: genesis_tx.protocol_version.clone(),
                 block_output_hash: B256::ZERO,
                 force_preimages: genesis_tx.force_deploy_preimages.clone(),
-                canonical_upgrade_tx_hash: B256::ZERO,
                 starting_cursors: BlockStartCursors::default(),
             };
             let sealed_genesis_record = Sealed::new_unchecked(genesis_record, genesis_hash);
@@ -244,13 +243,6 @@ impl BlockReplayStorage {
             &db_key,
             &force_preimages_value,
         );
-        // SYSCOIN
-        batch.put_cf(
-            BlockReplayColumnFamily::CanonicalUpgradeTxHash,
-            &db_key,
-            &record.canonical_upgrade_tx_hash.0,
-        );
-
         let starting_interop_root_id_value = bincode::serde::encode_to_vec(
             record.starting_cursors.interop_root_id,
             bincode::config::standard(),
@@ -538,34 +530,20 @@ impl BlockReplayStorage {
             .expect("Failed to read from NodeVersion CF")
             .expect("NodeVersion must be written atomically with Context");
 
-        let protocol_version = if let Some(version) = self
+        // SYSCOIN: Fresh V32 nodes reject legacy replay databases instead of guessing a version.
+        let protocol_version = self
             .db
             .get_cf(BlockReplayColumnFamily::ProtocolVersion, key)
             .expect("Failed to read from ProtocolVersion CF")
-        {
-            String::from_utf8(version)
-                .expect("Failed to deserialize protocol version")
-                .parse()
-                .expect("Failed to parse protocol version")
-        } else {
-            // TODO: temporary sanity check. This code is written when this CF is just introduced, so
-            // on some live nodes storage may not have this CF populated for historical blocks.
-            // Check if protocol version if available for genesis block -> it if is, then missing key
-            // is a bug and we should panic; if not, we can assume all historical blocks are missing it and
-            // default to latest version.
-            let genesis_block = 0u64.to_be_bytes();
-            let genesis_protocol_version = self
-                .db
-                .get_cf(BlockReplayColumnFamily::ProtocolVersion, &genesis_block)
-                .expect("Failed to read from ProtocolVersion CF for genesis block");
-            if genesis_protocol_version.is_some() {
+            .unwrap_or_else(|| {
                 panic!(
-                    "ProtocolVersion missing for block {block_number} despite being present for genesis block"
-                );
-            }
-
-            ProtocolSemanticVersion::legacy_genesis_version()
-        };
+                    "ProtocolVersion missing for block {block_number}; legacy replay databases are not supported by the canonical V8 deployment"
+                )
+            });
+        let protocol_version = String::from_utf8(protocol_version)
+            .expect("Failed to deserialize protocol version")
+            .parse()
+            .expect("Failed to parse protocol version");
 
         let force_preimages = if let Some(preimages) = self
             .db
@@ -587,14 +565,6 @@ impl BlockReplayStorage {
             .get_cf(BlockReplayColumnFamily::BlockOutputHash, key)
             .expect("Failed to read from BlockOutputHash CF")
             .expect("BlockOutputHash must be written atomically with Context");
-        // SYSCOIN
-        let canonical_upgrade_tx_hash = self
-            .db
-            .get_cf(BlockReplayColumnFamily::CanonicalUpgradeTxHash, key)
-            .expect("Failed to read from CanonicalUpgradeTxHash CF")
-            .map(|hash| B256::from_slice(&hash))
-            .unwrap_or(B256::ZERO);
-
         let starting_interop_root_id = if let Some(starting_interop_root_id) = self
             .db
             .get_cf(BlockReplayColumnFamily::StartingInteropRootId, key)
@@ -658,7 +628,6 @@ impl BlockReplayStorage {
             protocol_version,
             block_output_hash: B256::from_slice(&block_output_hash),
             force_preimages,
-            canonical_upgrade_tx_hash,
             starting_cursors: BlockStartCursors {
                 l1_priority_id: bincode::serde::decode_from_slice(
                     &starting_l1_priority_id,
@@ -857,7 +826,7 @@ impl StoredBlockContextV2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zksync_os_types::BlockStartCursors;
+    use zksync_os_types::{BlockStartCursors, ProtocolSemanticVersion};
 
     fn fake_hash(seed: u64) -> BlockHash {
         BlockHash::from(U256::from(0xFF_0000 + seed))
@@ -888,10 +857,9 @@ mod tests {
                 transactions: vec![],
                 previous_block_timestamp,
                 node_version: NODE_SEMVER_VERSION.clone(),
-                protocol_version: ProtocolSemanticVersion::legacy_genesis_version(),
+                protocol_version: ProtocolSemanticVersion::canonical_genesis_version(),
                 block_output_hash: B256::from(U256::from(0xB0_0000 + number)),
                 force_preimages: vec![],
-                canonical_upgrade_tx_hash: B256::ZERO,
                 starting_cursors: BlockStartCursors::default(),
             };
             chain.push(Sealed::new_unchecked(record, fake_hash(number)));
@@ -996,6 +964,24 @@ mod tests {
         }
         delete_stripped_rows(&storage, 100..=200);
         assert_chain_reads_back(&storage, &chain);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "legacy replay databases are not supported")]
+    async fn replay_record_without_protocol_version_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = BlockReplayStorage::new_without_genesis(dir.path(), 270);
+        let chain = make_chain(1);
+        storage.write(chain[0].clone(), false).await.unwrap();
+
+        let mut batch = storage.db.new_write_batch();
+        batch.delete_cf(
+            BlockReplayColumnFamily::ProtocolVersion,
+            &0_u64.to_be_bytes(),
+        );
+        storage.db.write(batch).unwrap();
+
+        let _ = storage.get_replay_record(0);
     }
 
     #[tokio::test]

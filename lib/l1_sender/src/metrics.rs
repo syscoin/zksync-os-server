@@ -54,23 +54,6 @@ pub struct L1SenderMetrics {
     #[metrics(labels = ["command"], buckets = Buckets::exponential(1.0..=10_000_000.0, 3.0))]
     pub gas_used: LabeledFamily<&'static str, Histogram<u64>>,
 
-    /// L1 blob base fee (EIP4844) of pending L1 block.
-    /// Reported by server when sending blob L1 transactions.
-    /// Value returned by `provider.get_blob_base_fee()`
-    #[metrics()]
-    pub blob_base_fee_gwei: Gauge<f64>,
-
-    /// The price actually paid by the EIP4844 transactions per blob gas
-    /// Taken from `blob_gas_price` field of `TransactionReceipt`
-    #[metrics()]
-    pub effective_blob_gas_price_gwei: Gauge<f64>,
-
-    /// Total L1 blob gas used by L1 commit (EIP4844)
-    /// Buckets: one blob is `131,072` gas - with these buckets we'll see how many blobs per tx we send
-    /// Taken from `blob_gas_used` field of `TransactionReceipt`
-    #[metrics(buckets = Buckets::linear(131_100.0..=1_311_000.0, 131_100.0))]
-    pub blob_gas_used: Histogram<u64>,
-
     /// The gas price paid post-execution by the transaction (i.e. base fee + priority fee).
     /// Taken from `effective_gas_price` field of `TransactionReceipt`
     #[metrics(labels = ["command"])]
@@ -99,7 +82,8 @@ pub struct L1SenderMetrics {
     pub nonce: LabeledFamily<&'static str, Gauge<u64>>,
 
     /// Time from tx submission (send_raw_transaction success) to L1 inclusion confirmation (seconds).
-    /// SYSCOIN Buckets cover 0.5s → ~68 minutes in doubling steps, so slow-L1 timeouts (~3000s) remain visible.
+    /// SYSCOIN: Buckets cover 0.5s → ~68 minutes in doubling steps, so slow-L1 timeouts
+    /// (~3000s) remain visible.
     #[metrics(labels = ["command"], buckets = Buckets::exponential(0.5..=4096.0, 2.0))]
     pub tx_inclusion_latency_seconds: LabeledFamily<&'static str, Histogram<f64>>,
 
@@ -142,9 +126,6 @@ impl L1SenderMetrics {
         if let Some(gas_used_per_l2_tx) = receipt.gas_used.checked_div(l2_txs_count as u64) {
             self.gas_used_per_l2_tx[&Input::COMPONENT_ID.as_str()].observe(gas_used_per_l2_tx);
         }
-        if let Some(blob_gas_used) = receipt.blob_gas_used {
-            self.blob_gas_used.observe(blob_gas_used);
-        }
         self.l1_transaction_fee_ether[&Input::COMPONENT_ID.as_str()]
             .observe(format_ether(l1_transaction_fee).parse()?);
         if let Some(l1_transaction_fee_per_l2_tx) = l1_transaction_fee_ether_per_l2_tx {
@@ -153,10 +134,6 @@ impl L1SenderMetrics {
         }
         self.effective_gas_price_gwei[&Input::COMPONENT_ID.as_str()]
             .set(Self::wei_to_gwei(receipt.effective_gas_price)?);
-        if let Some(blob_gas_price) = receipt.blob_gas_price {
-            self.effective_blob_gas_price_gwei
-                .set(Self::wei_to_gwei(blob_gas_price)?);
-        }
         Ok(())
     }
     pub fn report_l1_eip_1559_estimation(
@@ -169,12 +146,6 @@ impl L1SenderMetrics {
             .set(Self::wei_to_gwei(eip1559_est.max_priority_fee_per_gas)?);
         Ok(())
     }
-    pub fn report_blob_base_fee(&self, base_fee_wei: u128) -> anyhow::Result<()> {
-        self.blob_base_fee_gwei
-            .set(Self::wei_to_gwei(base_fee_wei)?);
-        Ok(())
-    }
-
     pub fn report_custom_estimated_max_priority_fee_per_gas(
         &self,
         window: PriorityFeeEstimateWindow,

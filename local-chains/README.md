@@ -2,63 +2,29 @@
 
 This directory contains configuration files for running ZKsync OS nodes locally.
 
+> **Canonical v32.0 fixture regeneration is pending.** No runnable V32 fixture is
+> checked in. The prior V31 and stock V32 snapshots were removed because they do
+> not bind the canonical Execution V7 / Proving V8 application, Security100 key,
+> or Syscoin Era contracts. See
+> [`v32.0/CANONICAL_V8_REGENERATION_REQUIRED`](./v32.0/CANONICAL_V8_REGENERATION_REQUIRED)
+> for the atomic regeneration requirements.
+
 ## Directory Structure
 
 ```
 local-chains/
-├── README.md                    # Top-level documentation for local chain configurations
-├── v30.1/                       # Protocol version v30.1
-│   ├── genesis.json             # Genesis configuration
-├── v30.2/                       # Protocol version v30.2
-│   ├── default/                 # Default (single-chain) setup
-│   │   ├── README.md            # Scenario-specific documentation
-│   │   ├── config.yaml          # Sequencer configuration
-│   │   ├── genesis.json         # Genesis configuration (symlink to parent genesis)
-│   │   ├── wallets.yaml         # Wallets configuration (symlink to multi_chain/wallets_6565.yaml)
-│   │   └── contracts.yaml       # Contracts configuration (symlink to multi_chain/contracts_6565.yaml)
-│   ├── multi_chain/             # Multi-chain scenario
-│   │   ├── README.md            # Scenario-specific documentation
-│   │   ├── genesis.json         # Genesis configuration (symlink to parent genesis)
-│   │   ├── chain_6565.yaml      # Configuration for chain with ID 6565
-│   │   ├── chain_6566.yaml      # Configuration for chain with ID 6566
-│   │   ├── wallets_6565.yaml    # Wallets for chain 6565
-│   │   ├── wallets_6566.yaml    # Wallets for chain 6566
-│   │   ├── contracts_6565.yaml  # Contracts for chain 6565
-│   │   └── contracts_6566.yaml  # Contracts for chain 6566
-│   ├── l1-state.json.gz         # Shared L1 state for protocol v30.2
-│   ├── genesis.json             # Genesis configuration for protocol v30.2
-│   └── versions.yaml            # Version metadata for protocol v30.2
-└── v31.0/                       # Protocol version v31.0
-    ├── default/                 # Default (single-chain) setup
-    │   ├── README.md            # Scenario-specific documentation
-    │   ├── config.yaml          # Sequencer configuration
-    │   ├── genesis.json         # Genesis configuration (symlink to parent genesis)
-    │   ├── wallets.yaml         # Wallets configuration (symlink to multi_chain/wallets_6565.yaml)
-    │   └── contracts.yaml       # Contracts configuration (symlink to multi_chain/contracts_6565.yaml)
-    ├── multi_chain/             # Multi-chain scenario
-    │   ├── README.md            # Scenario-specific documentation
-    │   ├── genesis.json         # Genesis configuration (symlink to parent genesis)
-    │   ├── chain_6565.yaml      # Configuration for chain with ID 6565
-    │   ├── chain_6566.yaml      # Configuration for chain with ID 6566
-    │   ├── wallets_6565.yaml    # Wallets for chain 6565
-    │   ├── wallets_6566.yaml    # Wallets for chain 6566
-    │   ├── contracts_6565.yaml  # Contracts for chain 6565
-    │   └── contracts_6566.yaml  # Contracts for chain 6566
-│   ├── l1-state.json.gz         # Shared L1 state for protocol v31.0
-│   ├── genesis.json             # Genesis configuration for protocol v31.0
-    └── versions.yaml            # Version metadata for protocol v31.0
+├── README.md
+└── v32.0/
+    └── CANONICAL_V8_REGENERATION_REQUIRED
 ```
 
 ## Configuration Files
 
 ### `l1-state.json.gz`
 
-L1 state snapshot for Anvil. Contains the deployed L1 contracts state. It can be decompressed and then loaded with:
-
-```bash
-gzip -dfk ./local-chains/v31.0/l1-state.json.gz
-anvil --load-state ./local-chains/v31.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10
-```
+No canonical snapshot is currently checked in. A fresh L1 state snapshot will
+be documented after the complete V32 fixture is regenerated and the marker is
+removed atomically.
 
 ### `config.yaml`
 
@@ -87,56 +53,15 @@ If you are changing source code of any of the `initial_contracts` you should als
 
 ## Usage
 
-### Using the `run_local.sh` Script
-
-⚠️ This script is a temporary solution. Do not depend on it in production.
-
-The `run_local.sh` script automates starting Anvil and chain node(s):
-
-```bash
-# Run a single chain
-./run_local.sh ./local-chains/v31.0/default
-
-# Run multiple chains (multi-chain fixtures currently exist only for v30.2)
-./run_local.sh ./local-chains/v30.2/multi_chain
-
-# Run with logging to files
-./run_local.sh ./local-chains/v30.2/multi_chain --logs-dir ./logs
-```
-
-#### How the Script Works
-
-1. **Validates configuration directory** - Checks that the directory exists and `l1-state.json.gz` is in parent directory
-2. Decompresses `l1-state.json.gz` into `l1-state.json` (in temporary directory)
-3. **Builds ZKsync OS**
-4. **Starts Anvil** - Loads the L1 state snapshot on port 8545
-5. **Waits for Anvil readiness** - Polls the JSON-RPC endpoint until Anvil responds (up to 30 seconds)
-6. **Detects chain mode**:
-   - If `config.json` exists → Starts single chain
-   - Otherwise → Starts all `chain_*.json` files found (e.g., `chain_6565.json`, `chain_6566.json`)
-7. **Database cleanup prompt** (single chain mode only) - If the `db/` folder contains existing data, prompts whether to clean it up before starting
-8. **Monitors processes** - If any process fails, all services are stopped
-9. **Graceful shutdown** - Press `Ctrl+C` to stop all services
-
-#### Script Output
-
-- **Anvil logs**: Suppressed (or written to `anvil-<timestamp>.log` if `--logs-dir` is specified)
-- **Chain logs**: Displayed in terminal (or written to `<config-name>-<timestamp>.log` if `--logs-dir` is specified)
-- **Script messages**: Color-coded status updates
-
-### Manual Setup
-
-#### Running a Single Chain
-
-Follow the instructions in the [v30.2/single_chain/README.md](./v30.2/default/README.md).
-
-#### Running Multiple Chains
-
-Follow the instructions in the [v30.2/multi_chain/README.md](./v30.2/multi_chain/README.md).
+Local launch instructions are intentionally disabled while
+[`CANONICAL_V8_REGENERATION_REQUIRED`](./v32.0/CANONICAL_V8_REGENERATION_REQUIRED)
+exists. Do not bypass the marker or reuse an old Anvil snapshot. Runnable
+single-chain and Gateway examples must be restored only with the freshly
+regenerated and attested V8 fixture.
 
 ## Adding a new protocol version
 
-1. Create a new directory (e.g., `v31.1/`)
+1. Create a new directory (e.g., `v32.1/`)
 2. Use [upgrade scripts](https://github.com/matter-labs/zksync-os-scripts) to regenerate single and multi-chain configurations
 3. Optionally add new scenario-specific subfolders if required
 4. Update [protocol upgrade tests](../integration-tests/src/upgrade) to support the update to the new version

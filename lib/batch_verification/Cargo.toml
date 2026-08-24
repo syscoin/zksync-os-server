@@ -26,8 +26,9 @@ zksync_os_merkle_tree.workspace = true
 zksync_os_interface.workspace = true
 
 alloy = { workspace = true, default-features = false, features = ["rlp"] }
-# SYSCOIN: verifier-side Bitcoin DA availability checks before signing batches.
-bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", tag = "v0.1.13" }
+# SYSCOIN: Pin the reviewed v0.1.15 Blake2s merge commit whose finality APIs reject
+# PoDA-only availability; a bare archive hit must never authorize a validator signature.
+bitcoin_da_client = { git = "https://github.com/syscoin/bitcoin_da_client.git", rev = "1b6f11d3e538120759e062ca0a478973653c1038" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -39,8 +40,12 @@ vise.workspace = true
 [dev-dependencies]
 alloy = { workspace = true, default-features = false, features = ["providers", "rpc-client", "transports"] }
 blake2.workspace = true
+httpmock.workspace = true
 semver.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
+# SYSCOIN: Deterministically exercise the collector's one absolute deadline under queue backlog.
+tokio = { workspace = true, features = ["test-util"] }
 zksync_os_genesis.workspace = true
 zksync_os_merkle_tree_api.workspace = true
 zksync_os_provider.workspace = true

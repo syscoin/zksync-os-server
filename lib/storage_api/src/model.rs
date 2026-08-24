@@ -37,8 +37,8 @@ pub struct ReplayRecord {
     pub block_context: BlockContext,
     #[serde_as(as = "Vec<Eip2718>")]
     pub transactions: Vec<ZkTransaction>,
-    /// The field is used to generate the prover input for the block in ProverInputGenerator.
-    /// Will be moved to the BlockContext at some point
+    /// SYSCOIN: The field is used by canonical native V32 batch witness generation.
+    /// Will be moved to the BlockContext at some point.
     pub previous_block_timestamp: u64,
     /// Version of the node that created this replay record.
     /// NOTE: Excluded from equality check, different node versions can produce identical blocks.
@@ -52,9 +52,8 @@ pub struct ReplayRecord {
     pub block_output_hash: B256,
     /// Forced preimages to be included before the block execution.
     pub force_preimages: Vec<(B256, Vec<u8>)>,
-    /// Canonical settlement-layer upgrade tx hash for this block's upgrade batch.
-    #[serde(default)]
-    pub canonical_upgrade_tx_hash: B256,
+    // SYSCOIN: The retired V31 replay-only upgrade hash is not persisted; V32 binds upgrades in
+    // canonical batch input while preserving upstream's `zks/5` / v3 replay schema.
     /// Cursors at the start of this block. Tracks where each L1 data source
     /// (priority txs, interop events, migrations, fee updates) left off.
     /// Flattened for serde backwards-compatibility with the old flat field layout.
@@ -72,7 +71,6 @@ impl PartialEq for ReplayRecord {
             && self.protocol_version == other.protocol_version
             && self.block_output_hash == other.block_output_hash
             && self.force_preimages == other.force_preimages
-            && self.canonical_upgrade_tx_hash == other.canonical_upgrade_tx_hash
             && self.starting_cursors == other.starting_cursors
     }
 }
@@ -87,7 +85,6 @@ impl ReplayRecord {
         protocol_version: ProtocolSemanticVersion,
         block_output_hash: B256,
         force_preimages: Vec<(B256, Vec<u8>)>,
-        canonical_upgrade_tx_hash: B256,
         starting_cursors: BlockStartCursors,
     ) -> Self {
         let first_l1_tx_priority_id = transactions.iter().find_map(|tx| match tx.envelope() {
@@ -109,7 +106,6 @@ impl ReplayRecord {
             protocol_version,
             block_output_hash,
             force_preimages,
-            canonical_upgrade_tx_hash,
             starting_cursors,
         }
     }
@@ -126,7 +122,8 @@ pub struct FinalityStatus {
     pub last_finalized_executed_batch: u64,
 }
 
-/// Message flowing from `TreeManager` → `ProverInputGenerator` / `BatchVerificationResponder`.
+/// SYSCOIN: Native V32 message flowing from `TreeManager` to the batcher or
+/// batch-verification responder; there is no standalone ProverInputGenerator hop.
 pub struct TreeBlock {
     pub output: BlockOutput,
     pub record: ReplayRecord,

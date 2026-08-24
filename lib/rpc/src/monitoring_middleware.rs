@@ -28,6 +28,13 @@ const UNKNOWN_METHOD: &str = "<unknown>";
 /// separate batches and connections can still make progress independently.
 const MAX_CONCURRENT_BATCH_ENTRIES: usize = 32;
 
+// SYSCOIN: `zks_getL2ToL1LogProof` may retain a maximum-size provider `ResponsePacket` while
+// Alloy performs typed deserialization and the RPC handler constructs its response. Keep that
+// end-to-end overlap to 8 (1 GiB at the 128-MiB provider cap) without serializing the route.
+pub(crate) const MAX_CONCURRENT_L2_TO_L1_LOG_PROOF_RPCS: usize = 8;
+
+const L2_TO_L1_LOG_PROOF_METHOD: &str = "zks_getL2ToL1LogProof";
+
 /// Records RPC metrics and owns the custom batch-dispatch behavior.
 ///
 /// Calls always pass through the inner service. When parallel batches are enabled, calls within a
@@ -37,6 +44,9 @@ pub struct Monitoring<S = RpcService> {
     inner: S,
     max_response_size_bytes: usize,
     blocking_rpcs_semaphore: Arc<Semaphore>,
+    // SYSCOIN: This route-specific gate spans the complete RPC handler, including Alloy's typed
+    // provider deserialization, which cannot retain the lower transport's byte-budget guard.
+    l2_to_l1_log_proof_semaphore: Arc<Semaphore>,
     known_methods: Arc<HashSet<&'static str>>,
     parallel_batches: bool,
 }
@@ -46,6 +56,7 @@ impl<S> Monitoring<S> {
         inner: S,
         max_response_size_bytes: u32,
         blocking_rpcs_semaphore: Arc<Semaphore>,
+        l2_to_l1_log_proof_semaphore: Arc<Semaphore>,
         known_methods: Arc<HashSet<&'static str>>,
         parallel_batches: bool,
     ) -> Self {
@@ -53,6 +64,7 @@ impl<S> Monitoring<S> {
             inner,
             max_response_size_bytes: max_response_size_bytes as usize,
             blocking_rpcs_semaphore,
+            l2_to_l1_log_proof_semaphore,
             known_methods,
             parallel_batches,
         }
@@ -90,6 +102,9 @@ fn is_heavy_rpc_method(method: &str) -> bool {
             | "ots_searchTransactionsAfter"
             | "ots_searchTransactionsBefore"
             | "unstable_getLocalRoot"
+            // SYSCOIN: Gateway MessageRoot proof construction scans/rebuilds bounded but large
+            // ancestry, receipt, event, and Merkle inputs; share the process-wide heavy-work gate.
+            | "zks_getL2ToL1LogProof"
             | "zks_getProof"
     )
 }
@@ -242,11 +257,29 @@ where
         let request_size = request.params.as_ref().map_or(0, |p| p.get().len());
         let inner = self.inner.clone();
         let blocking_rpcs_semaphore = self.blocking_rpcs_semaphore.clone();
+        let l2_to_l1_log_proof_semaphore = self.l2_to_l1_log_proof_semaphore.clone();
 
         async move {
             let id = request.id.clone().into_owned();
             let handler_error_id = id.clone();
             let handler = RPC_TASK_MONITOR.instrument(async move {
+                // SYSCOIN: Acquire the narrow route gate before the general heavy-work gate so
+                // queued log-proof calls cannot consume all general permits. Owned permits are
+                // returned on success, handler error/panic, timeout, or request cancellation.
+                let _l2_to_l1_log_proof_permit: Option<OwnedSemaphorePermit> =
+                    if method == L2_TO_L1_LOG_PROOF_METHOD {
+                        match l2_to_l1_log_proof_semaphore.acquire_owned().await {
+                            Ok(permit) => Some(permit),
+                            Err(_) => {
+                                return MethodResponse::error(
+                                    handler_error_id,
+                                    internal_rpc_err("Internal error"),
+                                );
+                            }
+                        }
+                    } else {
+                        None
+                    };
                 let _permit: Option<OwnedSemaphorePermit> = if is_heavy_rpc_method(method) {
                     match blocking_rpcs_semaphore.acquire_owned().await {
                         Ok(permit) => Some(permit),
@@ -358,9 +391,37 @@ where
         let request_size = n.params.as_ref().map_or(0, |p| p.get().len());
         let method = method_label(&self.known_methods, n.method_name());
         let inner = self.inner.clone();
+        // SYSCOIN: Notifications execute the same registered handlers as calls even though they
+        // produce no response. Share the process-wide permit so an attacker cannot bypass the
+        // heavy-work ceiling by omitting the JSON-RPC request ID.
+        let blocking_rpcs_semaphore = self.blocking_rpcs_semaphore.clone();
+        let l2_to_l1_log_proof_semaphore = self.l2_to_l1_log_proof_semaphore.clone();
 
         async move {
-            let handler = async move { inner.notification(n).await };
+            let handler = async move {
+                // SYSCOIN: Notifications reach the same handler and therefore share the same
+                // end-to-end log-proof memory gate; a closed gate fails closed.
+                let _l2_to_l1_log_proof_permit: Option<OwnedSemaphorePermit> =
+                    if method == L2_TO_L1_LOG_PROOF_METHOD {
+                        match l2_to_l1_log_proof_semaphore.acquire_owned().await {
+                            Ok(permit) => Some(permit),
+                            Err(_) => return MethodResponse::notification(),
+                        }
+                    } else {
+                        None
+                    };
+                let _permit: Option<OwnedSemaphorePermit> = if is_heavy_rpc_method(method) {
+                    match blocking_rpcs_semaphore.acquire_owned().await {
+                        Ok(permit) => Some(permit),
+                        // SYSCOIN: Notifications cannot return an error response. A closed
+                        // process-wide gate therefore fails closed without running the handler.
+                        Err(_) => return MethodResponse::notification(),
+                    }
+                } else {
+                    None
+                };
+                inner.notification(n).await
+            };
             CallGuard::new(CallKind::Notification, method, request_size)
                 .handle_result(handler, MethodResponse::notification)
                 .await
@@ -485,8 +546,77 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    use super::{Monitoring, UNKNOWN_METHOD, is_heavy_rpc_method, method_label};
+    use jsonrpsee::MethodResponse;
+    use jsonrpsee::core::middleware::{Batch, Notification};
+    use jsonrpsee::server::middleware::rpc::RpcServiceT;
+    use jsonrpsee::types::Request;
+    use std::borrow::Cow;
     use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::{Notify, Semaphore};
+
+    #[derive(Clone)]
+    struct NotificationTestService {
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl RpcServiceT for NotificationTestService {
+        type MethodResponse = MethodResponse;
+        type NotificationResponse = MethodResponse;
+        type BatchResponse = MethodResponse;
+
+        #[allow(clippy::manual_async_fn)]
+        fn call<'a>(
+            &self,
+            _request: Request<'a>,
+        ) -> impl Future<Output = Self::MethodResponse> + Send + 'a {
+            async { MethodResponse::notification() }
+        }
+
+        #[allow(clippy::manual_async_fn)]
+        fn batch<'a>(
+            &self,
+            _batch: Batch<'a>,
+        ) -> impl Future<Output = Self::BatchResponse> + Send + 'a {
+            async { MethodResponse::notification() }
+        }
+
+        fn notification<'a>(
+            &self,
+            _notification: Notification<'a>,
+        ) -> impl Future<Output = Self::NotificationResponse> + Send + 'a {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            async move {
+                started.notify_one();
+                release.notified().await;
+                MethodResponse::notification()
+            }
+        }
+    }
+
+    fn notification_test_monitoring(
+        blocking_semaphore: Arc<Semaphore>,
+        l2_to_l1_log_proof_semaphore: Arc<Semaphore>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> Monitoring<NotificationTestService> {
+        Monitoring::new(
+            NotificationTestService { started, release },
+            1_000_000,
+            blocking_semaphore,
+            l2_to_l1_log_proof_semaphore,
+            Arc::new(
+                ["zks_getL2ToL1LogProof", "eth_call", "eth_blockNumber"]
+                    .into_iter()
+                    .collect(),
+            ),
+            false,
+        )
+    }
 
     #[test]
     fn registered_methods_pass_through_unknown_methods_collapse() {
@@ -513,9 +643,145 @@ mod tests {
         assert!(is_heavy_rpc_method("eth_estimateGas"));
         assert!(is_heavy_rpc_method("eth_getLogs"));
         assert!(is_heavy_rpc_method("debug_traceTransaction"));
+        assert!(is_heavy_rpc_method("zks_getL2ToL1LogProof"));
+        // SYSCOIN: IMT reconstruction owns a stricter fail-fast one-wide lane at the reader
+        // boundary, so requests never queue here while occupying the broad heavy-work budget.
+        assert!(!is_heavy_rpc_method("zks_getImtInclusionProof"));
+        assert!(!is_heavy_rpc_method("zks_getImtLowNullifierIndex"));
         assert!(is_heavy_rpc_method("zks_getProof"));
         assert!(is_heavy_rpc_method("unstable_getLocalRoot"));
         assert!(!is_heavy_rpc_method("eth_blockNumber"));
         assert!(!is_heavy_rpc_method(UNKNOWN_METHOD));
+    }
+
+    // SYSCOIN: Omitting a JSON-RPC request ID must not bypass the shared heavy-work ceiling, and
+    // cancelling a waiting/running notification must return its owned permit immediately.
+    #[tokio::test]
+    async fn heavy_notification_waits_for_and_releases_owned_permit_on_cancellation() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let l2_to_l1_log_proof_semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let monitoring = notification_test_monitoring(
+            semaphore.clone(),
+            l2_to_l1_log_proof_semaphore.clone(),
+            started.clone(),
+            release,
+        );
+        let notification = Notification::new(Cow::Borrowed("zks_getL2ToL1LogProof"), None);
+        let task = tokio::spawn(async move { monitoring.notification(notification).await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), started.notified())
+                .await
+                .is_err(),
+            "heavy notification ran without a permit"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("heavy notification did not run after a permit became available");
+        assert_eq!(semaphore.available_permits(), 0);
+
+        task.abort();
+        let _ = task.await;
+        assert_eq!(semaphore.available_permits(), 1);
+        assert_eq!(l2_to_l1_log_proof_semaphore.available_permits(), 1);
+    }
+
+    // SYSCOIN: Log-proof waiters acquire the narrow memory gate before the shared heavy-work
+    // gate. They therefore cannot starve unrelated heavy RPCs, and cancellation returns both
+    // owned permits after the handler has begun.
+    #[tokio::test]
+    async fn log_proof_gate_is_route_specific_and_releases_on_cancellation() {
+        let blocking_semaphore = Arc::new(Semaphore::new(1));
+        let l2_to_l1_log_proof_semaphore = Arc::new(Semaphore::new(1));
+        let held_log_proof = l2_to_l1_log_proof_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap();
+
+        let log_started = Arc::new(Notify::new());
+        let log_monitoring = notification_test_monitoring(
+            blocking_semaphore.clone(),
+            l2_to_l1_log_proof_semaphore.clone(),
+            log_started.clone(),
+            Arc::new(Notify::new()),
+        );
+        let log_notification = Notification::new(Cow::Borrowed("zks_getL2ToL1LogProof"), None);
+        let log_task =
+            tokio::spawn(async move { log_monitoring.notification(log_notification).await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), log_started.notified())
+                .await
+                .is_err(),
+            "log-proof notification ran without its route permit"
+        );
+        assert_eq!(
+            blocking_semaphore.available_permits(),
+            1,
+            "a route-gated waiter consumed the general heavy-work permit"
+        );
+
+        let other_started = Arc::new(Notify::new());
+        let other_monitoring = notification_test_monitoring(
+            blocking_semaphore.clone(),
+            l2_to_l1_log_proof_semaphore.clone(),
+            other_started.clone(),
+            Arc::new(Notify::new()),
+        );
+        let other_notification = Notification::new(Cow::Borrowed("eth_call"), None);
+        let other_task =
+            tokio::spawn(async move { other_monitoring.notification(other_notification).await });
+        tokio::time::timeout(Duration::from_secs(1), other_started.notified())
+            .await
+            .expect("unrelated heavy notification waited for the log-proof route permit");
+        other_task.abort();
+        let _ = other_task.await;
+        assert_eq!(blocking_semaphore.available_permits(), 1);
+
+        drop(held_log_proof);
+        tokio::time::timeout(Duration::from_secs(1), log_started.notified())
+            .await
+            .expect("log-proof notification did not run after its route permit became available");
+        assert_eq!(blocking_semaphore.available_permits(), 0);
+        assert_eq!(l2_to_l1_log_proof_semaphore.available_permits(), 0);
+
+        log_task.abort();
+        let _ = log_task.await;
+        assert_eq!(blocking_semaphore.available_permits(), 1);
+        assert_eq!(l2_to_l1_log_proof_semaphore.available_permits(), 1);
+    }
+
+    // SYSCOIN: The security gate is method-specific; ordinary notifications retain their existing
+    // behavior and do not wait behind unrelated heavy work.
+    #[tokio::test]
+    async fn ordinary_notification_does_not_wait_for_heavy_permit() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let l2_to_l1_log_proof_semaphore = Arc::new(Semaphore::new(1));
+        let held = semaphore.clone().acquire_owned().await.unwrap();
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let monitoring = notification_test_monitoring(
+            semaphore.clone(),
+            l2_to_l1_log_proof_semaphore.clone(),
+            started.clone(),
+            release,
+        );
+        let notification = Notification::new(Cow::Borrowed("eth_blockNumber"), None);
+        let task = tokio::spawn(async move { monitoring.notification(notification).await });
+
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("ordinary notification incorrectly waited for the heavy-work permit");
+        task.abort();
+        let _ = task.await;
+        assert_eq!(semaphore.available_permits(), 0);
+        assert_eq!(l2_to_l1_log_proof_semaphore.available_permits(), 1);
+        drop(held);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 }

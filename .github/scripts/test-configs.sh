@@ -7,11 +7,17 @@ INTERVAL=${INTERVAL:-3}
 
 chmod a+x ./zksync-os-server
 
+# SYSCOIN: Never exercise a stale fixture against the app-bound V8 execution and verifier lane.
+PENDING_FIXTURE=local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+if [[ -f "${PENDING_FIXTURE}" ]]; then
+  echo "error: canonical v32.0/V8 fixture regeneration is required: ${PENDING_FIXTURE}" >&2
+  exit 1
+fi
+
 # name|state|config
-# v30.x configs are gone from this list: V6 proving support was dropped, so fresh v30 chains
-# cannot run with default settings. Re-add multi-chain entries once v31+ fixtures exist.
+# SYSCOIN: Only the canonical v32.0 identity may return here after its V8 fixture is regenerated.
 CONFIGS=(
-  "v31 default|local-chains/v31.0/l1-state.json|local-chains/v31.0/default/config.yaml"
+  "v32 default|local-chains/v32.0/l1-state.json|local-chains/v32.0/default/config.yaml"
 )
 
 cleanup() {

@@ -1,3 +1,56 @@
+use alloy::primitives::{Address, B256, U256, address, b256, keccak256};
+
+/// SYSCOIN: Consensus target baked into the canonical Syscoin zksync-os guest for compact edge-DA commit
+/// transactions. A runtime deployment must match this address before it can collect or verify
+/// compact edge references.
+pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
+    address!("0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19");
+
+/// SYSCOIN: Canonical zkSYS fee-tank address baked into the V8 guest.
+pub const SYSCOIN_GAS_TANK_ADDRESS: Address =
+    address!("0xb49943ea232624dd4aa63e18186076c6c99a68ef");
+
+/// SYSCOIN: Exact deployed EVM runtime identity of [`SYSCOIN_GAS_TANK_ADDRESS`].
+/// The constructor-specialized runtime also binds the immutable canonical zkSYS token address.
+pub const SYSCOIN_GAS_TANK_RUNTIME_HASH: B256 =
+    b256!("041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269");
+
+/// SYSCOIN: The only Gateway chain whose guest may collect forwarded compact Edge-DA refs.
+pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = 57_001;
+
+/// SYSCOIN: Canonical relay deployed through Arachnid's universal CREATE2 factory. The guest
+/// authenticates this address as the `L1Messenger` message origin; it is not configurable.
+pub const SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER: Address =
+    address!("0xdc5172acd7c9cb5496db42a87dcafc14f18790a5");
+
+/// SYSCOIN: Exact frozen runtime identity of [`SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER`].
+pub const SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH: B256 =
+    b256!("a10c6c2043e1bdae798eebc77bc4d435da04c163ac4f79b41eaef3577fc5fdbf");
+
+/// SYSCOIN: Arachnid deterministic-deployment proxy and its exact canonical runtime identity.
+pub const SYSCOIN_EDGE_DA_RELAY_FACTORY: Address =
+    address!("0x4e59b44847b379578588920ca78fbf26c0b4956c");
+pub const SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH: B256 =
+    b256!("2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989");
+
+/// SYSCOIN: Canonical EIP-7825 transaction gas cap committed by the V8 chain configuration.
+///
+/// This value is consensus-critical: the native PIG, L1 proof calldata, and Era executor must all
+/// hash the same value.
+pub const SYSCOIN_MAX_TX_GAS_LIMIT: u64 = 1 << 24;
+
+/// SYSCOIN: Canonical V8 chain configuration commitment.
+///
+/// The L2 chain ID is committed here instead of being repeated in `BatchOutput`. The middle word
+/// is `fri_proof_verification_enabled`, which is permanently disabled for this deployment.
+pub fn syscoin_chain_config_hash(chain_id: u64) -> B256 {
+    let mut bytes = Vec::with_capacity(32 * 3);
+    bytes.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    bytes.extend_from_slice(&U256::ZERO.to_be_bytes::<32>());
+    bytes.extend_from_slice(&U256::from(SYSCOIN_MAX_TX_GAS_LIMIT).to_be_bytes::<32>());
+    keccak256(bytes)
+}
+
 mod config_format;
 pub use config_format::ConfigFormat;
 

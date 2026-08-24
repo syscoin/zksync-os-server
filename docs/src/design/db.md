@@ -1,13 +1,33 @@
 # Database Schema Overview
 
-All persistent data is stored across multiple RocksDB databases:
+Primary persistent node state is split across these RocksDB databases and proof files:
 
 - block_replay_wal
 - preimages_full_diffs
 - repository
 - state_full_diffs
 - tree
+- batch (`ExecutedBatchStorage`, RocksDB label `executed_batch_storage`)
+- raft
+- priority_txs_tree
+- batch_work_queue and bitcoin_da_status (batcher-enabled nodes)
 - proofs (JSON files, not RocksDB)
+
+<!-- SYSCOIN: These stores form one protocol/genesis-bound recovery set. -->
+
+Back up or move the complete node database directory while the node is stopped;
+do not restore, clear, or copy one store independently unless a documented
+recovery procedure explicitly permits it. In particular, pre-reset V31 state is
+not valid V32 input, even when the chain ID is unchanged.
+
+<!-- SYSCOIN: Authenticate the complete storage root before any child database is opened. -->
+The root contains a `database_identity.json` marker that binds protocol version, both chain IDs,
+L1 genesis, the diamond proxy, and L2 genesis. The regular JSON marker is bounded to 16 KiB, created
+with no-overwrite semantics, and synced before any child RocksDB is opened. A missing marker is
+accepted only for a fresh otherwise-empty root. An identity mismatch, malformed or interrupted
+marker, or unmarked legacy store fails startup; move or reset the entire directory rather than
+replacing an individual marker or RocksDB. Host/operator filesystem mutation is outside this
+deployment-mismatch guard's trust boundary.
 
 ---
 
@@ -75,7 +95,41 @@ Note: The 'default' column also stores a serialized Manifest at key '0'.
 
 ---
 
-## 6. proofs
+## 6. batch / executed_batch_storage
+
+The node opens this RocksDB at `<rocks_db_path>/batch`; its internal metrics /
+schema label is `executed_batch_storage`.
+
+| Column | Key | Value |
+|--------|-----|-------|
+| BatchInfo | batch number (u64, big-endian) | JSON `PersistedBatch` |
+| FirstBlockIndex | first block number (u64, big-endian) | batch number (u64, big-endian) |
+| Latest | `latest_batch` | highest appended batch number |
+
+This store anchors committed-batch discovery, stable batch RPC responses, and
+restart recovery. Preserve it with the repository, replay WAL, state, and tree;
+an inconsistent cursor or missing canonical genesis must fail startup rather
+than be repaired by deleting only this directory.
+
+---
+
+## 7. raft
+
+When consensus is enabled, this database persists Raft logs, votes, committed
+log metadata, membership/state-machine metadata, and the applied-WAL anchor.
+Retain it with the replay WAL. Clearing it is a coordinated consensus operation,
+not a general database reset.
+
+---
+
+## 8. priority_txs_tree
+
+Stores the cached priority-operation Merkle tree and its last processed block.
+It must remain aligned with executed/replayed block state.
+
+---
+
+## 9. proofs
 
 Stored as JSON files in a separate directory:
 ../shared/fri_batch_envelopes

@@ -26,7 +26,8 @@ pub enum ComponentId {
     NoopSink,
     BatchVerificationResponder,
     BlockCanonizer,
-    ProverInputGenerator,
+    // SYSCOIN: Native V32 batch generation owns proof-input generation; there is no standalone
+    // ProverInputGenerator lifecycle or pipeline identity.
     Batcher,
     BatchVerification,
     FriJobManager,
@@ -61,7 +62,7 @@ impl ComponentId {
             Self::NoopSink => "noop_sink",
             Self::BatchVerificationResponder => "batch_verification_responder",
             Self::BlockCanonizer => "block_canonizer",
-            Self::ProverInputGenerator => "prover_input_generator",
+            // SYSCOIN: Keep the component-name mapping aligned with the native V32 topology.
             Self::Batcher => "batcher",
             Self::BatchVerification => "batch_verification",
             Self::FriJobManager => "fri_job_manager",

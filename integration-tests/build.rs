@@ -27,7 +27,20 @@ fn decompress_l1_states() {
             continue;
         }
 
-        if entry.path().ends_with("v30.1") {
+        if !entry.path().join("versions.yaml").is_file() {
+            // Ignore local materializations left behind after a tracked fixture was removed.
+            continue;
+        }
+
+        if entry
+            .path()
+            .join("CANONICAL_V8_REGENERATION_REQUIRED")
+            .is_file()
+        {
+            println!(
+                "cargo::warning=skipping blocked local-chain fixture at {}",
+                entry.path().display()
+            );
             continue;
         }
 

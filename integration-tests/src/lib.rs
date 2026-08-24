@@ -1,28 +1,19 @@
 use crate::config::{ChainLayout, load_chain_config};
-use crate::contracts::{
-    LegacyDepositTransactionFiltererTest, SyscoinBlobsL1DAValidatorTest, SyscoinCommitterFacetTest,
-};
 use crate::node_log::NodeLogState;
 use crate::prover_tester::ProverTester;
 use crate::provider::ZksyncTestingProvider;
 use crate::rpc_recorder::{HttpRpcRecorder, RpcRecordConfig};
 use crate::test_config::{
-    BitcoinDaMock, TEST_PROVIDER_POLL_INTERVAL, build_node_config, disable_prover_input_generation,
-    maybe_start_bitcoin_da_mock,
-};
-use crate::upgrade::{
-    Action, DiamondCutData, FacetCut, L2DACommitmentScheme, ZkChain, send_l1_to_gateway_request,
+    BitcoinDaMock, TEST_PROVIDER_POLL_INTERVAL, build_node_config, maybe_start_bitcoin_da_mock,
 };
 use alloy::network::EthereumWallet;
-use alloy::primitives::{FixedBytes, U256, address};
-use alloy::providers::ext::AnvilApi;
+use alloy::primitives::U256;
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{
     DynProvider, Identity, PendingTransactionBuilder, Provider, ProviderBuilder, WalletProvider,
 };
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::{LocalSigner, PrivateKeySigner};
-use alloy::sol_types::SolCall;
 use anyhow::Context;
 use backon::ConstantBuilder;
 use backon::Retryable;
@@ -45,11 +36,7 @@ use zksync_os_provider::NodeProvider;
 use zksync_os_server::ServerPorts;
 use zksync_os_server::config::{Config, ProviderConfig};
 pub use zksync_os_server::config::{DeploymentFilterConfig, PolicyServiceConfig};
-#[cfg(feature = "prover-tests")]
-use zksync_os_server::default_protocol_version::PROTOCOL_VERSION_V30_2;
-use zksync_os_server::default_protocol_version::{
-    NEXT_PROTOCOL_VERSION, PROTOCOL_VERSION, PROTOCOL_VERSION_V31_0,
-};
+use zksync_os_server::default_protocol_version::{PROTOCOL_VERSION, PROTOCOL_VERSION_V32_0};
 use zksync_os_status_server::StatusResponse;
 use zksync_os_types::{
     L1PriorityTxType, L1TxType, NodeRole, REQUIRED_L1_TO_L2_GAS_PER_PUBDATA_BYTE,
@@ -66,8 +53,6 @@ pub mod provider;
 pub mod rpc_recorder;
 pub mod test_config;
 pub mod upgrade;
-#[cfg(feature = "prover-tests")]
-mod utils;
 pub mod wallets;
 
 /// L1 chain id as expected by contracts deployed in `l1-state.json.gz`
@@ -95,21 +80,6 @@ impl TestCase {
         }
     }
 
-    pub const fn next_to_l1() -> Self {
-        Self {
-            protocol_version: NEXT_PROTOCOL_VERSION,
-            settlement_layer: SettlementLayer::L1,
-        }
-    }
-
-    pub const fn next_to_gateway() -> Self {
-        Self {
-            protocol_version: NEXT_PROTOCOL_VERSION,
-            settlement_layer: SettlementLayer::Gateway,
-        }
-    }
-
-    // SYSCOIN: Keep an explicit supported Gateway topology while NEXT advances to direct-L1 V8.
     pub const fn current_to_gateway() -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -133,28 +103,15 @@ impl TestCase {
 }
 
 pub const CURRENT_TO_L1: TestCase = TestCase::current_to_l1();
-// SYSCOIN: v32 fixtures are intentionally direct-L1-only until the V8 app emits the compact
-// Gateway edge-DA preimages; keep Gateway coverage on the supported v31 production topology.
 pub const CURRENT_TO_GATEWAY: TestCase = TestCase::current_to_gateway();
-pub const NEXT_TO_L1: TestCase = TestCase::next_to_l1();
-pub const NEXT_TO_GATEWAY: TestCase = TestCase::next_to_gateway();
-
-/// Fresh chain at v30.2 — the oldest protocol version with live proving support (V6).
-#[cfg(feature = "prover-tests")]
-pub const V30_TO_L1: TestCase = TestCase {
-    protocol_version: PROTOCOL_VERSION_V30_2,
-    settlement_layer: SettlementLayer::L1,
-};
 
 /// Set of private keys for batch verification participants.
 pub const BATCH_VERIFICATION_KEYS: [&str; 2] = [
     "0x7094f4b57ed88624583f68d2f241858f7dafb6d2558bc22d18991690d36b4e47",
     "0xf9306dd03807c08b646d47c739bd51e4d2a25b02bad0efb3d93f095982ac98cd",
 ];
-/// Shutdown completes in <5 seconds when there is no CPU starvation. But because prover input
-/// generator runs its CPU-bound task on a blocking thread it can significantly slow down graceful
-/// shutdown. Keep 60s until V7 proving support is dropped (V8 generates prover input natively
-/// at batch seal, without the blocking RISC-V simulator).
+/// Shutdown completes in <5 seconds when there is no CPU starvation. Native batch witness
+/// generation is CPU-bound, so retain headroom for a seal already running on a blocking thread.
 const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Set of addresses (i.e. public keys) expected by batch verification. Derived from [`BATCH_VERIFICATION_KEYS`].
 static BATCH_VERIFICATION_ADDRESSES: LazyLock<Vec<String>> = LazyLock::new(|| {
@@ -228,21 +185,6 @@ impl TestEnvironment {
                     cfg!(feature = "prover-tests"),
                 )
                 .await?;
-                if !prover_input_generation_enabled() {
-                    disable_prover_input_generation(&mut gateway_config);
-                }
-                // SYSCOIN: Keep the fixture-upgrade transactions in one Gateway batch so the fake proof
-                // pipeline does not see a burst of setup-only batches before the child starts.
-                gateway_config.batcher_config.batch_timeout = Duration::from_secs(2);
-                // SYSCOIN: The fixture Gateway may seal several setup batches while its contracts are
-                // upgraded. Serialize settlement submissions so the deliberately small pipeline
-                // buffers cannot be filled by that test-only startup burst.
-                gateway_config.l1_sender_config.command_limit = 1;
-                gateway_config.prover_api_config.fake_fri_provers.workers = 1;
-                gateway_config
-                    .prover_api_config
-                    .fake_fri_provers
-                    .compute_time = Duration::from_secs(6);
                 configure_gateway(&mut gateway_config);
                 let gateway = Tester::launch_with_new_runtime(
                     l1.clone(),
@@ -250,7 +192,6 @@ impl TestEnvironment {
                     gateway_config,
                 )
                 .await?;
-                patch_v31_gateway_contracts(&l1, &gateway, 0).await?;
                 let gateway = GatewayContext::from_tester(gateway);
                 let prepared_runtime = PreparedRuntime::new().await?;
                 Ok(Self {
@@ -301,9 +242,6 @@ impl TestEnvironment {
         mut config: Config,
         l1_rpc_url: String,
     ) -> anyhow::Result<Tester> {
-        if !prover_input_generation_enabled() {
-            disable_prover_input_generation(&mut config);
-        }
         Tester::bind_runtime_config(
             &self.l1,
             self.prepared_runtime.tempdir.as_ref(),
@@ -325,9 +263,6 @@ impl TestEnvironment {
     }
 
     pub async fn launch(mut self, mut config: Config) -> anyhow::Result<Tester> {
-        if !prover_input_generation_enabled() {
-            disable_prover_input_generation(&mut config);
-        }
         Tester::bind_runtime_config(
             &self.l1,
             self.prepared_runtime.tempdir.as_ref(),
@@ -473,7 +408,6 @@ impl Tester {
             .map(|rpc_url| ProviderConfig::new(rpc_url, TEST_PROVIDER_POLL_INTERVAL));
         config.prover_api_config.fake_fri_provers.enabled = true;
         config.prover_api_config.fake_snark_provers.enabled = true;
-        config.prover_input_generator_config.logging_enabled = false;
         config.batch_verification_config.server_enabled = false;
         config.l1_sender_config.pubdata_mode = None;
     }
@@ -664,8 +598,8 @@ impl Tester {
             bitcoin_da_mock,
             ..
         } = self;
-        // NOTE: supporting nodes (e.g. gateway) are kept alive across stop/start so that
-        // `restart()` works for `NEXT_TO_GATEWAY` topology.  They are only torn down in
+        // NOTE: supporting nodes (e.g. Gateway) are kept alive across stop/start so that
+        // `restart()` preserves the complete settlement topology. They are only torn down in
         // `StoppedTester::shutdown()` or when `StoppedTester` is dropped.
         shutdown_runtime(runtime).await?;
         let http_port_reservations = HttpPortReservations::reserve(&config, bound_ports).await?;
@@ -961,9 +895,8 @@ impl StoppedTester {
             ..
         } = self;
         let mut config = config;
-        // SYSCOIN: A stopped tester restart promises to preserve its current DB. Re-unpacking the
-        // pinned v31 ephemeral fixture would silently replace rebuilt/recovered WAL and repository
-        // state with the original fixture snapshot on every restart.
+        // A stopped tester restart promises to preserve its current DB. Re-unpacking any
+        // configured ephemeral state would replace rebuilt/recovered WAL and repository state.
         config.general_config.ephemeral_state = None;
         let bitcoin_da_mock = match bitcoin_da_mock {
             Some(mock) => Some(mock),
@@ -1093,87 +1026,6 @@ impl GatewayContext {
             node: SupportingNode::from_tester(tester),
         }
     }
-}
-
-// SYSCOIN: Patch the upstream fixture with the compact DA contracts used by our v31 testnet.
-async fn patch_v31_gateway_contracts(
-    l1: &AnvilL1,
-    gateway: &Tester,
-    chain_index: usize,
-) -> anyhow::Result<()> {
-    if gateway.protocol_version() != PROTOCOL_VERSION_V31_0 {
-        return Ok(());
-    }
-    let child_layout = ChainLayout::GatewayChain {
-        protocol_version: PROTOCOL_VERSION_V31_0,
-        chain_index,
-    };
-    let child_chain_id = load_chain_config(child_layout)
-        .await
-        .genesis_config
-        .chain_id
-        .context("v31 Gateway child config is missing its chain ID")?;
-    let bridgehub_l1 = gateway.l2_zk_provider.get_bridgehub_contract().await?;
-    let bridgehub_gateway = Bridgehub::new(
-        zksync_os_contract_interface::l1_discovery::L2_BRIDGEHUB_ADDRESS,
-        gateway.l2_provider.clone(),
-        child_chain_id,
-    );
-    let child_diamond_address = *bridgehub_gateway.zk_chain().await?.address();
-    let child_diamond = ZkChain::new(child_diamond_address, gateway.l2_provider.clone());
-
-    let committer =
-        SyscoinCommitterFacetTest::deploy(gateway.l2_provider.clone(), U256::from(L1_CHAIN_ID))
-            .await
-            .context("failed to deploy the Syscoin committer on the v31 test Gateway")?;
-    let commit_selector =
-        FixedBytes(SyscoinCommitterFacetTest::commitBatchesSharedBridgeCall::SELECTOR);
-    let committer_cut = DiamondCutData {
-        facetCuts: vec![FacetCut {
-            facet: *committer.address(),
-            action: Action::Replace,
-            isFreezable: child_diamond
-                .isFunctionFreezable(commit_selector)
-                .call()
-                .await?,
-            selectors: vec![commit_selector],
-        }],
-        initAddress: Default::default(),
-        initCalldata: Default::default(),
-    };
-    let chain_type_manager = child_diamond.getChainTypeManager().call().await?;
-    send_l1_to_gateway_request(
-        &l1.provider,
-        &gateway.l2_provider,
-        &gateway.l2_zk_provider,
-        bridgehub_l1,
-        chain_type_manager,
-        child_diamond_address,
-        child_diamond
-            .executeUpgrade(committer_cut)
-            .calldata()
-            .clone(),
-    )
-    .await
-    .context("failed to install the Syscoin committer on the v31 test Gateway")?;
-
-    let diamond_admin = child_diamond.getAdmin().call().await?;
-    send_l1_to_gateway_request(
-        &l1.provider,
-        &gateway.l2_provider,
-        &gateway.l2_zk_provider,
-        bridgehub_l1,
-        diamond_admin,
-        child_diamond_address,
-        child_diamond
-            .setDAValidatorPair(*committer.address(), L2DACommitmentScheme::BLOBS_ZKSYNC_OS)
-            .calldata()
-            .clone(),
-    )
-    .await
-    .context("failed to install the Syscoin DA validator on the v31 test Gateway")?;
-
-    Ok(())
 }
 
 impl Drop for SupportingNode {
@@ -1333,7 +1185,7 @@ pub struct GatewayTesterBuilder {
 impl Default for GatewayTesterBuilder {
     fn default() -> Self {
         Self {
-            protocol_version: PROTOCOL_VERSION_V31_0,
+            protocol_version: PROTOCOL_VERSION_V32_0,
             num_chains: None,
             deployment_filter: None,
             policy_service: None,
@@ -1369,20 +1221,14 @@ impl GatewayTesterBuilder {
 
         let protocol_version = self.protocol_version;
         let l1 = AnvilL1::start(ChainLayout::Gateway { protocol_version }).await?;
-        let mut gateway_config =
+        let gateway_config =
             build_node_config(&l1, ChainLayout::Gateway { protocol_version }, false).await?;
-        if !prover_input_generation_enabled() {
-            disable_prover_input_generation(&mut gateway_config);
-        }
         let gateway = Tester::launch_with_new_runtime(
             l1.clone(),
             ChainLayout::Gateway { protocol_version },
             gateway_config,
         )
         .await?;
-        for chain_index in 0..num_chains {
-            patch_v31_gateway_contracts(&l1, &gateway, chain_index).await?;
-        }
         let gateway_rpc_url = gateway.l2_rpc_url().to_owned();
 
         let mut chains = Vec::with_capacity(num_chains);
@@ -1402,9 +1248,6 @@ impl GatewayTesterBuilder {
             let policy_service = self.policy_service.clone();
 
             let mut tester_config = build_node_config(&l1, chain_layout, false).await?;
-            if !prover_input_generation_enabled() {
-                disable_prover_input_generation(&mut tester_config);
-            }
             tester_config.gateway_provider_config = Some(ProviderConfig::new(
                 gateway_rpc_url,
                 TEST_PROVIDER_POLL_INTERVAL,
@@ -1434,10 +1277,6 @@ impl GatewayTesterBuilder {
 
         Ok(GatewayTester { gateway, chains })
     }
-}
-
-fn prover_input_generation_enabled() -> bool {
-    std::env::var("NEXTEST_PROFILE").as_deref() != Ok("no-pig")
 }
 
 async fn wait_for_gateway_readiness(
@@ -1497,12 +1336,11 @@ pub struct AnvilL1 {
 impl AnvilL1 {
     async fn start(chain_layout: ChainLayout<'_>) -> anyhow::Result<Self> {
         let tempdir = tempfile::tempdir()?;
-        let mut l1_state: serde_json::Value = serde_json::from_slice(&chain_layout.l1_state())?;
+        let l1_state: serde_json::Value = serde_json::from_slice(&chain_layout.l1_state())?;
         let l1_timestamp = l1_state_timestamp(&l1_state)?;
         let wall_clock_timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let timestamp_offset_seconds =
             i64::try_from(l1_timestamp)?.saturating_sub(i64::try_from(wall_clock_timestamp)?);
-        patch_v31_syscoin_da_validator(chain_layout, &mut l1_state)?;
         let l1_state_path = tempdir.path().join("l1-state.json");
         std::fs::write(&l1_state_path, serde_json::to_vec(&l1_state)?)
             .context("failed to write L1 state to temporary state file")?;
@@ -1556,59 +1394,6 @@ impl AnvilL1 {
             })
             .await?;
 
-            if chain_layout.protocol_version() == PROTOCOL_VERSION_V31_0 {
-                // SYSCOIN: The upstream fixture predates the compact edge-DA fields in the v31 commit struct.
-                // Deploying first ensures the facet's chain ID and timestamp-window immutables are
-                // initialized exactly as they are in production before its code replaces the fixture.
-                let committer =
-                    SyscoinCommitterFacetTest::deploy(provider.clone(), U256::from(L1_CHAIN_ID))
-                        .await
-                        .context("failed to deploy the Syscoin v31 committer facet")?;
-                let committer_code = provider
-                    .get_code_at(*committer.address())
-                    .await
-                    .context("failed to read the deployed Syscoin v31 committer facet")?;
-                provider
-                    .anvil_set_code(
-                        address!("cadf65088e818af6e6ec5c321a81a811d0d223ba"),
-                        committer_code,
-                    )
-                    .await
-                    .context("failed to install the Syscoin v31 committer facet")?;
-
-                if matches!(chain_layout, ChainLayout::Default { .. }) {
-                    let chain_config = load_chain_config(ChainLayout::Default {
-                        protocol_version: PROTOCOL_VERSION_V31_0,
-                    })
-                    .await;
-                    let chain_id = chain_config
-                        .genesis_config
-                        .chain_id
-                        .context("v31 direct-L1 fixture is missing its chain ID")?;
-                    let bridgehub_address = chain_config
-                        .genesis_config
-                        .bridgehub_address
-                        .context("v31 direct-L1 fixture is missing its Bridgehub address")?;
-                    let bridgehub = Bridgehub::new(bridgehub_address, provider.clone(), chain_id);
-                    let filterer_address = bridgehub
-                        .zk_chain()
-                        .await?
-                        .get_transaction_filterer()
-                        .await?;
-                    let filterer = LegacyDepositTransactionFiltererTest::deploy(provider.clone())
-                        .await
-                        .context("failed to deploy the v31 legacy-deposit filter shim")?;
-                    let filterer_code = provider
-                        .get_code_at(*filterer.address())
-                        .await
-                        .context("failed to read the v31 legacy-deposit filter shim")?;
-                    provider
-                        .anvil_set_code(filterer_address, filterer_code)
-                        .await
-                        .context("failed to install the v31 legacy-deposit filter shim")?;
-                }
-            }
-
             tracing::info!("L1 chain started on {}", address);
 
             // `NodeProvider::new` probes Anvil's capabilities over a transport with no request
@@ -1653,42 +1438,6 @@ impl AnvilL1 {
     }
 }
 
-fn patch_v31_syscoin_da_validator(
-    chain_layout: ChainLayout<'_>,
-    state: &mut serde_json::Value,
-) -> anyhow::Result<()> {
-    if chain_layout.protocol_version() != PROTOCOL_VERSION_V31_0 {
-        return Ok(());
-    }
-
-    // Some fixture chains still point at the old rollup validator while others already point at
-    // the dedicated ZKsync OS blobs validator. Both predate Syscoin's compact blob-ID input.
-    const V31_DA_VALIDATORS: [&str; 2] = [
-        "0xebab99053a18ee485b5f0f960c7d9efed9f9dbd8",
-        "0x6707e526d43d161218cc6f482f9cd17cd37e5837",
-    ];
-    for validator in V31_DA_VALIDATORS {
-        replace_l1_state_code(
-            state,
-            validator,
-            SyscoinBlobsL1DAValidatorTest::DEPLOYED_BYTECODE.as_ref(),
-        )?;
-    }
-    Ok(())
-}
-
-fn replace_l1_state_code(
-    state: &mut serde_json::Value,
-    address: &str,
-    bytecode: &[u8],
-) -> anyhow::Result<()> {
-    let account = state["accounts"]
-        .get_mut(address)
-        .with_context(|| format!("v31 L1 state is missing contract {address}"))?;
-    account["code"] = serde_json::Value::String(format!("0x{}", alloy::hex::encode(bytecode)));
-    Ok(())
-}
-
 fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
     let timestamp = state["block"]["timestamp"]
         .as_str()
@@ -1708,25 +1457,21 @@ fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
 #[cfg(feature = "prover-tests")]
 async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
     let protocol_version = tester.chain_layout.protocol_version();
-    let app_bin_path = match protocol_version {
-        PROTOCOL_VERSION_V30_2 => utils::materialize_multiblock_batch_bin(
-            &tester.tempdir.path().join("app_bins"),
-            "v6",
-            zksync_os_multivm::apps::v6::MULTIBLOCK_BATCH,
-        ),
-        PROTOCOL_VERSION_V31_0 => utils::materialize_multiblock_batch_bin(
-            &tester.tempdir.path().join("app_bins"),
-            "v7",
-            zksync_os_multivm::apps::v7::MULTIBLOCK_BATCH,
-        ),
-        _ => panic!("unsupported protocol version for prover tests"),
-    };
+    assert_eq!(protocol_version, PROTOCOL_VERSION_V32_0);
+    let app_bin_path = std::env::var("SYSCOIN_V8_APP_BIN")
+        .map(std::path::PathBuf::from)
+        .expect("SYSCOIN_V8_APP_BIN must point to the canonical patched-v0.4 app binary");
+    assert!(
+        app_bin_path.is_file(),
+        "SYSCOIN_V8_APP_BIN is not a file: {}",
+        app_bin_path.display()
+    );
     let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
     let output_dir = tester.tempdir.path().join("outputs");
     std::fs::create_dir_all(&output_dir).unwrap();
 
-    let path =
-        download_prover_and_unpack(protocol_version, cfg!(feature = "gpu-prover-tests")).await;
+    let path = std::env::var("SYSCOIN_V8_PROVER_BIN")
+        .expect("SYSCOIN_V8_PROVER_BIN must point to the app-bound Syscoin V8 prover");
 
     let mut child = tokio::process::Command::new(&path)
         .arg("--sequencer-urls")
@@ -1770,229 +1515,4 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
             panic!("prover service terminated with exit code {}", code);
         }
     });
-}
-
-#[cfg(feature = "prover-tests")]
-fn prover_release_for_protocol(protocol_version: &str) -> &'static str {
-    match protocol_version {
-        PROTOCOL_VERSION_V30_2 => "v0.7.1",
-        PROTOCOL_VERSION_V31_0 => "v0.8.0",
-        _ => {
-            panic!("unsupported protocol version `{protocol_version}` for prover binary selection")
-        }
-    }
-}
-
-#[cfg(feature = "prover-tests")]
-async fn download_prover_and_unpack(protocol_version: &str, gpu: bool) -> String {
-    let release_version = prover_release_for_protocol(protocol_version);
-    let release_base_url = format!(
-        "https://github.com/matter-labs/zksync-airbender-prover/releases/download/{release_version}"
-    );
-
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let asset_name = match (os, arch, gpu) {
-        ("linux", "x86_64", true) => {
-            format!(
-                "zksync-os-prover-service-{release_version}-x86_64-unknown-linux-gnu-gpu.tar.gz"
-            )
-        }
-        ("linux", "x86_64", false) => {
-            format!(
-                "zksync-os-prover-service-{release_version}-x86_64-unknown-linux-gnu-cpu.tar.gz"
-            )
-        }
-        ("macos", _, true) => {
-            panic!("GPU prover binary is not available for macOS in {release_version}")
-        }
-        ("macos", _, false) => {
-            format!("zksync-os-prover-service-{release_version}-universal-apple-darwin-cpu.tar.gz")
-        }
-        ("linux", _, _) => panic!(
-            "unsupported Linux architecture `{arch}` for prover binaries; supported architecture: x86_64"
-        ),
-        _ => panic!(
-            "unsupported platform `{os}-{arch}` for prover binaries; supported platforms: linux-x86_64 (cpu/gpu), macos-* (cpu)"
-        ),
-    };
-
-    let local_binary_name = asset_name.trim_end_matches(".tar.gz");
-    let dir = std::path::Path::new("prover-binaries");
-    if !std::fs::exists(dir).expect("failed to check dir existence") {
-        std::fs::create_dir_all(dir).expect("failed to create dir");
-    }
-
-    let binary_path = dir.join(local_binary_name);
-    if std::fs::exists(binary_path.as_path()).expect("failed to check binary existence") {
-        tracing::info!(
-            "prover service binary is already present at {}",
-            binary_path.display()
-        );
-        return binary_path.display().to_string();
-    }
-
-    let archive_path = dir.join(&asset_name);
-    if !std::fs::exists(archive_path.as_path()).expect("failed to check archive existence") {
-        let url = format!("{release_base_url}/{asset_name}");
-        tracing::info!(
-            "downloading prover service archive from {url} to {}",
-            archive_path.display()
-        );
-        let resp = download_prover_binary(&url)
-            .await
-            .expect("failed to download");
-        let body = resp
-            .bytes()
-            .await
-            .expect("failed to read response body")
-            .to_vec();
-        std::fs::write(archive_path.as_path(), body).expect("failed to write archive");
-    }
-
-    let extract_dir = dir.join(format!("{local_binary_name}-extract"));
-    if std::fs::exists(extract_dir.as_path()).expect("failed to check extraction dir existence") {
-        std::fs::remove_dir_all(extract_dir.as_path())
-            .expect("failed to clear previous extraction dir");
-    }
-    std::fs::create_dir_all(extract_dir.as_path()).expect("failed to create extraction dir");
-    let (archive_path_clone, extract_dir_clone) = (archive_path.clone(), extract_dir.clone());
-    tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(&archive_path_clone)
-            .expect("prover archive exists and is readable");
-        tar::Archive::new(flate2::read::GzDecoder::new(file))
-            .unpack(&extract_dir_clone)
-            .unwrap_or_else(|e| {
-                panic!(
-                    "failed to unpack prover archive {}: {e}",
-                    archive_path_clone.display()
-                )
-            });
-    })
-    .await
-    .expect("extraction task did not panic");
-
-    let extracted_binary_path =
-        find_first_prover_binary(extract_dir.as_path()).unwrap_or_else(|| {
-            panic!(
-                "failed to locate prover binary after unpacking archive {}",
-                archive_path.display()
-            )
-        });
-    std::fs::copy(extracted_binary_path.as_path(), binary_path.as_path())
-        .expect("failed to copy extracted prover binary");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut perms = std::fs::metadata(binary_path.as_path())
-            .expect("failed to load binary metadata")
-            .permissions();
-        perms.set_mode(0o755); // Sets rwxr-xr-x
-        std::fs::set_permissions(binary_path.as_path(), perms)
-            .expect("failed to set binary permissions");
-    }
-    #[cfg(not(unix))]
-    {
-        panic!("unsupported platform (UNIX required)");
-    }
-
-    binary_path.display().to_string()
-}
-
-#[cfg(feature = "prover-tests")]
-fn find_first_prover_binary(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    for entry in std::fs::read_dir(dir).ok()? {
-        let path = entry.ok()?.path();
-        if path.is_dir() {
-            if let Some(found) = find_first_prover_binary(path.as_path()) {
-                return Some(found);
-            }
-            continue;
-        }
-
-        let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
-            continue;
-        };
-        if file_name.starts_with("zksync-os-prover-service") && !file_name.ends_with(".tar.gz") {
-            return Some(path);
-        }
-    }
-    None
-}
-
-#[cfg(feature = "prover-tests")]
-async fn download_prover_binary(url: &str) -> anyhow::Result<reqwest::Response> {
-    use reqwest::{
-        Client, StatusCode,
-        header::{AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT},
-    };
-
-    const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
-    const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
-    const DOWNLOAD_BASE_BACKOFF_MS: u64 = 500;
-
-    fn is_retryable_status(status: StatusCode) -> bool {
-        status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
-    }
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("zksync-os-integration-tests/1.0"),
-    );
-
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        let bearer = format!("Bearer {}", token.trim());
-        match HeaderValue::from_str(&bearer) {
-            Ok(value) => {
-                headers.insert(AUTHORIZATION, value);
-            }
-            Err(err) => {
-                tracing::warn!("Ignoring invalid GITHUB_TOKEN format: {err}");
-            }
-        }
-    }
-
-    let client = Client::builder()
-        .default_headers(headers)
-        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-        .build()?;
-
-    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        let response = client.get(url).send().await;
-        match response {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    return Ok(response);
-                }
-
-                if is_retryable_status(status) && attempt < DOWNLOAD_MAX_ATTEMPTS {
-                    let delay_ms = DOWNLOAD_BASE_BACKOFF_MS * attempt as u64;
-                    tracing::warn!(
-                        "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed with status {status} for {url}; retrying in {delay_ms}ms"
-                    );
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-
-                anyhow::bail!("download failed with status {status} for {url}");
-            }
-            Err(err) => {
-                if attempt < DOWNLOAD_MAX_ATTEMPTS {
-                    let delay_ms = DOWNLOAD_BASE_BACKOFF_MS * attempt as u64;
-                    tracing::warn!(
-                        "download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed for {url}: {err}; retrying in {delay_ms}ms"
-                    );
-                    std::thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-
-                anyhow::bail!("download request failed for {url}: {err}");
-            }
-        }
-    }
-    unreachable!("loop always returns on success or final attempt");
 }

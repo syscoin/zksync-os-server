@@ -42,22 +42,15 @@ that is if a transaction doesn't use many precompiles that are expensive in term
 
 ### Pubdata price
 
-Pubdata price depends on what DA chain uses. If chain is a validium then price is set to 0.
-For rollups that settle to L1:
-- if blobs are used, then L1 blob price is used for calculation
-- if calldata is used, then L1 gas price is used for calculation
-If rollup settles to Gateway, then gateway pubdate price is used.
+The canonical Syscoin `BlobsZKsyncOS` and `RelayedL2Calldata` modes publish bytes to Bitcoin DA
+and use the Bitcoin DA client's estimated price per byte. Direct settlement uses `BlobsZKsyncOS`;
+Gateway settlement uses compact `RelayedL2Calldata`. Only Blake2s data identifiers are relayed
+through Gateway and settlement; no full calldata, Ethereum blob fee, or blob-fill adjustment is
+applied.
 
-Pricing for blobs case is special because calculation of blob commitments is proven so it results in additional proving costs,
-thus pubdata price also depends on native price.
-Also, if chain settles frequently and posts blob that is not full then operator still needs to pay for the full blob.
-Node calculates a statistic for a fill ratio of submitted blobs and uses it to adjust pubdata price accordingly.
-
-Blob price is not stable on Ethereum testnets, and can grow a lot sometimes. 
-At some point it can be the case that pubdata price is high enough so that gas costs for small transactions are higher than block gas limit.
-To circumvent this issue, node has a configuration parameter `FeeConfig::pubdata_price_cap` (`fee_pubdata_price_cap`).
-If it's set, then pubdata price is capped by the value, allowing the node to operate normally even if blob price is very high.
-For ETH-based testnet chains we recommend to set `10_000_000_000_000`. If base token price is different from ETH, then the value should be adjusted accordingly.
+Bitcoin DA prices can still move abruptly. `FeeConfig::pubdata_price_cap`
+(`fee_pubdata_price_cap`) caps the calculated pubdata price so the node can continue operating
+when the external estimate spikes. Operators should set the cap in their base token units.
 
 ### Config overrides
 

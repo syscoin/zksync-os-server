@@ -69,7 +69,9 @@ Enable and configure the main node / sequencer with these options:
   threshold through `MultisigCommitter`, that settlement-layer validator set takes precedence over
   this local list.
 - `batch_verification_request_timeout`
-  How long the main node waits for responses during a single signature collection attempt.
+  How long one signature-collection attempt may spend in total. **SYSCOIN:** This is one absolute
+  deadline across local dispatch queueing, the peer lane, and response collection; transport does
+  not restart the duration.
 - `batch_verification_retry_delay`
   Delay between collection attempts when the main node retries.
 
@@ -85,3 +87,11 @@ Each EN that participates in 2FA needs these options:
   Private key used by the EN to sign batch approvals. Its address must be present in the local
   accepted signer list for L2-only mode, or in the settlement-layer validator set for
   settlement-layer-backed mode.
+
+**SYSCOIN:** Configure stable enodes in both directions. The main node should include every
+verifier EN in `network.boot_nodes`. Trusted outgoing peers bypass admission immediately; trusted
+incoming EN dials are admitted after Reth reveals their authenticated PeerId, so neither the
+mandatory replay cap nor optional verifier cap can exclude them even when configured to zero.
+Every verifier EN must include its trusted main node in `network.boot_nodes`; the EN rejects all
+replay and verifier work from any other RLPx PeerId before reading a 2FA frame, and external-node
+startup rejects an empty boot-node set.

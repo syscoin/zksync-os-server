@@ -35,6 +35,17 @@ pub struct L1PersistBatchWatcher<BatchStorage> {
     last_persisted_batch_on_start: u64,
 }
 
+// SYSCOIN: Fresh V32 permits an older/equal recommit after a protocol revert and the next
+// sequential batch, but never a forward gap that would hide a missing range-report event.
+fn ensure_commit_has_no_gap(latest_processed_batch: u64, batch_number: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        batch_number.saturating_sub(latest_processed_batch) <= 1,
+        "non-sequential committed batch #{batch_number}; expected at most #{}",
+        latest_processed_batch.saturating_add(1)
+    );
+    Ok(())
+}
+
 impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
     /// Builds an [`SlAwareL1Watcher`](crate::SlAwareL1Watcher) that walks every settlement-layer
     /// interval still relevant to persistence, in order. Per-segment block resolution happens
@@ -234,28 +245,11 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
                 )));
             }
         } else {
-            if batch_number > latest_processed_batch + 1 {
-                if latest_processed_batch == 0 {
-                    // We did not have `ReportCommittedBatchRangeZKsyncOS` event on some of the older
-                    // testnet chains (e.g. `stage`, `testnet-alpha`). These batches are considered to
-                    // be legacy and are not persisted in batch storage. Users will not be able to
-                    // generate L2->L1 log proofs for those batches through RPC.
-                    tracing::warn!(
-                        batch_number,
-                        "first discovered batch #{batch_number} is not batch #1; assuming batches #1-#{} are legacy and skipping them",
-                        batch_number - 1
-                    );
-                } else {
-                    // This should only be possible if we skipped reverted batch previously and are now
-                    // discovering more reverted batches.
-                    tracing::warn!(
-                        batch_number,
-                        latest_processed_batch,
-                        "non-sequential batch discovered; assuming revert and skipping"
-                    );
-                    return Ok(());
-                }
-            } else if batch_number <= latest_processed_batch {
+            // SYSCOIN: Treating a gap as old-testnet/revert compatibility would permanently omit
+            // the metadata needed by recovery and L2-to-L1 proof RPCs.
+            ensure_commit_has_no_gap(latest_processed_batch, batch_number)
+                .map_err(L1WatcherError::Other)?;
+            if batch_number <= latest_processed_batch {
                 tracing::warn!(
                     "Found already committed batch #{batch_number}, but it is not present in batch storage; \
                     assuming previous operation was reverted and overwriting data"
@@ -268,6 +262,21 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
             self.last_processed_commit_batch = batch_number;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_commit_has_no_gap;
+
+    #[test]
+    fn fresh_v32_commit_sequence_allows_recommit_but_rejects_forward_gaps() {
+        assert!(ensure_commit_has_no_gap(0, 1).is_ok());
+        assert!(ensure_commit_has_no_gap(5, 6).is_ok());
+        assert!(ensure_commit_has_no_gap(5, 5).is_ok());
+        assert!(ensure_commit_has_no_gap(5, 4).is_ok());
+        assert!(ensure_commit_has_no_gap(0, 2).is_err());
+        assert!(ensure_commit_has_no_gap(5, 7).is_err());
     }
 }
 
@@ -315,12 +324,10 @@ impl<BatchStorage: WriteBatch> ProcessRawEvents for L1PersistBatchWatcher<BatchS
                                 log.block_number.expect("Missing block number in log"),
                             ),
                         });
-                    } else if self.last_processed_commit_batch == self.last_persisted_batch_on_start
-                    {
-                        // No `ReportCommittedBatchRangeZKsyncOS` event was processed yet, it is very likely that the batch is legacy
-                        // i.e. block range was not reported for it. Skip this batch.
-                        tracing::info!("assuming batch #{batch_number} is legacy and skipping it");
                     } else {
+                        // SYSCOIN: A fresh V32 execute event must have a matching range report in
+                        // the ordered finalized stream; silently skipping it creates a permanent
+                        // hole in persisted batch/proof data.
                         return Err(L1WatcherError::Other(anyhow::anyhow!(
                             "discovered executed batch #{batch_number} was not previously discovered as committed"
                         )));

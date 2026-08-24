@@ -4,7 +4,6 @@ use crate::verify_batch_wire::encode_verify_batch_request;
 use alloy::primitives::Address;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use zksync_os_batch_types::batcher_model::{
@@ -13,7 +12,8 @@ use zksync_os_batch_types::batcher_model::{
 use zksync_os_batch_types::{BatchSignatureSet, ValidatedBatchSignature};
 use zksync_os_batcher_metrics::BatchExecutionStage;
 use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
-use zksync_os_network::{PeerVerifyBatchResult, VerifyBatch, VerifyBatchOutcome};
+// SYSCOIN: Network dispatch envelopes preserve the collector-created absolute deadline.
+use zksync_os_network::{PeerVerifyBatchResult, VerifyBatchDispatch, VerifyBatchOutcome};
 use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent, SendAndRecordExt};
 
@@ -23,7 +23,8 @@ pub struct BatchVerificationPipelineStep<E> {
     validators: Vec<Address>,
     last_committed_batch_number: u64,
     l1_state: L1State,
-    verify_request_tx: mpsc::Sender<VerifyBatch>,
+    // SYSCOIN: Dispatch carries the collector's one absolute attempt deadline into networking.
+    verify_request_tx: mpsc::Sender<VerifyBatchDispatch>,
     verify_result_rx: mpsc::Receiver<PeerVerifyBatchResult>,
     _phantom: std::marker::PhantomData<E>,
 }
@@ -33,7 +34,8 @@ impl<E> BatchVerificationPipelineStep<E> {
         config: BatchVerificationConfig,
         l1_state: L1State,
         last_committed_batch_number: u64,
-        verify_request_tx: mpsc::Sender<VerifyBatch>,
+        // SYSCOIN: The network must receive the same absolute deadline used for collection.
+        verify_request_tx: mpsc::Sender<VerifyBatchDispatch>,
         verify_result_rx: mpsc::Receiver<PeerVerifyBatchResult>,
     ) -> Self {
         let (threshold, validators) = effective_verification_policy(&config, &l1_state);
@@ -57,6 +59,15 @@ pub fn effective_verification_policy(
     config: &BatchVerificationConfig,
     l1_state: &L1State,
 ) -> (u64, Vec<Address>) {
+    effective_verification_policy_for_settlement(config, &l1_state.batch_verification)
+}
+
+/// SYSCOIN: Keep startup feasibility checks and the live collector on one effective-policy
+/// implementation; divergent local/L1 override rules can otherwise admit an impossible launch.
+pub fn effective_verification_policy_for_settlement(
+    config: &BatchVerificationConfig,
+    batch_verification: &BatchVerificationSL,
+) -> (u64, Vec<Address>) {
     let config_validators = config
         .accepted_signers
         .clone()
@@ -64,7 +75,7 @@ pub fn effective_verification_policy(
         .map(|signer| signer.parse().unwrap())
         .collect();
 
-    match &l1_state.batch_verification {
+    match batch_verification {
         BatchVerificationSL::Enabled(l1_config) => {
             if !l1_config.validators.is_empty() || l1_config.threshold > 0 {
                 (
@@ -125,7 +136,8 @@ struct BatchVerificationRunner {
     accepted_signers: Vec<Address>,
     threshold: u64,
     request_id_counter: AtomicU64,
-    verify_request_tx: mpsc::Sender<VerifyBatch>,
+    // SYSCOIN: No transport layer may replace the deadline carried by this channel item.
+    verify_request_tx: mpsc::Sender<VerifyBatchDispatch>,
     verify_result_rx: mpsc::Receiver<PeerVerifyBatchResult>,
     l1_chain_id: u64,
     diamond_proxy_sl: Address,
@@ -284,6 +296,16 @@ impl BatchVerificationRunner {
         let metrics = &*BATCH_VERIFICATION_SEQUENCER_METRICS;
         let request_id = self.request_id_counter.fetch_add(1, Ordering::SeqCst);
         metrics.last_request_id.set(request_id);
+        // SYSCOIN: Encoding and queue admission are part of the attempt, so create its sole
+        // monotonic deadline before either can consume unaccounted time.
+        let start_time = Instant::now();
+        let deadline = start_time
+            .checked_add(self.config.request_timeout)
+            .ok_or_else(|| {
+                BatchVerificationError::Internal(
+                    "batch verification request timeout overflows monotonic clock".to_owned(),
+                )
+            })?;
 
         let request = encode_verify_batch_request(batch_envelope, request_id)?;
         tracing::info!(
@@ -291,27 +313,37 @@ impl BatchVerificationRunner {
             request_id,
             "Starting batch verification"
         );
-        self.verify_request_tx
-            .send(request)
-            .await
-            .map_err(|_| BatchVerificationError::VerifyRequestChannelClosed)?;
+        // SYSCOIN: Create the attempt deadline once, before dispatch queue admission. Network
+        // backlog and lane execution consume the same budget as signature collection.
+        match tokio::time::timeout_at(
+            deadline,
+            self.verify_request_tx.send(VerifyBatchDispatch {
+                message: request,
+                deadline,
+            }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(BatchVerificationError::VerifyRequestChannelClosed),
+            Err(_) => {
+                return Err(BatchVerificationError::NotEnoughSigners(0, self.threshold));
+            }
+        }
 
         let mut responses = BatchSignatureSet::new();
-        let start_time = Instant::now();
-        let deadline = Instant::now() + self.config.request_timeout;
 
         loop {
-            let remaining_time = deadline - Instant::now();
-            if remaining_time <= Duration::from_secs(0) {
-                let responses_len = u64::try_from(responses.len()).unwrap();
+            // SYSCOIN: Check the clock on both sides of channel readiness so an already-buffered
+            // result cannot win Tokio polling order at or after the absolute deadline.
+            if deadline <= Instant::now() {
                 return Err(BatchVerificationError::NotEnoughSigners(
-                    responses_len,
+                    u64::try_from(responses.len()).unwrap(),
                     self.threshold,
                 ));
             }
-
             let response =
-                match tokio::time::timeout(remaining_time, self.verify_result_rx.recv()).await {
+                match tokio::time::timeout_at(deadline, self.verify_result_rx.recv()).await {
                     Ok(Some(response)) => response,
                     Ok(None) => return Err(BatchVerificationError::VerifyResultChannelClosed),
                     Err(_) => {
@@ -322,6 +354,13 @@ impl BatchVerificationRunner {
                         ));
                     }
                 };
+            // SYSCOIN: Repeat the clock check after receive to reject a buffered late response.
+            if deadline <= Instant::now() {
+                return Err(BatchVerificationError::NotEnoughSigners(
+                    u64::try_from(responses.len()).unwrap(),
+                    self.threshold,
+                ));
+            }
 
             if response.message.request_id != request_id {
                 tracing::debug!(
@@ -409,12 +448,14 @@ impl BatchVerificationRunner {
             }
             VerifyBatchOutcome::Refused(reason) => {
                 BATCH_VERIFICATION_SEQUENCER_METRICS.failed_responses[&"refused"].inc();
+                // SYSCOIN: Remote refusal text is diagnostic and untrusted; logs retain only
+                // bounded metadata rather than copying peer-controlled content.
                 tracing::info!(
                     peer_id = %response.peer_id,
                     batch_number = batch_envelope.batch_number(),
                     request_id,
-                    "Verification refused: {}",
-                    reason
+                    reason_bytes = reason.len(),
+                    "Verification refused"
                 );
                 return None;
             }
@@ -461,6 +502,7 @@ mod tests {
     use alloy::primitives::{Address, b512};
     use alloy::signers::local::PrivateKeySigner;
     use secrecy::SecretString;
+    use std::time::Duration;
     use tokio::sync::mpsc;
     use zksync_os_batch_types::batcher_model::{
         BatchForSigning, BatchSignatureData, SignedBatchEnvelope,
@@ -494,6 +536,7 @@ mod tests {
             peer_id: b512!(
                 "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
             ),
+            lane_id: 1,
             message: result,
         }
     }
@@ -530,7 +573,7 @@ mod tests {
         last_committed_batch_number: u64,
     ) -> (
         BatchVerificationRunner,
-        mpsc::Receiver<VerifyBatch>,
+        mpsc::Receiver<VerifyBatchDispatch>,
         mpsc::Sender<PeerVerifyBatchResult>,
     ) {
         let config = test_config(accepted_signers.clone());
@@ -645,7 +688,7 @@ mod tests {
                 .await
                 .expect("verifier should send a verification request");
             let mut response = response;
-            response.message.request_id = request.request_id;
+            response.message.request_id = request.message.request_id;
             verify_result_tx
                 .send(response)
                 .await
@@ -704,11 +747,12 @@ mod tests {
             .recv()
             .await
             .expect("verifier should retry the timed out request");
-        assert_eq!(retried.batch_number, first.batch_number);
+        assert_eq!(retried.message.batch_number, first.message.batch_number);
         // Responses are matched by request id, so a retry cannot be answered by a stale response.
-        assert_ne!(retried.request_id, first.request_id);
+        assert_ne!(retried.message.request_id, first.message.request_id);
+        assert!(retried.deadline > first.deadline);
 
-        response.message.request_id = retried.request_id;
+        response.message.request_id = retried.message.request_id;
         verify_result_tx
             .send(response)
             .await
@@ -723,6 +767,40 @@ mod tests {
             .await
             .expect("run task should complete")
             .expect("run should succeed");
+    }
+
+    // SYSCOIN: A full collector-to-network queue consumes the same absolute attempt budget and a
+    // canceled send cannot leave a stale dispatch behind to reserve a verifier lane later.
+    #[tokio::test(start_paused = true)]
+    async fn dispatch_queue_backlog_consumes_attempt_deadline_without_stale_send() {
+        let batch = dummy_batch_envelope(3, 10, 15);
+        let (mut verifier, mut verify_request_rx, _verify_result_tx) = make_verifier(Vec::new(), 0);
+        verifier.config.request_timeout = Duration::from_secs(5);
+        verifier
+            .verify_request_tx
+            .try_send(VerifyBatchDispatch {
+                message: encode_verify_batch_request(&batch, 0).unwrap(),
+                deadline: Instant::now() + Duration::from_secs(60),
+            })
+            .unwrap();
+
+        let task = tokio::spawn(async move {
+            verifier
+                .collect_batch_verification_signatures(&batch, 1)
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let error = match task.await.unwrap() {
+            Ok(_) => panic!("a saturated dispatch queue unexpectedly completed"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            BatchVerificationError::NotEnoughSigners(0, 1)
+        ));
+        assert_eq!(verify_request_rx.try_recv().unwrap().message.request_id, 0);
+        assert!(verify_request_rx.try_recv().is_err());
     }
 
     #[tokio::test]

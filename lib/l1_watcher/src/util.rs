@@ -1,5 +1,6 @@
 use crate::watcher::L1WatcherError;
 use alloy::consensus::Transaction;
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::primitives::{Address, BlockNumber, Log, TxHash, U256};
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
@@ -15,9 +16,7 @@ use zksync_os_contract_interface::IChainAssetHandler;
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
 use zksync_os_contract_interface::is_method_missing;
-use zksync_os_contract_interface::{
-    Bridgehub, Error as ContractInterfaceError, IExecutor, MessageRoot, ZkChain,
-};
+use zksync_os_contract_interface::{Bridgehub, IExecutor, MessageRoot, ZkChain};
 use zksync_os_provider::NodeProvider;
 
 // SYSCOIN: Startup cursor resolution may need historical L1 state that a live
@@ -209,18 +208,13 @@ pub async fn find_block_by_migration_number(
     ));
     let target = U256::from(migration_number);
     let latest = instance.provider().get_block_number().await?;
-    let latest_migration_number = match instance
+    // SYSCOIN: The current pinned V32 ChainAssetHandler must answer this lookup. Only the binary
+    // search below may treat method-missing at historical pre-deployment blocks as `false`.
+    let latest_migration_number = instance
         .migrationNumber(U256::from(chain_id))
         .block(latest.into())
         .call()
-        .await
-    {
-        Ok(n) => n,
-        // Pre-V31 `ChainAssetHandler` does not expose `migrationNumber`. No Gateway migrations can
-        // exist in that era, so there is nothing to scan for — start from the latest block.
-        Err(err) if is_method_missing(&err) => return Ok(latest),
-        Err(err) => return Err(err.into()),
-    };
+        .await?;
     // If this migration has not been reached yet, return the latest block.
     if latest_migration_number < target {
         return Ok(latest);
@@ -565,11 +559,11 @@ pub async fn find_l1_execute_block_by_batch_number(
     .await
 }
 
-/// Finds the first L1 block where MessageRoot's counter reached `next_interop_root_id`.
+/// Finds a safe rescan block for the next MessageRoot ID the chain has not imported.
 ///
-/// The input is the next root the chain has not imported. For example, cursor 42 resolves to the
-/// block that advanced the counter to 42. A zero cursor has no on-chain anchor yet and resolves to
-/// block 0.
+/// If the next ID has already published, this is the first block whose counter reached it. If the
+/// local cursor is exactly one beyond the current counter, the chain is caught up and the canonical
+/// tip is returned so the watcher can rescan it, skip old IDs, and tail future logs.
 pub async fn find_l1_block_by_interop_root_id(
     bridgehub: Bridgehub<NodeProvider>,
     next_interop_root_id: u64,
@@ -582,7 +576,13 @@ pub async fn find_l1_block_by_interop_root_id(
         message_root_address,
         bridgehub.provider().clone(),
     ));
-    let latest = message_root.provider().get_block_number().await?;
+    let latest_block = message_root
+        .provider()
+        .get_block_by_number(BlockNumberOrTag::Latest)
+        .await?
+        .context("active MessageRoot provider returned no latest block")?;
+    let latest = latest_block.header.inner.number;
+    let latest_hash = latest_block.header.hash;
     // The provider's cache resolves (and remembers) the MessageRoot deployment block, giving the
     // search a tight lower bound without a per-iteration code-existence guard.
     let deployment_block = message_root.deployment_block().await?;
@@ -592,47 +592,20 @@ pub async fn find_l1_block_by_interop_root_id(
             let res = message_root.interop_root_log_id(block.into()).await?;
             Ok(res >= next_interop_root_id)
         };
-    // SYSCOIN
-    let latest_result = predicate(message_root.clone(), latest).await;
-    let latest_matches_target = match latest_result {
-        Ok(latest_matches_target) => latest_matches_target,
-        Err(err) if should_fallback_to_genesis_log_scan(&err) => {
-            tracing::warn!(
-                interop_root_id = next_interop_root_id,
-                message_root = ?message_root_address,
-                error = %err,
-                "MessageRoot.totalPublishedInteropRoots is unavailable; falling back to genesis log scan"
-            );
-            return Ok(0);
-        }
-        Err(err) => return Err(err),
-    };
-
-    // SYSCOIN
-    if !latest_matches_target {
-        anyhow::bail!(
-            "Condition not satisfied up to latest block: contract not deployed yet \
-             or target not reached.",
-        );
+    // SYSCOIN: V32 pins the counter getter, so a missing/reverting method is a topology error, not
+    // a legacy signal. Anchor latest state by canonical hash and distinguish a normal caught-up
+    // next cursor from a corrupt cursor that is more than one ID ahead.
+    let latest_counter = message_root
+        .interop_root_log_id(BlockId::hash_canonical(latest_hash))
+        .await?;
+    if interop_cursor_is_caught_up(next_interop_root_id, latest_counter)? {
+        return Ok(latest);
     }
 
     let (mut lo, mut hi) = (deployment_block, latest);
     while lo < hi {
         let mid = (lo + hi) / 2;
-        // SYSCOIN
-        let mid_matches_target = match predicate(message_root.clone(), mid).await {
-            Ok(mid_matches_target) => mid_matches_target,
-            Err(err) if should_fallback_to_genesis_log_scan(&err) => {
-                tracing::warn!(
-                    interop_root_id = next_interop_root_id,
-                    message_root = ?message_root_address,
-                    error = %err,
-                    "MessageRoot.totalPublishedInteropRoots became unavailable during binary search; falling back to genesis log scan"
-                );
-                return Ok(0);
-            }
-            Err(err) => return Err(err),
-        };
+        let mid_matches_target = predicate(message_root.clone(), mid).await?;
         if mid_matches_target {
             hi = mid;
         } else {
@@ -640,22 +613,31 @@ pub async fn find_l1_block_by_interop_root_id(
         }
     }
 
+    // SYSCOIN: A concurrent reorg invalidates the numeric binary-search snapshot. Restart startup
+    // discovery instead of returning a block resolved across two canonical histories.
+    let canonical_latest = message_root
+        .provider()
+        .get_block_by_number(BlockNumberOrTag::Number(latest))
+        .await?
+        .context("active MessageRoot latest block disappeared during cursor resolution")?;
+    anyhow::ensure!(
+        canonical_latest.header.hash == latest_hash,
+        "active MessageRoot chain reorged during interop cursor resolution"
+    );
     Ok(lo)
 }
-// SYSCOIN
-fn should_fallback_to_genesis_log_scan(err: &anyhow::Error) -> bool {
-    let Some(err) = err.downcast_ref::<ContractInterfaceError>() else {
-        return false;
-    };
-    match err {
-        ContractInterfaceError::Call(inner, function_name)
-        | ContractInterfaceError::CallAtBlock(inner, function_name, _)
-            if function_name == "totalPublishedInteropRoots" =>
-        {
-            inner.to_string().contains("execution reverted")
-        }
-        _ => false,
+
+// SYSCOIN: The persisted value is a next-ID cursor. Exactly counter+1 is normal caught-up state;
+// any larger gap would skip roots and must fail startup before the watcher begins polling.
+fn interop_cursor_is_caught_up(next_id: u64, latest_counter: u64) -> anyhow::Result<bool> {
+    if next_id <= latest_counter {
+        return Ok(false);
     }
+    anyhow::ensure!(
+        latest_counter.checked_add(1) == Some(next_id),
+        "persisted next interop root ID {next_id} is more than one ahead of active MessageRoot counter {latest_counter}"
+    );
+    Ok(true)
 }
 
 /// Fetches and decodes stored batch data for batch `batch_number` that is expected to have been
@@ -829,7 +811,7 @@ pub async fn fetch_committed_batch_data(
 
 #[cfg(test)]
 mod tests {
-    use super::event_scan_block_count;
+    use super::{event_scan_block_count, interop_cursor_is_caught_up};
 
     #[test]
     fn event_scan_block_count_is_inclusive() {
@@ -845,5 +827,18 @@ mod tests {
             err.to_string().contains("behind event scan start block"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn next_interop_cursor_accepts_caught_up_tip_and_rejects_skipped_ids() {
+        assert!(!interop_cursor_is_caught_up(7, 7).unwrap());
+        assert!(interop_cursor_is_caught_up(8, 7).unwrap());
+        assert!(
+            interop_cursor_is_caught_up(9, 7)
+                .unwrap_err()
+                .to_string()
+                .contains("more than one ahead")
+        );
+        assert!(!interop_cursor_is_caught_up(u64::MAX, u64::MAX).unwrap());
     }
 }

@@ -1,5 +1,5 @@
+// SYSCOIN: Compact Bitcoin DA commits have calldata-only sender metadata, with no blob sidecar.
 use crate::commands::SendToL1;
-use alloy::consensus::BlobTransactionSidecar;
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::sol_types::SolCall;
 use std::fmt::Display;
@@ -80,7 +80,6 @@ impl SendToL1 for CommitCommand {
     const SENT_STAGE: BatchExecutionStage = BatchExecutionStage::CommitL1TxSent;
     const MINED_STAGE: BatchExecutionStage = BatchExecutionStage::CommitL1TxMined;
     const PASSTHROUGH_STAGE: BatchExecutionStage = BatchExecutionStage::CommitL1Passthrough;
-    const MAY_SEND_BLOBS: bool = true;
 
     fn solidity_call(&self, _gateway: bool, _operator: &Address) -> Bytes {
         if let Some(signatures_set) = &self.signatures {
@@ -126,10 +125,6 @@ impl SendToL1 for CommitCommand {
             .abi_encode()
             .into()
         }
-    }
-
-    fn blob_sidecar(&self) -> Option<BlobTransactionSidecar> {
-        self.input.batch.blob_sidecar.clone()
     }
 }
 

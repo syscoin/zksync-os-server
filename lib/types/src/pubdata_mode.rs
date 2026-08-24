@@ -1,40 +1,18 @@
-use crate::ProtocolSemanticVersion;
 use serde::{Deserialize, Serialize};
 
 /// The chain pubdata mode.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PubdataMode {
     Blobs = 0,
-    Calldata = 1,
-    Validium = 2,
+    /// SYSCOIN: Edge-chain Bitcoin DA represented by compact references on Gateway.
     RelayedL2Calldata = 3,
 }
 
 impl PubdataMode {
-    ///
-    /// This method needed only during v29 => v30 protocol upgrade to ensure automatic pubdata mode change.
-    ///
-    /// Before v30 we didn't support blobs, and for some chains we want to automatically change pubdata mode from calldata to blobs during v30 upgrade.
-    /// For this we set blobs DA in the config, but before the v30 upgrade it should be interpreted as calldata DA.
-    ///
-    pub fn adapt_for_protocol_version(&self, protocol_version: &ProtocolSemanticVersion) -> Self {
-        if protocol_version.minor != 29 {
-            return *self;
-        }
-        match self {
-            Self::Blobs => Self::Calldata,
-            Self::Calldata => Self::Calldata,
-            Self::Validium => Self::Validium,
-            Self::RelayedL2Calldata => Self::RelayedL2Calldata,
-        }
-    }
-
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(PubdataMode::Blobs),
-            1 => Some(PubdataMode::Calldata),
-            2 => Some(PubdataMode::Validium),
             3 => Some(PubdataMode::RelayedL2Calldata),
             _ => None,
         }
@@ -47,15 +25,33 @@ impl PubdataMode {
     pub fn da_commitment_scheme(&self) -> zksync_os_contract_interface::models::DACommitmentScheme {
         match self {
             Self::Blobs => zksync_os_contract_interface::models::DACommitmentScheme::BlobsZKsyncOS,
-            Self::Calldata => {
-                zksync_os_contract_interface::models::DACommitmentScheme::BlobsAndPubdataKeccak256
-            }
-            Self::Validium => zksync_os_contract_interface::models::DACommitmentScheme::EmptyNoDA,
             // SYSCOIN: edge chains settling to Gateway publish pubdata directly to Bitcoin DA and
             // send compact blob-hash references, not full relayed calldata.
             Self::RelayedL2Calldata => {
                 zksync_os_contract_interface::models::DACommitmentScheme::BlobsZKsyncOS
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PubdataMode;
+
+    #[test]
+    fn only_canonical_syscoin_pubdata_modes_decode_from_wire() {
+        assert_eq!(PubdataMode::from_u8(0), Some(PubdataMode::Blobs));
+        assert_eq!(
+            PubdataMode::from_u8(3),
+            Some(PubdataMode::RelayedL2Calldata)
+        );
+        assert_eq!(PubdataMode::from_u8(1), None);
+        assert_eq!(PubdataMode::from_u8(2), None);
+    }
+
+    #[test]
+    fn legacy_pubdata_mode_names_do_not_deserialize() {
+        assert!(serde_json::from_str::<PubdataMode>(r#""Calldata""#).is_err());
+        assert!(serde_json::from_str::<PubdataMode>(r#""Validium""#).is_err());
     }
 }

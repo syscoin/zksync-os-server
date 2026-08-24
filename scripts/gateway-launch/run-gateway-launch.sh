@@ -31,9 +31,9 @@ Required env:
   L1_RPC_URL=http(s)://...  (HTTP(S) only)
 
 Optional env:
-  GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for os-server historical startup reads (defaults to L1_RPC_URL)
+  GATEWAY_ARCHIVE_L1_RPC_URL   archive L1 RPC for startup history and settlement proofs (defaults to L1_RPC_URL)
   BITCOIN_DA_MIN_BALANCE_SYS    target DA wallet balance, default 10 on Tanenbaum, 0 on mainnet
-  PROTOCOL_VERSION             default v31.0
+  PROTOCOL_VERSION             default v32.0
   GATEWAY_DIR                  default ~/gateway
   REUSE_ECOSYSTEM              true|false, default false
   MIGRATE_EDGE                 true|false, default false
@@ -148,7 +148,8 @@ export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: The checkpointed launcher targets the canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 : "${REUSE_ECOSYSTEM:=false}"
 REUSE_ECOSYSTEM="$(gl_to_lower "${REUSE_ECOSYSTEM}")"
 case "${REUSE_ECOSYSTEM}" in

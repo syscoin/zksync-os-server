@@ -91,6 +91,12 @@ where
             .authorization_list()
             .map(|l| l.len())
             .unwrap_or(0) as u64;
+        let blob_versioned_hashes_num = transaction
+            .blob_versioned_hashes()
+            .map_or(0, |hashes| hashes.len() as u64);
+        // SYSCOIN: The canonical server envelope has no FRI-proof transaction variant, so transactions
+        // admitted by this pool cannot carry statement-versioned hashes.
+        let statement_versioned_hashes_num = 0;
         // if base_fee > max_fee_per_gas, gas_price and correspondingly native limit can't be calculated
         // We can try to calculate native limit using some estimated inclusion params, but for now
         // just skipping native validation. It's uncommon case.
@@ -106,6 +112,8 @@ where
             access_list_accounts,
             access_list_storage_keys,
             authorization_list_num,
+            blob_versioned_hashes_num,
+            statement_versioned_hashes_num,
             U256::from(transaction.max_fee_per_gas()),
             transaction
                 .max_priority_fee_per_gas()
@@ -125,12 +133,13 @@ where
         transaction: &Tx,
     ) -> Result<(), InvalidPoolTransactionError> {
         self.inner.validate_stateless(origin, transaction)?;
+        // SYSCOIN: Fresh-only validation recognizes the sole canonical protocol identity.
         if self
             .protocol_version
             .read()
             .expect("lock poisoned")
             .as_ref()
-            .is_some_and(ProtocolSemanticVersion::is_post_v31)
+            .is_some_and(|version| version == &ProtocolSemanticVersion::canonical_genesis_version())
         {
             self.validate_intrinsic_native_resources(transaction)
         } else {

@@ -190,8 +190,7 @@ pub struct ExecutionMetrics {
 
     pub pubdata_price: Gauge<u64>,
 
-    pub blob_fill_ratio: Gauge<f64>,
-
+    // SYSCOIN: V32's compact Bitcoin-DA/native-batch path has no EIP-4844 blob-fill signal.
     pub base_fee: Gauge<u64>,
 
     pub native_price: Gauge<u64>,

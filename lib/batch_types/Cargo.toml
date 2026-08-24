@@ -20,7 +20,8 @@ zksync_os_pipeline.workspace = true
 
 zksync_os_interface.workspace = true
 
-alloy = { workspace = true, features = ["kzg", "signers", "signer-local"] }
+# SYSCOIN: Compact Bitcoin DA replaces EIP-4844 sidecars, so this crate does not enable KZG.
+alloy = { workspace = true, features = ["signers", "signer-local"] }
 thiserror.workspace = true
 serde.workspace = true
 blake2.workspace = true

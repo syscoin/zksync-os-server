@@ -17,8 +17,11 @@ rewritten server workspace. Do not use plain Cargo for commands that compile
 `multivm`; its build script deliberately rejects the unpatched upstream source.
 
 ### Local Development Setup
-1. Run script: `./run_local.sh ./local-chains/v31.0/default`
-2. To restart chain: `rm -rf db/*` then re-run the script
+
+The canonical v32.0/V8 local-chain fixture is pending atomic regeneration. The
+historical files were removed; do not bypass the gate under `local-chains/v32.0` while
+`CANONICAL_V8_REGENERATION_REQUIRED` exists. Runnable setup commands will be
+restored with the regenerated fixture.
 
 ## Submitting a PR
 
@@ -38,7 +41,10 @@ If the PR title uses the breaking-change marker (`feat!: ...`, `fix!: ...`), you
 
 ### Wire format immutability
 
-Do **not** modify existing versioned wire format files under `lib/network/src/wire/replays/v*.rs`. Add a new versioned file instead.
+Do **not** modify the contents of existing versioned wire format files under
+`lib/network/src/wire/replays/v*.rs`. Add a new versioned file instead. An obsolete format may be
+deleted only in an explicit breaking retirement after its deployed network is retired; never reuse
+its protocol number or message IDs.
 
 ### Comments
 Comment **why**, not **what**. The code shows what it does; comments explain intent, invariants, and non-obvious decisions. No comments on self-evident code.

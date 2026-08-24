@@ -1,13 +1,14 @@
 use crate::metrics::L1_STATE_METRICS;
 use crate::models::BatchDaInputMode;
-use crate::settlement_layer_intervals::SettlementLayerIntervals;
+use crate::settlement_layer_intervals::{IntervalSettlementLayer, SettlementLayerIntervals};
 use crate::{Bridgehub, MultisigCommitter, PubdataPricingMode, ZkChain};
-use alloy::eips::BlockId;
-use alloy::primitives::{Address, U256, address};
+use alloy::eips::{BlockId, BlockNumberOrTag};
+use alloy::primitives::{Address, B256, U256, address};
 use alloy::providers::Provider;
 use anyhow::Context;
 use backon::{ConstantBuilder, Retryable};
 use std::fmt::Debug;
+use std::future::Future;
 use std::time::Duration;
 use zksync_os_provider::NodeProvider;
 
@@ -44,6 +45,9 @@ pub struct L1State {
     pub finalized_sl_block_number: u64,
     pub da_input_mode: BatchDaInputMode,
     pub l1_chain_id: u64,
+    /// SYSCOIN: Canonical L1 genesis hash sampled and revalidated with the complete startup
+    /// topology. Fresh database identity must never be published from an earlier standalone RPC.
+    pub l1_genesis_block_hash: B256,
     pub sl_chain_id: u64,
     /// The address returned by `getSettlementLayer()` on the L1 diamond proxy at startup.
     /// `Address::ZERO` means the chain is settling on L1; any other address is the Gateway.
@@ -60,15 +64,152 @@ struct BatchFinality {
     last_executed_batch: u64,
 }
 
+// SYSCOIN: Startup finalization can span a settlement-layer migration. Retry a bounded number of
+// complete snapshots, then fail closed rather than returning providers bound to the old layer.
+const SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS: usize = 3;
+
+// SYSCOIN: Keep the provider-bound objects and every independently sampled identity signal in one
+// snapshot so finalization revalidation cannot accidentally compare only a subset of the topology.
+struct DiscoveredSettlementTopology {
+    bridgehub_l1: Bridgehub<NodeProvider>,
+    bridgehub_sl: Bridgehub<NodeProvider>,
+    diamond_proxy_l1: ZkChain<NodeProvider>,
+    diamond_proxy_sl: ZkChain<NodeProvider>,
+    l1_chain_id: u64,
+    l1_genesis_block_hash: B256,
+    sl_chain_id: u64,
+    settlement_layer_address: Address,
+    settlement_layer_intervals: SettlementLayerIntervals,
+}
+
+/// SYSCOIN: Provider-free identity of one complete settlement interval. Historical intervals are
+/// consensus-relevant routing state too: a reorg can change one while leaving the open interval
+/// and current settlement-layer identity unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SettlementIntervalFingerprint {
+    settlement_layer: IntervalSettlementLayer,
+    first_batch: u64,
+    last_batch: Option<u64>,
+    proxy: Address,
+}
+
+/// SYSCOIN: Provider-free identity of the complete settlement topology. Keeping every interval
+/// detects migrations, migration round trips, and historical interval changes across long reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SettlementTopologyFingerprint {
+    l1_chain_id: u64,
+    l1_genesis_block_hash: B256,
+    sl_chain_id: u64,
+    settlement_layer_address: Address,
+    diamond_proxy_l1: Address,
+    diamond_proxy_sl: Address,
+    settlement_layer_intervals: Vec<SettlementIntervalFingerprint>,
+}
+
+impl DiscoveredSettlementTopology {
+    // SYSCOIN: Reduce a provider-bound discovery result to the exact identity compared across the
+    // potentially long finalization wait.
+    fn fingerprint(&self) -> SettlementTopologyFingerprint {
+        settlement_topology_fingerprint(
+            self.l1_chain_id,
+            self.l1_genesis_block_hash,
+            self.sl_chain_id,
+            self.settlement_layer_address,
+            *self.diamond_proxy_l1.address(),
+            *self.diamond_proxy_sl.address(),
+            &self.settlement_layer_intervals,
+        )
+    }
+}
+
+// SYSCOIN: Centralize fingerprint construction so production discovery and deterministic migration
+// tests compare precisely the same fields.
+fn settlement_topology_fingerprint(
+    l1_chain_id: u64,
+    l1_genesis_block_hash: B256,
+    sl_chain_id: u64,
+    settlement_layer_address: Address,
+    diamond_proxy_l1: Address,
+    diamond_proxy_sl: Address,
+    settlement_layer_intervals: &SettlementLayerIntervals,
+) -> SettlementTopologyFingerprint {
+    let settlement_layer_intervals = settlement_layer_intervals
+        .intervals()
+        .iter()
+        .map(|interval| SettlementIntervalFingerprint {
+            settlement_layer: interval.settlement_layer.clone(),
+            first_batch: interval.first_batch,
+            last_batch: interval.last_batch,
+            proxy: *interval.proxy.address(),
+        })
+        .collect();
+    SettlementTopologyFingerprint {
+        l1_chain_id,
+        l1_genesis_block_hash,
+        sl_chain_id,
+        settlement_layer_address,
+        diamond_proxy_l1,
+        diamond_proxy_sl,
+        settlement_layer_intervals,
+    }
+}
+
+// SYSCOIN: Bound migration churn during startup; only an unchanged post-wait topology can be
+// accepted, while the final changed attempt fails closed.
+fn retry_changed_settlement_topology(
+    before: &SettlementTopologyFingerprint,
+    after: &SettlementTopologyFingerprint,
+    attempt: usize,
+) -> anyhow::Result<bool> {
+    if before == after {
+        return Ok(false);
+    }
+    anyhow::ensure!(
+        attempt < SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS,
+        "settlement topology changed during startup snapshot on all \
+         {SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS} attempts; before={before:?}, after={after:?}"
+    );
+    Ok(true)
+}
+
+// SYSCOIN: Keep the bounded retry control flow in one driver so both public fetch paths and their
+// deterministic tests prove the same accept/retry/fail-closed behavior around arbitrarily long reads.
+async fn retry_settlement_snapshot<T, F, Fut>(mut attempt_snapshot: F) -> anyhow::Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<
+        Output = anyhow::Result<(
+            T,
+            SettlementTopologyFingerprint,
+            SettlementTopologyFingerprint,
+        )>,
+    >,
+{
+    for attempt in 1..=SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS {
+        let (snapshot, before, after) = attempt_snapshot(attempt).await?;
+        if retry_changed_settlement_topology(&before, &after, attempt)? {
+            tracing::warn!(
+                attempt,
+                max_attempts = SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS,
+                ?before,
+                ?after,
+                "settlement topology changed during startup reads; retrying the complete snapshot"
+            );
+            continue;
+        }
+        return Ok(snapshot);
+    }
+    unreachable!("bounded settlement topology loop returns or errors on its final attempt")
+}
+
 impl L1State {
     /// Resolves the L1 diamond proxy for this chain via the L1 Bridgehub, without fetching any
     /// batch-finality state.
     ///
-    /// Startup uses this to initialize genesis and the repository manager *before* the startup L1
-    /// revert (the revert's `from_block_hash` guard reads the current local block hash via the
-    /// repository manager). The full [`L1State`] — including the batch-finality numbers
-    /// (`last_committed_batch`, ...) that a revert invalidates — is fetched only after the revert
-    /// decision point, so no stale batch-finality data can reach the components initialized here.
+    /// SYSCOIN: This narrow resolver remains available for callers that do not establish durable
+    /// identity. Node startup uses a fully revalidated [`L1State`] before publishing its database
+    /// marker, then refreshes batch-finality counters only if its own startup revert invalidates
+    /// them.
     pub async fn resolve_diamond_proxy_l1(
         l1_provider: NodeProvider,
         bridgehub_address_l1: Address,
@@ -91,36 +232,39 @@ impl L1State {
         Ok((bridgehub_l1, diamond_proxy_l1))
     }
 
-    /// Fetches L1 ecosystem contracts along with batch finality status as of latest block.
-    ///
-    /// `gateway_provider` must be `Some` when the chain is currently settling on the Gateway
-    /// (an error is returned if missing). It may also be passed when the chain is currently
-    /// settling on L1 but has historical Gateway intervals — in that case the Gateway diamond
-    /// proxy is resolved from it so historical batches committed on the Gateway can still be
-    /// looked up through [`SettlementLayerIntervals`].
-    pub async fn fetch(
+    /// SYSCOIN: Discovers and cross-validates every identity signal needed to bind one active
+    /// settlement topology. This deliberately excludes batch counters so `fetch_finalized()` can
+    /// repeat it after its wait without waiting on finality a second time.
+    async fn discover_settlement_topology(
         l1_provider: NodeProvider,
         gateway_provider: Option<NodeProvider>,
         bridgehub_address_l1: Address,
         l2_chain_id: u64,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<DiscoveredSettlementTopology> {
         let l1_chain_id = l1_provider.get_chain_id().await?;
-
+        // SYSCOIN: Database identity is authority for every child store. Sample block zero inside
+        // the same before/after topology fingerprint as chain/proxy/migration identity so one
+        // transient standalone response cannot be durably published by startup.
+        let l1_genesis_block = l1_provider
+            .get_block_by_number(BlockNumberOrTag::Earliest)
+            .await?
+            .context("L1 provider returned no genesis block during settlement discovery")?;
+        anyhow::ensure!(
+            l1_genesis_block.header.inner.number == 0,
+            "L1 provider returned block {} for the earliest block",
+            l1_genesis_block.header.inner.number
+        );
+        let l1_genesis_block_hash = l1_genesis_block.header.hash;
         let (bridgehub_l1, diamond_proxy_l1) =
             Self::resolve_l1_bridgehub_and_proxy(l1_provider, bridgehub_address_l1, l2_chain_id)
                 .await?;
 
-        // Call ZKChainStorage::getSettlementLayer() on the L1 diamond proxy to determine whether
-        // this chain is currently settling on L1 or on the Gateway.
-        // Returns address(0) when settling on L1, or the Gateway diamond proxy address after migration.
         let settlement_layer_address = diamond_proxy_l1
             .get_settlement_layer(BlockId::latest())
             .await?;
         let (sl_chain_id, bridgehub_sl) = if settlement_layer_address.is_zero() {
-            // Settling on L1: the settlement layer is L1 itself.
             (l1_chain_id, bridgehub_l1.clone())
         } else {
-            // Settling on Gateway: require a dedicated Gateway RPC provider.
             let gateway_provider = gateway_provider.as_ref().with_context(|| {
                 format!(
                     "chain is settling on Gateway (settlement layer: {settlement_layer_address}) \
@@ -137,9 +281,125 @@ impl L1State {
             (sl_chain_id, bridgehub_sl)
         };
 
+        // SYSCOIN: Bind the configured Gateway RPC identity to the Gateway proxy selected by the
+        // canonical L1 chain. Chain-ID whitelisting alone is insufficient: another whitelisted
+        // Gateway could expose this edge chain and otherwise pass all startup discovery checks.
+        Self::validate_settlement_layer_identity(
+            &bridgehub_l1,
+            settlement_layer_address,
+            sl_chain_id,
+        )
+        .await?;
         Self::validate_chain_ids(&bridgehub_l1, &bridgehub_sl, l2_chain_id).await?;
 
         let diamond_proxy_sl = bridgehub_sl.zk_chain().await?;
+        let chain_asset_handler = bridgehub_l1.chain_asset_handler_address().await?;
+        let settlement_layer_intervals = SettlementLayerIntervals::discover(
+            chain_asset_handler,
+            diamond_proxy_l1.clone(),
+            gateway_provider,
+            l2_chain_id,
+        )
+        .await?;
+        let current_interval = settlement_layer_intervals
+            .intervals()
+            .last()
+            .expect("settlement layer discovery always returns an open interval");
+        // SYSCOIN: getSettlementLayer() and migration intervals are sampled by separate RPC reads.
+        // Abort if a concurrent migration produced a split startup topology rather than routing
+        // execution and settlement through different layers.
+        Self::validate_settlement_topology_snapshot(
+            settlement_layer_address,
+            l1_chain_id,
+            sl_chain_id,
+            *diamond_proxy_l1.address(),
+            *diamond_proxy_sl.address(),
+            &current_interval.settlement_layer,
+            *current_interval.proxy.address(),
+            current_interval.last_batch,
+        )?;
+
+        Ok(DiscoveredSettlementTopology {
+            bridgehub_l1,
+            bridgehub_sl,
+            diamond_proxy_l1,
+            diamond_proxy_sl,
+            l1_chain_id,
+            l1_genesis_block_hash,
+            sl_chain_id,
+            settlement_layer_address,
+            settlement_layer_intervals,
+        })
+    }
+
+    /// Fetches L1 ecosystem contracts along with batch finality status as of latest block.
+    ///
+    /// `gateway_provider` must be `Some` when the chain is currently settling on the Gateway
+    /// (an error is returned if missing). It may also be passed when the chain is currently
+    /// settling on L1 but has historical Gateway intervals — in that case the Gateway diamond
+    /// proxy is resolved from it so historical batches committed on the Gateway can still be
+    /// looked up through [`SettlementLayerIntervals`].
+    pub async fn fetch(
+        l1_provider: NodeProvider,
+        gateway_provider: Option<NodeProvider>,
+        bridgehub_address_l1: Address,
+        l2_chain_id: u64,
+    ) -> anyhow::Result<Self> {
+        // SYSCOIN: Ordinary EN/non-batcher startup performs multiple independent RPC reads after
+        // discovery. Revalidate the complete topology at the end and retry the entire snapshot so
+        // those roles cannot return providers or historical intervals from a pre-migration view.
+        retry_settlement_snapshot(|_| {
+            let l1_provider = l1_provider.clone();
+            let gateway_provider = gateway_provider.clone();
+            async move {
+                let (snapshot, before) = Self::fetch_once(
+                    l1_provider.clone(),
+                    gateway_provider.clone(),
+                    bridgehub_address_l1,
+                    l2_chain_id,
+                )
+                .await?;
+                let after = Self::discover_settlement_topology(
+                    l1_provider,
+                    gateway_provider,
+                    bridgehub_address_l1,
+                    l2_chain_id,
+                )
+                .await?
+                .fingerprint();
+                Ok((snapshot, before, after))
+            }
+        })
+        .await
+    }
+
+    // SYSCOIN: Build exactly one ordinary startup snapshot. Callers must compare the returned
+    // pre-read topology fingerprint with a fresh discovery after all provider reads complete.
+    async fn fetch_once(
+        l1_provider: NodeProvider,
+        gateway_provider: Option<NodeProvider>,
+        bridgehub_address_l1: Address,
+        l2_chain_id: u64,
+    ) -> anyhow::Result<(Self, SettlementTopologyFingerprint)> {
+        let topology = Self::discover_settlement_topology(
+            l1_provider,
+            gateway_provider,
+            bridgehub_address_l1,
+            l2_chain_id,
+        )
+        .await?;
+        let before = topology.fingerprint();
+        let DiscoveredSettlementTopology {
+            bridgehub_l1,
+            bridgehub_sl,
+            diamond_proxy_l1,
+            diamond_proxy_sl,
+            l1_chain_id,
+            l1_genesis_block_hash,
+            sl_chain_id,
+            settlement_layer_address,
+            settlement_layer_intervals,
+        } = topology;
         let validator_timelock_sl = bridgehub_sl.validator_timelock_address().await?;
 
         // SYSCOIN: wait for a finalized SL block before sampling latest counters. Sampling latest
@@ -197,39 +457,35 @@ impl L1State {
             None => BatchVerificationSL::Disabled,
         };
 
-        let chain_asset_handler = bridgehub_l1.chain_asset_handler_address().await?;
-        let settlement_layer_intervals = SettlementLayerIntervals::discover(
-            chain_asset_handler,
-            diamond_proxy_l1.clone(),
-            gateway_provider,
-            l2_chain_id,
-        )
-        .await?;
         tracing::info!(
             "discovered {} settlement layer intervals: {:?}",
             settlement_layer_intervals.intervals().len(),
             settlement_layer_intervals.intervals(),
         );
 
-        Ok(Self {
-            bridgehub_l1,
-            bridgehub_sl,
-            diamond_proxy_l1,
-            diamond_proxy_sl,
-            validator_timelock_sl,
-            batch_verification,
-            last_committed_batch,
-            last_proved_batch,
-            last_executed_batch,
-            last_finalized_executed_batch,
-            sl_block_number: latest_sl_block_number,
-            finalized_sl_block_number,
-            da_input_mode,
-            l1_chain_id,
-            sl_chain_id,
-            settlement_layer_address,
-            settlement_layer_intervals,
-        })
+        Ok((
+            Self {
+                bridgehub_l1,
+                bridgehub_sl,
+                diamond_proxy_l1,
+                diamond_proxy_sl,
+                validator_timelock_sl,
+                batch_verification,
+                last_committed_batch,
+                last_proved_batch,
+                last_executed_batch,
+                last_finalized_executed_batch,
+                sl_block_number: latest_sl_block_number,
+                finalized_sl_block_number,
+                da_input_mode,
+                l1_chain_id,
+                l1_genesis_block_hash,
+                sl_chain_id,
+                settlement_layer_address,
+                settlement_layer_intervals,
+            },
+            before,
+        ))
     }
 
     async fn validate_chain_ids(
@@ -257,6 +513,83 @@ impl L1State {
         Ok(())
     }
 
+    /// SYSCOIN: Fails closed unless a nonzero `getSettlementLayer()` address is the L1
+    /// Bridgehub's registered ZK chain for the configured Gateway RPC's chain ID. Direct-L1
+    /// settlement has no Gateway identity to resolve and remains unaffected.
+    async fn validate_settlement_layer_identity(
+        bridgehub_l1: &Bridgehub<NodeProvider>,
+        settlement_layer_address: Address,
+        sl_chain_id: u64,
+    ) -> anyhow::Result<()> {
+        if settlement_layer_address.is_zero() {
+            return Ok(());
+        }
+
+        let registered_gateway = bridgehub_l1
+            .zk_chain_by_chain_id(sl_chain_id)
+            .await
+            .with_context(|| {
+                format!("failed to resolve Gateway chain ID {sl_chain_id} through the L1 Bridgehub")
+            })?;
+        let registered_gateway_address = *registered_gateway.address();
+        anyhow::ensure!(
+            registered_gateway_address == settlement_layer_address,
+            "Gateway settlement-layer identity mismatch: L1 getSettlementLayer() returned \
+             {settlement_layer_address}, but L1 Bridgehub.getZKChain({sl_chain_id}) returned \
+             {registered_gateway_address}"
+        );
+        Ok(())
+    }
+
+    /// SYSCOIN: Fails closed when independently sampled settlement-layer signals describe
+    /// different current topologies, as can happen if migration races startup discovery.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_settlement_topology_snapshot(
+        settlement_layer_address: Address,
+        l1_chain_id: u64,
+        sl_chain_id: u64,
+        diamond_proxy_l1: Address,
+        diamond_proxy_sl: Address,
+        interval_layer: &IntervalSettlementLayer,
+        interval_proxy: Address,
+        interval_last_batch: Option<u64>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            interval_last_batch.is_none(),
+            "current settlement-layer interval is unexpectedly closed at batch {:?}",
+            interval_last_batch
+        );
+        if settlement_layer_address.is_zero() {
+            anyhow::ensure!(
+                sl_chain_id == l1_chain_id,
+                "direct-L1 settlement snapshot uses SL chain ID {sl_chain_id}, expected L1 chain ID {l1_chain_id}"
+            );
+            anyhow::ensure!(
+                matches!(interval_layer, IntervalSettlementLayer::L1),
+                "getSettlementLayer() reports direct L1 but the open interval reports {interval_layer}"
+            );
+            anyhow::ensure!(
+                diamond_proxy_sl == diamond_proxy_l1 && interval_proxy == diamond_proxy_l1,
+                "direct-L1 settlement proxy mismatch: L1={diamond_proxy_l1}, SL={diamond_proxy_sl}, interval={interval_proxy}"
+            );
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            sl_chain_id != l1_chain_id,
+            "Gateway settlement snapshot uses the L1 chain ID {l1_chain_id}"
+        );
+        anyhow::ensure!(
+            matches!(interval_layer, IntervalSettlementLayer::Gateway(chain_id) if *chain_id == sl_chain_id),
+            "getSettlementLayer() reports Gateway chain ID {sl_chain_id} but the open interval reports {interval_layer}"
+        );
+        anyhow::ensure!(
+            interval_proxy == diamond_proxy_sl,
+            "Gateway settlement proxy mismatch: resolved SL={diamond_proxy_sl}, interval={interval_proxy}"
+        );
+        Ok(())
+    }
+
     /// Equivalent to [`Self::fetch`] that also waits until the pending SL state is consistent with the
     /// latest SL state (i.e., there are no pending transactions that are committing / proving /
     /// executing batches on the settlement layer).
@@ -268,49 +601,86 @@ impl L1State {
         gateway_provider: Option<NodeProvider>,
         bridgehub_address: Address,
         chain_id: u64,
-        // SYSCOIN: preserve the configured startup finalization wait used by the direct-v31 launch path.
+        // SYSCOIN: preserve the configured startup finalization wait used by the direct-settlement path.
         startup_sl_finalization_timeout: Duration,
     ) -> anyhow::Result<Self> {
-        let this = Self::fetch(l1_provider, gateway_provider, bridgehub_address, chain_id).await?;
-        let zk_chain_sl = &this.diamond_proxy_sl;
-        let (sl_block_number, batch_finality) = wait_to_finalize(
-            zk_chain_sl.provider(),
-            startup_sl_finalization_timeout,
-            |block_id| async move {
-                Ok(BatchFinality {
-                    last_committed_batch: zk_chain_sl.get_total_batches_committed(block_id).await?,
-                    last_proved_batch: zk_chain_sl.get_total_batches_proved(block_id).await?,
-                    last_executed_batch: zk_chain_sl.get_total_batches_executed(block_id).await?,
-                })
-            },
-        )
-        .await
-        .context("failed to fetch finalized batch state")?;
-        validate_batch_frontiers(
-            batch_finality.last_committed_batch,
-            batch_finality.last_proved_batch,
-            batch_finality.last_executed_batch,
-            this.last_finalized_executed_batch,
-        )?;
-        Ok(Self {
-            bridgehub_l1: this.bridgehub_l1,
-            bridgehub_sl: this.bridgehub_sl,
-            diamond_proxy_l1: this.diamond_proxy_l1,
-            diamond_proxy_sl: this.diamond_proxy_sl,
-            validator_timelock_sl: this.validator_timelock_sl,
-            batch_verification: this.batch_verification,
-            last_committed_batch: batch_finality.last_committed_batch,
-            last_proved_batch: batch_finality.last_proved_batch,
-            last_executed_batch: batch_finality.last_executed_batch,
-            last_finalized_executed_batch: this.last_finalized_executed_batch,
-            sl_block_number,
-            finalized_sl_block_number: this.finalized_sl_block_number,
-            da_input_mode: this.da_input_mode,
-            l1_chain_id: this.l1_chain_id,
-            sl_chain_id: this.sl_chain_id,
-            settlement_layer_address: this.settlement_layer_address,
-            settlement_layer_intervals: this.settlement_layer_intervals,
+        // SYSCOIN: A complete attempt includes discovery, finalization wait, and post-wait identity
+        // revalidation. Never mix finalized counters from one topology with providers from another.
+        let snapshot = retry_settlement_snapshot(|_| {
+            let l1_provider = l1_provider.clone();
+            let gateway_provider = gateway_provider.clone();
+            async move {
+                let (this, before) = Self::fetch_once(
+                    l1_provider.clone(),
+                    gateway_provider.clone(),
+                    bridgehub_address,
+                    chain_id,
+                )
+                .await?;
+                let zk_chain_sl = &this.diamond_proxy_sl;
+                let (sl_block_number, batch_finality) = wait_to_finalize(
+                    zk_chain_sl.provider(),
+                    startup_sl_finalization_timeout,
+                    |block_id| async move {
+                        Ok(BatchFinality {
+                            last_committed_batch: zk_chain_sl
+                                .get_total_batches_committed(block_id)
+                                .await?,
+                            last_proved_batch: zk_chain_sl
+                                .get_total_batches_proved(block_id)
+                                .await?,
+                            last_executed_batch: zk_chain_sl
+                                .get_total_batches_executed(block_id)
+                                .await?,
+                        })
+                    },
+                )
+                .await
+                .context("failed to fetch finalized batch state")?;
+
+                // SYSCOIN: The wait above may be arbitrarily long. Re-discover the exact
+                // L1-selected identity and full interval history after it completes; migration or
+                // a historical interval reorg invalidates every provider/counter sampled before it.
+                let after = Self::discover_settlement_topology(
+                    l1_provider,
+                    gateway_provider,
+                    bridgehub_address,
+                    chain_id,
+                )
+                .await?
+                .fingerprint();
+
+                let snapshot = Self {
+                    bridgehub_l1: this.bridgehub_l1,
+                    bridgehub_sl: this.bridgehub_sl,
+                    diamond_proxy_l1: this.diamond_proxy_l1,
+                    diamond_proxy_sl: this.diamond_proxy_sl,
+                    validator_timelock_sl: this.validator_timelock_sl,
+                    batch_verification: this.batch_verification,
+                    last_committed_batch: batch_finality.last_committed_batch,
+                    last_proved_batch: batch_finality.last_proved_batch,
+                    last_executed_batch: batch_finality.last_executed_batch,
+                    last_finalized_executed_batch: this.last_finalized_executed_batch,
+                    sl_block_number,
+                    finalized_sl_block_number: this.finalized_sl_block_number,
+                    da_input_mode: this.da_input_mode,
+                    l1_chain_id: this.l1_chain_id,
+                    l1_genesis_block_hash: this.l1_genesis_block_hash,
+                    sl_chain_id: this.sl_chain_id,
+                    settlement_layer_address: this.settlement_layer_address,
+                    settlement_layer_intervals: this.settlement_layer_intervals,
+                };
+                Ok((snapshot, before, after))
+            }
         })
+        .await?;
+        validate_batch_frontiers(
+            snapshot.last_committed_batch,
+            snapshot.last_proved_batch,
+            snapshot.last_executed_batch,
+            snapshot.last_finalized_executed_batch,
+        )?;
+        Ok(snapshot)
     }
 
     /// Fetch L1 state, optionally waiting for all pending L1 transactions to finalize first.
@@ -455,7 +825,7 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
     warning_interval: Duration,
     f: impl Fn(BlockId) -> Fut,
 ) -> anyhow::Result<(u64, T)> {
-    /// SYSCOIN We probe once per second so startup can proceed as soon as pending SL state finalizes.
+    /// SYSCOIN: We probe once per second so startup can proceed as soon as pending SL state finalizes.
     const RETRY_DELAY: Duration = Duration::from_secs(1);
     let retry_builder = ConstantBuilder::new()
         .with_delay(RETRY_DELAY)
@@ -543,6 +913,39 @@ async fn wait_to_finalize<T: Debug + PartialEq, Fut: Future<Output = crate::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::network::EthereumWallet;
+    use alloy::primitives::{Bytes, address};
+    use alloy::providers::ProviderBuilder;
+    use alloy::rpc::types::Header;
+    use alloy::sol_types::SolValue;
+    use alloy::transports::mock::Asserter;
+
+    const EDGE_CHAIN_ID: u64 = 506;
+    const GATEWAY_CHAIN_ID: u64 = 270;
+
+    fn header_with_number(number: u64) -> Header<alloy::consensus::Header> {
+        let mut header: Header<alloy::consensus::Header> = Header::default();
+        header.inner.number = number;
+        header
+    }
+
+    async fn mocked_bridgehub_l1(asserter: &Asserter) -> Bridgehub<NodeProvider> {
+        // NodeProvider capability probes: latest header and finalized header.
+        asserter.push_success(&header_with_number(1));
+        asserter.push_success(&header_with_number(1));
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .wallet(EthereumWallet::default())
+            .connect_mocked_client(asserter.clone());
+        let provider = NodeProvider::new(provider)
+            .await
+            .expect("mocked provider construction should succeed");
+        Bridgehub::new(
+            address!("0x0000000000000000000000000000000000001002"),
+            provider,
+            EDGE_CHAIN_ID,
+        )
+    }
 
     #[test]
     fn batch_frontiers_allow_ordered_state() {
@@ -564,5 +967,347 @@ mod tests {
     fn batch_frontiers_reject_non_monotonic_latest_counters() {
         assert!(validate_batch_frontiers(1, 1, 2, 1).is_err());
         assert!(validate_batch_frontiers(1, 2, 1, 1).is_err());
+    }
+
+    // SYSCOIN: A configured Gateway must be the exact ZK-chain proxy selected on canonical L1.
+    #[tokio::test]
+    async fn settlement_layer_identity_accepts_registered_gateway() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+        let gateway = address!("0x0000000000000000000000000000000000002002");
+        asserter.push_success(&Bytes::from(gateway.abi_encode()));
+
+        L1State::validate_settlement_layer_identity(&bridgehub_l1, gateway, GATEWAY_CHAIN_ID)
+            .await
+            .expect("matching Gateway identity must be accepted");
+
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: Whitelisting a Gateway chain ID must not let a different Gateway RPC identity pass.
+    #[tokio::test]
+    async fn settlement_layer_identity_rejects_different_registered_gateway() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+        let selected_gateway = address!("0x0000000000000000000000000000000000002002");
+        let registered_gateway = address!("0x0000000000000000000000000000000000003003");
+        asserter.push_success(&Bytes::from(registered_gateway.abi_encode()));
+
+        let err = L1State::validate_settlement_layer_identity(
+            &bridgehub_l1,
+            selected_gateway,
+            GATEWAY_CHAIN_ID,
+        )
+        .await
+        .expect_err("mismatched Gateway identity must be rejected");
+
+        assert!(
+            err.to_string().contains("identity mismatch"),
+            "unexpected error: {err:#}"
+        );
+        assert!(asserter.read_q().is_empty(), "all responses consumed");
+    }
+
+    // SYSCOIN: Direct-L1 settlement must not perform a Gateway lookup.
+    #[tokio::test]
+    async fn settlement_layer_identity_leaves_direct_l1_unaffected() {
+        let asserter = Asserter::new();
+        let bridgehub_l1 = mocked_bridgehub_l1(&asserter).await;
+
+        L1State::validate_settlement_layer_identity(&bridgehub_l1, Address::ZERO, GATEWAY_CHAIN_ID)
+            .await
+            .expect("direct-L1 settlement must not require a Gateway identity");
+
+        assert!(
+            asserter.read_q().is_empty(),
+            "direct-L1 validation must not issue an RPC call"
+        );
+    }
+
+    // SYSCOIN: Direct-L1 startup accepts only a coherent zero-address/open-L1 identity snapshot.
+    #[test]
+    fn settlement_topology_snapshot_accepts_direct_l1() {
+        let proxy = address!("0x0000000000000000000000000000000000004004");
+        L1State::validate_settlement_topology_snapshot(
+            Address::ZERO,
+            57,
+            57,
+            proxy,
+            proxy,
+            &IntervalSettlementLayer::L1,
+            proxy,
+            None,
+        )
+        .expect("coherent direct-L1 snapshot must pass");
+    }
+
+    // SYSCOIN: Gateway startup binds the selected layer, chain ID, and proxy into one snapshot.
+    #[test]
+    fn settlement_topology_snapshot_accepts_gateway() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let sl_proxy = address!("0x0000000000000000000000000000000000005005");
+        L1State::validate_settlement_topology_snapshot(
+            address!("0x0000000000000000000000000000000000006006"),
+            57,
+            57_001,
+            l1_proxy,
+            sl_proxy,
+            &IntervalSettlementLayer::Gateway(57_001),
+            sl_proxy,
+            None,
+        )
+        .expect("coherent Gateway snapshot must pass");
+    }
+
+    // SYSCOIN: Independently sampled current-layer and interval signals must fail closed if split.
+    #[test]
+    fn settlement_topology_snapshot_rejects_split_layer_signals() {
+        let proxy = address!("0x0000000000000000000000000000000000004004");
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                Address::ZERO,
+                57,
+                57,
+                proxy,
+                proxy,
+                &IntervalSettlementLayer::Gateway(57_001),
+                proxy,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                address!("0x0000000000000000000000000000000000006006"),
+                57,
+                57_001,
+                proxy,
+                proxy,
+                &IntervalSettlementLayer::L1,
+                proxy,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    // SYSCOIN: Gateway chain/proxy identity mismatches cannot route startup to another settlement layer.
+    #[test]
+    fn settlement_topology_snapshot_rejects_gateway_id_or_proxy_mismatch() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let sl_proxy = address!("0x0000000000000000000000000000000000005005");
+        let gateway = address!("0x0000000000000000000000000000000000006006");
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                gateway,
+                57,
+                57_001,
+                l1_proxy,
+                sl_proxy,
+                &IntervalSettlementLayer::Gateway(57_002),
+                sl_proxy,
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            L1State::validate_settlement_topology_snapshot(
+                gateway,
+                57,
+                57_001,
+                l1_proxy,
+                sl_proxy,
+                &IntervalSettlementLayer::Gateway(57_001),
+                l1_proxy,
+                None,
+            )
+            .is_err()
+        );
+    }
+
+    // SYSCOIN: Build provider-free deterministic topology identities for bounded retry regressions.
+    fn topology_fingerprint(
+        settlement_layer_address: Address,
+        sl_chain_id: u64,
+        open_interval_layer: IntervalSettlementLayer,
+        open_interval_first_batch: u64,
+        open_interval_proxy: Address,
+    ) -> SettlementTopologyFingerprint {
+        SettlementTopologyFingerprint {
+            l1_chain_id: 57,
+            l1_genesis_block_hash: B256::repeat_byte(0x57),
+            sl_chain_id,
+            settlement_layer_address,
+            diamond_proxy_l1: address!("0x0000000000000000000000000000000000004004"),
+            diamond_proxy_sl: open_interval_proxy,
+            settlement_layer_intervals: vec![SettlementIntervalFingerprint {
+                settlement_layer: open_interval_layer,
+                first_batch: open_interval_first_batch,
+                last_batch: None,
+                proxy: open_interval_proxy,
+            }],
+        }
+    }
+
+    // SYSCOIN: A migration that lands while `wait_to_finalize()` is pending invalidates the
+    // provider-bound counters and retries the complete startup snapshot.
+    #[tokio::test]
+    async fn finalized_snapshot_retries_migration_during_wait() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let gateway_proxy = address!("0x0000000000000000000000000000000000005005");
+        let before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 1, l1_proxy);
+        let after = topology_fingerprint(
+            gateway_proxy,
+            57_001,
+            IntervalSettlementLayer::Gateway(57_001),
+            42,
+            gateway_proxy,
+        );
+
+        let mut attempts = std::collections::VecDeque::from([
+            (11_u64, before, after.clone()),
+            (22_u64, after.clone(), after),
+        ]);
+        let mut observed_attempts = Vec::new();
+        let snapshot = retry_settlement_snapshot(|attempt| {
+            observed_attempts.push(attempt);
+            std::future::ready(Ok::<_, anyhow::Error>(attempts.pop_front().unwrap()))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot, 22);
+        assert_eq!(observed_attempts, [1, 2]);
+        assert!(attempts.is_empty());
+    }
+
+    // SYSCOIN: Block zero is part of persistent database identity. A provider that changes only
+    // that response across the startup snapshot must retry just like a proxy or migration change.
+    #[tokio::test]
+    async fn settlement_snapshot_retries_l1_genesis_change() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 1, l1_proxy);
+        let mut changed = before.clone();
+        changed.l1_genesis_block_hash = B256::repeat_byte(0x58);
+
+        let mut attempts = std::collections::VecDeque::from([
+            (11_u64, before, changed.clone()),
+            (22_u64, changed.clone(), changed),
+        ]);
+        let snapshot = retry_settlement_snapshot(|_| {
+            std::future::ready(Ok::<_, anyhow::Error>(attempts.pop_front().unwrap()))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot, 22);
+        assert!(attempts.is_empty());
+    }
+
+    // SYSCOIN: The ordinary `fetch()` path used by EN/non-batcher roles must retry when migration
+    // races any post-discovery read, even though it does not perform the main-node pending wait.
+    #[tokio::test]
+    async fn ordinary_snapshot_retries_migration_during_reads() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let gateway_proxy = address!("0x0000000000000000000000000000000000005005");
+        let before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 1, l1_proxy);
+        let after = topology_fingerprint(
+            gateway_proxy,
+            57_001,
+            IntervalSettlementLayer::Gateway(57_001),
+            42,
+            gateway_proxy,
+        );
+        let mut attempts = std::collections::VecDeque::from([
+            ("stale", before, after.clone()),
+            ("current", after.clone(), after),
+        ]);
+
+        let snapshot = retry_settlement_snapshot(|_| {
+            std::future::ready(Ok::<_, anyhow::Error>(attempts.pop_front().unwrap()))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot, "current");
+        assert!(attempts.is_empty());
+    }
+
+    // SYSCOIN: Comparing the open interval start detects a complete migration round trip even if
+    // startup observes the same active layer and proxy on both sides of the finalization wait.
+    #[test]
+    fn finalized_snapshot_detects_round_trip_during_wait() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 1, l1_proxy);
+        let after = topology_fingerprint(
+            Address::ZERO,
+            57,
+            IntervalSettlementLayer::L1,
+            100,
+            l1_proxy,
+        );
+
+        assert!(retry_changed_settlement_topology(&before, &after, 1).unwrap());
+    }
+
+    // SYSCOIN: A closed historical interval can reorg while the selected/open layer remains
+    // identical; the complete fingerprint must still invalidate the provider-bound snapshot.
+    #[test]
+    fn snapshot_detects_closed_interval_change_with_identical_open_interval() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let gateway_proxy = address!("0x0000000000000000000000000000000000005005");
+        let mut before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 42, l1_proxy);
+        before.settlement_layer_intervals.insert(
+            0,
+            SettlementIntervalFingerprint {
+                settlement_layer: IntervalSettlementLayer::Gateway(57_001),
+                first_batch: 1,
+                last_batch: Some(41),
+                proxy: gateway_proxy,
+            },
+        );
+        let mut after = before.clone();
+        after.settlement_layer_intervals[0].last_batch = Some(40);
+
+        assert_eq!(
+            before.settlement_layer_intervals.last(),
+            after.settlement_layer_intervals.last()
+        );
+        assert!(retry_changed_settlement_topology(&before, &after, 1).unwrap());
+    }
+
+    // SYSCOIN: Repeatedly moving topology cannot keep startup alive on stale providers forever.
+    #[tokio::test]
+    async fn finalized_snapshot_fails_closed_after_bounded_migration_retries() {
+        let l1_proxy = address!("0x0000000000000000000000000000000000004004");
+        let gateway_proxy = address!("0x0000000000000000000000000000000000005005");
+        let before =
+            topology_fingerprint(Address::ZERO, 57, IntervalSettlementLayer::L1, 1, l1_proxy);
+        let after = topology_fingerprint(
+            gateway_proxy,
+            57_001,
+            IntervalSettlementLayer::Gateway(57_001),
+            42,
+            gateway_proxy,
+        );
+
+        let mut calls = 0;
+        let err = retry_settlement_snapshot(|attempt| {
+            calls += 1;
+            std::future::ready(Ok::<_, anyhow::Error>((
+                attempt,
+                before.clone(),
+                after.clone(),
+            )))
+        })
+        .await
+        .expect_err("the final changed snapshot must fail closed");
+        assert!(err.to_string().contains("changed during startup snapshot"));
+        assert_eq!(calls, SETTLEMENT_TOPOLOGY_REVALIDATION_ATTEMPTS);
     }
 }

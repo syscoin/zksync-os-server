@@ -155,11 +155,9 @@ pub fn zk_tx_into_revm_tx(
 }
 
 pub fn zk_spec_version(execution_version: ExecutionVersion) -> Option<ZkSpecId> {
+    // SYSCOIN: The fresh V32 deployment accepts only the pinned V7 / AtlasV3 execution surface;
+    // pre-mainnet legacy execution versions are deliberately not retained as live mappings.
     match execution_version {
-        ExecutionVersion::V1 | ExecutionVersion::V2 | ExecutionVersion::V3 => {
-            Some(ZkSpecId::AtlasV1)
-        }
-        ExecutionVersion::V4 | ExecutionVersion::V5 => Some(ZkSpecId::AtlasV2),
-        ExecutionVersion::V6 | ExecutionVersion::V7 => Some(ZkSpecId::AtlasV3),
+        ExecutionVersion::V7 => Some(ZkSpecId::AtlasV3),
     }
 }

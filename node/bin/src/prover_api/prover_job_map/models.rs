@@ -1,4 +1,8 @@
+use alloy::primitives::B256;
+use blake2::{Blake2s256, Digest as _};
+use rand_core06::{OsRng, RngCore};
 use std::fmt::Debug;
+use std::io::Write;
 use std::time::{Duration, Instant};
 use zksync_os_batch_types::batcher_model::SignedBatchEnvelope;
 use zksync_os_types::ProvingVersion;
@@ -9,16 +13,69 @@ pub struct JobEntry<T> {
     pub metadata: JobMetadata,
 }
 
+/// SYSCOIN: An OS-random capability authorizing one exact external prover assignment.
+///
+/// The custom `Debug` implementation is deliberately redacted so diagnostics cannot turn the
+/// otherwise opaque capability into prover authority. Only pick responses expose its wire value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProverLeaseToken(B256);
+
+impl ProverLeaseToken {
+    pub fn generate() -> Self {
+        let mut bytes = [0_u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        Self(B256::from(bytes))
+    }
+
+    pub fn to_wire_value(&self) -> String {
+        self.0.to_string()
+    }
+
+    pub fn matches_wire_value(&self, candidate: &str) -> bool {
+        let Ok(candidate) = candidate.parse::<B256>() else {
+            return false;
+        };
+        // SYSCOIN: Compare every byte so repeated network requests cannot learn a token prefix.
+        self.0
+            .as_slice()
+            .iter()
+            .zip(candidate.as_slice())
+            .fold(0_u8, |difference, (expected, actual)| {
+                difference | (expected ^ actual)
+            })
+            == 0
+    }
+}
+
+impl Debug for ProverLeaseToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProverLeaseToken([REDACTED])")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct JobMetadata {
     pub batch_number: u64,
+    // SYSCOIN: Compare duplicate/replayed authoritative metadata without serializing a potentially
+    // multi-megabyte batch while the global prover queue locks are held.
+    pub batch_metadata_digest: B256,
     pub proving_version: ProvingVersion,
-    pub requires_standalone_snark_proof: bool,
+    // SYSCOIN: Release a real SNARK aggregation early once this range can advance interop.
+    pub contains_interop_bundle: bool,
+    // SYSCOIN: Exact marker-only durable JSON contribution, measured once before queue locking.
+    // Aggregate admission sums this value atomically and can never lease an unpersistable range.
+    pub durable_snark_batch_json_bytes: usize,
     pub tx_count: usize,
     pub computational_native_used: Option<u64>,
     pub added_at: Instant,
     pub assigned_to_prover_id: Option<String>,
     pub assigned_at: Option<Instant>,
+    /// SYSCOIN: Exact aggregate lease; a prover may submit only this complete range.
+    pub assigned_batch_range: Option<(u64, u64)>,
+    /// SYSCOIN: Opaque authority for the current exact assignment; never expose through status.
+    pub assigned_lease_token: Option<ProverLeaseToken>,
+    /// SYSCOIN: Admit at most one submission for this lease before expensive verification.
+    pub submission_in_progress: bool,
     pub current_attempt: usize, // 0 = never assigned, 1+ = assigned N times
 }
 
@@ -54,43 +111,97 @@ impl Debug for QueueStatistics {
 
 impl JobMetadata {
     pub fn new_from_batch<T>(batch_envelope: &SignedBatchEnvelope<T>) -> Self {
+        Self::new_from_batch_with_age(batch_envelope, Duration::ZERO)
+    }
+
+    /// SYSCOIN: Reconstructs queue age for a job loaded from durable proof storage.
+    pub fn new_from_batch_with_age<T>(
+        batch_envelope: &SignedBatchEnvelope<T>,
+        existing_age: Duration,
+    ) -> Self {
         let batch_number = batch_envelope.batch_number();
+        let batch_metadata_digest = canonical_batch_metadata_digest(batch_envelope);
         let proving_version = batch_envelope
             .batch
             .proving_version()
             .expect("Must be valid execution as set by the server");
+        let contains_interop_bundle = batch_envelope.batch.contains_interop_bundle();
         let tx_count = batch_envelope.batch.tx_count;
         let computational_native_used = batch_envelope.batch.computational_native_used;
-        let requires_standalone_snark_proof =
-            batch_envelope.batch.requires_standalone_snark_proof();
+        let now = Instant::now();
 
         Self {
             batch_number,
+            batch_metadata_digest,
             proving_version,
-            requires_standalone_snark_proof,
+            contains_interop_bundle,
+            // Populated before locking when this metadata enters the SNARK-stage map. FRI-stage
+            // jobs never aggregate into a durable wrapper and avoid this extra serialization.
+            durable_snark_batch_json_bytes: 0,
             tx_count,
             computational_native_used,
-            added_at: Instant::now(),
+            // `existing_age` originates from a file timestamp and is expected to be small enough
+            // to represent on the platform's monotonic clock. Falling back to `now` is defensive
+            // for corrupt / unrepresentable timestamps; normal files preserve their prior age.
+            added_at: now.checked_sub(existing_age).unwrap_or(now),
             assigned_to_prover_id: None,
             assigned_at: None,
+            assigned_batch_range: None,
+            assigned_lease_token: None,
+            submission_in_progress: false,
             current_attempt: 0,
         }
     }
 
-    /// Assign (or reassign) this job to a prover.
-    pub fn assign(&mut self, assigned_at: Instant, assigned_to_prover_id: String) {
+    /// SYSCOIN: Assign (or reassign) this job and its opaque capability atomically.
+    pub fn assign(
+        &mut self,
+        assigned_at: Instant,
+        assigned_to_prover_id: String,
+        assigned_batch_range: (u64, u64),
+        assigned_lease_token: ProverLeaseToken,
+    ) {
         self.assigned_at = Some(assigned_at);
         self.assigned_to_prover_id = Some(assigned_to_prover_id);
+        self.assigned_batch_range = Some(assigned_batch_range);
+        self.assigned_lease_token = Some(assigned_lease_token);
+        self.submission_in_progress = false;
         self.current_attempt += 1;
     }
 
-    /// Clear the assignment so the job can be picked up again immediately
+    /// SYSCOIN: Clear the assignment, opaque capability, and submission guard together so the job
+    /// can be picked up again immediately
     /// (e.g. after the assigned prover submitted a proof that failed verification).
     /// `current_attempt` is preserved as assignment history.
     pub fn unassign(&mut self) {
         self.assigned_at = None;
         self.assigned_to_prover_id = None;
+        self.assigned_batch_range = None;
+        self.assigned_lease_token = None;
+        self.submission_in_progress = false;
     }
+}
+
+// SYSCOIN: Stream canonical batch metadata directly into Blake2s so durable job identity does not
+// require a second, attacker-sized serialized allocation.
+struct Blake2sWriter(Blake2s256);
+
+impl Write for Blake2sWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn canonical_batch_metadata_digest<T>(batch_envelope: &SignedBatchEnvelope<T>) -> B256 {
+    let mut writer = Blake2sWriter(Blake2s256::new());
+    serde_json::to_writer(&mut writer, &batch_envelope.batch)
+        .expect("canonical batch metadata must serialize");
+    B256::from_slice(&writer.0.finalize())
 }
 
 /// Statistics about a batch of jobs for logging and metrics

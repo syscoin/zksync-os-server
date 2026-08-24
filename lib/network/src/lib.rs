@@ -10,13 +10,19 @@ mod wire;
 
 // todo: temporary re-export while we have record overrides, otherwise `wire` module should be
 //       entirely internal
-pub use service::{NetworkPorts, PeerVerifyBatch, PeerVerifyBatchResult};
+// SYSCOIN: Expose the deadline-carrying verifier dispatch and exact lane-scoped message types to
+// the node and batch-verification crates without duplicating their transport contract.
+pub use service::{NetworkPorts, PeerVerifyBatch, PeerVerifyBatchResult, VerifyBatchDispatch};
 pub use twofa::{
     ExternalNode2faConfig, MainNode2faConfig, ZKS_2FA_PROTOCOL, Zks2faMessage,
     Zks2faProtocolHandler,
 };
 pub use wire::replays::RecordOverride;
-pub use wire::verification::{VerifyBatch, VerifyBatchOutcome, VerifyBatchResult};
+// SYSCOIN: Refusal producers and consumers share one byte-exact UTF-8-safe wire boundary.
+pub use wire::verification::{
+    MAX_VERIFY_BATCH_REFUSAL_REASON_BYTES, VerifyBatch, VerifyBatchOutcome, VerifyBatchResult,
+    bounded_verify_batch_refusal_reason,
+};
 
 // Re-export relevant Reth types
 pub use reth_network::config::SecretKey;

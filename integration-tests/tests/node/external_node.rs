@@ -77,8 +77,7 @@ async fn batch_verification_without_enough_ens(env: TestEnvironment) -> anyhow::
         .expect_successful_receipt()
         .await?;
 
-    // SYSCOIN: The pinned v31 fixture already contains finalized history, so assert against the
-    // newly produced block rather than the upstream empty-genesis block number.
+    // Assert against the newly produced block rather than assuming a fixed genesis height.
     let block_number = deploy_tx_receipt
         .block_number
         .expect("deployment receipt must contain a block number");
@@ -111,8 +110,7 @@ async fn batch_verification_with_2_ens(env: TestEnvironment) -> anyhow::Result<(
         .await?
         .expect_successful_receipt()
         .await?;
-    // SYSCOIN: The pinned v31 fixture already contains finalized history, so assert against the
-    // newly produced block rather than the upstream empty-genesis block number.
+    // Assert against the newly produced block rather than assuming a fixed genesis height.
     let first_block = first_receipt
         .block_number
         .expect("deployment receipt must contain a block number");
