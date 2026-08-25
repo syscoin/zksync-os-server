@@ -187,6 +187,7 @@ pub struct CommitBatchInfo {
     pub priority_operations_hash: B256,
     pub dependency_roots_rolling_hash: B256,
     pub l2_to_l1_logs_root_hash: B256,
+    // SYSCOIN: Fresh V32 persistence requires an explicit DA scheme; no legacy default is valid.
     pub l2_da_commitment_scheme: DACommitmentScheme,
     pub da_commitment: B256,
     pub first_block_timestamp: u64,

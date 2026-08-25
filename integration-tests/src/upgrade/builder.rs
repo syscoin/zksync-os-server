@@ -196,7 +196,7 @@ impl ProtocolUpgradeBuilder {
             // The server's `L1UpgradeTxWatcher::fetch_force_preimages` filters
             // supplier events by this topic, then re-keys each fetched
             // preimage under hash (2) (Blake2s) for the L2 lookup above. The
-            // two distinct hashes mirror the production v31 layout.
+            // SYSCOIN: The two distinct hashes mirror the pinned V32 production layout.
             factory_deps.push(U256::from_be_slice(keccak256(&bytecode).as_ref()));
         }
 

@@ -28,6 +28,8 @@ use zksync_os_types::{
 
 /// Object that helps with preparation and execution of protocol upgrades in integration tests.
 ///
+/// SYSCOIN: Fresh V32 fixtures intentionally omit the retired V30/V31 compatibility branches.
+///
 /// Tester assumes that governance is an EOA account, and uses impersonation
 /// to execute the upgrade with it.
 #[derive(Debug)]
@@ -444,9 +446,8 @@ impl<'a> UpgradeTester<'a> {
             None
         };
 
-        // Fetch the BytecodesSupplier address from the L1 ChainTypeManager,
-        // where it is stored as an immutable `L1_BYTECODES_SUPPLIER`.
-        // Falls back to the config address for pre-v31 deployments that don't expose this getter.
+        // SYSCOIN: Resolve the canonical BytecodesSupplier from the pinned V32 L1 CTM; a missing
+        // getter or zero address is a deployment mismatch rather than a legacy fallback signal.
         let ctm_l1_address = l1_state.bridgehub_l1.chain_type_manager_address().await?;
         let ctm_l1 =
             interfaces::ChainTypeManager::new(ctm_l1_address, tester.l1_provider().clone());
@@ -455,19 +456,11 @@ impl<'a> UpgradeTester<'a> {
             ctm_l1.serverNotifierAddress().call().await?,
             tester.l1_provider().clone(),
         );
-        let bytecode_supplier_address = match ctm_l1.L1_BYTECODES_SUPPLIER().call().await {
-            Ok(addr) if addr != Address::ZERO => addr,
-            Ok(_) => anyhow::bail!(
-                "L1 ChainTypeManager at {ctm_l1_address:?} returned zero BytecodesSupplier"
-            ),
-            Err(_) => {
-                // Pre-v31 CTMs don't have this getter; fall back to config.
-                chain_config
-                    .genesis_config
-                    .bytecode_supplier_address
-                    .expect("Bytecode supplier address is missing in the config")
-            }
-        };
+        let bytecode_supplier_address = ctm_l1.L1_BYTECODES_SUPPLIER().call().await?;
+        anyhow::ensure!(
+            bytecode_supplier_address != Address::ZERO,
+            "L1 ChainTypeManager at {ctm_l1_address:?} returned zero BytecodesSupplier"
+        );
         let bytecode_supplier = interfaces::BytecodesSupplier::new(
             bytecode_supplier_address,
             tester.l1_provider().clone(),

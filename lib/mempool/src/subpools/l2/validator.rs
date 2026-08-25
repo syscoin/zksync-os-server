@@ -33,8 +33,8 @@ use zksync_os_types::{FeeParams, ProtocolSemanticVersion};
 pub(crate) struct ZkTransactionValidator<Client, Tx> {
     inner: EthTransactionValidator<Client, Tx, EthEvmConfig>,
     fee_params: RwLock<FeeParams>,
-    /// Protocol version expected for the next produced block. Drives version-gated
-    /// stateless checks (e.g. intrinsic native resources, available from v31).
+    /// Protocol version expected for the next produced block. Drives canonical V32
+    /// stateless checks such as intrinsic native resource admission.
     /// Starts as `None` (version-gated checks disabled) and is populated on canonical state
     /// changes — at least one block is replayed before block production starts.
     protocol_version: RwLock<Option<ProtocolSemanticVersion>>,

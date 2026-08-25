@@ -60,6 +60,7 @@ mod tests {
     use serde_json::Value;
     use zksync_os_storage_api::BlockContext;
 
+    // SYSCOIN: Retired upgrade metadata may be read for compatibility but never survives V32 output.
     fn replay_record() -> ReplayRecord {
         ReplayRecord {
             block_context: BlockContext {

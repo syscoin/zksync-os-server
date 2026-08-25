@@ -129,7 +129,8 @@ All migration components communicate through two `tokio::sync::watch` channels c
 | `migration_state` | `GatewayMigrationState` | `GatewayMigrationWatcher` (→ `InProgress`), `MigrationFinalizedWatcher` (→ `Stable`) | `MigrationGate` |
 | `migration_triggered` | `Option<u64>` | `MigrationGate` (→ `Some(batch_number)`) | `SettlementLayerWatcher` |
 
-Both channels are created unconditionally (initial values: `Stable` and `None`) so that on pre-v31 chains the batcher pipeline compiles and runs unchanged — the senders are simply never written to.
+<!-- SYSCOIN: Fresh V32 does not retain a legacy migration lane. -->
+The reference design creates both channels unconditionally with initial values `Stable` and `None`. The current Syscoin V32 production graph does not start the migration producers, so these channels remain at their initial values.
 
 ## Startup Recovery
 

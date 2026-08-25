@@ -108,6 +108,8 @@ pub async fn build_external_config(repo: ConfigRepository<'_>) -> Config {
         .parse()
         .expect("Failed to parse L1 watcher config");
 
+    // SYSCOIN: V32 prover input generation is owned by the prover API pipeline; there is no
+    // standalone legacy ProverInputGenerator configuration.
     let prover_api_config = repo
         .single::<ProverApiConfig>()
         .expect("Failed to load prover api config")

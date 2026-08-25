@@ -15,7 +15,6 @@ use zksync_os_batch_types::{CommittedBatchInfo, DiscoveredCommittedBatch};
 use zksync_os_contract_interface::IChainAssetHandler;
 use zksync_os_contract_interface::IExecutor::ReportCommittedBatchRangeZKsyncOS;
 use zksync_os_contract_interface::calldata::CommitCalldata;
-use zksync_os_contract_interface::is_method_missing;
 use zksync_os_contract_interface::{Bridgehub, IExecutor, MessageRoot, ZkChain};
 use zksync_os_provider::NodeProvider;
 
@@ -220,10 +219,9 @@ pub async fn find_block_by_migration_number(
         return Ok(latest);
     }
 
-    // The chain's diamond proxy deployment block is a safe lower bound for CAH searches: the proxy
-    // can only exist when the bridgehub ecosystem (including CAH, when present) is at least
-    // partially up. The predicate still guards against CAH being absent for the V30→V31 migration
-    // window where the proxy existed before CAH was deployed.
+    // SYSCOIN: The chain deployment block is a safe lower bound for the fresh V32 CAH search.
+    // Empty predeployment code remains false; every code-bearing point must expose the pinned
+    // migrationNumber interface rather than being treated as a legacy compatibility window.
     let start_block = zk_chain.deployment_block().await?;
     find_l1_block_by_predicate(Arc::new(zk_chain), start_block, move |zk, block| {
         let instance = instance.clone();
@@ -236,19 +234,11 @@ pub async fn find_block_by_migration_number(
             if code.0.is_empty() {
                 return Ok(false);
             }
-            // At this block the address may have code but not yet be the ChainAssetHandler
-            // (e.g. a proxy upgraded to it only later), so `migrationNumber` reverts. Treat a
-            // revert as "not deployed yet" (false); real RPC errors still propagate.
-            let res = match instance
+            let res = instance
                 .migrationNumber(U256::from(chain_id))
                 .block(block.into())
                 .call()
-                .await
-            {
-                Ok(res) => res,
-                Err(err) if is_method_missing(&err) => return Ok(false),
-                Err(err) => return Err(err.into()),
-            };
+                .await?;
             Ok(res >= target)
         }
     })

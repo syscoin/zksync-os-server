@@ -12,8 +12,8 @@ use zksync_os_integration_tests::{CURRENT_TO_L1, TestEnvironment, test_multisetu
 /// reading `block.prevrandao` tripped a false divergence.
 ///
 /// Runs such a contract with revert-on-divergence enabled: a divergence panics the node,
-/// which would fail block finalization below. Only protocol v31+ (execution version 6,
-/// AtlasV3) exercised the buggy path, so the NEXT setup is the load-bearing one.
+/// which would fail block finalization below. Canonical V32 exercises the corrected path, so the
+/// `CURRENT_TO_L1` setup is the load-bearing one.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn prevrandao_does_not_trip_revm_consistency_checker(
     env: TestEnvironment,

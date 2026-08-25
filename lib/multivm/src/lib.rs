@@ -1,4 +1,4 @@
-//! Canonical Syscoin block execution and transaction simulation.
+//! SYSCOIN: Canonical fresh-V32 block execution and transaction simulation.
 
 use zk_os_forward_system::run::RunBlockForward;
 use zksync_os_interface::error::InvalidTransaction;

@@ -49,6 +49,7 @@ impl<'a> ChainLayout<'a> {
             .join(self.protocol_version())
     }
 
+    // SYSCOIN: A removed pre-mainnet fixture must never be mistaken for the blocked V32 rebuild.
     fn assert_fixture_ready(self) {
         let marker = self
             .protocol_dir()

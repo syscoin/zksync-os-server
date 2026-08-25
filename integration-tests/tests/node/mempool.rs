@@ -115,7 +115,7 @@ async fn sensitive_to_balance_changes(mut tester: Tester) -> anyhow::Result<()> 
 
 /// A transaction with maxFeePerGas below the chain's base fee must not stall
 /// block production for other senders. This also exercises the `basefee > max_fee_per_gas`
-/// short-circuit in the post-v31 intrinsic-native validator that lets such txs into the pool
+/// short-circuit in the canonical V32 intrinsic-native validator that lets such txs into the pool
 /// instead of rejecting at ingress.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn low_fee_tx_does_not_hang_block_executor(env: TestEnvironment) -> anyhow::Result<()> {
@@ -231,7 +231,7 @@ async fn low_fee_tx_does_not_hang_block_executor(env: TestEnvironment) -> anyhow
 
 /// FeeConfig that produces native_per_gas=1 and native_per_pubdata=0, so the only thing the
 /// mempool's intrinsic-native check has to cover is the constant computational native cost
-/// (order of hundreds of thousands). With `gas_limit = 100_000` the post-v31 check fails;
+/// (order of hundreds of thousands). With `gas_limit = 100_000` the canonical V32 check fails;
 /// with a multi-million gas_limit it passes.
 fn intrinsic_native_test_fee_config() -> FeeConfig {
     let price: u64 = 1_000_000_000;
@@ -245,7 +245,7 @@ fn intrinsic_native_test_fee_config() -> FeeConfig {
     }
 }
 
-/// Negative case: post-v31, a tx whose `gas_limit` covers the EVM intrinsic gas (100_000) but
+/// Negative case: on canonical V32, a tx whose `gas_limit` covers the EVM intrinsic gas (100_000) but
 /// not the intrinsic native cost is rejected at mempool ingress with `intrinsic gas too low`.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn intrinsic_native_check_rejects_underpaid_tx(env: TestEnvironment) -> anyhow::Result<()> {
@@ -281,7 +281,7 @@ async fn intrinsic_native_check_rejects_underpaid_tx(env: TestEnvironment) -> an
     Ok(())
 }
 
-/// Positive case: post-v31, a tx with enough gas_limit to cover the intrinsic native cost
+/// Positive case: on canonical V32, a tx with enough gas_limit to cover the intrinsic native cost
 /// passes the new validator and is mined successfully.
 #[test_multisetup([CURRENT_TO_L1])]
 async fn intrinsic_native_check_accepts_well_funded_tx(env: TestEnvironment) -> anyhow::Result<()> {

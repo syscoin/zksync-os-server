@@ -5,7 +5,7 @@
 #   ZKSYNC_OS_PATH=/path/to/patched/zksync-os ./run.sh
 #
 # ZKSYNC_OS_PATH must point at a zksync-os checkout with the Syscoin patch
-# applied (scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh). The runner temporarily
+# SYSCOIN: applied with scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh. The runner temporarily
 # regenerates the checkout's syscoin_edge_da.rs with the test gas-tank address
 # (0x3333...33) expected by tests/gas_tank.rs, and restores the original file
 # afterwards. The Solidity twin of this suite lives in

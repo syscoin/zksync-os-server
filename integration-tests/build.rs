@@ -28,7 +28,7 @@ fn decompress_l1_states() {
         }
 
         if !entry.path().join("versions.yaml").is_file() {
-            // Ignore local materializations left behind after a tracked fixture was removed.
+            // SYSCOIN: Ignore local materializations left behind after a tracked fixture was removed.
             continue;
         }
 

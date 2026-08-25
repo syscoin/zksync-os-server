@@ -1,4 +1,4 @@
-//! Live end-to-end test for the canonical zksync-os 0.4.0 lane (protocol v32.0, execution V7,
+//! SYSCOIN: Live end-to-end test for the canonical zksync-os 0.4.0 lane (protocol v32.0, execution V7,
 //! proving V8, native batch PIG):
 //!
 //! 1. Start a v32.0 chain settling on L1 with fake FRI/SNARK provers.
