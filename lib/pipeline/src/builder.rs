@@ -1,10 +1,41 @@
 use crate::PipelineComponent;
 use crate::component_id::ComponentId;
 use crate::peekable_receiver::PeekableReceiver;
+use futures::FutureExt as _;
 use reth_tasks::Runtime;
 use std::collections::HashSet;
+use std::future::Future;
 use tokio::sync::{mpsc, watch};
 use zksync_os_observability::{ComponentState, ComponentStateReporter};
+
+enum SegmentExit<T, Guard> {
+    Shutdown(Guard),
+    Component(T),
+}
+
+async fn select_segment_exit<Component, Shutdown, Guard>(
+    component: Component,
+    shutdown: Shutdown,
+) -> SegmentExit<anyhow::Result<()>, Guard>
+where
+    Component: Future<Output = anyhow::Result<()>>,
+    Shutdown: Future<Output = Guard>,
+{
+    tokio::pin!(component);
+    tokio::pin!(shutdown);
+
+    tokio::select! {
+        biased;
+        guard = &mut shutdown => SegmentExit::Shutdown(guard),
+        result = &mut component => match result {
+            Err(err) => match (&mut shutdown).now_or_never() {
+                Some(guard) => SegmentExit::Shutdown(guard),
+                None => SegmentExit::Component(Err(err)),
+            },
+            Ok(()) => SegmentExit::Component(Ok(())),
+        },
+    }
+}
 
 /// Pipeline with an active output stream that can be piped to more components
 pub struct Pipeline<Output: Send + 'static> {
@@ -106,32 +137,24 @@ impl<Output: Send + 'static> Pipeline<Output> {
         let shutdown_sender = self.shutdown_sender.clone();
         self.runtime
             .spawn_critical_with_graceful_shutdown_signal(name, |shutdown| async move {
-                // `biased` + shutdown polled first: once the shutdown signal is set,
-                // segments exit in arbitrary order, and an upstream exiting first
-                // closes this segment's input — making `run` return an error that
-                // is normal wind-down, not a failure. A segment can also fail
-                // because of shutdown without its input closing, so an error
-                // re-checks the signal before being declared fatal.
-                let mut shutdown = shutdown;
-                tokio::select! {
-                    biased;
-                    _guard = &mut shutdown => {
+                let _shutdown_guard = match select_segment_exit(
+                    component.run(input_receiver, output_sender, reporter),
+                    shutdown,
+                )
+                .await
+                {
+                    SegmentExit::Component(res) => {
+                        res.expect("pipeline segment failed");
+                        tracing::debug!(name, "segment finished running");
+                        None
+                    }
+                    SegmentExit::Shutdown(guard) => {
                         tracing::debug!(name, "segment shutting down");
+                        Some(guard)
                     }
-                    res = component.run(input_receiver, output_sender, reporter) => {
-                        match res {
-                            Ok(()) => tracing::debug!(name, "segment finished running"),
-                            Err(err) => match futures::FutureExt::now_or_never(&mut shutdown) {
-                                Some(_guard) => {
-                                    tracing::debug!(name, %err, "segment errored during shutdown");
-                                }
-                                None => panic!("pipeline segment failed: {err:?}"),
-                            },
-                        }
-                    }
-                }
-                // Always deregister, even from a failing teardown; the supervisor
-                // itself may already be gone, so a failed send is not an error.
+                };
+                // Always deregister after either normal completion or shutdown. The supervisor
+                // may already be gone during teardown, so a failed bookkeeping send is harmless.
                 shutdown_sender.send(name).await.ok();
             });
         self.spawned_tasks.insert(name);
@@ -180,6 +203,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use reth_tasks::{Runtime, RuntimeBuilder, RuntimeConfig, TokioConfig};
+    use std::future::ready;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -216,17 +240,46 @@ mod tests {
         }
     }
 
-    /// Counts every panic in the process. Nextest runs each test in its own process, so this is a
-    /// reliable assertion for whether the pipeline supervisor amplified a segment failure.
-    fn install_panic_counter() -> Arc<AtomicUsize> {
+    static PANIC_HOOK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
+
+    struct PanicCounter {
+        _guard: tokio::sync::MutexGuard<'static, ()>,
+        counter: Arc<AtomicUsize>,
+        previous_hook: Option<PanicHook>,
+    }
+
+    impl PanicCounter {
+        fn count(&self) -> usize {
+            self.counter.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for PanicCounter {
+        fn drop(&mut self) {
+            std::panic::set_hook(
+                self.previous_hook
+                    .take()
+                    .expect("panic hook is restored exactly once"),
+            );
+        }
+    }
+
+    /// Counts every panic while serializing access to the process-global panic hook.
+    async fn install_panic_counter() -> PanicCounter {
+        let guard = PANIC_HOOK_LOCK.lock().await;
         let counter = Arc::new(AtomicUsize::new(0));
         let hook_counter = counter.clone();
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |_| {
             hook_counter.fetch_add(1, Ordering::SeqCst);
-            previous(info);
         }));
-        counter
+        PanicCounter {
+            _guard: guard,
+            counter,
+            previous_hook: Some(previous_hook),
+        }
     }
 
     fn test_runtime() -> Runtime {
@@ -241,7 +294,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_segment_error_during_shutdown_winds_down_without_panicking() {
-        let panics = install_panic_counter();
+        let panics = install_panic_counter().await;
         let runtime = test_runtime();
         let (started_sender, started) = tokio::sync::oneshot::channel();
         let (go, go_receiver) = tokio::sync::oneshot::channel();
@@ -266,7 +319,7 @@ mod tests {
             "every segment must deregister and wind down"
         );
         assert_eq!(
-            panics.load(Ordering::SeqCst),
+            panics.count(),
             0,
             "an error during shutdown is wind-down, not a failure"
         );
@@ -274,7 +327,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_segment_error_while_live_still_panics_exactly_once() {
-        let panics = install_panic_counter();
+        let panics = install_panic_counter().await;
         let runtime = test_runtime();
         let (started_sender, started) = tokio::sync::oneshot::channel();
         let (go, go_receiver) = tokio::sync::oneshot::channel();
@@ -288,7 +341,7 @@ mod tests {
         started.await.expect("segment started");
         go.send(()).expect("segment waits for go");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while panics.load(Ordering::SeqCst) == 0 {
+        while panics.count() == 0 {
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "a live segment failure must panic"
@@ -298,9 +351,18 @@ mod tests {
 
         runtime.graceful_shutdown_with_timeout(Duration::from_secs(10));
         assert_eq!(
-            panics.load(Ordering::SeqCst),
+            panics.count(),
             1,
             "exactly the segment's own panic — the supervisor must not amplify it"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_wins_when_both_futures_are_ready() {
+        let component = ready::<anyhow::Result<()>>(Err(anyhow::anyhow!("component failed")));
+
+        let exit = select_segment_exit(component, ready(())).await;
+
+        assert!(matches!(exit, SegmentExit::Shutdown(())));
     }
 }

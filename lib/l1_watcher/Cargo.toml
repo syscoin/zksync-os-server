@@ -33,3 +33,4 @@ rangemap.workspace = true
 [dev-dependencies]
 zk_os_api.workspace = true
 zk_os_basic_system.workspace = true
+serde.workspace = true

@@ -651,7 +651,7 @@ impl PendingBatchInfo {
                 )
                     .abi_encode_packed(),
             )),
-            31 | 32 if self.use_legacy_v31_commitment => B256::from(keccak256(
+            31 if self.use_legacy_v31_commitment => B256::from(keccak256(
                 (
                     U256::from(commit_info.chain_id),
                     commit_info.first_block_timestamp,
@@ -668,7 +668,7 @@ impl PendingBatchInfo {
                 )
                     .abi_encode_packed(),
             )),
-            31 | 32 => B256::from(keccak256(
+            31 => B256::from(keccak256(
                 (
                     U256::from(commit_info.chain_id),
                     commit_info.first_block_timestamp,
@@ -687,6 +687,9 @@ impl PendingBatchInfo {
                 )
                     .abi_encode_packed(),
             )),
+            // v32 drops the leading chain_id - it is committed through the chain config hash
+            // in the outer public input instead (era-contracts#2323 does the same on-chain).
+            32 => self.v32_batch_output_hash(),
             _ => panic!("Unsupported protocol version: {}", self.protocol_version),
         }
     }
@@ -695,9 +698,8 @@ impl PendingBatchInfo {
     /// (`BatchOutput::hash` in `basic_bootloader/.../post_tx_op/public_input.rs`): unlike the
     /// pre-V8 [`Self::public_input_hash`] layout, it does NOT include the leading `chain_id` —
     /// the chain id is committed through the chain config hash in the outer batch public input
-    /// instead. Used for server-side verification of V8 FRI proofs; the L1-facing commitment
-    /// (`public_input_hash`) is intentionally left unchanged until v32.0 contracts define the
-    /// on-chain layout.
+    /// instead. Used for server-side verification of V8 FRI proofs and as the v32 arm of
+    /// [`Self::public_input_hash`] — era-contracts#2323 defines the same layout on-chain.
     pub fn v32_batch_output_hash(&self) -> B256 {
         let commit_info = &self.commit_info;
         let upgrade_tx_hash = self.upgrade_tx_hash.unwrap_or(B256::ZERO);

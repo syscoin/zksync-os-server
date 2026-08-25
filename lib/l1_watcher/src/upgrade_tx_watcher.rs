@@ -194,12 +194,13 @@ impl L1UpgradeTxWatcher {
             // mempool matches what the settlement layer actually wrote into the priority queue.
             //
             // Route through the upgrade facet's deployed address, which is
-            // `diamond_cut_data.initAddress`. Only "method missing" reverts (pre-v31
-            // init contracts that don't expose this function) fall back to the
-            // original tx data; any other error — RPC failure, decode error, or a
-            // genuine revert like `UnexpectedZKsyncOSFlag` / `UnexpectedUpgradeSelector`
-            // — is propagated, because silently using the placeholder would inject
-            // a tx whose hash diverges from what L1 wrote into the priority queue.
+            // `diamond_cut_data.initAddress`. For a known pre-v31 source version, a missing-method
+            // response falls back to the original tx data; this includes Anvil's narrowly
+            // recognized code-3 empty revert for an unknown selector. V31+ missing methods and any
+            // other error — RPC failure, decode error, or a genuine revert like
+            // `UnexpectedZKsyncOSFlag` / `UnexpectedUpgradeSelector` — are propagated, because
+            // silently using the placeholder would inject a tx whose hash diverges from what L1
+            // wrote into the priority queue.
             let upgrade_init_address = diamond_cut_data.initAddress;
             let original_tx_data = proposed_upgrade.l2ProtocolUpgradeTx.data.clone();
             // SYSCOIN: the cut data can be owned by the Gateway CTM, in which case both the
@@ -227,7 +228,7 @@ impl L1UpgradeTxWatcher {
                     );
                     proposed_upgrade.l2ProtocolUpgradeTx.data = rewritten;
                 }
-                Err(e) if is_method_missing(&e) || is_pre_v31_empty_revert(&e) => {
+                Err(e) if should_fallback_missing_upgrade_rewriter(old_protocol_version, &e) => {
                     tracing::info!(
                         init_address = ?upgrade_init_address,
                         "init contract does not expose getL2UpgradeTxData (pre-v31); using original tx data"
@@ -800,12 +801,20 @@ fn is_pre_v31_empty_revert(err: &alloy::contract::Error) -> bool {
     };
     err.as_error_resp().is_some_and(|response| {
         response.code == 3
-            && response.message == "execution reverted"
+            && response.message.to_ascii_lowercase().contains("revert")
             && response
-                .data
-                .as_ref()
-                .is_some_and(|data| data.get() == "\"0x\"")
+                .as_revert_data()
+                .is_some_and(|data| data.is_empty())
     })
+}
+
+// SYSCOIN: Restrict both missing-method encodings to upgrades whose source protocol is known not
+// to expose getL2UpgradeTxData; V31+ missing methods and contract reverts remain fatal.
+fn should_fallback_missing_upgrade_rewriter(
+    old_protocol_version: &ProtocolSemanticVersion,
+    err: &alloy::contract::Error,
+) -> bool {
+    old_protocol_version.minor < 31 && (is_method_missing(err) || is_pre_v31_empty_revert(err))
 }
 
 async fn fetch_upgrade_cut_log_at(
@@ -850,9 +859,68 @@ async fn find_l1_block_by_protocol_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::rpc::json_rpc::{ErrorPayload, RpcSend};
+    use alloy::transports::TransportError;
     use blake2::{Blake2s256, Digest as BlakeDigest};
+    use serde::Serialize;
     use zk_os_api::helpers::set_properties_code;
     use zk_os_basic_system::system_implementation::flat_storage_model::AccountProperties;
+
+    #[derive(Clone, Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct NestedRevert {
+        original_error: RevertData,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    struct RevertData {
+        data: &'static str,
+    }
+
+    fn rpc_error<T: RpcSend>(data: Option<T>) -> alloy::contract::Error {
+        let payload = ErrorPayload {
+            code: 3,
+            message: "execution reverted".into(),
+            data,
+        }
+        .serialize_payload()
+        .unwrap();
+        alloy::contract::Error::TransportError(TransportError::ErrorResp(payload))
+    }
+
+    #[test]
+    fn pre_v31_fallback_accepts_only_empty_revert_data() {
+        assert!(is_pre_v31_empty_revert(&rpc_error(Some("0x"))));
+        assert!(is_pre_v31_empty_revert(&rpc_error(Some(NestedRevert {
+            original_error: RevertData { data: "0x" },
+        }))));
+        assert!(!is_pre_v31_empty_revert(&rpc_error(Some("0xdeadbeef"))));
+        assert!(!is_pre_v31_empty_revert(&rpc_error(Option::<&str>::None)));
+    }
+
+    #[test]
+    fn missing_upgrade_rewriter_fallback_is_scoped_to_pre_v31() {
+        let missing_responses = [
+            rpc_error(Some("0x")),
+            alloy::contract::Error::ZeroData(
+                "getL2UpgradeTxData".into(),
+                alloy::dyn_abi::Error::TypeMismatch {
+                    expected: "bytes".into(),
+                    actual: "empty".into(),
+                },
+            ),
+        ];
+        for response in &missing_responses {
+            assert!(should_fallback_missing_upgrade_rewriter(
+                &ProtocolSemanticVersion::new(0, 30, 2),
+                response,
+            ));
+            assert!(!should_fallback_missing_upgrade_rewriter(
+                &ProtocolSemanticVersion::new(0, 31, 0),
+                response,
+            ));
+        }
+    }
 
     /// Golden-value test using a known externally-verifiable result.
     /// `blake2s256(b"") = 69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9`

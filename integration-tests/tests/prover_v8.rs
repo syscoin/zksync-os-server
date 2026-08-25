@@ -74,8 +74,12 @@ async fn v8_native_pig_real_fri_proof_e2e() -> anyhow::Result<()> {
                 U256::MAX,
                 U256::from(1),
                 false,
-                vec![],
+                zksync_os_integration_tests::upgrade::v32_facet_cuts(&upgrade_tester).await?,
                 None,
+                Some(
+                    zksync_os_integration_tests::upgrade::ZKSYNC_OS_TESTNET_VERIFIER_DEPLOYED_BYTECODE
+                        .parse::<alloy::primitives::Bytes>()?,
+                ),
             )
             .await?;
     }

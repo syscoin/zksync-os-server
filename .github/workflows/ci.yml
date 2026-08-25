@@ -298,7 +298,8 @@ jobs:
   ci-success:
     name: Github Status Check
     runs-on: ubuntu-latest
-    if: always() && !cancelled()
+    # SYSCOIN: This merge gate must run after failed, cancelled, or skipped required jobs.
+    if: ${{ always() }}
     needs:
       [
         build,
@@ -312,9 +313,8 @@ jobs:
     steps:
       - name: Status
         run: |
-          # This will check all jobs status in the `needs` list, and fail job if one is failed.
-          # Since we split prover and core to different flows, this job will be only as Required Status Check in the Pull Request.
-          if [[ ${{ contains(join(needs.*.result, ','), 'failure') }} == "true" ]]; then
-            echo "Intentionally failing to block PR from merging"
+          # SYSCOIN: Every job listed in ci-success.needs is mandatory; accept only success.
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" == "true" ]]; then
+            echo "A mandatory CI job failed, was cancelled, or was skipped; blocking the PR"
             exit 1
           fi

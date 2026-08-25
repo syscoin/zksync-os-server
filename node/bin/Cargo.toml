@@ -58,7 +58,6 @@ zksync_os_external_price_api.workspace = true
 zksync_os_operator_signer.workspace = true
 zksync_os_reth_compat.workspace = true
 zksync_os_replay_archive.workspace = true
-zksync_os_state.workspace = true
 zksync_os_state_full_diffs.workspace = true
 zksync_os_merkle_tree.workspace = true
 zksync_os_raft.workspace = true
@@ -66,6 +65,9 @@ zksync_os_tx_validators.workspace = true
 zksync_os_config_validation_macros.workspace = true
 zksync_os_backpressure.workspace = true
 
+zk_ee_0_2_10.workspace = true
+zk_os_basic_system_0_2_10.workspace = true
+zk_os_forward_system_0_2_10.workspace = true
 zk_ee_prev.workspace = true
 zk_os_basic_system_prev.workspace = true
 zk_os_forward_system_prev.workspace = true
@@ -110,6 +112,7 @@ smart-config = { workspace = true, features = ["primitive-types", "alloy"] }
 smart-config-commands.workspace = true
 axum.workspace = true
 http.workspace = true
+http-body.workspace = true
 async-trait.workspace = true
 jsonrpsee = { workspace = true, default-features = false, features = [
     "client",

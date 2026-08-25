@@ -99,11 +99,7 @@ impl FriProvingPipelineStep {
         match &stored_batch.data {
             FriProof::Real(real) => {
                 if let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
-                    expected_batch
-                        .batch
-                        .previous_stored_batch_info
-                        .state_commitment,
-                    expected_stored_batch,
+                    &expected_batch.batch,
                     real.proof(),
                 ) {
                     tracing::warn!(
@@ -374,7 +370,8 @@ mod tests {
             },
             batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                protocol_version: ProtocolSemanticVersion::new(0, 30, 0),
+                // SYSCOIN: Use the earliest still-supported V6 lane; 0.30.0 has no proving mapping.
+                protocol_version: ProtocolSemanticVersion::new(0, 30, 1),
                 upgrade_tx_hash: None,
                 use_legacy_v31_commitment: false,
             },

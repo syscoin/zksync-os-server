@@ -24,6 +24,12 @@ fn parse_git_reference(package_id: &PackageId) -> anyhow::Result<String> {
 // Remove entries as the corresponding proving lanes leave the support window.
 fn binary_source_config(reference: &str) -> Option<BinarySourceConfig> {
     match reference {
+        // The V6 VK was generated from the original v0.2.5 binaries; 0.2.x rebuild tags
+        // produce different ones.
+        "v0.2.10-interface-v0.1.3-2026-02-10" => Some(BinarySourceConfig {
+            proving_version: "V6",
+            download_tag: "v0.2.5",
+        }),
         "v0.3.2-interface-v0.1.3" => Some(BinarySourceConfig {
             proving_version: "V7",
             download_tag: "v0.3.2-interface-v0.1.3",
@@ -94,11 +100,10 @@ fn verify_syscoin_execution_source(package_manifest: &Path) -> anyhow::Result<()
         )
     })?;
 
-    // A released V7 guest contains the Syscoin 0x101 implementation. Native V6
-    // execution must come from the same patched source or simulation and proving
-    // can disagree. Cargo cannot apply an external patch during dependency
-    // resolution, so unsupported plain builds fail closed and direct callers use
-    // the checked-in patched-workspace launcher.
+    // A released V7 guest contains the Syscoin 0x101 implementation. Native execution for the
+    // V7 proving lane must come from the same patched source or simulation and proving can
+    // disagree. Cargo cannot apply an external patch during dependency resolution, so unsupported
+    // plain builds fail closed and direct callers use the checked-in patched-workspace launcher.
     require_patched_source_text(
         source_root,
         "forward_system/Cargo.toml",
@@ -272,14 +277,15 @@ fn main() {
         };
 
         if let Some(config) = binary_source_config(&reference) {
-            configured_v7_sources += 1;
-            verify_syscoin_execution_source(package.manifest_path.as_std_path()).unwrap_or_else(
-                |err| {
-                    panic!(
-                        "V7 zksync-os execution source is not Syscoin-patched: {err}. Use run_local.sh or scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh instead of plain Cargo for builds that include multivm"
-                    )
-                },
-            );
+            if config.proving_version == "V7" {
+                configured_v7_sources += 1;
+                verify_syscoin_execution_source(package.manifest_path.as_std_path())
+                    .unwrap_or_else(|err| {
+                        panic!(
+                            "V7 zksync-os execution source is not Syscoin-patched: {err}. Use run_local.sh or scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh instead of plain Cargo for builds that include multivm"
+                        )
+                    });
+            }
             let client = new_http_client().expect("failed to create HTTP client");
             let dir = format!("{manifest_dir}/apps/{}", config.download_tag);
             std::fs::create_dir_all(&dir).expect("failed to create directory");

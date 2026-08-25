@@ -101,11 +101,8 @@ impl SnarkProvingPipelineStep {
         }
         // SYSCOIN
         if let FriProof::Real(real) = &batch.data
-            && let Err(err) = fri_proof_verifier::verify_real_fri_proof_bytes(
-                batch.batch.previous_stored_batch_info.state_commitment,
-                local_stored_batch,
-                real.proof(),
-            )
+            && let Err(err) =
+                fri_proof_verifier::verify_real_fri_proof_bytes(&batch.batch, real.proof())
         {
             tracing::warn!(
                 batch_number = expected_batch_number,

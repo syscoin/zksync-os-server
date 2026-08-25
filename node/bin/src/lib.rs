@@ -21,7 +21,6 @@ pub mod prover_api;
 mod prover_block;
 mod prover_input_generator;
 mod provider;
-mod state_initializer;
 pub mod tree_manager;
 pub mod util;
 
@@ -54,7 +53,6 @@ use crate::prover_api::snark_job_manager::{FakeSnarkProver, SnarkJobManager};
 use crate::prover_api::snark_proving_pipeline_step::SnarkProvingPipelineStep;
 use crate::prover_input_generator::ProverInputGenerator;
 use crate::provider::{ProviderKind, build_node_provider};
-use crate::state_initializer::StateInitializer;
 use crate::tree_manager::TreeManager;
 use alloy::consensus::BlobTransactionSidecar;
 use alloy::primitives::{Address, BlockHash, BlockNumber};
@@ -103,7 +101,7 @@ use zksync_os_network::protocol::{
 };
 use zksync_os_network::service::{NetworkService, PeerVerifyBatch, PeerVerifyBatchResult};
 use zksync_os_observability::GENERAL_METRICS;
-use zksync_os_pipeline::{Pipeline, PipelineComponent};
+use zksync_os_pipeline::Pipeline;
 use zksync_os_priority_tree::PriorityTreeManager;
 use zksync_os_provider::NodeProvider;
 use zksync_os_raft::{
@@ -118,6 +116,7 @@ use zksync_os_revm_consistency_checker::node::RevmConsistencyChecker;
 use zksync_os_rpc::{EthCallHandler, RpcStorage};
 use zksync_os_sequencer::execution::block_context_provider::{BlockContextProvider, LastBlockSeed};
 use zksync_os_sequencer::execution::{BlockApplier, BlockCanonizer, BlockExecutor, FeeProvider};
+use zksync_os_state_full_diffs::FullDiffsState;
 use zksync_os_status_server::{StatusServerState, run_status_server};
 use zksync_os_storage::db::{BlockReplayStorage, ExecutedBatchStorage};
 use zksync_os_storage::in_memory::Finality;
@@ -141,9 +140,6 @@ const PRIORITY_TREE_DB_NAME: &str = "priority_txs_tree";
 const REPOSITORY_DB_NAME: &str = "repository";
 const BATCH_DB_NAME: &str = "batch";
 // SYSCOIN
-const BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE: usize = 5;
-const REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE: usize = 5;
-const EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE: usize = 4;
 const MAX_BATCH_WORK_CHANNEL_CAPACITY: usize = 1024;
 pub const INTERNAL_CONFIG_FILE_NAME: &str = "internal_config.json";
 
@@ -340,11 +336,7 @@ fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificati
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone>(
-    runtime: &Runtime,
-    config: Config,
-) -> ServerPorts {
+pub async fn run(runtime: &Runtime, config: Config) -> ServerPorts {
     let BoundListeners {
         rpc: rpc_listener,
         status: prebound_status_listener,
@@ -633,7 +625,9 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
     .await
     .expect("failed to init CommittedBatchProvider");
 
-    let state = State::new(&config.general_config, &genesis).await;
+    let state = FullDiffsState::new(config.general_config.rocks_db_path.clone(), &genesis)
+        .await
+        .expect("Failed to initialize full diffs state");
 
     tracing::info!("Initializing mempools");
     let zk_provider_factory = ZkProviderFactory::new(state.clone(), repositories.clone(), chain_id);
@@ -1233,12 +1227,6 @@ pub async fn run<State: ReadStateHistory + WriteState + StateInitializer + Clone
         "repository persist loop",
         repositories_clone.run_persist_loop(),
     );
-    let state_clone = state.clone();
-    runtime.spawn_critical_task(
-        "state compact loop",
-        state_clone.compact_periodically_optional(),
-    );
-
     // SYSCOIN: Only an active main-node batcher installs the L1 archive gate. Other node modes
     // consume publication receipts in the archive component so receipt tracking stays bounded.
     let replay_archive = init_replay_archive(
@@ -1725,31 +1713,12 @@ async fn run_main_node_pipeline(
     }
     let pubdata_mode = pubdata_mode
         .expect("effective pubdata mode must be set when the Main Node batcher is enabled");
-    // SYSCOIN
-    let batch_work_state_history_reserve = config
-        .prover_input_generator_config
-        .maximum_in_flight_blocks
-        + <BatchWorkSource as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
-        + <TreeManager as PipelineComponent>::OUTPUT_CHANNEL_CAPACITY
-        + BLOCK_APPLIER_OUTPUT_BUFFER_RESERVE
-        + REVM_CONSISTENCY_CHECKER_OUTPUT_BUFFER_RESERVE
-        + EXECUTION_PIPELINE_IN_FLIGHT_STATE_RESERVE;
-    let batch_work_channel_capacity = config
-        .general_config
-        .blocks_to_retain_in_memory
-        .checked_sub(batch_work_state_history_reserve)
-        .filter(|capacity| *capacity > 0)
-        .unwrap_or_else(|| {
-            panic!(
-                "blocks_to_retain_in_memory ({}) must exceed async batch-work state history reserve ({batch_work_state_history_reserve})",
-                config.general_config.blocks_to_retain_in_memory
-            )
-        })
-        .min(MAX_BATCH_WORK_CHANNEL_CAPACITY);
+    // SYSCOIN: FullDiffs keeps historical state independently of repository retention. Bound the
+    // durable execution-to-batching handoff directly instead of coupling it to the repository-only
+    // `blocks_to_retain_in_memory` setting.
+    let batch_work_channel_capacity = MAX_BATCH_WORK_CHANNEL_CAPACITY;
     tracing::info!(
         batch_work_channel_capacity,
-        blocks_to_retain_in_memory = config.general_config.blocks_to_retain_in_memory,
-        batch_work_state_history_reserve,
         "Configured async batch-work queue capacity"
     );
     // SYSCOIN
@@ -2440,9 +2409,7 @@ fn determine_starting_block(
         "No batches committed to L1 yet - start with block/batch 1"
     );
 
-    let desired_starting_block = if let Some(forced_starting_block_number) =
-        config.general_config.force_starting_block_number
-    {
+    if let Some(forced_starting_block_number) = config.general_config.force_starting_block_number {
         forced_starting_block_number
     } else {
         // Start with the oldest block from:
@@ -2458,8 +2425,7 @@ fn determine_starting_block(
             // In the current tree implementation this will always be ahead of `last_l1_executed_block`,
             // but this may change if we make tree persistence async (like elsewhere)
             node_startup_state.tree_last_block,
-            // For compacted state, we need to replay all blocks that were not persisted yet.
-            // For FullDiffs state (default) - this is always ahead of `last_l1_executed_block`.
+            // The last block available in state - this is always ahead of `last_l1_executed_block`.
             *state.block_range_available().end(),
             // If block rebuild (aka block reversion) is configured, we should ensure we replay
             // all the blocks we are rebuilding
@@ -2478,24 +2444,7 @@ fn determine_starting_block(
         }
 
         last_matching_block.min(want_to_start_from)
-    };
-
-    // Ignore genesis here as we never actually run it in sequencer
-    if desired_starting_block > 0
-        && desired_starting_block < state.block_range_available().start() + 1
-    {
-        // This may only happen with Compacted State. This means that the block we want to rerun was already compacted.
-        // This can be fixed by manually removing the storage persistence - which will force the node to start from block 1.
-
-        // Alternatively, we can clear storage programmatically here and start from 1 - this is not currently implemented
-        panic!(
-            "Cannot start: desired_starting_block < state.block_range_available().start() + 1: {} < {}",
-            desired_starting_block,
-            state.block_range_available().start() + 1
-        );
     }
-
-    desired_starting_block
 }
 
 /// Finds the last block number where the local node's block hash matches the main node's block hash.

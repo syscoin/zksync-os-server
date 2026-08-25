@@ -12,12 +12,10 @@ use zksync_os_metadata::NODE_VERSION;
 use zksync_os_observability::prometheus::PrometheusExporterConfig;
 use zksync_os_server::config::{
     Config, ConfigArgs, ConfigValidate, PrometheusConfig, ProofStorageConfig, RebuildBounds,
-    RebuildConfig, StateBackendConfig, build_external_config, load_config_file_sources,
+    RebuildConfig, build_external_config, load_config_file_sources,
 };
 use zksync_os_server::default_protocol_version::{DEFAULT_ROCKS_DB_PATH, PROTOCOL_VERSION};
 use zksync_os_server::{INTERNAL_CONFIG_FILE_NAME, run};
-use zksync_os_state::StateHandle;
-use zksync_os_state_full_diffs::FullDiffsState;
 
 #[cfg(all(feature = "jemalloc", target_family = "unix"))]
 #[global_allocator]
@@ -88,8 +86,27 @@ fn load_config_defaults(config_sources: &mut ConfigSources, config_paths: Option
     load_config_file_sources(config_sources, &config_paths);
 }
 
-#[tokio::main]
-pub async fn main() {
+/// Stack size for tokio worker threads. The v32.0 native batch prover-input generator
+/// overflows the 2 MiB default and aborts the server while sealing its first batch.
+/// Only a ceiling - nothing is allocated up front.
+const WORKER_THREAD_STACK_SIZE: usize = 256 * 1024 * 1024;
+
+pub fn main() {
+    // `RUST_MIN_STACK`, when set, wins, so constrained environments can still lower this.
+    let stack_size = std::env::var("RUST_MIN_STACK")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(WORKER_THREAD_STACK_SIZE);
+
+    tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(stack_size)
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime")
+        .block_on(async_main());
+}
+
+async fn async_main() {
     // Explicitly select the `ring` TLS crypto provider for rustls.
     //
     // Our dependency tree pulls in both `ring` and `aws-lc-rs` as rustls crypto backends
@@ -194,10 +211,7 @@ pub async fn main() {
     let prometheus_config = config.observability_config.prometheus.clone();
     let prometheus_port = prometheus_config.port;
 
-    match config.general_config.state_backend {
-        StateBackendConfig::FullDiffs => run::<FullDiffsState>(&runtime, config).await,
-        StateBackendConfig::Compacted => run::<StateHandle>(&runtime, config).await,
-    };
+    run(&runtime, config).await;
 
     let prometheus_push_shutdown = if ephemeral_enabled {
         tracing::info!("Ephemeral mode enabled, skipping Prometheus push exporter");

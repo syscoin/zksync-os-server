@@ -1,31 +1,35 @@
 use crate::prover_api::fri_job_manager::SubmitError;
 use alloy::primitives::{B256, keccak256};
 use zksync_os_batch_types::batcher_model::BatchMetadata;
-use zksync_os_contract_interface::models::StoredBatchInfo;
 use zksync_os_types::ProvingVersion;
 
 // SYSCOIN
 pub fn verify_real_fri_proof_bytes(
-    previous_state_commitment: B256,
-    stored_batch_info: StoredBatchInfo,
+    batch_metadata: &BatchMetadata,
     proof_bytes: &[u8],
 ) -> Result<(), SubmitError> {
-    let expected_hash = keccak256(
-        [
-            previous_state_commitment.0,
-            stored_batch_info.state_commitment.0,
-            stored_batch_info.commitment.0,
-        ]
-        .concat(),
-    );
-    let program_proof = bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
-        .map_err(SubmitError::DeserializationFailed)?
-        .0;
-    verify_fri_proof(
-        hash_as_register_values(expected_hash),
-        program_proof,
-        stored_batch_info.batch_number,
-    )
+    let proving_version = batch_metadata
+        .proving_version()
+        .map_err(|err| SubmitError::Other(format!("cannot determine proving version: {err:#}")))?;
+    let expected_hash_u32s = expected_public_input_registers(proving_version, batch_metadata)?;
+    let batch_number = batch_metadata.batch_info.commit_info.batch_number;
+
+    match proving_version {
+        ProvingVersion::V6 | ProvingVersion::V7 => {
+            let program_proof =
+                bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+                    .map_err(SubmitError::DeserializationFailed)?
+                    .0;
+            verify_fri_proof(expected_hash_u32s, program_proof, batch_number)
+        }
+        ProvingVersion::V8 => {
+            let program_proof: execution_utils::unrolled::UnrolledProgramProof =
+                bincode::serde::decode_from_slice(proof_bytes, bincode::config::standard())
+                    .map_err(SubmitError::DeserializationFailed)?
+                    .0;
+            verify_fri_proof_v8(expected_hash_u32s, &program_proof, batch_number)
+        }
+    }
 }
 
 /// Expected batch public-input hash, as the final register values a valid FRI proof of this
@@ -59,7 +63,7 @@ pub fn expected_public_input_registers(
                 .concat(),
             )
         }
-        _ => {
+        ProvingVersion::V6 | ProvingVersion::V7 => {
             let stored = batch_metadata.batch_info.clone().into_stored();
             keccak256(
                 [
@@ -194,17 +198,20 @@ mod v8_verifier {
     use verifier_common::SecurityModel;
     use verifier_common::transcript::Blake2sBufferingTranscript;
 
-    const SECURITY: SecurityModel = SecurityModel::Security80;
+    /// v32 proves at 100-bit; this selects the recursion verifier binaries the chain below is
+    /// continued through, so it must match the prover's `PROVING_SECURITY_LEVEL`.
+    const SECURITY: SecurityModel = SecurityModel::Security100;
 
-    /// `end_params` of the zksync-os v0.4.0 multiblock batch program, built reproducibly from
-    /// draft-0.4.0 @ 8ef47499 (md5 `8128c18a3b7145366b184e027d0e0f34`), computed with the
-    /// airbender `end_params` tool (`tools/cli`) at the pinned tag v0.6.0-rc.1.
+    /// `end_params` of the V8 `multiblock_batch.bin` (md5
+    /// `31cb9cb3b42d4a183fb858594eeb8706`), from the airbender `end_params` tool (`tools/cli`).
+    /// Derived from the app binary alone, so it is level-independent - unlike `expected_chain`,
+    /// which continues it through the `SECURITY` artifacts above.
     /// Every V8 FRI proof must carry a recursion chain rooted in this program. Must be
     /// regenerated together with `V8_VK_HASH` whenever the V8 app binary or the airbender pin
     /// changes.
     const V8_APP_END_PARAMS: [u32; 8] = [
-        2307768600, 2457250828, 3716327079, 4199813212, 118680239, 3956473405, 1127792062,
-        2161297246,
+        1634684069, 1321011044, 3947845475, 1282304698, 3895515656, 1824728812, 3916768926,
+        1115552394,
     ];
 
     pub(super) struct UnifiedLevelData {
@@ -352,8 +359,8 @@ mod tests {
         assert_eq!(
             v8_verifier::unified_level_data().expected_chain,
             [
-                404272789, 3121750659, 852643044, 1762144566, 2420098273, 1372768532, 3381753661,
-                851746963,
+                3908330635, 3818926154, 688684577, 1308736155, 1264132119, 1537631312, 358892107,
+                1291547267,
             ],
         );
     }

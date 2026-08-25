@@ -227,6 +227,16 @@ impl<T: Clone> ProverJobMap<T> {
             .collect()
     }
 
+    pub async fn has_assignable_job<F>(&self, mut predicate: F) -> bool
+    where
+        F: FnMut(&JobEntry<T>) -> bool,
+    {
+        let now = Instant::now();
+        let jobs = self.lock_with_tracking(JobMapMethod::PickJobsWhile).await;
+        jobs.values()
+            .any(|entry| self.is_job_eligible(&[], entry, now, 1, &mut predicate))
+    }
+
     /// Checks if a job is eligible for assignment based on:
     /// - Not exceeding the limit of selected jobs
     /// - Being either pending or timed out
@@ -572,10 +582,11 @@ impl<T: Clone> ProverJobMap<T> {
 mod tests {
     use super::*;
     use crate::prover_api::metrics::ProverStage;
+    // SYSCOIN: these fixtures exercise downstream upgrade-hash and compact edge-DA metadata.
     use alloy::primitives::{Address, B256};
     use std::time::Duration;
     use zksync_os_batch_types::PendingBatchInfo;
-    use zksync_os_batch_types::batcher_model::{BatchForSigning, BatchMetadata};
+    use zksync_os_batch_types::batcher_model::BatchForSigning;
     use zksync_os_contract_interface::models::{
         CommitBatchInfo, DACommitmentScheme, StoredBatchInfo,
     };
@@ -602,7 +613,9 @@ mod tests {
     ) -> SignedBatchEnvelope<Vec<u8>> {
         create_test_batch_envelope_with_protocol_version_and_upgrade(
             batch_number,
-            ProtocolSemanticVersion::legacy_genesis_version(),
+            // SYSCOIN: synthetic jobs must use the fresh-chain V8 proving lane; the legacy
+            // genesis version intentionally has no proving-version mapping.
+            ProtocolSemanticVersion::new(0, 32, 0),
             upgrade_tx_hash,
         )
     }
