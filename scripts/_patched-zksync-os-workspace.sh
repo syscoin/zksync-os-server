@@ -322,16 +322,16 @@ def rewrite_lock(
     return pattern.sub(replace, text), count
 
 
+# SYSCOIN: Reconcile only dependency edges that the reviewed guest patch actually changes.
 def apply_checked_patch_lock_delta(
     text: str, local_url: str, expected_tag: str, patched_rev: str
 ) -> str:
     """Apply the exact dependency-edge delta from the reviewed Syscoin patch.
 
     The checked-in server lock describes the official, unpatched v0.4 source.
-    The patch adds `sha2` to basic_system for the portable SLH-DSA verifier and
-    removes callable_oracles' direct `c-kzg` edge after replacing its legacy
-    KZG advice implementation with a 32-byte data-ID oracle. Keep this narrower
-    than running Cargo unlocked; transitive `c-kzg` package records remain.
+    The patch adds `sha2` to basic_system for the portable SLH-DSA verifier.
+    Keep this narrower than running Cargo unlocked; all unchanged dependency
+    edges must remain byte-for-byte aligned with the checked-in lock.
     """
     package_re = re.compile(r"(?ms)^\[\[package\]\]\n.*?(?=^\[\[package\]\]\n|\Z)")
     expected_source = (
@@ -368,18 +368,6 @@ def apply_checked_patch_lock_delta(
         block = block.replace(anchor, dependency + anchor, 1)
         text = text[:start] + block + text[end:]
 
-    start, end, block = package_block("callable_oracles")
-    direct_kzg = ' "c-kzg",\n'
-    if block.count(direct_kzg) != 1:
-        raise SystemExit(
-            "canonical callable_oracles lock entry must contain exactly one direct c-kzg edge"
-        )
-    block = block.replace(direct_kzg, "", 1)
-    text = text[:start] + block + text[end:]
-    if not re.search(
-        r'(?ms)^\[\[package\]\]\nname = "c-kzg"\nversion = "2\.1\.8"\n', text
-    ):
-        raise SystemExit("transitive c-kzg 2.1.8 package record unexpectedly disappeared")
     return text
 
 

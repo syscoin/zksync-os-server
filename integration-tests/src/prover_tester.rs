@@ -2,7 +2,7 @@ use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{U256, keccak256};
 use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::Filter;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zksync_os_alloy_ext::network::Zksync;
 use zksync_os_alloy_ext::provider::ZksyncApi;
 use zksync_os_contract_interface::l1_discovery::L1State;
@@ -120,17 +120,34 @@ impl ProverTester {
 
     /// Resolves when the requested batch gets reported as proven by prover API.
     pub async fn wait_for_batch_proven(&self, batch_number: u64) -> anyhow::Result<()> {
-        let mut retries = 40;
-        while retries > 0 {
+        self.wait_for_batch_proven_with_timeout(batch_number, Duration::from_secs(20 * 60))
+            .await
+    }
+
+    /// SYSCOIN: Real app-bound V8 proving may take substantially longer than the fake/default
+    /// lane, especially when the SNARK wrapper runs on CPU. Keep the deadline explicit for the
+    /// fixture-gated live test without weakening the normal integration-test timeout.
+    pub async fn wait_for_batch_proven_with_timeout(
+        &self,
+        batch_number: u64,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            anyhow::anyhow!("proof wait timeout {timeout:?} exceeds the monotonic clock range")
+        })?;
+        loop {
             let status = self.check_batch_status(batch_number).await?;
             if status {
                 return Ok(());
-            } else {
-                tracing::info!("proof not ready yet, retrying");
-                retries -= 1;
-                tokio::time::sleep(Duration::from_secs(30)).await;
             }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "proof for batch {batch_number} was not submitted to L1 within {timeout:?}"
+            );
+            tracing::info!(?remaining, "proof not ready yet, retrying");
+            tokio::time::sleep(remaining.min(Duration::from_secs(30))).await;
         }
-        Err(anyhow::anyhow!("proof was not submitted to L1 in time"))
     }
 }

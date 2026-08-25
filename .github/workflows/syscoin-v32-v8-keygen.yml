@@ -208,8 +208,10 @@ jobs:
       fail-fast: false
       matrix:
         lane: [a, b]
-    # SYSCOIN: Provision at least two isolated runner workers with this label. They
-    # need Docker, >=160 GiB RAM, and >=100 GiB free disk; no GPU is required for deterministic VK setup.
+    # SYSCOIN: Provision these two runner registrations on separately administered ephemeral
+    # hosts. The workflow can reject a reused runner name, but physical independence is an
+    # operator-reviewed prerequisite. Each host needs Docker, >=160 GiB RAM, and >=100 GiB free
+    # disk; no GPU is required for deterministic VK setup.
     runs-on: [self-hosted, linux, x64, syscoin-keygen]
     timeout-minutes: 1440
     environment:
@@ -236,8 +238,9 @@ jobs:
             echo "CARGO_TARGET_DIR=${work_dir}/cargo-target"
           } >> "${GITHUB_ENV}"
           echo "${work_dir}/cargo-home/bin" >> "${GITHUB_PATH}"
-          # SYSCOIN: Publish only a one-way runner identity so reconciliation can
-          # reject two reproducibility runs accidentally scheduled on the same worker.
+          # SYSCOIN: Publish only a one-way runner-name identity so reconciliation can reject
+          # two reproducibility runs scheduled under the same registration. Different names do
+          # not by themselves attest separate physical hosts; that remains an operator gate.
           [[ -n "${RUNNER_NAME}" ]]
           printf '%s' "${RUNNER_NAME}" | sha256sum | awk '{print $1}' > \
             "${work_dir}/out/runner-identity.sha256"
@@ -723,7 +726,7 @@ jobs:
           name: syscoin-v32-v8-stock-control
           path: ${{ runner.temp }}/syscoin-v32-v8-attest/stock
 
-      - name: Reconcile both independent keygens
+      - name: Reconcile both reproducible keygens
         run: |
           set -euo pipefail
           work_dir="${RUNNER_TEMP}/syscoin-v32-v8-attest"
@@ -744,7 +747,7 @@ jobs:
           )
 
           # SYSCOIN: A release key is accepted only when both clean key-generation runs
-          # independently reproduce every application and VK byte.
+          # reproduce every application and VK byte under distinct runner registrations.
           for path in \
             app/app.bin \
             app/app.elf \
@@ -766,12 +769,12 @@ jobs:
               "${work_dir}/a/runner-identity.sha256" \
               "${work_dir}/b/runner-identity.sha256"
           then
-            echo "independent keygen lanes used the same runner identity" >&2
+            echo "keygen lanes used the same runner-name identity" >&2
             exit 1
           else
             runner_cmp_exit="$?"
             if [[ "${runner_cmp_exit}" != "1" ]]; then
-              echo "failed to compare independent keygen runner identities" >&2
+              echo "failed to compare keygen runner-name identities" >&2
               exit "${runner_cmp_exit}"
             fi
           fi
@@ -1313,8 +1316,9 @@ jobs:
                 app_bound_plonk_hash: $vk_hash,
                 upstream_program_commitment: $stock_program_commitment,
                 upstream_app_bound_reproduction_hash: $stock_vk_hash,
-                independent_keygens_equal: true,
-                distinct_keygen_runners: true
+                reproducible_keygens_equal: true,
+                distinct_runner_names: true,
+                physical_host_independence_requires_operator_attestation: true
               },
               atomic_update_candidates: {
                 era_plonk_key_sha256: $plonk_key_sha256,

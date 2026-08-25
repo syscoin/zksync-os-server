@@ -282,7 +282,10 @@ impl TestEnvironment {
         };
         let bitcoin_da_mock = maybe_start_bitcoin_da_mock(&mut config);
         #[cfg(feature = "prover-tests")]
-        let enable_prover = !config.prover_api_config.fake_fri_provers.enabled;
+        // SYSCOIN: Launch the external app-bound FRI+SNARK service only when its HTTP API is
+        // explicitly enabled. An idle commit-only node also has fake FRI disabled, but must not
+        // accidentally spawn a prover against an unbound endpoint.
+        let enable_prover = config.prover_api_config.enabled;
         let mut tester = Tester::launch_node_inner(
             self.l1,
             config,
@@ -307,7 +310,8 @@ impl TestEnvironment {
                         .expect("supporting node must have prover API port bound for prover tests"),
                 );
             }
-            spawn_prover_service(&tester, &sequencer_urls, sequencer_urls.len()).await;
+            tester.prover_service_task =
+                Some(spawn_prover_service(&tester, &sequencer_urls, sequencer_urls.len()).await);
         }
         Ok(tester)
     }
@@ -347,6 +351,10 @@ pub struct Tester {
     bitcoin_da_mock: Option<BitcoinDaMock>,
     #[cfg(feature = "prover-tests")]
     prover_api_address: String,
+    // SYSCOIN: Retain ownership of the combined prover monitor for fail-fast and abort+join
+    // cleanup in the canonical live-proof test.
+    #[cfg(feature = "prover-tests")]
+    prover_service_task: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 /// A stopped test node that keeps its database, effective config and L1 alive so it can be
@@ -392,6 +400,13 @@ impl Tester {
         self.bound_ports
             .prover_api
             .map(|port| format!("http://localhost:{port}"))
+    }
+
+    /// SYSCOIN: Transfer the combined prover monitor to the live-proof test so a child-process
+    /// failure is reported immediately instead of being detached until the proving deadline.
+    #[cfg(feature = "prover-tests")]
+    pub fn take_prover_service_task(&mut self) -> Option<JoinHandle<anyhow::Result<()>>> {
+        self.prover_service_task.take()
     }
 
     fn apply_external_node_defaults(&self, config: &mut Config) {
@@ -846,6 +861,9 @@ impl Tester {
             bitcoin_da_mock,
             #[cfg(feature = "prover-tests")]
             prover_api_address,
+            // SYSCOIN: The external prover is attached after node launch; start with no monitor.
+            #[cfg(feature = "prover-tests")]
+            prover_service_task: None,
         };
         if wait_for_initial_deposit {
             tester.wait_for_initial_deposit().await?;
@@ -1455,7 +1473,13 @@ fn l1_state_timestamp(state: &serde_json::Value) -> anyhow::Result<u64> {
 }
 
 #[cfg(feature = "prover-tests")]
-async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterations: usize) {
+// SYSCOIN: Return the child monitor so the caller can propagate failure and synchronously abort
+// the owned process during test cleanup instead of detaching it.
+async fn spawn_prover_service(
+    tester: &Tester,
+    sequencer_urls: &[String],
+    iterations: usize,
+) -> JoinHandle<anyhow::Result<()>> {
     let protocol_version = tester.chain_layout.protocol_version();
     assert_eq!(protocol_version, PROTOCOL_VERSION_V32_0);
     let app_bin_path = std::env::var("SYSCOIN_V8_APP_BIN")
@@ -1468,6 +1492,7 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
     );
     let trusted_setup_file = std::env::var("COMPACT_CRS_FILE").unwrap();
     let output_dir = tester.tempdir.path().join("outputs");
+    let submission_dir = tester.tempdir.path().join("prover-submissions");
     std::fs::create_dir_all(&output_dir).unwrap();
 
     let path = std::env::var("SYSCOIN_V8_PROVER_BIN")
@@ -1478,16 +1503,21 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
         .arg(sequencer_urls.join(","))
         .arg("--app-bin-path")
         .arg(app_bin_path)
-        .arg("--circuit-limit")
-        .arg("10000")
         .arg("--output-dir")
         .arg(output_dir)
+        // SYSCOIN: The hardened prover persists leased capabilities in an explicit absolute,
+        // owner-only spool so a crash cannot lose or duplicate a completed submission.
+        .arg("--submission-dir")
+        .arg(submission_dir)
         .arg("--trusted-setup-file")
         .arg(trusted_setup_file)
         .arg("--iterations")
         .arg(iterations.to_string())
         .arg("--max-fris-per-snark")
-        .arg("1")
+        .arg("2")
+        // SYSCOIN: This process connects only to loopback endpoints created inside the isolated
+        // integration test; production remote sequencers remain HTTPS-only.
+        .arg("--allow-insecure-sequencer-http")
         .arg("--disable-zk")
         // Without this the prover keeps running after a panic: the wait-task below is
         // dropped on runtime shutdown without ever signalling the child.
@@ -1508,11 +1538,12 @@ async fn spawn_prover_service(tester: &Tester, sequencer_urls: &[String], iterat
         let code = child
             .wait()
             .await
-            .expect("failed to wait for prover service");
-        if code.success() {
-            tracing::info!("prover service finished running");
-        } else {
-            panic!("prover service terminated with exit code {}", code);
-        }
-    });
+            .context("failed to wait for prover service")?;
+        anyhow::ensure!(
+            code.success(),
+            "prover service terminated with exit code {code}"
+        );
+        tracing::info!("prover service finished running");
+        Ok(())
+    })
 }

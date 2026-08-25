@@ -1050,7 +1050,7 @@ prepare_run_workspace \\
             callable_block = rewritten_lock.split(
                 'name = "callable_oracles"', 1
             )[1].split("[[package]]", 1)[0]
-            self.assertNotIn(' "c-kzg",', callable_block)
+            self.assertIn(' "c-kzg",', callable_block)
             self.assertIn('name = "c-kzg"\nversion = "2.1.8"', rewritten_lock)
             self.assertNotIn(
                 f"git+{OFFICIAL_OS_URL}.git?tag={FINAL_OS_TAG}#{FINAL_LOCKED_REV}",
@@ -1138,14 +1138,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             result = self.run_rewrite(Path(temp), cargo_lock=cargo_lock)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("required sha2 0.10.9 package", result.stderr)
-
-    def test_rejects_unexpected_callable_oracles_lock_shape(self) -> None:
-        with tempfile.TemporaryDirectory() as temp:
-            cargo_lock = self.fixture_cargo_lock().replace(' "c-kzg",\n', "")
-            result = self.run_rewrite(Path(temp), cargo_lock=cargo_lock)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("exactly one direct c-kzg edge", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()
