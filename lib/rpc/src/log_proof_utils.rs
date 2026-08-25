@@ -1282,7 +1282,6 @@ pub(crate) async fn build_gateway_proof_extension(
             )
             .await
             .context("unstable_getBatchByBlockNumber")?;
-        validate_gateway_block_range(&gateway_batch.block_range, execute_gateway_block_number)?;
         (
             gateway_batch.block_range.clone(),
             gateway_batch.number(),

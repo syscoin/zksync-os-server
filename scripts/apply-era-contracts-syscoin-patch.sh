@@ -752,10 +752,11 @@ fi
 # including submodule initialization and source-patch application.
 verify_verifier_artifacts_pending
 
-# Only top-level dependencies are part of this source attestation. Their own
-# optional developer/test submodules are not needed for the canonical build.
-git -C "${CONTRACTS_PATH}" submodule sync
-git -C "${CONTRACTS_PATH}" submodule update --init
+# SYSCOIN: Forge auto-discovers remappings from nested dependencies and commits them to IPFS
+# metadata. Populate the exact recursive graph so standalone application reproduces the baked
+# validator bytecode hashes used by the canonical launch path.
+git -C "${CONTRACTS_PATH}" submodule sync --recursive
+git -C "${CONTRACTS_PATH}" submodule update --init --recursive
 
 EXPECTED_GITLINK="$(git -C "${CONTRACTS_PATH}" ls-tree HEAD "${NESTED_PATH}" | awk '{print $3}')"
 [[ "${EXPECTED_GITLINK}" == "${EXPECTED_NESTED_SHA}" ]] ||

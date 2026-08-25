@@ -536,7 +536,8 @@ class EraAttestationStaticTests(unittest.TestCase):
             self.assertIn("SYSCOIN:", patch[start:end], path)
 
         pending_gate = helper.rindex("\nverify_verifier_artifacts_pending\n")
-        self.assertLess(pending_gate, helper.index("submodule sync\n"))
+        self.assertLess(pending_gate, helper.index("submodule sync --recursive\n"))
+        self.assertIn("submodule update --init --recursive", helper)
         self.assertLess(
             pending_gate,
             helper.index('apply --recount --unidiff-zero --whitespace'),

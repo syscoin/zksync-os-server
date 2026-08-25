@@ -106,10 +106,11 @@ schema label is `executed_batch_storage`.
 | FirstBlockIndex | first block number (u64, big-endian) | batch number (u64, big-endian) |
 | Latest | `latest_batch` | highest appended batch number |
 
+<!-- SYSCOIN: Document the bounded startup checks without reviving a full-store recovery walk. -->
 This store anchors committed-batch discovery, stable batch RPC responses, and
 restart recovery. Preserve it with the repository, replay WAL, state, and tree;
-an inconsistent cursor or missing canonical genesis must fail startup rather
-than be repaired by deleting only this directory.
+a malformed latest cursor, or a nonzero cursor without the canonical genesis,
+fails startup rather than being repaired by deleting only this directory.
 
 ---
 
