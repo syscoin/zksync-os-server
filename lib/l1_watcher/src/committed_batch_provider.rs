@@ -212,11 +212,7 @@ impl CommittedBatchProvider {
         block_number: BlockNumber,
     ) -> Option<DiscoveredCommittedBatch> {
         let inner = self.inner.read().expect("lock poisoned");
-        inner
-            .block_range_index
-            .get(&block_number)
-            .and_then(|batch_number| inner.batches.get(batch_number))
-            .cloned()
+        inner.get_batch_containing_block(block_number)
     }
 
     /// Returns `DiscoveredCommittedBatch` from in-memory map if available.
@@ -292,6 +288,19 @@ impl CommittedBatchProvider {
 }
 
 impl Inner {
+    // SYSCOIN: Same-number recommits can leave an old disjoint range-map segment; bind every hit
+    // back to the authoritative replacement batch before exposing optimistic Gateway metadata.
+    fn get_batch_containing_block(
+        &self,
+        block_number: BlockNumber,
+    ) -> Option<DiscoveredCommittedBatch> {
+        self.block_range_index
+            .get(&block_number)
+            .and_then(|batch_number| self.batches.get(batch_number))
+            .filter(|batch| batch.block_range.contains(&block_number))
+            .cloned()
+    }
+
     fn insert(&mut self, batch: DiscoveredCommittedBatch) {
         self.block_range_index
             .insert(batch.block_range.clone(), batch.number());
@@ -749,7 +758,7 @@ async fn validate_archive_batch_against_live(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_persisted_batch, startup_batch_numbers};
+    use super::{Inner, load_persisted_batch, startup_batch_numbers};
     use alloy::primitives::B256;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -784,6 +793,22 @@ mod tests {
             Some(committed_batch)
         );
         assert!(load_persisted_batch(&storage, 8).unwrap().is_none());
+    }
+
+    #[test]
+    fn disjoint_same_number_recommit_rejects_stale_range() {
+        let mut inner = Inner::default();
+        inner.insert(discovered_batch(7, 70, 79));
+        assert_eq!(inner.get_batch_containing_block(75).unwrap().number(), 7);
+
+        inner.insert(discovered_batch(7, 90, 99));
+
+        assert_eq!(inner.block_range_index.get(&75), Some(&7));
+        assert!(inner.get_batch_containing_block(75).is_none());
+        assert_eq!(
+            inner.get_batch_containing_block(95).unwrap().block_range,
+            90..=99
+        );
     }
 
     #[derive(Clone, Default)]
