@@ -24,16 +24,12 @@ use alloy::providers::Provider as _;
 /// the set `local-chains/v32.0/regenerate.sh` replaces.
 pub async fn v32_facet_cuts(upgrade_tester: &UpgradeTester<'_>) -> anyhow::Result<Vec<FacetCut>> {
     let l1_chain_id = upgrade_tester.tester.l1_provider().get_chain_id().await?;
-    let executor = ExecutorFacetV32::deploy(
-        upgrade_tester.tester.l1_provider().clone(),
-        U256::from(l1_chain_id),
-    )
-    .await?;
-    let committer = CommitterFacetV32::deploy(
-        upgrade_tester.tester.l1_provider().clone(),
-        U256::from(l1_chain_id),
-    )
-    .await?;
+    // SYSCOIN: Deploy facets on the settlement layer that executes the diamond cut while
+    // retaining the actual L1 chain ID in their immutable constructor argument.
+    let settlement_provider = upgrade_tester.tester.sl_provider().clone();
+    let executor =
+        ExecutorFacetV32::deploy(settlement_provider.clone(), U256::from(l1_chain_id)).await?;
+    let committer = CommitterFacetV32::deploy(settlement_provider, U256::from(l1_chain_id)).await?;
     Ok(vec![
         FacetCut {
             facet: *executor.address(),
