@@ -26,12 +26,11 @@ impl fmt::Debug for BitcoinDaMock {
     }
 }
 
-/// Configures the node to commit batches on L1 but never execute them: FRI proofs are faked,
-/// while SNARK proving is disabled. This keeps batches in the committed-but-not-executed state.
+/// SYSCOIN: Configures the node to commit batches on L1 without starting either proof stage.
+/// Commitment precedes proving, so the intentionally idle pipeline keeps batches committed but
+/// unproved without violating the V32 rule that rejects partial fake-prover topologies.
 pub fn make_commit_only_config(config: &mut Config) {
-    config.prover_api_config.fake_fri_provers.enabled = true;
-    config.prover_api_config.fake_fri_provers.compute_time = Duration::from_millis(200);
-    config.prover_api_config.fake_fri_provers.min_age = Duration::ZERO;
+    config.prover_api_config.fake_fri_provers.enabled = false;
     config.prover_api_config.fake_snark_provers.enabled = false;
 }
 
