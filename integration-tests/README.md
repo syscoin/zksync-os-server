@@ -44,6 +44,9 @@ Pre-requisites:
 
 # Run prover tests (CPU prover)
 # !! Note `--release`, important to avoid stack overflow and low performance in prover !!
+# SYSCOIN: Set SYSCOIN_V8_PROVER_BIN, SYSCOIN_V8_APP_BIN, and COMPACT_CRS_FILE to the
+# reviewed app-bound combined prover, canonical V8 app, and compact CRS respectively.
+# SYSCOIN_V8_PROVING_TIMEOUT_SECS optionally overrides the four-hour live-proof deadline.
 ./scripts/cargo-with-patched-zksync-os.sh integration-prover-cpu -- \
   nextest run --locked --release -p zksync_os_integration_tests \
   --features prover-tests -E 'binary(prover)'
@@ -51,6 +54,7 @@ Pre-requisites:
 # Run prover tests (GPU prover)
 # !! Note `--release`, important to avoid stack overflow and low performance in prover !!
 # !! Requires 24GB of VRAM and CUDA toolkit 12.x installed !!
+# SYSCOIN: The same three app-bound artifact variables above are mandatory.
 ./scripts/cargo-with-patched-zksync-os.sh integration-prover-gpu -- \
   nextest run --locked --release -p zksync_os_integration_tests \
   --features gpu-prover-tests -E 'binary(prover)'

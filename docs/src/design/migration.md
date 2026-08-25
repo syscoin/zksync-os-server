@@ -1,6 +1,8 @@
-# Gateway Migration
+# Gateway Migration Reference Design
 
-This document describes how the server handles a chain migrating its settlement layer (SL) — either from L1 to the Gateway, or from the Gateway back to L1.
+This document describes the upstream live-migration design for moving a chain's settlement layer (SL) between L1 and Gateway.
+
+> **SYSCOIN: Current V32 scope:** live settlement-layer migration is not wired into the production server. `GatewayMigrationWatcher` and the migration gate types remain reference code, but the production component graph does not start them. The interop-root cursor is also local to one `MessageRoot` contract, so it cannot safely continue across a live source change. Operators must quiesce the chain, complete the migration, reset or namespace the interop cursor for the new source, and restart every node with the matching Gateway configuration. Both startup fetch paths now revalidate the L1-selected identity and complete interval history after all provider reads, retry a bounded number of times, and fail closed if migration or an interval reorg races startup; this is a static-startup safety boundary, not live-migration support.
 
 ## Background
 
@@ -26,7 +28,7 @@ At any point in time the node commits, proves, and executes batches on exactly o
 
 ## Components
 
-Five components participate in migration handling. They are only active on protocol version ≥ v31.
+The upstream design uses five components. They are documented below for future integration, but are not active in the current Syscoin V32 production component graph.
 
 ### `GatewayMigrationWatcher` (`lib/l1_watcher`)
 
@@ -127,7 +129,8 @@ All migration components communicate through two `tokio::sync::watch` channels c
 | `migration_state` | `GatewayMigrationState` | `GatewayMigrationWatcher` (→ `InProgress`), `MigrationFinalizedWatcher` (→ `Stable`) | `MigrationGate` |
 | `migration_triggered` | `Option<u64>` | `MigrationGate` (→ `Some(batch_number)`) | `SettlementLayerWatcher` |
 
-Both channels are created unconditionally (initial values: `Stable` and `None`) so that on pre-v31 chains the batcher pipeline compiles and runs unchanged — the senders are simply never written to.
+<!-- SYSCOIN: Fresh V32 does not retain a legacy migration lane. -->
+The reference design creates both channels unconditionally with initial values `Stable` and `None`. The current Syscoin V32 production graph does not start the migration producers, so these channels remain at their initial values.
 
 ## Startup Recovery
 

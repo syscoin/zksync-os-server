@@ -16,9 +16,10 @@ zksync_os_merkle_tree.workspace = true
 zksync_os_storage_api.workspace = true
 zksync_os_types.workspace = true
 
-zk_os_forward_system_0_4_0.workspace = true
-zk_os_basic_system_0_4_0.workspace = true
-zk_ee_0_4_0.workspace = true
+# SYSCOIN: Native V32 witness generation targets only the canonical v0.4.0 guest aliases.
+zk_os_forward_system.workspace = true
+zk_os_basic_system.workspace = true
+zk_ee.workspace = true
 
 alloy.workspace = true
 anyhow.workspace = true

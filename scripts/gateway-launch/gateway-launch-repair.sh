@@ -108,7 +108,8 @@ export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Repair checkpoints only for the canonical fresh V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 

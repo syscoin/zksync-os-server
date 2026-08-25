@@ -1,72 +1,17 @@
-use cargo_metadata::{MetadataCommand, PackageId};
-use reqwest::StatusCode;
-use reqwest::blocking::Client;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
+use cargo_metadata::MetadataCommand;
 use sha2::{Digest, Sha256};
-use std::fmt::Write as _;
-use std::path::Path;
-use url::Url;
+use std::{fmt::Write as _, path::Path};
 
-struct BinarySourceConfig {
-    proving_version: &'static str,
-    download_tag: &'static str,
-}
-
-fn parse_git_reference(package_id: &PackageId) -> anyhow::Result<String> {
-    let url = Url::parse(&package_id.to_string())?;
-    let mut query_pairs = url.query_pairs();
-    let (_, reference) = query_pairs
-        .find(|(key, _)| key == "tag" || key == "branch" || key == "rev")
-        .ok_or_else(|| anyhow::anyhow!("missing tag, branch or rev in git url `{url}`"))?;
-    Ok(reference.to_string())
-}
-
-// Remove entries as the corresponding proving lanes leave the support window.
-fn binary_source_config(reference: &str) -> Option<BinarySourceConfig> {
-    match reference {
-        // The V6 VK was generated from the original v0.2.5 binaries; 0.2.x rebuild tags
-        // produce different ones.
-        "v0.2.10-interface-v0.1.3-2026-02-10" => Some(BinarySourceConfig {
-            proving_version: "V6",
-            download_tag: "v0.2.5",
-        }),
-        "v0.3.2-interface-v0.1.3" => Some(BinarySourceConfig {
-            proving_version: "V7",
-            download_tag: "v0.3.2-interface-v0.1.3",
-        }),
-        _ => None,
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
     }
+    output
 }
 
-fn require_patched_source_text(
-    root: &Path,
-    relative_path: &str,
-    needle: &str,
-) -> anyhow::Result<()> {
-    let path = root.join(relative_path);
-    println!("cargo:rerun-if-changed={}", path.display());
-    let metadata = std::fs::symlink_metadata(&path)?;
-    if !metadata.file_type().is_file() {
-        anyhow::bail!(
-            "patched zksync-os source is not a regular file: {}",
-            path.display()
-        );
-    }
-    let text = std::fs::read_to_string(&path)?;
-    if !text.contains(needle) {
-        anyhow::bail!(
-            "patched zksync-os sentinel is missing from {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn require_patched_source_sha256(
-    root: &Path,
-    relative_path: &str,
-    expected: &str,
-) -> anyhow::Result<()> {
+fn require_source_sha256(root: &Path, relative_path: &str, expected: &str) -> anyhow::Result<()> {
     let path = root.join(relative_path);
     println!("cargo:rerun-if-changed={}", path.display());
     let metadata = std::fs::symlink_metadata(&path)?;
@@ -86,242 +31,72 @@ fn require_patched_source_sha256(
     Ok(())
 }
 
-fn verify_syscoin_execution_source(package_manifest: &Path) -> anyhow::Result<()> {
-    let package_dir = package_manifest.parent().ok_or_else(|| {
+fn verify_syscoin_source(manifest: &Path) -> anyhow::Result<()> {
+    let source_root = manifest.parent().and_then(Path::parent).ok_or_else(|| {
         anyhow::anyhow!(
-            "forward_system manifest has no parent directory: {}",
-            package_manifest.display()
-        )
-    })?;
-    let source_root = package_dir.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "forward_system package has no zksync-os source root: {}",
-            package_dir.display()
+            "invalid forward_system manifest path: {}",
+            manifest.display()
         )
     })?;
 
-    // A released V7 guest contains the Syscoin 0x101 implementation. Native execution for the
-    // V7 proving lane must come from the same patched source or simulation and proving can
-    // disagree. Cargo cannot apply an external patch during dependency resolution, so unsupported
-    // plain builds fail closed and direct callers use the checked-in patched-workspace launcher.
-    require_patched_source_text(
-        source_root,
-        "forward_system/Cargo.toml",
-        "system_hooks/slh_dsa_precompile",
-    )?;
-    require_patched_source_text(
-        source_root,
-        "basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs",
-        "compress256(state, core::slice::from_ref(&block));",
-    )?;
-    require_patched_source_text(
-        source_root,
-        "evm_interpreter/src/precompile_addresses.rs",
-        "SLH_DSA_SHA2_128_24_VERIFY_HOOK_ADDRESS_LOW",
-    )?;
-    require_patched_source_sha256(
+    // SYSCOIN: These exact files bind native execution to the audited final-v0.4 guest source.
+    require_source_sha256(
         source_root,
         "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs",
-        "1eb8dc0da30570626a860968140c41663b9a40077f2c420665196b7506d7a7cb",
+        "00ede058520ad12356fb2137f9d59673828d0bd7fa99c859f86b623681c369c6",
+    )?;
+    require_source_sha256(
+        source_root,
+        "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs",
+        "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188",
+    )?;
+    require_source_sha256(
+        source_root,
+        "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/mod.rs",
+        "cbf166eea82af6c2fc5d0570095630987498dc75bce935cb7b3e05077a8f1863",
+    )?;
+    require_source_sha256(
+        source_root,
+        "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/blob_commitment_generator/mod.rs",
+        "8fff7414159aff9ea8fe8513e57b6cc6f31aa5ae15943066aae224f1dcff3d26",
+    )?;
+    require_source_sha256(
+        source_root,
+        "basic_bootloader/src/bootloader/block_flow/zk/post_tx_op/da_commitment_generator/syscoin_commitment_generator.rs",
+        "39be17a6fb165137e175271758514de959c0812e1579275a6f5d4d3a386a421c",
+    )?;
+    require_source_sha256(
+        source_root,
+        "basic_system/src/system_functions/slh_dsa_sha2_128_24_verify.rs",
+        "929738ac17af40fa260313ed0a8ce09e396ebede3b10f32a3dd7701928078b84",
+    )?;
+    require_source_sha256(
+        source_root,
+        "forward_system/src/run/mod.rs",
+        "9e96f3a3302a81293a364be7c749eb998e4b3197e84baebd58f089b7a8375e7a",
     )?;
     Ok(())
-}
-
-const DOWNLOAD_MAX_ATTEMPTS: usize = 5;
-const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
-const DOWNLOAD_BASE_BACKOFF_MS: u64 = 500;
-const APP_VARIANTS: [&str; 3] = [
-    "multiblock_batch",
-    "singleblock_batch",
-    "singleblock_batch_logging_enabled",
-];
-
-fn expected_syscoin_app_sha256(tag: &str, variant: &str) -> anyhow::Result<&'static str> {
-    // SYSCOIN: keep the patched V7 VM app release assets pinned to exact bytes.
-    match (tag, variant) {
-        ("v0.2.5", "multiblock_batch") => {
-            Ok("f8612c0c43719549d233a16efb95984109ea7ce543b102ffaf572c9496cebf22")
-        }
-        ("v0.2.5", "singleblock_batch") => {
-            Ok("c7f375b6086814033e1de5ada8a4b0cfb3a1a71f9cb25de824ced247178d23e0")
-        }
-        ("v0.2.5", "singleblock_batch_logging_enabled") => {
-            Ok("055ed473eb0af6797c9dda7ef7551aa7bb8907761be9c8726046c1959eeb6e4d")
-        }
-        ("v0.3.2-interface-v0.1.3", "multiblock_batch") => {
-            Ok("1487dd6070b75f43f433499f3ab2910e23dfacc24319bb09c1ed43375483e7b5")
-        }
-        ("v0.3.2-interface-v0.1.3", "singleblock_batch") => {
-            Ok("097ca3c97ddf5c3985f2d97dfdc05354329ed137b219566847acda9417d02a87")
-        }
-        ("v0.3.2-interface-v0.1.3", "singleblock_batch_logging_enabled") => {
-            Ok("4e7dbf72ae7edd7b1f6b555da787ad61f993c3757f0d8c654586b557a2c0417d")
-        }
-        _ => anyhow::bail!("missing expected SHA-256 for Syscoin zksync-os app {tag}/{variant}"),
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    output
-}
-
-fn verify_syscoin_app_sha256(tag: &str, variant: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let expected = expected_syscoin_app_sha256(tag, variant)?;
-    let actual = sha256_hex(bytes);
-    if actual != expected {
-        anyhow::bail!(
-            "SHA-256 mismatch for Syscoin zksync-os app {tag}/{variant}: expected {expected}, got {actual}"
-        );
-    }
-    Ok(())
-}
-
-fn verify_syscoin_app_file(tag: &str, variant: &str, path: &str) -> anyhow::Result<()> {
-    let bytes = std::fs::read(path)?;
-    verify_syscoin_app_sha256(tag, variant, &bytes)
-}
-
-fn is_retryable_status(status: StatusCode) -> bool {
-    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS
-}
-
-fn new_http_client() -> anyhow::Result<Client> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static("zksync-os-build-script/1.0"),
-    );
-
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        let bearer = format!("Bearer {}", token.trim());
-        match HeaderValue::from_str(&bearer) {
-            Ok(value) => {
-                headers.insert(AUTHORIZATION, value);
-            }
-            Err(err) => {
-                println!("cargo:warning=Ignoring invalid GITHUB_TOKEN format: {err}");
-            }
-        }
-    }
-
-    Ok(Client::builder()
-        .default_headers(headers)
-        .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-        .build()?)
-}
-
-fn download_with_retry(
-    client: &Client,
-    url: &str,
-    path: &str,
-    tag: &str,
-    variant: &str,
-) -> anyhow::Result<()> {
-    for attempt in 1..=DOWNLOAD_MAX_ATTEMPTS {
-        let response = client.get(url).send();
-        match response {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    let body = response.bytes()?;
-                    verify_syscoin_app_sha256(tag, variant, body.as_ref())?;
-                    std::fs::write(path, body.as_ref())?;
-                    return Ok(());
-                }
-
-                if is_retryable_status(status) && attempt < DOWNLOAD_MAX_ATTEMPTS {
-                    let delay_ms = DOWNLOAD_BASE_BACKOFF_MS * attempt as u64;
-                    println!(
-                        "cargo:warning=download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed with status {status} for {url}; retrying in {delay_ms}ms"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    continue;
-                }
-
-                anyhow::bail!("download failed with status {status} for {url}");
-            }
-            Err(err) => {
-                if attempt < DOWNLOAD_MAX_ATTEMPTS {
-                    let delay_ms = DOWNLOAD_BASE_BACKOFF_MS * attempt as u64;
-                    println!(
-                        "cargo:warning=download attempt {attempt}/{DOWNLOAD_MAX_ATTEMPTS} failed for {url}: {err}; retrying in {delay_ms}ms"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                    continue;
-                }
-
-                anyhow::bail!("download request failed for {url}: {err}");
-            }
-        }
-    }
-    unreachable!("loop always returns on success or final attempt");
 }
 
 fn main() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let metadata = MetadataCommand::new().exec().unwrap();
-    let mut configured_v7_sources = 0;
-
-    // Find forward_system crate and expose its path to the directory containing `app*.bin` files.
-    for package in &metadata.packages {
-        if package.name.as_str() != "forward_system" {
-            continue;
-        }
-        let Ok(reference) = parse_git_reference(&package.id) else {
-            continue;
-        };
-
-        if let Some(config) = binary_source_config(&reference) {
-            if config.proving_version == "V7" {
-                configured_v7_sources += 1;
-                verify_syscoin_execution_source(package.manifest_path.as_std_path())
-                    .unwrap_or_else(|err| {
-                        panic!(
-                            "V7 zksync-os execution source is not Syscoin-patched: {err}. Use run_local.sh or scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh instead of plain Cargo for builds that include multivm"
-                        )
-                    });
-            }
-            let client = new_http_client().expect("failed to create HTTP client");
-            let dir = format!("{manifest_dir}/apps/{}", config.download_tag);
-            std::fs::create_dir_all(&dir).expect("failed to create directory");
-            for variant in APP_VARIANTS {
-                // SYSCOIN: app binaries are published as hash-pinned release assets;
-                // this URL is artifact hosting, not an execution-source dependency.
-                // Verify exact bytes before embedding them with include_bytes!.
-                let url = format!(
-                    "https://github.com/syscoin/zksync-os/releases/download/{}/{variant}.bin",
-                    config.download_tag
-                );
-                let path = format!("{dir}/{variant}.bin");
-                if std::fs::exists(&path).expect("failed to check file existence") {
-                    if let Err(err) = verify_syscoin_app_file(config.download_tag, variant, &path) {
-                        println!(
-                            "cargo:warning=removing cached Syscoin zksync-os app with invalid SHA-256 at {path}: {err}"
-                        );
-                        std::fs::remove_file(&path).expect("failed to remove invalid app binary");
-                    } else {
-                        continue;
-                    }
-                }
-                download_with_retry(&client, &url, &path, config.download_tag, variant)
-                    .expect("failed to download");
-            }
-
-            println!(
-                "cargo:rustc-env=ZKSYNC_OS_{}_SOURCE_PATH={dir}",
-                config.proving_version
-            );
-            continue;
-        }
-    }
+    let metadata = MetadataCommand::new()
+        .exec()
+        .expect("failed to read Cargo metadata");
+    let forward_systems: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| package.name.as_str() == "forward_system")
+        .collect();
 
     assert_eq!(
-        configured_v7_sources, 1,
-        "expected exactly one V7 forward_system source, found {configured_v7_sources}"
+        forward_systems.len(),
+        1,
+        "expected one canonical forward_system source, found {}",
+        forward_systems.len()
     );
+    verify_syscoin_source(forward_systems[0].manifest_path.as_std_path()).unwrap_or_else(|err| {
+        panic!(
+            "zksync-os execution source is not the audited Syscoin final-v0.4 postimage: {err}. Use scripts/cargo-with-patched-zksync-os.sh instead of plain Cargo"
+        )
+    });
 }

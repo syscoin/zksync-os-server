@@ -25,7 +25,7 @@ const API_LEVEL: u64 = 8;
 /// which works for simple cases that we currently use Otterscan for.
 const MAX_BLOCKS_TO_SCAN: u64 = 1000;
 
-/// SYSCOIN Maximum number of transactions returned by OTS search endpoints in a single response.
+/// SYSCOIN: Maximum number of transactions returned by OTS search endpoints in a single response.
 const MAX_TRANSACTIONS_PAGE_SIZE: usize = 500;
 
 pub struct OtsNamespace<RpcStorage> {
@@ -195,7 +195,7 @@ impl<RpcStorage: ReadRpcStorage> OtsNamespace<RpcStorage> {
         block_number_iter: impl IntoIterator<Item = BlockNumber>,
         page_size: usize,
     ) -> EthResult<(Vec<ZkApiTransaction>, Vec<OtsTransactionReceipt>, bool)> {
-        // SYSCOIN
+        // SYSCOIN:
         if page_size > MAX_TRANSACTIONS_PAGE_SIZE {
             return Err(EthError::PageSizeTooLarge {
                 page_size,

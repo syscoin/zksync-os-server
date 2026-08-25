@@ -2,7 +2,7 @@ use crate::model::blocks::PreparedBlockCommand;
 use alloy::primitives::B256;
 use std::fmt;
 use zksync_os_storage_api::BlockContext;
-use zksync_os_types::{BlockOutput, BlockPubdata};
+use zksync_os_types::BlockOutput;
 
 struct BlockContextDbg<'a>(&'a BlockContext);
 impl<'a> fmt::Debug for BlockContextDbg<'a> {
@@ -63,16 +63,8 @@ impl<'a> fmt::Debug for Hex<'a> {
     }
 }
 
-struct BlockPubdataDbg<'a>(&'a BlockPubdata);
-impl<'a> fmt::Debug for BlockPubdataDbg<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            BlockPubdata::Bytes(bytes) => Hex(bytes).fmt(f),
-            BlockPubdata::Length(length) => write!(f, "length({length})"),
-        }
-    }
-}
-
+// SYSCOIN: V32 debug output reports canonical pubdata usage; the retired BlockPubdata wrapper was
+// tied to the legacy per-block proof-input path and is not part of the native batch surface.
 impl<'a> fmt::Debug for BlockOutputDebug<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let o = self.0;
@@ -90,7 +82,6 @@ impl<'a> fmt::Debug for BlockOutputDebug<'a> {
             .field("storage_writes", &o.storage_writes)
             .field("account_diffs", &o.account_diffs)
             .field("published_preimages", &preimages)
-            .field("pubdata", &BlockPubdataDbg(&o.pubdata))
             .field("pubdata_used", &o.pubdata_used())
             .field("computational_native_used", &o.computational_native_used)
             .finish()

@@ -3,12 +3,11 @@
 //! This crate isolates version-specific zksync-os native batching APIs from the rest of the
 //! server so `multivm` can stay focused on block execution and transaction simulation.
 
-use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{B256, keccak256};
+use alloy::primitives::{Address, B256, keccak256};
 use zksync_os_batch_types::{BlockMerkleTreeData, CanonicalBatchCommitData, PendingBatchInfo};
 use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper};
 use zksync_os_storage_api::{ReadStateHistory, ReplayRecord};
-use zksync_os_types::{ProtocolSemanticVersion, ProvingVersion, PubdataMode};
+use zksync_os_types::{BlockOutput, ProtocolSemanticVersion, PubdataMode};
 
 pub mod tree;
 mod v32;
@@ -18,6 +17,8 @@ mod v32;
 pub struct NativeBatchBlock<'a> {
     pub replay_record: &'a ReplayRecord,
     pub tree_data: &'a BlockMerkleTreeData,
+    /// SYSCOIN: Native result used to reconstruct and authenticate compact edge-DA openings.
+    pub block_output: &'a BlockOutput,
 }
 
 #[derive(Debug)]
@@ -44,6 +45,10 @@ pub struct NativeBatchRunOutput {
     pub chain_id: u64,
     pub sl_chain_id: u64,
     pub upgrade_tx_hash: Option<B256>,
+    /// SYSCOIN: Compact edge-DA messages carried into the final-L1 opening.
+    pub edge_da_refs_input: Vec<u8>,
+    /// SYSCOIN: Ordered root of the compact edge-DA messages.
+    pub edge_da_refs_root: B256,
 }
 
 impl NativeBatchRunOutput {
@@ -68,6 +73,8 @@ impl NativeBatchRunOutput {
             chain_id: self.chain_id,
             sl_chain_id: self.sl_chain_id,
             pubdata: self.pubdata.clone(),
+            edge_da_refs_input: self.edge_da_refs_input.clone(),
+            edge_da_refs_root: self.edge_da_refs_root,
         }
     }
 
@@ -84,7 +91,7 @@ impl NativeBatchRunOutput {
         protocol_version: &ProtocolSemanticVersion,
         chain_id: u64,
         sl_chain_id: u64,
-    ) -> anyhow::Result<(PendingBatchInfo, Option<BlobTransactionSidecar>)> {
+    ) -> anyhow::Result<PendingBatchInfo> {
         anyhow::ensure!(
             self.chain_id == chain_id,
             "native batch run chain id mismatch: node has {chain_id}, batch program used {}",
@@ -96,7 +103,7 @@ impl NativeBatchRunOutput {
             self.sl_chain_id,
         );
 
-        let (batch_info, blob_sidecar) = PendingBatchInfo::build_from_canonical_output(
+        let batch_info = PendingBatchInfo::build_from_canonical_output(
             batch_number,
             pubdata_mode,
             protocol_version,
@@ -111,7 +118,7 @@ impl NativeBatchRunOutput {
                 self.previous_state_commitment.0,
                 batch_info.commit_info.new_state_commitment.0,
                 chain_config_hash.0,
-                batch_info.v32_batch_output_hash().0,
+                batch_info.batch_output_hash().0,
             ]
             .concat(),
         );
@@ -121,38 +128,38 @@ impl NativeBatchRunOutput {
             self.batch_public_input_hash,
         );
 
-        Ok((batch_info, blob_sidecar))
+        Ok(batch_info)
     }
 }
 
-/// The chain config all v32 executions (block and native batch) run with. Its hash is part of
-/// the v32 batch public input, so every construction site must go through this function.
-pub fn v32_chain_config(
+/// The chain config all canonical executions run with. Its hash is part of the batch public
+/// input, so every construction site must go through this function.
+pub fn chain_config(
     chain_id: u64,
-) -> anyhow::Result<zk_ee_0_4_0::system::metadata::chain_config::ChainConfig> {
+) -> anyhow::Result<zk_ee::system::metadata::chain_config::ChainConfig> {
     v32::chain_config(chain_id)
 }
 
-/// keccak256 commitment of [`v32_chain_config`], as committed to in the v32 batch public input.
-pub fn v32_chain_config_hash(chain_id: u64) -> anyhow::Result<B256> {
+/// Keccak256 commitment of [`chain_config`], as committed to in the batch public input.
+pub fn chain_config_hash(chain_id: u64) -> anyhow::Result<B256> {
     v32::chain_config_hash(chain_id)
 }
 
 pub fn generate_batch_run<ReadState: ReadStateHistory>(
-    proving_version: ProvingVersion,
     blocks: &[NativeBatchBlock<'_>],
     read_state: &ReadState,
     merkle_tree: MerkleTree<RocksDBWrapper>,
     pubdata_mode: PubdataMode,
+    // SYSCOIN: The guest-bound Gateway commit target selects compact edge-DA openings.
+    compact_edge_da_commit_target: Address,
 ) -> anyhow::Result<NativeBatchRunOutput> {
-    match proving_version {
-        ProvingVersion::V8 => {
-            v32::generate_batch_run(blocks, read_state, merkle_tree, pubdata_mode)
-        }
-        ProvingVersion::V6 | ProvingVersion::V7 => {
-            anyhow::bail!("native batch proving is unsupported for {proving_version:?}")
-        }
-    }
+    v32::generate_batch_run(
+        blocks,
+        read_state,
+        merkle_tree,
+        pubdata_mode,
+        compact_edge_da_commit_target,
+    )
 }
 
 #[cfg(test)]
@@ -178,6 +185,8 @@ mod tests {
             chain_id: 270,
             sl_chain_id: 123,
             upgrade_tx_hash: Some(B256::repeat_byte(0x66)),
+            edge_da_refs_input: vec![0xaa, 0xbb],
+            edge_da_refs_root: B256::repeat_byte(0x99),
         };
 
         let canonical = output.canonical_commit_data(7, 9);
@@ -200,5 +209,7 @@ mod tests {
         assert_eq!(canonical.chain_id, 270);
         assert_eq!(canonical.sl_chain_id, 123);
         assert_eq!(canonical.pubdata, vec![9, 8, 7]);
+        assert_eq!(canonical.edge_da_refs_input, vec![0xaa, 0xbb]);
+        assert_eq!(canonical.edge_da_refs_root, B256::repeat_byte(0x99));
     }
 }

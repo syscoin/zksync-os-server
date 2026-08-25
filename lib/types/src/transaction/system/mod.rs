@@ -22,7 +22,7 @@ pub use utils::{
     SYSTEM_TX_TYPE_ID, SystemTxType,
 };
 use zksync_os_contract_interface::IInteropCenter::setInteropFeeCall;
-// SYSCOIN
+// SYSCOIN:
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     into = "tx_serde::TransactionSerdeHelper",
@@ -239,7 +239,7 @@ mod tx_serde {
             }
         }
     }
-    // SYSCOIN
+    // SYSCOIN:
     impl TryFrom<TransactionSerdeHelper> for SystemTxEnvelope {
         type Error = String;
 

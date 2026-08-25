@@ -1,0 +1,8 @@
+self-hosted-runner:
+  # SYSCOIN: The protected V32/V8 key ceremony runs only on dedicated operators.
+  labels:
+    - syscoin-keygen
+
+config-variables: null
+
+paths:

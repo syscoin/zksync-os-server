@@ -8,26 +8,34 @@ use std::fs::Metadata;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::io::AsyncWriteExt as _;
 use tokio::sync::Mutex;
 use zksync_os_batch_types::batcher_model::{FriProof, SignedBatchEnvelope};
 use zksync_os_pipeline::HasBlockRangeEnd;
+
+// SYSCOIN: Unique same-directory transaction files make accepted-proof publication atomic while
+// retaining stale crash artifacts for explicit startup quarantine.
+static STORAGE_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
+const STORAGE_TRANSACTION_PREFIX: &str = ".syscoin-proof-txn-";
+const STORAGE_TRANSACTION_SUFFIX: &str = ".tmp";
 
 /// Persists FRI proofs to disk together with the batch if proof is successful
 #[derive(Clone, Debug)]
 pub struct ProofStorage {
     batches_with_proof: Arc<Mutex<BoundedFileStorage>>,
-    // SYSCOIN
-    pending_batches_with_proof: Arc<Mutex<HashMap<String, u64>>>,
-    // SYSCOIN
+    // SYSCOIN: Each durable pending proof key has one owner and remains capacity-protected until
+    // handoff; duplicate ownership is rejected before storage can overwrite the accepted proof.
+    pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
+    // SYSCOIN: Recovered pending keys are replayed exactly once after restart.
     recovered_pending_batches_with_proof: Arc<Mutex<HashSet<String>>>,
-    // SYSCOIN
+    // SYSCOIN: Disambiguates pending writes created in the same clock tick.
     pending_key_counter: Arc<AtomicU64>,
     failed: Arc<Mutex<BoundedFileStorage>>,
 }
 
-// SYSCOIN
+// SYSCOIN: Couples a proven batch with its durable pending-file lease.
 #[derive(Debug)]
 pub struct ProvenBatch {
     pub batch: SignedBatchEnvelope<FriProof>,
@@ -70,16 +78,13 @@ impl HasBlockRangeEnd for ProvenBatch {
 impl ProofStorage {
     pub async fn new(config: ProofStorageConfig) -> anyhow::Result<Self> {
         let fri_batches_path = config.path.join("fri_batches");
-        // SYSCOIN
+        // SYSCOIN: Discover and protect accepted-but-unforwarded proofs before capacity cleanup.
         let pending_keys = discover_pending_batch_proof_keys(&fri_batches_path).await?;
         let pending_protected_keys: HashSet<_> = pending_keys
             .iter()
             .map(|key| key.as_str().to_string())
             .collect();
-        let pending_batches_with_proof = pending_protected_keys
-            .iter()
-            .map(|key| (key.clone(), 1))
-            .collect();
+        let pending_batches_with_proof = pending_protected_keys.clone();
         tracing::info!(
             path = config.path.display().to_string(),
             batch_with_proof_capacity = config.batch_with_proof_capacity.0,
@@ -109,15 +114,20 @@ impl ProofStorage {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) async fn pending_batch_proof_count_for_test(&self) -> usize {
+        self.pending_batches_with_proof.lock().await.len()
+    }
+
     /// Persist a BatchWithProof. Overwrites any existing entry for the same batch.
     pub async fn save_batch_with_proof(&self, batch: &StoredBatch) -> anyhow::Result<()> {
         let latency =
             PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
 
         let key = format!("batch_{}.json", batch.batch_number());
-        // SYSCOIN
+        // SYSCOIN: Canonical writes must not evict durable pending proof leases.
         let pending = self.pending_batches_with_proof.lock().await;
-        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
+        let protected_keys = pending.clone();
         let result = self
             .batches_with_proof
             .lock()
@@ -131,8 +141,7 @@ impl ProofStorage {
         Ok(())
     }
 
-    // SYSCOIN
-    /// Promote a pending proof file to its canonical batch key.
+    /// SYSCOIN: Promote a pending proof file to its canonical batch key.
     ///
     /// Unlike [`Self::save_batch_with_proof`], this is a required durable handoff; it renames
     /// the already-written pending file instead of requiring temporary capacity for a second copy.
@@ -156,8 +165,7 @@ impl ProofStorage {
         Ok(())
     }
 
-    // SYSCOIN
-    /// Persist a batch with proof that has been accepted by the FRI API but not yet forwarded.
+    /// SYSCOIN: Persist a batch with proof that has been accepted by the FRI API but not yet forwarded.
     ///
     /// Pending proofs are protected from capacity eviction until [`Self::release_pending_batch_with_proof`]
     /// is called. Returning `Ok(())` from this method means the proof was actually written and remains
@@ -166,17 +174,29 @@ impl ProofStorage {
         &self,
         batch: &StoredBatch,
     ) -> anyhow::Result<PendingBatchProofKey> {
-        let latency =
-            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
-
         let key = PendingBatchProofKey::new(
             batch.batch_number(),
             self.pending_key_counter.fetch_add(1, Ordering::Relaxed),
         )?;
+        self.save_pending_batch_with_proof_at_key(batch, key).await
+    }
+
+    async fn save_pending_batch_with_proof_at_key(
+        &self,
+        batch: &StoredBatch,
+        key: PendingBatchProofKey,
+    ) -> anyhow::Result<PendingBatchProofKey> {
+        let latency =
+            PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::SaveBatchWithProof].start();
+
         let mut pending = self.pending_batches_with_proof.lock().await;
-        // SYSCOIN
-        *pending.entry(key.as_str().to_string()).or_insert(0) += 1;
-        let protected_keys: HashSet<_> = pending.keys().cloned().collect();
+        // SYSCOIN: A pending key is a single-owner durable handoff. Fail closed before writing so
+        // an impossible clock/sequence collision cannot replace an already-accepted proof.
+        if !pending.insert(key.as_str().to_string()) {
+            latency.observe();
+            anyhow::bail!("pending proof key collision: {}", key.as_str());
+        }
+        let protected_keys = pending.clone();
 
         let result = self
             .batches_with_proof
@@ -186,8 +206,8 @@ impl ProofStorage {
             .await;
 
         if result.is_err() {
-            // SYSCOIN
-            decrement_pending_proof(&mut pending, key.as_str());
+            // SYSCOIN: Roll back ownership when the durable write fails.
+            pending.remove(key.as_str());
         }
 
         latency.observe();
@@ -197,15 +217,10 @@ impl ProofStorage {
         Ok(key)
     }
 
-    // SYSCOIN
+    // SYSCOIN: Release and remove a durable pending proof after successful handoff.
     pub async fn release_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        let Some(reference_count) = pending.get_mut(key.as_str()) else {
-            return;
-        };
-
-        if *reference_count > 1 {
-            *reference_count -= 1;
+        if !pending.contains(key.as_str()) {
             return;
         }
 
@@ -233,15 +248,10 @@ impl ProofStorage {
         }
     }
 
-    // SYSCOIN
+    // SYSCOIN: Quarantine a corrupt pending proof so restart recovery cannot loop on it.
     pub async fn quarantine_pending_batch_with_proof(&self, key: &PendingBatchProofKey) {
         let mut pending = self.pending_batches_with_proof.lock().await;
-        let Some(reference_count) = pending.get_mut(key.as_str()) else {
-            return;
-        };
-
-        if *reference_count > 1 {
-            *reference_count -= 1;
+        if !pending.contains(key.as_str()) {
             return;
         }
 
@@ -285,7 +295,7 @@ impl ProofStorage {
         }
     }
 
-    // SYSCOIN
+    // SYSCOIN: Return the startup snapshot of durable pending proofs in canonical order.
     pub async fn recovered_pending_batch_proof_keys(&self) -> Vec<PendingBatchProofKey> {
         let recovered = self.recovered_pending_batches_with_proof.lock().await;
         let mut keys: Vec<_> = recovered
@@ -296,7 +306,7 @@ impl ProofStorage {
         keys
     }
 
-    // SYSCOIN
+    // SYSCOIN: Mark a recovered pending key consumed without changing its file lease yet.
     pub async fn remove_recovered_pending_batch_proof_key(&self, key: &PendingBatchProofKey) {
         self.recovered_pending_batches_with_proof
             .lock()
@@ -304,7 +314,7 @@ impl ProofStorage {
             .remove(key.as_str());
     }
 
-    // SYSCOIN
+    // SYSCOIN: Load an accepted proof by its durable pending lease key.
     pub async fn get_pending_batch_with_proof(
         &self,
         key: &PendingBatchProofKey,
@@ -328,6 +338,21 @@ impl ProofStorage {
         &self,
         batch_num: u64,
     ) -> anyhow::Result<Option<SignedBatchEnvelope<FriProof>>> {
+        Ok(self
+            .get_batch_with_proof_and_age(batch_num)
+            .await?
+            .map(|(batch, _)| batch))
+    }
+
+    /// SYSCOIN: Loads a canonical FRI proof with time elapsed since durable acceptance.
+    ///
+    /// Accepted proofs are first written under a pending key and then renamed to their canonical
+    /// key. Renaming preserves the file modification time, so this timestamp survives process
+    /// restart without changing the existing on-disk JSON format.
+    pub async fn get_batch_with_proof_and_age(
+        &self,
+        batch_num: u64,
+    ) -> anyhow::Result<Option<(SignedBatchEnvelope<FriProof>, Duration)>> {
         let latency = PROOF_STORAGE_METRICS.latency[&ProofStorageMethod::GetBatchWithProof].start();
 
         let key = format!("batch_{batch_num}.json");
@@ -335,9 +360,16 @@ impl ProofStorage {
             .batches_with_proof
             .lock()
             .await
-            .load::<StoredBatch>(&key)
+            .load_with_modified_time::<StoredBatch>(&key)
             .await
-            .map(|o| o.map(|o| o.batch_envelope()));
+            .map(|stored| {
+                stored.map(|(stored, modified_at)| {
+                    let accepted_age = SystemTime::now()
+                        .duration_since(modified_at)
+                        .unwrap_or(Duration::ZERO);
+                    (stored.batch_envelope(), accepted_age)
+                })
+            });
 
         latency.observe();
         result
@@ -369,19 +401,7 @@ impl ProofStorage {
     }
 }
 
-// SYSCOIN
-fn decrement_pending_proof(pending: &mut HashMap<String, u64>, key: &str) -> bool {
-    if let Some(count) = pending.get_mut(key) {
-        *count -= 1;
-        if *count == 0 {
-            pending.remove(key);
-            return true;
-        }
-    }
-    false
-}
-
-// SYSCOIN
+// SYSCOIN: Opaque durable lease for an accepted FRI proof awaiting pipeline handoff.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct PendingBatchProofKey {
     key: String,
@@ -417,7 +437,7 @@ impl PendingBatchProofKey {
     }
 }
 
-// SYSCOIN
+// SYSCOIN: Recover pending proof leases left by a process interruption.
 async fn discover_pending_batch_proof_keys(
     base_dir: &std::path::Path,
 ) -> anyhow::Result<Vec<PendingBatchProofKey>> {
@@ -443,22 +463,17 @@ async fn discover_pending_batch_proof_keys(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum StoredBatch {
-    V1(SignedBatchEnvelope<FriProof>),
-}
+#[serde(transparent)]
+/// SYSCOIN: Fresh V32 proof storage has one canonical envelope without legacy enum variants.
+pub struct StoredBatch(pub SignedBatchEnvelope<FriProof>);
 
 impl StoredBatch {
     pub fn batch_number(&self) -> u64 {
-        match self {
-            StoredBatch::V1(envelope) => envelope.batch_number(),
-        }
+        self.0.batch_number()
     }
 
     pub fn batch_envelope(self) -> SignedBatchEnvelope<FriProof> {
-        match self {
-            StoredBatch::V1(envelope) => envelope,
-        }
+        self.0
     }
 }
 
@@ -499,7 +514,7 @@ impl BoundedFileStorage {
         Self::new_protected(base_dir, capacity_bytes, &HashSet::new()).await
     }
 
-    // SYSCOIN
+    // SYSCOIN: Initialize bounded storage while excluding active pending leases from eviction.
     async fn new_protected(
         base_dir: PathBuf,
         capacity_bytes: u64,
@@ -507,6 +522,17 @@ impl BoundedFileStorage {
     ) -> anyhow::Result<Self> {
         // Create the directory if it doesn't exist already
         fs::create_dir_all(&base_dir).await?;
+        // SYSCOIN: Proof files may contain unpublished execution data. Restrict a freshly created
+        // or pre-existing storage directory before scanning/recovering transactional artifacts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o700)).await?;
+        }
+        // SYSCOIN: A crash before atomic publication can leave a partial or fully-synced temp.
+        // Its generic payload type is unavailable here, so fail safely by quarantining it rather
+        // than treating it as accepted proof state; the retained prover lease can replay it.
+        quarantine_stale_storage_transactions(&base_dir).await?;
         // List all files sorted by timestamp (descending)
         let mut entries = fs::read_dir(&base_dir).await?;
         let mut files = Vec::new();
@@ -555,7 +581,7 @@ impl BoundedFileStorage {
             .await
     }
 
-    // SYSCOIN
+    // SYSCOIN: Store a required value without evicting any active pending lease.
     async fn store_protected<T: Serialize>(
         &mut self,
         key: &str,
@@ -591,12 +617,21 @@ impl BoundedFileStorage {
             return Ok(self.current_size);
         }
 
-        if require_write && self.base_dir.join(key).is_file() {
+        let path = self.base_dir.join(key);
+        if require_write && fs::try_exists(&path).await? && fs::read(&path).await? == data {
+            // SYSCOIN: GaplessCommitter can replay an already-canonical proof while the pipeline catches
+            // up after restart. Rewriting identical bytes would refresh the file mtime that is
+            // also the durable SNARK aggregation-age clock.
+            tracing::info!(key, "Skipping identical proof storage replay");
+            return Ok(self.current_size);
+        }
+
+        if require_write && path.is_file() {
             return self
                 .overwrite_existing_required(key, data, count, protected_keys)
                 .await;
         }
-        if !require_write && protected_keys.contains(key) && self.base_dir.join(key).is_file() {
+        if !require_write && protected_keys.contains(key) && path.is_file() {
             tracing::warn!(
                 key,
                 "Skipping best-effort overwrite of protected proof storage entry"
@@ -624,7 +659,7 @@ impl BoundedFileStorage {
         Ok(self.current_size)
     }
 
-    // SYSCOIN
+    // SYSCOIN: Replace a required canonical value atomically while preserving capacity accounting.
     async fn overwrite_existing_required(
         &mut self,
         key: &str,
@@ -646,31 +681,41 @@ impl BoundedFileStorage {
             "not enough storage capacity for {key}; remaining files are protected"
         );
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let tmp_key = format!("{key}.tmp_{now}");
-        let tmp_path = self.base_dir.join(&tmp_key);
-        fs::write(&tmp_path, data).await?;
-        fs::rename(&tmp_path, &path).await?;
+        // SYSCOIN: File fsync precedes atomic replacement. Update in-memory accounting immediately
+        // after publication, then require parent fsync before reporting success.
+        self.durable_atomic_write(&path, &data).await?;
 
         self.current_size = self.current_size - old_len + count;
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&path).await?;
         self.remove_queue.push_back((key.to_string(), meta));
+        sync_storage_directory(&self.base_dir).await?;
         Ok(self.current_size)
     }
 
     async fn load<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<Option<T>> {
+        Ok(self
+            .load_with_modified_time(key)
+            .await?
+            .map(|(value, _)| value))
+    }
+
+    async fn load_with_modified_time<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<(T, SystemTime)>> {
         let path = self.base_dir.join(key);
         if !fs::try_exists(&path).await? {
             return Ok(None);
         }
 
-        let data = fs::read(path).await?;
+        let data = fs::read(&path).await?;
+        let modified_at = fs::metadata(path).await?.modified()?;
         let decoded = serde_json::from_slice(&data)?;
-        Ok(Some(decoded))
+        Ok(Some((decoded, modified_at)))
     }
 
-    // SYSCOIN
+    // SYSCOIN: Remove a durable file and retain stale queue accounting for lazy cleanup.
     async fn remove(&mut self, key: &str) -> anyhow::Result<()> {
         let path = self.base_dir.join(key);
         if !fs::try_exists(&path).await? {
@@ -681,10 +726,13 @@ impl BoundedFileStorage {
         fs::remove_file(path).await?;
         self.current_size = self.current_size.saturating_sub(meta.len());
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
+        // SYSCOIN: Keep process accounting truthful even if directory fsync fails and forces the
+        // caller to restart/recover; success still requires the durable unlink boundary.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(())
     }
 
-    // SYSCOIN
+    // SYSCOIN: Atomically promote a pending proof to its canonical batch key.
     async fn promote(&mut self, from_key: &str, to_key: &str) -> anyhow::Result<u64> {
         let from_path = self.base_dir.join(from_key);
         anyhow::ensure!(
@@ -693,6 +741,19 @@ impl BoundedFileStorage {
         );
 
         if from_key != to_key {
+            let to_path = self.base_dir.join(to_key);
+            if fs::try_exists(&to_path).await?
+                && fs::read(&from_path).await? == fs::read(&to_path).await?
+            {
+                // SYSCOIN: Leave the pending file for `release_pending_batch_with_proof()` to remove. The
+                // canonical file (and therefore its original acceptance timestamp) stays intact.
+                tracing::info!(
+                    from_key,
+                    to_key,
+                    "Skipping promotion of proof identical to canonical storage"
+                );
+                return Ok(self.current_size);
+            }
             self.remove(to_key).await?;
         }
 
@@ -701,10 +762,13 @@ impl BoundedFileStorage {
         *self.outdated_count.entry(from_key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&to_path).await?;
         self.remove_queue.push_back((to_key.to_string(), meta));
+        // SYSCOIN: Persist the pending-to-canonical namespace transition before downstream ack;
+        // accounting is already reconciled if this fsync itself fails.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(self.current_size)
     }
 
-    // SYSCOIN
+    // SYSCOIN: Move an unreadable pending proof aside for operator inspection.
     async fn quarantine(&mut self, key: &str) -> anyhow::Result<Option<String>> {
         let path = self.base_dir.join(key);
         if !fs::try_exists(&path).await? {
@@ -718,6 +782,8 @@ impl BoundedFileStorage {
         *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
         let meta = fs::metadata(&quarantine_path).await?;
         self.remove_queue.push_back((quarantine_key.clone(), meta));
+        // SYSCOIN: Make quarantine durable after reconciling the already-visible rename.
+        sync_storage_directory(&self.base_dir).await?;
         Ok(Some(quarantine_key))
     }
 
@@ -731,7 +797,7 @@ impl BoundedFileStorage {
         while self.current_size + new_file_size > self.capacity_bytes
             && !self.remove_queue.is_empty()
         {
-            // SYSCOIN
+            // SYSCOIN: Skip protected pending leases while reclaiming bounded storage capacity.
             let mut removed_any = false;
             let entries_to_scan = self.remove_queue.len();
             for _ in 0..entries_to_scan {
@@ -753,6 +819,9 @@ impl BoundedFileStorage {
                 fs::remove_file(self.base_dir.join(key)).await?;
                 self.current_size -= meta.len();
                 removed_any = true;
+                // SYSCOIN: Persist every capacity-eviction unlink after reflecting it in memory;
+                // a directory-fsync failure is returned without leaving live accounting stale.
+                sync_storage_directory(&self.base_dir).await?;
 
                 if self.current_size + new_file_size <= self.capacity_bytes {
                     break;
@@ -790,11 +859,13 @@ impl BoundedFileStorage {
             // no longer exists under that name. Increment the counter so that
             // `enforce_capacity` knows to skip that entry rather than deleting the
             // newly-written file.
-            *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
             // Rename and add to the back of the queue
             fs::rename(path, new_path.clone()).await?;
+            *self.outdated_count.entry(key.to_string()).or_insert(0) += 1;
             let meta = fs::metadata(&new_path).await?;
             self.remove_queue.push_back((new_key.to_string(), meta));
+            // SYSCOIN: Preserve the duplicate after reconciling its visible queue identity.
+            sync_storage_directory(&self.base_dir).await?;
         }
         Ok(())
     }
@@ -803,19 +874,267 @@ impl BoundedFileStorage {
     async fn write_file(&mut self, key: &str, data: Vec<u8>) -> anyhow::Result<()> {
         let path = self.base_dir.join(key);
         let len = data.len() as u64;
-        fs::write(&path, data).await?;
+        // SYSCOIN: Required accepted proofs and best-effort diagnostics share one crash-safe
+        // publication primitive; callers decide whether a write failure is terminal or retryable.
+        self.durable_atomic_write(&path, &data).await?;
         self.current_size += len;
         let meta = fs::metadata(&path).await?;
         self.remove_queue.push_back((key.to_string(), meta));
+        sync_storage_directory(&self.base_dir).await?;
         Ok(())
     }
+
+    // SYSCOIN: Publish one owner-only file via same-directory temp -> file fsync -> atomic rename.
+    // The caller updates capacity/queue accounting before performing the required directory fsync.
+    async fn durable_atomic_write(
+        &self,
+        path: &std::path::Path,
+        data: &[u8],
+    ) -> anyhow::Result<()> {
+        let transaction_id = STORAGE_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let temporary_path = self.base_dir.join(format!(
+            "{STORAGE_TRANSACTION_PREFIX}{}-{now}-{transaction_id}{STORAGE_TRANSACTION_SUFFIX}",
+            std::process::id()
+        ));
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temporary_path).await?;
+        if let Err(error) = file.write_all(data).await {
+            drop(file);
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        if let Err(error) = file.sync_all().await {
+            drop(file);
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        drop(file);
+
+        if let Err(error) = fs::rename(&temporary_path, path).await {
+            let _ = fs::remove_file(&temporary_path).await;
+            let _ = sync_storage_directory(&self.base_dir).await;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+}
+
+// SYSCOIN: Linux directory fsync is the durability boundary for rename/unlink operations.
+async fn sync_storage_directory(directory: &std::path::Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::File::open(directory).await?.sync_all().await?;
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
+}
+
+// SYSCOIN: Transaction temps are never silently accepted after a crash. Quarantine each one with
+// a durable rename; a client-owned envelope or reconstructed FRI job remains the recovery source.
+async fn quarantine_stale_storage_transactions(directory: &std::path::Path) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(STORAGE_TRANSACTION_PREFIX)
+            || !name.ends_with(STORAGE_TRANSACTION_SUFFIX)
+        {
+            continue;
+        }
+        let source = entry.path();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let destination = directory.join(format!("{name}.quarantined_{now}"));
+        fs::rename(source, destination).await?;
+        sync_storage_directory(directory).await?;
+    }
+    Ok(())
 }
 
 // Since this data isn't used by the node itself, I added some tests
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prover_api::test_util::{
+        create_test_batch_envelope_with_data, mark_test_batch_as_interop_bundle,
+    };
     use tempfile::TempDir;
+    use zksync_os_types::ProtocolSemanticVersion;
+
+    // SYSCOIN: A crash-surviving transaction temp is never mistaken for accepted proof state.
+    #[tokio::test]
+    async fn stale_transaction_temp_is_durably_quarantined_on_restart() -> anyhow::Result<()> {
+        let dir = TempDir::new()?;
+        let temporary_name =
+            format!("{STORAGE_TRANSACTION_PREFIX}crash{STORAGE_TRANSACTION_SUFFIX}");
+        fs::write(dir.path().join(&temporary_name), b"partial proof").await?;
+
+        let storage = BoundedFileStorage::new(dir.path().to_owned(), 1024).await?;
+        assert!(
+            storage
+                .load::<serde_json::Value>(&temporary_name)
+                .await?
+                .is_none()
+        );
+
+        let mut entries = fs::read_dir(dir.path()).await?;
+        let mut quarantined = false;
+        while let Some(entry) = entries.next_entry().await? {
+            quarantined |= entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&format!("{temporary_name}.quarantined_")));
+        }
+        assert!(quarantined, "stale transaction temp was not quarantined");
+        Ok(())
+    }
+
+    // SYSCOIN: A pending key collision must not overwrite an accepted proof, and the original
+    // single-owner key must remain discoverable and protected after restart.
+    #[tokio::test]
+    async fn pending_key_collision_preserves_original_across_restart() -> anyhow::Result<()> {
+        let dir = TempDir::new()?;
+        let config = ProofStorageConfig {
+            path: dir.path().to_owned(),
+            ..ProofStorageConfig::default()
+        };
+        let storage = ProofStorage::new(config.clone()).await?;
+        let mut original = create_test_batch_envelope_with_data(
+            1,
+            ProtocolSemanticVersion::canonical_genesis_version(),
+            FriProof::Fake,
+        );
+        mark_test_batch_as_interop_bundle(&mut original);
+        let replacement = create_test_batch_envelope_with_data(
+            1,
+            ProtocolSemanticVersion::canonical_genesis_version(),
+            FriProof::Fake,
+        );
+        let key = PendingBatchProofKey {
+            key: "batch_1_pending_123_0.json".to_owned(),
+            batch_number: 1,
+        };
+
+        storage
+            .save_pending_batch_with_proof_at_key(&StoredBatch(original), key.clone())
+            .await?;
+        let collision = storage
+            .save_pending_batch_with_proof_at_key(&StoredBatch(replacement), key.clone())
+            .await
+            .expect_err("duplicate pending key must fail closed");
+        assert!(
+            collision
+                .to_string()
+                .contains("pending proof key collision"),
+            "unexpected collision error: {collision:#}"
+        );
+
+        drop(storage);
+
+        let restarted_storage = ProofStorage::new(config).await?;
+        assert_eq!(
+            restarted_storage.recovered_pending_batch_proof_keys().await,
+            vec![key.clone()]
+        );
+        let recovered = restarted_storage
+            .get_pending_batch_with_proof(&key)
+            .await?
+            .expect("the original pending proof must remain loadable after restart");
+        assert_eq!(recovered.batch.logs.len(), 1);
+        assert_eq!(recovered.batch.messages, vec![vec![0x01, 0x12, 0x34]]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canonical_proof_age_survives_pending_promotion_and_restart() -> anyhow::Result<()> {
+        let dir = TempDir::new()?;
+        let config = ProofStorageConfig {
+            path: dir.path().to_owned(),
+            ..ProofStorageConfig::default()
+        };
+        let storage = ProofStorage::new(config.clone()).await?;
+        let mut batch = create_test_batch_envelope_with_data(
+            1,
+            ProtocolSemanticVersion::canonical_genesis_version(),
+            FriProof::Fake,
+        );
+        mark_test_batch_as_interop_bundle(&mut batch);
+        let stored_batch = StoredBatch(batch);
+
+        let pending_key = storage.save_pending_batch_with_proof(&stored_batch).await?;
+        storage
+            .promote_pending_batch_with_proof(&pending_key)
+            .await?;
+        storage.release_pending_batch_with_proof(&pending_key).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(storage);
+
+        let restarted_storage = ProofStorage::new(config).await?;
+        let (batch, accepted_age) = restarted_storage
+            .get_batch_with_proof_and_age(1)
+            .await?
+            .expect("promoted proof must survive restart");
+        assert_eq!(batch.batch_number(), 1);
+        assert_eq!(batch.batch.logs.len(), 1);
+        assert_eq!(batch.batch.messages, vec![vec![0x01, 0x12, 0x34]]);
+        assert!(
+            accepted_age >= Duration::from_millis(25),
+            "acceptance age was reset on restart: {accepted_age:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identical_replays_preserve_canonical_proof_mtime() -> anyhow::Result<()> {
+        let dir = TempDir::new()?;
+        let config = ProofStorageConfig {
+            path: dir.path().to_owned(),
+            ..ProofStorageConfig::default()
+        };
+        let storage = ProofStorage::new(config).await?;
+        let stored_batch = StoredBatch(create_test_batch_envelope_with_data(
+            1,
+            ProtocolSemanticVersion::canonical_genesis_version(),
+            FriProof::Fake,
+        ));
+        let canonical_path = dir.path().join("fri_batches/batch_1.json");
+
+        storage.save_batch_with_proof(&stored_batch).await?;
+        let deliberately_old_mtime = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&canonical_path)?
+            .set_times(std::fs::FileTimes::new().set_modified(deliberately_old_mtime))?;
+        let original_mtime = fs::metadata(&canonical_path).await?.modified()?;
+
+        // GaplessCommitter takes this path when replaying a canonical proof without a pending
+        // acceptance file.
+        storage.save_batch_with_proof(&stored_batch).await?;
+        assert_eq!(
+            fs::metadata(&canonical_path).await?.modified()?,
+            original_mtime
+        );
+
+        // It takes this path when replaying a recovered pending proof for the same batch.
+        let pending_key = storage.save_pending_batch_with_proof(&stored_batch).await?;
+        storage
+            .promote_pending_batch_with_proof(&pending_key)
+            .await?;
+        storage.release_pending_batch_with_proof(&pending_key).await;
+        assert_eq!(
+            fs::metadata(&canonical_path).await?.modified()?,
+            original_mtime
+        );
+        Ok(())
+    }
 
     // Make sure files are being removed as expected
     #[tokio::test]

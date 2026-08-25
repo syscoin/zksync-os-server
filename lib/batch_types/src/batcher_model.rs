@@ -1,6 +1,5 @@
 use crate::{BatchSignatureSet, PendingBatchInfo};
-use alloy::consensus::BlobTransactionSidecar;
-use alloy::primitives::{Address, B256, Bytes};
+use alloy::primitives::{Address, B256, Bytes, address, keccak256};
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -11,7 +10,53 @@ use zksync_os_batcher_metrics::{BATCHER_METRICS, BatchExecutionStage};
 use zksync_os_contract_interface::models::{L2Log, StoredBatchInfo};
 use zksync_os_observability::LatencyDistributionTracker;
 use zksync_os_pipeline::HasBlockRangeEnd;
-use zksync_os_types::{ProvingVersion, PubdataMode};
+use zksync_os_types::{BlockOutput, L2_INTEROP_CENTER_ADDRESS, ProvingVersion, PubdataMode};
+
+// SYSCOIN: V32 InteropCenter bundles are emitted through the canonical L2-to-L1 messenger.
+pub const L2_TO_L1_MESSENGER_ADDRESS: Address =
+    address!("0x0000000000000000000000000000000000008008");
+// SYSCOIN: Pinned Era V32 `Messaging.sol` prefixes InteropCenter bundles with this byte.
+pub const INTEROP_BUNDLE_IDENTIFIER: u8 = 0x01;
+
+/// SYSCOIN: Authenticates one canonical InteropCenter bundle log against its retained message
+/// preimage. Checking the messenger, caller key, and preimage hash prevents arbitrary user messages
+/// from opting into the priority proving lane by copying the bundle prefix.
+pub fn is_interop_bundle_log(
+    l2_shard_id: u8,
+    is_service: bool,
+    sender: Address,
+    key: B256,
+    value: B256,
+    message: &[u8],
+) -> bool {
+    l2_shard_id == 0
+        && is_service
+        && sender == L2_TO_L1_MESSENGER_ADDRESS
+        && key == B256::left_padding_from(L2_INTEROP_CENTER_ADDRESS.as_slice())
+        && message.first().copied() == Some(INTEROP_BUNDLE_IDENTIFIER)
+        && keccak256(message) == value
+}
+
+/// SYSCOIN: Detects an authenticated InteropCenter bundle directly in canonical block output.
+/// Only successful transactions count: reverted calls may retain diagnostic logs in VM output,
+/// but cannot create a durable interop signal or arm the companion-batch policy.
+pub fn block_contains_interop_bundle(block: &BlockOutput) -> bool {
+    block.tx_results.iter().flatten().any(|tx_output| {
+        tx_output.is_success()
+            && tx_output.l2_to_l1_logs.iter().any(|log| {
+                log.preimage.as_deref().is_some_and(|message| {
+                    is_interop_bundle_log(
+                        log.log.l2_shard_id,
+                        log.log.is_service,
+                        log.log.sender,
+                        log.log.key,
+                        log.log.value,
+                        message,
+                    )
+                })
+            })
+    })
+}
 
 /// Information about a batch that is enough for all L1 operations.
 /// Used throughout the batcher subsystem
@@ -30,11 +75,9 @@ pub struct BatchMetadata {
     #[serde(rename = "commit_batch_info")]
     pub batch_info: PendingBatchInfo,
     pub chain_address: Address,
-    pub blob_sidecar: Option<BlobTransactionSidecar>,
     pub first_block_number: u64,
     pub last_block_number: u64,
     pub last_block_hash: Option<B256>,
-    #[serde(default = "default_pubdata_mode")]
     pub pubdata_mode: PubdataMode,
     // note: can equal to zero
     pub tx_count: usize,
@@ -69,15 +112,22 @@ impl BatchMetadata {
         )?)
     }
 
-    // SYSCOIN: Upgrade batches are proof-range boundaries on L1; do not aggregate
-    // them with neighboring FRI proofs into a multi-batch SNARK.
-    pub fn requires_standalone_snark_proof(&self) -> bool {
-        self.batch_info.upgrade_tx_hash.is_some()
+    /// SYSCOIN: Returns whether this durable batch contains an authenticated V32 InteropCenter
+    /// bundle. The same predicate drives batch isolation and priority SNARK readiness.
+    pub fn contains_interop_bundle(&self) -> bool {
+        self.logs.iter().any(|log| {
+            self.messages.iter().any(|message| {
+                is_interop_bundle_log(
+                    log.l2_shard_id,
+                    log.is_service,
+                    log.sender,
+                    log.key,
+                    log.value,
+                    message,
+                )
+            })
+        })
     }
-}
-
-fn default_pubdata_mode() -> PubdataMode {
-    PubdataMode::Calldata
 }
 
 #[derive(Debug)]
@@ -214,15 +264,11 @@ pub enum FriProof {
     Real(RealFriProof),
 }
 
-// V1 can be dropped if there testnet-alpha will be regenerated from scratch.
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum RealFriProof {
-    V1(Bytes),
-    V2 {
-        proof: Bytes,
-        proving_execution_version: u32,
-    },
+/// SYSCOIN: Fresh V32 storage has one canonical, version-stamped FRI proof envelope.
+pub struct RealFriProof {
+    pub proof: Bytes,
+    pub proving_execution_version: u32,
 }
 
 impl FriProof {
@@ -232,10 +278,7 @@ impl FriProof {
 
     pub fn proving_execution_version(&self) -> Option<u32> {
         match self {
-            FriProof::Real(RealFriProof::V2 {
-                proving_execution_version,
-                ..
-            }) => Some(*proving_execution_version),
+            FriProof::Real(proof) => Some(proof.proving_execution_version),
             _ => None,
         }
     }
@@ -250,10 +293,7 @@ impl FriProof {
 
 impl RealFriProof {
     pub fn proof(&self) -> &[u8] {
-        match self {
-            RealFriProof::V1(proof) => proof.as_ref(),
-            RealFriProof::V2 { proof, .. } => proof.as_ref(),
-        }
+        self.proof.as_ref()
     }
 }
 
@@ -279,24 +319,17 @@ pub enum SnarkProof {
     Real(RealSnarkProof),
 }
 
-// V1 can be dropped if there testnet-alpha will be regenerated from scratch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum RealSnarkProof {
-    V1(Vec<u8>),
-    V2 {
-        proof: Vec<u8>,
-        proving_execution_version: u32,
-    },
+/// SYSCOIN: Fresh V32 storage has one canonical, version-stamped SNARK proof envelope.
+pub struct RealSnarkProof {
+    pub proof: Vec<u8>,
+    pub proving_execution_version: u32,
 }
 
 impl SnarkProof {
     pub fn proving_execution_version(&self) -> Option<u32> {
         match self {
-            SnarkProof::Real(RealSnarkProof::V2 {
-                proving_execution_version,
-                ..
-            }) => Some(*proving_execution_version),
+            SnarkProof::Real(proof) => Some(proof.proving_execution_version),
             _ => None,
         }
     }
@@ -311,10 +344,7 @@ impl SnarkProof {
 
 impl RealSnarkProof {
     pub fn proof(&self) -> &[u8] {
-        match self {
-            RealSnarkProof::V1(proof) => proof.as_slice(),
-            RealSnarkProof::V2 { proof, .. } => proof.as_slice(),
-        }
+        self.proof.as_slice()
     }
 }
 
@@ -332,13 +362,118 @@ impl<E: Send + 'static, S: Send + 'static> HasBlockRangeEnd for BatchEnvelope<E,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{L2_TO_L1_MESSENGER_ADDRESS, block_contains_interop_bundle, is_interop_bundle_log};
+    use alloy::consensus::{Header, Sealable};
+    use alloy::primitives::{Address, B256, keccak256};
+    use zksync_os_interface::types::{
+        ExecutionOutput, ExecutionResult, L2ToL1Log, L2ToL1LogWithPreimage, TxOutput,
+    };
+    use zksync_os_types::{BlockOutput, BlockPubdata, L2_INTEROP_CENTER_ADDRESS};
+
+    fn block_with_bundle(success: bool) -> BlockOutput {
+        let message = vec![0x01, 0x12, 0x34];
+        let tx_output = TxOutput {
+            execution_result: if success {
+                ExecutionResult::Success(ExecutionOutput::Call(Vec::new()))
+            } else {
+                ExecutionResult::Revert(Vec::new())
+            },
+            gas_used: 0,
+            gas_refunded: 0,
+            computational_native_used: 0,
+            native_used: 0,
+            pubdata_used: 0,
+            contract_address: None,
+            logs: Vec::new(),
+            l2_to_l1_logs: vec![L2ToL1LogWithPreimage {
+                log: L2ToL1Log {
+                    l2_shard_id: 0,
+                    is_service: true,
+                    tx_number_in_block: 0,
+                    sender: L2_TO_L1_MESSENGER_ADDRESS,
+                    key: B256::left_padding_from(L2_INTEROP_CENTER_ADDRESS.as_slice()),
+                    value: keccak256(&message),
+                },
+                preimage: Some(message),
+            }],
+            storage_writes: Vec::new(),
+        };
+        BlockOutput {
+            header: Header::default().seal_slow(),
+            tx_results: vec![Ok(tx_output)],
+            storage_writes: Vec::new(),
+            account_diffs: Vec::new(),
+            published_preimages: Vec::new(),
+            pubdata: BlockPubdata::new(0),
+            computational_native_used: 0,
+        }
+    }
 
     #[test]
-    fn test_v1_proof_deserialization() {
-        // Real testnet envelope. Proof was shortened for brevity.
-        let data = r#"{"batch":{"previous_stored_batch_info":{"batch_number":9,"state_commitment":"0x7e7f4bbd2fac4431253feccd4688d4b060d720c9cdb5eb06267e9cc8fdfad39d","number_of_layer1_txs":0,"priority_operations_hash":"0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470","dependency_roots_rolling_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","l2_to_l1_logs_root_hash":"0x692f35c99f9c698852289ffecf07f6dd45770904521149d79aa85aae598fa375","commitment":"0xf1dfa8fe5d6571e1c9bdb01f574cff0cbe8c23183c4fcd6d7dd1b4128e54287c","last_block_timestamp":1758115458},"commit_batch_info":{"batch_number":10,"new_state_commitment":"0x53680ad464b20f43921708bd3e024f365b788b9e11cf49e783607a42172136fc","number_of_layer1_txs":0,"priority_operations_hash":"0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470","dependency_roots_rolling_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","l2_to_l1_logs_root_hash":"0x692f35c99f9c698852289ffecf07f6dd45770904521149d79aa85aae598fa375","l2_da_validator":"0x0000000000000000000000000000000000000000","da_commitment":"0x86b130c978627d2acb4a68c823cfc31efadf6482862566d364cc4bc15e500e2b","first_block_timestamp":1758116549,"last_block_timestamp":1758116549,"chain_id":8022833,"operator_da_input":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,201,102,180,205,111,127,203,19,178,222,176,220,147,85,249,171,106,46,88,99,189,117,148,44,88,11,167,49,72,205,72,21,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,116,25,135,1,193,217,21,41,206,115,57,17,55,153,69,34,75,25,41,48,9,20,117,70,62,143,98,164,122,16,216,160,0,0,0,2,193,25,138,114,80,95,70,215,34,237,142,12,160,249,191,228,43,163,162,216,104,166,24,217,213,90,128,186,146,85,247,97,20,33,1,64,111,64,166,72,80,155,187,230,197,73,156,145,87,2,137,219,217,151,57,45,241,113,145,154,157,86,109,62,141,1,57,228,183,230,28,9,1,34,1,64,111,64,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"protocol_version":"0.31.0","upgrade_tx_hash":null},"chain_address":"0x02b1ac1cf0a592aefd3c2246b2431388365db272","blob_sidecar":null,"first_block_number":10,"last_block_number":10,"tx_count":1,"execution_version":1},"data":{"Real":[2,252,54,244]}}"#;
-        let b = serde_json::from_str::<SignedBatchEnvelope<FriProof>>(data).unwrap();
-        assert!(matches!(b.data, FriProof::Real(RealFriProof::V1(_))));
+    fn interop_bundle_signal_requires_the_canonical_messenger_binding() {
+        let message = [0x01, 0x12, 0x34];
+        let key = B256::left_padding_from(L2_INTEROP_CENTER_ADDRESS.as_slice());
+        let value = keccak256(message);
+
+        assert!(is_interop_bundle_log(
+            0,
+            true,
+            L2_TO_L1_MESSENGER_ADDRESS,
+            key,
+            value,
+            &message,
+        ));
+        assert!(!is_interop_bundle_log(
+            0,
+            true,
+            Address::ZERO,
+            key,
+            value,
+            &message,
+        ));
+        assert!(!is_interop_bundle_log(
+            0,
+            true,
+            L2_TO_L1_MESSENGER_ADDRESS,
+            B256::ZERO,
+            value,
+            &message,
+        ));
+        assert!(!is_interop_bundle_log(
+            0,
+            true,
+            L2_TO_L1_MESSENGER_ADDRESS,
+            key,
+            B256::ZERO,
+            &message,
+        ));
+        assert!(!is_interop_bundle_log(
+            0,
+            true,
+            L2_TO_L1_MESSENGER_ADDRESS,
+            key,
+            keccak256([0x02, 0x12, 0x34]),
+            &[0x02, 0x12, 0x34],
+        ));
+    }
+
+    #[test]
+    fn block_bundle_signal_ignores_reverted_transaction_output() {
+        assert!(block_contains_interop_bundle(&block_with_bundle(true)));
+        assert!(!block_contains_interop_bundle(&block_with_bundle(false)));
+
+        let mut missing_preimage = block_with_bundle(true);
+        missing_preimage.tx_results[0]
+            .as_mut()
+            .unwrap()
+            .l2_to_l1_logs[0]
+            .preimage = None;
+        assert!(!block_contains_interop_bundle(&missing_preimage));
+
+        let mut spoofed_sender = block_with_bundle(true);
+        spoofed_sender.tx_results[0].as_mut().unwrap().l2_to_l1_logs[0]
+            .log
+            .sender = Address::ZERO;
+        assert!(!block_contains_interop_bundle(&spoofed_sender));
     }
 }

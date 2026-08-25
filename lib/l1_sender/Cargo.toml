@@ -22,7 +22,7 @@ zksync_os_operator_signer.workspace = true
 
 alloy = { workspace = true, default-features = false, features = [
     "reqwest",
-    "kzg",
+    # SYSCOIN: Compact Bitcoin DA transactions never construct EIP-4844/KZG sidecars.
     "provider-debug-api",
     "signer-local",
 ] }

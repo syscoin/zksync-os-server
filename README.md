@@ -26,21 +26,11 @@ The ZKsync OS Server design optimizes for throughput, low latency, and a seamles
 
 ## Quickstart
 
-To run server locally with in-memory L1 node and dummy proofs, run the following commands:
-```bash
-# Launch zksync-os-server on the default port 3050
-# This also starts in-memory L1 node as a background process.
-# By default, fake (dummy) proofs are used both for FRI and SNARK proofs.
-./run_local.sh ./local-chains/v31.0/default
-
-# Use default rich account for testing
-RICH_ACCOUNT=0x36615Cf349d7F6344891B1e7CA7C72883F5dc049
-PRIVATE_KEY=0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110
-
-# Send test transaction
-TO=0x5A67EE02274D9Ec050d412b96fE810Be4D71e7A0
-cast send --private-key ${PRIVATE_KEY} --rpc-url http://localhost:3050 ${TO} --value 100
-```
+The canonical v32.0/V8 local fixture is pending regeneration with the final V8
+verification key and patched-v0.4 Era contracts. Repository launch/config helpers
+fail closed while
+`local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED` exists; do not launch the
+old fixture bytes from an external checkout.
 
 For more configuration and detailed instructions, check the [developer documentation](https://matter-labs.github.io/zksync-os-server/latest).
 

@@ -2,6 +2,7 @@ use super::proof_storage::{ProofStorage, ProvenBatch};
 use crate::prover_api::fri_job_manager::FriJobManager;
 use crate::prover_api::fri_proof_verifier;
 use async_trait::async_trait;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -29,22 +30,29 @@ pub struct FriProvingPipelineStep {
 }
 
 impl FriProvingPipelineStep {
+    /// SYSCOIN: Returns the durable accepted-proof forwarder separately so the node runtime can
+    /// supervise it as critical instead of silently detaching it.
     pub fn new(
         proof_storage: ProofStorage,
         last_proved_batch_number: u64,
         assignment_timeout: Duration,
         max_assigned_batch_range: usize,
-    ) -> (Self, Arc<FriJobManager>) {
+    ) -> (
+        Self,
+        Arc<FriJobManager>,
+        impl Future<Output = ()> + Send + 'static,
+    ) {
         // Create channel for completed proofs - between FriProveManager and GaplessCommitter
         let (batches_with_proof_sender, batches_with_proof_receiver) =
             mpsc::channel::<ProvenBatch>(5);
 
-        let fri_job_manager = Arc::new(FriJobManager::new(
+        let (fri_job_manager, accepted_proof_forwarder) = FriJobManager::new(
             batches_with_proof_sender,
             proof_storage.clone(),
             assignment_timeout,
             max_assigned_batch_range,
-        ));
+        );
+        let fri_job_manager = Arc::new(fri_job_manager);
 
         let result = Self {
             last_proved_batch_number,
@@ -53,9 +61,11 @@ impl FriProvingPipelineStep {
             batches_with_proof_receiver,
         };
 
-        (result, fri_job_manager)
+        // SYSCOIN: The caller must register the accepted-proof forwarder as a critical task.
+        (result, fri_job_manager, accepted_proof_forwarder)
     }
-    // SYSCOIN
+    // SYSCOIN: Reuse a durable FRI proof only when it matches the canonical rebuilt batch and
+    // passes the current V8 proof verifier.
     fn can_rehydrate_batch(
         expected_batch: &SignedBatchEnvelope<ProverInput>,
         stored_batch: &SignedBatchEnvelope<FriProof>,
@@ -162,7 +172,7 @@ impl FriProvingPipelineStep {
         }
     }
 
-    // SYSCOIN
+    // SYSCOIN: Recover an accepted-but-unforwarded FRI proof before scheduling fresh proving.
     async fn try_rehydrate_pending_batch(
         proof_storage: &ProofStorage,
         batch: &SignedBatchEnvelope<ProverInput>,
@@ -267,7 +277,7 @@ impl PipelineComponent for FriProvingPipelineStep {
             result = async {
                 while let Some(batch) = input.recv_and_record_picked(&state_reporter).await {
                     if batch.batch_number() > last_proved_batch_number {
-                        // SYSCOIN
+                        // SYSCOIN: Prefer durable pending/canonical proofs before adding a new FRI job.
                         if let Some(stored_batch) = Self::try_rehydrate_pending_batch(&proof_storage, &batch).await {
                             output.send_and_record(stored_batch, &state_reporter).await?;
                             continue;
@@ -321,7 +331,7 @@ mod tests {
     use super::*;
     use crate::config::ProofStorageConfig;
     use crate::prover_api::proof_storage::StoredBatch;
-    use alloy::primitives::{Address, B256};
+    use alloy::primitives::{Address, B256, keccak256};
     use tempfile::TempDir;
     use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, BatchSignatureData};
@@ -340,14 +350,14 @@ mod tests {
             priority_operations_hash: B256::ZERO,
             dependency_roots_rolling_hash: B256::ZERO,
             l2_to_l1_logs_root_hash: B256::ZERO,
-            l2_da_commitment_scheme: DACommitmentScheme::BlobsAndPubdataKeccak256,
-            da_commitment: B256::ZERO,
+            l2_da_commitment_scheme: DACommitmentScheme::BlobsZKsyncOS,
+            da_commitment: keccak256([0u8; 32]),
             first_block_timestamp: 0,
             first_block_number: Some(from),
             last_block_timestamp: 0,
             last_block_number: Some(to),
             chain_id: 270,
-            operator_da_input: Vec::new(),
+            operator_da_input: vec![0u8; 32],
             // SYSCOIN: dummy batches do not include compact edge DA ref openings.
             edge_da_refs_input: Vec::new(),
             // SYSCOIN: dummy batches do not include compact edge DA refs.
@@ -370,17 +380,15 @@ mod tests {
             },
             batch_info: PendingBatchInfo {
                 commit_info: dummy_commit_batch_info(batch_number, from, to),
-                // SYSCOIN: Use the earliest still-supported V6 lane; 0.30.0 has no proving mapping.
-                protocol_version: ProtocolSemanticVersion::new(0, 30, 1),
+                // SYSCOIN: V32 fixtures must exercise the canonical V8 proving lane.
+                protocol_version: ProtocolSemanticVersion::new(0, 32, 0),
                 upgrade_tx_hash: None,
-                use_legacy_v31_commitment: false,
             },
             chain_address: Address::ZERO,
-            blob_sidecar: None,
             first_block_number: from,
             last_block_number: to,
             last_block_hash: None,
-            pubdata_mode: PubdataMode::Calldata,
+            pubdata_mode: PubdataMode::Blobs,
             tx_count: 0,
             computational_native_used: None,
             logs: vec![],
@@ -411,11 +419,12 @@ mod tests {
     async fn run_does_not_reuse_stored_fake_fri_proof_after_restart() -> anyhow::Result<()> {
         let proof_storage = proof_storage_for_test().await?;
         let input_batch = dummy_input_batch(1);
-        let stored_batch = StoredBatch::V1(dummy_input_batch(1).with_data(FriProof::Fake));
+        let stored_batch = StoredBatch(dummy_input_batch(1).with_data(FriProof::Fake));
         proof_storage.save_batch_with_proof(&stored_batch).await?;
 
-        let (step, job_manager) =
+        let (step, job_manager, forwarder) =
             FriProvingPipelineStep::new(proof_storage, 0, Duration::from_secs(30), 16);
+        let _forwarder = tokio::spawn(forwarder);
 
         let (input_tx, input_rx) = mpsc::channel(1);
         let (output_tx, mut output_rx) = mpsc::channel(1);
@@ -444,11 +453,12 @@ mod tests {
         let mismatched_batch = BatchEnvelope::new(mismatched_metadata, FriProof::Fake)
             .with_signatures(BatchSignatureData::NotNeeded);
         proof_storage
-            .save_batch_with_proof(&StoredBatch::V1(mismatched_batch))
+            .save_batch_with_proof(&StoredBatch(mismatched_batch))
             .await?;
 
-        let (step, _job_manager) =
+        let (step, _job_manager, forwarder) =
             FriProvingPipelineStep::new(proof_storage, 0, Duration::from_secs(30), 16);
+        let _forwarder = tokio::spawn(forwarder);
 
         let (input_tx, input_rx) = mpsc::channel(1);
         let (output_tx, mut output_rx) = mpsc::channel(1);

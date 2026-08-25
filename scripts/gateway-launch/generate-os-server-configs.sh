@@ -12,7 +12,8 @@ gl_require ZKSYNC_OS_SERVER_PATH
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: Generate only canonical fresh V32 deployment configs.
+: "${PROTOCOL_VERSION:=v32.0}"
 : "${GATEWAY_CHAIN_ID:=57001}"
 : "${EDGE_CHAIN_ID:=57057}"
 : "${GATEWAY_OS_RPC_PORT:=3052}"
@@ -23,11 +24,18 @@ gl_require ZKSYNC_OS_SERVER_PATH
 : "${EDGE_STATUS_PORT:=3072}"
 : "${GATEWAY_PROMETHEUS_PORT:=3312}"
 : "${EDGE_PROMETHEUS_PORT:=3313}"
+# SYSCOIN: Generated remote prover ingress is the host-local buffering HTTPS proxy. Keep the
+# application listener on the exact IPv4 loopback address used by that generated upstream.
 : "${PROVER_API_BIND_HOST:=127.0.0.1}"
 : "${GATEWAY_PROVER_API_DOMAIN:=prover-gw.dev11.top}"
 : "${EDGE_PROVER_API_DOMAIN:=prover-zk.dev11.top}"
 : "${PROVER_API_AUTH_PASSWORD:=}"
 : "${PROVER_API_AUTH_USER:=${PROVER_API_AUTH_PASSWORD:+syscoin-prover}}"
+# SYSCOIN: Retain enough durable FRI data to reconstruct the full 256-batch real-prover
+# window after restart. The HTTP API accepts 10 MiB proof submissions and canonical JSON
+# hex encoding can approximately double their decoded size, so the upstream 1 GiB default
+# is too small for two 100-FRI aggregation windows plus headroom.
+: "${PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES:=8589934592}"
 : "${GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES:=67108833}"
 : "${GATEWAY_BATCH_TIMEOUT:=1000s}"
 # SYSCOIN: Keep the generated edge limit aligned with one Syscoin DA blob and
@@ -189,6 +197,7 @@ export GATEWAY_PROVER_API_DOMAIN
 export EDGE_PROVER_API_DOMAIN
 export PROVER_API_AUTH_USER
 export PROVER_API_AUTH_PASSWORD
+export PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES
 export GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES
 export GATEWAY_BATCH_TIMEOUT
 export EDGE_BLOCK_PUBDATA_LIMIT_BYTES
@@ -360,6 +369,21 @@ prover_mode = os.environ.get("PROVER_MODE", "gpu").strip().lower()
 if prover_mode not in {"gpu", "no-proofs"}:
     raise SystemExit(f"invalid PROVER_MODE '{prover_mode}' (expected gpu|no-proofs)")
 use_mock_prover = prover_mode == "no-proofs"
+try:
+    prover_batch_with_proof_capacity_bytes = int(
+        os.environ["PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES"]
+    )
+except ValueError as err:
+    raise SystemExit(
+        "invalid PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES (expected integer bytes)"
+    ) from err
+if prover_batch_with_proof_capacity_bytes <= 0:
+    raise SystemExit("PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES must be greater than zero")
+if not use_mock_prover and prover_batch_with_proof_capacity_bytes < 8 * 1024**3:
+    raise SystemExit(
+        "real proving requires PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES >= 8589934592 "
+        "for restart-safe retention of the 256-batch queue"
+    )
 materialize_edge_config = os.environ.get("MATERIALIZE_EDGE_CONFIG", "true").strip().lower()
 if materialize_edge_config not in {"true", "false"}:
     raise SystemExit("invalid MATERIALIZE_EDGE_CONFIG (expected true|false)")
@@ -378,12 +402,23 @@ prover_api_auth_password = os.environ.get("PROVER_API_AUTH_PASSWORD", "").strip(
 prover_api_bind_host = os.environ.get("PROVER_API_BIND_HOST", "").strip()
 if not prover_api_bind_host:
     raise SystemExit("missing prover API bind host: set PROVER_API_BIND_HOST")
-prover_api_bind_is_loopback = prover_api_bind_host in {"127.0.0.1", "localhost", "::1"}
-if (not prover_api_auth_user or not prover_api_auth_password) and (
-    not use_mock_prover or not prover_api_bind_is_loopback
-):
+# SYSCOIN: Match the generated nginx upstream exactly; direct or container-network plaintext
+# listeners bypass its bounded response spool and can let slow authenticated readers retain slots.
+if prover_api_bind_host != "127.0.0.1":
+    raise SystemExit(
+        "PROVER_API_BIND_HOST must be 127.0.0.1; remote provers must use the generated "
+        "buffering HTTPS proxy"
+    )
+if (not prover_api_auth_user or not prover_api_auth_password) and not use_mock_prover:
     raise SystemExit(
         "missing prover API credentials: set PROVER_API_AUTH_USER and PROVER_API_AUTH_PASSWORD"
+    )
+# SYSCOIN: A public Basic Auth endpoint protects job assignment and live lease capabilities.
+# Reject human-scale passwords in generated deployments; `openssl rand -hex 32` is URL-safe.
+if prover_api_auth_password and len(prover_api_auth_password) < 32:
+    raise SystemExit(
+        "PROVER_API_AUTH_PASSWORD must contain at least 32 characters "
+        "(recommended: openssl rand -hex 32)"
     )
 prover_api_auth_config_lines = []
 if prover_api_auth_user and prover_api_auth_password:
@@ -418,12 +453,36 @@ server {{
     ssl_certificate_key /etc/letsencrypt/live/{domain}/privkey.pem;
     ssl_trusted_certificate /etc/letsencrypt/live/{domain}/chain.pem;
 
-    # Airbender proof submissions can exceed nginx's 1M default.
-    client_max_body_size 0;
+    # SYSCOIN: Match the node's 10 MiB request limit. An unlimited nginx buffer lets an
+    # unauthenticated internet client consume proxy disk before node-side auth can reject it.
+    client_max_body_size 10m;
+    # SYSCOIN: Bound slow upload gaps at the public edge consistently with the node's total
+    # authenticated body deadline; neither limit changes the longer proof-verification timeout.
+    client_body_timeout 120s;
+
+    # SYSCOIN: Tokenless peek/failed routes are local operator diagnostics, not worker protocol.
+    # Keeping them off the public proxy prevents repeatable large responses from filling its spool.
+    location ~ ^/prover-jobs/v1/(?:FRI/[^/]+/(?:peek|failed)|SNARK/[^/]+/[^/]+/peek)/?$ {{
+        return 404;
+    }}
 
     location / {{
         proxy_pass http://127.0.0.1:{prover_api_port};
         proxy_http_version 1.1;
+        # SYSCOIN: Stream request bodies so node-side Basic Auth runs before buffering and the
+        # node's 120-second total body deadline covers the public upload, not only nginx-to-node.
+        proxy_request_buffering off;
+        # SYSCOIN: Let every bounded prover response spool completely while a remote reader is slow.
+        # This drains the node side and releases any response slot independently of client pace.
+        proxy_buffering on;
+        proxy_max_temp_file_size 384m;
+        proxy_ignore_headers X-Accel-Buffering;
+        # SYSCOIN: The prover client has a 600-second request backstop. Keep the public proxy
+        # alive slightly longer so native FRI verification / SNARK preflight, not nginx's
+        # 60-second default, determines the response and lease-retry semantics.
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 650s;
+        proxy_read_timeout 650s;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -597,6 +656,17 @@ def materialize_chain(
             ),
             *(
                 [
+                    "l1_watcher:",
+                    # SYSCOIN: Edge chains deliberately trust the Gateway head so interop does
+                    # not wait for Gateway-to-L1 settlement. Production Gateways should run
+                    # OpenRaft; without it this is explicit sequencer/RPC-head trust.
+                    "  optimistic_gateway_head: true",
+                ]
+                if gateway_rpc_url is not None
+                else []
+            ),
+            *(
+                [
                     "fee:",
                     f"  native_per_gas: {os.environ['EDGE_NATIVE_PER_GAS']}",
                     f"  native_price_usd: {os.environ['EDGE_NATIVE_PRICE_USD']}",
@@ -606,14 +676,6 @@ def materialize_chain(
             ),
             "rpc:",
             f"  address: 0.0.0.0:{rpc_port}",
-            *(
-                [
-                    "prover_input_generator:",
-                    "  enable_input_generation: false",
-                ]
-                if use_mock_prover
-                else []
-            ),
             "prover_api:",
             *(
                 ["  enabled: false"]
@@ -622,12 +684,21 @@ def materialize_chain(
             ),
             f"  address: {prover_api_bind_host}:{prover_api_port}",
             *prover_api_auth_config_lines,
+            # SYSCOIN: Three resident GPU FRI workers feed a separate CPU combiner/wrapper. The
+            # two-hour lease avoids duplicate CPU wrapping while retaining a one-hour release bound.
+            "  snark_job_timeout: 2h",
+            "  max_assigned_batch_range: 256",
+            "  max_fris_per_snark: 100",
+            "  target_fris_per_snark: 100",
+            "  max_snark_batch_wait: 1h",
             "  fake_fri_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  fake_snark_provers:",
             f"    enabled: {'true' if use_mock_prover else 'false'}",
             "  proof_storage:",
             f"    path: {out_dir / 'db' / 'fri_proofs'}",
+            # SYSCOIN: Keep every active/next-window FRI proof restart-recoverable.
+            f"    batch_with_proof_capacity: {prover_batch_with_proof_capacity_bytes} B",
             "status_server:",
             f"  address: 0.0.0.0:{status_port}",
             "observability:",

@@ -51,10 +51,15 @@ impl FakeFriProversPool {
                 loop {
                     // Only take inbound items whose age >= min_age.
                     match jm
-                        .pick_next_job(min_age, "fake_prover".to_string(), None)
+                        // SYSCOIN: The in-process fake prover has no HTTP response envelope.
+                        .pick_next_job(min_age, "fake_prover".to_string(), None, usize::MAX)
                         .await
                     {
-                        Some((fri_job, _prover_input)) => {
+                        Some(leased_job) => {
+                            // SYSCOIN: Carry the exact capability across simulated proving delay so
+                            // this worker cannot consume a newer real-prover reassignment.
+                            let fri_job = leased_job.job;
+                            let lease_token = leased_job.lease_token;
                             // Emulate proving work.
                             let start = Instant::now();
                             sleep(compute_time).await;
@@ -70,7 +75,7 @@ impl FakeFriProversPool {
                                     "fake prover dropped job (simulated timeout)"
                                 );
                             } else if let Err(e) = jm
-                                .submit_fake_proof(fri_job.batch_number, PROVER_LABEL)
+                                .submit_fake_proof(fri_job.batch_number, PROVER_LABEL, &lease_token)
                                 .await
                             {
                                 tracing::warn!(

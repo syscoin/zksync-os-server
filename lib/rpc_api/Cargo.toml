@@ -23,7 +23,7 @@ jsonrpsee = { workspace = true, default-features = false, features = ["macros", 
 serde.workspace = true
 
 [dev-dependencies]
-# SYSCOIN: Assert the v31 JSON-RPC response key remains wire-compatible.
+# SYSCOIN: Assert the settlement-layer-neutral V32 JSON-RPC response key remains stable.
 serde_json.workspace = true
 
 [features]

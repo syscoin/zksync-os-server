@@ -29,14 +29,6 @@ pub struct ProtocolUpgradeBuilder {
     /// Timestamp after which upgrade can be executed
     /// If not provided, default value will be used (e.g. upgrade whenever)
     timestamp: U256,
-    /// Whether to include bytecode hashes in `factory_deps` of the upgrade tx.
-    /// When true, the server's `fetch_force_preimages` will look up bytecodes
-    /// from the L1 `BytecodesSupplier`. When false, the server relies on
-    /// preimages already known from L2 deploys.
-    ///
-    /// TODO: Remove once v30 support is dropped — `BytecodesSupplier` will be
-    /// the only path and this flag should always be true.
-    include_factory_deps: bool,
 }
 
 impl ProtocolUpgradeBuilder {
@@ -51,7 +43,6 @@ impl ProtocolUpgradeBuilder {
             force_deployments: None,
             delegate_to,
             timestamp: U256::ZERO,
-            include_factory_deps: false,
         }
     }
 
@@ -96,13 +87,6 @@ impl ProtocolUpgradeBuilder {
     /// Optional. Sets the list of contracts to be force-deployed during the upgrade.
     pub fn with_force_deployments(mut self, deployments: BTreeMap<Address, Bytes>) -> Self {
         self.force_deployments = Some(deployments);
-        self
-    }
-
-    /// Includes bytecode hashes in the upgrade tx's `factory_deps`, which causes the
-    /// server to fetch preimages from the L1 `BytecodesSupplier` via `EVMBytecodePublished` events.
-    pub fn with_factory_deps(mut self) -> Self {
-        self.include_factory_deps = true;
         self
     }
 
@@ -155,19 +139,6 @@ impl ProtocolUpgradeBuilder {
             //        publishes raw bytes, not padded+artifacts, so this hash never
             //        keys anything in the supplier-fed preimage cache.
             //
-            // Two preimage shapes also appear:
-            //
-            //   A) Raw bytecode (length = `observable_bytecode_len`)
-            //        Published to `BytecodesSupplier`; expected by the system hook
-            //        when given hash (2).
-            //
-            //   B) Raw + padding + artifacts (length = `full_bytecode_len`)
-            //        Computed and stored by zksync-os whenever a contract is
-            //        deployed via the EVM (`account_cache.rs:947-972`). Keyed by
-            //        hash (3). The legacy `publish_bytecodes` path in this test
-            //        suite (which `Create`-deploys the bytecode on L2) ends up
-            //        registering shape B under hash (3).
-            //
             // In production, era-contracts'
             // `L2GenesisForceDeploymentsHelper.unsafeForceDeployZKsyncOS` decodes
             // `(bytecodeHash, bytecodeLength, observableBytecodeHash)` from the
@@ -181,12 +152,12 @@ impl ProtocolUpgradeBuilder {
             //   - asserts iterator length ≤ expected → panic on mismatch (this is
             //     the "Iterator length exceeds expected preimage length" panic),
             //   - re-derives EVM artifacts from the returned raw bytes,
-            //   - records a *new* preimage of shape B keyed by hash (3),
+            //   - records a new padded+artifacts preimage keyed by hash (3),
             //   - writes hash (3) to `account.bytecode_hash`.
             //
             // So the inner force-deployment payload must carry: hash (2),
             // `bytecodeLength = observable len`, hash (1) — and the supplier
-            // (or test fixture) must register shape A under hash (2). Anything
+            // (or test fixture) must register the raw bytecode under hash (2). Anything
             // else either panics on length, fails the proof-env hash check, or
             // silently writes an unusable account.
             //
@@ -198,47 +169,17 @@ impl ProtocolUpgradeBuilder {
             // itself parses `factoryDeps` but never resolves it as preimages,
             // so its semantic is purely server-side.
             //
-            // ----- Branch selection below -----
-            //
-            // `include_factory_deps == true` — production / BytecodesSupplier path.
-            //   The server's `fetch_force_preimages` will scan supplier events and
-            //   register shape A under hash (2). Send hash (2) + observable len in
-            //   the inner payload, and hash (1) in the outer `factoryDeps`.
-            //
-            // `include_factory_deps == false` — legacy path used by v30→v31 tests.
-            //   No supplier interaction; instead the test pre-runs `Create` on L2
-            //   to register shape B under hash (3). The system hook still runs the
-            //   length check, so the upgrade tx must claim `bytecodeLength =
-            //   full_bytecode_len` and `bytecodeHash = hash (3)`. The hook then
-            //   "recomputes" artifacts on shape B (treating it as raw), which is
-            //   technically wrong but harmless: the real entrypoints sit at offset
-            //   0 of shape B, so contract calls still execute correctly. This
-            //   mismatch is why the branch must die with v30 support.
-            //
-            // TODO: Remove the legacy branch once v30 support is dropped and
-            // `include_factory_deps` is always true.
             let mut account_properties = AccountProperties::default();
             set_properties_code(&mut account_properties, &bytecode);
 
-            let (bytecode_hash, bytecode_size) = if self.include_factory_deps {
-                // Hash (2): Blake2s of the raw EVM bytecode bytes.
-                let raw_blake = B256::from_slice(Blake2s256::digest(&bytecode).as_slice());
-                (raw_blake, account_properties.observable_bytecode_len)
-            } else {
-                // Hash (3): Blake2s of (raw + padding + artifacts), pulled from
-                // `set_properties_code` above. Only valid because shape B was
-                // pre-registered by an L2 deploy.
-                (
-                    B256::from_slice(account_properties.bytecode_hash.as_u8_ref()),
-                    account_properties.full_bytecode_len(),
-                )
-            };
+            // Hash (2): Blake2s of the raw EVM bytecode bytes.
+            let bytecode_hash = B256::from_slice(Blake2s256::digest(&bytecode).as_slice());
+            let bytecode_size = account_properties.observable_bytecode_len;
             let deployed_bytecode_info = super::interfaces::ForceDeploymentBytecodeInfo {
                 bytecodeHash: bytecode_hash,
                 bytecodeSize: bytecode_size,
                 // Hash (1): always Keccak256 of the raw bytes — this is what
-                // `EXTCODEHASH` returns and is independent of which lookup-hash
-                // path we picked above. Stored verbatim on the account as
+                // `EXTCODEHASH` returns. Stored verbatim on the account as
                 // `observable_bytecode_hash`.
                 observableBytecodeHash: B256::from_slice(
                     account_properties.observable_bytecode_hash.as_u8_ref(),
@@ -250,15 +191,13 @@ impl ProtocolUpgradeBuilder {
                 newAddress: address,
             });
 
-            if self.include_factory_deps {
-                // `factory_deps` carries hash (1) — `keccak256(raw_bytecode)`,
-                // which is `EVMBytecodePublished`'s topic1 on `BytecodesSupplier`.
-                // The server's `L1UpgradeTxWatcher::fetch_force_preimages` filters
-                // supplier events by this topic, then re-keys each fetched
-                // preimage under hash (2) (Blake2s) for the L2 lookup above. The
-                // two distinct hashes mirror the production v31 layout.
-                factory_deps.push(U256::from_be_slice(keccak256(&bytecode).as_ref()));
-            }
+            // `factory_deps` carries hash (1) — `keccak256(raw_bytecode)`,
+            // which is `EVMBytecodePublished`'s topic1 on `BytecodesSupplier`.
+            // The server's `L1UpgradeTxWatcher::fetch_force_preimages` filters
+            // supplier events by this topic, then re-keys each fetched
+            // preimage under hash (2) (Blake2s) for the L2 lookup above. The
+            // SYSCOIN: The two distinct hashes mirror the pinned V32 production layout.
+            factory_deps.push(U256::from_be_slice(keccak256(&bytecode).as_ref()));
         }
 
         let tx_type = if patch_only {

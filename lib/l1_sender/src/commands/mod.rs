@@ -1,4 +1,4 @@
-use alloy::consensus::BlobTransactionSidecar;
+// SYSCOIN: Sender commands route explicitly to L1 or Gateway and never carry EIP-4844 sidecars.
 use alloy::primitives::{Address, Bytes};
 use itertools::Itertools;
 use std::fmt::Display;
@@ -80,16 +80,12 @@ pub trait SendToL1:
     const SENT_STAGE: BatchExecutionStage;
     const MINED_STAGE: BatchExecutionStage;
     const PASSTHROUGH_STAGE: BatchExecutionStage;
-    /// Whether this command type can produce blob-carrying transactions. Replacing a blob
-    /// transaction in the pool requires a 100% fee bump (vs 10% for regular transactions),
-    /// so blob-capable senders enforce higher replacement-fee minimums.
-    const MAY_SEND_BLOBS: bool = false;
     /// We use `Bytes` instead of `SolCall`, because SolCall is a trait that cannot be dyn
     fn solidity_call(&self, gateway: bool, operator: &Address) -> Bytes;
 
-    fn blob_sidecar(&self) -> Option<BlobTransactionSidecar> {
-        None
-    }
+    // SYSCOIN: Proof commands use this post-confirmation hook to retire a node-local durable
+    // wrapper journal. Other upstream command types have no durable handoff and remain no-op.
+    fn notify_confirmed(&self) {}
 
     /// Only used for logging - as we send commands in bulk, it's natural to print a single range
     /// for the whole group, e.g. "1-3, 4, 5-6" instead of "1, 2, 3, 4, 5, 6"

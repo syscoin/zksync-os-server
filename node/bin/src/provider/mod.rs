@@ -1,3 +1,4 @@
+mod bounded_http;
 mod latency;
 mod metrics;
 mod retry;
@@ -8,6 +9,7 @@ use alloy::network::EthereumWallet;
 use alloy::providers::ProviderBuilder;
 use alloy::rpc::client::RpcClient;
 use alloy::signers::local::PrivateKeySigner;
+pub(crate) use bounded_http::ProviderResponseByteBudget;
 use std::time::Duration;
 use tower::ServiceBuilder;
 use vise::{EncodeLabelSet, EncodeLabelValue};
@@ -27,6 +29,7 @@ pub(crate) async fn build_node_provider(
     finalized_poll_interval: Duration,
     log_cache_capacity: usize,
     provider: ProviderKind,
+    response_byte_budget: &ProviderResponseByteBudget,
 ) -> NodeProvider {
     let max_retries = config.max_retries;
     let retry_backoff = config.retry_backoff;
@@ -45,11 +48,23 @@ pub(crate) async fn build_node_provider(
             timeout: request_timeout,
         });
 
+    // SYSCOIN: Alloy's stock reqwest transport calls `Response::bytes()` before JSON decoding.
+    // Stream through our hard cap so a Byzantine or faulty L1/Gateway RPC cannot allocate an
+    // unbounded body before the proof/event-level validators get control.
+    let transport = bounded_http::BoundedHttpTransport::new(
+        config
+            .rpc_url
+            .parse()
+            .expect("L1/Gateway provider URL is invalid"),
+        // SYSCOIN: All provider instances and their Alloy clones share one process-wide weighted
+        // response-byte budget instead of multiplying the cap per L1/archive/Gateway transport.
+        response_byte_budget.clone(),
+    )
+    .expect("L1/Gateway provider URL must use HTTP or HTTPS");
+    let is_local = transport.is_local();
     let client = RpcClient::builder()
         .layer(provider_layers)
-        .connect(&config.rpc_url)
-        .await
-        .expect("failed to connect to L1 api")
+        .transport(transport, is_local)
         .with_poll_interval(config.rpc_poll_interval);
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::new(PrivateKeySigner::random()))

@@ -19,11 +19,11 @@ case "${WORKSPACE_NAME}" in
     ;;
 esac
 
-# These constants are consensus inputs baked into the hash-pinned V7 guest.
-# Native execution must use these exact values; a per-deployment rewrite would
-# create different execution semantics under the published VK.
+# SYSCOIN: These constants are consensus inputs baked into the hash-pinned canonical
+# guest. Native execution must use these exact values; a per-deployment rewrite
+# would create different execution semantics under the published VK.
 PUBLISHED_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
-PUBLISHED_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 
 require_published_value() {
   local primary_name="$1" secondary_name="$2" expected="$3"
@@ -33,7 +33,7 @@ require_published_value() {
     [ -z "${value}" ] && continue
     normalized="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
     [ "${normalized}" = "${expected}" ] || {
-      echo "error: ${name}=${value} differs from the published V7 app value ${expected}" >&2
+      echo "error: ${name}=${value} differs from the published zksync-os app value ${expected}" >&2
       exit 1
     }
   done
@@ -45,10 +45,11 @@ require_published_value SYSCOIN_EDGE_DA_COMMIT_TARGET \
   ZKSYNC_OS_SYSCOIN_EDGE_DA_COMMIT_TARGET "${PUBLISHED_EDGE_DA_COMMIT_TARGET}"
 require_published_value SYSCOIN_GAS_TANK_ADDRESS \
   ZKSYNC_OS_SYSCOIN_GAS_TANK_ADDRESS "${PUBLISHED_GAS_TANK_ADDRESS}"
-: "${PROTOCOL_VERSION:=v31.0}"
+# SYSCOIN: The patched workspace supports the single canonical V32 lane.
+: "${PROTOCOL_VERSION:=v32.0}"
 : "${ZKSYNC_OS_GIT_URL:=https://github.com/matter-labs/zksync-os.git}"
-: "${GATEWAY_DIR:=${SYSCOIN_PATCHED_OS_BUILD_ROOT:-${TMPDIR:-/tmp}/syscoin-zksync-os-server-build}}"
 : "${CARGO_TARGET_DIR:=${REPO_ROOT}/target}"
+: "${GATEWAY_DIR:=${SYSCOIN_PATCHED_OS_BUILD_ROOT:-${CARGO_TARGET_DIR}/syscoin-zksync-os-server-build}}"
 
 export CARGO_TARGET_DIR GATEWAY_DIR PROTOCOL_VERSION
 export SYSCOIN_EDGE_DA_COMMIT_TARGET SYSCOIN_GAS_TANK_ADDRESS

@@ -45,10 +45,10 @@ pub struct UpgradeMetadata {
     pub timestamp: u64,
     /// Which protocol version will be used after the upgrade transaction is executed.
     pub protocol_version: ProtocolSemanticVersion,
+    /// SYSCOIN: V32 authorizes upgrades through canonical batch input, so the pre-mainnet V31
+    /// settlement-hash metadata is intentionally absent from the live transaction model.
     /// Preimages (e.g. force deployments) for the upgrade transaction (if any).
     pub force_preimages: Vec<(B256, Vec<u8>)>,
-    /// Canonical settlement-layer hash committed for this upgrade batch.
-    pub canonical_tx_hash: B256,
 }
 
 impl UpgradeInfo {
@@ -64,7 +64,6 @@ impl Debug for UpgradeInfo {
             .field("timestamp", &self.metadata.timestamp)
             .field("protocol_version", &self.metadata.protocol_version)
             .field("tx_hash", &self.tx.as_ref().map(|tx| tx.hash()))
-            .field("canonical_tx_hash", &self.metadata.canonical_tx_hash)
             .field(
                 "force_preimages_hashes",
                 &self

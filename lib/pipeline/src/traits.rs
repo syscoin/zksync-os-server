@@ -6,7 +6,8 @@ use tokio::sync::mpsc;
 use zksync_os_observability::ComponentStateReporter;
 
 /// A component that transforms messages in the pipeline.
-/// Examples: ProverInputGenerator, Batcher, L1 senders
+/// SYSCOIN: Native V32 pipeline examples are the batcher and L1 senders; proof-input generation
+/// is part of batch construction rather than a standalone component.
 ///
 /// Components construct themselves with all needed parameters, then get consumed by `run()`.
 #[async_trait]

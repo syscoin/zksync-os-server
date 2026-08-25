@@ -8,11 +8,9 @@ use crate::assert_traits::ReceiptAssert;
 use crate::config::load_chain_config;
 use crate::provider::ZksyncTestingProvider as _;
 use crate::upgrade::interfaces::ChainAssetHandlerBase::ChainAssetHandlerBaseInstance;
-use crate::upgrade::interfaces::ChainTypeManagerV30::ChainTypeManagerV30Instance;
 use crate::upgrade::interfaces::FacetCut;
-use crate::upgrade::interfaces::ZkChainV30::ZkChainV30Instance;
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use alloy::providers::ext::AnvilApi;
 use alloy::providers::utils::Eip1559Estimator;
 use alloy::providers::{DynProvider, PendingTransactionBuilder, Provider};
@@ -29,6 +27,8 @@ use zksync_os_types::{
 };
 
 /// Object that helps with preparation and execution of protocol upgrades in integration tests.
+///
+/// SYSCOIN: Fresh V32 fixtures intentionally omit the retired V30/V31 compatibility branches.
 ///
 /// Tester assumes that governance is an EOA account, and uses impersonation
 /// to execute the upgrade with it.
@@ -210,10 +210,9 @@ impl<'a> UpgradeTester<'a> {
         patch_only: bool,
         facet_cuts: Vec<FacetCut>,
         da_validator_pair: Option<(Address, interfaces::L2DACommitmentScheme)>,
-        // Deployed bytecode to install (via `anvil_setCode`, keeping storage) over the
-        // chain's verifier together with the diamond cut. From v32 on the Executor hands the
-        // verifier untruncated per-batch public inputs, which the old verifier
-        // misinterprets, so a v31 -> v32 upgrade must swap both at once.
+        // Optional verifier bytecode to install (via `anvil_setCode`, keeping storage)
+        // together with a diamond cut. Any future upgrade that changes the verifier's
+        // public-input ABI must replace both atomically.
         new_verifier_code: Option<Bytes>,
     ) -> anyhow::Result<()> {
         // Deploy the upgrade contract on SL.
@@ -309,14 +308,11 @@ impl<'a> UpgradeTester<'a> {
                 )
                 .await?;
         } else {
-            // From v32 on, the batch format the server commits and proves is protocol-version
-            // dependent (chain-id-less batchOutputHash, chain config hash folded into the
-            // batch proof public input), and only the facets carried by the upgrade's diamond
-            // cut compute the matching values on-chain. A new-version batch committed while
-            // the chain still runs the old facets poisons the chain: the contract stores an
-            // old-style hash for it, the server records the new-style one, and the next
-            // commit's `previous_stored_batch_info` check reverts with BatchHashMismatch,
-            // killing the l1_sender.
+            // A minor upgrade may change the batch format committed and proved by the server.
+            // Only the facets carried by that upgrade's diamond cut compute matching values
+            // on-chain. A new-format batch committed while the chain still runs old facets
+            // poisons the chain: the contract and server retain different batch hashes, and
+            // the next `previous_stored_batch_info` check reverts with BatchHashMismatch.
             //
             // Mirror a real rollout instead:
             //   1. settle everything produced under the old version,
@@ -450,9 +446,8 @@ impl<'a> UpgradeTester<'a> {
             None
         };
 
-        // Fetch the BytecodesSupplier address from the L1 ChainTypeManager,
-        // where it is stored as an immutable `L1_BYTECODES_SUPPLIER`.
-        // Falls back to the config address for pre-v31 deployments that don't expose this getter.
+        // SYSCOIN: Resolve the canonical BytecodesSupplier from the pinned V32 L1 CTM; a missing
+        // getter or zero address is a deployment mismatch rather than a legacy fallback signal.
         let ctm_l1_address = l1_state.bridgehub_l1.chain_type_manager_address().await?;
         let ctm_l1 =
             interfaces::ChainTypeManager::new(ctm_l1_address, tester.l1_provider().clone());
@@ -461,19 +456,11 @@ impl<'a> UpgradeTester<'a> {
             ctm_l1.serverNotifierAddress().call().await?,
             tester.l1_provider().clone(),
         );
-        let bytecode_supplier_address = match ctm_l1.L1_BYTECODES_SUPPLIER().call().await {
-            Ok(addr) if addr != Address::ZERO => addr,
-            Ok(_) => anyhow::bail!(
-                "L1 ChainTypeManager at {ctm_l1_address:?} returned zero BytecodesSupplier"
-            ),
-            Err(_) => {
-                // Pre-v31 CTMs don't have this getter; fall back to config.
-                chain_config
-                    .genesis_config
-                    .bytecode_supplier_address
-                    .expect("Bytecode supplier address is missing in the config")
-            }
-        };
+        let bytecode_supplier_address = ctm_l1.L1_BYTECODES_SUPPLIER().call().await?;
+        anyhow::ensure!(
+            bytecode_supplier_address != Address::ZERO,
+            "L1 ChainTypeManager at {ctm_l1_address:?} returned zero BytecodesSupplier"
+        );
         let bytecode_supplier = interfaces::BytecodesSupplier::new(
             bytecode_supplier_address,
             tester.l1_provider().clone(),
@@ -593,23 +580,15 @@ impl<'a> UpgradeTester<'a> {
             )
             .await?;
         } else {
-            let pause_migration_tx = if self.tester.chain_layout.protocol_version().contains("v30")
-            {
-                self.bridgehub_sl
-                    .pauseMigration()
-                    .into_transaction_request()
-                    .with_from(self.bridgehub_owner_sl)
-            } else {
-                let chain_asset_handler = self.bridgehub_sl.chainAssetHandler().call().await?;
-                let chain_asset_handler = ChainAssetHandlerBaseInstance::new(
-                    chain_asset_handler,
-                    self.bridgehub_sl.provider().clone(),
-                );
-                chain_asset_handler
-                    .pauseMigration()
-                    .into_transaction_request()
-                    .with_from(self.bridgehub_owner_sl)
-            };
+            let chain_asset_handler = self.bridgehub_sl.chainAssetHandler().call().await?;
+            let chain_asset_handler = ChainAssetHandlerBaseInstance::new(
+                chain_asset_handler,
+                self.bridgehub_sl.provider().clone(),
+            );
+            let pause_migration_tx = chain_asset_handler
+                .pauseMigration()
+                .into_transaction_request()
+                .with_from(self.bridgehub_owner_sl);
             self.send_impersonated_transaction(pause_migration_tx)
                 .await?;
         }
@@ -634,26 +613,6 @@ impl<'a> UpgradeTester<'a> {
             self.protocol_version.clone(),
             delegate_to,
         ))
-    }
-
-    /// Deploys each bytecode on L2 so that the preimages are known to the node.
-    pub async fn publish_bytecodes<I: IntoIterator<Item = Bytes>>(
-        &self,
-        bytecodes: I,
-    ) -> anyhow::Result<()> {
-        for bytecode in bytecodes {
-            self.tester
-                .l2_provider
-                .send_transaction(
-                    TransactionRequest::default()
-                        .with_kind(TxKind::Create)
-                        .with_input(bytecode),
-                )
-                .await?
-                .expect_successful_receipt()
-                .await?;
-        }
-        Ok(())
     }
 
     /// Publishes EVM bytecodes to the `BytecodesSupplier` contract on L1.
@@ -705,64 +664,31 @@ impl<'a> UpgradeTester<'a> {
                 .with_from(self.ctm_owner_l1);
             self.send_impersonated_transaction(tx).await?;
         } else {
-            let tx = if self.tester.chain_layout.protocol_version().contains("v30") {
-                let ctm = ChainTypeManagerV30Instance::new(
-                    *self.ctm_sl.address(),
-                    self.ctm_sl.provider().clone(),
-                );
-                ctm.setNewVersionUpgrade(
+            let verifier = self.diamond_proxy_sl.getVerifier().call().await?;
+            let tx = self
+                .ctm_sl
+                .setNewVersionUpgrade(
                     upgrade_data,
                     self.protocol_version
                         .packed()
                         .expect("incorrect protocol version"),
                     deadline,
                     new_version,
+                    verifier,
                 )
                 .into_transaction_request()
-                .with_from(self.ctm_owner_sl)
-            } else {
-                let verifier = self.diamond_proxy_sl.getVerifier().call().await?;
-                self.ctm_sl
-                    .setNewVersionUpgrade(
-                        upgrade_data,
-                        self.protocol_version
-                            .packed()
-                            .expect("incorrect protocol version"),
-                        deadline,
-                        new_version,
-                        verifier,
-                    )
-                    .into_transaction_request()
-                    .with_from(self.ctm_owner_sl)
-            };
+                .with_from(self.ctm_owner_sl);
             self.send_impersonated_transaction(tx).await?;
         }
         Ok(())
     }
 
     pub async fn set_upgrade_timestamp(&self, timestamp: U256) -> anyhow::Result<()> {
-        let data = if self.tester.chain_layout.protocol_version().contains("v30") {
-            // v30.2 ServerNotifier's setUpgradeTimestamp specifies the protocol version being upgraded FROM
-            let server_notifier_v30 = interfaces::ServerNotifierV30::new(
-                *self.l1_server_notifier.address(),
-                self.tester.l1_provider().clone(),
-            );
-            server_notifier_v30
-                .setUpgradeTimestamp(
-                    U256::from(self.chain_id),
-                    self.protocol_version
-                        .packed()
-                        .expect("incorrect protocol version"),
-                    timestamp,
-                )
-                .calldata()
-                .clone()
-        } else {
-            self.l1_server_notifier
-                .setUpgradeTimestamp(U256::from(self.chain_id), timestamp)
-                .calldata()
-                .clone()
-        };
+        let data = self
+            .l1_server_notifier
+            .setUpgradeTimestamp(U256::from(self.chain_id), timestamp)
+            .calldata()
+            .clone();
         let tx = self
             .l1_chain_admin
             .multicall(
@@ -802,32 +728,17 @@ impl<'a> UpgradeTester<'a> {
             )
             .await?;
         } else {
-            let tx = if self.tester.chain_layout.protocol_version().contains("v30") {
-                let zk_chain = ZkChainV30Instance::new(
-                    *self.diamond_proxy_sl.address(),
-                    self.diamond_proxy_sl.provider().clone(),
-                );
-                zk_chain
-                    .upgradeChainFromVersion(
-                        self.protocol_version
-                            .packed()
-                            .expect("Incorrect protocol version"),
-                        upgrade_data,
-                    )
-                    .into_transaction_request()
-                    .with_from(self.diamond_proxy_admin_sl)
-            } else {
-                self.diamond_proxy_sl
-                    .upgradeChainFromVersion(
-                        Address::ZERO, // not used
-                        self.protocol_version
-                            .packed()
-                            .expect("Incorrect protocol version"),
-                        upgrade_data,
-                    )
-                    .into_transaction_request()
-                    .with_from(self.diamond_proxy_admin_sl)
-            };
+            let tx = self
+                .diamond_proxy_sl
+                .upgradeChainFromVersion(
+                    Address::ZERO, // not used
+                    self.protocol_version
+                        .packed()
+                        .expect("Incorrect protocol version"),
+                    upgrade_data,
+                )
+                .into_transaction_request()
+                .with_from(self.diamond_proxy_admin_sl);
             self.send_impersonated_transaction(tx).await?;
         }
         Ok(())

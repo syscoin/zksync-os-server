@@ -270,7 +270,7 @@ impl<P: ProcessRawEvents> L1Watcher<P> {
 
             match self.poll(cap).await {
                 Ok(()) => {}
-                // SYSCOIN
+                // SYSCOIN: Treat transient settlement-layer transport failures as retryable.
                 Err(L1WatcherError::Transport(err)) => {
                     tracing::warn!(?err, "watcher transport error; retrying on next poll");
                     // SYSCOIN: retry the same block range even if the chain is idle and the

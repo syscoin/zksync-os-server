@@ -83,7 +83,8 @@ pub fn raw_transaction_rlp_item_length(raw_tx: &[u8]) -> usize {
     }
 }
 
-/// Proof that an L2-to-L1 log belongs to a source batch and, optionally, L1's MessageRoot.
+/// SYSCOIN: Proof that an L2-to-L1 log belongs to a source batch and, for Gateway settlement,
+/// optionally continues through Gateway's MessageRoot aggregation.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct L2ToL1LogProof {
@@ -97,14 +98,13 @@ pub struct L2ToL1LogProof {
     pub id: u32,
     /// Source batch root reached by the first proof segment.
     pub root: B256,
-    /// Settlement-layer block where the source batch was executed for a
-    /// [`LogProofTarget::MessageRoot`] proof.
+    /// SYSCOIN: Gateway block where the source batch was executed for either Gateway proof target.
     ///
-    /// It is `None` for [`LogProofTarget::L1BatchRoot`] proofs, which do not include a MessageRoot
-    /// extension.
-    // SYSCOIN: Keep the v31 JSON-RPC wire key consumed by production relayers while allowing the
-    // generalized v32 spelling on input. The Rust name can describe either settlement layer.
-    #[serde(rename = "gatewayBlockNumber", alias = "settlementLayerBlockNumber")]
+    /// It is `None` for the final [`LogProofTarget::L1BatchRoot`] proof returned for a batch that
+    /// settled directly on L1. [`LogProofTarget::MessageRoot`] is unsupported for direct-L1
+    /// settlement.
+    // SYSCOIN: Use the settlement-layer-neutral V32 key while documenting its topology-dependent
+    // presence: both Gateway targets return the source batch's Gateway execution block.
     pub settlement_layer_block_number: Option<u64>,
 }
 
@@ -123,8 +123,8 @@ pub struct ImtLeaf {
 
 /// Membership proof for one commit value in a chain's atomic-interop commitment tree.
 ///
-/// This response authenticates the commit leaf against the IMT root at one L2 block. To execute an
-/// atomic bundle, the caller pairs it with a `MessageRoot` proof from
+/// SYSCOIN: This response authenticates the commit leaf against the IMT root at one L2 block. To
+/// execute an atomic bundle, the caller pairs it with a Gateway-settled `MessageRoot` proof from
 /// `zks_getL2ToL1LogProof`; that second proof authenticates the IMT root across chains.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -145,19 +145,22 @@ pub struct ImtInclusionProof {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LogProofTarget {
-    /// Stops at the source chain's batch root without reading or adding any MessageRoot state.
+    /// SYSCOIN: Selects the batch root used by L1 verification flows such as withdrawal
+    /// finalization.
     ///
-    /// This is the default used by L1 verification flows such as withdrawal finalization.
+    /// For direct-L1 settlement, the source batch root is already final and no MessageRoot segment
+    /// is added. For Gateway settlement, the proof recursively extends through Gateway's
+    /// `L2MessageRoot` to the containing Gateway batch root and is returned only after that root is
+    /// authenticated against L1.
     #[default]
     L1BatchRoot,
-    /// Extends the source batch-root proof through the source chain's batch tree and then L1's
-    /// shared chain tree in MessageRoot.
+    /// SYSCOIN: Extends a Gateway-settled source batch-root proof through its batch tree and the
+    /// shared chain tree in Gateway's `L2MessageRoot`.
     ///
-    /// MessageRoot appends the source chain's batch root when the batch executes on L1. Reading it
-    /// at that execution block selects the historical shared root containing the append; later
-    /// blocks may contain a different root. Other chains import the shared root keyed by this L1
-    /// block. This target is available only for batches produced under a protocol version that
-    /// supports L1 interop.
+    /// Reading Gateway's tree at the source batch's execution block selects the historical shared
+    /// root containing that append; later Gateway blocks may contain a different root. Other edge
+    /// chains import this root keyed by Gateway chain ID and block, while Gateway later settles its
+    /// aggregate roots to L1. This target is unsupported for batches settled directly on L1.
     MessageRoot,
 }
 
@@ -389,7 +392,7 @@ mod tests {
     use alloy_rlp::BufMut;
 
     #[test]
-    fn l2_to_l1_log_proof_preserves_v31_gateway_block_wire_key() {
+    fn l2_to_l1_log_proof_uses_settlement_layer_block_wire_key() {
         let proof = L2ToL1LogProof {
             batch_number: 11,
             proof: vec![B256::repeat_byte(1)],
@@ -398,17 +401,11 @@ mod tests {
             settlement_layer_block_number: Some(42),
         };
 
-        // SYSCOIN: Existing v31 relayers read `gatewayBlockNumber`; changing only the Rust field
-        // name must not silently remove that response value.
         let serialized = serde_json::to_value(&proof).unwrap();
-        assert_eq!(serialized["gatewayBlockNumber"], 42);
-        assert!(serialized.get("settlementLayerBlockNumber").is_none());
+        assert_eq!(serialized["settlementLayerBlockNumber"], 42);
+        assert!(serialized.get("gatewayBlockNumber").is_none());
 
-        let mut generalized = serialized;
-        let object = generalized.as_object_mut().unwrap();
-        let block_number = object.remove("gatewayBlockNumber").unwrap();
-        object.insert("settlementLayerBlockNumber".to_owned(), block_number);
-        let decoded: L2ToL1LogProof = serde_json::from_value(generalized).unwrap();
+        let decoded: L2ToL1LogProof = serde_json::from_value(serialized).unwrap();
         assert_eq!(decoded.settlement_layer_block_number, Some(42));
     }
 

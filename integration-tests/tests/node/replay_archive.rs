@@ -62,9 +62,9 @@ async fn encrypted_replay_archive_recovers_node_storage_end_to_end(
         .await
         .context("failed to join RocksDB shutdown wait")?;
 
-    // SYSCOIN: Stopping a node on the seeded v31 fixture can flush a partially accumulated batch
-    // and archive blocks beyond the last RPC tip observed before shutdown. Recover from the
-    // writer-drained archive head so the restored WAL cannot lag that newly committed batch.
+    // Stopping a node can flush a partially accumulated batch and archive blocks beyond the last
+    // RPC tip observed before shutdown. Recover from the writer-drained archive head so the
+    // restored WAL cannot lag that newly committed batch.
     let archive_page = FileSystemReplayArchiveReader::new(archive_root.clone())
         .list_keys_page(None)
         .await?;

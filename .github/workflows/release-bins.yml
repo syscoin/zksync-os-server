@@ -24,7 +24,8 @@ env:
   RELEASE_PROFILE: 'maxperf'
   SERVER_LOGFILE: zksync-os-server.log.txt
   FOUNDRY_VERSION: 'v1.5.1'
-  PROTOCOL_VERSION: 'v31.0'
+  # SYSCOIN: Fresh release artifacts expose only the canonical V32 identity.
+  PROTOCOL_VERSION: 'v32.0'
   LOCAL_CHAINS_DIR: 'local-chains'
 
 defaults:

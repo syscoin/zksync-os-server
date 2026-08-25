@@ -22,10 +22,11 @@ pub trait ZksApi {
 
     /// Returns the merkle proof for an L2->L1 log emitted in a given transaction.
     ///
-    /// `proof_target` selects which root the proof anchors to (see [`LogProofTarget`]).
-    /// If omitted, [`LogProofTarget::L1BatchRoot`] is used. A `MessageRoot` proof is available only
-    /// after the source batch has executed on L1 and only for protocol versions that support L1
-    /// interop.
+    /// SYSCOIN: `proof_target` selects the topology-aware root described by [`LogProofTarget`]. If
+    /// omitted, [`LogProofTarget::L1BatchRoot`] is used. On Gateway, `L1BatchRoot` recursively
+    /// reaches a Gateway batch authenticated on L1, while `MessageRoot` stops at the source batch's
+    /// Gateway execution-block root. Direct-L1 settlement supports only `L1BatchRoot` and returns a
+    /// typed error for `MessageRoot`.
     #[method(name = "getL2ToL1LogProof")]
     async fn get_l2_to_l1_log_proof(
         &self,

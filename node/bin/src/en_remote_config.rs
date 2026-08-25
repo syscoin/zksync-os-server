@@ -19,28 +19,17 @@ pub async fn load_remote_config(
         );
     }
 
-    let bytecode_supplier_address = match main_node_client.bytecode_supplier_contract().await {
-        Ok(result) => {
-            if let Some(local_bytecode_supplier_address) =
-                en_local_genesis_config.bytecode_supplier_address
-            {
-                anyhow::ensure!(
-                    result == local_bytecode_supplier_address,
-                    "Bytecode Supplier address mismatch: remote = {result}, local = {local_bytecode_supplier_address}",
-                );
-            }
-            result
-        }
-        // todo: remove when `main_node_rpc_client.get_bytecode_supplier_contract()` is deployed everywhere
-        Err(_) => {
-            tracing::info!(
-                "Cannot read bytecode supplier contract address from the Main Node. This is expected if Main Node runs an older version. Using local config value instead..."
-            );
-            en_local_genesis_config
-                .bytecode_supplier_address
-                .context("`genesis_bytecode_supplier_address` config must be provided when running against an older version of Main Node (`main_node_rpc_client.get_bytecode_supplier_contract()` is not available)")?
-        }
-    };
+    // SYSCOIN: Fresh V32 external nodes require the canonical main-node value. Falling back to a
+    // local address on a method/decode error would silently re-enable pre-V32 compatibility and
+    // could make later upgrade-preimage recovery read a different L1 supplier.
+    let bytecode_supplier_address = main_node_client.bytecode_supplier_contract().await?;
+    if let Some(local_bytecode_supplier_address) = en_local_genesis_config.bytecode_supplier_address
+    {
+        anyhow::ensure!(
+            bytecode_supplier_address == local_bytecode_supplier_address,
+            "Bytecode Supplier address mismatch: remote = {bytecode_supplier_address}, local = {local_bytecode_supplier_address}",
+        );
+    }
 
     let remote_chain_id: u64 = u64::from_be_bytes(
         main_node_client

@@ -4,10 +4,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tower::Service;
 
-/// SYSCOIN Matched by `retry::RetryService` to treat L1 and Gateway timeouts as retryable.
+/// SYSCOIN: Matched by `retry::RetryService` to treat L1 and Gateway timeouts as retryable.
 pub(super) const TIMED_OUT_MSG: &str = "settlement-layer RPC request timed out";
 
-/// SYSCOIN Fails L1 or Gateway RPC requests that receive no response within the configured
+/// SYSCOIN: Fails L1 or Gateway RPC requests that receive no response within the configured
 /// timeout; without it, a request hanging on a half-dead connection never returns and freezes its
 /// caller forever.
 #[derive(Debug, Clone)]

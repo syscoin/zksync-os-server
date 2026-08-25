@@ -11,12 +11,10 @@ which a pruned node (the default `BONSAI` format) cannot answer.
 
 ## Forks
 
-Enable all forks **up to and including Cancun**. On a Cancun chain the server posts pubdata as
-**EIP-4844 blobs**.
-
-**Fusaka (Osaka) is optional.** If you also enable it, the server switches to the newer **EIP-7594**
-blob transaction format. The node detects the chain's active fork through `eth_config` at startup
-and picks the matching blob format automatically — no configuration needed.
+Enable all forks **up to and including Cancun** so the L1 EVM and block-header shape match the
+contracts and execution environment used by the server. Syscoin does not submit EIP-4844 or
+EIP-7594 blob transactions to this L1: batch data is published through Bitcoin DA and settlement
+transactions are ordinary EIP-1559 transactions carrying compact data identifiers.
 
 ### Genesis up to Cancun
 
@@ -100,27 +98,3 @@ A complete Besu QBFT genesis with forks enabled through Cancun, ready to copy in
 
 The `alloc` predeploys the CREATE2 factory at `0x4e59b44847b379578588920cA78FbF26c0B4956C`, which the
 deployer relies on. The `privateKey` fields are ignored by Besu and are only there for test tooling.
-
-### Enabling Fusaka
-
-To move the chain to Fusaka, add Prague and Osaka activation plus a blob schedule to `config`:
-
-```json
-{
-  "config": {
-    "...": "... forks up to cancunTime as above ...",
-    "cancunTime": 0,
-    "pragueTime": 0,
-    "osakaTime": 0,
-    "blobSchedule": {
-      "osaka": {
-        "target": 6,
-        "max": 9,
-        "baseFeeUpdateFraction": 5007716
-      }
-    }
-  }
-}
-```
-
-With Osaka active, the server sends EIP-7594 blob transactions instead of EIP-4844.

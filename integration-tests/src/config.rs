@@ -49,6 +49,18 @@ impl<'a> ChainLayout<'a> {
             .join(self.protocol_version())
     }
 
+    // SYSCOIN: A removed pre-mainnet fixture must never be mistaken for the blocked V32 rebuild.
+    fn assert_fixture_ready(self) {
+        let marker = self
+            .protocol_dir()
+            .join("CANONICAL_V8_REGENERATION_REQUIRED");
+        assert!(
+            !marker.is_file(),
+            "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: {}",
+            marker.display()
+        );
+    }
+
     fn base_dir(self) -> PathBuf {
         self.protocol_dir().join(self.dir())
     }
@@ -66,6 +78,7 @@ impl<'a> ChainLayout<'a> {
     /// Read the pre-decompressed L1 state JSON.
     /// Produced by `build.rs` locally, or by a CI step on remote runners.
     pub(crate) fn l1_state(self) -> Vec<u8> {
+        self.assert_fixture_ready();
         let json_path = self.protocol_dir().join("l1-state.json");
         std::fs::read(&json_path).unwrap_or_else(|e| {
             panic!(
@@ -90,6 +103,7 @@ impl<'a> ChainLayout<'a> {
 /// Load a `Config` from either default or multi-chain layout.
 /// Also loads `local-chains/local_dev.yaml` as a base layer when present.
 pub async fn load_chain_config(layout: ChainLayout<'_>) -> Config {
+    layout.assert_fixture_ready();
     let local_dev_path = workspace_dir().join("local-chains").join("local_dev.yaml");
     let chain_config_path = layout.config_path();
     let mut config = load_config_from_paths(&[local_dev_path, chain_config_path]).await;

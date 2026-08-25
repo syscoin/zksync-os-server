@@ -612,7 +612,7 @@ impl<RpcStorage: ReadRpcStorage> EthCallHandler<RpcStorage> {
             mid = range.midpoint();
         }
 
-        // SYSCOIN: The execution search uses `NopValidator`, while v31 mempool admission also
+        // SYSCOIN: The execution search uses `NopValidator`, while V32 mempool admission also
         // enforces native-resource intrinsic gas. Apply the same monotonic floor so an estimate
         // returned by RPC is always admissible by `eth_sendRawTransaction`.
         if let Some(intrinsic_floor) = l2_intrinsic_gas_floor(&tx, &admission_block_context)? {
@@ -669,16 +669,13 @@ fn l2_intrinsic_gas_floor(
     tx: &ZkTransaction,
     block_context: &BlockContext,
 ) -> Result<Option<u64>, EthCallError> {
-    let Ok(execution_version) = ExecutionVersion::try_from(block_context.execution_version) else {
+    let Ok(ExecutionVersion::V7) = ExecutionVersion::try_from(block_context.execution_version)
+    else {
         return Ok(None);
     };
     let ZkEnvelope::L2(l2_tx) = tx.envelope() else {
         return Ok(None);
     };
-    if execution_version < ExecutionVersion::V6 {
-        return Ok(None);
-    }
-
     let (access_list_accounts, access_list_storage_keys) = l2_tx
         .access_list()
         .map(|access_list| {
@@ -695,6 +692,12 @@ fn l2_intrinsic_gas_floor(
         .authorization_list()
         .map(|authorizations| authorizations.len() as u64)
         .unwrap_or_default();
+    let blob_versioned_hashes_num = l2_tx
+        .blob_versioned_hashes()
+        .map_or(0, |hashes| hashes.len() as u64);
+    // `L2Envelope` has no FRI-proof transaction variant, so an RPC transaction cannot carry
+    // statement-versioned hashes.
+    let statement_versioned_hashes_num = 0;
     // SYSCOIN: Fee-less estimate requests are executed with zero gas price, but wallet fillers
     // submit them at or above the pending base fee. Use that minimum admissible fee here so the
     // returned gas limit includes the same native-resource floor the filled tx will face.
@@ -718,6 +721,8 @@ fn l2_intrinsic_gas_floor(
             access_list_accounts,
             access_list_storage_keys,
             authorization_list_num,
+            blob_versioned_hashes_num,
+            statement_versioned_hashes_num,
             max_fee_per_gas,
             max_priority_fee_per_gas,
         )
@@ -727,7 +732,7 @@ fn l2_intrinsic_gas_floor(
     let mut highest = tx.gas_limit();
     if !satisfies_intrinsic(highest) {
         return Err(EthCallError::ForwardSubsystemError(anyhow::anyhow!(
-            "transaction does not satisfy v31 intrinsic native-resource limits at block gas limit {highest}"
+            "transaction does not satisfy V32 intrinsic native-resource limits at block gas limit {highest}"
         )));
     }
     let mut lowest = 0_u64;

@@ -38,6 +38,8 @@ impl Default for BackpressureConfig {
 
 impl BackpressureConfig {
     fn default_condition_for(&self, id: ComponentId) -> PipelineCondition {
+        // SYSCOIN: V32 generates proof input inside the native batch path, so there is no
+        // standalone ProverInputGenerator stage that can participate in block backpressure.
         match id {
             ComponentId::BlockCanonizer
             | ComponentId::BlockApplier
@@ -45,8 +47,7 @@ impl BackpressureConfig {
             | ComponentId::TreeManager
             | ComponentId::BatchWorkDispatcher
             | ComponentId::BatchWorkSource
-            | ComponentId::EnMigrationTrigger
-            | ComponentId::ProverInputGenerator => PipelineCondition {
+            | ComponentId::EnMigrationTrigger => PipelineCondition {
                 max_block_diff_to_upstream: Some(self.default_block_diff_limit),
                 ..Default::default()
             },

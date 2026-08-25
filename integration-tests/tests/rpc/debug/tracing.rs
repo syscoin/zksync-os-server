@@ -89,7 +89,7 @@ fn pubdata_exhaustion_fee_config() -> FeeConfig {
     }
 }
 
-/// SYSCOIN: This limit covers the gas-tank slot-diff intrinsic pubdata added to v31 validation,
+/// SYSCOIN: This limit covers the gas-tank slot-diff intrinsic pubdata added to V32 validation,
 /// but still leaves too little native resource for the transaction's execution pubdata.
 const PUBDATA_EXHAUSTION_GAS_LIMIT: u64 = 1_000_000;
 

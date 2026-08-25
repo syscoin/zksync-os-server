@@ -286,7 +286,6 @@ mod tests {
                 timestamp: 0,
                 protocol_version,
                 force_preimages: Vec::new(),
-                canonical_tx_hash: B256::ZERO,
             },
         }
     }
@@ -296,7 +295,7 @@ mod tests {
         let unreliable_version = version(30, 1);
         let subpool = UpgradeSubpool::default();
         subpool
-            .init(ProtocolSemanticVersion::legacy_genesis_version())
+            .init(ProtocolSemanticVersion::canonical_genesis_version())
             .await;
         let tx = upgrade_tx(1);
 
@@ -317,7 +316,7 @@ mod tests {
     async fn historical_replay_drains_pending_old_upgrades() {
         let subpool = UpgradeSubpool::default();
         subpool
-            .init(ProtocolSemanticVersion::legacy_genesis_version())
+            .init(ProtocolSemanticVersion::canonical_genesis_version())
             .await;
         let old_tx = upgrade_tx(1);
         let new_tx = upgrade_tx(2);

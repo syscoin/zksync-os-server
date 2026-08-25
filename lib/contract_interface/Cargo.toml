@@ -21,3 +21,7 @@ tracing.workspace = true
 vise.workspace = true
 structdiff.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# SYSCOIN: Gateway settlement-identity regressions exercise the async mocked RPC provider.
+tokio.workspace = true

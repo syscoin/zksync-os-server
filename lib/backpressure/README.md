@@ -96,7 +96,7 @@ precedence over the global defaults.
 
 | Category | Default threshold | Signal |
 |---|---|---|
-| Block-pipeline stages (`BlockCanonizer`, `BlockApplier`, `TreeManager`, `ProverInputGenerator`, `RevmConsistencyChecker`) | 256 blocks | `block_diff_to_upstream` |
+| Block-pipeline stages (`BlockCanonizer`, `BlockApplier`, `TreeManager`, `RevmConsistencyChecker`) | 256 blocks | `block_diff_to_upstream` |
 | Batch-pipeline stages (`BatchVerification`, `FriJobManager`, `SnarkJobManager`, `GaplessCommitter`, `UpgradeGatekeeper`, `L1SenderCommit/Prove/Execute`, `GaplessL1ProofSender`, `PriorityTree`) | 128 batches | `batch_diff_to_upstream` |
 | `Batcher` | none — see note below | — |
 | Pipeline sources / sinks | none | — |

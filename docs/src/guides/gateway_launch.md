@@ -41,7 +41,7 @@ The launch flow assumes descriptor wallets backed by SQLite. Berkeley DB is only
 needed if you intentionally enable legacy wallets; do not add it for the normal
 Gateway launch path.
 
-Install Rust and the RISC-V support used by the `v31` OS-server line:
+Install Rust and the RISC-V support used by the `V32` OS-server line:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
@@ -72,7 +72,7 @@ export PATH="$HOME/.foundry/bin:$PATH"
 foundryup-zksync
 ```
 
-Cache the Solidity compiler used by the v31 contracts before the first offline
+Cache the Solidity compiler used by the v32 contracts before the first offline
 launch. `run-gateway-launch.sh` defaults `FOUNDRY_OFFLINE=true`, so an empty
 compiler cache will otherwise fail with `can't install missing solc 0.8.28 in
 offline mode`.
@@ -157,11 +157,16 @@ export FUNDER_ACCOUNT_NAME=funder
 bash scripts/gateway-launch/run-gateway-launch.sh --l1 mainnet --migrate-edge
 ```
 
+<!-- SYSCOIN: Keep historical startup and settlement-proof authentication on the configured
+archive trust boundary instead of silently falling back to a potentially pruned live provider. -->
 `L1_RPC_URL` is written as the normal OS-server L1 provider and can point at the
 local sysgeth used for live traffic. `GATEWAY_ARCHIVE_L1_RPC_URL` is written as
-the archive L1 provider used only for historical committed-batch startup reads;
-point it at an archive-capable Syscoin L1 RPC unless the local `L1_RPC_URL` node
-was synced in archive mode from genesis.
+the archive L1 provider used for historical committed-batch startup reads and
+hash-pinned Gateway-to-L1 settlement-proof authentication. Point it at an
+archive-capable Syscoin L1 RPC unless the local `L1_RPC_URL` node was synced in
+archive mode from genesis. When this archive URL is configured, historical
+proof reads fail closed on that endpoint rather than retrying against the live
+provider; the live provider is the fallback only when no archive is configured.
 
 Do not pass production private keys as raw command-line arguments. Import the
 launch signer into Foundry's keystore first with
@@ -238,6 +243,14 @@ Then rerun the canonical launcher command.
 - Runs edge migration to gateway settlement.
 - Ensures DA pair correctness and deposit unpause via migration script guards.
 - Generates final `os-server-configs` launchers.
+
+> **SYSCOIN Gateway-head trust boundary:** Generated edge-chain configs set
+> `l1_watcher.optimistic_gateway_head: true`. This lets Gateway commit, execute, interop-root,
+> and MessageRoot-proof paths use the current Gateway head without waiting for Gateway-to-L1
+> settlement. Imported roots cannot be rolled back after destination execution, so production
+> deployments should expose only a quorum-canonized Gateway head (OpenRaft) through a trusted RPC.
+> Leave the option `false` for a reorgable Gateway RPC; direct-L1 watchers retain their configured
+> confirmation depth either way.
 
 ## Configure replay archive before production start
 
@@ -442,11 +455,55 @@ Then start Airbender provers with a credentialed HTTPS sequencer URL, for
 example `https://syscoin-prover:...@prover-gw.dev11.top` for Gateway and
 `https://syscoin-prover:...@prover-zk.dev11.top` for zksys.
 
-Generated configs bind the prover API to `127.0.0.1` by default. If you need
-direct HTTP access instead of a proxy/VPN, set `PROVER_API_BIND_HOST=0.0.0.0`
-when generating configs and give provers a URL such as
-`http://syscoin-prover:...@node-host:3124`. This is not recommended over the
-public internet because Basic Auth is not encrypted without HTTPS.
+<!-- SYSCOIN: Remote prover admission requires a buffering protected transport boundary. -->
+Generated configs and the node bind the application prover API to `127.0.0.1`; a
+non-loopback bind fails closed even when Basic Auth is configured. The generated
+nginx HTTPS vhost is the supported remote ingress and can fully spool each bounded
+response while serving a slow worker, so remote client pace cannot retain all
+node-side pick permits. If nginx runs in a container, give it access to the host
+loopback listener through the same network namespace or host networking; do not
+replace this boundary with a direct plaintext bind or an unbuffered tunnel. The
+public vhost intentionally returns 404 for tokenless peek/failed-proof debugging;
+run those diagnostics from the trusted node host through loopback.
+
+### Prover restart recovery
+
+<!-- SYSCOIN: Operators must preserve the durable prover authority while bounded recovery uses the
+protected worker surface before public node readiness. -->
+On a proving-node restart, expect the node to advance through
+`Recovering -> Drainable -> Ready`:
+
+1. `Recovering` reserves the prover address without listening while canonical committed metadata,
+   accepted-wrapper journal records, and their replay ownership are validated. Public node
+   readiness remains HTTP 503.
+2. `Drainable` opens only the loopback prover service behind its buffering HTTPS proxy, when enabled.
+   Public readiness remains HTTP 503 while durable FRI files are fed in canonical order
+   through the bounded RAM job map and external Airbender or in-process fake workers drain them.
+3. `Ready` means every startup batch has a canonical classification and explicit owner or recovery
+   disposition. It does not require every recovered FRI to have completed SNARK wrapping; public
+   readiness may leave HTTP 503 only after this phase and the independent database gate are ready.
+
+The default `prover_api.max_assigned_batch_range: 256` is an in-memory operating-span bound. It
+does not need to cover the complete restart backlog: the configured proof-storage directory is the
+durable overflow queue, and recovery admits more work as workers free RAM-map capacity.
+
+Preserve each chain's complete configured `prover_api.proof_storage.path` across ordinary restarts,
+including its `snark_journal` subdirectory. Back up and restore that tree as one unit; do not delete
+FRI files to force readiness or restore the journal without its companion proof storage. Do not
+change `PROVER_MODE`, the effective `GATEWAY_PROVER_MODE`, or the underlying fake-prover flags while
+retaining this chain and recovery state. Clearing launcher checkpoints alone is not a proving-mode
+migration.
+
+<!-- SYSCOIN: The accepted-wrapper journal applies the same availability budget live and on boot. -->
+The SNARK journal admits at most 256 MiB per record, 8 GiB in aggregate, and 65,536 ranges. Reaching
+the aggregate cap during an extended L1/Gateway confirmation outage makes new wrapper persistence
+retryable; it does not authorize deleting files or abandoning leases. Capacity returns as confirmed
+records are durably retired, and an identical retry does not consume the budget twice.
+
+Recovery fails closed instead of publishing `Ready` when canonical metadata or ownership is
+inconsistent, a future non-V32 proving-version boundary is unsupported, or a real singleton can
+never acquire a compatible companion. A normal V32 tail singleton remains pending for its next
+canonical same-version batch.
 
 If the explorer runs on a separate host, keep sequencer/node RPC bound locally
 or behind the host reverse proxy and allowlist only the explorer server's public
@@ -587,27 +644,32 @@ If the script cannot raise the limit high enough, increase the shell / service h
 
 ## Important env vars
 
+<!-- SYSCOIN: Generated prover settings separate durable restart overflow from bounded resident
+work and bind recovery to one verifier mode. -->
+
 | Variable | Purpose |
 |---|---|
 | `L1_RPC_URL` | Required HTTP(S) JSON-RPC endpoint used for broadcasts (expected: local Syscoin node/proxy, e.g. `http://127.0.0.1:8545`) |
 | `GATEWAY_DIR` | Ecosystem workspace path (default `~/gateway`) |
 | `REUSE_ECOSYSTEM` | Set to `true` only when intentionally reusing an existing `$GATEWAY_DIR/ZkStack.yaml`; equivalent to `--reuse-ecosystem` |
 | `MIGRATE_EDGE` | Set to `true` only when intentionally pausing deposits and migrating/finalizing the edge chain; equivalent to `--migrate-edge` |
-| `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node + migration startup (if unset, falls back to `L1_RPC_URL`) |
-| `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; defaults to `127.0.0.1` so public access should go through HTTPS/VPN/reverse proxy termination |
+| `GATEWAY_ARCHIVE_L1_RPC_URL` | Recommended runtime archive RPC URL for gateway node startup/migration reads and historical settlement-proof authentication (if unset, falls back to `L1_RPC_URL`) |
+| `PROVER_API_BIND_HOST` | Prover API bind host for generated node configs; must remain `127.0.0.1` and remote access must use the generated buffering HTTPS proxy |
 | `GATEWAY_PROVER_API_DOMAIN` / `EDGE_PROVER_API_DOMAIN` | Hostnames for generated nginx prover API vhosts; defaults are `prover-gw.dev11.top` and `prover-zk.dev11.top` |
-| `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; password is required for generated configs |
+| `PROVER_API_AUTH_USER` / `PROVER_API_AUTH_PASSWORD` | Basic Auth credentials for remote prover API access; generated configs require a password of at least 32 characters (use a URL-safe secret such as `openssl rand -hex 32`) |
+| `PROVER_BATCH_WITH_PROOF_CAPACITY_BYTES` | Durable accepted-FRI overflow cap; defaults to 8 GiB and cannot be lower in GPU mode. Size it for the expected disk backlog independently of the `max_assigned_batch_range: 256` RAM-span bound. |
 | `FUNDER_SIGNER` | Funder signer backend: `account` (default on Tanenbaum/Mainnet), `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
 | `FUNDER_ACCOUNT_NAME` | Foundry keystore account name when `FUNDER_SIGNER=account` (default `funder`) |
 | `FUNDER_KEYSTORE` | Keystore file path when `FUNDER_SIGNER=keystore` |
 | `FUNDER_PASSWORD_FILE` | Optional keystore password file passed to Cast without exposing the password in argv |
 | `FUNDER_PRIVATE_KEY` | Local/disposable-network fallback for `FUNDER_SIGNER=private-key`; rejected on Tanenbaum/Mainnet by default |
 | `GATEWAY_FUND_WALLETS_PATHS` | Optional extra `wallets.yaml` paths to fund (colon-separated) |
-| `PROVER_MODE` | `gpu` (default) or `no-proofs` |
-| `PROTOCOL_VERSION` | Default `v31.0` |
+| `PROVER_MODE` | `gpu` (default) or `no-proofs`; do not change it across a restart that retains chain and proof-recovery state |
+| `SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER` | Explicit upgrade-script opt-in for retaining the zkOS type-3 mock wrapper; defaults to `false` and must never be set for production |
+| `PROTOCOL_VERSION` | Default `v32.0` |
 | `GATEWAY_CHAIN_ID` | Gateway / zkSYS chain id used by ecosystem and node config generation |
 | `ZKSYS_L2_CREATE2_DEPLOYER` | Deterministic L2 CREATE2 deployer for canonical zkSYS; defaults to `0x4e59b44847b379578588920cA78FbF26c0B4956C` |
-| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet and whenever `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE=true`; initial token role admin and default owner of deterministic zkSYS `ProxyAdmin` contracts; also used during L1 launch to derive deterministic zkSYS L2 addresses and the v31 `zk_token_asset_id` for canonical L2 zkSYS |
+| `ZKSYS_L2_TOKEN_ADMIN_ADDRESS` | Required on mainnet and whenever `ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE=true`; initial token role admin and default owner of deterministic zkSYS `ProxyAdmin` contracts; also used during L1 launch to derive deterministic zkSYS L2 addresses and the v32 `zk_token_asset_id` for canonical L2 zkSYS |
 | `ZKSYS_L2_PROXY_ADMIN_SALT` | Optional bytes32 salt for the deterministic zkSYS `ProxyAdmin` deployment |
 | `ZKSYS_L2_TOKEN_IMPL_SALT` / `ZKSYS_L2_TOKEN_PROXY_SALT` | Optional bytes32 salts for deriving the canonical L2 zkSYS implementation/proxy addresses |
 | `ZKSYS_L2_RPC_URL` | Required by `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the L2 zkSYS suite after the chain is live |
@@ -630,14 +692,14 @@ If the script cannot raise the limit high enough, increase the shell / service h
 | `ZKSYS_ISSUER_PERIODS_PER_YEAR` | Number of issuance periods in each schedule year; defaults to `365`; must multiply with `ZKSYS_ISSUER_PERIOD_SECONDS` to exactly `365 days` |
 | `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` | Reward-weight activation delay for positive native stake and Sentry Node weight changes; defaults to `3` periods and must be `1..7` |
 | `ZKSYS_L2_GAS_TANK_SALT` | Optional bytes32 salt for the deterministic L2 zkSYS gas tank deployment; the tank is granted the token burn role and its address is written to `l2.zksys_gas_tank_addr` |
-| `SYSCOIN_REQUIRE_GAS_TANK` | Optional edge-chain launch gate; when `1`, a missing/zero `l2.zksys_gas_tank_addr` fails before launch. Leave unset for the first boot so the node can start with the immutable published address before `zksys-l2-bootstrap.sh` deploys the tank; set for production restarts |
+| `SYSCOIN_REQUIRE_GAS_TANK` | Optional explicit gas-tank presence gate (`0` or `1`). Leave unset for the first canonical edge-chain boot so the node can start with the immutable published address before `zksys-l2-bootstrap.sh` deploys the tank. After bootstrap attests and persists a nonzero `l2.zksys_gas_tank_addr`, the canonical main-node runner forces this gate to `1` on every launch (even if an operator supplies `0`). Fresh external nodes retain the missing-code allowance while catching up, always reject a wrong nonempty runtime, and may set `1` once synced past deployment. |
 | `ZKSYNC_ERA_PATH` | Optional custom era checkout; otherwise launcher manages pinned workspace |
-| `ZKSYNC_OS_DEV_PATH` | Optional custom upstream `zksync-os` checkout to patch for the `v31` dev proving line; otherwise launcher manages it under `$GATEWAY_DIR/.gateway-launch/zksync-os/` |
-| `ZKSYNC_OS_GIT_URL` | Optional override for the upstream `zksync-os` Git URL used when launcher materializes the patched `dev` workspace; the repo must contain the `Cargo.lock`-pinned commit |
+| `ZKSYNC_OS_DEV_PATH` | Optional custom official final-v0.4 `zksync-os` checkout for the single canonical Syscoin patch. Otherwise the launcher creates an isolated checkout under `$GATEWAY_DIR/.gateway-launch/zksync-os/<workspace>/canonical/` |
+| `ALLOW_SHARED_ZKSYNC_OS_DEV_PATH` | Set to `true` only for local development when `ZKSYNC_OS_DEV_PATH` is used. Deployment builds leave it unset and use an isolated disposable checkout |
+| `ZKSYNC_OS_GIT_URL` | Optional transport override or mirror for materializing the official `matter-labs/zksync-os` commit. The exact `Cargo.lock`-pinned revision must be present; execution dependencies are rewritten only after their official source and locked object ID are verified |
 | `GATEWAY_CREATE2_FACTORY_SALT` | Optional deterministic `create2_factory_salt` override for L1 deployment |
 | `GATEWAY_WALLET_PATH` | Wallet file used for gateway ecosystem create (`in-file` if present, else random+persist) |
 | `EDGE_WALLET_PATH` | Wallet file used for edge chain create (`in-file` if present, else random+persist) |
-| `EDGE_GATEWAY_L1_DA_VALIDATOR_ADDR` | Optional override for DA validator used by edge migration repair on Gateway |
 | `DEPLOYER_SIGNER` | Optional L1 deployer signer override for direct Forge deployment/retry broadcasts; defaults to `FUNDER_SIGNER` on Tanenbaum/Mainnet and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
 | `DEPLOYER_ACCOUNT_NAME` | Foundry keystore account name when `DEPLOYER_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `DEPLOYER_KEYSTORE` | Keystore file path when `DEPLOYER_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
@@ -651,21 +713,24 @@ If the script cannot raise the limit high enough, increase the shell / service h
 ## Notes
 
 - Default `FOUNDRY_EVM_VERSION` remains `shanghai`.
+<!-- SYSCOIN: bind operator prover mode to the explicit on-chain verifier mode. -->
+- `PROVER_MODE=no-proofs` is valid only when the active settlement-layer diamond points to the explicit `ZKsyncOSTestnetVerifier`. Its constructor is bound to both the execution chain and the ultimate root-L1 chain ID carried through direct and Gateway deployment: root chain ID 1 or 57 is rejected even when the constructor executes on Gateway chain ID 57001, while Tanenbaum root 5700 remains available for a fresh mock-prover testnet. The node also reads the wrapper's testnet marker before starting fake pools. Conversely, `PROVER_MODE=gpu` requires the production wrapper, a cleared regeneration sentinel, and an exact match between its on-chain PLONK VK hash and the compiled V8 VK. Converting the testnet to real proving therefore requires an atomic verifier/VK/config transition, not merely changing this environment variable.
 - `run-gateway-launch.sh` still enforces L1 chain-id preflight before broadcast steps.
 - Migration safety guards remain in `edge-chain-migrate-to-gateway.sh` (DA bytecode checks, idempotent pause/unpause behavior).
 - For Tanenbaum/Mainnet launches, keep `L1_RPC_URL` on local Syscoin RPC and set `GATEWAY_ARCHIVE_L1_RPC_URL` to the archive/public endpoint.
-- On mainnet, `gateway-deploy-l1.sh` derives `ZKSYS_ZK_TOKEN_ASSET_ID` from the deterministic L2 zkSYS proxy address and the v31 L2 native token vault address `0x0000000000000000000000000000000000010004`, then exports it for zkstack CTM deployment. v31 uses this asset id only for InteropCenter's optional fixed zkSYS fee path; the default interop fee path remains base-token `msg.value` in SYS.
+- On mainnet, `gateway-deploy-l1.sh` derives `ZKSYS_ZK_TOKEN_ASSET_ID` from the deterministic L2 zkSYS proxy address and the v32 L2 native token vault address `0x0000000000000000000000000000000000010004`, then exports it for zkstack CTM deployment. v32 uses this asset id only for InteropCenter's optional fixed zkSYS fee path; the default interop fee path remains base-token `msg.value` in SYS.
 - Canonical zkSYS CREATE2 bytecode derivation uses `forge inspect --no-metadata` so Solidity metadata and local remapping paths do not affect deterministic addresses. Discard any zkSYS CREATE2 addresses or `ZKSYS_ZK_TOKEN_ASSET_ID` values calculated from metadata-bearing bytecode.
 - Canonical Pali ERC-4337 infrastructure bytecodes are also generated without Solidity metadata; keep `pali-wallet` deployment constants and the committed Blockscout/Sourcify standard JSON inputs in sync when regenerating them. The SLH-DSA validator constructor pins the verifier runtime code hash.
-- The prover API is plain HTTP in the node process. For internet-reachable provers, keep `PROVER_API_BIND_HOST=127.0.0.1` and expose it through HTTPS, VPN, or another trusted transport that forwards the Basic Auth header to the node.
+- The prover API is plain HTTP and loopback-only in the node process. Internet-reachable provers must use the generated buffering HTTPS vhost, which forwards Basic Auth while draining each complete bounded response independently of client pace.
 - Changing `GATEWAY_CREATE2_FACTORY_SALT` resets checkpoint state automatically (new redeploy run context).
-- After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, algorithmic issuer, and zkSYS gas tank with deterministic CREATE2 salts, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, optional L1 registry bridge authority, and burn rights for the gas tank (`burnSurplus()`). The script verifies the final role and receiver wiring before exiting and records the gas tank address as `l2.zksys_gas_tank_addr`. That address must equal the immutable address already bound to the published V7 application and VK; changing it requires rebuilding the app and verifier artifacts. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.
+- After the chain is live, run `scripts/gateway-launch/zksys-l2-bootstrap.sh` to deploy the canonical L2 zkSYS `ProxyAdmin`, transparent proxy, implementation, membership fact registry, reward weight registry, algorithmic issuer, and zkSYS gas tank with deterministic CREATE2 salts, then wire issuer minting, membership-to-weight callbacks, weight-to-issuer callbacks, optional L1 registry bridge authority, and burn rights for the gas tank (`burnSurplus()`). The script verifies the final role and receiver wiring before exiting and records the gas tank address as `l2.zksys_gas_tank_addr`. That persisted, attested value is also the durable launch-policy transition: the next canonical edge-chain main-node start requires the exact gas-tank runtime to exist in the latest local state, and no operator-supplied `SYSCOIN_REQUIRE_GAS_TANK=0` can keep the first-boot exception active. That address must equal the immutable address already bound to the canonical application and VK; changing it requires rebuilding the app and verifier artifacts. The token admin receives role-admin authority for recovery and later governance transfer, but not direct `MINTER_ROLE` / `BURNER_ROLE`.
 - The membership registry mirrors NEVM facts from the L1 `0x62` precompile and exposes the active Sentry Node address set for offchain diffing. The L1 registry bridge derives each Sentry Node's seniority-weighted reward weight from raw Syscoin collateral age (`nNEVMStartBlock + block.number - collateralHeight`) and sends that final weight to L2. For mainnet, use effective post-NEVM seniority thresholds `210240` and `525600` blocks with levels `3500` and `10000` bps. Native SYS staking is handled by the L2 staking vault.
 - Reward weight increases are not active immediately: native SYS deposits, Sentry Node additions, and Sentry Node seniority increases are queued for `ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS` periods and require the account to call `activatePendingWeight()` after the delay. Weight decreases and removals apply immediately. This prevents a stake or Sentry weight increase submitted just before a period boundary from earning the completed period.
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.
-- If you switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) between runs, clear checkpoint state first: `rm -rf "${GATEWAY_DIR:-${HOME}/gateway}/.gateway-launch"`.
+<!-- SYSCOIN: Fake/real mode is part of durable prover recovery authority, not launcher cache state. -->
+- Do not switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) while retaining a chain's proof storage or journal. Clearing `$GATEWAY_DIR/.gateway-launch` is not sufficient; use an explicitly planned verifier/config/chain-state transition instead of treating a production restart as a fake/real mode change.
 - During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
 - During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
-- For `v31.x`, launcher build/run commands copy the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrite only the `*_dev` `zksync-os` deps to the patched upstream checkout, and use that isolated workspace for Cargo.
+- For `v32.x`, launcher build/run commands copy the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrite only the `*_dev` `zksync-os` deps to the patched upstream checkout, and use that isolated workspace for Cargo.
 - The zkSYS external-node deployment invalidates the prior build stamp, builds each isolated patched workspace with `build-node.sh`, then publishes a stamp bound to the binary and compiled Syscoin address context before restarting its service. The generated `start-node.sh` only refreshes rotating Syscoin RPC cookie credentials, validates that stamp, and executes the prebuilt binary, so ordinary systemd or package-maintenance restarts do not rebuild Rust dependencies while the public RPC is offline. A failed or partial redeployment leaves the stamp invalid and later restarts fail closed rather than running a stale binary against new deployment state.
 - High-TPS runs can exhaust low default `nofile` limits; use at least `65536`, with `131072+` recommended.

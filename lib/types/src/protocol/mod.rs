@@ -37,6 +37,8 @@ impl Deref for ProtocolSemanticVersion {
 }
 
 impl ProtocolSemanticVersion {
+    // SYSCOIN: Fresh V32 deployment retires the upstream historical L1-interop version threshold;
+    // only reliable upgrade-log compatibility remains in this reset protocol surface.
     /// Smallest version such that upgrading to that version uses the current log format
     /// In other words: if replay record has protocol version this or greater,
     /// we can expect the watcher to pick up the logs.
@@ -45,9 +47,6 @@ impl ProtocolSemanticVersion {
     /// For 30.1 -> 30.2, 30.1 -> 31.0 we expect to find a log
     /// For 30.0 -> 30.1 or 30.1 -> 30.1 we don't
     pub const MIN_VERSION_WITH_RELIABLE_UPGRADE_LOGS: Self = Self::new(0, 30, 2);
-
-    /// Activation version for L1-backed interop-root imports and MessageRoot proofs.
-    pub const MIN_VERSION_WITH_L1_INTEROP: Self = Self::new(0, 32, 0);
 
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
         Self(semver::Version {
@@ -65,31 +64,13 @@ impl ProtocolSemanticVersion {
         if self.major != 0 {
             return false;
         }
-        // A patch version can change the proving harness, so a version is only live once it
-        // maps to a `ProvingVersion` known to this server release.
-        match self.minor {
-            // SYSCOIN: V32 code is compiled for direct-L1 validation, but it is not production
-            // live until its V8 app, VK, contracts, and compact Bitcoin-DA commitments agree.
-            30..=31 => ProvingVersion::try_from(self.clone()).is_ok(),
-            // When updating this function, make sure to insert the new non-live version here.
-            _ => false,
-        }
+        ProvingVersion::try_from(self.clone()).is_ok()
     }
 
-    pub fn is_post_v31(&self) -> bool {
-        self.minor >= 31
-    }
-
-    /// Whether blocks under this version may consume L1 interop traffic and build MessageRoot
-    /// proofs.
-    pub fn supports_l1_interop(&self) -> bool {
-        self >= &Self::MIN_VERSION_WITH_L1_INTEROP
-    }
-
-    /// This version was used for all the chains prior to the introduction of protocol upgrades
-    /// support.
-    pub const fn legacy_genesis_version() -> Self {
-        Self::new(0, 29, 1)
+    /// SYSCOIN: Canonical protocol version used for fresh deployments. Historical protocol
+    /// identities are intentionally unsupported by this server binary.
+    pub const fn canonical_genesis_version() -> Self {
+        Self::new(0, 32, 0)
     }
 
     /// Packs the semantic version into a `U256` according to the protocol encoding.
@@ -246,13 +227,13 @@ mod tests {
         let test_vector = [
             ((0, 29, 5), false),
             ((0, 30, 0), false),
-            ((0, 30, 1), true),
-            ((0, 30, 2), true),
+            ((0, 30, 1), false),
+            ((0, 30, 2), false),
             // Patch versions without a known proving version are not live.
             ((0, 30, 99), false),
-            ((0, 31, 0), true),
-            // SYSCOIN: keep the production upgrade watcher closed for the gated V8 rollout.
-            ((0, 32, 0), false),
+            ((0, 31, 0), false),
+            ((0, 31, 1), false),
+            ((0, 32, 0), true),
             ((0, 32, 1), false),
             ((0, 33, 0), false), // When updating this test, make sure to insert the new non-live version here.
         ];
@@ -260,12 +241,5 @@ mod tests {
             let version = ProtocolSemanticVersion::new(*major, *minor, *patch);
             assert_eq!(version.is_live(), *expected);
         }
-    }
-
-    #[test]
-    fn test_protocol_semantic_version_supports_l1_interop() {
-        assert!(!ProtocolSemanticVersion::new(0, 31, 99).supports_l1_interop());
-        assert!(ProtocolSemanticVersion::new(0, 32, 0).supports_l1_interop());
-        assert!(ProtocolSemanticVersion::new(0, 33, 0).supports_l1_interop());
     }
 }

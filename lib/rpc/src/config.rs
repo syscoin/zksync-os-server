@@ -1,7 +1,7 @@
 use crate::limits::Limits;
 use alloy::primitives::{Address, B256};
 use std::collections::{HashMap, HashSet};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 /// Rate-limit configuration.
@@ -110,6 +110,10 @@ pub struct RpcConfig {
     // SYSCOIN: cap resource-heavy blocking JSON-RPC handlers independently from
     // the connection limit so public endpoints cannot fan out unlimited VM/state work.
     pub max_concurrent_blocking_rpcs: u32,
+
+    // SYSCOIN: Maximum historical IMT leaves replayed by one public proof/lookup request. This is
+    // an operational safety ceiling until proofs come from an indexed O(log N) source.
+    pub max_imt_reconstruction_leaves: NonZeroU64,
 
     /// Maximum number of active subscriptions accepted per websocket connection.
     pub max_subscriptions_per_connection: u32,

@@ -46,7 +46,7 @@ use crate::eth_impl::EthNamespace;
 use crate::eth_pubsub_impl::EthPubsubNamespace;
 use crate::limits::{Limiter, LoggingLimiter};
 use crate::method_filter_middleware::MethodFiltering;
-use crate::monitoring_middleware::Monitoring;
+use crate::monitoring_middleware::{MAX_CONCURRENT_L2_TO_L1_LOG_PROOF_RPCS, Monitoring};
 use crate::net_impl::NetNamespace;
 use crate::ots_impl::OtsNamespace;
 use crate::rate_limit_middleware::RateLimiting;
@@ -66,6 +66,7 @@ use reth_tasks::Runtime;
 use tower_http::cors::{Any, CorsLayer};
 use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
 use zksync_os_genesis::GenesisInputSource;
+use zksync_os_l1_watcher::CommittedBatchProvider;
 use zksync_os_mempool::subpools::l2::L2Subpool;
 use zksync_os_rpc_api::debug::DebugApiServer;
 use zksync_os_rpc_api::eth::EthApiServer;
@@ -86,6 +87,8 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     config: RpcConfig,
     listener: tokio::net::TcpListener,
     chain_id: u64,
+    // SYSCOIN: Carry the exact startup-discovered L1 identity into proof construction.
+    l1_chain_id: u64,
     bridgehub_address: Address,
     bytecode_supplier_address: Address,
     storage: RpcStorage,
@@ -95,8 +98,14 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     last_constructed_block_context: watch::Receiver<Option<BlockContext>>,
     tx_forwarder: Option<TxForwarder>,
     l1_provider: DynProvider,
+    // SYSCOIN: Historical Gateway-to-L1 proof authentication prefers archive state when present.
+    l1_archive_provider: Option<DynProvider>,
     gateway_provider: Option<DynProvider>,
     settlement_layer_intervals: SettlementLayerIntervals,
+    // SYSCOIN: Wire the explicit Gateway-head trust gate and live committed-batch source only into
+    // the zkSYS namespace; withdrawal and direct-L1 proof paths remain finalized-store-backed.
+    optimistic_gateway_head: bool,
+    committed_batch_provider: CommittedBatchProvider,
     policy_client: Option<PolicyClient>,
     runtime: &Runtime,
     wait_for_db: impl Future<Output = ()> + Send + 'static,
@@ -137,10 +146,20 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
             storage.clone(),
             genesis_input_source,
             chain_id,
+            // SYSCOIN: Proof RPCs reject any selected L1 endpoint whose identity drifts from
+            // discovery.
+            l1_chain_id,
             l1_provider,
+            l1_archive_provider,
             gateway_provider,
             settlement_layer_intervals,
+            // SYSCOIN: Preserve the operator's Gateway-head trust decision and the exact live
+            // committed-batch index when constructing the V32 proof RPC namespace.
+            optimistic_gateway_head,
+            committed_batch_provider,
             eth_call_handler.clone(),
+            // SYSCOIN: Apply the operator's pre-allocation/work ceiling at the shared IMT reader.
+            config.max_imt_reconstruction_leaves,
         )
         .into_rpc(),
     )?;
@@ -181,6 +200,11 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
     let blocking_rpcs_semaphore = Arc::new(Semaphore::new(
         config.max_concurrent_blocking_rpcs.max(1) as usize,
     ));
+    // SYSCOIN: The bounded HTTP transport releases its raw-body permits at Alloy's owned
+    // `ResponsePacket` boundary. Keep the only provider response route that can approach that cap
+    // to 8 end-to-end handlers (<=1 GiB retained at once), while still allowing parallel proofs.
+    let l2_to_l1_log_proof_semaphore =
+        Arc::new(Semaphore::new(MAX_CONCURRENT_L2_TO_L1_LOG_PROOF_RPCS));
     let limiter = LoggingLimiter::new(Limiter::new(config.rate_limits.clone().into_limits()));
     let rate_limit_logging = LoggingLimiter::run(limiter.clone());
     let method_filter = Arc::new(config.method_filter.clone());
@@ -194,6 +218,7 @@ pub async fn spawn<RpcStorage: ReadRpcStorage, Mempool: L2Subpool>(
                 service,
                 max_response_size_bytes,
                 blocking_rpcs_semaphore.clone(),
+                l2_to_l1_log_proof_semaphore.clone(),
                 known_methods.clone(),
                 parallel_batches,
             )

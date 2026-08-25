@@ -58,7 +58,8 @@ jobs:
         with:
           repository: Romsters/boojumos-e2e-tests
           submodules: recursive
-          ref: stable # TODO: replace with immutable commit SHA
+          # SYSCOIN: Pin the reviewed `stable` postimage; never execute a movable external tag.
+          ref: da76b5d38feb6c682ee2be9b48ea01b0d0ed408d
           persist-credentials: false
 
       - name: Install python
@@ -68,6 +69,15 @@ jobs:
           # its source build is broken by scikit-build-core >= 1.0; 3.12 is the newest Python
           # with a prebuilt wheel.
           python-version: 3.12
+
+      # SYSCOIN: Preinstall an exact uv release so the pinned external setup script cannot fall
+      # back to executing the mutable https://astral.sh/uv/install.sh bootstrap.
+      - name: Install pinned uv
+        id: setup-uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.16"
+          enable-cache: false
 
       - name: Install pip dependencies
         run: pip install -r ./python-scripts/requirements.txt
@@ -132,9 +142,15 @@ jobs:
           python ./python-scripts/fund-wallet.py --coinbase "${COINBASE}" --to "${TEST_ACCOUNT}" --eth 50000.0
 
       - name: Run spec tests on geth
+        env:
+          PINNED_UV_PATH: ${{ steps.setup-uv.outputs.uv-path }}
         run: |
           # Setup tests
-          export PATH=${HOME}/.local/bin:${PATH}
+          # SYSCOIN: Fail closed on the action's exact binary before any persistent runner path;
+          # this also defeats ambient UV_NO_MODIFY_PATH and a stale ~/.local/bin/uv.
+          [[ "${PINNED_UV_PATH}" = /* && -x "${PINNED_UV_PATH}" ]]
+          [[ "$("${PINNED_UV_PATH}" --version)" = "uv 0.11.16" ]]
+          export PATH="${PINNED_UV_PATH%/*}:${HOME}/.local/bin:${PATH}"
           ./scripts/setup-exec-tests.sh
           cd lib/execution-spec-tests
           
@@ -187,11 +203,20 @@ jobs:
       - name: Setup runner
         uses: ./.github/actions/runner-setup
 
+      # SYSCOIN: Never exercise a stale fixture against the app-bound V8 execution and verifier lane.
+      - name: Require canonical v32.0/V8 fixture
+        run: |
+          marker=./local-chains/v32.0/CANONICAL_V8_REGENERATION_REQUIRED
+          if [[ -f "${marker}" ]]; then
+            echo "error: canonical v32.0/V8 fixture regeneration is required: ${marker}" >&2
+            exit 1
+          fi
+
       - name: Decompress anvil state
-        run: gzip -dfk ./local-chains/v31.0/l1-state.json.gz
+        run: gzip -dfk ./local-chains/v32.0/l1-state.json.gz
 
       - name: Run anvil L1
-        run: anvil --load-state ./local-chains/v31.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 &
+        run: anvil --load-state ./local-chains/v32.0/l1-state.json --port 8545 --block-time 0.25 --mixed-mining --slots-in-an-epoch 10 &
 
       - name: Build server
         env:
@@ -224,23 +249,36 @@ jobs:
           done
           echo "Sequencer is up and running."
 
-      # NOTE: Intentionally do not execute tests from an unpinned external repository.
-      # If re-enabled, use an immutable commit SHA and least-privilege permissions.
-
       - name: Checkout tests
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: Romsters/boojumos-e2e-tests
           submodules: recursive
-          ref: stable # TODO: replace with immutable commit SHA
+          # SYSCOIN: Pin the reviewed `stable` postimage; never execute a movable external tag.
+          ref: da76b5d38feb6c682ee2be9b48ea01b0d0ed408d
           persist-credentials: false
           path: ${{ env.TESTS_WORKING_DIR }}
 
+      # SYSCOIN: Preinstall an exact uv release so the pinned external setup script cannot fall
+      # back to executing the mutable https://astral.sh/uv/install.sh bootstrap.
+      - name: Install pinned uv
+        id: setup-uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.16"
+          enable-cache: false
+
       - name: Run spec tests
         working-directory: ${{ env.TESTS_WORKING_DIR }}
+        env:
+          PINNED_UV_PATH: ${{ steps.setup-uv.outputs.uv-path }}
         run: |
           # Setup tests
-          export PATH="${HOME}/.local/bin:${PATH}"
+          # SYSCOIN: Fail closed on the action's exact binary before any persistent runner path;
+          # this also defeats ambient UV_NO_MODIFY_PATH and a stale ~/.local/bin/uv.
+          [[ "${PINNED_UV_PATH}" = /* && -x "${PINNED_UV_PATH}" ]]
+          [[ "$("${PINNED_UV_PATH}" --version)" = "uv 0.11.16" ]]
+          export PATH="${PINNED_UV_PATH%/*}:${HOME}/.local/bin:${PATH}"
           ./scripts/setup-exec-tests.sh
           cast balance --rpc-url "${RPC_URL}" "${WALLET_ADDRESS}"
           cd lib/execution-spec-tests

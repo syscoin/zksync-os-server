@@ -5,7 +5,7 @@
 #   ZKSYNC_OS_PATH=/path/to/patched/zksync-os ./run.sh
 #
 # ZKSYNC_OS_PATH must point at a zksync-os checkout with the Syscoin patch
-# applied (scripts/apply-zksync-os-syscoin-patch.sh). The runner temporarily
+# SYSCOIN: applied with scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh. The runner temporarily
 # regenerates the checkout's syscoin_edge_da.rs with the test gas-tank address
 # (0x3333...33) expected by tests/gas_tank.rs, and restores the original file
 # afterwards. The Solidity twin of this suite lives in
@@ -24,7 +24,7 @@ ZKSYNC_OS_PATH="$(cd "${ZKSYNC_OS_PATH}" && pwd)"
 GAS_TANK_SRC="${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs"
 EDGE_DA_SRC="${ZKSYNC_OS_PATH}/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs"
 if [[ ! -f "${GAS_TANK_SRC}" || ! -f "${EDGE_DA_SRC}" ]]; then
-  echo "error: gas-tank patch not present in ${ZKSYNC_OS_PATH}; apply scripts/apply-zksync-os-syscoin-patch.sh first" >&2
+  echo "error: gas-tank patch not present in ${ZKSYNC_OS_PATH}; apply scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh first" >&2
   exit 1
 fi
 

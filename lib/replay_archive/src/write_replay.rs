@@ -51,7 +51,7 @@ where
             return Ok(());
         };
 
-        // SYSCOIN: A restored v31 WAL may start at its existing tip without replaying historical
+        // SYSCOIN: A restored WAL may start at its existing tip without replaying historical
         // blocks through `WriteReplay::write`. Explicitly seed the new archive session so recovery
         // is complete from genesis rather than depending on rejected writes as an implicit scan.
         for block_number in 0..=initial_tip {
@@ -381,7 +381,6 @@ mod tests {
             protocol_version: "0.29.1".parse().unwrap(),
             block_output_hash: B256::ZERO,
             force_preimages: vec![],
-            canonical_upgrade_tx_hash: B256::ZERO,
             starting_cursors: Default::default(),
         }
     }

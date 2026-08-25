@@ -22,7 +22,7 @@ pub(in crate::prover_api::prover_server) fn v1_routes() -> Router<AppState> {
         .route("/FRI/{id}/peek", get(peek_fri_job))
         .route("/FRI/{id}/failed", get(get_failed_fri_proof))
         .route("/SNARK/{from}/{to}/peek", get(peek_snark_job))
-        // SYSCOIN
+        // SYSCOIN: Expose queue status for multi-worker prover orchestration and monitoring.
         .route("/status/", get(status_default))
         .route("/status/{stage}", get(status))
 }

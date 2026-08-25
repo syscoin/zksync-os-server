@@ -109,7 +109,7 @@ impl SlChainIdSubpool {
             } else {
                 // SYSCOIN: live gateway migration emission is disabled after upstream removed
                 // the restart gate. Do not accept non-placeholder replayed migrations without
-                // watcher/L1 provenance; Syscoin direct-v31 uses only the u64::MAX placeholder.
+                // watcher/L1 provenance; Syscoin direct settlement uses only the u64::MAX placeholder.
                 anyhow::bail!(
                     "SetSLChainId migration tx has no watcher-authenticated pending entry: {tx:?}"
                 );
@@ -173,7 +173,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn ignores_direct_v31_placeholder_without_pending_tx() {
+    async fn ignores_direct_settlement_placeholder_without_pending_tx() {
         let subpool = SlChainIdSubpool::default();
         let tx = SystemTxEnvelope::set_sl_chain_id(5700, u64::MAX);
 

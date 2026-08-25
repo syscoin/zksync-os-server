@@ -30,11 +30,15 @@ pub enum ProtocolEvent {
     VerifierRoleRequested {
         /// Peer ID.
         peer_id: PeerId,
+        /// SYSCOIN: Exact 2FA connection generation that produced this event.
+        lane_id: u64,
     },
     /// Main node sent verifier challenge to peer.
     VerifierChallengeSent {
         /// Peer ID.
         peer_id: PeerId,
+        /// SYSCOIN: Exact 2FA connection generation that produced this event.
+        lane_id: u64,
         /// Challenge nonce.
         nonce: B256,
     },
@@ -42,6 +46,8 @@ pub enum ProtocolEvent {
     VerifierAuthorized {
         /// Peer ID.
         peer_id: PeerId,
+        /// SYSCOIN: Exact 2FA connection generation that produced this event.
+        lane_id: u64,
         /// Recovered verifier signer.
         signer: Address,
     },
@@ -49,6 +55,8 @@ pub enum ProtocolEvent {
     VerifierUnauthorized {
         /// Peer ID.
         peer_id: PeerId,
+        /// SYSCOIN: Exact 2FA connection generation that produced this event.
+        lane_id: u64,
         /// Recovered signer if signature parsing succeeded.
         signer: Option<Address>,
     },
@@ -66,7 +74,8 @@ pub enum ProtocolEvent {
     },
     /// External node's replay stream from this peer is no longer usable (no messages within the
     /// inactivity timeout, or the message stream terminated while the session stayed up). The
-    /// service reacts by disconnecting the peer so that a fresh session re-requests replays.
+    /// SYSCOIN: exact mandatory protocol wrapper closes itself; this event is observability only so
+    /// a delayed PeerId-scoped consumer cannot disconnect a replacement session.
     ReplayStreamStalled {
         /// Peer ID.
         peer_id: PeerId,

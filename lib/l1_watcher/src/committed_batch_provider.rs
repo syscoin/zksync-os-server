@@ -87,7 +87,7 @@ impl StartupBatchFrontier {
 }
 
 impl CommittedBatchProvider {
-    /// Creates a provider, inserts the genesis batch if needed, and eagerly loads the startup
+    /// Creates a provider, authenticates and inserts genesis, and eagerly loads the startup
     /// frontier batches used by startup bookkeeping.
     // SYSCOIN: Thread persisted batch storage through startup loading so restarts
     // use local committed-batch data before falling back to archive L1 calls.
@@ -106,24 +106,24 @@ impl CommittedBatchProvider {
             inner: Arc::new(RwLock::new(Inner::default())),
             intervals: l1_state.settlement_layer_intervals.clone(),
         };
-        // Special case for genesis
-        if l1_state.last_executed_batch == 0 {
-            let batch_info = load_genesis_batch_info().await;
-            let batch_hash_l1 = l1_state
-                .diamond_proxy_l1
-                .stored_batch_hash(0, BlockId::latest())
-                .await?;
-            anyhow::ensure!(
-                batch_hash_l1 == batch_info.hash(),
-                "genesis batch hash mismatch: L1 {}, local {}",
-                batch_hash_l1,
-                batch_info.hash(),
-            );
-            provider.insert(DiscoveredCommittedBatch {
-                batch_info,
-                block_range: 0..=0,
-            });
-        }
+        // SYSCOIN: Always bind canonical local genesis to the live L1 stored hash. Besides serving
+        // fresh chains, this lets startup validate / repair the batch-0 RPC record before exposure
+        // on later restarts without trusting whatever was left in the local executed-batch DB.
+        let batch_info = load_genesis_batch_info().await;
+        let batch_hash_l1 = l1_state
+            .diamond_proxy_l1
+            .stored_batch_hash(0, BlockId::latest())
+            .await?;
+        anyhow::ensure!(
+            batch_hash_l1 == batch_info.hash(),
+            "genesis batch hash mismatch: L1 {}, local {}",
+            batch_hash_l1,
+            batch_info.hash(),
+        );
+        provider.insert(DiscoveredCommittedBatch {
+            batch_info,
+            block_range: 0..=0,
+        });
 
         let startup_frontier = StartupBatchFrontier::from_l1_state(l1_state);
         let (prioritized_batch_numbers, _) = startup_frontier.startup_batch_numbers();
@@ -212,11 +212,7 @@ impl CommittedBatchProvider {
         block_number: BlockNumber,
     ) -> Option<DiscoveredCommittedBatch> {
         let inner = self.inner.read().expect("lock poisoned");
-        inner
-            .block_range_index
-            .get(&block_number)
-            .and_then(|batch_number| inner.batches.get(batch_number))
-            .cloned()
+        inner.get_batch_containing_block(block_number)
     }
 
     /// Returns `DiscoveredCommittedBatch` from in-memory map if available.
@@ -292,6 +288,19 @@ impl CommittedBatchProvider {
 }
 
 impl Inner {
+    // SYSCOIN: Same-number recommits can leave an old disjoint range-map segment; bind every hit
+    // back to the authoritative replacement batch before exposing optimistic Gateway metadata.
+    fn get_batch_containing_block(
+        &self,
+        block_number: BlockNumber,
+    ) -> Option<DiscoveredCommittedBatch> {
+        self.block_range_index
+            .get(&block_number)
+            .and_then(|batch_number| self.batches.get(batch_number))
+            .filter(|batch| batch.block_range.contains(&block_number))
+            .cloned()
+    }
+
     fn insert(&mut self, batch: DiscoveredCommittedBatch) {
         self.block_range_index
             .insert(batch.block_range.clone(), batch.number());
@@ -387,7 +396,7 @@ struct ProviderTips {
     archive: BlockNumber,
 }
 
-// SYSCOIN
+// SYSCOIN: Fall back to the live settlement provider with the archive failure retained as context.
 async fn fetch_batch_from_live_with_context(
     live_proxy: &ZkChain<NodeProvider>,
     batch_number: u64,
@@ -400,7 +409,7 @@ async fn fetch_batch_from_live_with_context(
         .with_context(|| format!("{context}; live provider fallback also failed"))
 }
 
-// SYSCOIN
+// SYSCOIN: Snapshot both provider tips around archive lookups to detect lag or movement.
 async fn read_provider_tips(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -421,19 +430,19 @@ async fn read_provider_tips(
     Ok(ProviderTips { live, archive })
 }
 
-// SYSCOIN
+// SYSCOIN: A failed tip read can resolve directly through the live provider.
 enum TipReadOutcome {
     Tips(ProviderTips),
     LiveBatch(DiscoveredCommittedBatch),
 }
 
-// SYSCOIN
+// SYSCOIN: Archive discovery either yields a batch or requests a bounded retry with fresh tips.
 enum ArchiveLookupOutcome {
     Batch(DiscoveredCommittedBatch),
     Retry(ProviderTips),
 }
 
-// SYSCOIN
+// SYSCOIN: Route tip-read failures through the live provider instead of failing startup.
 async fn read_provider_tips_or_live_fallback(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -476,7 +485,7 @@ async fn read_provider_tips_or_live_fallback(
     }
 }
 
-// SYSCOIN
+// SYSCOIN: Never trust an archive result while its provider tip trails the live settlement tip.
 async fn live_fallback_if_archive_is_behind(
     live_proxy: &ZkChain<NodeProvider>,
     tips: ProviderTips,
@@ -509,7 +518,7 @@ async fn live_fallback_if_archive_is_behind(
     .map(Some)
 }
 
-// SYSCOIN
+// SYSCOIN: Retry archive reconstruction if either provider advanced during the lookup.
 fn retry_if_tips_changed(
     tips_before: ProviderTips,
     tips_after: ProviderTips,
@@ -534,7 +543,7 @@ fn retry_if_tips_changed(
     Some(ArchiveLookupOutcome::Retry(tips_after))
 }
 
-// SYSCOIN
+// SYSCOIN: Revalidate archive results against fresh live/archive tips before accepting them.
 async fn archive_batch_lookup_outcome(
     live_proxy: &ZkChain<NodeProvider>,
     archive_provider: &NodeProvider,
@@ -749,7 +758,7 @@ async fn validate_archive_batch_against_live(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_persisted_batch, startup_batch_numbers};
+    use super::{Inner, load_persisted_batch, startup_batch_numbers};
     use alloy::primitives::B256;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
@@ -784,6 +793,22 @@ mod tests {
             Some(committed_batch)
         );
         assert!(load_persisted_batch(&storage, 8).unwrap().is_none());
+    }
+
+    #[test]
+    fn disjoint_same_number_recommit_rejects_stale_range() {
+        let mut inner = Inner::default();
+        inner.insert(discovered_batch(7, 70, 79));
+        assert_eq!(inner.get_batch_containing_block(75).unwrap().number(), 7);
+
+        inner.insert(discovered_batch(7, 90, 99));
+
+        assert_eq!(inner.block_range_index.get(&75), Some(&7));
+        assert!(inner.get_batch_containing_block(75).is_none());
+        assert_eq!(
+            inner.get_batch_containing_block(95).unwrap().block_range,
+            90..=99
+        );
     }
 
     #[derive(Clone, Default)]

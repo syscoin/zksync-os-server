@@ -13,7 +13,12 @@ gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 gl_require ZKSYS_ISSUER_START_TIME
 : "${ZKSYNC_ERA_PATH:=$(cd "${ZKSYNC_OS_SERVER_PATH}/.." && pwd)/zksync-era}"
 
-: "${ZKSYS_L2_CREATE2_DEPLOYER:=0x4e59b44847b379578588920cA78FbF26c0B4956C}"
+# SYSCOIN: exact Arachnid deterministic-deployment-proxy attestation. Merely
+# finding code at this address is insufficient on a custom-genesis chain.
+ARACHNID_CREATE2_DEPLOYER=0x4e59b44847b379578588920cA78FbF26c0B4956C
+ARACHNID_CREATE2_RUNTIME=0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3
+ARACHNID_CREATE2_RUNTIME_HASH=0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989
+: "${ZKSYS_L2_CREATE2_DEPLOYER:=${ARACHNID_CREATE2_DEPLOYER}}"
 : "${ZKSYS_L2_TOKEN_NAME:=ZKSYS}"
 : "${ZKSYS_L2_TOKEN_SYMBOL:=ZKSYS}"
 : "${ZKSYS_L2_TOKEN_DECIMALS:=18}"
@@ -85,10 +90,32 @@ rpc_code() {
   cast code --rpc-url "${ZKSYS_L2_RPC_URL}" "${1:?address required}"
 }
 
+assert_exact_runtime() {
+  local label="${1:?label required}"
+  local address="${2:?address required}"
+  local expected_runtime="${3:?expected runtime required}"
+  local expected_runtime_hash="${4:?expected runtime hash required}"
+  local actual_runtime actual_runtime_hash
+
+  actual_runtime="$(rpc_code "${address}")"
+  if [ "$(gl_to_lower "${actual_runtime}")" != "$(gl_to_lower "${expected_runtime}")" ]; then
+    gl_die "${label} runtime at ${address} does not match the exact canonical bytecode"
+  fi
+  actual_runtime_hash="$(cast keccak "${actual_runtime}")"
+  if [ "$(gl_to_lower "${actual_runtime_hash}")" != "$(gl_to_lower "${expected_runtime_hash}")" ]; then
+    gl_die "${label} runtime hash ${actual_runtime_hash} does not match ${expected_runtime_hash}"
+  fi
+}
+
 require_create2_deployer() {
-  local code
-  code="$(rpc_code "${ZKSYS_L2_CREATE2_DEPLOYER}")"
-  [ "${code}" != "0x" ] || gl_die "CREATE2 deployer has no code at ${ZKSYS_L2_CREATE2_DEPLOYER}"
+  if [ "$(gl_to_lower "${ZKSYS_L2_CREATE2_DEPLOYER}")" != "$(gl_to_lower "${ARACHNID_CREATE2_DEPLOYER}")" ]; then
+    gl_die "ZKSYS_L2_CREATE2_DEPLOYER=${ZKSYS_L2_CREATE2_DEPLOYER} is not the canonical Arachnid factory ${ARACHNID_CREATE2_DEPLOYER}"
+  fi
+  assert_exact_runtime \
+    "Arachnid CREATE2 deployer" \
+    "${ZKSYS_L2_CREATE2_DEPLOYER}" \
+    "${ARACHNID_CREATE2_RUNTIME}" \
+    "${ARACHNID_CREATE2_RUNTIME_HASH}"
 }
 
 deploy_create2() {
@@ -432,17 +459,23 @@ ZKSYS_L2_STAKING_VAULT_ADDRESS="$(
 # bootloader. Non-upgradeable and atomic by construction: the constructor
 # pins the token; the only wiring is the BURNER_ROLE grant for burnSurplus().
 gas_tank_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}")"
-gas_tank_init_code="$(forge_inspect_bytecode ZkSysGasTank)${gas_tank_ctor_args#0x}"
+gas_tank_creation_code="$(forge_inspect_bytecode ZkSysGasTank)"
+gas_tank_init_code="${gas_tank_creation_code}${gas_tank_ctor_args#0x}"
+gas_tank_init_code_hash="$(cast keccak "${gas_tank_init_code}")"
 ZKSYS_L2_GAS_TANK_ADDRESS="$(
   cast create2 \
     --deployer "${ZKSYS_L2_CREATE2_DEPLOYER}" \
     --salt "${ZKSYS_L2_GAS_TANK_SALT}" \
     --init-code "${gas_tank_init_code}"
 )"
-PUBLISHED_V7_GAS_TANK_ADDRESS=0xb9feff70ec42b6b5af5a690b4dbc332a2d1f3beb
+PUBLISHED_GAS_TANK_INIT_CODE_HASH=0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561
+PUBLISHED_GAS_TANK_RUNTIME_HASH=0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269
+PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
+[ "$(gl_to_lower "${gas_tank_init_code_hash}")" = "${PUBLISHED_GAS_TANK_INIT_CODE_HASH}" ] || \
+  gl_die "derived gas tank init-code hash ${gas_tank_init_code_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_INIT_CODE_HASH}; changing it requires a new app, VK, and verifier"
 [ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
-  "${PUBLISHED_V7_GAS_TANK_ADDRESS}" ] || \
-  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the published V7 app value ${PUBLISHED_V7_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
+  "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
+  gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
 
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"
@@ -456,7 +489,25 @@ deploy_create2 "zkSYS issuer implementation" "${ZKSYS_L2_ISSUER_IMPL_ADDRESS}" "
 deploy_create2 "zkSYS issuer proxy" "${ZKSYS_L2_ISSUER_ADDRESS}" "${ZKSYS_L2_ISSUER_PROXY_SALT}" "${issuer_proxy_init_code}"
 deploy_create2 "zkSYS native staking vault implementation" "${ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_IMPL_SALT}" "${staking_vault_impl_init_code}"
 deploy_create2 "zkSYS native staking vault proxy" "${ZKSYS_L2_STAKING_VAULT_ADDRESS}" "${ZKSYS_L2_STAKING_VAULT_PROXY_SALT}" "${staking_vault_proxy_init_code}"
+
+# SYSCOIN: execute the constructor against the now-live canonical token proxy
+# to obtain the immutable-specialized runtime. Reject a preexisting or newly
+# deployed impostor byte-for-byte and by hash before granting any burn power.
+expected_gas_tank_runtime="$(
+  cast call \
+    --rpc-url "${ZKSYS_L2_RPC_URL}" \
+    --create "${gas_tank_creation_code}" \
+    "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
+)"
+expected_gas_tank_runtime_hash="$(cast keccak "${expected_gas_tank_runtime}")"
+[ "$(gl_to_lower "${expected_gas_tank_runtime_hash}")" = "${PUBLISHED_GAS_TANK_RUNTIME_HASH}" ] || \
+  gl_die "derived gas tank runtime hash ${expected_gas_tank_runtime_hash} differs from the canonical value ${PUBLISHED_GAS_TANK_RUNTIME_HASH}; changing it requires a new app, VK, and verifier"
 deploy_create2 "zkSYS gas tank" "${ZKSYS_L2_GAS_TANK_ADDRESS}" "${ZKSYS_L2_GAS_TANK_SALT}" "${gas_tank_init_code}"
+assert_exact_runtime \
+  "zkSYS gas tank" \
+  "${ZKSYS_L2_GAS_TANK_ADDRESS}" \
+  "${expected_gas_tank_runtime}" \
+  "${PUBLISHED_GAS_TANK_RUNTIME_HASH}"
 
 echo "zksys-l2-bootstrap: verifying proxy admin and implementation wiring"
 assert_proxy_admin_owner "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
@@ -512,7 +563,7 @@ zksys-l2-bootstrap: complete
 EOF
 
 # SYSCOIN: persist the already-attested gas-tank address so launchers can
-# validate deployment state against the published V7 app.
+# validate deployment state against the canonical app.
 # Resolve the target file with the same priority as the reader
 # (gl_zksys_gas_tank_from_edge_config): canonical contracts.yaml first, then
 # the zkstack-emitted contracts_<chain-id>.yaml layout.
@@ -553,7 +604,10 @@ l2["zksys_gas_tank_addr"] = address
 path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 PY
   echo "zksys-l2-bootstrap: updated ${zksys_contracts_yaml}: l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS}"
-  echo "zksys-l2-bootstrap: address matches the published V7 app binding"
+  echo "zksys-l2-bootstrap: address matches the canonical app binding"
+  # SYSCOIN: The canonical main-node runner treats this attested nonzero value
+  # as the durable transition out of its one-time first-boot exception.
+  echo "zksys-l2-bootstrap: the next canonical edge-node launch will require the gas-tank runtime in local state"
 else
   echo "zksys-l2-bootstrap: warning: ${zksys_contracts_yaml} not found; set l2.zksys_gas_tank_addr=${ZKSYS_L2_GAS_TANK_ADDRESS} manually" >&2
 fi

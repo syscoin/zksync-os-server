@@ -1,0 +1,1376 @@
+name: Syscoin V32 ExecV7 ProvingV8 Security100 keygen
+
+# SYSCOIN: This is a manual, non-deploying app-bound key-generation check. Configure the
+# `syscoin-v32-v8-keygen` environment with required reviewers and the environment
+# variable documented in the authorization job before enabling this workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type SYSCOIN-V32-V8-SECURITY100 exactly
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: syscoin-v32-v8-security100-keygen
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
+  ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
+  ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
+  ZKSYNC_OS_PATCHED_TREE: 20dc217bbd535877f600df88bd7e2966d3d9b43a
+  ZKSYNC_OS_PATCH_SIZE: "266203"
+  ZKSYNC_OS_PATCH_SHA256: b2c9a187b18d2e16ba20066a0fe297dc4946e4e6cf00bec7eb4ad365076487ff
+  ZKSYNC_OS_HELPER_SIZE: "7324"
+  ZKSYNC_OS_HELPER_SHA256: 9173d046d684be10583a3c6dc4f20393f87b83e7106fc5c3d3f5c7c5b8d94807
+
+  AIRBENDER_REPOSITORY: https://github.com/matter-labs/zksync-airbender.git
+  AIRBENDER_COMMIT: 03454c7a41053a4b88bb421e97fb9efe893a92f5
+  AIRBENDER_RELEASE: v0.6.0-rc.2
+  AIRBENDER_PLATFORM_REPOSITORY: https://github.com/matter-labs/airbender-platform.git
+  # SYSCOIN: Exact cargo-airbender v0.2.4 revision used by both canonical app rebuilds.
+  AIRBENDER_PLATFORM_COMMIT: a350ee3e08bef4cbe2b7bc968966bee45bc98a17
+  AIRBENDER_PLATFORM_VERSION: 0.2.4
+  WRAPPER_REPOSITORY: https://github.com/matter-labs/zkos-wrapper.git
+  WRAPPER_COMMIT: 585595f145cb53a09a130706ca36f80ddcac3961
+  PROVER_REPOSITORY: https://github.com/matter-labs/zksync-airbender-prover.git
+  PROVER_COMMIT: ea89b3256bc2c1dd6ee8df8ce95cffcdc3eb51ad
+  RUST_TOOLCHAIN: nightly-2026-02-10
+  CARGO_BINUTILS_VERSION: 0.4.0
+
+  # SYSCOIN: The guest source is reviewable before the high-memory reproducible app rebuild,
+  # but old app identities must never look canonical. Replace every zero below from two clean
+  # builds of this exact tree, install the same values in the server FRI verifier, and only then
+  # change APP_IDENTITY_STATUS to `attested`.
+  APP_IDENTITY_SOURCE_TREE: 20dc217bbd535877f600df88bd7e2966d3d9b43a
+  APP_IDENTITY_STATUS: regeneration-required
+  APP_BIN_SIZE: "0"
+  APP_BIN_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  APP_BIN_MD5: "00000000000000000000000000000000"
+  APP_ELF_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  APP_TEXT_SIZE: "0"
+  APP_TEXT_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  APP_TEXT_MD5: "00000000000000000000000000000000"
+  APP_MANIFEST_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
+  APP_END_PARAMS: "[0, 0, 0, 0, 0, 0, 0, 0]"
+  SECURITY100_WORDS: "[0, 0, 0, 0, 0, 0, 0, 0]"
+  SECURITY100_COMMITMENT: "0x0000000000000000000000000000000000000000000000000000000000000000"
+  STOCK_APP_BIN_SIZE: "1427412"
+  STOCK_APP_BIN_SHA256: 5cc3fa3e0aecf6ddde74a062e59593418e0e2b9035570f3fcc363a1dfbad8335
+  STOCK_APP_BIN_MD5: 31cb9cb3b42d4a183fb858594eeb8706
+  STOCK_APP_TEXT_SIZE: "1166708"
+  STOCK_APP_TEXT_SHA256: c029c88ffb38f236ecd1ca020e93b97f1e32bb5b63ce135af3faa17f1732f061
+  STOCK_APP_TEXT_MD5: 41588b1341c4b70f697446e47d830b67
+  STOCK_SECURITY100_COMMITMENT: "0xad0424473747a5ecba3294e4de778e305b433c2c2794814084ccda7ac817312d"
+  STOCK_APP_VK_HASH: "0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
+
+  CRS_URL: https://storage.googleapis.com/matterlabs-setup-keys-us/setup-keys/setup_compact.key
+  CRS_SIZE: "4831838468"
+  CRS_SHA256: 90d1dea94da665d5741dcc6e9ffc1af23a29669f950a6d599a6ccfee4cfb81bd
+  CRS_MD5: 3e0c9900e16e4872429cc6f2113f28ef
+
+  ERA_REPOSITORY: https://github.com/matter-labs/era-contracts.git
+  ERA_BASE_COMMIT: 8fb7c29a4e3174335c6480b23f57822e054f9d5f
+  ERA_BASE_TREE: acdd11e5bb7787d9df2306f6a1dc96bf92e67f53
+  ERA_NESTED_COMMIT: e554ae64ec150c47d6f17786e7f4aacebc7bf945
+  ERA_PATCH_SIZE: "314725"
+  ERA_PATCH_SHA256: c8a9ac36c270c43dcff3ce33dd3178e41cbf4a07757c83ef54e9cbdf7f57f17c
+  ERA_PATCH_PATH_COUNT: "57"
+  ERA_PATCH_PATHS_SHA256: 2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183
+  ERA_SOURCE_PATCHED_TREE: 04eed331c8729a179b237063906d30b27d86bfe3
+  ERA_HELPER_SIZE: "45018"
+  ERA_HELPER_SHA256: c5137746b5716817342931ed51c6a535c232974c00e79ebc3e687f8b18e22028
+  ERA_VERIFIER_TOOLCHAIN: nightly-2024-12-01
+  ERA_CONTRACT_HASH_ENTRY_COUNT: "278"
+  FOUNDRY_ZKSYNC_VERSION: v0.1.5
+  FOUNDRY_ZKSYNC_COMMIT: 807f47ace7cdd90eed7190dc4481952cfaa25938
+  FOUNDRY_ZKSYNC_ARCHIVE_SIZE: "69463576"
+  FOUNDRY_ZKSYNC_ARCHIVE_SHA256: 3835574db25f52650df01df854886aebed25f63c561826708dccd46c3fc401bd
+  FOUNDRY_ZKSYNC_FORGE_SHA256: 789c539cc69ccbfbeee308b6305321edab651a327cca2c438961e3150448e987
+  FOUNDRY_ZKSYNC_CAST_SHA256: 3f504920edfeeb181e0075621d14f83a2292d70b3348c984fc43a45710c6b029
+  ZERO_B256: "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+jobs:
+  authorize:
+    name: Review gate and source identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: syscoin-v32-v8-keygen
+    env:
+      CONFIRMATION: ${{ inputs.confirmation }}
+      # SYSCOIN: Set this only as an environment-level variable after configuring
+      # required reviewers for `syscoin-v32-v8-keygen` in repository settings.
+      REVIEW_POLICY: ${{ vars.SYSCOIN_V32_KEYGEN_REVIEWERS_CONFIGURED }}
+    steps:
+      - name: Checkout key-generation source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Enforce manual approval phrase and environment policy
+        run: |
+          set -euo pipefail
+          [[ "${CONFIRMATION}" == "SYSCOIN-V32-V8-SECURITY100" ]]
+          [[ "${REVIEW_POLICY}" == "required-reviewers-configured" ]]
+          [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]
+          [[ "${APP_IDENTITY_SOURCE_TREE}" == "${ZKSYNC_OS_PATCHED_TREE}" ]]
+          if [[ "${APP_IDENTITY_STATUS}" != "attested" ]]; then
+            echo "canonical app identity regeneration is required for zksync-os tree ${ZKSYNC_OS_PATCHED_TREE}" >&2
+            exit 1
+          fi
+          [[ "${APP_BIN_SIZE}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${APP_TEXT_SIZE}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${APP_BIN_SHA256}" =~ ^[0-9a-f]{64}$ && "${APP_BIN_SHA256}" != "${ZERO_B256#0x}" ]]
+          [[ "${APP_ELF_SHA256}" =~ ^[0-9a-f]{64}$ && "${APP_ELF_SHA256}" != "${ZERO_B256#0x}" ]]
+          [[ "${APP_TEXT_SHA256}" =~ ^[0-9a-f]{64}$ && "${APP_TEXT_SHA256}" != "${ZERO_B256#0x}" ]]
+          [[ "${APP_MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ && "${APP_MANIFEST_SHA256}" != "${ZERO_B256#0x}" ]]
+          [[ "${APP_BIN_MD5}" =~ ^[0-9a-f]{32}$ && "${APP_BIN_MD5}" != "00000000000000000000000000000000" ]]
+          [[ "${APP_TEXT_MD5}" =~ ^[0-9a-f]{32}$ && "${APP_TEXT_MD5}" != "00000000000000000000000000000000" ]]
+          [[ "${APP_END_PARAMS}" != "[0, 0, 0, 0, 0, 0, 0, 0]" ]]
+          [[ "${SECURITY100_WORDS}" != "[0, 0, 0, 0, 0, 0, 0, 0]" ]]
+          [[ "${SECURITY100_COMMITMENT}" =~ ^0x[0-9a-f]{64}$ && "${SECURITY100_COMMITMENT}" != "${ZERO_B256}" ]]
+
+      - name: Attest checked-in Syscoin patch inputs
+        run: |
+          set -euo pipefail
+
+          check_file() {
+            local path="$1"
+            local expected_size="$2"
+            local expected_sha256="$3"
+            local actual_size actual_sha256
+            [[ -f "${path}" && ! -L "${path}" ]]
+            actual_size="$(stat -c '%s' "${path}")"
+            actual_sha256="$(sha256sum "${path}" | awk '{print $1}')"
+            [[ "${actual_size}" == "${expected_size}" ]]
+            [[ "${actual_sha256}" == "${expected_sha256}" ]]
+          }
+
+          # SYSCOIN: The workflow may consume only these reviewed source applicators.
+          check_file \
+            scripts/patches/zksync-os-syscoin-v0.4.0.patch \
+            "${ZKSYNC_OS_PATCH_SIZE}" \
+            "${ZKSYNC_OS_PATCH_SHA256}"
+          check_file \
+            scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh \
+            "${ZKSYNC_OS_HELPER_SIZE}" \
+            "${ZKSYNC_OS_HELPER_SHA256}"
+          check_file \
+            scripts/patches/era-contracts-syscoin.patch \
+            "${ERA_PATCH_SIZE}" \
+            "${ERA_PATCH_SHA256}"
+          check_file \
+            scripts/apply-era-contracts-syscoin-patch.sh \
+            "${ERA_HELPER_SIZE}" \
+            "${ERA_HELPER_SHA256}"
+
+          if grep -Eq \
+            '^(deleted file mode |GIT binary patch$|Binary files )' \
+            scripts/patches/era-contracts-syscoin.patch
+          then
+            echo "Era source patch contains a deletion or binary delta" >&2
+            exit 1
+          fi
+
+          # SYSCOIN: Bind the reviewed Era source patch to its exact sorted path
+          # manifest as well as its bytes. This prevents a same-purpose patch from
+          # silently widening the fresh-deployment surface consumed by keygen.
+          mapfile -t era_patch_paths < <(
+            git apply \
+              --numstat \
+              --recount \
+              --unidiff-zero \
+              scripts/patches/era-contracts-syscoin.patch | \
+              awk -F '\t' '{print $3}' | \
+              LC_ALL=C sort
+          )
+          [[ "${#era_patch_paths[@]}" == "${ERA_PATCH_PATH_COUNT}" ]]
+          era_patch_paths_sha256="$({
+            printf '%s\n' "${era_patch_paths[@]}"
+          } | sha256sum | awk '{print $1}')"
+          # GitHub injects this workflow-level variable into every run shell.
+          # shellcheck disable=SC2153
+          [[ "${era_patch_paths_sha256}" == "${ERA_PATCH_PATHS_SHA256}" ]]
+
+  syscoin-keygen:
+    name: Independent Syscoin keygen ${{ matrix.lane }}
+    needs: authorize
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [a, b]
+    # SYSCOIN: Provision these two runner registrations on separately administered ephemeral
+    # hosts. The workflow can reject a reused runner name, but physical independence is an
+    # operator-reviewed prerequisite. Each host needs Docker, >=160 GiB RAM, and >=100 GiB free
+    # disk; no GPU is required for deterministic VK setup.
+    runs-on: [self-hosted, linux, x64, syscoin-keygen]
+    timeout-minutes: 1440
+    environment:
+      name: syscoin-v32-v8-keygen
+    steps:
+      - name: Checkout key-generation source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Create isolated lane workspace
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work_dir="${RUNNER_TEMP}/syscoin-v32-v8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${LANE}"
+          [[ "${work_dir}" == "${RUNNER_TEMP}/syscoin-v32-v8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${LANE}" ]]
+          mkdir -p "${work_dir}/out/app" "${work_dir}/out/vks"
+          {
+            echo "WORK_DIR=${work_dir}"
+            echo "CARGO_HOME=${work_dir}/cargo-home"
+            echo "RUSTUP_HOME=${work_dir}/rustup-home"
+            echo "CARGO_TARGET_DIR=${work_dir}/cargo-target"
+          } >> "${GITHUB_ENV}"
+          echo "${work_dir}/cargo-home/bin" >> "${GITHUB_PATH}"
+          # SYSCOIN: Publish only a one-way runner-name identity so reconciliation can reject
+          # two reproducibility runs scheduled under the same registration. Different names do
+          # not by themselves attest separate physical hosts; that remains an operator gate.
+          [[ -n "${RUNNER_NAME}" ]]
+          printf '%s' "${RUNNER_NAME}" | sha256sum | awk '{print $1}' > \
+            "${work_dir}/out/runner-identity.sha256"
+
+      - name: Check keygen runner capacity and tools
+        run: |
+          set -euo pipefail
+          for command in awk curl docker git jq md5sum nproc python3 rustup sha256sum stat; do
+            command -v "${command}" >/dev/null
+          done
+          docker info >/dev/null
+          available_bytes="$(df --output=avail -B1 "${RUNNER_TEMP}" | tail -n 1 | tr -d '[:space:]')"
+          memory_kib="$(awk '/MemTotal:/ { print $2 }' /proc/meminfo)"
+          (( available_bytes >= 100 * 1024 * 1024 * 1024 ))
+          (( memory_kib >= 160 * 1024 * 1024 ))
+
+      - name: Install exact build toolchain in the lane
+        run: |
+          set -euo pipefail
+          rustup set profile minimal
+          rustup toolchain install \
+            "${RUST_TOOLCHAIN}" \
+            --profile minimal \
+            --component rust-src \
+            --component llvm-tools-preview
+          cargo "+${RUST_TOOLCHAIN}" install \
+            cargo-binutils \
+            --version "${CARGO_BINUTILS_VERSION}" \
+            --locked
+          [[ "$(cargo objcopy --version)" == \
+            "cargo-objcopy ${CARGO_BINUTILS_VERSION}" ]]
+          cargo "+${RUST_TOOLCHAIN}" install \
+            cargo-airbender \
+            --git "${AIRBENDER_PLATFORM_REPOSITORY}" \
+            --rev "${AIRBENDER_PLATFORM_COMMIT}" \
+            --no-default-features \
+            --locked
+          cargo airbender --version | grep -Fqx \
+            "cargo-airbender ${AIRBENDER_PLATFORM_VERSION}"
+
+      - name: Rebuild and attest the canonical patched application
+        run: |
+          set -euo pipefail
+          source_dir="${WORK_DIR}/zksync-os"
+          git clone --no-tags "${ZKSYNC_OS_REPOSITORY}" "${source_dir}"
+          git -C "${source_dir}" checkout --detach "${ZKSYNC_OS_BASE_COMMIT}"
+          # SYSCOIN: cargo-airbender records the source branch in manifest.toml.
+          # Recreate the reviewed build's `master` branch at the already pinned object.
+          git -C "${source_dir}" branch --force master "${ZKSYNC_OS_BASE_COMMIT}"
+          git -C "${source_dir}" checkout master
+          [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${ZKSYNC_OS_BASE_COMMIT}" ]]
+          [[ "$(git -C "${source_dir}" symbolic-ref --short HEAD)" == "master" ]]
+          [[ "$(git -C "${source_dir}" rev-parse 'HEAD^{tree}')" == "${ZKSYNC_OS_BASE_TREE}" ]]
+
+          # SYSCOIN: Apply only the hash-attested downstream patch from this checkout.
+          "${GITHUB_WORKSPACE}/scripts/apply-zksync-os-syscoin-v0.4.0-patch.sh" "${source_dir}"
+          git -C "${source_dir}" add -A
+          [[ "$(git -C "${source_dir}" write-tree)" == "${ZKSYNC_OS_PATCHED_TREE}" ]]
+          git -C "${source_dir}" diff --cached --check
+
+          # SYSCOIN: Both reviewed lockfiles and the installed build frontend must
+          # resolve the same vetted airbender-platform v0.2.4 revision.
+          for lockfile in Cargo.lock zksync_os/Cargo.lock; do
+            mapfile -t platform_sources < <(
+              grep -F 'source = "git+https://github.com/matter-labs/airbender-platform' \
+                "${source_dir}/${lockfile}"
+            )
+            (( ${#platform_sources[@]} > 0 ))
+            for source in "${platform_sources[@]}"; do
+              [[ "${source}" == *"#${AIRBENDER_PLATFORM_COMMIT}\"" ]]
+            done
+          done
+          (
+            cd "${source_dir}/zksync_os"
+            ./dump_bin.sh --type multiblock-batch --reproducible
+          )
+          # SYSCOIN: The canonical Docker rebuild resolved cargo-binutils 0.4.0;
+          # fail if the reproducible-build image drifts to another release.
+          container_binutils_version="$(
+            docker run \
+              --rm \
+              --pull never \
+              --platform linux/amd64 \
+              "airbender-build:${RUST_TOOLCHAIN}" \
+              cargo objcopy --version
+          )"
+          [[ "${container_binutils_version}" == \
+            "cargo-objcopy ${CARGO_BINUTILS_VERSION}" ]]
+
+          app_dir="${source_dir}/zksync_os/dist/multiblock_batch"
+          check_sha256() {
+            local path="$1"
+            local expected="$2"
+            [[ "$(sha256sum "${path}" | awk '{print $1}')" == "${expected}" ]]
+          }
+          [[ "$(stat -c '%s' "${app_dir}/app.bin")" == "${APP_BIN_SIZE}" ]]
+          check_sha256 "${app_dir}/app.bin" "${APP_BIN_SHA256}"
+          [[ "$(md5sum "${app_dir}/app.bin" | awk '{print $1}')" == "${APP_BIN_MD5}" ]]
+          check_sha256 "${app_dir}/app.elf" "${APP_ELF_SHA256}"
+          [[ "$(stat -c '%s' "${app_dir}/app.text")" == "${APP_TEXT_SIZE}" ]]
+          check_sha256 "${app_dir}/app.text" "${APP_TEXT_SHA256}"
+          [[ "$(md5sum "${app_dir}/app.text" | awk '{print $1}')" == "${APP_TEXT_MD5}" ]]
+          check_sha256 "${app_dir}/manifest.toml" "${APP_MANIFEST_SHA256}"
+          cp "${app_dir}/app.bin" "${WORK_DIR}/out/app/"
+          cp "${app_dir}/app.elf" "${WORK_DIR}/out/app/"
+          cp "${app_dir}/app.text" "${WORK_DIR}/out/app/"
+          cp "${app_dir}/manifest.toml" "${WORK_DIR}/out/app/"
+
+      - name: Check out exact Airbender and wrapper sources
+        run: |
+          set -euo pipefail
+          git clone --no-tags "${AIRBENDER_REPOSITORY}" "${WORK_DIR}/airbender"
+          git -C "${WORK_DIR}/airbender" checkout --detach "${AIRBENDER_COMMIT}"
+          [[ "$(git -C "${WORK_DIR}/airbender" rev-parse HEAD)" == "${AIRBENDER_COMMIT}" ]]
+
+          git clone --no-tags "${WRAPPER_REPOSITORY}" "${WORK_DIR}/wrapper"
+          git -C "${WORK_DIR}/wrapper" checkout --detach "${WRAPPER_COMMIT}"
+          [[ "$(git -C "${WORK_DIR}/wrapper" rev-parse HEAD)" == "${WRAPPER_COMMIT}" ]]
+
+          mapfile -t airbender_sources < <(
+            grep -F 'source = "git+https://github.com/matter-labs/zksync-airbender' \
+              "${WORK_DIR}/wrapper/Cargo.lock"
+          )
+          (( ${#airbender_sources[@]} > 0 ))
+          for source in "${airbender_sources[@]}"; do
+            [[ "${source}" == *"?tag=${AIRBENDER_RELEASE}#${AIRBENDER_COMMIT}\"" ]]
+          done
+          grep -Fqx 'default = ["security_100"]' "${WORK_DIR}/wrapper/wrapper/Cargo.toml"
+
+      - name: Download and attest an independent CRS copy
+        run: |
+          set -euo pipefail
+          crs_part="${WORK_DIR}/setup_compact.key.part"
+          crs_file="${WORK_DIR}/setup_compact.key"
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --retry 5 \
+            --retry-all-errors \
+            --output "${crs_part}" \
+            "${CRS_URL}"
+          [[ "$(stat -c '%s' "${crs_part}")" == "${CRS_SIZE}" ]]
+          [[ "$(sha256sum "${crs_part}" | awk '{print $1}')" == "${CRS_SHA256}" ]]
+          [[ "$(md5sum "${crs_part}" | awk '{print $1}')" == "${CRS_MD5}" ]]
+          mv "${crs_part}" "${crs_file}"
+
+      - name: Recompute Security100 program identity
+        run: |
+          set -euo pipefail
+          app_bin="${WORK_DIR}/out/app/app.bin"
+          app_text="${WORK_DIR}/out/app/app.text"
+          end_params_file="${WORK_DIR}/out/end-params.txt"
+
+          cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/airbender/Cargo.toml" \
+            -p cli \
+            --bin end_params \
+            -- \
+            "${app_bin}" \
+            "${app_text}" > "${end_params_file}"
+
+          grep -Fqx "app_end_params = ${APP_END_PARAMS}" "${end_params_file}"
+          grep -Fqx \
+            "unified_chain (expected registers[8..16]) = ${SECURITY100_WORDS}" \
+            "${end_params_file}"
+
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            compute-aux-params \
+            --bin "${app_bin}" \
+            --text "${app_text}" \
+            --output "${WORK_DIR}/out/aux-params.json"
+
+          [[ "$(jq -c . "${WORK_DIR}/out/aux-params.json")" == "$(tr -d ' ' <<< "${SECURITY100_WORDS}")" ]]
+          commitment="0x"
+          while read -r word; do
+            printf -v commitment '%s%08x' "${commitment}" "${word}"
+          done < <(jq -r '.[]' "${WORK_DIR}/out/aux-params.json")
+          [[ "${commitment}" == "${SECURITY100_COMMITMENT}" ]]
+          printf '%s\n' "${commitment}" > "${WORK_DIR}/out/program-commitment.txt"
+
+          # SYSCOIN: The server's native FRI verifier is independently app-bound. Do not let
+          # keygen succeed if it still carries a prior app's end params / Security100 chain, or
+          # if its own source-tree regeneration sentinel was not cleared with those values.
+          SERVER_FRI_VERIFIER="${GITHUB_WORKSPACE}/node/bin/src/prover_api/fri_proof_verifier.rs" \
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source = Path(os.environ["SERVER_FRI_VERIFIER"]).read_text(encoding="utf-8")
+
+          def require_string(name: str, expected: str) -> None:
+              match = re.search(rf'const {name}: &str = "([^"]+)";', source)
+              if match is None or match.group(1) != expected:
+                  raise SystemExit(f"server {name} is not bound to the rebuilt app")
+
+          def require_words(name: str, expected_json: str) -> None:
+              match = re.search(
+                  rf"const {name}: \[u32; 8\] = \[(.*?)\];",
+                  source,
+                  flags=re.DOTALL,
+              )
+              if match is None:
+                  raise SystemExit(f"server {name} is missing")
+              actual = [int(word.strip()) for word in match.group(1).split(",") if word.strip()]
+              if actual != json.loads(expected_json):
+                  raise SystemExit(f"server {name} is not bound to the rebuilt app")
+
+          require_string("V8_APP_IDENTITY_SOURCE_TREE", os.environ["APP_IDENTITY_SOURCE_TREE"])
+          require_string("V8_APP_BIN_MD5", os.environ["APP_BIN_MD5"])
+          require_words("V8_APP_END_PARAMS", os.environ["APP_END_PARAMS"])
+          require_words("V8_SECURITY100_EXPECTED_CHAIN", os.environ["SECURITY100_WORDS"])
+          if "const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = false;" not in source:
+              raise SystemExit("server V8 app-identity regeneration sentinel is not cleared")
+          PY
+
+      - name: Generate the app-bound Security100 verification keys
+        run: |
+          set -euo pipefail
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            --threads "$(nproc)" \
+            generate-vk \
+            --check-aux-params \
+            --bin "${WORK_DIR}/out/app/app.bin" \
+            --text "${WORK_DIR}/out/app/app.text" \
+            --trusted-setup "${WORK_DIR}/setup_compact.key" \
+            --output-dir "${WORK_DIR}/out/vks"
+
+          for artifact in risc_wrapper_vk.json compression_vk.json snark_vk.json; do
+            [[ -s "${WORK_DIR}/out/vks/${artifact}" ]]
+            jq -e . "${WORK_DIR}/out/vks/${artifact}" >/dev/null
+          done
+
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            vk-hash \
+            --vk "${WORK_DIR}/out/vks/snark_vk.json" \
+            > "${WORK_DIR}/out/vk-hash.log" 2>&1
+
+          mapfile -t hashes < <(grep -oE '0x[0-9a-f]{64}' "${WORK_DIR}/out/vk-hash.log")
+          (( ${#hashes[@]} == 1 ))
+          [[ "${hashes[0]}" != "${STOCK_APP_VK_HASH}" ]]
+          printf '%s\n' "${hashes[0]}" > "${WORK_DIR}/out/vk-hash.txt"
+
+          sums_tmp="${WORK_DIR}/out.SHA256SUMS.tmp"
+          (
+            cd "${WORK_DIR}/out"
+            find . -type f -print0 | \
+              LC_ALL=C sort -z | \
+              xargs -0 sha256sum
+          ) > "${sums_tmp}"
+          mv "${sums_tmp}" "${WORK_DIR}/out/SHA256SUMS"
+
+      - name: Upload independently generated public attestation artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syscoin-v32-v8-keygen-${{ matrix.lane }}
+          path: ${{ env.WORK_DIR }}/out
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Remove lane workspace
+        if: always()
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          set -euo pipefail
+          # SYSCOIN: This exact run-scoped directory contains the 4.8 GB CRS copy.
+          expected="${RUNNER_TEMP}/syscoin-v32-v8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${LANE}"
+          [[ -n "${WORK_DIR:-}" && "${WORK_DIR}" == "${expected}" && -d "${WORK_DIR}" ]]
+          rm -rf -- "${WORK_DIR}"
+
+  stock-control:
+    name: Reproduce upstream Security100 app-bound key
+    needs: authorize
+    runs-on: [self-hosted, linux, x64, syscoin-keygen]
+    timeout-minutes: 1440
+    environment:
+      name: syscoin-v32-v8-keygen
+    steps:
+      - name: Checkout key-generation source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Create isolated control workspace
+        run: |
+          set -euo pipefail
+          umask 077
+          work_dir="${RUNNER_TEMP}/syscoin-v32-v8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-stock"
+          mkdir -p "${work_dir}/out/app" "${work_dir}/out/vks"
+          {
+            echo "WORK_DIR=${work_dir}"
+            echo "CARGO_HOME=${work_dir}/cargo-home"
+            echo "RUSTUP_HOME=${work_dir}/rustup-home"
+            echo "CARGO_TARGET_DIR=${work_dir}/cargo-target"
+          } >> "${GITHUB_ENV}"
+          echo "${work_dir}/cargo-home/bin" >> "${GITHUB_PATH}"
+
+      - name: Prepare exact wrapper, upstream app, and CRS
+        run: |
+          set -euo pipefail
+          for command in curl git jq md5sum nproc rustup sha256sum stat; do
+            command -v "${command}" >/dev/null
+          done
+          available_bytes="$(df --output=avail -B1 "${RUNNER_TEMP}" | tail -n 1 | tr -d '[:space:]')"
+          memory_kib="$(awk '/MemTotal:/ { print $2 }' /proc/meminfo)"
+          (( available_bytes >= 60 * 1024 * 1024 * 1024 ))
+          (( memory_kib >= 160 * 1024 * 1024 ))
+
+          rustup set profile minimal
+          rustup toolchain install "${RUST_TOOLCHAIN}" --profile minimal
+          git clone --no-tags "${WRAPPER_REPOSITORY}" "${WORK_DIR}/wrapper"
+          git -C "${WORK_DIR}/wrapper" checkout --detach "${WRAPPER_COMMIT}"
+          [[ "$(git -C "${WORK_DIR}/wrapper" rev-parse HEAD)" == "${WRAPPER_COMMIT}" ]]
+          grep -Fqx 'default = ["security_100"]' "${WORK_DIR}/wrapper/wrapper/Cargo.toml"
+          mapfile -t airbender_sources < <(
+            grep -F 'source = "git+https://github.com/matter-labs/zksync-airbender' \
+              "${WORK_DIR}/wrapper/Cargo.lock"
+          )
+          (( ${#airbender_sources[@]} > 0 ))
+          for source in "${airbender_sources[@]}"; do
+            [[ "${source}" == *"?tag=${AIRBENDER_RELEASE}#${AIRBENDER_COMMIT}\"" ]]
+          done
+
+          git clone --no-tags "${PROVER_REPOSITORY}" "${WORK_DIR}/prover"
+          git -C "${WORK_DIR}/prover" checkout --detach "${PROVER_COMMIT}"
+          [[ "$(git -C "${WORK_DIR}/prover" rev-parse HEAD)" == "${PROVER_COMMIT}" ]]
+          stock_bin="${WORK_DIR}/prover/multiblock_batch.bin"
+          stock_text="${WORK_DIR}/prover/multiblock_batch.text"
+          [[ "$(stat -c '%s' "${stock_bin}")" == "${STOCK_APP_BIN_SIZE}" ]]
+          [[ "$(sha256sum "${stock_bin}" | awk '{print $1}')" == "${STOCK_APP_BIN_SHA256}" ]]
+          [[ "$(md5sum "${stock_bin}" | awk '{print $1}')" == "${STOCK_APP_BIN_MD5}" ]]
+          [[ "$(stat -c '%s' "${stock_text}")" == "${STOCK_APP_TEXT_SIZE}" ]]
+          [[ "$(sha256sum "${stock_text}" | awk '{print $1}')" == "${STOCK_APP_TEXT_SHA256}" ]]
+          [[ "$(md5sum "${stock_text}" | awk '{print $1}')" == "${STOCK_APP_TEXT_MD5}" ]]
+          cp "${stock_bin}" "${WORK_DIR}/out/app/app.bin"
+          cp "${stock_text}" "${WORK_DIR}/out/app/app.text"
+
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --retry 5 \
+            --retry-all-errors \
+            --output "${WORK_DIR}/setup_compact.key" \
+            "${CRS_URL}"
+          [[ "$(stat -c '%s' "${WORK_DIR}/setup_compact.key")" == "${CRS_SIZE}" ]]
+          [[ "$(sha256sum "${WORK_DIR}/setup_compact.key" | awk '{print $1}')" == "${CRS_SHA256}" ]]
+          [[ "$(md5sum "${WORK_DIR}/setup_compact.key" | awk '{print $1}')" == "${CRS_MD5}" ]]
+
+      - name: Reproduce and identify the upstream app-bound key
+        run: |
+          set -euo pipefail
+          # SYSCOIN: Upstream's published V8 key is bound to its exact final-v0.4 app.
+          # Use the same check-aux-params path as the Syscoin keygen for an apples-to-apples control.
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            compute-aux-params \
+            --bin "${WORK_DIR}/out/app/app.bin" \
+            --text "${WORK_DIR}/out/app/app.text" \
+            --output "${WORK_DIR}/out/aux-params.json"
+
+          stock_commitment="0x"
+          while read -r word; do
+            printf -v stock_commitment '%s%08x' "${stock_commitment}" "${word}"
+          done < <(jq -r '.[]' "${WORK_DIR}/out/aux-params.json")
+          [[ "${stock_commitment}" == "${STOCK_SECURITY100_COMMITMENT}" ]]
+          printf '%s\n' "${stock_commitment}" > "${WORK_DIR}/out/program-commitment.txt"
+
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            --threads "$(nproc)" \
+            generate-vk \
+            --check-aux-params \
+            --bin "${WORK_DIR}/out/app/app.bin" \
+            --text "${WORK_DIR}/out/app/app.text" \
+            --trusted-setup "${WORK_DIR}/setup_compact.key" \
+            --output-dir "${WORK_DIR}/out/vks"
+
+          RUST_MIN_STACK=268435456 cargo "+${RUST_TOOLCHAIN}" run \
+            --locked \
+            --release \
+            --manifest-path "${WORK_DIR}/wrapper/Cargo.toml" \
+            -p zkos-wrapper \
+            --bin wrapper \
+            -- \
+            vk-hash \
+            --vk "${WORK_DIR}/out/vks/snark_vk.json" \
+            > "${WORK_DIR}/out/vk-hash.log" 2>&1
+
+          mapfile -t hashes < <(grep -oE '0x[0-9a-f]{64}' "${WORK_DIR}/out/vk-hash.log")
+          (( ${#hashes[@]} == 1 ))
+          [[ "${hashes[0]}" == "${STOCK_APP_VK_HASH}" ]]
+          printf '%s\n' "${hashes[0]}" > "${WORK_DIR}/out/vk-hash.txt"
+          sums_tmp="${WORK_DIR}/out.SHA256SUMS.tmp"
+          (
+            cd "${WORK_DIR}/out"
+            find . -type f -print0 | \
+              LC_ALL=C sort -z | \
+              xargs -0 sha256sum
+          ) > "${sums_tmp}"
+          mv "${sums_tmp}" "${WORK_DIR}/out/SHA256SUMS"
+
+      - name: Upload upstream reproduction artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syscoin-v32-v8-stock-control
+          path: ${{ env.WORK_DIR }}/out
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Remove control workspace
+        if: always()
+        run: |
+          set -euo pipefail
+          # SYSCOIN: Delete only this run's exact control directory and CRS copy.
+          expected="${RUNNER_TEMP}/syscoin-v32-v8-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-stock"
+          [[ -n "${WORK_DIR:-}" && "${WORK_DIR}" == "${expected}" && -d "${WORK_DIR}" ]]
+          rm -rf -- "${WORK_DIR}"
+
+  attest:
+    name: Reconcile keys and generate Era PLONK verifier
+    needs: [syscoin-keygen, stock-control]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    environment:
+      name: syscoin-v32-v8-keygen
+    steps:
+      - name: Checkout key-generation source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download keygen A
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: syscoin-v32-v8-keygen-a
+          path: ${{ runner.temp }}/syscoin-v32-v8-attest/a
+
+      - name: Download keygen B
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: syscoin-v32-v8-keygen-b
+          path: ${{ runner.temp }}/syscoin-v32-v8-attest/b
+
+      - name: Download stock control
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: syscoin-v32-v8-stock-control
+          path: ${{ runner.temp }}/syscoin-v32-v8-attest/stock
+
+      - name: Reconcile both reproducible keygens
+        run: |
+          set -euo pipefail
+          work_dir="${RUNNER_TEMP}/syscoin-v32-v8-attest"
+          mkdir -p "${work_dir}/final"
+          echo "WORK_DIR=${work_dir}" >> "${GITHUB_ENV}"
+
+          (
+            cd "${work_dir}/a"
+            sha256sum --check SHA256SUMS
+          )
+          (
+            cd "${work_dir}/b"
+            sha256sum --check SHA256SUMS
+          )
+          (
+            cd "${work_dir}/stock"
+            sha256sum --check SHA256SUMS
+          )
+
+          # SYSCOIN: A release key is accepted only when both clean key-generation runs
+          # reproduce every application and VK byte under distinct runner registrations.
+          for path in \
+            app/app.bin \
+            app/app.elf \
+            app/app.text \
+            app/manifest.toml \
+            aux-params.json \
+            end-params.txt \
+            program-commitment.txt \
+            vks/risc_wrapper_vk.json \
+            vks/compression_vk.json \
+            vks/snark_vk.json \
+            vk-hash.txt
+          do
+            cmp --silent "${work_dir}/a/${path}" "${work_dir}/b/${path}"
+          done
+          grep -Eq '^[0-9a-f]{64}$' "${work_dir}/a/runner-identity.sha256"
+          grep -Eq '^[0-9a-f]{64}$' "${work_dir}/b/runner-identity.sha256"
+          if cmp --silent \
+              "${work_dir}/a/runner-identity.sha256" \
+              "${work_dir}/b/runner-identity.sha256"
+          then
+            echo "keygen lanes used the same runner-name identity" >&2
+            exit 1
+          else
+            runner_cmp_exit="$?"
+            if [[ "${runner_cmp_exit}" != "1" ]]; then
+              echo "failed to compare keygen runner-name identities" >&2
+              exit "${runner_cmp_exit}"
+            fi
+          fi
+
+          syscoin_vk_hash="$(< "${work_dir}/a/vk-hash.txt")"
+          stock_vk_hash="$(< "${work_dir}/stock/vk-hash.txt")"
+          [[ "${syscoin_vk_hash}" =~ ^0x[0-9a-f]{64}$ ]]
+          [[ "${stock_vk_hash}" == "${STOCK_APP_VK_HASH}" ]]
+          [[ "${syscoin_vk_hash}" != "${stock_vk_hash}" ]]
+          printf '%s\n' "${syscoin_vk_hash}" > "${work_dir}/final/syscoin-v8-vk-hash.txt"
+
+      - name: Generate and compile the Era PLONK verifier
+        run: |
+          set -euo pipefail
+          export CARGO_HOME="${WORK_DIR}/cargo-home"
+          export RUSTUP_HOME="${WORK_DIR}/rustup-home"
+          era_dir="${WORK_DIR}/era-contracts"
+          output_dir="${WORK_DIR}/final/era"
+          mkdir -p "${output_dir}"
+
+          git clone --no-tags "${ERA_REPOSITORY}" "${era_dir}"
+          git -C "${era_dir}" checkout --detach "${ERA_BASE_COMMIT}"
+          [[ "$(git -C "${era_dir}" rev-parse HEAD)" == "${ERA_BASE_COMMIT}" ]]
+          [[ "$(git -C "${era_dir}" rev-parse 'HEAD^{tree}')" == "${ERA_BASE_TREE}" ]]
+          git -C "${era_dir}" submodule sync
+          git -C "${era_dir}" submodule update --init
+          [[ "$(git -C "${era_dir}/lib/@matterlabs/zksync-contracts" rev-parse HEAD)" == "${ERA_NESTED_COMMIT}" ]]
+
+          # SYSCOIN: The source-only Era patch is hash-attested above. The checked-in
+          # helper intentionally remains fail-closed until generated verifier hashes are approved,
+          # so this key-generation job applies the reviewed patch directly in its disposable checkout.
+          mapfile -t era_source_paths < <(
+            git -C "${era_dir}" apply \
+              --numstat \
+              --recount \
+              --unidiff-zero \
+              "${GITHUB_WORKSPACE}/scripts/patches/era-contracts-syscoin.patch" | \
+              awk -F '\t' '{print $3}' | \
+              LC_ALL=C sort
+          )
+          [[ "${#era_source_paths[@]}" == "${ERA_PATCH_PATH_COUNT}" ]]
+          git -C "${era_dir}" apply \
+            --check \
+            --recount \
+            --unidiff-zero \
+            --whitespace=error-all \
+            "${GITHUB_WORKSPACE}/scripts/patches/era-contracts-syscoin.patch"
+          git -C "${era_dir}" apply \
+            --recount \
+            --unidiff-zero \
+            --whitespace=error-all \
+            "${GITHUB_WORKSPACE}/scripts/patches/era-contracts-syscoin.patch"
+
+          # SYSCOIN: every reviewed source/config delta carries literal downstream provenance;
+          # generated JSON artifacts and the selector inventory are exact-tree checked below.
+          for era_source_path in "${era_source_paths[@]}"; do
+            case "${era_source_path}" in
+              *.sol | *.toml | *.gitignore)
+                grep -Fq 'SYSCOIN:' "${era_dir}/${era_source_path}"
+                ;;
+            esac
+          done
+
+          # SYSCOIN: retain exact pinned-upstream build/test and FFLONK key, generator,
+          # source, deployment, and review-tool bytes. It is dormant: no proof type may route to it.
+          fflonk_key_rel="tools/verifier-gen/data/ZKsyncOS_fflonk_scheduler_key.json"
+          fflonk_contract_rel="l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierFflonk.sol"
+          while read -r retained_size retained_sha256 retained_path; do
+            [[ -f "${era_dir}/${retained_path}" && ! -L "${era_dir}/${retained_path}" ]]
+            [[ "$(stat -c '%s' "${era_dir}/${retained_path}")" == "${retained_size}" ]]
+            [[ "$(sha256sum "${era_dir}/${retained_path}" | awk '{print $1}')" == \
+              "${retained_sha256}" ]]
+            if printf '%s\n' "${era_source_paths[@]}" | grep -Fqx "${retained_path}"
+            then
+              exit 1
+            fi
+          done <<'SYSCOIN_RETAINED_UPSTREAM_MANIFEST'
+          4895 cfa792fc502364d12c855c02724ceef0843aa193b711630fb87326e16197e4bd l1-contracts/foundry.toml
+          58881 4e272ef47b1ba6fbbdd546e8da4b97a130463b54ad48eb03431dfb59e6e44b2e l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/Committing.t.sol
+          77746 9308b1850d4197bd7b6a59cc35029f51b94ffce76f5951848669fd9424a07d48 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierFflonk.sol
+          1920 a1d093cf2bb0f5331c4a6bbf0e40d5f4888cc850324e8b9e406bde6686f07f77 tools/verifier-gen/data/ZKsyncOS_fflonk_scheduler_key.json
+          75842 b2b292b85a7f676d18bee0a0e98af3dbbd4bc05bcaccef1b8260e195652db647 tools/verifier-gen/data/fflonk_verifier_contract_template.txt
+          5122 7f015b5fbaebf4e21357c56db3282507256b0eb0bb44ed33f49b3d4be0c4c098 tools/verifier-gen/src/fflonk.rs
+          5962 f63ab6897dd986a6f5f36e1759d1d032f573c4aea9fcba42bc45a33c85df0e65 tools/verifier-gen/src/main.rs
+          1812 29736c7e0ad4a2e8e5b67e4f2de3064a05aef12db19783bb08635fbb2ed43cdc tools/verifier-gen/README.md
+          18272 315661d42cad03e6dbddf995f5f7f9fd3a5716518274d3c620e37922cae3490c .github/workflows/l1-contracts-ci.yaml
+          2656 e4c067ed467721e54b967fc57d1342f523c8690f7a5bb5726b348a449529c444 .github/workflows/slither.yaml
+          1510 18c4ad86772fc5e41d8241d1a7b2dc5f510610d99af44325ddb0ce98977b39bf .prettierignore
+          SYSCOIN_RETAINED_UPSTREAM_MANIFEST
+          zkos_router="${era_dir}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol"
+          grep -Fq \
+            'uint256 internal constant ZKSYNC_OS_PLONK_VERIFICATION_TYPE = 2;' \
+            "${zkos_router}"
+          grep -Fq \
+            'uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;' \
+            "${zkos_router}"
+          grep -Fq \
+            'mapping(uint32 => IVerifierV2) public fflonkVerifiers;' \
+            "${zkos_router}"
+          grep -Fq \
+            'fflonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION] = _fflonkVerifier;' \
+            "${zkos_router}"
+          if grep -Eq \
+            'ZKSYNC_OS_FFLONK_VERIFICATION_TYPE|fflonkVerifiers\[[^]]+\]\.verify' \
+            "${zkos_router}"
+          then
+            exit 1
+          fi
+          grep -Fq 'revert MockVerifierNotSupported();' "${zkos_router}"
+          grep -Fq 'return false;' "${zkos_router}"
+          testnet_router="${era_dir}/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol"
+          [[ -f "${testnet_router}" && ! -L "${testnet_router}" ]]
+          grep -Fq 'contract ZKsyncOSTestnetVerifier is ZKsyncOSDualVerifier' "${testnet_router}"
+          grep -Eq 'mockVerify[[:space:]]*\(' "${testnet_router}"
+          grep -Fq 'return true;' "${testnet_router}"
+          testnet_router_sha256="$(sha256sum "${testnet_router}" | awk '{print $1}')"
+
+          # SYSCOIN: Generated PLONK bytes are key-generation outputs, never concealed
+          # inside the reviewed source-only patch. Pinned FFLONK inputs/source also remain exact.
+          for candidate_only_path in \
+            tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json \
+            tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol \
+            l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol \
+            "${fflonk_key_rel}" \
+            "${fflonk_contract_rel}" \
+            tools/verifier-gen/src/main.rs \
+            tools/verifier-gen/README.md
+          do
+            if printf '%s\n' "${era_source_paths[@]}" | grep -Fqx "${candidate_only_path}"
+            then
+              exit 1
+            fi
+          done
+
+          git -C "${era_dir}" add -A -- "${era_source_paths[@]}"
+          [[ "$(git -C "${era_dir}" write-tree)" == "${ERA_SOURCE_PATCHED_TREE}" ]]
+          git -C "${era_dir}" reset --quiet
+          reviewed_selectors_sha256="$(
+            sha256sum "${era_dir}/l1-contracts/selectors" | awk '{print $1}'
+          )"
+          [[ "$(jq 'length' "${era_dir}/AllContractsHashes.json")" == \
+            "${ERA_CONTRACT_HASH_ENTRY_COUNT}" ]]
+          reviewed_plonk_zk_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .zkBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          reviewed_plonk_evm_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          reviewed_plonk_deployed_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          reviewed_plonk_deployed_blake_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeBlakeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          reviewed_inventory_without_plonk_sha256="$(
+            jq -S -c \
+              'map(select(.contractName != "l1-contracts/ZKsyncOSVerifierPlonk"))' \
+              "${era_dir}/AllContractsHashes.json" | \
+              sha256sum | \
+              awk '{print $1}'
+          )"
+          reviewed_plonk_shape_sha256="$(
+            jq -S -c \
+              '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | del(.zkBytecodeHash, .evmBytecodeHash, .evmDeployedBytecodeHash, .evmDeployedBytecodeBlakeHash)' \
+              "${era_dir}/AllContractsHashes.json" | \
+              sha256sum | \
+              awk '{print $1}'
+          )"
+          for reviewed_hash in \
+            "${reviewed_plonk_zk_hash}" \
+            "${reviewed_plonk_evm_hash}" \
+            "${reviewed_plonk_deployed_hash}" \
+            "${reviewed_plonk_deployed_blake_hash}"
+          do
+            [[ "${reviewed_hash}" =~ ^0x[0-9a-f]{64}$ ]]
+            [[ "${reviewed_hash}" != "${ZERO_B256}" ]]
+          done
+
+          cp \
+            "${WORK_DIR}/a/vks/snark_vk.json" \
+            "${era_dir}/tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"
+
+          rustup set profile minimal
+          rustup toolchain install "${ERA_VERIFIER_TOOLCHAIN}" --profile minimal
+          (
+            cd "${era_dir}/tools/verifier-gen"
+            # SYSCOIN: use the exact pinned-upstream dual-output generator. Only its
+            # PLONK input is replaced; the generated FFLONK must reproduce checked-in source.
+            cargo "+${ERA_VERIFIER_TOOLCHAIN}" run \
+              --locked \
+              --release \
+              --bin zksync_verifier_contract_generator \
+              -- \
+              --variant zksync-os
+          )
+
+          generated_key_rel="tools/verifier-gen/data/ZKsyncOS_plonk_scheduler_key.json"
+          generated_plonk_rel="tools/verifier-gen/data/ZKsyncOSVerifierPlonk.sol"
+          generated_fflonk_rel="tools/verifier-gen/data/ZKsyncOSVerifierFflonk.sol"
+          contract_plonk_rel="l1-contracts/contracts/state-transition/verifiers/ZKsyncOSVerifierPlonk.sol"
+          generated_plonk="${era_dir}/${generated_plonk_rel}"
+          generated_fflonk="${era_dir}/${generated_fflonk_rel}"
+          contract_plonk="${era_dir}/${contract_plonk_rel}"
+          contract_fflonk="${era_dir}/${fflonk_contract_rel}"
+          syscoin_vk_hash="$(< "${WORK_DIR}/final/syscoin-v8-vk-hash.txt")"
+          embedded_hash="$(grep -m1 -oE '0x[0-9a-f]{64}' "${generated_plonk}")"
+          [[ "${embedded_hash}" == "${syscoin_vk_hash}" ]]
+          grep -Fq \
+            "Contract was generated from a verification key with a hash of ${syscoin_vk_hash}" \
+            "${generated_plonk}"
+
+          # SYSCOIN: FFLONK is retained only as pinned-upstream compatibility surface;
+          # reproduce it byte-for-byte and exclude the temporary generated copy from candidates.
+          cmp --silent "${generated_fflonk}" "${contract_fflonk}"
+          retained_fflonk_sha256="$(sha256sum "${contract_fflonk}" | awk '{print $1}')"
+          rm -- "${generated_fflonk}"
+          cp "${generated_plonk}" "${contract_plonk}"
+
+          command -v node >/dev/null
+          node_major="$(node -p "process.versions.node.split('.')[0]")"
+          [[ "${node_major}" == "20" ]]
+          corepack enable
+          corepack prepare yarn@1.22.22 --activate
+          [[ "$(yarn --version)" == "1.22.22" ]]
+
+          # SYSCOIN: AllContractsHashes scans EVM and EraVM Foundry outputs from all
+          # four contract packages. Use the exact upstream-pinned foundry-zksync build;
+          # a partial Hardhat-only compile would silently produce an empty inventory.
+          foundry_archive="${WORK_DIR}/foundry_zksync_${FOUNDRY_ZKSYNC_VERSION}_linux_amd64.tar.gz"
+          foundry_dir="${WORK_DIR}/foundry-zksync-${FOUNDRY_ZKSYNC_VERSION}"
+          curl \
+            --fail \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --retry 3 \
+            --output "${foundry_archive}" \
+            "https://github.com/matter-labs/foundry-zksync/releases/download/foundry-zksync-${FOUNDRY_ZKSYNC_VERSION}/foundry_zksync_${FOUNDRY_ZKSYNC_VERSION}_linux_amd64.tar.gz"
+          [[ "$(stat -c '%s' "${foundry_archive}")" == "${FOUNDRY_ZKSYNC_ARCHIVE_SIZE}" ]]
+          [[ "$(sha256sum "${foundry_archive}" | awk '{print $1}')" == \
+            "${FOUNDRY_ZKSYNC_ARCHIVE_SHA256}" ]]
+          mkdir "${foundry_dir}"
+          tar --extract --gzip --file "${foundry_archive}" --directory "${foundry_dir}"
+          [[ -f "${foundry_dir}/forge" && ! -L "${foundry_dir}/forge" ]]
+          [[ -f "${foundry_dir}/cast" && ! -L "${foundry_dir}/cast" ]]
+          [[ "$(sha256sum "${foundry_dir}/forge" | awk '{print $1}')" == \
+            "${FOUNDRY_ZKSYNC_FORGE_SHA256}" ]]
+          [[ "$(sha256sum "${foundry_dir}/cast" | awk '{print $1}')" == \
+            "${FOUNDRY_ZKSYNC_CAST_SHA256}" ]]
+          chmod 0755 "${foundry_dir}/forge" "${foundry_dir}/cast"
+          export PATH="${foundry_dir}:${PATH}"
+          forge_version_output="$(forge --version)"
+          grep -Fqx \
+            'forge Version: 1.3.5-foundry-zksync-v0.1.5' \
+            <<< "${forge_version_output}"
+          grep -Eq \
+            "^Commit SHA: (${FOUNDRY_ZKSYNC_COMMIT}|VERGEN_IDEMPOTENT_OUTPUT)$" \
+            <<< "${forge_version_output}"
+          cast_version_output="$(cast --version)"
+          grep -Fqx \
+            'cast Version: 1.3.5-foundry-zksync-v0.1.5' \
+            <<< "${cast_version_output}"
+          grep -Eq \
+            "^Commit SHA: (${FOUNDRY_ZKSYNC_COMMIT}|VERGEN_IDEMPOTENT_OUTPUT)$" \
+            <<< "${cast_version_output}"
+
+          (
+            cd "${era_dir}"
+            yarn install --frozen-lockfile
+            bash ./recompute_hashes.sh
+            yarn calculate-hashes:check
+          )
+
+          # SYSCOIN: build-l1 may leave this disposable selector scratch file;
+          # it is not a reviewed source or verifier candidate artifact.
+          selectors_tmp="${era_dir}/l1-contracts/selectors.tmp"
+          [[ ! -L "${selectors_tmp}" ]]
+          if [[ -f "${selectors_tmp}" ]]; then
+            rm -- "${selectors_tmp}"
+          fi
+          # SYSCOIN: Production keygen generates type-2 PLONK bytes only and must
+          # not rewrite the explicitly retained fake-prover testnet mock source.
+          [[ "$(sha256sum "${testnet_router}" | awk '{print $1}')" == "${testnet_router_sha256}" ]]
+
+          # SYSCOIN: Re-attest bytes, not merely filenames, after dependency installation
+          # and compilation. Build tooling may not mutate any reviewed source path or either
+          # copy of the app-bound verifier, and the scheduler key must remain the exact lane-A VK.
+          git -C "${era_dir}" add -A -- "${era_source_paths[@]}"
+          [[ "$(git -C "${era_dir}" write-tree)" == "${ERA_SOURCE_PATCHED_TREE}" ]]
+          git -C "${era_dir}" reset --quiet
+          cmp --silent \
+            "${era_dir}/${generated_key_rel}" \
+            "${WORK_DIR}/a/vks/snark_vk.json"
+          cmp --silent "${generated_plonk}" "${contract_plonk}"
+          [[ "$(sha256sum "${contract_fflonk}" | awk '{print $1}')" == "${retained_fflonk_sha256}" ]]
+          post_build_embedded_hash="$(grep -m1 -oE '0x[0-9a-f]{64}' "${contract_plonk}")"
+          [[ "${post_build_embedded_hash}" == "${syscoin_vk_hash}" ]]
+          grep -Fq \
+            "Contract was generated from a verification key with a hash of ${syscoin_vk_hash}" \
+            "${contract_plonk}"
+
+          # SYSCOIN: The app-bound verifier changes creation/deployed bytecode hashes even
+          # though its ABI selectors do not change. Prove that the regenerated inventory
+          # is the only overlay on the reviewed source tree.
+          post_build_selectors_sha256="$(
+            sha256sum "${era_dir}/l1-contracts/selectors" | awk '{print $1}'
+          )"
+          [[ "${post_build_selectors_sha256}" == "${reviewed_selectors_sha256}" ]]
+          [[ "$(jq 'length' "${era_dir}/AllContractsHashes.json")" == \
+            "${ERA_CONTRACT_HASH_ENTRY_COUNT}" ]]
+          [[ "$(jq '[.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk")] | length' \
+            "${era_dir}/AllContractsHashes.json")" == "1" ]]
+          candidate_plonk_zk_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .zkBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          candidate_plonk_evm_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          candidate_plonk_deployed_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          candidate_plonk_deployed_blake_hash="$(
+            jq -r '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | .evmDeployedBytecodeBlakeHash' \
+              "${era_dir}/AllContractsHashes.json"
+          )"
+          candidate_inventory_without_plonk_sha256="$(
+            jq -S -c \
+              'map(select(.contractName != "l1-contracts/ZKsyncOSVerifierPlonk"))' \
+              "${era_dir}/AllContractsHashes.json" | \
+              sha256sum | \
+              awk '{print $1}'
+          )"
+          candidate_plonk_shape_sha256="$(
+            jq -S -c \
+              '.[] | select(.contractName == "l1-contracts/ZKsyncOSVerifierPlonk") | del(.zkBytecodeHash, .evmBytecodeHash, .evmDeployedBytecodeHash, .evmDeployedBytecodeBlakeHash)' \
+              "${era_dir}/AllContractsHashes.json" | \
+              sha256sum | \
+              awk '{print $1}'
+          )"
+          for candidate_hash in \
+            "${candidate_plonk_zk_hash}" \
+            "${candidate_plonk_evm_hash}" \
+            "${candidate_plonk_deployed_hash}" \
+            "${candidate_plonk_deployed_blake_hash}"
+          do
+            [[ "${candidate_hash}" =~ ^0x[0-9a-f]{64}$ ]]
+            [[ "${candidate_hash}" != "${ZERO_B256}" ]]
+          done
+          [[ "${candidate_plonk_zk_hash}" != "${reviewed_plonk_zk_hash}" ]]
+          [[ "${candidate_plonk_evm_hash}" != "${reviewed_plonk_evm_hash}" ]]
+          [[ "${candidate_plonk_deployed_hash}" != "${reviewed_plonk_deployed_hash}" ]]
+          [[ "${candidate_plonk_deployed_blake_hash}" != \
+            "${reviewed_plonk_deployed_blake_hash}" ]]
+          [[ "${candidate_inventory_without_plonk_sha256}" == \
+            "${reviewed_inventory_without_plonk_sha256}" ]]
+          [[ "${candidate_plonk_shape_sha256}" == "${reviewed_plonk_shape_sha256}" ]]
+
+          git -C "${era_dir}" add -A -- "${era_source_paths[@]}"
+          candidate_hashes_blob="$(git -C "${era_dir}" rev-parse ':AllContractsHashes.json')"
+          reviewed_hashes_blob="$(
+            git -C "${era_dir}" rev-parse "${ERA_SOURCE_PATCHED_TREE}:AllContractsHashes.json"
+          )"
+          reviewed_hashes_mode="$(
+            git -C "${era_dir}" ls-tree "${ERA_SOURCE_PATCHED_TREE}" -- AllContractsHashes.json | \
+              awk '{print $1}'
+          )"
+          [[ "${candidate_hashes_blob}" != "${reviewed_hashes_blob}" ]]
+          [[ "${reviewed_hashes_mode}" == "100644" ]]
+          git -C "${era_dir}" update-index \
+            --cacheinfo \
+            "${reviewed_hashes_mode},${reviewed_hashes_blob},AllContractsHashes.json"
+          [[ "$(git -C "${era_dir}" write-tree)" == "${ERA_SOURCE_PATCHED_TREE}" ]]
+          git -C "${era_dir}" reset --quiet
+
+          cp \
+            "${era_dir}/${generated_key_rel}" \
+            "${output_dir}/"
+          cp "${contract_plonk}" "${output_dir}/"
+          cp "${era_dir}/AllContractsHashes.json" "${output_dir}/"
+          printf '%s\n' "${post_build_selectors_sha256}" > "${output_dir}/selectors.sha256"
+
+          # SYSCOIN: Fail if compilation polluted the candidate. The atomic Era
+          # patch consists of the exact source postimage, its regenerated hash inventory,
+          # and exactly three app-bound PLONK artifacts.
+          mapfile -t expected_candidate_paths < <(
+            printf '%s\n' \
+              "${era_source_paths[@]}" \
+              "${generated_key_rel}" \
+              "${generated_plonk_rel}" \
+              "${contract_plonk_rel}" | \
+              LC_ALL=C sort -u
+          )
+          mapfile -t actual_candidate_paths < <(
+            git -C "${era_dir}" status --porcelain --untracked-files=all | \
+              sed -E 's/^.. //' | \
+              LC_ALL=C sort
+          )
+          [[ "${#actual_candidate_paths[@]}" == "${#expected_candidate_paths[@]}" ]]
+          [[ "$(printf '%s\n' "${actual_candidate_paths[@]}" | sha256sum | awk '{print $1}')" == \
+            "$(printf '%s\n' "${expected_candidate_paths[@]}" | sha256sum | awk '{print $1}')" ]]
+
+          git -C "${era_dir}" add -A -- "${expected_candidate_paths[@]}"
+          git -C "${era_dir}" diff --cached --check
+          git -C "${era_dir}" diff --cached --binary --no-ext-diff HEAD > \
+            "${output_dir}/era-contracts-v32-v8-plonk-candidate.patch"
+          [[ -s "${output_dir}/era-contracts-v32-v8-plonk-candidate.patch" ]]
+
+          git -C "${era_dir}" write-tree > "${output_dir}/era-patched-tree.txt"
+
+      - name: Produce fail-closed server candidate and attestation manifest
+        run: |
+          set -euo pipefail
+          output_dir="${WORK_DIR}/final"
+          syscoin_vk_hash="$(< "${output_dir}/syscoin-v8-vk-hash.txt")"
+          proving_version="lib/types/src/protocol/proving_version.rs"
+
+          # SYSCOIN: Prepare the server half of the atomic candidate without
+          # clearing the regeneration sentinel. The checked-out source starts and
+          # finishes this key-generation job with its zero VK, and no generated output can
+          # activate proving by itself.
+          git diff --quiet -- "${proving_version}"
+          grep -Fq \
+            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
+            "${proving_version}"
+          [[ "$(grep -Fc \
+            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
+            "${proving_version}")" == "1" ]]
+          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          restore_server_gate() {
+            git restore --source=HEAD --worktree -- "${proving_version}"
+          }
+          trap restore_server_gate EXIT
+          VK_HASH="${syscoin_vk_hash}" perl -0pi -e \
+            's/0x0{64}/$ENV{VK_HASH}/' \
+            "${proving_version}"
+          grep -Fq "\"${syscoin_vk_hash}\"" "${proving_version}"
+          if grep -Fq \
+              '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
+              "${proving_version}"
+          then
+            exit 1
+          fi
+          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          git diff --check -- "${proving_version}"
+          git diff --binary --no-ext-diff -- "${proving_version}" > \
+            "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+          [[ -s "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" ]]
+          restore_server_gate
+          trap - EXIT
+          git diff --quiet -- "${proving_version}"
+          grep -Fq \
+            '"0x0000000000000000000000000000000000000000000000000000000000000000"' \
+            "${proving_version}"
+          grep -Fq 'const V8_VK_REGENERATION_REQUIRED: bool = true;' "${proving_version}"
+          git apply --check "${output_dir}/zksync-os-server-v8-plonk-candidate.patch"
+
+          plonk_key_sha="$(sha256sum "${output_dir}/era/ZKsyncOS_plonk_scheduler_key.json" | awk '{print $1}')"
+          plonk_sol_sha="$(sha256sum "${output_dir}/era/ZKsyncOSVerifierPlonk.sol" | awk '{print $1}')"
+          all_contracts_hashes_sha="$(sha256sum "${output_dir}/era/AllContractsHashes.json" | awk '{print $1}')"
+          selectors_sha="$(< "${output_dir}/era/selectors.sha256")"
+          [[ "${selectors_sha}" =~ ^[0-9a-f]{64}$ ]]
+          era_patch_sha="$(sha256sum "${output_dir}/era/era-contracts-v32-v8-plonk-candidate.patch" | awk '{print $1}')"
+          server_patch_sha="$(sha256sum "${output_dir}/zksync-os-server-v8-plonk-candidate.patch" | awk '{print $1}')"
+          era_candidate_tree="$(< "${output_dir}/era/era-patched-tree.txt")"
+          [[ "${era_candidate_tree}" =~ ^[0-9a-f]{40}$ ]]
+
+          jq -n \
+            --arg schema "syscoin-v32-v8-security100-keygen-v2" \
+            --arg server_revision "${GITHUB_SHA}" \
+            --arg zksync_os_base "${ZKSYNC_OS_BASE_COMMIT}" \
+            --arg zksync_os_patched_tree "${ZKSYNC_OS_PATCHED_TREE}" \
+            --arg airbender "${AIRBENDER_COMMIT}" \
+            --arg airbender_release "${AIRBENDER_RELEASE}" \
+            --arg cargo_airbender "${AIRBENDER_PLATFORM_COMMIT}" \
+            --arg wrapper "${WRAPPER_COMMIT}" \
+            --arg upstream_prover "${PROVER_COMMIT}" \
+            --arg era_base "${ERA_BASE_COMMIT}" \
+            --arg era_source_patched_tree "${ERA_SOURCE_PATCHED_TREE}" \
+            --arg era_candidate_tree "${era_candidate_tree}" \
+            --arg foundry_zksync_version "${FOUNDRY_ZKSYNC_VERSION}" \
+            --arg foundry_zksync_commit "${FOUNDRY_ZKSYNC_COMMIT}" \
+            --arg foundry_zksync_archive_sha256 "${FOUNDRY_ZKSYNC_ARCHIVE_SHA256}" \
+            --arg foundry_zksync_forge_sha256 "${FOUNDRY_ZKSYNC_FORGE_SHA256}" \
+            --arg foundry_zksync_cast_sha256 "${FOUNDRY_ZKSYNC_CAST_SHA256}" \
+            --arg crs_sha256 "${CRS_SHA256}" \
+            --arg crs_size "${CRS_SIZE}" \
+            --arg app_bin_sha256 "${APP_BIN_SHA256}" \
+            --arg app_text_sha256 "${APP_TEXT_SHA256}" \
+            --arg app_elf_sha256 "${APP_ELF_SHA256}" \
+            --arg manifest_sha256 "${APP_MANIFEST_SHA256}" \
+            --arg program_commitment "${SECURITY100_COMMITMENT}" \
+            --arg stock_program_commitment "${STOCK_SECURITY100_COMMITMENT}" \
+            --arg vk_hash "${syscoin_vk_hash}" \
+            --arg stock_vk_hash "${STOCK_APP_VK_HASH}" \
+            --arg plonk_key_sha256 "${plonk_key_sha}" \
+            --arg plonk_sol_sha256 "${plonk_sol_sha}" \
+            --arg all_contracts_hashes_sha256 "${all_contracts_hashes_sha}" \
+            --arg selectors_sha256 "${selectors_sha}" \
+            --arg era_patch_sha256 "${era_patch_sha}" \
+            --arg server_patch_sha256 "${server_patch_sha}" \
+            '{
+              schema: $schema,
+              protocol: {major: 0, minor: 32, patch: 0, execution: 7, proving: 8, security_bits: 100},
+              sources: {
+                server_revision: $server_revision,
+                zksync_os_base: $zksync_os_base,
+                zksync_os_patched_tree: $zksync_os_patched_tree,
+                airbender: $airbender,
+                airbender_release: $airbender_release,
+                cargo_airbender: $cargo_airbender,
+                wrapper: $wrapper,
+                upstream_prover: $upstream_prover,
+                era_base: $era_base,
+                era_source_patched_tree: $era_source_patched_tree
+              },
+              contract_toolchain: {
+                foundry_zksync_version: $foundry_zksync_version,
+                foundry_zksync_commit: $foundry_zksync_commit,
+                archive_sha256: $foundry_zksync_archive_sha256,
+                forge_sha256: $foundry_zksync_forge_sha256,
+                cast_sha256: $foundry_zksync_cast_sha256
+              },
+              crs: {sha256: $crs_sha256, size: ($crs_size | tonumber)},
+              app: {
+                bin_sha256: $app_bin_sha256,
+                text_sha256: $app_text_sha256,
+                elf_sha256: $app_elf_sha256,
+                manifest_sha256: $manifest_sha256,
+                security100_program_commitment: $program_commitment
+              },
+              verification_key: {
+                app_bound_plonk_hash: $vk_hash,
+                upstream_program_commitment: $stock_program_commitment,
+                upstream_app_bound_reproduction_hash: $stock_vk_hash,
+                reproducible_keygens_equal: true,
+                distinct_runner_names: true,
+                physical_host_independence_requires_operator_attestation: true
+              },
+              atomic_update_candidates: {
+                era_plonk_key_sha256: $plonk_key_sha256,
+                era_plonk_sol_sha256: $plonk_sol_sha256,
+                era_all_contracts_hashes_sha256: $all_contracts_hashes_sha256,
+                era_selectors_sha256: $selectors_sha256,
+                era_candidate_patch_sha256: $era_patch_sha256,
+                era_candidate_tree: $era_candidate_tree,
+                server_plonk_candidate_patch_sha256: $server_patch_sha256,
+                must_be_reviewed_and_applied_together: true
+              },
+              release_gate: {
+                deployment_tag_or_repository_push_performed: false,
+                production_verifier_route: "plonk-only",
+                production_verifier_type: 2,
+                zksync_os_fflonk_artifact_or_deployer_present: true,
+                zksync_os_fflonk_proof_route_present: false,
+                testnet_mock_route_retained: true,
+                testnet_mock_candidate_generated: false,
+                checked_out_server_vk_remains_zero: true,
+                server_regeneration_sentinel_cleared: false,
+                note: "Fail closed: both atomic candidates require separate release review; this key-generation workflow only uploads attestations and never activates, deploys, tags, or pushes them."
+              }
+            }' > "${output_dir}/attestation.json"
+          jq -e . "${output_dir}/attestation.json" >/dev/null
+
+          sums_tmp="${WORK_DIR}/final.SHA256SUMS.tmp"
+          (
+            cd "${output_dir}"
+            find . -type f -print0 | \
+              LC_ALL=C sort -z | \
+              xargs -0 sha256sum
+          ) > "${sums_tmp}"
+          mv "${sums_tmp}" "${output_dir}/SHA256SUMS"
+          (
+            cd "${output_dir}"
+            sha256sum --check SHA256SUMS
+          )
+
+      - name: Upload final non-deploying attestation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: syscoin-v32-v8-security100-attestation
+          path: ${{ env.WORK_DIR }}/final
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+      - name: Remove attestation workspace
+        if: always()
+        run: |
+          set -euo pipefail
+          expected="${RUNNER_TEMP}/syscoin-v32-v8-attest"
+          [[ -n "${WORK_DIR:-}" && "${WORK_DIR}" == "${expected}" && -d "${WORK_DIR}" ]]
+          rm -rf -- "${WORK_DIR}"

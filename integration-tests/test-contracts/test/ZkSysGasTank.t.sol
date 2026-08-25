@@ -10,6 +10,127 @@ import {ZkSysProxyAdmin} from "contracts/src/zksys/ZkSysProxyAdmin.sol";
 import {SyscoinZKSYSToken} from "contracts/src/zksys/SyscoinZKSYSToken.sol";
 import {IZkSysGasToken, ZkSysGasTank} from "contracts/src/zksys/ZkSysGasTank.sol";
 
+// SYSCOIN: adversarial token used to pin the tank's exact-transfer and
+// callback isolation requirements. Production zkSYS is exact-transfer and
+// callback-free today, but its proxy must remain safe across future upgrades.
+contract AdversarialGasToken is IZkSysGasToken {
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    uint256 public transferFromFee;
+    uint256 public transferFromExtraDebit;
+    uint256 public transferExtraDebit;
+    uint256 public transferDeliveryFee;
+    uint256 public burnExtraDebit;
+    address public callbackTarget;
+    bytes private _callbackData;
+    address public observedAccount;
+    uint256 public observedCreditDuringCallback;
+    bool public callbackAttempted;
+    bool public callbackSucceeded;
+    bytes4 public callbackRevertSelector;
+
+    function decimals() external pure returns (uint8) {
+        return 18;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        return _balances[account];
+    }
+
+    function allowance(address owner, address spender) external view returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function mint(address account, uint256 amount) external {
+        _balances[account] += amount;
+    }
+
+    function confiscate(address account, uint256 amount) external {
+        _balances[account] -= amount;
+    }
+
+    function approve(address spender, uint256 amount) external returns (bool) {
+        _allowances[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function setTransferFromFee(uint256 fee) external {
+        transferFromFee = fee;
+    }
+
+    function setTransferFromExtraDebit(uint256 extraDebit) external {
+        transferFromExtraDebit = extraDebit;
+    }
+
+    function setTransferBehavior(uint256 extraDebit, uint256 deliveryFee) external {
+        transferExtraDebit = extraDebit;
+        transferDeliveryFee = deliveryFee;
+    }
+
+    function setBurnExtraDebit(uint256 extraDebit) external {
+        burnExtraDebit = extraDebit;
+    }
+
+    function configureCallback(address target, bytes calldata data, address account) external {
+        callbackTarget = target;
+        _callbackData = data;
+        observedAccount = account;
+        callbackAttempted = false;
+        callbackSucceeded = false;
+        callbackRevertSelector = bytes4(0);
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        uint256 allowed = _allowances[from][msg.sender];
+        require(allowed >= amount, "allowance");
+        _allowances[from][msg.sender] = allowed - amount;
+
+        uint256 fee = transferFromFee;
+        require(amount >= fee, "fee");
+        _balances[from] -= amount + transferFromExtraDebit;
+        _balances[to] += amount - fee;
+        _attemptCallback();
+        return true;
+    }
+
+    function transfer(address to, uint256 amount) external returns (bool) {
+        uint256 deliveryFee = transferDeliveryFee;
+        require(amount >= deliveryFee, "delivery fee");
+        _balances[msg.sender] -= amount + transferExtraDebit;
+        _balances[to] += amount - deliveryFee;
+        _attemptCallback();
+        return true;
+    }
+
+    function burn(address from, uint256 amount) external returns (bool) {
+        _balances[from] -= amount + burnExtraDebit;
+        _attemptCallback();
+        return true;
+    }
+
+    function _attemptCallback() private {
+        address target = callbackTarget;
+        if (target == address(0)) {
+            return;
+        }
+
+        // A read-only callback is allowed and proves funding credit is not
+        // published until the exact token transfer has completed.
+        observedCreditDuringCallback = ZkSysGasTank(target).creditOf(observedAccount);
+        callbackAttempted = true;
+        bytes memory returnData;
+        (callbackSucceeded, returnData) = target.call(_callbackData);
+        if (!callbackSucceeded && returnData.length >= 4) {
+            bytes4 selector;
+            assembly {
+                selector := mload(add(returnData, 0x20))
+            }
+            callbackRevertSelector = selector;
+        }
+    }
+}
+
 contract ZkSysGasTankTest is Test {
     // Must match the bootloader constants in zksync-os
     // basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_gas_tank.rs.
@@ -146,6 +267,249 @@ contract ZkSysGasTankTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.InsufficientCredit.selector, 10 ether, 11 ether));
         tank.withdraw(11 ether);
         vm.stopPrank();
+    }
+
+    function test_WithdrawFailsClosedWhenTotalCreditsInvariantIsCorrupted() public {
+        vm.startPrank(alice);
+        token.approve(address(tank), 10 ether);
+        tank.fund(10 ether);
+        vm.stopPrank();
+
+        // Emulate a prior faulty direct bootloader mutation: the account still
+        // owns ten credits but the aggregate claims to back only one.
+        vm.store(address(tank), bytes32(TOTAL_CREDITS_SLOT), bytes32(uint256(1 ether)));
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TotalCreditsUnderflow.selector, 1 ether, 2 ether));
+        tank.withdraw(2 ether);
+
+        assertEq(tank.creditOf(alice), 10 ether);
+        assertEq(tank.totalCredits(), 1 ether);
+        assertEq(token.balanceOf(address(tank)), 10 ether);
+    }
+
+    function test_FeeOnTransferFundingRevertsAtomically() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+        adversarialToken.setTransferFromFee(1 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TokenBalanceMismatch.selector, 10 ether, 9 ether));
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+
+        // The failed exact-balance check reverts both contracts atomically.
+        assertEq(adversarialToken.balanceOf(alice), 100 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 0);
+        assertEq(adversarialToken.allowance(alice, address(guardedTank)), 10 ether);
+        assertEq(guardedTank.creditOf(alice), 0);
+        assertEq(guardedTank.totalCredits(), 0);
+    }
+
+    function test_FunderOverDebitRevertsAtomically() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+        adversarialToken.setTransferFromExtraDebit(1 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TokenBalanceMismatch.selector, 90 ether, 89 ether));
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+
+        assertEq(adversarialToken.balanceOf(alice), 100 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 0);
+        assertEq(adversarialToken.allowance(alice, address(guardedTank)), 10 ether);
+        assertEq(guardedTank.creditOf(alice), 0);
+        assertEq(guardedTank.totalCredits(), 0);
+    }
+
+    function test_FundingFailsClosedUntilPreexistingDeficitIsRestored() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 10 ether);
+        adversarialToken.mint(bob, 20 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+        adversarialToken.confiscate(address(guardedTank), 1 ether);
+
+        vm.startPrank(bob);
+        adversarialToken.approve(address(guardedTank), 5 ether);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.InsufficientBacking.selector, 9 ether, 10 ether));
+        guardedTank.fund(5 ether);
+        vm.stopPrank();
+
+        assertEq(adversarialToken.balanceOf(bob), 20 ether);
+        assertEq(adversarialToken.allowance(bob, address(guardedTank)), 5 ether);
+        assertEq(guardedTank.creditOf(bob), 0);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+
+        // A direct donation restores solvency without mutating consensus
+        // ledger slots; subsequent exact funding can safely proceed.
+        adversarialToken.mint(address(guardedTank), 1 ether);
+        vm.prank(bob);
+        guardedTank.fund(5 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 15 ether);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.creditOf(bob), 5 ether);
+        assertEq(guardedTank.totalCredits(), 15 ether);
+    }
+
+    function test_TokenCallbackCannotReenterOrObserveUncommittedCredit() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+        adversarialToken.configureCallback(address(guardedTank), abi.encodeCall(ZkSysGasTank.fund, (1)), alice);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 20 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+
+        assertTrue(adversarialToken.callbackAttempted());
+        assertFalse(adversarialToken.callbackSucceeded());
+        assertEq(adversarialToken.callbackRevertSelector(), ZkSysGasTank.ReentrantCall.selector);
+        assertEq(adversarialToken.observedCreditDuringCallback(), 0);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 10 ether);
+
+        // A completed call clears transient guard state; a later transaction
+        // can fund normally and its callback sees only already-committed credit.
+        vm.prank(alice);
+        guardedTank.fund(5 ether);
+        assertFalse(adversarialToken.callbackSucceeded());
+        assertEq(adversarialToken.callbackRevertSelector(), ZkSysGasTank.ReentrantCall.selector);
+        assertEq(adversarialToken.observedCreditDuringCallback(), 10 ether);
+        assertEq(guardedTank.creditOf(alice), 15 ether);
+        assertEq(guardedTank.totalCredits(), 15 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 15 ether);
+    }
+
+    function test_WithdrawAndBurnTokenCallbacksCannotReenter() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+
+        adversarialToken.configureCallback(
+            address(guardedTank), abi.encodeCall(ZkSysGasTank.withdraw, (1 ether)), alice
+        );
+        vm.prank(alice);
+        guardedTank.withdraw(2 ether);
+
+        assertTrue(adversarialToken.callbackAttempted());
+        assertFalse(adversarialToken.callbackSucceeded());
+        assertEq(adversarialToken.callbackRevertSelector(), ZkSysGasTank.ReentrantCall.selector);
+        assertEq(guardedTank.creditOf(alice), 8 ether);
+        assertEq(guardedTank.totalCredits(), 8 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 8 ether);
+
+        // Directly donated tokens are surplus. The token's burn callback also
+        // cannot recursively enter permissionless surplus burning.
+        adversarialToken.mint(address(guardedTank), 2 ether);
+        adversarialToken.configureCallback(address(guardedTank), abi.encodeCall(ZkSysGasTank.burnSurplus, ()), alice);
+        assertEq(guardedTank.burnSurplus(), 2 ether);
+
+        assertTrue(adversarialToken.callbackAttempted());
+        assertFalse(adversarialToken.callbackSucceeded());
+        assertEq(adversarialToken.callbackRevertSelector(), ZkSysGasTank.ReentrantCall.selector);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 8 ether);
+        assertEq(guardedTank.totalCredits(), 8 ether);
+    }
+
+    function test_WithdrawRejectsTokenOverDebitAtomically() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+        adversarialToken.mint(address(guardedTank), 5 ether);
+        adversarialToken.setTransferBehavior(1 ether, 0);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TokenBalanceMismatch.selector, 13 ether, 12 ether));
+        guardedTank.withdraw(2 ether);
+
+        assertEq(adversarialToken.balanceOf(alice), 90 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 15 ether);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+    }
+
+    function test_WithdrawFailsClosedWhenBackingWasConfiscated() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+        adversarialToken.confiscate(address(guardedTank), 1 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.InsufficientBacking.selector, 9 ether, 10 ether));
+        guardedTank.withdraw(2 ether);
+
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 9 ether);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+    }
+
+    function test_WithdrawRejectsTokenUnderDeliveryAtomically() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+        adversarialToken.setTransferBehavior(0, 1 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TokenBalanceMismatch.selector, 92 ether, 91 ether));
+        guardedTank.withdraw(2 ether);
+
+        assertEq(adversarialToken.balanceOf(alice), 90 ether);
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 10 ether);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+    }
+
+    function test_BurnRejectsTokenOverDebitAtomically() public {
+        AdversarialGasToken adversarialToken = new AdversarialGasToken();
+        ZkSysGasTank guardedTank = new ZkSysGasTank(IZkSysGasToken(address(adversarialToken)));
+        adversarialToken.mint(alice, 100 ether);
+
+        vm.startPrank(alice);
+        adversarialToken.approve(address(guardedTank), 10 ether);
+        guardedTank.fund(10 ether);
+        vm.stopPrank();
+        adversarialToken.mint(address(guardedTank), 3 ether);
+        adversarialToken.setBurnExtraDebit(1 ether);
+
+        vm.expectRevert(abi.encodeWithSelector(ZkSysGasTank.TokenBalanceMismatch.selector, 10 ether, 9 ether));
+        guardedTank.burnSurplus();
+
+        assertEq(adversarialToken.balanceOf(address(guardedTank)), 13 ether);
+        assertEq(guardedTank.creditOf(alice), 10 ether);
+        assertEq(guardedTank.totalCredits(), 10 ether);
+        assertEq(guardedTank.surplus(), 3 ether);
     }
 
     function test_ConstructorRejectsNonNativeDecimals() public {
@@ -436,6 +800,31 @@ contract ZkSysGasTankTest is Test {
         tank.withdraw(coinbaseCredit);
         assertEq(token.balanceOf(address(tank)), 0);
         assertEq(tank.totalCredits(), 0);
+    }
+
+    function testFuzz_BootloaderSettlementPreservesLedgerAndBacking(uint96 rawFee, uint96 rawRefund, uint96 rawTip)
+        public
+    {
+        uint256 initialCredit = 100 ether;
+        uint256 fee = bound(uint256(rawFee), 1, initialCredit);
+        uint256 refund = bound(uint256(rawRefund), 0, fee);
+        uint256 tip = bound(uint256(rawTip), 0, fee - refund);
+        uint256 burned = fee - refund - tip;
+
+        vm.startPrank(alice);
+        token.approve(address(tank), initialCredit);
+        tank.fund(initialCredit);
+        vm.stopPrank();
+
+        _stfPrecharge(alice, fee);
+        _stfCreditAccountOnly(alice, refund);
+        _stfCreditAccountOnly(coinbase, tip);
+        _stfDebitTotalCredits(burned);
+
+        uint256 sumCredits = tank.creditOf(alice) + tank.creditOf(coinbase);
+        assertEq(tank.totalCredits(), sumCredits);
+        assertGe(token.balanceOf(address(tank)), tank.totalCredits());
+        assertEq(tank.surplus(), burned);
     }
 
     function test_BurnSurplusRevertsWithoutSurplus() public {
