@@ -188,6 +188,17 @@ where
         self.config.operator_signer.address().await
     }
 
+    async fn confirmed_nonce_baseline(&self) -> anyhow::Result<u64> {
+        let operator_address = self.operator_address().await?;
+        self.provider
+            .get_transaction_count(operator_address)
+            // SYSCOIN: The inbound queue is derived from the settlement-layer snapshot; on an
+            // edge chain this is Gateway rather than L1, so preserve the generalized field.
+            .block_id(BlockId::number(self.sl_block_number))
+            .await
+            .context("get confirmed transaction count")
+    }
+
     pub async fn run_l1_sender(
         &self,
         // == plumbing ==
@@ -196,6 +207,19 @@ where
         state_reporter: ComponentStateReporter,
     ) -> anyhow::Result<()> {
         self.config.fee_config.validate_syscoin_fee_caps()?;
+
+        // SYSCOIN: Recovery must use the same settlement-layer snapshot as the inbound queue.
+        // Capture its nonce before waiting for a first non-passthrough command can let that
+        // snapshot age out of history.
+        let confirmed_nonce =
+            if self.config.pipelining_enabled || !self.config.force_transaction_resubmission {
+                // SYSCOIN: Capture the result early but defer handling it until after passthroughs
+                // are drained. Pipeline recovery then propagates it, while stop-and-wait keeps
+                // its established warn-and-continue boundary below.
+                Some(self.confirmed_nonce_baseline().await)
+            } else {
+                None
+            };
 
         // Process all potential passthrough commands first
         if self
@@ -211,9 +235,16 @@ where
         // (and of the component future moved by value at pipeline spawn), whose size is
         // stack-critical — see the stack-overflow note in `pipelined.rs`.
         if self.config.pipelining_enabled {
-            Box::pin(self.run_pipelined(inbound, outbound, state_reporter)).await
+            Box::pin(self.run_pipelined(
+                inbound,
+                outbound,
+                state_reporter,
+                confirmed_nonce.expect("pipelined sender must capture the nonce baseline")?,
+            ))
+            .await
         } else {
-            Box::pin(self.run_stop_and_wait(inbound, outbound, state_reporter)).await
+            Box::pin(self.run_stop_and_wait(inbound, outbound, state_reporter, confirmed_nonce))
+                .await
         }
     }
 
@@ -224,6 +255,7 @@ where
         mut inbound: PeekableReceiver<L1SenderCommand<Input>>,
         outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
         state_reporter: ComponentStateReporter,
+        confirmed_nonce: Option<anyhow::Result<u64>>,
     ) -> anyhow::Result<()> {
         let command_name = Input::COMPONENT_ID.as_str();
         let fee_config = self.config.fee_config;
@@ -236,10 +268,16 @@ where
         let recovered = if force_transaction_resubmission {
             vec![]
         } else {
-            match self
-                .recover_in_flight_txs(&mut inbound, &state_reporter)
-                .await
+            let recovery_result = match confirmed_nonce
+                .expect("stop-and-wait recovery must capture the nonce baseline")
             {
+                Ok(confirmed_nonce) => {
+                    self.recover_in_flight_txs(&mut inbound, &state_reporter, confirmed_nonce)
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+            match recovery_result {
                 Ok(paired) => paired,
                 Err(err) => {
                     tracing::warn!("Error during in-flight transaction recovery: {err}");
@@ -805,23 +843,19 @@ where
     /// the loop stops and whatever has been paired so far is returned — the unmatched command
     /// remains in `inbound` for the normal send path.
     ///
-    /// `l1_block_number` must be the same L1 block at which `getTotalBatches*` was called when
-    /// constructing the inbound command queue. Pinning the confirmed-nonce baseline to that block
-    /// prevents the race where txs mined between the `getTotalBatches` call and this nonce check
-    /// cause us to mis-count in-flight txs and crash on calldata mismatch.
+    /// SYSCOIN: `sl_block_number` must be the same settlement-layer block at which
+    /// `getTotalBatches*` was called when constructing the inbound command queue. Pinning the
+    /// confirmed-nonce baseline to that block prevents the race where txs mined between the
+    /// `getTotalBatches` call and this nonce check cause us to mis-count in-flight txs and crash
+    /// on calldata mismatch.
     async fn recover_in_flight_txs(
         &self,
         inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
         state_reporter: &ComponentStateReporter,
+        latest_nonce: u64,
     ) -> anyhow::Result<Vec<(alloy::primitives::B256, Input)>> {
         let command_name = Input::COMPONENT_ID.as_str();
         let operator_address = self.operator_address().await?;
-        let latest_nonce = self
-            .provider
-            .get_transaction_count(operator_address)
-            .block_id(BlockId::number(self.sl_block_number))
-            .await
-            .context("get confirmed transaction count")?;
         let pending_nonce = self
             .provider
             .get_transaction_count(operator_address)
@@ -1645,6 +1679,160 @@ fn padded_estimated_gas_limit(estimated_gas: u64, block_gas_limit: u64) -> anyho
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::commit::CommitCommand;
+    use crate::config::L1SenderConfig;
+    use alloy::network::EthereumWallet;
+    use alloy::primitives::U64;
+    use alloy::providers::ProviderBuilder;
+    use alloy::rpc::json_rpc::ErrorPayload;
+    use alloy::rpc::types::{Block, Header};
+    use alloy::signers::k256::ecdsa::SigningKey;
+    use alloy::transports::mock::Asserter;
+    use zksync_os_operator_signer::SignerConfig;
+    use zksync_os_provider::NodeProvider;
+
+    fn mocked_header() -> Header {
+        let block: Block = Block::default();
+        block.header
+    }
+
+    async fn mocked_node_provider(asserter: &Asserter) -> NodeProvider {
+        asserter.push_success(&mocked_header());
+        asserter.push_success(&mocked_header());
+        asserter.push_failure(ErrorPayload {
+            code: METHOD_NOT_FOUND_CODE,
+            message: "eth_config unavailable".into(),
+            data: None,
+        });
+        asserter.push_success(&U64::from(zksync_os_provider::ANVIL_L1_CHAIN_ID));
+        let provider = ProviderBuilder::new()
+            .disable_recommended_fillers()
+            .wallet(EthereumWallet::default())
+            .connect_mocked_client(asserter.clone());
+        NodeProvider::new(provider)
+            .await
+            .expect("mocked provider construction should succeed")
+    }
+
+    fn mocked_l1_sender(
+        provider: NodeProvider,
+        pipelining_enabled: bool,
+    ) -> L1Sender<CommitCommand> {
+        L1Sender {
+            provider,
+            config: L1SenderConfig {
+                operator_signer: SignerConfig::Local(
+                    SigningKey::from_slice(&[1_u8; 32]).expect("valid test signing key"),
+                ),
+                fee_config: L1SenderFeeConfig {
+                    // SYSCOIN: Exercise the upstream nonce regression through the production fee
+                    // policy rather than bypassing the Syscoin miner-tip floor.
+                    max_fee_per_gas_wei: SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
+                    max_priority_fee_per_gas_wei: SYSCOIN_L1_PRIORITY_FEE_FLOOR_WEI,
+                    max_fee_per_gas_replacement_multiplier: 2.0,
+                    max_priority_fee_per_gas_replacement_multiplier: 2.0,
+                },
+                force_transaction_resubmission: false,
+                command_limit: 1,
+                pipelining_enabled,
+                poll_interval: Duration::from_millis(1),
+                transaction_timeout: Duration::from_secs(1),
+                tx_liveness_poll_interval: Duration::from_millis(1),
+                tx_liveness_max_missing_polls: 0,
+                gateway_da_admission_retry_timeout: Duration::from_secs(1),
+                gateway_da_admission_retry_interval: Duration::from_millis(1),
+                required_confirmations: 1,
+                nonce_error_max_attempts: 1,
+                nonce_error_retry_backoff: Duration::from_millis(1),
+                phantom_data: Default::default(),
+            },
+            to_address: Address::ZERO,
+            gateway: false,
+            commit_submitted_tx: None,
+            sl_block_number: 42,
+        }
+    }
+
+    async fn wait_for_mock_requests(asserter: &Asserter) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !asserter.read_q().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expected mock requests were not issued");
+    }
+
+    #[tokio::test]
+    async fn captures_confirmed_nonce_before_waiting_for_first_command() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        asserter.push_success(&U64::from(7));
+
+        let sender = mocked_l1_sender(provider, true);
+        let (_input_tx, input_rx) = mpsc::channel(1);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_baseline_test");
+
+        let task = tokio::spawn(async move {
+            sender
+                .run_l1_sender(PeekableReceiver::new(input_rx), output_tx, state_reporter)
+                .await
+        });
+        wait_for_mock_requests(&asserter).await;
+
+        task.abort();
+        assert!(
+            task.await
+                .expect_err("task should be cancelled")
+                .is_cancelled()
+        );
+    }
+
+    #[tokio::test]
+    async fn pipelined_nonce_failure_is_deferred_until_recovery() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: "historical state temporarily unavailable".into(),
+            data: None,
+        });
+
+        let sender = mocked_l1_sender(provider, true);
+        let (input_tx, input_rx) = mpsc::channel(1);
+        drop(input_tx);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_deferred_test");
+
+        sender
+            .run_l1_sender(PeekableReceiver::new(input_rx), output_tx, state_reporter)
+            .await
+            .expect("a nonce failure must not preempt passthrough draining");
+    }
+
+    #[tokio::test]
+    async fn stop_and_wait_nonce_failure_stays_inside_recovery_boundary() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        let sender = mocked_l1_sender(provider, false);
+        let (input_tx, input_rx) = mpsc::channel(1);
+        drop(input_tx);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_fallback_test");
+
+        sender
+            .run_stop_and_wait(
+                PeekableReceiver::new(input_rx),
+                output_tx,
+                state_reporter,
+                Some(Err(anyhow::anyhow!(
+                    "historical state temporarily unavailable"
+                ))),
+            )
+            .await
+            .expect("stop-and-wait must preserve its best-effort recovery fallback");
+    }
 
     #[test]
     fn simulation_gas_limit_respects_l1_block_limit() {
@@ -1684,7 +1872,6 @@ mod tests {
 
     #[test]
     fn nonce_error_classification() {
-        use alloy::rpc::json_rpc::ErrorPayload;
         use alloy::transports::TransportErrorKind;
 
         let resp = |message: &str| {

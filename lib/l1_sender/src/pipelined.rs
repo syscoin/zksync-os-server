@@ -45,7 +45,6 @@ use crate::metrics::L1_SENDER_METRICS;
 use crate::pipeline_component::L1Sender;
 use crate::{FeeParams, L1SenderState, METHOD_NOT_FOUND_CODE, SimPrefixEntry};
 use alloy::consensus::Transaction as ConsensusTransaction;
-use alloy::eips::BlockId;
 use alloy::network::{Ethereum, Network, TransactionResponse};
 use alloy::primitives::{Address, B256};
 use alloy::providers::Provider;
@@ -147,6 +146,7 @@ where
         mut inbound: PeekableReceiver<L1SenderCommand<Input>>,
         outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
         state_reporter: ComponentStateReporter,
+        latest_nonce: u64,
     ) -> anyhow::Result<()> {
         let command_name = Input::COMPONENT_ID.as_str();
         let operator_address = self.operator_address().await?;
@@ -161,7 +161,12 @@ where
         };
 
         let start = self
-            .plan_pipelined_recovery(&mut inbound, &state_reporter, operator_address)
+            .plan_pipelined_recovery(
+                &mut inbound,
+                &state_reporter,
+                operator_address,
+                latest_nonce,
+            )
             .await?
             .context("inbound channel closed during in-flight recovery")?;
 
@@ -758,11 +763,11 @@ where
     /// continue from, and whether a stale suffix must be replaced with bumped fees.
     ///
     /// Pairing: for each pending nonce the on-chain transaction's calldata is compared
-    /// against the next queued command (pinned to the same L1 block at which the inbound
-    /// queue was constructed — see `l1_block_number`). A match is tracked as
-    /// already-submitted; a mismatch or dropped transaction produces a [`ReplacementPlan`] so
-    /// the stale suffix is replaced at its own nonces instead of appending duplicates behind
-    /// it.
+    /// against the next queued command. SYSCOIN: this is pinned to the same settlement-layer
+    /// `sl_block_number` at which the inbound queue was constructed because the provider may be
+    /// Gateway rather than L1. A match is tracked as already-submitted; a mismatch or dropped
+    /// transaction produces a [`ReplacementPlan`] so the stale suffix is replaced at its own
+    /// nonces instead of appending duplicates behind it.
     ///
     /// Returns `None` when the inbound channel closes mid-recovery.
     async fn plan_pipelined_recovery(
@@ -770,14 +775,9 @@ where
         inbound: &mut PeekableReceiver<L1SenderCommand<Input>>,
         state_reporter: &ComponentStateReporter,
         operator_address: Address,
+        latest_nonce: u64,
     ) -> anyhow::Result<Option<PipelinedStart<Input>>> {
         let command_name = Input::COMPONENT_ID.as_str();
-        let latest_nonce = self
-            .provider
-            .get_transaction_count(operator_address)
-            .block_id(BlockId::number(self.sl_block_number))
-            .await
-            .context("get confirmed transaction count")?;
         let pending_nonce = self
             .provider
             .get_transaction_count(operator_address)
