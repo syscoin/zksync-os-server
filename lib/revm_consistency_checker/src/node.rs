@@ -2,6 +2,7 @@ use crate::helpers::{zk_spec_version, zk_tx_into_revm_tx};
 use crate::metrics::PUSH_METRICS;
 use crate::revm_state_provider::RevmStateProvider;
 use crate::storage_diff_comp::CompareReport;
+use crate::syscoin_gas_tank::GasTankRevmPlan;
 use alloy::primitives::{B256, U256};
 use async_trait::async_trait;
 use revm::ExecuteCommitEvm;
@@ -197,6 +198,9 @@ where
                         revm::primitives::eip4844::BLOB_BASE_FEE_UPDATE_FRACTION_PRAGUE,
                     ))
                 };
+                let revm_blob_gasprice = blob_excess_gas_and_price
+                    .as_ref()
+                    .map_or(0, |value| value.blob_gasprice);
 
                 // For each block, we create an in-memory cache database to accumulate transaction state changes separately
                 let state_provider =
@@ -219,6 +223,18 @@ where
                     })
                     .build_zk();
 
+                // SYSCOIN: A zip would silently omit transactions from either
+                // side and could bless a partial replay. A sealed block must
+                // have exactly one output for every replay transaction.
+                if replay_record.transactions.len() != block_output.tx_results.len() {
+                    return Err(anyhow::anyhow!(
+                        "REVM replay transaction/output length mismatch in block {}: {} transactions, {} outputs",
+                        replay_record.block_context.block_number,
+                        replay_record.transactions.len(),
+                        block_output.tx_results.len(),
+                    ));
+                }
+
                 let revm_txs: anyhow::Result<Vec<_>> = replay_record
                     .transactions
                     .iter()
@@ -227,13 +243,14 @@ where
                         let tx_output = tx_output_raw.as_ref().expect(
                             "block_output of a sealed block must not contain invalid transactions",
                         );
-                        zk_tx_into_revm_tx(
+                        let revm_tx = zk_tx_into_revm_tx(
                             transaction,
                             tx_output.gas_used,
                             tx_output.is_success(),
                             replay_record.block_context.gas_limit,
                             Some(settlement_layer_chain_id),
-                        )
+                        )?;
+                        Ok((transaction, tx_output.gas_used, revm_tx))
                     })
                     .collect();
 
@@ -242,10 +259,21 @@ where
                         let mut execution_error = None;
                         // Commit after each transaction so the diagnostic state follows the
                         // canonical executor exactly; any execution failure is fail-closed.
-                        for tx in txs {
+                        for (original_tx, gas_used, tx) in txs {
+                            let gas_tank_plan = GasTankRevmPlan::prepare(
+                                evm.0.db_mut(),
+                                original_tx,
+                                &replay_record.block_context,
+                                gas_used,
+                                block_basefee,
+                                revm_blob_gasprice,
+                            )?;
                             if let Err(err) = evm.transact_commit(tx) {
                                 execution_error = Some(err);
                                 break;
+                            }
+                            if let Some(plan) = gas_tank_plan {
+                                plan.settle(evm.0.db_mut())?;
                             }
                         }
 

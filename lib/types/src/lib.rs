@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, U256, address, b256, keccak256};
 /// transactions. A runtime deployment must match this address before it can collect or verify
 /// compact edge references.
 pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
-    address!("0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19");
+    address!("0xd0ec30807902886b61a86d9bd209fe353c1d912b");
 
 /// SYSCOIN: Canonical zkSYS fee-tank address baked into the V8 guest.
 pub const SYSCOIN_GAS_TANK_ADDRESS: Address =
@@ -21,11 +21,11 @@ pub const SYSCOIN_GATEWAY_CHAIN_ID: u64 = 57_001;
 /// SYSCOIN: Canonical relay deployed through Arachnid's universal CREATE2 factory. The guest
 /// authenticates this address as the `L1Messenger` message origin; it is not configurable.
 pub const SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER: Address =
-    address!("0xdc5172acd7c9cb5496db42a87dcafc14f18790a5");
+    address!("0x758b06cda80bdd016f79afd0df1a984039067a21");
 
 /// SYSCOIN: Exact frozen runtime identity of [`SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER`].
 pub const SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH: B256 =
-    b256!("a10c6c2043e1bdae798eebc77bc4d435da04c163ac4f79b41eaef3577fc5fdbf");
+    b256!("4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0");
 
 /// SYSCOIN: Arachnid deterministic-deployment proxy and its exact canonical runtime identity.
 pub const SYSCOIN_EDGE_DA_RELAY_FACTORY: Address =

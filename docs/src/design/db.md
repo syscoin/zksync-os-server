@@ -10,7 +10,8 @@ Primary persistent node state is split across these RocksDB databases and proof 
 - batch (`ExecutedBatchStorage`, RocksDB label `executed_batch_storage`)
 - raft
 - priority_txs_tree
-- batch_work_queue and bitcoin_da_status (batcher-enabled nodes)
+<!-- SYSCOIN: Compact-DA HA producers retain the authentication epoch without running a batcher. -->
+- batch_work_queue (batchers and compact-DA-capable HA producers); bitcoin_da_status (batchers)
 - proofs (JSON files, not RocksDB)
 
 <!-- SYSCOIN: These stores form one protocol/genesis-bound recovery set. -->

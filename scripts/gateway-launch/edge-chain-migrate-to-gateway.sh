@@ -21,6 +21,11 @@ cd "${GATEWAY_DIR}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME:=BlobsZKsyncOS}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:=4}"
 
+# SYSCOIN: These identities are compiled into the current guest and native server. A production
+# deployment with different governance or salts must regenerate and repin all three atomically.
+readonly SYSCOIN_COMPACT_EDGE_DA_RELAY="0x758b06cda80bdd016f79afd0df1a984039067a21"
+readonly SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH="0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0"
+
 # Gateway settlement checks must use the system Bridgehub on the Gateway chain.
 # Do not allow accidental carry-over from shell/session env to point this at L1.
 readonly GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS="0x0000000000000000000000000000000000010002"
@@ -535,6 +540,22 @@ gateway_address_has_code() {
   [ "${code}" != "0x" ] || return 1
 }
 
+gateway_address_has_exact_runtime() {
+  local rpc_url="${1:?rpc url required}"
+  local addr="${2:?address required}"
+  local expected_hash="${3:?runtime hash required}"
+  local code actual_hash
+
+  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+    return 1
+  fi
+  code="$(printf '%s' "${code}" | tr -d '[:space:]')"
+  [ -n "${code}" ] && [ "${code}" != "0x" ] || return 1
+  actual_hash="$(cast keccak "${code}")" || return 1
+  [ "$(gl_to_lower "${actual_hash}")" = "$(gl_to_lower "${expected_hash}")" ]
+}
+
 gateway_committer_role_set() {
   local chain_name="${1:?chain name required}"
   local committer_addr="${2:?committer address required}"
@@ -857,8 +878,11 @@ is_da_pair_set_on_gateway() {
 
   [ -n "${line1}" ] || return 1
   [ -n "${line2}" ] || return 1
-  [ "${line1}" != "0x0000000000000000000000000000000000000000" ] || return 1
-  gateway_address_has_code "${gateway_rpc}" "${line1}" || return 1
+  [ "$(gl_to_lower "${line1}")" = "${SYSCOIN_COMPACT_EDGE_DA_RELAY}" ] || return 1
+  gateway_address_has_exact_runtime \
+    "${gateway_rpc}" \
+    "${line1}" \
+    "${SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH}" || return 1
 
   # The scheme must match the batches produced by OS-server. A non-zero validator
   # address with the wrong scheme still lets migration finish, but the first
@@ -946,12 +970,20 @@ PY
     return 1
   }
 
-  if gateway_address_has_code "${gateway_rpc_url}" "${candidate}"; then
+  if [ "$(gl_to_lower "${candidate}")" != "${SYSCOIN_COMPACT_EDGE_DA_RELAY}" ]; then
+    echo "configured relayed_sl_da_validator ${candidate} does not match the guest-bound relay ${SYSCOIN_COMPACT_EDGE_DA_RELAY} for ${edge_chain_name}" >&2
+    return 1
+  fi
+
+  if gateway_address_has_exact_runtime \
+    "${gateway_rpc_url}" \
+    "${candidate}" \
+    "${SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH}"; then
     printf '%s\n' "${candidate}"
     return 0
   fi
 
-  echo "canonical relayed_sl_da_validator ${candidate} has no bytecode on the configured Gateway RPC for ${edge_chain_name}" >&2
+  echo "canonical relayed_sl_da_validator ${candidate} has the wrong or missing runtime on the configured Gateway RPC for ${edge_chain_name}" >&2
   return 1
 }
 
@@ -1001,6 +1033,11 @@ if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
+
+# SYSCOIN: Authenticate the guest-bound relay and its exact runtime before the first migration
+# broadcast. Reuse this attested address for any later DA-pair repair so a stale or malicious
+# Gateway configuration cannot pause, migrate, or finalize an edge chain before failing closed.
+l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
 
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""
@@ -1080,7 +1117,6 @@ if ! wait_for_da_pair_on_gateway \
   "${GATEWAY_RPC_URL}" \
   "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS}" \
   "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY}"; then
-  l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
   echo "gateway-launch: DA pair still missing or has wrong scheme on Gateway; setting ${GATEWAY_L2_DA_COMMITMENT_SCHEME} explicitly"
   repair_da_pair_on_gateway "${EDGE_CHAIN_NAME}" "${l1_da_validator_addr}"
   da_pair_repair_requested=true

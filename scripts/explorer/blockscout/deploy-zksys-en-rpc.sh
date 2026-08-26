@@ -374,7 +374,7 @@ ZKSYS_GAS_TANK_ADDRESS="$(normalize_zksys_gas_tank_address "${ZKSYS_GAS_TANK_ADD
 
 # SYSCOIN: Fail before deleting remote stamps, uploading source, or replacing config if
 # this deployment does not match the consensus inputs in the canonical app.
-PUBLISHED_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0xd0ec30807902886b61a86d9bd209fe353c1d912b
 PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 if [[ "${SYSCOIN_EDGE_DA_COMMIT_TARGET}" != "${PUBLISHED_EDGE_DA_COMMIT_TARGET}" ]]; then
   echo "error: SYSCOIN_EDGE_DA_COMMIT_TARGET=${SYSCOIN_EDGE_DA_COMMIT_TARGET} differs from the canonical app value ${PUBLISHED_EDGE_DA_COMMIT_TARGET}" >&2

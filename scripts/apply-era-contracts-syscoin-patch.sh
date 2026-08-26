@@ -28,10 +28,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="314725"
-EXPECTED_PATCH_SHA256="c8a9ac36c270c43dcff3ce33dd3178e41cbf4a07757c83ef54e9cbdf7f57f17c"
-EXPECTED_PATCH_PATH_COUNT="57"
-EXPECTED_PATCH_PATHS_SHA256="2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183"
+EXPECTED_PATCH_SIZE="1419459"
+EXPECTED_PATCH_SHA256="b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9"
+EXPECTED_PATCH_PATH_COUNT="59"
+EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"
+# SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
+# EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
+EXPECTED_PATCHED_TREE="ea1c0600ebbcafbada4e0080aa0178311084f86a"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -158,6 +161,7 @@ verify_postimage_manifest() {
   done <<'SYSCOIN_POSTIMAGE_MANIFEST'
 3053 9e46ccc83139e8fb6d57a284631a2c1c90601525d5e44a05dc49d6a5988e216c .gitignore
 160049 c1ad0208e77c01d3c2e91a7fe7e12624575dab9f231964e8a77223e787196725 AllContractsHashes.json
+557518 5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95 configs/genesis/zksync-os/latest.json
 1615 b9492bb3d1cbb976fbc2bd960707c194750202b9569f6c60e8bcdefa7353384e da-contracts/contracts/DAContractsErrors.sol
 601 9201889972a107b91caec471ad95bb7c912fa1b2c0822004bb06f3629b1d2fd2 da-contracts/contracts/SyscoinDAUtils.sol
 2999 24fcd082bee0ef29de5b4bd09b8e493a1bb1ef6759235ec71120668a19c417f4 da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
@@ -185,15 +189,15 @@ verify_postimage_manifest() {
 14452 db6f5326495f0e9926a15632ae8001d64887d9cb83fb64a1a8ffc3a0dbe35588 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 21890 285f15bd41c33ac64f19e20fb3853e867bd8491625b4d6968666166bb3a02260 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 26354 9fdb904b1613e219fa29f9e4dbaea017ba2311bec6e2ca358c41beb341bb2f36 l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-41586 a7257c0a6d2bd596c93cf7a168d2460d958d339ed8eaf405ce4e6864cebfbd32 l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-21231 00d5e5c4afd6e142f060c15f76bd355297136fd8f1c5220bab6f4c237fd518ad l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
+41377 22d5c9ed58e078d7984757c6c4d023bc0afb64f4f8aff240a576783f92b96fb1 l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
+21027 6ebceffb5d2a5f6c083c8d78e79e0b97110e2653e5bd64c164f53d3cdc63f6de l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 45338 212349849a53a7712cd68cb1065e00cc5a1abc451c2e4481df4c200c804ef3ed l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 31333 13eb6e18cd1806cf5154083c82299e4f1da1107d16812e125ee5040fd8832e5c l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 23029 aff6be7d88b5426e117626bfbb717d292ca0531a7a5488620d5c4dfecd8ed27b l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 11325 50276f9a9c4f059305b67471943159f0c195cc6c901968d6c2c1f9382db02754 l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 858 9a6796cad5a4b8955ed797df04c19cdfc3d95494693f64bb818b1dc991635387 l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 2307622 ade53de26fa17c876045ae4817c932307b1a51b8edc6ae93e92e6bfa349238aa l1-contracts/selectors
-16802 9fec079b64e290f8747a6693c8d86c35d9d8b49931ff17cd05fc91a541d82a38 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
+18811 881846d3c06c9c660c8ee451ae5eb95d1fe324b65126a1a848ebe298cb93bf84 l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 17959 27e8c3a9f751b94e17a9c47b2303240cb5b375d0c09c1dbafda9b3039a1757a8 l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 19299 1934c2776adb7c9c6b49fe5425cd0c19d4d27910d2fd3dbcadff3cd2240e4bab l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 8296 b18605c0bc27bdb37e37ed58bc5c3484b92dfb2b2e2f56e3a9d5b0804e9fe752 l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
@@ -202,7 +206,7 @@ verify_postimage_manifest() {
 17139 7555ab6bee81f7c7133343d56e555a566b12d3ceabe6f61146d4bee53ccdad07 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 6691 88562d3c06e6339b4059966c0e3173eceb98a458205cb011bbb861ee7d5b7955 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 22740 dad85086f482c0d710834f2b6c8002946f2dd626c0cc44da0c0d0cdb0b45b045 l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
-19452 3988c1b2f85bab3c041e7aaddb4d1067f2338de8470fe2934980b85773410c7b l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
+19467 e487d9ef43ae3d7bcbc941f035ec25e06b38ff8686629a7276a2fbaaf0e94943 l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 4828 3912fe8d417ec07ecb74a3a7e1e773907169bcafb56e4105cbdbfb0416f79da9 l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 37262 e6cb6d802f989a56ac8904a2b7d941a7203f664e8e2dbb8a3bf56f6dab74c069 l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 7994 ee66867257ad8f7856ddcd660f44c36db9aea6c33c1c1ff8c75bde2221d03887 l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
@@ -210,9 +214,10 @@ verify_postimage_manifest() {
 4147 72dc6373a6093ea18a8d71522dda3836d66d9b3056660787c00ced1499a24967 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 3454 9cc8e015664c0fe9b5bfca6e12a29120cf611775df6dbbd7d00d45e90dc74ea8 l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 18331 8600ed5a07fa68e2cb180674320406523a98660c0b6f78a538568ef935ec140e l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-17971 a3c816fee489368c405273303b3d8c18043d66b21771f5de3da580151ed7f10e l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
+17824 85171d93961f63606c4449f9cfbae0e8341daa942d659513d42ed0018850a758 l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 5070 2bbab9425954d54c8dc0e0f963e4f9befb35eae6a34bcdb8ccb854409526487f l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 14102 8db8cf9b188baf96c2634fcab0c4e54512254c0b8737a066ad540ae7e5102a4e l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
+11865 2d470cd020bad4178adc1cd12889693e235df86103be24bf25549ac411613b6d tools/zksync-os-genesis-gen/src/consts.rs
 SYSCOIN_POSTIMAGE_MANIFEST
 
   manifest_paths="${manifest_paths%$'\n'}"
@@ -246,7 +251,7 @@ verify_semantics() {
   local tagged_path
   while IFS= read -r tagged_path; do
     case "${tagged_path}" in
-      *.sol | *.toml | *.gitignore)
+      *.sol | *.rs | *.toml | *.gitignore)
         require_text "${tagged_path}" "SYSCOIN:"
         ;;
     esac
@@ -586,7 +591,10 @@ verify_semantics() {
     'require(config.isZKsyncOS, "Syscoin compact Gateway DA requires ZKsync OS");'
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
-    "deployerCalldata.syscoinEdgeDARelayCalldata = _prepareSyscoinEdgeDARelayDeployment();"
+    "_validateSyscoinEdgeDARelayArtifact();"
+  forbid_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    "syscoinEdgeDARelayCalldata"
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
     "actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH"
@@ -599,9 +607,42 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol" \
     'require(config.isZKsyncOS, "Only the canonical Syscoin ZKsync OS Gateway deployment is supported");'
-  require_text \
+  forbid_text \
     "l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol" \
     "runGatewayL1L2Transaction(create2FactoryAddress, deployerCalldata.syscoinEdgeDARelayCalldata);"
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    'pub const SYSCOIN_EDGE_DA_RELAY_ADDRESS: Address = Address(FixedBytes::<20>(hex_literal::hex!('
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    '"758b06cDA80BDD016F79AFd0df1A984039067A21"'
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    'pub const INITIAL_CONTRACTS: [(Address, ContractDeployment); 23] = ['
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    'ContractDeployment::Direct(ContractSource::L1ContractName('
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    '"SyscoinRelayedSLDAValidator",'
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    'canonical zkOS genesis must contain only the pinned 41 contracts'
+  require_text \
+    "tools/zksync-os-genesis-gen/src/consts.rs" \
+    '"ec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb"'
+  require_text \
+    "configs/genesis/zksync-os/latest.json" \
+    '"0x758b06cda80bdd016f79afd0df1a984039067a21",'
+  require_text \
+    "configs/genesis/zksync-os/latest.json" \
+    '"genesis_root": "0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb"'
+  require_text \
+    "l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol" \
+    '0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb;'
+  require_text \
+    "l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol" \
+    '0xf537449b2ae8774f0073e37e622c7b69744cfc985baf8236be2c82411a161191;'
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol" \
     'vm.serializeAddress("root", "validium_da_validator", output.validiumDAValidator);'
@@ -712,6 +753,22 @@ STOCK_VERIFIER_ARTIFACTS
   die "canonical V8 VK regeneration and attestation are still required; no app-bound security100 verifier hashes are approved"
 }
 
+pending_v8_mock_source_mode_enabled() {
+  # SYSCOIN: This is the sole pre-keygen source-materialization exception. Both
+  # the operator-facing mode and explicit on-chain mock-verifier opt-in must be
+  # exact, and no chain-specific override may silently select GPU proving.
+  [[ "${PROVER_MODE:-}" == "no-proofs" ]] || return 1
+  [[ "${SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER:-}" == "true" ]] || return 1
+  [[ "${GATEWAY_PROVER_MODE:-no-proofs}" == "no-proofs" ]] || return 1
+  [[ "${EDGE_PROVER_MODE:-no-proofs}" == "no-proofs" ]] || return 1
+  # SYSCOIN: Standalone invocation must bind the exception to one reviewed
+  # non-production network/chain pair even if the outer launcher is skipped.
+  case "${L1_NETWORK:-}:${L1_CHAIN_ID:-}" in
+    localhost:31337 | tanenbaum:5700) ;;
+    *) return 1 ;;
+  esac
+}
+
 verify_worktree_postimage_scope() {
   local status_paths status_count status_sha256
   git -C "${CONTRACTS_PATH}" diff --cached --quiet ||
@@ -727,6 +784,34 @@ verify_worktree_postimage_scope() {
     die "patched worktree has unexpected path count: expected=${EXPECTED_PATCH_PATH_COUNT} actual=${status_count}"
   [[ "${status_sha256}" == "${EXPECTED_PATCH_PATHS_SHA256}" ]] ||
     die "patched worktree contains partial or unrelated changes"
+}
+
+verify_worktree_postimage_tree() {
+  # SYSCOIN: Reproduce the reviewed patched tree with an isolated index. This
+  # binds the mock-only exception to every postimage byte without touching the
+  # operator's real index or accepting an equivalent-but-unreviewed patch.
+  local temporary_dir temporary_index actual_patched_tree relative_path
+  temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/syscoin-era-patch-index.XXXXXX")"
+  temporary_index="${temporary_dir}/index"
+
+  if ! actual_patched_tree="$({
+    export GIT_INDEX_FILE="${temporary_index}"
+    git -C "${CONTRACTS_PATH}" read-tree HEAD || exit 1
+    while IFS= read -r relative_path; do
+      [[ -n "${relative_path}" ]] || continue
+      git -C "${CONTRACTS_PATH}" add -A -- "${relative_path}" || exit 1
+    done <<< "${PATCH_PATHS}"
+    git -C "${CONTRACTS_PATH}" write-tree || exit 1
+  })"; then
+    rm -f "${temporary_index}" "${temporary_index}.lock"
+    rmdir "${temporary_dir}"
+    die "failed to calculate canonical patched Era-contracts tree"
+  fi
+  rm -f "${temporary_index}" "${temporary_index}.lock"
+  rmdir "${temporary_dir}"
+
+  [[ "${actual_patched_tree}" == "${EXPECTED_PATCHED_TREE}" ]] ||
+    die "patched Era-contracts tree mismatch: expected=${EXPECTED_PATCHED_TREE} actual=${actual_patched_tree}"
 }
 
 BASE_FORWARD=false
@@ -748,9 +833,17 @@ if [[ "${BASE_FORWARD}" == true ]]; then
   fi
 fi
 
-# This pending-keygen gate is intentionally before every mutating operation,
-# including submodule initialization and source-patch application.
-verify_verifier_artifacts_pending
+# SYSCOIN: Production/GPU paths retain the original pre-mutation pending-keygen
+# failure. Only an explicitly fake-prover-backed launch may materialize the
+# reviewed source patch before VK generation; its exact postimage is attested
+# below before this helper can report success.
+PENDING_V8_MOCK_SOURCE_MODE=false
+if pending_v8_mock_source_mode_enabled; then
+  PENDING_V8_MOCK_SOURCE_MODE=true
+  echo "SYSCOIN: allowing exact pending-V8 Era source materialization for no-proofs/mock-verifier launch only" >&2
+else
+  verify_verifier_artifacts_pending
+fi
 
 # SYSCOIN: Forge auto-discovers remappings from nested dependencies and commits them to IPFS
 # metadata. Populate the exact recursive graph so standalone application reproduces the baked
@@ -778,5 +871,10 @@ verify_worktree_postimage_scope
 verify_postimage_manifest
 verify_semantics
 git -C "${CONTRACTS_PATH}" diff --check
+verify_worktree_postimage_tree
+
+if [[ "${PENDING_V8_MOCK_SOURCE_MODE}" == true ]]; then
+  echo "SYSCOIN: pending-V8 mock source postimage matches exact reviewed tree ${EXPECTED_PATCHED_TREE}" >&2
+fi
 
 echo "Canonical Syscoin Era source patch is exact: protocol V32, execution V7, proving V8, verifier slot 8, compact DA only."

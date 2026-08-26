@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -10,7 +11,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
-PUBLISHED_PATCH_TARGET = "0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19"
+PUBLISHED_PATCH_TARGET = "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+PUBLISHED_EDGE_RELAY = "0x758b06cda80bdd016f79afd0df1a984039067a21"
+PUBLISHED_EDGE_RELAY_RUNTIME_HASH = (
+    "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0"
+)
 PUBLISHED_GAS_TANK = "0xb49943ea232624dd4aa63e18186076c6c99a68ef"
 PUBLISHED_GAS_TANK_INIT_CODE_HASH = (
     "0x1fce42acba699bc198d2e146b0284e3bdd821d1634cd809f1c0a12e961dac561"
@@ -19,12 +24,19 @@ PUBLISHED_GAS_TANK_RUNTIME_HASH = (
     "0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
 )
 PUBLISHED_EDGE_SOURCE_SHA256 = (
-    "00ede058520ad12356fb2137f9d59673828d0bd7fa99c859f86b623681c369c6"
+    "99a0ae0dfc013ce7beacc60df0a487b35fd2af1fdcb04103ba438353cbd2a3bd"
 )
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "20dc217bbd535877f600df88bd7e2966d3d9b43a"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9fb99cf591c553447cd3839489cc4d327eb424b4"
+PUBLISHED_ERA_PATCHED_TREE = "ea1c0600ebbcafbada4e0080aa0178311084f86a"
+PUBLISHED_ERA_GENESIS_ROOT = (
+    "0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb"
+)
+PUBLISHED_ERA_GENESIS_SHA256 = (
+    "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95"
+)
 OFFICIAL_OS_URL = "https://github.com/matter-labs/zksync-os"
 FINAL_OS_TAG = "v0.4.0"
 OTHER_OS_TAG = "v0.2.10-interface-v0.1.3-2026-02-10"
@@ -38,6 +50,27 @@ def rust_address_bytes(address: str) -> str:
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
+        launcher = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            f'SYSCOIN_CANONICAL_GENESIS_SHA256="{PUBLISHED_ERA_GENESIS_SHA256}"',
+            launcher,
+        )
+        self.assertIn(
+            "canonical Syscoin V32 genesis digest mismatch before generation",
+            launcher,
+        )
+        self.assertIn(
+            "generated Syscoin V32 genesis is not byte-identical to the committed config",
+            launcher,
+        )
+        self.assertIn("if generated != canonical:", launcher)
+        self.assertIn("--bin zksync-os-genesis-gen", launcher)
+        self.assertIn("--locked", launcher)
+
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
@@ -220,18 +253,18 @@ class LauncherStaticTests(unittest.TestCase):
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="20dc217bbd535877f600df88bd7e2966d3d9b43a"',
-            'EXPECTED_PATCH_SIZE="266203"',
-            'EXPECTED_PATCH_SHA256="b2c9a187b18d2e16ba20066a0fe297dc4946e4e6cf00bec7eb4ad365076487ff"',
-            'EXPECTED_PATCH_PATH_COUNT="63"',
-            'EXPECTED_PATCH_PATHS_SHA256="b6278e874bb760d1da002f7824bb7e6424ccdcb4b1a0c36e74cfd90802c68094"',
+            'EXPECTED_PATCHED_TREE="9fb99cf591c553447cd3839489cc4d327eb424b4"',
+            'EXPECTED_PATCH_SIZE="275841"',
+            'EXPECTED_PATCH_SHA256="556a223a7c095e30030a869c4d08d102c24ac00c8623f50649d17a07a9193965"',
+            'EXPECTED_PATCH_PATH_COUNT="64"',
+            'EXPECTED_PATCH_PATHS_SHA256="33a2714fec3c4c61e754ed699f94c1529fbddc549bd033ced143162deb4bcf7a"',
         ):
             self.assertIn(expected, applicator)
         workspace_helper = (
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="20dc217bbd535877f600df88bd7e2966d3d9b43a"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="9fb99cf591c553447cd3839489cc4d327eb424b4"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -248,6 +281,65 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertNotIn("blob_data_id_advice", patch)
         self.assertNotIn("callable_oracles/src/blob_data_id", patch)
         self.assertIn("host advice is neither", patch)
+
+    def test_os_keygen_workflow_attests_current_source_inputs(self) -> None:
+        helper_path = (
+            REPO_ROOT / "scripts" / "apply-zksync-os-syscoin-v0.4.0-patch.sh"
+        )
+        patch_path = (
+            REPO_ROOT
+            / "scripts"
+            / "patches"
+            / "zksync-os-syscoin-v0.4.0.patch"
+        )
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "syscoin-v32-v8-keygen.yml"
+        ).read_text(encoding="utf-8")
+        helper = helper_path.read_bytes()
+        patch = patch_path.read_bytes()
+        gateway_identity_path = (
+            REPO_ROOT / "local-chains" / "v32.0" / "gateway-identity.v1.json"
+        )
+        gateway_identity = gateway_identity_path.read_bytes()
+        gateway_identity_data = json.loads(gateway_identity)
+
+        for expected in (
+            f'ZKSYNC_OS_PATCHED_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
+            f'ZKSYNC_OS_PATCH_SIZE: "{len(patch)}"',
+            f"ZKSYNC_OS_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
+            f'ZKSYNC_OS_HELPER_SIZE: "{len(helper)}"',
+            f"ZKSYNC_OS_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
+            f'APP_IDENTITY_SOURCE_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
+            f'SYSCOIN_EDGE_DA_COMMIT_TARGET: "{PUBLISHED_PATCH_TARGET}"',
+            f'SYSCOIN_EDGE_DA_RELAY_EMITTER: "{PUBLISHED_EDGE_RELAY}"',
+            f'SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH: "{PUBLISHED_EDGE_RELAY_RUNTIME_HASH}"',
+            "GATEWAY_TARGET_IDENTITY_STATUS: regeneration-required",
+            "GATEWAY_TARGET_IDENTITY_PATH: local-chains/v32.0/gateway-identity.v1.json",
+            f'GATEWAY_TARGET_IDENTITY_SIZE: "{len(gateway_identity)}"',
+            f"GATEWAY_TARGET_IDENTITY_SHA256: {hashlib.sha256(gateway_identity).hexdigest()}",
+            "Gateway target derivation must be frozen before app/VK generation",
+            "Gateway identity artifact has incomplete production derivation inputs",
+            'gateway_target: {',
+            'validator_timelock: $gateway_target',
+            'relay_emitter: $gateway_relay',
+            'relay_runtime_keccak256: $gateway_relay_runtime_hash',
+            'derivation_sha256: $gateway_target_identity_sha256',
+        ):
+            self.assertIn(expected, workflow)
+        self.assertEqual(gateway_identity_data["status"], "integration-candidate")
+        self.assertFalse(gateway_identity_data["production_attested"])
+        self.assertEqual(
+            gateway_identity_data["outputs"]["validator_timelock"],
+            PUBLISHED_PATCH_TARGET,
+        )
+        self.assertEqual(
+            gateway_identity_data["outputs"]["relay_emitter"],
+            PUBLISHED_EDGE_RELAY,
+        )
+        self.assertEqual(
+            gateway_identity_data["outputs"]["relay_runtime_keccak256"],
+            PUBLISHED_EDGE_RELAY_RUNTIME_HASH,
+        )
 
     def test_published_consensus_constants_are_consistent(self) -> None:
         deploy_en = (
@@ -293,9 +385,55 @@ class LauncherStaticTests(unittest.TestCase):
         )
         normalized_patch = " ".join(patch_postimage.split())
         self.assertIn(rust_address_bytes(PUBLISHED_PATCH_TARGET), normalized_patch)
+        self.assertNotIn("64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19", normalized_patch)
+        self.assertIn(rust_address_bytes(PUBLISHED_EDGE_RELAY), normalized_patch)
         self.assertIn(rust_address_bytes(PUBLISHED_GAS_TANK), normalized_patch)
 
+        types = (REPO_ROOT / "lib" / "types" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        ).lower()
+        era_patch = (
+            REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        ).read_text(encoding="utf-8").lower()
+        self.assertIn(PUBLISHED_EDGE_RELAY, types)
+        self.assertIn(PUBLISHED_EDGE_RELAY_RUNTIME_HASH.removeprefix("0x"), types)
+        self.assertIn(PUBLISHED_EDGE_RELAY, era_patch)
+        self.assertIn(PUBLISHED_EDGE_RELAY_RUNTIME_HASH, era_patch)
+
         deploy_en_text = deploy_en.read_text(encoding="utf-8")
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f'readonly SYSCOIN_COMPACT_EDGE_DA_RELAY="{PUBLISHED_EDGE_RELAY}"',
+            migration,
+        )
+        self.assertIn(
+            'readonly SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH="'
+            f'{PUBLISHED_EDGE_RELAY_RUNTIME_HASH}"',
+            migration,
+        )
+        self.assertIn("gateway_address_has_exact_runtime", migration)
+        self.assertIn("does not match the guest-bound relay", migration)
+        relay_preflight = (
+            'l1_da_validator_addr="$(get_l1_da_validator_for_edge '
+            '"${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"'
+        )
+        self.assertEqual(migration.count(relay_preflight), 1)
+        self.assertLess(
+            migration.index(relay_preflight),
+            migration.index("zkstack chain pause-deposits --chain"),
+        )
+        self.assertLess(
+            migration.index(relay_preflight), migration.index("migrate-to-gateway")
+        )
+        self.assertLess(
+            migration.index(relay_preflight),
+            migration.index("finalize-chain-migration-to-gateway"),
+        )
         self.assertLess(
             deploy_en_text.index("PUBLISHED_EDGE_DA_COMMIT_TARGET="),
             deploy_en_text.index("remote_prebuilt_stamps=("),
@@ -460,10 +598,11 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="314725"',
-            'EXPECTED_PATCH_SHA256="c8a9ac36c270c43dcff3ce33dd3178e41cbf4a07757c83ef54e9cbdf7f57f17c"',
-            'EXPECTED_PATCH_PATH_COUNT="57"',
-            'EXPECTED_PATCH_PATHS_SHA256="2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183"',
+            'EXPECTED_PATCH_SIZE="1419459"',
+            'EXPECTED_PATCH_SHA256="b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9"',
+            'EXPECTED_PATCH_PATH_COUNT="59"',
+            'EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"',
+            f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
             "if (version != CANONICAL_ZKSYNC_OS_VERIFIER_VERSION) {",
@@ -476,7 +615,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             "? abi.encode(verifiersConfig, config.l1ChainId)",
             "testGatewayVerifierDeployerZKsyncOSRejectsSyscoinMainnetRootForTestnetRoute",
             "testGatewayVerifierDeployerZKsyncOSRejectsEthereumMainnetRootForTestnetRoute",
-            '*.sol | *.toml | *.gitignore)',
+            '*.sol | *.rs | *.toml | *.gitignore)',
             'done <<< "${PATCH_PATHS}"',
             "postimage manifest does not exactly match the canonical patch path set",
             "canonical source patch unexpectedly deletes an upstream path",
@@ -489,9 +628,16 @@ class EraAttestationStaticTests(unittest.TestCase):
             "no app-bound security100 verifier hashes are approved",
             "SYSCOIN_EDGE_DA_RELAY_ADDRESS = 0x758b06cDA80BDD016F79AFd0df1A984039067A21",
             "actualRelayCodeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
-            "deployerCalldata.syscoinEdgeDARelayCalldata = _prepareSyscoinEdgeDARelayDeployment();",
+            "_validateSyscoinEdgeDARelayArtifact();",
             "actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH",
             "actualRuntimeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
+            "pub const SYSCOIN_EDGE_DA_RELAY_ADDRESS: Address",
+            "pub const INITIAL_CONTRACTS: [(Address, ContractDeployment); 23] = [",
+            '"SyscoinRelayedSLDAValidator",',
+            "canonical zkOS genesis must contain only the pinned 41 contracts",
+            f'"genesis_root": "{PUBLISHED_ERA_GENESIS_ROOT}"',
+            f'"{PUBLISHED_ERA_GENESIS_ROOT.removeprefix("0x")}"',
+            "0xf537449b2ae8774f0073e37e622c7b69744cfc985baf8236be2c82411a161191;",
         ):
             self.assertIn(expected, helper)
 
@@ -500,18 +646,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 57)
+        self.assertEqual(len(patch_paths), 59)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183",
+            "d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 57)
+        self.assertEqual(len(manifest_entries), 59)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -535,15 +681,28 @@ class EraAttestationStaticTests(unittest.TestCase):
             )
             self.assertIn("SYSCOIN:", patch[start:end], path)
 
-        pending_gate = helper.rindex("\nverify_verifier_artifacts_pending\n")
+        pending_gate = helper.rindex("\n  verify_verifier_artifacts_pending\n")
         self.assertLess(pending_gate, helper.index("submodule sync --recursive\n"))
         self.assertIn("submodule update --init --recursive", helper)
         self.assertLess(
             pending_gate,
             helper.index('apply --recount --unidiff-zero --whitespace'),
         )
+        exact_tree_gate = helper.rindex("\nverify_worktree_postimage_tree\n")
+        self.assertGreater(
+            exact_tree_gate,
+            helper.index('apply --recount --unidiff-zero --whitespace'),
+        )
+        self.assertLess(
+            exact_tree_gate,
+            helper.rindex("\necho \"Canonical Syscoin Era source patch is exact:"),
+        )
 
         for path, digest in (
+            (
+                "configs/genesis/zksync-os/latest.json",
+                PUBLISHED_ERA_GENESIS_SHA256,
+            ),
             (
                 "da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol",
                 "24fcd082bee0ef29de5b4bd09b8e493a1bb1ef6759235ec71120668a19c417f4",
@@ -570,7 +729,11 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol",
-                "a7257c0a6d2bd596c93cf7a168d2460d958d339ed8eaf405ce4e6864cebfbd32",
+                "22d5c9ed58e078d7984757c6c4d023bc0afb64f4f8aff240a576783f92b96fb1",
+            ),
+            (
+                "tools/zksync-os-genesis-gen/src/consts.rs",
+                "2d470cd020bad4178adc1cd12889693e235df86103be24bf25549ac411613b6d",
             ),
             (
                 "l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol",
@@ -677,9 +840,142 @@ class EraAttestationStaticTests(unittest.TestCase):
             "diff --git a/l1-contracts/script-config/syscoin-edge-da-relay-v1.json",
             patch,
         )
+        self.assertIn(
+            "diff --git a/tools/zksync-os-genesis-gen/src/consts.rs",
+            patch,
+        )
+        self.assertIn(
+            "diff --git a/configs/genesis/zksync-os/latest.json",
+            patch,
+        )
+        self.assertIn(
+            "pub const SYSCOIN_EDGE_DA_RELAY_ADDRESS: Address",
+            patch,
+        )
+        self.assertIn(
+            "pub const INITIAL_CONTRACTS: [(Address, ContractDeployment); 23] = [",
+            patch,
+        )
+        self.assertIn("_validateSyscoinEdgeDARelayArtifact();", patch)
+        self.assertIn(
+            f'"genesis_root": "{PUBLISHED_ERA_GENESIS_ROOT}"',
+            patch,
+        )
+        self.assertIn(
+            "canonical zkOS genesis must contain only the pinned 41 contracts",
+            patch,
+        )
+        self.assertIn(
+            "0xf537449b2ae8774f0073e37e622c7b69744cfc985baf8236be2c82411a161191;",
+            patch,
+        )
+        self.assertIn(
+            "vm.etch(SYSCOIN_EDGE_DA_RELAY_ADDRESS, type(SyscoinRelayedSLDAValidator).runtimeCode);",
+            patch,
+        )
+        self.assertNotIn("syscoinEdgeDARelayCalldata", patch)
         self.assertNotIn(
             "diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/Committing.t.sol",
             patch,
+        )
+
+    # SYSCOIN: Pending VKs may materialize Era sources only for the explicit
+    # fake-prover route, never through a chain-specific GPU override.
+    def test_pending_v8_source_materialization_requires_exact_mock_modes(self) -> None:
+        helper = (
+            REPO_ROOT / "scripts" / "apply-era-contracts-syscoin-patch.sh"
+        ).read_text(encoding="utf-8")
+        function_start = helper.index("pending_v8_mock_source_mode_enabled() {")
+        function_end = helper.index("\n}\n", function_start) + len("\n}\n")
+        function_source = helper[function_start:function_end]
+        probe = (
+            function_source
+            + "\nif pending_v8_mock_source_mode_enabled; then printf enabled; "
+            "else printf blocked; fi\n"
+        )
+
+        def run_gate(overrides: dict[str, str]) -> str:
+            env = os.environ.copy()
+            for name in (
+                "PROVER_MODE",
+                "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER",
+                "GATEWAY_PROVER_MODE",
+                "EDGE_PROVER_MODE",
+                "L1_NETWORK",
+                "L1_CHAIN_ID",
+            ):
+                env.pop(name, None)
+            env.update(overrides)
+            result = subprocess.run(
+                ["bash", "-c", probe],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        mock_modes = {
+            "PROVER_MODE": "no-proofs",
+            "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "true",
+        }
+        self.assertEqual(run_gate({}), "blocked")
+        self.assertEqual(run_gate({"PROVER_MODE": "no-proofs"}), "blocked")
+        self.assertEqual(
+            run_gate({"SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "true"}), "blocked"
+        )
+        self.assertEqual(run_gate(mock_modes), "blocked")
+        self.assertEqual(
+            run_gate(
+                {
+                    **mock_modes,
+                    "L1_NETWORK": "localhost",
+                    "L1_CHAIN_ID": "31337",
+                }
+            ),
+            "enabled",
+        )
+        self.assertEqual(
+            run_gate({**mock_modes, "GATEWAY_PROVER_MODE": "gpu"}), "blocked"
+        )
+        self.assertEqual(
+            run_gate({**mock_modes, "EDGE_PROVER_MODE": "gpu"}), "blocked"
+        )
+        self.assertEqual(
+            run_gate({**mock_modes, "L1_NETWORK": "mainnet"}), "blocked"
+        )
+        self.assertEqual(run_gate({**mock_modes, "L1_CHAIN_ID": "1"}), "blocked")
+        self.assertEqual(run_gate({**mock_modes, "L1_CHAIN_ID": "57"}), "blocked")
+        self.assertEqual(
+            run_gate(
+                {
+                    **mock_modes,
+                    "L1_NETWORK": "devnet",
+                    "L1_CHAIN_ID": "31337",
+                }
+            ),
+            "blocked",
+        )
+        self.assertEqual(
+            run_gate(
+                {
+                    **mock_modes,
+                    "L1_NETWORK": "localhost",
+                    "L1_CHAIN_ID": "5700",
+                }
+            ),
+            "blocked",
+        )
+        self.assertEqual(
+            run_gate(
+                {
+                    **mock_modes,
+                    "L1_NETWORK": "tanenbaum",
+                    "L1_CHAIN_ID": "5700",
+                }
+            ),
+            "enabled",
         )
 
     def test_era_keygen_workflow_attests_current_source_inputs(self) -> None:
@@ -694,16 +990,27 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "57"',
+            'ERA_PATCH_PATH_COUNT: "59"',
             "ERA_PATCH_PATHS_SHA256: "
-            "2521b30d62cdeac3f105a97dd393e7df9e6a0fe06b7d63b448b906fa7ce7f183",
-            "ERA_SOURCE_PATCHED_TREE: "
-            "04eed331c8729a179b237063906d30b27d86bfe3",
+            "d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff",
+            f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
+            "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
+            'ERA_GENESIS_SIZE: "557518"',
+            f"ERA_GENESIS_SHA256: {PUBLISHED_ERA_GENESIS_SHA256}",
+            f'ERA_GENESIS_ROOT: "{PUBLISHED_ERA_GENESIS_ROOT}"',
+            'ERA_GENESIS_CONTRACT_COUNT: "41"',
             'ERA_CONTRACT_HASH_ENTRY_COUNT: "278"',
             f'ERA_HELPER_SIZE: "{len(helper)}"',
             f"ERA_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
             "zksync_os_fflonk_artifact_or_deployer_present: true",
             "zksync_os_fflonk_proof_route_present: false",
+            'canonical_genesis_snapshot="${WORK_DIR}/canonical-zksync-os-genesis.json"',
+            'generated_genesis="${WORK_DIR}/generated-zksync-os-genesis.json"',
+            'cp "${canonical_genesis}" "${canonical_genesis_snapshot}"',
+            'cmp --silent "${canonical_genesis_snapshot}" "${canonical_genesis}"',
+            'cmp --silent "${canonical_genesis_snapshot}" "${generated_genesis}"',
+            'cargo "+${ERA_GENESIS_TOOLCHAIN}" run',
+            "--bin zksync-os-genesis-gen",
         ):
             self.assertIn(expected, workflow)
 

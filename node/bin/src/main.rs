@@ -211,7 +211,15 @@ async fn async_main() {
     let prometheus_config = config.observability_config.prometheus.clone();
     let prometheus_port = prometheus_config.port;
 
-    run(&runtime, config).await;
+    // SYSCOIN: Poll one signal-owner future across bootstrap and steady state. Gateway target
+    // discovery may intentionally wait forever, so installing handlers only after `run` returns
+    // would make that fail-closed wait impossible to terminate without SIGKILL.
+    let mut termination = Box::pin(handle_delayed_termination(runtime.clone()));
+    tokio::select! {
+        biased;
+        _ = &mut termination => return,
+        _ = run(&runtime, config) => {},
+    }
 
     let prometheus_push_shutdown = if ephemeral_enabled {
         tracing::info!("Ephemeral mode enabled, skipping Prometheus push exporter");
@@ -230,6 +238,8 @@ async fn async_main() {
         .expect("Runtime must contain a TaskManager handle");
 
     tokio::select! {
+        biased;
+        _ = &mut termination => {},
         task_manager_result = task_manager_handle => {
             if let Ok(Err(err)) = task_manager_result {
                 tracing::error!(%err, "shutting down due to critical task error");
@@ -240,7 +250,6 @@ async fn async_main() {
                 std::process::exit(1);
             }
         },
-        _ = handle_delayed_termination(runtime) => {},
     }
 }
 

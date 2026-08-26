@@ -25,7 +25,9 @@ pub mod tree_manager;
 pub mod util;
 
 use crate::batch_sink::{BatchSink, NoOpSink, clear_failing_block_config_task};
-use crate::batch_work::{BatchWorkDispatcher, BatchWorkSource, BatchWorkStorage};
+use crate::batch_work::{
+    BatchWorkDispatcher, BatchWorkPersistenceGate, BatchWorkSource, BatchWorkStorage,
+};
 use crate::batcher::bitcoin_da_finality_gate::BitcoinDaFinalityGate;
 use crate::batcher::bitcoin_da_status_cleanup::BitcoinDaStatusCleanup;
 use crate::batcher::bitcoin_da_status_storage::BitcoinDaStatusStorage;
@@ -56,9 +58,12 @@ use crate::prover_api::snark_proof_journal::SnarkProofJournal;
 use crate::prover_api::snark_proving_pipeline_step::{SnarkProvingPipelineStep, SnarkStartupPhase};
 use crate::provider::{ProviderKind, ProviderResponseByteBudget, build_node_provider};
 use crate::tree_manager::TreeManager;
-use alloy::eips::BlockNumberOrTag;
-use alloy::primitives::{Address, B256, BlockHash, BlockNumber, keccak256};
+use alloy::eips::{BlockId, BlockNumberOrTag};
+use alloy::network::TransactionBuilder;
+use alloy::primitives::{Address, B256, BlockHash, BlockNumber, Bytes, keccak256};
 use alloy::providers::Provider;
+use alloy::rpc::types::TransactionRequest;
+use alloy::sol_types::SolCall;
 use anyhow::Context;
 use priority_tree_pipeline_step::PriorityTreePipelineStep;
 use reth_tasks::Runtime;
@@ -66,8 +71,10 @@ use secrecy::ExposeSecret;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::watch;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+// SYSCOIN: A one-shot barrier prevents Gateway-local identity discovery from racing startup
+// rebuilds; watch channels continue to publish the authenticated target to all consumers.
+use tokio::sync::{oneshot, watch};
 use zksync_os_backpressure::{BackpressureMonitor, PipelineSnapshot, PipelineTracker};
 use zksync_os_base_token_adjuster::{BaseTokenPriceHandle, BaseTokenPriceUpdater};
 use zksync_os_batch_verification::{
@@ -75,9 +82,13 @@ use zksync_os_batch_verification::{
     BatchVerificationResponder, SyscoinDaVerificationConfig, effective_verification_policy,
     effective_verification_policy_for_settlement,
 };
-use zksync_os_contract_interface::ZkChain;
-use zksync_os_contract_interface::l1_discovery::{BatchVerificationSL, L1State};
+use zksync_os_contract_interface::l1_discovery::{
+    BatchVerificationSL, L1State, L2_BRIDGEHUB_ADDRESS,
+};
 use zksync_os_contract_interface::models::BatchDaInputMode;
+use zksync_os_contract_interface::{
+    IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
+};
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
 use zksync_os_internal_config::InternalConfigManager;
@@ -220,14 +231,50 @@ fn syscoin_edge_da_commit_target_required(
     node_role: NodeRole,
     effective_pubdata_mode: Option<PubdataMode>,
 ) -> bool {
+    let edge_da_admission_requested = edge_da_admission_requested(config);
+    // SYSCOIN: Topology determines target authority. Missing credentials must fail startup; they
+    // must never make a compact producer or verifier silently stop requiring the app-bound target.
     let block_producer_uses_compact_da = node_role.is_main()
-        && block_production_enabled(config)
-        && edge_da_admission_requested(config)
+        && (config.batcher_config.enabled
+            || config.sequencer_config.allow_non_batcher_block_production)
         && (compact_edge_da_admission_required(effective_pubdata_mode)
             || compact_edge_da_admission_required(config.l1_sender_config.pubdata_mode));
+    // SYSCOIN: RPC admission is itself a target consumer, including on a non-signing EN. Do not
+    // equate "does not produce or sign batches" with "may classify commit calls against zero".
+    let rpc_uses_compact_da = rpc_edge_da_target_required(
+        config.l1_sender_config.pubdata_mode,
+        edge_da_admission_requested,
+    );
 
     block_producer_uses_compact_da
-        || (config.batch_verification_config.client_enabled && edge_da_admission_requested(config))
+        || config.batch_verification_config.client_enabled
+        || rpc_uses_compact_da
+}
+
+// SYSCOIN: Every enabled compact Edge-DA consumer must have a complete RPC credential triplet.
+// RPC-only admission remains opt-in when all three fields are absent, while partial credentials
+// fail closed. This runtime boundary also protects library callers that bypass CLI validation.
+fn validate_syscoin_edge_da_credentials(
+    config: &Config,
+    node_role: NodeRole,
+    effective_pubdata_mode: Option<PubdataMode>,
+) -> anyhow::Result<()> {
+    if syscoin_edge_da_commit_target_required(config, node_role, effective_pubdata_mode) {
+        anyhow::ensure!(
+            bitcoin_da_rpc_config_complete(config),
+            "enabled compact Edge-DA consumer requires complete Bitcoin DA RPC credentials"
+        );
+    }
+    Ok(())
+}
+
+// SYSCOIN: Keep the role-independent RPC demand explicit and independently testable. A truly
+// non-compact node remains outside target discovery even if unrelated Bitcoin settings exist.
+fn rpc_edge_da_target_required(
+    pubdata_mode: Option<PubdataMode>,
+    edge_da_admission_requested: bool,
+) -> bool {
+    edge_da_admission_requested && compact_edge_da_admission_required(pubdata_mode)
 }
 
 fn bitcoin_da_rpc_config_complete(config: &Config) -> bool {
@@ -270,6 +317,28 @@ fn initial_transaction_acceptance_state(
     } else {
         TransactionAcceptanceState::Accepting
     }
+}
+
+// SYSCOIN: A disabled-batcher fresh main node has no non-genesis block that could reach
+// `RepositoryManager::populate`. Permit the exceptional genesis completion callback only when
+// every canonical local store is still exactly at block zero.
+fn requires_genesis_replay_repository_completion(
+    node_role: NodeRole,
+    batcher_enabled: bool,
+    starting_block: u64,
+    state_block_range_available: &std::ops::RangeInclusive<u64>,
+    block_replay_storage_last_block: u64,
+    tree_last_block: u64,
+    repositories_persisted_block: u64,
+) -> bool {
+    node_role.is_main()
+        && !batcher_enabled
+        && starting_block == 0
+        && *state_block_range_available.start() == 0
+        && *state_block_range_available.end() == 0
+        && block_replay_storage_last_block == 0
+        && tree_last_block == 0
+        && repositories_persisted_block == 0
 }
 
 fn edge_da_admission_config(
@@ -637,12 +706,6 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         )
         .expect("configured pubdata mode does not match the canonical settlement topology");
     }
-    if config.batch_verification_config.client_enabled {
-        assert!(
-            bitcoin_da_rpc_config_complete(&config),
-            "`batch_verification.client_enabled=true` requires complete Bitcoin DA RPC credentials"
-        );
-    }
     if node_role.is_main() {
         // SYSCOIN: Enforce the effective on-chain batch-verification signer policy at startup.
         validate_batch_verification_startup_policy(
@@ -672,6 +735,9 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             // External and replay-only main nodes do not produce blocks; pubdata mode is irrelevant.
             None
         };
+    // SYSCOIN: Validate the actual compact-DA consumer topology before any service starts.
+    validate_syscoin_edge_da_credentials(&config, node_role, effective_pubdata_mode)
+        .expect("invalid compact Edge-DA consumer configuration");
     prepare_raft_storage(&config).expect("failed to prepare raft storage");
 
     tracing::info!("Initializing Tree RocksDB");
@@ -1106,11 +1172,19 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     };
     let syscoin_edge_da_required =
         syscoin_edge_da_commit_target_required(&config, node_role, effective_pubdata_mode);
-    let syscoin_edge_da_commit_target =
-        resolve_syscoin_edge_da_commit_target(&l1_state, syscoin_edge_da_required);
-    validate_syscoin_edge_da_relay_identity(&l1_state, &state, chain_id, syscoin_edge_da_required)
-        .await
-        .expect("failed to authenticate the canonical compact Edge-DA relay deployment");
+    // SYSCOIN: A configured main-node rebuild owns the authoritative Gateway-local snapshot.
+    // Defer both target lookup and relay identity to its applied frontier; settlement-provider
+    // identity checks for edge chains remain part of ordinary startup validation.
+    let defer_gateway_local_target_until_rebuild = node_role.is_main() && rebuild_options.is_some();
+    validate_syscoin_edge_da_relay_identity(
+        &l1_state,
+        &state,
+        chain_id,
+        syscoin_edge_da_required,
+        defer_gateway_local_target_until_rebuild,
+    )
+    .await
+    .expect("failed to authenticate the canonical compact Edge-DA relay deployment");
 
     ExecutionVersion::try_from(current_protocol_version)
         .expect("Cannot determine execution version");
@@ -1222,15 +1296,111 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     let mut local_rpc_config: zksync_os_rpc::RpcConfig = config.rpc_config.clone().into();
     local_rpc_config.block_timestamp_offset_seconds =
         config.sequencer_config.block_timestamp_offset_seconds;
-    let local_eth_call = Box::new(EthCallHandler::new(
+    let local_eth_call = EthCallHandler::new(
         local_rpc_config,
         rpc_storage.clone(),
         chain_id,
         last_constructed_block_ctx_receiver.clone(),
-        // Interop fee updater runs inside the node and is not a user-facing
-        // RPC surface, so the admit boundary doesn't apply.
+        // Internal topology discovery and the interop fee updater are not user-facing RPC
+        // surfaces, so the admission policy boundary does not apply.
         None,
-    )) as Box<dyn LocalEthCall>;
+    );
+    // SYSCOIN: The Gateway-local CTM does not belong to this chain's L1 settlement snapshot.
+    // Authenticate it through local `eth_call`; only the narrow pending-bootstrap path may launch
+    // execution first, and target-consuming components remain gated below.
+    let syscoin_edge_da_commit_target_resolution = resolve_syscoin_edge_da_commit_target(
+        &l1_state,
+        chain_id,
+        &local_eth_call,
+        syscoin_edge_da_required,
+        defer_gateway_local_target_until_rebuild,
+    )
+    .await
+    .expect("failed to resolve the compact Edge-DA commit target");
+    let (syscoin_edge_da_commit_target_sender, syscoin_edge_da_commit_target_receiver) =
+        watch::channel(syscoin_edge_da_commit_target_resolution.target);
+    // SYSCOIN: Only a deferred Gateway-local lookup receives this barrier. Its sender is owned by
+    // the main execution pipeline and fires after the last startup rebuild block is applied.
+    let (startup_rebuild_target_gate_sender, startup_rebuild_target_gate_receiver) =
+        if syscoin_edge_da_commit_target_resolution
+            .pending_gateway_ctm_asset_id
+            .is_some()
+            && defer_gateway_local_target_until_rebuild
+        {
+            let (sender, receiver) = oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+    if let Some(ctm_asset_id) =
+        syscoin_edge_da_commit_target_resolution.pending_gateway_ctm_asset_id
+    {
+        let local_eth_call = local_eth_call.clone();
+        // SYSCOIN: Retain the live state handle so target publication attests the current local
+        // relay/factory snapshot, including the authoritative post-rebuild state when configured.
+        let target_bootstrap_state = state.clone();
+        let poll_interval = config.l1_watcher_config.poll_interval;
+        runtime.spawn_critical_with_graceful_shutdown_signal(
+            "Gateway compact Edge-DA target bootstrap",
+            |shutdown| async move {
+                let mut shutdown = Box::pin(shutdown);
+                tracing::warn!(
+                    %ctm_asset_id,
+                    "Gateway compact Edge-DA target is awaiting canonical CTM bootstrap; target-consuming components remain disabled"
+                );
+                if let Some(rebuild_completed) = startup_rebuild_target_gate_receiver {
+                    tokio::select! {
+                        biased;
+                        shutdown_guard = &mut shutdown => {
+                            drop(shutdown_guard);
+                            return;
+                        }
+                        result = rebuild_completed => {
+                            result.expect("startup rebuild pipeline ended before Gateway target discovery was released");
+                        }
+                    }
+                    tracing::info!(
+                        "Startup rebuild frontier applied; enabling Gateway-local target discovery"
+                    );
+                }
+                let live_target = tokio::select! {
+                    biased;
+                    shutdown_guard = &mut shutdown => {
+                        drop(shutdown_guard);
+                        return;
+                    }
+                    result = wait_for_gateway_local_syscoin_edge_da_commit_target(
+                        &local_eth_call,
+                        ctm_asset_id,
+                        poll_interval,
+                    ) => result.expect("failed to resolve Gateway compact Edge-DA target after pipeline startup"),
+                };
+                // SYSCOIN: Re-open the live post-frontier state immediately before authority is
+                // published. This also covers a first-boot CTM wait without a configured rebuild.
+                validate_syscoin_edge_da_gateway_local_relay_identity(&target_bootstrap_state)
+                    .expect(
+                        "Gateway compact Edge-DA relay identity is invalid before target publication",
+                    );
+                let live_target =
+                    validate_syscoin_edge_da_commit_target(live_target, None, true);
+                syscoin_edge_da_commit_target_sender.send_replace(Some(live_target));
+                tracing::info!(
+                    %ctm_asset_id,
+                    %live_target,
+                    "Authenticated Gateway compact Edge-DA target after canonical CTM bootstrap"
+                );
+
+                // SYSCOIN: Keep the authenticated publication source live through node readiness;
+                // graceful process shutdown owns the only ordinary exit.
+                let _shutdown_guard = shutdown.await;
+            },
+        );
+    } else {
+        // SYSCOIN: A completed static discovery is a one-shot value; receivers accept retained
+        // Some(target), while a retained None is usable only when compact Edge-DA is not required.
+        drop(syscoin_edge_da_commit_target_sender);
+    }
+    let local_eth_call = Box::new(local_eth_call) as Box<dyn LocalEthCall>;
 
     let pool = Pool::new(
         runtime.clone(),
@@ -1340,6 +1510,23 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         .await
         .expect("replay archive component stopped during startup WAL backfill");
 
+    // SYSCOIN: Wire a one-shot repository completion only for the exact fresh, disabled-batcher
+    // topology. The executor fires it after canonical genesis validation and pool initialization;
+    // transaction acceptance remains independently closed by `BlockProductionDisabled`.
+    let genesis_replay_completed = requires_genesis_replay_repository_completion(
+        node_role,
+        config.batcher_config.enabled,
+        starting_block,
+        &node_startup_state.state_block_range_available,
+        node_startup_state.block_replay_storage_last_block,
+        node_startup_state.tree_last_block,
+        node_startup_state.repositories_persisted_block,
+    )
+    .then(|| {
+        let repositories = repositories.clone();
+        Box::new(move || repositories.mark_ready_after_genesis_replay()) as Box<dyn FnOnce() + Send>
+    });
+
     let PipelineHandles {
         backpressure_acceptance_rx,
         pipeline_snapshot_rx,
@@ -1369,10 +1556,13 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             verify_request_tx,
             verify_result_rx,
             settles_on_gateway,
-            syscoin_edge_da_commit_target,
+            syscoin_edge_da_commit_target_receiver.clone(),
+            syscoin_edge_da_required,
             effective_pubdata_mode,
             replay_archiver,
             reserved_prover_api_socket,
+            genesis_replay_completed,
+            startup_rebuild_target_gate_sender,
         )
         .await
     } else {
@@ -1391,12 +1581,24 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
             stop_receiver.clone(),
             tx_acceptance_state_sender,
             chain_id,
-            syscoin_edge_da_commit_target,
+            syscoin_edge_da_commit_target_receiver.clone(),
+            syscoin_edge_da_required,
             verify_batch_rx,
             outgoing_verify_results.clone(),
         )
         .await
     };
+
+    // SYSCOIN: RPC admission receives only the authenticated live address. On a fresh Gateway,
+    // the execution/replay pipeline above is already running and can process the priority
+    // transaction that publishes this value; no circular startup dependency remains.
+    let mut rpc_edge_da_target_source = syscoin_edge_da_commit_target_receiver;
+    let syscoin_edge_da_commit_target = wait_for_syscoin_edge_da_commit_target(
+        &mut rpc_edge_da_target_source,
+        syscoin_edge_da_required,
+    )
+    .await
+    .expect("compact Edge-DA target authentication ended before RPC initialization");
 
     // Aggregate all "not accepting" signals into a single combined receiver for the RPC server.
     // Register additional sources here as needed — no other logic changes required.
@@ -1838,6 +2040,9 @@ fn replay_wal_is_linked_from(
 
 /// Applies any configured startup L1 revert to a fully validated initial snapshot and returns the
 /// post-revert state. A revert changes batch counters, so only that case requires a fresh snapshot.
+// SYSCOIN: Keep the settlement providers and authenticated startup snapshot explicit at this
+// one-shot boundary; folding them into an opaque context would weaken the revert/refetch audit.
+#[allow(clippy::too_many_arguments)]
 async fn apply_startup_l1_revert_and_refetch(
     config: &Config,
     node_role: NodeRole,
@@ -1920,6 +2125,45 @@ async fn wait_for_one_shot_startup_signal(
             .await
             .context("one-shot startup source closed before publishing readiness")?;
     }
+}
+
+// SYSCOIN: Ignore the receiver's seeded value and require an unseen BlockApplier publication.
+// During a rebuild the seed may already equal the WAL head, while only the later publication
+// proves that the rebuilt block passed replay storage, state, and repository persistence.
+async fn wait_for_post_rebuild_applied_frontier(
+    receiver: &mut watch::Receiver<Option<BlockNumber>>,
+    required_frontier: BlockNumber,
+) -> anyhow::Result<()> {
+    loop {
+        receiver
+            .changed()
+            .await
+            .context("block applier stopped before publishing the rebuilt WAL frontier")?;
+        if receiver
+            .borrow_and_update()
+            .is_some_and(|applied| applied >= required_frontier)
+        {
+            return Ok(());
+        }
+    }
+}
+
+// SYSCOIN: Release local target discovery exactly once, and only after the existing durable
+// BlockApplier signal demonstrates that the configured startup rebuild reached its WAL head.
+async fn release_gateway_target_after_startup_rebuild(
+    completion: Option<oneshot::Sender<()>>,
+    applied_block_number: &mut watch::Receiver<Option<BlockNumber>>,
+    required_frontier: BlockNumber,
+) -> anyhow::Result<()> {
+    let Some(completion) = completion else {
+        return Ok(());
+    };
+    wait_for_post_rebuild_applied_frontier(applied_block_number, required_frontier).await?;
+    completion.send(()).map_err(|_| {
+        anyhow::anyhow!(
+            "Gateway target resolver stopped before accepting the rebuilt-state frontier"
+        )
+    })
 }
 
 // SYSCOIN: Read the newest stable phase while proving the sole stage sender is still alive. If a
@@ -2090,11 +2334,18 @@ async fn run_main_node_pipeline(
     verify_request_tx: tokio::sync::mpsc::Sender<VerifyBatchDispatch>,
     verify_result_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatchResult>,
     settles_on_gateway: bool,
-    syscoin_edge_da_commit_target: Address,
+    mut syscoin_edge_da_commit_target_source: watch::Receiver<Option<Address>>,
+    syscoin_edge_da_required: bool,
     pubdata_mode: Option<PubdataMode>,
     replay_archiver: Option<impl ReplayArchiver>,
     // SYSCOIN: This socket reserves the prover address but is not a listener until recovery is live.
     reserved_prover_api_socket: Option<ReservedTcpSocket>,
+    // SYSCOIN: Present only for an all-genesis disabled-batcher main node; BlockExecutor invokes
+    // it after genesis replay authentication succeeds.
+    genesis_replay_completed: Option<Box<dyn FnOnce() + Send>>,
+    // SYSCOIN: Present only when Gateway-local target discovery was deliberately deferred across
+    // a startup rebuild. The applied-block frontier, not command enqueue, releases this barrier.
+    startup_rebuild_target_gate: Option<oneshot::Sender<()>>,
 ) -> PipelineHandles {
     let priority_tree_db_path = config
         .general_config
@@ -2113,6 +2364,32 @@ async fn run_main_node_pipeline(
     let (replays_to_execute_sender, replays_to_execute) = tokio::sync::mpsc::unbounded_channel();
     let (applied_block_number_sender, applied_block_number_receiver) =
         watch::channel(initial_applied_block_number(&block_context_provider));
+    // SYSCOIN: Preserve a consumer for the existing durable-applier signal before the executor
+    // receiver is moved into the pipeline. It is read only when a rebuild gate exists.
+    let mut startup_rebuild_applied_block_receiver = applied_block_number_receiver.clone();
+
+    // SYSCOIN: Only a node that can produce compact-DA blocks needs the pre-persistence ceiling.
+    // Read-only verifier / RPC consumers still authenticate the target, but have no local
+    // production to gate. HA producers need the durable epoch even without a local batcher.
+    let persistence_gate_required = syscoin_edge_da_required && block_production_enabled(config);
+    // SYSCOIN: Create the durable handoff and unresolved-target epoch before execution starts, so
+    // the pre-canonization gate cannot race the first produced block or reset across restarts.
+    let batch_work_storage =
+        (config.batcher_config.enabled || persistence_gate_required).then(|| {
+            BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
+                .expect("failed to initialize batch work storage")
+        });
+    let batch_work_persistence_gate = persistence_gate_required.then(|| {
+        BatchWorkPersistenceGate::new(
+            batch_work_storage
+                .as_ref()
+                .expect("compact Edge-DA production requires gate storage")
+                .clone(),
+            syscoin_edge_da_commit_target_source.clone(),
+            node_state_on_startup.block_replay_storage_last_block,
+        )
+        .expect("failed to initialize the pre-persistence compact Edge-DA target gate")
+    });
 
     let pipeline = Pipeline::new(runtime.clone())
         .pipe(ConsensusNodeCommandSource {
@@ -2130,7 +2407,9 @@ async fn run_main_node_pipeline(
             config: config.into(),
             tx_acceptance_state_sender,
             applied_block_number_receiver,
+            genesis_replay_completed,
         })
+        .pipe_opt(batch_work_persistence_gate)
         .pipe(BlockCanonizer {
             consensus: canonization_engine,
             canonized_blocks_for_execution: replays_to_execute_sender,
@@ -2168,6 +2447,13 @@ async fn run_main_node_pipeline(
         let pipeline = pipeline.pipe(NoOpSink::new());
         let components = pipeline.components();
         pipeline.spawn();
+        release_gateway_target_after_startup_rebuild(
+            startup_rebuild_target_gate,
+            &mut startup_rebuild_applied_block_receiver,
+            node_state_on_startup.block_replay_storage_last_block,
+        )
+        .await
+        .expect("startup rebuild ended before Gateway target discovery could be released");
         runtime.spawn_critical_task(
             "clear failing block config",
             clear_failing_block_config_task(finality, internal_config_manager),
@@ -2191,10 +2477,7 @@ async fn run_main_node_pipeline(
         batch_work_channel_capacity,
         "Configured async batch-work queue capacity"
     );
-    // SYSCOIN: Persist execution-to-batcher work before dispatch so restart cannot lose a batch.
-    let batch_work_storage =
-        BatchWorkStorage::new(config.general_config.rocks_db_path.join("batch_work_queue"))
-            .expect("failed to initialize batch work storage");
+    let batch_work_storage = batch_work_storage.expect("enabled batcher requires work storage");
     let (batch_work_tx, batch_work_rx) = tokio::sync::mpsc::channel(batch_work_channel_capacity);
     let bitcoin_da_status_storage = BitcoinDaStatusStorage::new(
         config
@@ -2387,10 +2670,37 @@ async fn run_main_node_pipeline(
     let execution_pipeline = pipeline.pipe(BatchWorkDispatcher::new(
         batch_work_storage.clone(),
         batch_work_tx,
+        // SYSCOIN: Replay may run before Gateway-local target discovery, but only disk staging
+        // may cross that window; the earlier gate owns the durable production ceiling.
+        syscoin_edge_da_required.then(|| syscoin_edge_da_commit_target_source.clone()),
     ));
 
+    // SYSCOIN: Launch execution first so canonical Gateway L1 priority transactions can install
+    // the local CTM mapping. No batch/DA component is constructed with an address until the live
+    // mapping has been authenticated against the app's exact published target.
+    let mut components = execution_pipeline.components();
+    tracing::info!("Launching execution pipeline");
+    execution_pipeline.spawn();
+    release_gateway_target_after_startup_rebuild(
+        startup_rebuild_target_gate,
+        &mut startup_rebuild_applied_block_receiver,
+        node_state_on_startup.block_replay_storage_last_block,
+    )
+    .await
+    .expect("startup rebuild ended before Gateway target discovery could be released");
+    let syscoin_edge_da_commit_target = wait_for_syscoin_edge_da_commit_target(
+        &mut syscoin_edge_da_commit_target_source,
+        syscoin_edge_da_required,
+    )
+    .await
+    .expect("compact Edge-DA target authentication ended before batch pipeline initialization");
+
     let batch_pipeline = Pipeline::new(runtime.clone())
-        .pipe(BatchWorkSource::new(batch_work_storage, batch_work_rx))
+        .pipe(BatchWorkSource::new(
+            batch_work_storage,
+            batch_work_rx,
+            tree.clone(),
+        ))
         .pipe(Batcher {
             startup_config: BatcherStartupConfig {
                 last_committed_batch: node_state_on_startup.l1_state.last_committed_batch,
@@ -2476,10 +2786,7 @@ async fn run_main_node_pipeline(
         })
         .pipe(BatchSink::new(internal_config_manager));
 
-    let mut components = execution_pipeline.components();
     components.extend(batch_pipeline.components());
-    tracing::info!("Launching execution pipeline");
-    execution_pipeline.spawn();
     tracing::info!("Launching batch pipeline");
     batch_pipeline.spawn();
     let snapshot_rx = PipelineTracker::spawn(runtime, components);
@@ -2510,7 +2817,8 @@ async fn run_en_pipeline(
     stop_receiver: watch::Receiver<bool>,
     tx_acceptance_state_sender: watch::Sender<TransactionAcceptanceState>,
     chain_id: u64,
-    syscoin_edge_da_commit_target: Address,
+    syscoin_edge_da_commit_target_source: watch::Receiver<Option<Address>>,
+    syscoin_edge_da_required: bool,
     verify_batch_rx: tokio::sync::mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: tokio::sync::broadcast::Sender<PeerVerifyBatchResult>,
 ) -> PipelineHandles {
@@ -2539,6 +2847,8 @@ async fn run_en_pipeline(
             config: config.into(),
             tx_acceptance_state_sender,
             applied_block_number_receiver,
+            // SYSCOIN: EN readiness remains tied to its normal replay/populate path.
+            genesis_replay_completed: None,
         })
         .pipe(BlockApplier {
             state: state.clone(),
@@ -2570,7 +2880,11 @@ async fn run_en_pipeline(
     // explicitly configured to sign batches. Our default signing key is empty
     // unless `client_enabled=true`, and `pipe_if` evaluates both branch values.
     let pipeline = if config.batch_verification_config.client_enabled {
-        pipeline.pipe(BatchVerificationResponder::new(
+        let initial_target = initial_syscoin_edge_da_commit_target(
+            &syscoin_edge_da_commit_target_source,
+            syscoin_edge_da_required,
+        );
+        let responder = BatchVerificationResponder::new(
             chain_id,
             node_state_on_startup.l1_state.diamond_proxy_address_sl(),
             config.batch_verification_config.signing_key.clone(),
@@ -2579,12 +2893,18 @@ async fn run_en_pipeline(
             config.batcher_config.blocks_per_batch_limit,
             finality.clone(),
             node_state_on_startup.l1_state.clone(),
-            syscoin_edge_da_commit_target,
+            initial_target,
             state.clone(),
             tree.clone(),
             verify_batch_rx,
             outgoing_verify_results,
-        ))
+        );
+        let responder = if syscoin_edge_da_required && initial_target.is_none() {
+            responder.with_syscoin_edge_da_target_source(syscoin_edge_da_commit_target_source)
+        } else {
+            responder
+        };
+        pipeline.pipe(responder)
     } else {
         pipeline.pipe(NoOpSink::new())
     };
@@ -2858,13 +3178,237 @@ fn check_required_operator_keys(config: &Config, settles_on_gateway: bool) {
     }
 }
 
+// SYSCOIN: The Gateway commits its own batches through the L1 ValidatorTimelock, but forwarded
+// edge-chain commits target a distinct ValidatorTimelock deployed inside Gateway. Keep that
+// topology choice explicit so the two equally-shaped contracts cannot be confused again.
+fn syscoin_edge_da_uses_gateway_local_target(
+    chain_id: u64,
+    l1_chain_id: u64,
+    sl_chain_id: u64,
+    settlement_layer_address: Address,
+    settles_on_gateway: bool,
+    required: bool,
+) -> anyhow::Result<bool> {
+    if !required {
+        return Ok(false);
+    }
+
+    if chain_id == SYSCOIN_GATEWAY_CHAIN_ID {
+        anyhow::ensure!(
+            !settles_on_gateway && settlement_layer_address.is_zero() && l1_chain_id == sl_chain_id,
+            "canonical Gateway chain {SYSCOIN_GATEWAY_CHAIN_ID} must settle directly on L1 when compact Edge-DA is active"
+        );
+        return Ok(true);
+    }
+
+    anyhow::ensure!(
+        settles_on_gateway
+            && !settlement_layer_address.is_zero()
+            && sl_chain_id == SYSCOIN_GATEWAY_CHAIN_ID,
+        "compact Edge-DA is active on chain {chain_id}, but it is not settling on canonical Gateway chain {SYSCOIN_GATEWAY_CHAIN_ID}"
+    );
+    Ok(false)
+}
+
 // SYSCOIN: Resolve and validate the immutable compact edge-DA target bound into the guest.
-fn resolve_syscoin_edge_da_commit_target(l1_state: &L1State, required: bool) -> Address {
-    validate_syscoin_edge_da_commit_target(
-        l1_state.validator_timelock_sl,
-        syscoin_edge_da_commit_target_from_env(),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SyscoinEdgeDaCommitTargetResolution {
+    target: Option<Address>,
+    // SYSCOIN: The Gateway-local CTM mapping is installed by a canonical L1 priority tx, which
+    // cannot execute until the local pipeline is running. Retain the already-authenticated L1
+    // asset ID so startup can finish the local half of discovery after launching that pipeline.
+    pending_gateway_ctm_asset_id: Option<B256>,
+}
+
+async fn resolve_syscoin_edge_da_commit_target(
+    l1_state: &L1State,
+    chain_id: u64,
+    local_eth_call: &dyn LocalEthCall,
+    required: bool,
+    defer_gateway_local_lookup: bool,
+) -> anyhow::Result<SyscoinEdgeDaCommitTargetResolution> {
+    let uses_gateway_local_target = syscoin_edge_da_uses_gateway_local_target(
+        chain_id,
+        l1_state.l1_chain_id,
+        l1_state.sl_chain_id,
+        l1_state.settlement_layer_address,
+        l1_state.settles_on_gateway(),
         required,
-    )
+    )?;
+    let mut pending_gateway_ctm_asset_id = None;
+    let live_target = if !required {
+        None
+    } else if uses_gateway_local_target {
+        let ctm_asset_id = resolve_gateway_l1_syscoin_ctm_asset_id(l1_state).await?;
+        if defer_gateway_local_lookup {
+            // SYSCOIN: Never inspect a pre-rebuild local snapshot. Even a canonical-looking value
+            // there is stale authorization until BlockApplier publishes the rebuilt WAL frontier.
+            pending_gateway_ctm_asset_id = Some(ctm_asset_id);
+            None
+        } else {
+            match resolve_gateway_local_syscoin_edge_da_commit_target(local_eth_call, ctm_asset_id)?
+            {
+                Some(target) => Some(target),
+                None => {
+                    // SYSCOIN: This is the one permitted incomplete bootstrap state. Do not create
+                    // a placeholder target: target-consuming components remain unconstructed or
+                    // gated until the post-pipeline resolver publishes the authenticated address.
+                    pending_gateway_ctm_asset_id = Some(ctm_asset_id);
+                    None
+                }
+            }
+        }
+    } else {
+        Some(l1_state.validator_timelock_sl)
+    };
+
+    let configured_target = syscoin_edge_da_commit_target_from_env();
+    let target = match live_target {
+        Some(live_target) => Some(validate_syscoin_edge_da_commit_target(
+            live_target,
+            configured_target,
+            true,
+        )),
+        None => {
+            // SYSCOIN: Even before local discovery, an operator-provided build identity must match
+            // the app's published source constant. It is validation only, never a fallback target.
+            validate_syscoin_edge_da_commit_target(
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+                configured_target,
+                false,
+            );
+            None
+        }
+    };
+
+    Ok(SyscoinEdgeDaCommitTargetResolution {
+        target,
+        pending_gateway_ctm_asset_id,
+    })
+}
+
+// SYSCOIN: Authenticate the immutable L1 side of Gateway CTM discovery before local bootstrap.
+async fn resolve_gateway_l1_syscoin_ctm_asset_id(l1_state: &L1State) -> anyhow::Result<B256> {
+    let ctm_asset_id = l1_state
+        .bridgehub_l1
+        .ctm_asset_id()
+        .await
+        .context("failed to resolve the Gateway chain's L1 CTM asset ID")?;
+    anyhow::ensure!(
+        !ctm_asset_id.is_zero(),
+        "Gateway chain L1 CTM asset ID is zero"
+    );
+    Ok(ctm_asset_id)
+}
+
+// SYSCOIN: Gateway activation is a canonical multi-block priority sequence. The authenticated L1
+// asset mapping may still be zero before the local Bridgehub mapping is installed. That state
+// remains pending and authorizes nothing; once mapped, CTM and target identity must be complete.
+fn resolve_gateway_local_syscoin_edge_da_commit_target(
+    local_eth_call: &dyn LocalEthCall,
+    ctm_asset_id: B256,
+) -> anyhow::Result<Option<Address>> {
+    let local_ctm = local_contract_address_call(
+        local_eth_call,
+        L2_BRIDGEHUB_ADDRESS,
+        ctmAssetIdToAddressCall {
+            _assetInfo: ctm_asset_id,
+        }
+        .abi_encode(),
+        "Gateway-local Bridgehub.ctmAssetIdToAddress()",
+    )?;
+    if local_ctm.is_zero() {
+        return Ok(None);
+    }
+
+    let validator_timelock = local_contract_address_call(
+        local_eth_call,
+        local_ctm,
+        validatorTimelockPostV29Call {}.abi_encode(),
+        "Gateway-local CTM.validatorTimelockPostV29()",
+    )?;
+    anyhow::ensure!(
+        !validator_timelock.is_zero(),
+        "Gateway-local CTM.validatorTimelockPostV29() returned zero"
+    );
+    Ok(Some(validator_timelock))
+}
+
+// SYSCOIN: Poll only the local state populated by the running canonical replay/priority pipeline.
+// L1 identity and the CTM asset ID were already authenticated in the startup topology snapshot.
+async fn wait_for_gateway_local_syscoin_edge_da_commit_target(
+    local_eth_call: &dyn LocalEthCall,
+    ctm_asset_id: B256,
+    poll_interval: Duration,
+) -> anyhow::Result<Address> {
+    let poll_interval = poll_interval.max(Duration::from_millis(10));
+    loop {
+        if let Some(target) =
+            resolve_gateway_local_syscoin_edge_da_commit_target(local_eth_call, ctm_asset_id)?
+        {
+            return Ok(target);
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
+// SYSCOIN: A target source may be a completed static discovery or the live post-priority-bootstrap
+// resolver. Closed-None is always an authentication failure when compact Edge-DA is required.
+async fn wait_for_syscoin_edge_da_commit_target(
+    target_source: &mut watch::Receiver<Option<Address>>,
+    required: bool,
+) -> anyhow::Result<Address> {
+    if !required {
+        return Ok(Address::ZERO);
+    }
+    let target = target_source
+        .wait_for(Option::is_some)
+        .await
+        .context("compact Edge-DA target source closed before authentication")?;
+    // SYSCOIN: Recheck at the consumer boundary so the watch channel is not itself an
+    // authentication capability.
+    Ok(validate_syscoin_edge_da_commit_target(
+        target.expect("watch predicate requires a target"),
+        None,
+        true,
+    ))
+}
+
+// SYSCOIN: Non-compact verification retains the historical inert zero target. Only a compact-DA
+// Gateway may enter the authenticated pending state.
+fn initial_syscoin_edge_da_commit_target(
+    target_source: &watch::Receiver<Option<Address>>,
+    required: bool,
+) -> Option<Address> {
+    if required {
+        *target_source.borrow()
+    } else {
+        Some(Address::ZERO)
+    }
+}
+
+fn local_contract_address_call(
+    local_eth_call: &dyn LocalEthCall,
+    contract: Address,
+    calldata: Vec<u8>,
+    description: &str,
+) -> anyhow::Result<Address> {
+    let request = TransactionRequest::default()
+        .with_to(contract)
+        .with_input(Bytes::from(calldata));
+    let output = local_eth_call
+        .call(request, Some(BlockId::latest()))
+        .with_context(|| format!("failed to call {description}"))?;
+    anyhow::ensure!(
+        output.len() == 32,
+        "{description} returned {} bytes, expected one ABI address word",
+        output.len()
+    );
+    anyhow::ensure!(
+        output[..12].iter().all(|byte| *byte == 0),
+        "{description} returned a non-canonical ABI address"
+    );
+    Ok(Address::from_slice(&output[12..]))
 }
 
 fn validate_syscoin_edge_da_commit_target(
@@ -2982,29 +3526,17 @@ async fn validate_syscoin_edge_da_relay_identity(
     state: &impl ReadStateHistory,
     chain_id: u64,
     required: bool,
+    defer_gateway_local_identity: bool,
 ) -> anyhow::Result<()> {
     if !required {
         return Ok(());
     }
 
-    let mut authenticated = false;
-    if chain_id == SYSCOIN_GATEWAY_CHAIN_ID {
-        let latest_state_block = *state.block_range_available().end();
-        let mut view = state
-            .state_view_at(latest_state_block)
-            .context("failed to open Gateway state for compact Edge-DA relay attestation")?;
-        validate_syscoin_edge_da_local_account(
-            &mut view,
-            SYSCOIN_EDGE_DA_RELAY_FACTORY,
-            SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
-            "Arachnid CREATE2 factory",
-        )?;
-        validate_syscoin_edge_da_local_account(
-            &mut view,
-            SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
-            SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
-            "compact Edge-DA relay",
-        )?;
+    let gateway_local_identity_deferred =
+        defer_syscoin_gateway_local_identity(chain_id, defer_gateway_local_identity);
+    let mut authenticated = gateway_local_identity_deferred;
+    if chain_id == SYSCOIN_GATEWAY_CHAIN_ID && !gateway_local_identity_deferred {
+        validate_syscoin_edge_da_gateway_local_relay_identity(state)?;
         authenticated = true;
     }
 
@@ -3054,6 +3586,36 @@ async fn validate_syscoin_edge_da_relay_identity(
     Ok(())
 }
 
+// SYSCOIN: Only Gateway-local state is rebuild-sensitive. Edge chains must still authenticate the
+// fixed relay/factory from their settlement-provider snapshot during ordinary startup.
+fn defer_syscoin_gateway_local_identity(chain_id: u64, defer_gateway_local_identity: bool) -> bool {
+    chain_id == SYSCOIN_GATEWAY_CHAIN_ID && defer_gateway_local_identity
+}
+
+// SYSCOIN: Resolve the latest local view on every call. Startup rebuild can replace the snapshot
+// checked before pipeline launch, so target publication must re-attest both identities afterward.
+fn validate_syscoin_edge_da_gateway_local_relay_identity(
+    state: &impl ReadStateHistory,
+) -> anyhow::Result<()> {
+    let latest_state_block = *state.block_range_available().end();
+    let mut view = state
+        .state_view_at(latest_state_block)
+        .context("failed to open Gateway state for compact Edge-DA relay attestation")?;
+    validate_syscoin_edge_da_local_account(
+        &mut view,
+        SYSCOIN_EDGE_DA_RELAY_FACTORY,
+        SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
+        "Arachnid CREATE2 factory",
+    )?;
+    validate_syscoin_edge_da_local_account(
+        &mut view,
+        SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+        SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
+        "compact Edge-DA relay",
+    )?;
+    Ok(())
+}
+
 // SYSCOIN: `observable_bytecode_hash` is the EVM EXTCODEHASH (Keccak of raw deployed runtime),
 // unlike zkOS's internal padded bytecode hash.
 fn validate_syscoin_edge_da_local_account(
@@ -3062,14 +3624,29 @@ fn validate_syscoin_edge_da_local_account(
     expected_hash: B256,
     name: &str,
 ) -> anyhow::Result<()> {
-    let account = view
-        .get_account(address)
-        .with_context(|| format!("canonical {name} is missing at {address}"))?;
+    let observed = view.get_account(address).map(|account| {
+        (
+            account.observable_bytecode_len,
+            B256::from(account.observable_bytecode_hash.as_u8_array()),
+        )
+    });
+    validate_syscoin_edge_da_observed_local_runtime(observed, address, expected_hash, name)
+}
+
+// SYSCOIN: Keep the snapshot-dependent read separate from the fail-closed identity policy so the
+// precheck / post-rebuild mutation boundary has a focused regression test.
+fn validate_syscoin_edge_da_observed_local_runtime(
+    observed: Option<(u32, B256)>,
+    address: Address,
+    expected_hash: B256,
+    name: &str,
+) -> anyhow::Result<()> {
+    let (runtime_len, actual_hash) =
+        observed.with_context(|| format!("canonical {name} is missing at {address}"))?;
     anyhow::ensure!(
-        account.observable_bytecode_len != 0,
+        runtime_len != 0,
         "canonical {name} has empty runtime at {address}"
     );
-    let actual_hash = B256::from(account.observable_bytecode_hash.as_u8_array());
     anyhow::ensure!(
         actual_hash == expected_hash,
         "canonical {name} runtime mismatch at {address}: expected {expected_hash}, found {actual_hash}"
@@ -3327,23 +3904,38 @@ fn raft_storage_path_exists(path: &Path) -> anyhow::Result<bool> {
 mod tests {
     use super::{
         MIN_REAL_PROVER_PROOF_STORAGE_CAPACITY, PipelineStartupReadiness, canonical_pubdata_mode,
-        check_batch_verification_mismatch, enforce_v8_regeneration_prover_policy,
+        check_batch_verification_mismatch, defer_syscoin_gateway_local_identity,
+        enforce_v8_regeneration_prover_policy, initial_syscoin_edge_da_commit_target,
         initial_transaction_acceptance_state, monitor_liveness_bound_startup_signal,
-        parse_syscoin_require_gas_tank, validate_batch_verification_startup_policy,
+        parse_syscoin_require_gas_tank, requires_genesis_replay_repository_completion,
+        resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
+        syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
         validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        validate_syscoin_edge_da_observed_local_runtime,
         validate_syscoin_gas_tank_observed_runtime, wait_for_liveness_bound_startup_signal,
         wait_for_node_startup, wait_for_one_shot_startup_signal,
+        wait_for_post_rebuild_applied_frontier, wait_for_syscoin_edge_da_commit_target,
     };
     use crate::config::{BatchVerificationConfig, ProverApiConfig};
     use crate::prover_api::snark_proving_pipeline_step::SnarkStartupPhase;
-    use alloy::primitives::{B256, address};
+    use alloy::eips::BlockId;
+    use alloy::primitives::{Address, B256, Bytes, TxKind, address};
+    use alloy::sol_types::SolCall;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::time::Duration;
     use zksync_os_contract_interface::l1_discovery::{
-        BatchVerificationSL, BatchVerificationSLConfig,
+        BatchVerificationSL, BatchVerificationSLConfig, L2_BRIDGEHUB_ADDRESS,
     };
     use zksync_os_contract_interface::models::BatchDaInputMode;
+    use zksync_os_contract_interface::{
+        IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call,
+    };
     use zksync_os_types::{
         NodeRole, NotAcceptingReason, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
-        SYSCOIN_GAS_TANK_RUNTIME_HASH, TransactionAcceptanceState,
+        SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER, SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
+        SYSCOIN_EDGE_DA_RELAY_FACTORY, SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
+        SYSCOIN_GAS_TANK_RUNTIME_HASH, SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
     };
 
     // SYSCOIN: Production presence policy accepts only the launcher's documented 0/1 values.
@@ -3377,6 +3969,46 @@ mod tests {
             )
             .unwrap()
         );
+    }
+
+    // SYSCOIN: A valid pre-rebuild snapshot is not cached authority. Either relay identity changing
+    // in the rebuilt snapshot must fail the same policy invoked immediately before target release.
+    #[test]
+    fn gateway_relay_identity_defers_stale_precheck_and_rechecks_rebuild() {
+        let validate_snapshot = |factory, relay| -> anyhow::Result<()> {
+            validate_syscoin_edge_da_observed_local_runtime(
+                factory,
+                SYSCOIN_EDGE_DA_RELAY_FACTORY,
+                SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
+                "Arachnid CREATE2 factory",
+            )?;
+            validate_syscoin_edge_da_observed_local_runtime(
+                relay,
+                SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+                SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
+                "compact Edge-DA relay",
+            )
+        };
+        let factory = Some((1, SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH));
+        let relay = Some((1, SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH));
+
+        // A stale bad pre-rebuild runtime would fail validation, but configured Gateway rebuilds
+        // deliberately defer that local read and accept the canonical repaired snapshot afterward.
+        assert!(defer_syscoin_gateway_local_identity(
+            SYSCOIN_GATEWAY_CHAIN_ID,
+            true
+        ));
+        assert!(validate_snapshot(Some((1, B256::repeat_byte(0x44))), relay).is_err());
+        validate_snapshot(factory, relay).expect("pre-rebuild identities must authenticate");
+
+        // Conversely, a mutation introduced by rebuild cannot inherit the successful precheck.
+        assert!(validate_snapshot(factory, Some((1, B256::repeat_byte(0x55)))).is_err());
+        assert!(validate_snapshot(None, relay).is_err());
+        assert!(!defer_syscoin_gateway_local_identity(
+            SYSCOIN_GATEWAY_CHAIN_ID,
+            false
+        ));
+        assert!(!defer_syscoin_gateway_local_identity(1, true));
     }
 
     // SYSCOIN: Drainable releases the prover-listener waiter, but database readiness cannot release
@@ -3838,6 +4470,277 @@ mod tests {
         );
     }
 
+    // SYSCOIN: Compact RPC admission authenticates its target independently of whether this EN
+    // signs verification responses; non-compact modes retain their historical target-free path.
+    #[test]
+    fn rpc_compact_edge_da_alone_requires_target_authentication() {
+        assert!(rpc_edge_da_target_required(Some(PubdataMode::Blobs), true));
+        assert!(rpc_edge_da_target_required(
+            Some(PubdataMode::RelayedL2Calldata),
+            true,
+        ));
+        assert!(!rpc_edge_da_target_required(None, true));
+        assert!(!rpc_edge_da_target_required(
+            Some(PubdataMode::Blobs),
+            false,
+        ));
+    }
+
+    // SYSCOIN: A seeded WAL head is not rebuild completion. The gate requires an unseen durable
+    // BlockApplier publication at the configured frontier and ignores earlier replay progress.
+    #[tokio::test]
+    async fn rebuild_target_gate_requires_post_startup_applier_frontier() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(Some(9));
+        let gate =
+            tokio::spawn(
+                async move { wait_for_post_rebuild_applied_frontier(&mut receiver, 9).await },
+            );
+
+        tokio::task::yield_now().await;
+        assert!(!gate.is_finished(), "seeded frontier released rebuild gate");
+        sender.send_replace(Some(8));
+        tokio::task::yield_now().await;
+        assert!(
+            !gate.is_finished(),
+            "sub-frontier replay released rebuild gate"
+        );
+        sender.send_replace(Some(9));
+
+        tokio::time::timeout(Duration::from_secs(1), gate)
+            .await
+            .expect("rebuilt frontier did not release target gate")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rebuild_target_gate_fails_closed_if_applier_stops() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(Some(9));
+        drop(sender);
+        assert!(
+            wait_for_post_rebuild_applied_frontier(&mut receiver, 9)
+                .await
+                .is_err()
+        );
+    }
+
+    #[derive(Debug)]
+    struct ExpectedLocalEthCall {
+        contract: Address,
+        calldata: Bytes,
+        block: Option<BlockId>,
+        output: Bytes,
+    }
+
+    struct QueuedLocalEthCall {
+        calls: Mutex<VecDeque<ExpectedLocalEthCall>>,
+    }
+
+    impl QueuedLocalEthCall {
+        fn new(calls: impl IntoIterator<Item = ExpectedLocalEthCall>) -> Self {
+            Self {
+                calls: Mutex::new(calls.into_iter().collect()),
+            }
+        }
+
+        fn remaining(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl zksync_os_mempool::LocalEthCall for QueuedLocalEthCall {
+        fn call(
+            &self,
+            request: alloy::rpc::types::TransactionRequest,
+            block: Option<BlockId>,
+        ) -> anyhow::Result<Bytes> {
+            let expected = self
+                .calls
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("unexpected local eth_call"))?;
+            anyhow::ensure!(
+                request.to == Some(TxKind::Call(expected.contract)),
+                "local eth_call destination mismatch: expected {}, got {:?}",
+                expected.contract,
+                request.to
+            );
+            anyhow::ensure!(
+                request.input.input().map(Bytes::as_ref) == Some(expected.calldata.as_ref()),
+                "local eth_call calldata mismatch: expected {}, got {:?}",
+                expected.calldata,
+                request.input.input()
+            );
+            anyhow::ensure!(
+                block == expected.block,
+                "local eth_call block mismatch: expected {:?}, got {:?}",
+                expected.block,
+                block
+            );
+            Ok(expected.output)
+        }
+    }
+
+    fn expected_address_call(
+        contract: Address,
+        calldata: Vec<u8>,
+        output: Address,
+    ) -> ExpectedLocalEthCall {
+        ExpectedLocalEthCall {
+            contract,
+            calldata: Bytes::from(calldata),
+            block: Some(BlockId::latest()),
+            output: address_abi_word(output),
+        }
+    }
+
+    fn address_abi_word(address: Address) -> Bytes {
+        let mut word = [0_u8; 32];
+        word[12..].copy_from_slice(address.as_slice());
+        Bytes::copy_from_slice(&word)
+    }
+
+    // SYSCOIN: A zero local Bridgehub mapping is the first pending-bootstrap state. Discovery must
+    // not invent a target or probe an address that has not been authenticated as the local CTM.
+    #[test]
+    fn compact_edge_da_gateway_zero_mapping_remains_unresolved() {
+        let asset_id = B256::repeat_byte(0x11);
+        let local = QueuedLocalEthCall::new([expected_address_call(
+            L2_BRIDGEHUB_ADDRESS,
+            ctmAssetIdToAddressCall {
+                _assetInfo: asset_id,
+            }
+            .abi_encode(),
+            Address::ZERO,
+        )]);
+        assert_eq!(
+            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap(),
+            None
+        );
+        assert_eq!(local.remaining(), 0);
+    }
+
+    #[test]
+    fn compact_edge_da_gateway_mapping_resolves_nonzero_timelock() {
+        let asset_id = B256::repeat_byte(0x22);
+        let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
+        let local = QueuedLocalEthCall::new([
+            expected_address_call(
+                L2_BRIDGEHUB_ADDRESS,
+                ctmAssetIdToAddressCall {
+                    _assetInfo: asset_id,
+                }
+                .abi_encode(),
+                local_ctm,
+            ),
+            expected_address_call(
+                local_ctm,
+                validatorTimelockPostV29Call {}.abi_encode(),
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+            ),
+        ]);
+        assert_eq!(
+            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap(),
+            Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET)
+        );
+        assert_eq!(local.remaining(), 0);
+    }
+
+    // SYSCOIN: Malformed CTM output is never downgraded into a retryable state.
+    #[test]
+    fn compact_edge_da_gateway_rejects_malformed_nonempty_timelock_output() {
+        let asset_id = B256::repeat_byte(0x34);
+        let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
+        let local = QueuedLocalEthCall::new([
+            expected_address_call(
+                L2_BRIDGEHUB_ADDRESS,
+                ctmAssetIdToAddressCall {
+                    _assetInfo: asset_id,
+                }
+                .abi_encode(),
+                local_ctm,
+            ),
+            ExpectedLocalEthCall {
+                contract: local_ctm,
+                calldata: Bytes::from(validatorTimelockPostV29Call {}.abi_encode()),
+                block: Some(BlockId::latest()),
+                output: Bytes::from(vec![0_u8; 31]),
+            },
+        ]);
+        let err =
+            resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id).unwrap_err();
+        assert!(err.to_string().contains("returned 31 bytes"));
+        assert_eq!(local.remaining(), 0);
+    }
+
+    // SYSCOIN: A well-formed but wrong eventual target reaches the immutable guest-binding check
+    // and remains a hard failure; pending-state handling never authorizes it.
+    #[test]
+    #[should_panic(expected = "SYSCOIN edge DA commit target mismatch")]
+    fn compact_edge_da_gateway_rejects_wrong_nonzero_timelock() {
+        let asset_id = B256::repeat_byte(0x35);
+        let local_ctm = address!("0x000000000000000000000000000000000000c7a1");
+        let wrong_target = address!("0x0000000000000000000000000000000000000042");
+        let local = QueuedLocalEthCall::new([
+            expected_address_call(
+                L2_BRIDGEHUB_ADDRESS,
+                ctmAssetIdToAddressCall {
+                    _assetInfo: asset_id,
+                }
+                .abi_encode(),
+                local_ctm,
+            ),
+            expected_address_call(
+                local_ctm,
+                validatorTimelockPostV29Call {}.abi_encode(),
+                wrong_target,
+            ),
+        ]);
+        let target = resolve_gateway_local_syscoin_edge_da_commit_target(&local, asset_id)
+            .unwrap()
+            .unwrap();
+        validate_syscoin_edge_da_commit_target(target, None, true);
+    }
+
+    #[tokio::test]
+    async fn compact_edge_da_target_source_never_promotes_closed_none() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        drop(sender);
+        assert!(
+            wait_for_syscoin_edge_da_commit_target(&mut receiver, true)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_edge_da_target_source_publishes_exact_authenticated_address() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        sender.send_replace(Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET));
+        // SYSCOIN: Static discovery is intentionally a closed one-shot channel; its retained
+        // authenticated value must remain consumable.
+        drop(sender);
+        assert_eq!(
+            wait_for_syscoin_edge_da_commit_target(&mut receiver, true)
+                .await
+                .unwrap(),
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET
+        );
+    }
+
+    // SYSCOIN: Optional/non-compact batch verification has no target to authenticate and must not
+    // be trapped in the Gateway readiness gate.
+    #[test]
+    fn non_compact_batch_verification_keeps_inert_zero_target() {
+        let (_sender, receiver) = tokio::sync::watch::channel(None);
+        assert_eq!(
+            initial_syscoin_edge_da_commit_target(&receiver, false),
+            Some(Address::ZERO)
+        );
+        assert_eq!(initial_syscoin_edge_da_commit_target(&receiver, true), None);
+    }
+
     #[test]
     #[should_panic(expected = "live settlement ValidatorTimelock")]
     fn compact_edge_da_rejects_a_live_target_not_bound_into_the_guest() {
@@ -3855,6 +4758,83 @@ mod tests {
             SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
             Some(address!("0x0000000000000000000000000000000000000001")),
             false,
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_gateway_uses_its_local_child_commit_timelock() {
+        assert!(
+            syscoin_edge_da_uses_gateway_local_target(
+                SYSCOIN_GATEWAY_CHAIN_ID,
+                57,
+                57,
+                alloy::primitives::Address::ZERO,
+                false,
+                true,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_edge_chain_uses_gateway_settlement_timelock() {
+        let gateway_proxy = address!("0x0000000000000000000000000000000000005701");
+        assert!(
+            !syscoin_edge_da_uses_gateway_local_target(
+                57_002,
+                57,
+                SYSCOIN_GATEWAY_CHAIN_ID,
+                gateway_proxy,
+                true,
+                true,
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_rejects_direct_non_gateway_topology() {
+        let err = syscoin_edge_da_uses_gateway_local_target(
+            57_002,
+            57,
+            57,
+            alloy::primitives::Address::ZERO,
+            false,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not settling on canonical Gateway")
+        );
+    }
+
+    #[test]
+    fn compact_edge_da_rejects_gateway_nested_under_another_settlement_layer() {
+        let err = syscoin_edge_da_uses_gateway_local_target(
+            SYSCOIN_GATEWAY_CHAIN_ID,
+            57,
+            57_099,
+            address!("0x0000000000000000000000000000000000005701"),
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("must settle directly on L1"));
+    }
+
+    #[test]
+    fn compact_edge_da_disabled_does_not_require_a_gateway_topology() {
+        assert!(
+            !syscoin_edge_da_uses_gateway_local_target(
+                57_002,
+                57,
+                57,
+                alloy::primitives::Address::ZERO,
+                false,
+                false,
+            )
+            .unwrap()
         );
     }
 
@@ -3913,6 +4893,68 @@ mod tests {
             TransactionAcceptanceState::NotAccepting(reasons)
                 if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
         ));
+    }
+
+    // SYSCOIN: A fresh replay-only main node may publish read readiness after authenticated
+    // genesis replay, while its independent admission latch remains closed to transactions.
+    #[test]
+    fn disabled_batcher_genesis_completion_is_read_only() {
+        assert!(requires_genesis_replay_repository_completion(
+            NodeRole::MainNode,
+            false,
+            0,
+            &(0..=0),
+            0,
+            0,
+            0,
+        ));
+        assert!(matches!(
+            initial_transaction_acceptance_state(NodeRole::MainNode, None, false),
+            TransactionAcceptanceState::NotAccepting(reasons)
+                if reasons == vec![NotAcceptingReason::BlockProductionDisabled]
+        ));
+    }
+
+    // SYSCOIN: Enabled settlement, EN mode, or any local-store drift must stay on the ordinary
+    // replay/populate readiness path.
+    #[test]
+    fn genesis_completion_rejects_non_fresh_or_non_replay_only_topologies() {
+        assert!(!requires_genesis_replay_repository_completion(
+            NodeRole::MainNode,
+            true,
+            0,
+            &(0..=0),
+            0,
+            0,
+            0,
+        ));
+        assert!(!requires_genesis_replay_repository_completion(
+            NodeRole::ExternalNode,
+            false,
+            0,
+            &(0..=0),
+            0,
+            0,
+            0,
+        ));
+
+        for (starting_block, state_end, wal_head, tree_head, repository_head) in [
+            (1, 0, 0, 0, 0),
+            (0, 1, 0, 0, 0),
+            (0, 0, 1, 0, 0),
+            (0, 0, 0, 1, 0),
+            (0, 0, 0, 0, 1),
+        ] {
+            assert!(!requires_genesis_replay_repository_completion(
+                NodeRole::MainNode,
+                false,
+                starting_block,
+                &(0..=state_end),
+                wal_head,
+                tree_head,
+                repository_head,
+            ));
+        }
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub enum ComponentId {
     L1SenderExecute,
     RevmConsistencyChecker,
     MigrationGate,
+    // SYSCOIN: Exact compact-DA target authentication gates payloads before canonization.
+    BatchWorkPersistenceGate,
     BatchWorkDispatcher,
     BatchWorkSource,
     BitcoinDaFinalityGate,
@@ -76,6 +78,8 @@ impl ComponentId {
             Self::L1SenderExecute => "l1_sender_execute",
             Self::RevmConsistencyChecker => "revm_consistency_checker",
             Self::MigrationGate => "migration_gate",
+            // SYSCOIN: Keep the pre-persistence target gate distinct in pipeline telemetry.
+            Self::BatchWorkPersistenceGate => "batch_work_persistence_gate",
             Self::BatchWorkDispatcher => "batch_work_dispatcher",
             Self::BatchWorkSource => "batch_work_source",
             Self::BitcoinDaFinalityGate => "bitcoin_da_finality_gate",

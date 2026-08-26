@@ -266,6 +266,9 @@ impl<BatchStorage: WriteBatch> L1PersistBatchWatcher<BatchStorage> {
 }
 
 #[cfg(test)]
+// SYSCOIN: Keep the gap-policy test beside the helper it locks down; the event processor below
+// remains in its existing upstream location to avoid a noisy structural move.
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::ensure_commit_has_no_gap;
 

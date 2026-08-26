@@ -142,6 +142,10 @@ alloy::sol! {
     interface IBridgehub {
         function getZKChain(uint256 _chainId) external view returns (address);
         function chainTypeManager(uint256 _chainId) external view returns (address);
+        // SYSCOIN: Gateway startup resolves the matching local CTM through the CTM asset
+        // registered during Gateway activation, before any edge chain has to be registered.
+        function ctmAssetIdFromChainId(uint256 _chainId) external view returns (bytes32);
+        function ctmAssetIdToAddress(bytes32 _assetInfo) external view returns (address);
         function sharedBridge() public view returns (address);
         function getAllZKChainChainIDs() external view returns (uint256[] memory);
         function messageRoot() external view returns (address);
@@ -551,6 +555,16 @@ impl<P: Provider + Clone> Bridgehub<P> {
     pub async fn chain_type_manager_address(&self) -> alloy::contract::Result<Address> {
         self.instance
             .chainTypeManager(U256::from(self.l2_chain_id))
+            .call()
+            .await
+    }
+
+    // SYSCOIN: Resolve the portable CTM identity used to bind an L1 CTM to its Gateway-local
+    // counterpart. Unlike `chainTypeManager()` on Gateway, this is available before a child
+    // edge chain is registered there.
+    pub async fn ctm_asset_id(&self) -> alloy::contract::Result<B256> {
+        self.instance
+            .ctmAssetIdFromChainId(U256::from(self.l2_chain_id))
             .call()
             .await
     }

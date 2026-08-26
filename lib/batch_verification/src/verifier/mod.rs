@@ -3,13 +3,14 @@ use crate::verifier::metrics::BATCH_VERIFICATION_RESPONDER_METRICS;
 use crate::verify_batch_wire::VerificationRequest;
 use alloy::primitives::{Address, B256, keccak256};
 use alloy::signers::local::PrivateKeySigner;
+use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::SyscoinClient;
 use block_cache::BlockCache;
 use secrecy::{ExposeSecret, SecretString};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use zksync_os_batch_types::{
     BatchSignature, SYSCOIN_DA_MAX_BLOBS_PER_BATCH, syscoin_edge_da_refs_from_input,
 };
@@ -24,7 +25,8 @@ use zksync_os_observability::{ComponentStateReporter, GenericComponentState};
 use zksync_os_pipeline::{PeekableReceiver, PipelineComponent};
 use zksync_os_storage_api::{ReadFinality, ReadStateHistory};
 use zksync_os_storage_api::{StateError, TreeBlock};
-use zksync_os_types::{ProvingVersion, PubdataMode};
+// SYSCOIN: The signing gate independently enforces the exact app-bound compact-DA target.
+use zksync_os_types::{ProvingVersion, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET};
 
 mod block_cache;
 mod metrics;
@@ -36,7 +38,7 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     chain_id: u64,
     diamond_proxy_sl: Address,
     l1_state: L1State,
-    syscoin_edge_da_commit_target: Address,
+    syscoin_edge_da_commit_target: Option<Address>,
     signer: PrivateKeySigner,
     syscoin_da_verification: Option<SyscoinDaVerificationConfig>,
     // SYSCOIN: A peer-supplied range may never exceed a batch this node is configured to build.
@@ -48,6 +50,9 @@ pub struct BatchVerificationResponder<Finality, ReadState> {
     merkle_tree: MerkleTree<RocksDBWrapper>,
     verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
     outgoing_verify_results: broadcast::Sender<PeerVerifyBatchResult>,
+    // SYSCOIN: A fresh Gateway EN learns its app-bound compact-DA target only after replay installs
+    // the CTM mapping. Cache blocks meanwhile, but never sign with a placeholder target.
+    target_source: Option<watch::Receiver<Option<Address>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -240,7 +245,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
         max_blocks_per_batch: u64,
         finality: Finality,
         l1_state: L1State,
-        syscoin_edge_da_commit_target: Address,
+        syscoin_edge_da_commit_target: Option<Address>,
         read_state: ReadState,
         merkle_tree: MerkleTree<RocksDBWrapper>,
         verify_request_rx: mpsc::Receiver<PeerVerifyBatch>,
@@ -271,7 +276,19 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
             merkle_tree,
             verify_request_rx,
             outgoing_verify_results,
+            target_source: None,
         }
+    }
+
+    // SYSCOIN: Replace the constructor target rather than retaining a pre-authentication fallback.
+    // Ordinary edge-chain and already-bootstrapped responders keep the direct constructor path.
+    pub fn with_syscoin_edge_da_target_source(
+        mut self,
+        target_source: watch::Receiver<Option<Address>>,
+    ) -> Self {
+        self.syscoin_edge_da_commit_target = None;
+        self.target_source = Some(target_source);
+        self
     }
 
     async fn handle_verification_request(
@@ -354,7 +371,9 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone>
         let read_state = self.read_state.clone();
         let merkle_tree = self.merkle_tree.clone();
         let pubdata_mode = request.pubdata_mode;
-        let compact_edge_da_commit_target = self.syscoin_edge_da_commit_target;
+        let compact_edge_da_commit_target = self
+            .syscoin_edge_da_commit_target
+            .context("Gateway compact Edge-DA target is not authenticated")?;
         let native_batch_run = tokio::task::spawn_blocking(move || {
             let native_blocks = native_run_blocks
                 .iter()
@@ -572,6 +591,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone> PipelineCompon
         tracing::info!("starting batch verification responder");
         loop {
             state_reporter.enter_state(GenericComponentState::Idle);
+            let target_is_ready = self.syscoin_edge_da_commit_target.is_some();
             tokio::select! {
                 block = input.recv() => {
                     match block {
@@ -585,7 +605,7 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone> PipelineCompon
                         None => return Ok(()),
                     }
                 }
-                request = self.verify_request_rx.recv() => {
+                request = self.verify_request_rx.recv(), if target_is_ready => {
                     let Some(request) = request else {
                         return Ok(());
                     };
@@ -604,9 +624,33 @@ impl<Finality: ReadFinality, ReadState: ReadStateHistory + Clone> PipelineCompon
                         message: result,
                     });
                 }
+                result = wait_for_syscoin_gateway_target(&mut self.target_source), if !target_is_ready => {
+                    self.syscoin_edge_da_commit_target = Some(result?);
+                    tracing::info!("Gateway compact Edge-DA target authenticated; enabling batch verification responses");
+                }
             }
         }
     }
+}
+
+// SYSCOIN: Closed-None is a failed authentication owner, never permission to sign. This helper is
+// cancellation-safe inside `select!`; the exact authenticated address remains in the watch value.
+async fn wait_for_syscoin_gateway_target(
+    target_source: &mut Option<watch::Receiver<Option<Address>>>,
+) -> anyhow::Result<Address> {
+    let receiver = target_source
+        .as_mut()
+        .context("missing Gateway target source while target is unresolved")?;
+    let target = receiver
+        .wait_for(Option::is_some)
+        .await
+        .map_err(|_| anyhow::anyhow!("Gateway compact Edge-DA target authentication ended before batch verification was enabled"))?;
+    let target = target.expect("watch predicate requires a target");
+    anyhow::ensure!(
+        target == SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+        "Gateway compact Edge-DA target {target} does not match app-bound target {SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET}"
+    );
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -630,6 +674,8 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::mpsc::error::TrySendError;
     use zksync_os_batch_types::BlockMerkleTreeData;
     use zksync_os_batch_types::PendingBatchInfo;
     use zksync_os_batch_types::batcher_model::{BatchEnvelope, BatchMetadata, ProverInput};
@@ -656,6 +702,118 @@ mod tests {
     const PRIVATE_KEY: &str = "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110";
     const DIAMOND_PROXY_SL: Address = address!("0x00000000000000000000000000000000000000d1");
     const VALIDATOR_TIMELOCK: Address = address!("0x00000000000000000000000000000000000000e1");
+
+    #[tokio::test]
+    async fn gateway_target_source_rejects_closed_unresolved_state() {
+        let (sender, receiver) = watch::channel(None);
+        drop(sender);
+        let mut source = Some(receiver);
+        assert!(wait_for_syscoin_gateway_target(&mut source).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn gateway_target_source_returns_only_published_address() {
+        let (sender, receiver) = watch::channel(None);
+        sender.send_replace(Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET));
+        let mut source = Some(receiver);
+        assert_eq!(
+            wait_for_syscoin_gateway_target(&mut source).await.unwrap(),
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET
+        );
+    }
+
+    // SYSCOIN: Publication alone cannot authorize a target that differs from the guest binding.
+    #[tokio::test]
+    async fn gateway_target_source_rejects_noncanonical_address() {
+        let (sender, receiver) = watch::channel(None);
+        sender.send_replace(Some(VALIDATOR_TIMELOCK));
+        let mut source = Some(receiver);
+        assert!(wait_for_syscoin_gateway_target(&mut source).await.is_err());
+    }
+
+    // SYSCOIN: A pending Gateway identity gates request consumption itself, not merely the final
+    // signature branch. The authenticated publication releases exactly the queued lane request.
+    #[tokio::test]
+    async fn unresolved_gateway_target_does_not_consume_or_answer_requests() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tree = MerkleTree::new(RocksDBWrapper::new(temp_dir.path()).unwrap()).unwrap();
+        let read_state = MemoryStateHistory {
+            view: MemoryStateView {
+                storage: Arc::new(HashMap::new()),
+                preimages: Arc::new(HashMap::new()),
+            },
+            block_range: 0..=1,
+        };
+        let (verify_request_tx, verify_request_rx) = mpsc::channel(1);
+        let (outgoing_verify_results, mut result_rx) = broadcast::channel(1);
+        let (target_tx, target_rx) = watch::channel(None);
+        let responder = BatchVerificationResponder::new(
+            CHAIN_ID,
+            DIAMOND_PROXY_SL,
+            SecretString::from(PRIVATE_KEY.to_owned()),
+            None,
+            1,
+            DummyFinality::zero(),
+            test_l1_state().await,
+            None,
+            read_state,
+            tree,
+            verify_request_rx,
+            outgoing_verify_results,
+        )
+        .with_syscoin_edge_da_target_source(target_rx);
+
+        let (_input_tx, input_rx) = mpsc::channel::<TreeBlock>(1);
+        let (output_tx, _output_rx) = mpsc::channel::<()>(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("gateway_target_gating_test");
+        let run =
+            tokio::spawn(responder.run(PeekableReceiver::new(input_rx), output_tx, state_reporter));
+
+        let peer_id = zksync_os_network::PeerId::repeat_byte(0x71);
+        let request = PeerVerifyBatch {
+            peer_id,
+            lane_id: 17,
+            message: VerifyBatch {
+                request_id: REQUEST_ID,
+                batch_number: BATCH_NUMBER,
+                first_block_number: 1,
+                last_block_number: 1,
+                pubdata_mode: PubdataMode::RelayedL2Calldata.to_u8(),
+                // Deliberately malformed so consumption produces an immediate generic refusal.
+                commit_data: Bytes::new(),
+                prev_commit_data: Bytes::new(),
+                execution_protocol_version: 32,
+            },
+        };
+        verify_request_tx.send(request.clone()).await.unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), result_rx.recv())
+                .await
+                .is_err(),
+            "unresolved target produced a verification response"
+        );
+        assert!(matches!(
+            verify_request_tx.try_send(request),
+            Err(TrySendError::Full(_))
+        ));
+
+        target_tx.send_replace(Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET));
+        let result = tokio::time::timeout(Duration::from_secs(1), result_rx.recv())
+            .await
+            .expect("authenticated target did not release queued verification request")
+            .unwrap();
+        assert_eq!(result.peer_id, peer_id);
+        assert_eq!(result.lane_id, 17);
+        assert_eq!(result.message.request_id, REQUEST_ID);
+        assert!(matches!(
+            result.message.result,
+            VerifyBatchOutcome::Refused(reason) if reason == "invalid verification request"
+        ));
+
+        run.abort();
+        let _ = run.await;
+    }
 
     #[derive(Clone, Debug)]
     struct MemoryStateView {
@@ -922,7 +1080,7 @@ mod tests {
             1,
             DummyFinality::zero(),
             test_l1_state().await,
-            Address::ZERO,
+            Some(Address::ZERO),
             read_state,
             tree,
             verify_request_rx,
@@ -1041,7 +1199,7 @@ mod tests {
             1,
             DummyFinality::zero(),
             test_l1_state().await,
-            Address::ZERO,
+            Some(Address::ZERO),
             read_state.clone(),
             tree.clone(),
             verify_request_rx,
