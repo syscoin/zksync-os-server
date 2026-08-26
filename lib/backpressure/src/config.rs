@@ -45,6 +45,8 @@ impl BackpressureConfig {
             | ComponentId::BlockApplier
             | ComponentId::RevmConsistencyChecker
             | ComponentId::TreeManager
+            // SYSCOIN: The hard target-authentication gate is also a block pipeline stage.
+            | ComponentId::BatchWorkPersistenceGate
             | ComponentId::BatchWorkDispatcher
             | ComponentId::BatchWorkSource
             | ComponentId::EnMigrationTrigger => PipelineCondition {

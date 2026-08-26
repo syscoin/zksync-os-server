@@ -6,14 +6,27 @@ contracts based on 8fb7c29a. The old upstream or Syscoin snapshots do not bind
 the regenerated application, compact Bitcoin-DA commitments, contract
 addresses, or Security100 verification key.
 
-The reviewed guest source target is tree
-20dc217bbd535877f600df88bd7e2966d3d9b43a. Its app binary, end parameters,
-Security100 chain, verification key, and fixture have not been regenerated yet;
-zero values in the server and keygen workflow are deliberate sentinels.
+The guest currently binds the integration-candidate ValidatorTimelock
+0xd0ec30807902886b61a86d9bd209fe353c1d912b, produced by the exact unmodified
+output of the Syscoin-patched Anvil V32 conversion. The matching candidate relay and
+evidence are recorded in gateway-identity.v1.json. Neither identity is production-attested.
+The former 0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19 deployment-specific V7 pin
+was materialized only through Anvil state overrides in the V32 fixture and is retired here.
 
-Regenerate and attest the V32 genesis state, L1 state, databases, contract
-addresses, verification key, and metadata atomically. All repository launch
-and test helpers must refuse this fixture while this marker exists. Remove the
-marker only in the same change that installs the complete generated set.
+The reviewed guest source target is tree
+9fb99cf591c553447cd3839489cc4d327eb424b4. Its app binary, end parameters,
+Security100 chain, verification key, and fixture have not been regenerated yet.
+The zero values in the server and keygen workflow are deliberate identity sentinels.
+
+Freeze and attest the final Gateway target and relay derivation inputs (Era tree and
+compiler output, CREATE2 factory/mode and each ecosystem, Gateway, target, and relay
+salt, governance and ownership). A SHA-bound machine derivation record must carry the
+complete typed input postimage and independently recompute both CREATE2 addresses;
+unknown candidate inputs remain null sentinels and cannot authorize keygen.
+Then regenerate the V32 guest tree, app/VK, genesis state, L1 state, databases,
+contract addresses, and metadata atomically. If either the final target or relay
+identity/runtime differs from the integration candidate, replace every guest/server
+pin before keygen. All repository launch and test helpers must refuse this fixture
+while this marker exists. Remove the marker only with the complete generated set.
 
 Do not copy or rename any V30, V31, or stock V32 fixture into this directory.

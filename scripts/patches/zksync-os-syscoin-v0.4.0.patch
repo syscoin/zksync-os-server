@@ -1182,14 +1182,21 @@ index 68ead1bfc855ab309ce3fa835b46eedd87fe7678..cdc289d6086308be20ac883e16ae7ea6
 +            && !context.fee_paid_from_gas_tank
 +        {
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
-index eebbe9c4e58f7f76d815cc076b348b073608e97e..682f2841300f871010d6285aef8c990d0f1eecea 100644
+index eebbe9c4e58f7f76d815cc076b348b073608e97e..4d58c2af6d4cd07a7d69ccbca4f6999b997f7e23 100644
 --- a/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
 +++ b/basic_bootloader/src/bootloader/transaction_flow/zk/process_l1_transaction.rs
 @@ -447,0 +448 @@ where
 +        collects_syscoin_edge_da_refs: false, // SYSCOIN: authenticated Gateway commits opt in later
+@@ -616,0 +618,6 @@ where
++    // SYSCOIN: Canonical fresh-chain storage contains the AssetTracker proxy
++    // but defers slots 154/155 initialization to the first Upgrade body.
++    if l1_chain_id.is_zero() {
++        system.finish_global_frame(Some(&rollback_handle))?;
++        return Ok(());
++    }
 diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs b/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..9d8fdc6a9a857c58496c879f1ac804ee5e3ae627
+index 0000000000000000000000000000000000000000..bbf59c075b2eb9af69be08c83dfac15583e48bfe
 --- /dev/null
 +++ b/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs
 @@ -0,0 +1,51 @@
@@ -1209,8 +1216,8 @@ index 0000000000000000000000000000000000000000..9d8fdc6a9a857c58496c879f1ac804ee
 +
 +pub fn syscoin_compact_edge_da_commit_target() -> B160 {
 +    B160::from_be_bytes([
-+        0x64, 0xef, 0x2f, 0x0c, 0x41, 0x68, 0xeb, 0x76, 0xfe, 0x95, 0x99, 0x3f, 0x2a, 0x7c, 0x7b,
-+        0x35, 0xdc, 0xf3, 0xfe, 0x19,
++        0xd0, 0xec, 0x30, 0x80, 0x79, 0x02, 0x88, 0x6b, 0x61, 0xa8, 0x6d, 0x9b, 0xd2, 0x09, 0xfe,
++        0x35, 0x3c, 0x1d, 0x91, 0x2b,
 +    ])
 +}
 +
@@ -1218,8 +1225,8 @@ index 0000000000000000000000000000000000000000..9d8fdc6a9a857c58496c879f1ac804ee
 +/// deployment whose L2-to-L1 messages may enter the proven compact Edge-DA root.
 +pub fn syscoin_compact_edge_da_relay_emitter() -> B160 {
 +    B160::from_be_bytes([
-+        0xdc, 0x51, 0x72, 0xac, 0xd7, 0xc9, 0xcb, 0x54, 0x96, 0xdb, 0x42, 0xa8, 0x7d, 0xca, 0xfc,
-+        0x14, 0xf1, 0x87, 0x90, 0xa5,
++        0x75, 0x8b, 0x06, 0xcd, 0xa8, 0x0b, 0xdd, 0x01, 0x6f, 0x79, 0xaf, 0xd0, 0xdf, 0x1a, 0x98,
++        0x40, 0x39, 0x06, 0x7a, 0x21,
 +    ])
 +}
 +
@@ -2499,11 +2506,18 @@ index 0000000000000000000000000000000000000000..e0c5019c7a70f02b73c3b07476d9951a
 +    }
 +}
 diff --git a/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs b/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
-index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c8f9a4e4e 100644
+index d88163eef9429f58522c1d5ebc5c263e175d662a..028ae65e6d3f855b4dc6d0f4c305f601246118a1 100644
 --- a/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
 +++ b/basic_system/src/system_implementation/caches/generic_pubdata_aware_plain_storage.rs
 @@ -7,0 +8 @@ use zk_ee::common_structs::cache_record::CacheRecord;
 +use zk_ee::common_structs::history_counter::HistoryCounter;
+@@ -13 +13,0 @@ use zk_ee::internal_error;
+-use zk_ee::oracle::basic_queries::InitialStorageSlotQuery;
+@@ -14,0 +15 @@ use zk_ee::oracle::IOOracle;
++use zk_ee::oracle::basic_queries::InitialStorageSlotQuery;
+@@ -20 +21 @@ use zk_ee::{
+-    system::{errors::system::SystemError, Resources},
++    system::{Resources, errors::system::SystemError},
 @@ -40,0 +42,5 @@ pub struct StorageElementMetadata {
 +    /// SYSCOIN: Transaction where native cold-read Merkle work was paid. This
 +    /// is deliberately independent from EIP-2929 warmth: bootloader fee-ledger
@@ -2536,6 +2550,31 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +    /// skipped by the special write and is covered by the same
 +    /// warm-storage-write native allowance.
 +    pub(crate) evm_original_override: HistoryCounter<Option<(K, V)>, SF, M, A>,
+@@ -86,12 +115,12 @@ impl<
+-        K: 'static + KeyLikeWithBounds,
+-        V: Default
+-            + Clone
+-            + Debug
+-            + PartialEq
+-            + From<<EthereumIOTypesConfig as SystemIOTypesConfig>::StorageValue>,
+-        A: Allocator + Clone,
+-        SF: StackFactory<M>,
+-        const M: usize,
+-        R: Resources,
+-        P: StorageAccessPolicy<R, V>,
+-    > GenericPubdataAwarePlainStorage<K, V, A, SF, M, R, P>
++    K: 'static + KeyLikeWithBounds,
++    V: Default
++        + Clone
++        + Debug
++        + PartialEq
++        + From<<EthereumIOTypesConfig as SystemIOTypesConfig>::StorageValue>,
++    A: Allocator + Clone,
++    SF: StackFactory<M>,
++    const M: usize,
++    R: Resources,
++    P: StorageAccessPolicy<R, V>,
++> GenericPubdataAwarePlainStorage<K, V, A, SF, M, R, P>
 @@ -101,0 +131,2 @@ impl<
 +            // SYSCOIN: Initialize the lazy per-transaction EVM-original singleton.
 +            evm_original_override: HistoryCounter::new(allocator.clone()),
@@ -2627,7 +2666,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        // SYSCOIN: Ordinary writes retain upstream EVM warming behavior.
 @@ -287,0 +356 @@ impl<
 +            EvmWarmthMode::Update,
-@@ -290 +359,13 @@ impl<
+@@ -290 +359,19 @@ impl<
 -        let val_at_tx_start = addr_data.committed().value();
 +        // SYSCOIN: A bootloader fee precharge may rebase the one sender-credit
 +        // slot's EVM-original value while retaining its committed value for
@@ -2640,9 +2679,44 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +            .and_then(|(override_key, override_value)| {
 +                (override_key == key).then_some(override_value)
 +            });
++        // SYSCOIN: The active sender fee-credit slot is settled again after
++        // payload gas refunds are finalized. Preserve ordinary SSTORE pricing,
++        // but make that one system-owned slot refund-ineligible so a payload
++        // clear cannot retain a refund after settlement re-credits it.
++        let suppress_evm_refund_delta =
++            ee_type == ExecutionEnvironmentType::EVM && evm_original_override.is_some();
 +        let val_at_tx_start =
 +            evm_original_override.unwrap_or_else(|| addr_data.committed().value());
-@@ -348,0 +430,109 @@ impl<
+@@ -321,9 +408,14 @@ impl<
+-        let mut refund_counter_value = self.evm_refunds_counter.value().clone();
+-        self.resources_policy.refund_for_storage_write(
+-            ee_type,
+-            val_at_tx_start,
+-            val_current,
+-            new_value,
+-            resources,
+-            &mut refund_counter_value,
+-        )?;
++        let refund_counter_value = if suppress_evm_refund_delta {
++            None
++        } else {
++            let mut refund_counter_value = self.evm_refunds_counter.value().clone();
++            self.resources_policy.refund_for_storage_write(
++                ee_type,
++                val_at_tx_start,
++                val_current,
++                new_value,
++                resources,
++                &mut refund_counter_value,
++            )?;
++            Some(refund_counter_value)
++        };
+@@ -344 +436,3 @@ impl<
+-        self.evm_refunds_counter.update(refund_counter_value);
++        if let Some(refund_counter_value) = refund_counter_value {
++            self.evm_refunds_counter.update(refund_counter_value);
++        }
+@@ -348,0 +443,109 @@ impl<
 +    /// SYSCOIN: Read a bootloader-owned fee-ledger slot while charging native
 +    /// storage work but preserving EIP-2929 warmth and EIP-2200 metadata.
 +    pub fn apply_fee_ledger_read_impl(
@@ -2752,7 +2826,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        Ok(())
 +    }
 +
-@@ -366,0 +557,13 @@ impl<
+@@ -366,0 +570,13 @@ impl<
 +        // SYSCOIN: A cleared account cannot retain a payload-original override
 +        // for one of its fee-ledger slots.
 +        let clear_override = self
@@ -2766,7 +2840,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +            self.evm_original_override.update(None);
 +        }
 +
-@@ -380,0 +584,744 @@ impl<
+@@ -380,0 +597,830 @@ impl<
 +
 +#[cfg(test)]
 +mod tests {
@@ -2778,7 +2852,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +    use crate::system_implementation::flat_storage_model::storage_cache::NewStorageWithAccountPropertiesUnderHash;
 +    use crate::system_implementation::system::EthereumLikeStorageAccessCostModel;
 +    use core::iter::Empty;
-+    use evm_interpreter::{gas_constants::COLD_SLOAD_COST, ERGS_PER_GAS};
++    use evm_interpreter::{ERGS_PER_GAS, gas_constants::COLD_SLOAD_COST};
 +    use std::alloc::Global;
 +    use storage_models::common_structs::StorageCacheModel;
 +    use zk_ee::common_structs::WarmStorageKey;
@@ -2825,6 +2899,20 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        }
 +    }
 +
++    fn other_credit_key() -> WarmStorageKey {
++        WarmStorageKey {
++            address: key().address,
++            key: value(8),
++        }
++    }
++
++    fn ordinary_key() -> WarmStorageKey {
++        WarmStorageKey {
++            address: B160::from_limbs([0x5678, 0, 0]),
++            key: value(7),
++        }
++    }
++
 +    fn resources() -> TestResources {
 +        TestResources::from_ergs_and_native(
 +            Ergs(10_000_000 * ERGS_PER_GAS),
@@ -2832,16 +2920,20 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        )
 +    }
 +
-+    fn preload(storage: &mut TestStorage, initial: u64) {
++    fn preload_key(storage: &mut TestStorage, storage_key: WarmStorageKey, initial: u64) {
 +        storage
 +            .cache
-+            .get_or_insert::<InternalError>(&key(), || {
++            .get_or_insert::<InternalError>(&storage_key, || {
 +                Ok((
 +                    CacheRecord::new(value(initial)),
 +                    CacheElementProperties::new(false, true),
 +                ))
 +            })
 +            .unwrap();
++    }
++
++    fn preload(storage: &mut TestStorage, initial: u64) {
++        preload_key(storage, key(), initial);
 +    }
 +
 +    fn storage_with_initial(initial: u64) -> TestStorage {
@@ -3124,8 +3216,8 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +            assert_eq!(storage.get_refund_counter_impl().ergs(), Ergs::empty());
 +        }
 +
-+        // Clearing a nonzero post-precharge original receives the legitimate
-+        // EIP-3529 4800-gas clear refund exactly once.
++        // SYSCOIN: Clearing the active fee slot cannot retain a refund because
++        // post-payload settlement may re-credit the same slot.
 +        let mut storage = storage_with_initial(100);
 +        let mut oracle = UnusedOracle;
 +        let mut resources = resources();
@@ -3148,10 +3240,18 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +                &mut resources,
 +            )
 +            .unwrap();
-+        assert_eq!(
-+            storage.get_refund_counter_impl().ergs(),
-+            Ergs(4_800 * ERGS_PER_GAS)
-+        );
++        assert_eq!(storage.get_refund_counter_impl().ergs(), Ergs::empty());
++        storage
++            .apply_fee_ledger_write_impl(
++                &key(),
++                &value(0),
++                &value(10),
++                false,
++                &mut oracle,
++                &mut resources,
++            )
++            .unwrap();
++        assert_eq!(storage.get_refund_counter_impl().ergs(), Ergs::empty());
 +    }
 +
 +    // SYSCOIN: The post-precharge value is the payload's clean EVM-original,
@@ -3240,16 +3340,18 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +            .unwrap();
 +        let resources_after_first = resources.clone();
 +
-+        assert!(storage
-+            .apply_fee_ledger_write_impl(
-+                &key(),
-+                &value(40),
-+                &value(30),
-+                true,
-+                &mut oracle,
-+                &mut resources,
-+            )
-+            .is_err());
++        assert!(
++            storage
++                .apply_fee_ledger_write_impl(
++                    &key(),
++                    &value(40),
++                    &value(30),
++                    true,
++                    &mut oracle,
++                    &mut resources,
++                )
++                .is_err()
++        );
 +        assert_eq!(resources, resources_after_first);
 +        assert_eq!(
 +            *storage.cache.get(&key()).unwrap().current().value(),
@@ -3288,11 +3390,13 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +            *storage.cache.get(&key()).unwrap().current().value(),
 +            value(0)
 +        );
-+        assert!(storage
-+            .evm_original_override
-+            .value()
-+            .and_then(Option::as_ref)
-+            .is_none());
++        assert!(
++            storage
++                .evm_original_override
++                .value()
++                .and_then(Option::as_ref)
++                .is_none()
++        );
 +
 +        storage.finish_frame_impl(Some(&snapshot)).unwrap();
 +        assert_eq!(
@@ -3329,16 +3433,18 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        storage.clear_state_impl(Box::new(key().address)).unwrap();
 +        let resources_after_clear = resources.clone();
 +
-+        assert!(storage
-+            .apply_fee_ledger_write_impl(
-+                &key(),
-+                &value(0),
-+                &value(30),
-+                true,
-+                &mut oracle,
-+                &mut resources,
-+            )
-+            .is_err());
++        assert!(
++            storage
++                .apply_fee_ledger_write_impl(
++                    &key(),
++                    &value(0),
++                    &value(30),
++                    true,
++                    &mut oracle,
++                    &mut resources,
++                )
++                .is_err()
++        );
 +        assert_eq!(resources, resources_after_clear);
 +        assert_eq!(
 +            *storage.cache.get(&key()).unwrap().current().value(),
@@ -3377,10 +3483,7 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +                &mut resources,
 +            )
 +            .unwrap();
-+        assert_eq!(
-+            storage.get_refund_counter_impl().ergs(),
-+            Ergs(4_800 * ERGS_PER_GAS)
-+        );
++        assert_eq!(storage.get_refund_counter_impl().ergs(), Ergs::empty());
 +        storage.finish_frame_impl(Some(&payload_snapshot)).unwrap();
 +
 +        let item = storage.cache.get(&key()).unwrap();
@@ -3410,10 +3513,10 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        );
 +    }
 +
-+    // SYSCOIN: Lock the canonical EIP-3529 dirty reset sequence used to detect
-+    // refund drift around fee-ledger rebasing.
++    // SYSCOIN: The active fee slot remains refund-ineligible across every
++    // payload mutation because settlement can mutate it after finalization.
 +    #[test]
-+    fn eip3529_nonzero_clear_then_restore_refunds_2800_gas() {
++    fn active_fee_slot_clear_then_restore_is_refund_ineligible() {
 +        let mut storage = storage_with_initial(100);
 +        let mut oracle = UnusedOracle;
 +        let mut resources = resources();
@@ -3445,10 +3548,65 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +                &mut resources,
 +            )
 +            .unwrap();
-+        assert_eq!(
-+            storage.get_refund_counter_impl().ergs(),
-+            Ergs(2_800 * ERGS_PER_GAS)
-+        );
++        assert_eq!(storage.get_refund_counter_impl().ergs(), Ergs::empty());
++    }
++
++    // SYSCOIN: Refund suppression is scoped to the exact active sender-credit
++    // key and preserves refunds already earned by every other storage key.
++    #[test]
++    fn active_fee_slot_preserves_unrelated_storage_refunds() {
++        let mut storage = TestStorage::new_from_parts(Global, EthereumLikeStorageAccessCostModel);
++        preload_key(&mut storage, key(), 100);
++        preload_key(&mut storage, other_credit_key(), 100);
++        preload_key(&mut storage, ordinary_key(), 100);
++        storage.begin_new_tx();
++
++        let mut oracle = UnusedOracle;
++        let mut resources = resources();
++        storage
++            .apply_fee_ledger_write_impl(
++                &key(),
++                &value(100),
++                &value(90),
++                true,
++                &mut oracle,
++                &mut resources,
++            )
++            .unwrap();
++
++        for unrelated_key in [other_credit_key(), ordinary_key()] {
++            storage
++                .apply_write_impl(
++                    ExecutionEnvironmentType::EVM,
++                    &unrelated_key,
++                    &value(0),
++                    &mut oracle,
++                    &mut resources,
++                )
++                .unwrap();
++        }
++        let unrelated_refunds = Ergs(9_600 * ERGS_PER_GAS);
++        assert_eq!(storage.get_refund_counter_impl().ergs(), unrelated_refunds);
++
++        storage
++            .apply_write_impl(
++                ExecutionEnvironmentType::EVM,
++                &key(),
++                &value(0),
++                &mut oracle,
++                &mut resources,
++            )
++            .unwrap();
++        storage
++            .apply_write_impl(
++                ExecutionEnvironmentType::EVM,
++                &key(),
++                &value(90),
++                &mut oracle,
++                &mut resources,
++            )
++            .unwrap();
++        assert_eq!(storage.get_refund_counter_impl().ergs(), unrelated_refunds);
 +    }
 +
 +    // SYSCOIN: Committing a transaction preserves the public precharge while
@@ -3495,16 +3653,18 @@ index d88163eef9429f58522c1d5ebc5c263e175d662a..c17aaa59e56731310a65d7b516c02b3c
 +        let mut storage = storage_with_initial(100);
 +        let mut oracle = UnusedOracle;
 +        let mut resources = resources();
-+        assert!(storage
-+            .apply_fee_ledger_write_impl(
-+                &key(),
-+                &value(99),
-+                &value(40),
-+                true,
-+                &mut oracle,
-+                &mut resources,
-+            )
-+            .is_err());
++        assert!(
++            storage
++                .apply_fee_ledger_write_impl(
++                    &key(),
++                    &value(99),
++                    &value(40),
++                    true,
++                    &mut oracle,
++                    &mut resources,
++                )
++                .is_err()
++        );
 +        let item = storage.cache.get(&key()).unwrap();
 +        assert_eq!(*item.current().value(), value(100));
 +        assert!(storage.evm_original_override.value().is_none());
@@ -3920,7 +4080,7 @@ index ce71ee0ffc9223db53231c3a8567a7fd2fed800b..b8db7d62f448f585367abe3ed814b375
 -Pubdata is the data we should publish with the chain DA, for rollups it should be Ethereum calldata or blobs.
 +Pubdata is the data we publish through the chain's DA path; supported rollup modes include Ethereum calldata and compact Syscoin Bitcoin DA.
 diff --git a/docs/system/io/caches.md b/docs/system/io/caches.md
-index 1c02a03fc097277eb86b8088e93be6eccc50332b..8d28269f5863009359b58a9dc7187195ce2d799b 100644
+index 1c02a03fc097277eb86b8088e93be6eccc50332b..dec32b1c809597f5ba7cc9675a2d9b377ce20d9f 100644
 --- a/docs/system/io/caches.md
 +++ b/docs/system/io/caches.md
 @@ -118,8 +118,9 @@ transaction ID that touched it. On access:
@@ -3948,13 +4108,24 @@ index 1c02a03fc097277eb86b8088e93be6eccc50332b..8d28269f5863009359b58a9dc7187195
 +native marker uses `Option<TransactionId>`, so its default cannot alias the
 +block-level system epoch at transaction ID zero.
 +
-@@ -168,0 +176,15 @@ from reverted calls are correctly discarded.
+@@ -163,2 +170,2 @@ Regression tests: `test_dropped_tx_does_not_discount_new_slot_read` and
+-The cache maintains a `NonEmptyHistoryCounter` of cumulative EVM refunds. Every
+-`apply_write_impl()` call passes the three-value state to `refund_for_storage_write()`,
++The cache maintains a `NonEmptyHistoryCounter` of cumulative EVM refunds. Normal
++`apply_write_impl()` calls pass the three-value state to `refund_for_storage_write()`,
+@@ -168,0 +176,21 @@ from reverted calls are correctly discarded.
 +**SYSCOIN fee-ledger path.** Gas-tank reads and compare-and-writes use a narrow
 +bootloader-only interface. These operations charge native storage work, preserve
 +pre-existing EVM access-list warmth, and never update the EVM refund counter. A
 +successful sender precharge records its post-precharge value as the payload's
 +EVM-original value, while retaining the pre-transaction committed value for
 +pubdata, persistence, and outer rollback.
++
++For that exact active sender-credit key, ordinary payload `SSTORE` still performs
++normal charging, state mutation, and rollback recording but suppresses refund
++deltas. Settlement may re-credit the slot after payload refund finalization, so
++granting a clear/restore refund before that late write would be unsound. All other
++keys retain standard EIP-3529 accounting.
 +
 +Only one sender-credit slot can be rebased per L2 transaction. The override is
 +therefore a lazy, rollback-aware `HistoryCounter<Option<(key, value)>>` singleton,
@@ -3964,16 +4135,16 @@ index 1c02a03fc097277eb86b8088e93be6eccc50332b..8d28269f5863009359b58a9dc7187195
 +the refund-counter history update deliberately skipped by the special write and
 +is covered by the same warm-storage-write native allowance.
 +
-@@ -214 +236 @@ trait (parameterised by `P`) controls how gas/ergs are charged for storage
+@@ -214 +242 @@ trait (parameterised by `P`) controls how gas/ergs are charged for storage
 -operations. It defines four methods:
 +operations. Its core methods are:
-@@ -218,0 +241,5 @@ operations. It defines four methods:
+@@ -218,0 +247,5 @@ operations. It defines four methods:
 +- `charge_cold_storage_read_ergs_extra` and
 +  `charge_cold_storage_read_native_extra` — **SYSCOIN** split components used by
 +  slot materialisation so fee-ledger IO can preserve EVM warmth while paying
 +  native cold-read work. The combined method remains unchanged for account-cache
 +  callers.
-@@ -230,4 +257,5 @@ The cache creates a composite `StorageSnapshotId` that bundles a `HistoryMap`
+@@ -230,4 +263,5 @@ The cache creates a composite `StorageSnapshotId` that bundles a `HistoryMap`
 -snapshot and a refund counter snapshot. On `start_frame()` both are captured;
 -on `finish_frame(Some(snapshot))` both are rolled back atomically. This ensures
 -that a reverted `CALL` or `CREATE` discards both its storage changes and its
@@ -4018,24 +4189,42 @@ index 453c10d3fac7b79b99f9920bdd34b0f9530a28e4..13740a4656d9daa6dba1e3b28c6eed46
 +            // generic sealing-limit carrier so the server rolls back, seals, and retries the tx.
 +            basic_bootloader::bootloader::errors::InvalidTransaction::SyscoinEdgeDaRefsLimitReached => { InvalidTransaction::OtherLimitReached("SyscoinEdgeDaRefsLimitReached".into()) }
 diff --git a/forward_system/src/run/mod.rs b/forward_system/src/run/mod.rs
-index 3af5b69422cedd3a0c7a2deda1bbef2fee879a0c..1fe083ec13d00de5ec34921d447c1b0faed93be3 100644
+index 3af5b69422cedd3a0c7a2deda1bbef2fee879a0c..6d6e667b5b4ef1b44c446b2447b067d7384cedbd 100644
 --- a/forward_system/src/run/mod.rs
 +++ b/forward_system/src/run/mod.rs
-@@ -248,0 +249,2 @@ pub fn generate_proof_input<
+@@ -82,0 +83,17 @@ pub use tx_source::TxSource;
++/// SYSCOIN: Host-only access to the exact gas-tank admission accounting used
++/// by the guest. The server REVM checker must reproduce the guest's dynamic
++/// fee-payer branch without copying consensus constants or formulas.
++#[doc(hidden)]
++pub mod syscoin_gas_tank_checker {
++    pub use basic_bootloader::bootloader::constants::{
++        CALLDATA_NON_ZERO_BYTE_TOKEN_FACTOR, CALLDATA_ZERO_BYTE_TOKEN_FACTOR,
++        SYSCOIN_GAS_TANK_CONDITIONAL_COMPUTATIONAL_NATIVE_COST, SYSCOIN_GAS_TANK_INTRINSIC_PUBDATA,
++        SYSCOIN_GAS_TANK_PROBE_COMPUTATIONAL_NATIVE_COST,
++    };
++    pub use basic_bootloader::bootloader::transaction_flow::gas_helpers::{
++        calculate_l2_tx_intrinsic_computational_native_resources,
++        calculate_l2_tx_intrinsic_pubdata, calculate_tx_intrinsic_gas, create_resources_for_tx,
++        L2TxIntrinsicNativeInput, ResourcesForTx,
++    };
++}
++
+@@ -248,0 +266,2 @@ pub fn generate_proof_input<
 +    // SYSCOIN: Preserve the upstream KZG processor surface. The selected
 +    // compact generator never queries it, so it emits no witness advice.
-@@ -278,2 +280,3 @@ pub fn generate_proof_input<
+@@ -278,2 +297,3 @@ pub fn generate_proof_input<
 -/// Important: `da_commitment_scheme` must match the scheme used for the
 -/// per-block proof input generation.
 +/// The DA-scheme and pubdata parameters remain for caller compatibility. SYSCOIN: compact
 +/// Blake2s IDs are computed in-guest, so this helper no longer splices a scheme-specific advice
 +/// tail into the combined witness.
-@@ -289,2 +292,2 @@ pub fn generate_legacy_batch_proof_input(
+@@ -289,2 +309,2 @@ pub fn generate_legacy_batch_proof_input(
 -    da_commitment_scheme: DACommitmentScheme,
 -    blocks_pubdata: Vec<&[u8]>,
 +    _da_commitment_scheme: DACommitmentScheme,
 +    _blocks_pubdata: Vec<&[u8]>,
-@@ -306,52 +309,9 @@ pub fn generate_legacy_batch_proof_input(
+@@ -306,52 +326,9 @@ pub fn generate_legacy_batch_proof_input(
 -    let mut trimmed_blocks_proof_inputs = Vec::with_capacity(blocks_proof_inputs.len());
 -    let blobs_advice = match da_commitment_scheme {
 -        DACommitmentScheme::BlobsZKsyncOS => {
@@ -4097,37 +4286,37 @@ index 3af5b69422cedd3a0c7a2deda1bbef2fee879a0c..1fe083ec13d00de5ec34921d447c1b0f
 +            block_proof_input[..disconnect_marker_idx].to_vec()
 +        })
 +        .collect::<Vec<_>>();
-@@ -364,3 +324 @@ pub fn generate_legacy_batch_proof_input(
+@@ -364,3 +341 @@ pub fn generate_legacy_batch_proof_input(
 -            + 1
 -            + blobs_advice.len()
 -            + 1,
 +            + 2,
-@@ -372 +329,0 @@ pub fn generate_legacy_batch_proof_input(
+@@ -372 +346,0 @@ pub fn generate_legacy_batch_proof_input(
 -    proof_input.extend_from_slice(blobs_advice.as_slice());
-@@ -468,0 +426 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
+@@ -468,0 +443 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
 +    // SYSCOIN: Retained upstream processor; unused by compact DA.
-@@ -523,0 +482 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
+@@ -523,0 +499 @@ pub fn generate_batch_proof_input<BS: BatchState, TS: TxSource>(
 +    // SYSCOIN: Compact DA ignores the retained upstream oracle argument.
-@@ -685,0 +645 @@ pub fn make_oracle_for_proofs_and_dumps_for_init_data_with_chain_config<
+@@ -685,0 +662 @@ pub fn make_oracle_for_proofs_and_dumps_for_init_data_with_chain_config<
 +        // SYSCOIN: Preserve upstream registration; compact DA does not query it.
-@@ -691,0 +652 @@ pub fn make_oracle_for_proofs_and_dumps_for_init_data_with_chain_config<
+@@ -691,0 +669 @@ pub fn make_oracle_for_proofs_and_dumps_for_init_data_with_chain_config<
 +        // SYSCOIN: Preserve upstream registration; compact DA does not query it.
-@@ -827,0 +789 @@ pub fn run_block_with_oracle_dump_ext_with_chain_config<
+@@ -827,0 +806 @@ pub fn run_block_with_oracle_dump_ext_with_chain_config<
 +    // SYSCOIN: Preserve upstream registration; compact DA does not query it.
-@@ -879,0 +842 @@ pub fn run_block_from_oracle_dump<
+@@ -879,0 +859 @@ pub fn run_block_from_oracle_dump<
 +    // SYSCOIN: Preserve upstream registration; compact DA consumes no KZG advice.
-@@ -953,0 +917 @@ pub fn simulate_tx<S: ReadStorage, PS: PreimageSource>(
+@@ -953,0 +934 @@ pub fn simulate_tx<S: ReadStorage, PS: PreimageSource>(
 +// SYSCOIN: Witness-combination tests cover the removal of per-block KZG advice tails.
-@@ -965,0 +930,2 @@ mod tests {
+@@ -965,0 +947,2 @@ mod tests {
 +    // SYSCOIN: Legacy witness combination must preserve only the single final disconnect now that
 +    // compact-DA advice tails no longer exist.
-@@ -969,2 +935 @@ mod tests {
+@@ -969,2 +952 @@ mod tests {
 -        block_proof_input.extend_from_slice(&[11, 12, 24]);
 -        block_proof_input.extend(100..124);
 +        block_proof_input.extend_from_slice(&[11, 12]);
-@@ -982 +946,0 @@ mod tests {
+@@ -982 +963,0 @@ mod tests {
 -        expected.extend_from_slice(&blob_advice(&[1, 2, 3]));
-@@ -988,50 +951,0 @@ mod tests {
+@@ -988,50 +968,0 @@ mod tests {
 -    fn blob_advice(pubdata: &[u8]) -> Vec<u32> {
 -        let mut blobs_data = Vec::with_capacity(pubdata.len() + 31);
 -        blobs_data.extend_from_slice(&(pubdata.len() as u64).to_be_bytes());
@@ -4510,6 +4699,54 @@ index 49d0847f9be20f2c3a82664df3e8ef6f9c318b14..bb1c99401abcf439408134322714f2ac
 +    let mut expected = [0u8; 32];
 +    expected[31] = 1;
 +    assert_slh_dsa_sha2_128_24_routes(&slh_dsa_sha2_128_24_ipd_counter0_input(), &expected);
++}
++
+diff --git a/tests/instances/transactions/src/asset_tracker.rs b/tests/instances/transactions/src/asset_tracker.rs
+index eccfdf136ac7f2dd1837108912b00864391ddb2c..f4d7f87ab2958ded19a5edc77ff92d393c61f4de 100644
+--- a/tests/instances/transactions/src/asset_tracker.rs
++++ b/tests/instances/transactions/src/asset_tracker.rs
+@@ -34,2 +34,2 @@ use rig::predeployed_contracts::{
+-    DEFAULT_BASE_TOKEN_ASSET_ID, L2_ASSET_TRACKER_L1_CHAIN_ID_SLOT,
+-    SYSTEM_CONTEXT_SETTLEMENT_LAYER_CHAIN_ID_SLOT,
++    DEFAULT_BASE_TOKEN_ASSET_ID, L2_ASSET_TRACKER_BASE_TOKEN_ASSET_ID_SLOT,
++    L2_ASSET_TRACKER_L1_CHAIN_ID_SLOT, SYSTEM_CONTEXT_SETTLEMENT_LAYER_CHAIN_ID_SLOT,
+@@ -209,0 +210,38 @@ fn read_l1_chain_id_tx(nonce: u64) -> ZKsyncTxEnvelope {
++// SYSCOIN: Canonical genesis deploys the AssetTracker proxy before its first
++// Upgrade transaction initializes the L1 chain ID and base-token asset ID.
++fn uninitialized_asset_tracker() -> TestingFramework {
++    TestingFramework::new()
++        .with_storage_slot(
++            asset_tracker_address(),
++            U256::from(L2_ASSET_TRACKER_L1_CHAIN_ID_SLOT),
++            B256::ZERO,
++        )
++        .with_storage_slot(
++            asset_tracker_address(),
++            U256::from(L2_ASSET_TRACKER_BASE_TOKEN_ASSET_ID_SLOT),
++            B256::ZERO,
++        )
++}
++
++#[test]
++fn test_preloop_allows_uninitialized_genesis_asset_tracker() {
++    let mut tester = uninitialized_asset_tracker();
++
++    let output = tester.execute_block(vec![]);
++    assert!(output.tx_results.is_empty());
++    assert_eq!(
++        tester.get_storage_slot(
++            &asset_tracker_address(),
++            U256::from(L2_ASSET_TRACKER_L1_CHAIN_ID_SLOT),
++        ),
++        Some(Bytes32::zero()),
++    );
++    assert_eq!(
++        tester.get_storage_slot(
++            &asset_tracker_address(),
++            U256::from(L2_ASSET_TRACKER_BASE_TOKEN_ASSET_ID_SLOT),
++        ),
++        Some(Bytes32::zero()),
++    );
 +}
 +
 diff --git a/tests/instances/transactions/src/gas_tank.rs b/tests/instances/transactions/src/gas_tank.rs

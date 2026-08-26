@@ -273,7 +273,7 @@ mod v8_verifier {
     /// SYSCOIN: Exact reviewed guest source awaiting the reproducible app rebuild. These
     /// sentinels are replaced together from Airbender `end_params` output before keygen is
     /// authorized; no prior app identity is valid for this tree.
-    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "20dc217bbd535877f600df88bd7e2966d3d9b43a";
+    pub(super) const V8_APP_IDENTITY_SOURCE_TREE: &str = "9fb99cf591c553447cd3839489cc4d327eb424b4";
     pub(super) const V8_APP_BIN_MD5: &str = "00000000000000000000000000000000";
     pub(super) const V8_APP_IDENTITY_REGENERATION_REQUIRED: bool = true;
 

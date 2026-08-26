@@ -38,6 +38,10 @@ where
     /// that reproduces during rebuilds when the runtime truncates base state.
     /// Once that bug is fixed, this wait can be removed.
     pub applied_block_number_receiver: watch::Receiver<Option<BlockNumber>>,
+    /// SYSCOIN: Completes the fresh replay-only main-node repository latch after genesis has been
+    /// authenticated by `BlockContextProvider`; genesis intentionally has no `BlockPayload` and
+    /// therefore cannot reach `BlockApplier::populate`.
+    pub genesis_replay_completed: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[async_trait]
@@ -80,6 +84,10 @@ where
             };
             tracing::info!("Command {cmd} received by BlockExecutor");
             let cmd_type = cmd.command_type();
+            let replayed_block_number = match &cmd {
+                BlockCommand::Replay(record) => Some(record.block_context.block_number),
+                _ => None,
+            };
             state_reporter.enter_state(SequencerState::WaitingForApplier);
             // If we had a non-genesis block in the past, we need to wait for the block applier to
             // catch up. Genesis is skipped because it never gets applied further down the pipeline.
@@ -112,6 +120,9 @@ where
 
             let Some(prepared_command) = self.block_context_provider.prepare_command(cmd).await?
             else {
+                // SYSCOIN: `prepare_command` returns `None` only for the canonical genesis replay.
+                // Fire after its validation and pool initialization succeed, never on receipt alone.
+                complete_genesis_replay(replayed_block_number, &mut self.genesis_replay_completed);
                 continue;
             };
 
@@ -234,6 +245,19 @@ where
     }
 }
 
+// SYSCOIN: Keep the one-shot boundary local to the executor so a malformed genesis record cannot
+// make a read-only node ready merely because the command source enqueued it.
+fn complete_genesis_replay(
+    replayed_block_number: Option<BlockNumber>,
+    completion: &mut Option<Box<dyn FnOnce() + Send>>,
+) {
+    if replayed_block_number == Some(0)
+        && let Some(completion) = completion.take()
+    {
+        completion();
+    }
+}
+
 async fn wait_for_block_applier(
     applied_block_number_receiver: &mut watch::Receiver<Option<BlockNumber>>,
     required_block_number: BlockNumber,
@@ -323,7 +347,41 @@ fn make_deployment_filter(
 
 #[cfg(test)]
 mod tests {
-    use super::block_production_limit_reached;
+    use super::{block_production_limit_reached, complete_genesis_replay};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // SYSCOIN: A successfully skipped genesis replay releases its one-shot completion exactly once.
+    #[test]
+    fn genesis_replay_completion_is_exactly_once() {
+        let completions = Arc::new(AtomicUsize::new(0));
+        let completions_for_callback = completions.clone();
+        let mut completion: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            completions_for_callback.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        complete_genesis_replay(Some(0), &mut completion);
+        complete_genesis_replay(Some(0), &mut completion);
+
+        assert_eq!(completions.load(Ordering::Relaxed), 1);
+        assert!(completion.is_none());
+    }
+
+    // SYSCOIN: No non-genesis or non-replay no-op may release the fresh-repository latch.
+    #[test]
+    fn non_genesis_command_does_not_complete_genesis_replay() {
+        let completions = Arc::new(AtomicUsize::new(0));
+        let completions_for_callback = completions.clone();
+        let mut completion: Option<Box<dyn FnOnce() + Send>> = Some(Box::new(move || {
+            completions_for_callback.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        complete_genesis_replay(Some(1), &mut completion);
+        complete_genesis_replay(None, &mut completion);
+
+        assert_eq!(completions.load(Ordering::Relaxed), 0);
+        assert!(completion.is_some());
+    }
 
     #[test]
     fn block_production_limit_is_reached_for_zero_cap_at_startup() {

@@ -1,0 +1,140 @@
+{
+  "schema": "syscoin-v32-gateway-identity-v1",
+  "status": "integration-candidate",
+  "production_attested": false,
+  "scope": "Unmodified output of the Syscoin-patched Anvil integration conversion; not a production deployment identity",
+  "sources": {
+    "era_repository": "https://github.com/matter-labs/era-contracts.git",
+    "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
+    "era_source_patched_tree": "ea1c0600ebbcafbada4e0080aa0178311084f86a",
+    "era_patch_sha256": "b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9",
+    "zksync_os_patched_tree": "9fb99cf591c553447cd3839489cc4d327eb424b4"
+  },
+  "toolchain": {
+    "foundry_zksync_version": "v0.1.5",
+    "foundry_zksync_commit": "807f47ace7cdd90eed7190dc4481952cfaa25938",
+    "foundry_zksync_archive_sha256": "3835574db25f52650df01df854886aebed25f63c561826708dccd46c3fc401bd",
+    "forge_sha256": "789c539cc69ccbfbeee308b6305321edab651a327cca2c438961e3150448e987",
+    "cast_sha256": "3f504920edfeeb181e0075621d14f83a2292d70b3348c984fc43a45710c6b029"
+  },
+  "integration_inputs": {
+    "l1_chain_id": 31337,
+    "gateway_chain_id": 57001,
+    "owner": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "deployer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    "deployment_mode": "protocol-ops-chain-gateway-convert",
+    "ecosystem_create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+    "ecosystem_initialization_salt": "0x35b140facc0022911dc77f4438627d7990d9a140bbb5abc89552a24f821c7122",
+    "gateway_chain_create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+    "gateway_chain_create2_salt_input": null,
+    "gateway_chain_deployment_salt": "0xdfa003029ff3579190f73bd5d88d098b77b8b311b764b774c0088a6f786c6aa1",
+    "gateway_conversion_create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+    "gateway_conversion_deployment_salt": "0x88923c4cbe9c208bdd041f7c19b2d0f7e16d312e3576f17934dd390b7a2c5cc5",
+    "gateway_vote_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "validator_timelock_create2_factory": null,
+    "validator_timelock_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "relay_create2_factory": null,
+    "relay_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "gateway_bridgehub": "0x0000000000000000000000000000000000010002",
+    "gateway_ctm_proxy": "0x6b2f658d52bfce15d33bce87442c9e662e461090",
+    "conversion_command": "protocol-ops chain.gateway.convert",
+    "conversion_calldata_unmodified": true
+  },
+  "integration_input_provenance": {
+    "ecosystem_initialization": {
+      "manifest_sha256": "1626ce097ca5937d71226209265ba1bba97327dd94069f49e7f93a7eafec3a05",
+      "safe_bundle_sha256": "fc736652a5d1cd46197afcee8cc1f7bfd68ba1e9dc69697a8c7388b9190acd26",
+      "command": "ecosystem.init",
+      "create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "create2_salt": "0x35b140facc0022911dc77f4438627d7990d9a140bbb5abc89552a24f821c7122",
+      "factory_and_salt_source": "manifest input plus EIP-2470 factory transaction calldata"
+    },
+    "gateway_chain_initialization": {
+      "manifest_sha256": "ad2248796cf017197bfdfa426fdfaf9cd08fc47650e7fb526f0e48d4d5543083",
+      "safe_bundle_sha256": "1e65dd530ddf476b5368b15cf537ce29cd2ef90232e555f935753993c9ca3764",
+      "command": "chain.init",
+      "salt_input": null,
+      "create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "effective_l1_deployment_salt": "0xdfa003029ff3579190f73bd5d88d098b77b8b311b764b774c0088a6f786c6aa1",
+      "effective_l1_factory_and_salt_source": "EIP-2470 factory transaction calldata"
+    },
+    "gateway_conversion": {
+      "manifest_sha256": "4bed5246ca06b838da1a132d874c169a3fd7a227bd1491025a44726550ed793c",
+      "safe_bundle_sha256": "a555302196bf10459b4e389f09b11d2c181f4bb4cc04aba1bb5f35cfaf517d12",
+      "command": "chain.gateway.convert",
+      "create2_factory": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+      "effective_l1_deployment_salt": "0x88923c4cbe9c208bdd041f7c19b2d0f7e16d312e3576f17934dd390b7a2c5cc5",
+      "effective_l1_factory_and_salt_source": "EIP-2470 factory transaction calldata",
+      "gateway_vote_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "gateway_vote_create2_salt_source": "reviewed command default None mapped to bytes32(0)"
+    },
+    "gateway_inner_deployments": {
+      "salt_source": "reviewed GatewayCTMDeployer config propagated to ValidatorTimelock and relay CREATE2",
+      "validator_timelock_create2_deployer": null,
+      "validator_timelock_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "relay_create2_deployer": null,
+      "relay_create2_salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "addresses_recomputed": false
+    }
+  },
+  "outputs": {
+    "validator_timelock": "0xd0ec30807902886b61a86d9bd209fe353c1d912b",
+    "validator_timelock_runtime_keccak256": "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777",
+    "validator_timelock_runtime_size": 2840,
+    "relay_emitter": "0x758b06cda80bdd016f79afd0df1a984039067a21",
+    "relay_runtime_keccak256": "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0",
+    "chain_type_manager_proxy": "0x6b2f658d52bfce15d33bce87442c9e662e461090"
+  },
+  "evidence": {
+    "ecosystem_manifest_sha256": "1626ce097ca5937d71226209265ba1bba97327dd94069f49e7f93a7eafec3a05",
+    "ecosystem_safe_bundle_sha256": "fc736652a5d1cd46197afcee8cc1f7bfd68ba1e9dc69697a8c7388b9190acd26",
+    "gateway_chain_manifest_sha256": "ad2248796cf017197bfdfa426fdfaf9cd08fc47650e7fb526f0e48d4d5543083",
+    "gateway_chain_safe_bundle_sha256": "1e65dd530ddf476b5368b15cf537ce29cd2ef90232e555f935753993c9ca3764",
+    "conversion_manifest_sha256": "4bed5246ca06b838da1a132d874c169a3fd7a227bd1491025a44726550ed793c",
+    "conversion_safe_bundle_sha256": "a555302196bf10459b4e389f09b11d2c181f4bb4cc04aba1bb5f35cfaf517d12",
+    "conversion_transaction_count": 22,
+    "validator_timelock_deployed_block": 53,
+    "chain_type_manager_deployed_block": 64,
+    "bridgehub_mapping_activated_block": 67
+  },
+  "production_derivation": {
+    "l1_chain_id": null,
+    "l1_block_hash": null,
+    "l1_bridgehub": null,
+    "source_chain_type_manager": null,
+    "gateway_chain_id": null,
+    "owner": null,
+    "governance": null,
+    "deployer": null,
+    "deployment_mode": null,
+    "ecosystem_create2_factory": null,
+    "ecosystem_initialization_salt": null,
+    "gateway_chain_create2_factory": null,
+    "gateway_chain_deployment_salt": null,
+    "gateway_conversion_create2_factory": null,
+    "gateway_conversion_deployment_salt": null,
+    "gateway_vote_create2_salt": null,
+    "validator_timelock_create2_factory": null,
+    "validator_timelock_create2_salt": null,
+    "validator_timelock_init_code_hash": null,
+    "validator_timelock_constructor_args_hash": null,
+    "relay_create2_factory": null,
+    "relay_create2_salt": null,
+    "relay_init_code_hash": null,
+    "relay_constructor_args_hash": null,
+    "conversion_safe_bundle_sha256": null,
+    "machine_derivation_record": {
+      "path": null,
+      "size": null,
+      "sha256": null,
+      "schema": null,
+      "generator_source_path": null,
+      "generator_source_size": null,
+      "generator_source_sha256": null,
+      "inputs_sha256": null
+    },
+    "validator_timelock_create2_recomputed": false,
+    "relay_create2_recomputed": false,
+    "derivation_recomputed": false
+  }
+}

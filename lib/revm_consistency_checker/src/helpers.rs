@@ -121,9 +121,14 @@ pub fn zk_tx_into_revm_tx(
         None => TxKind::Create,
     };
 
-    // The `tx_type == 0x7d` value already triggers the service-tx code path in
-    // zksync-os-revm (validation skipped, no nonce/balance checks); no extra
-    // builder flag is required.
+    // SYSCOIN: A service tx's envelope nonce is a uniqueness salt, not an account nonce. Passing
+    // the fresh-chain placeholder salt (`u64::MAX`) through TxEnv makes REVM reject it during
+    // environment validation before its service-tx path can skip account nonce semantics.
+    let revm_nonce = if matches!(envelope, zksync_os_types::ZkEnvelope::System(_)) {
+        0
+    } else {
+        tx.nonce()
+    };
     let mut tx_env_builder = TxEnv::builder()
         .caller(caller)
         .gas_limit(gas_limit)
@@ -131,7 +136,7 @@ pub fn zk_tx_into_revm_tx(
         .kind(transact_to)
         .value(value)
         .data(data)
-        .nonce(tx.nonce())
+        .nonce(revm_nonce)
         .access_list(access_list)
         .tx_type(Some(tx.tx_type().ty()))
         .chain_id(chain_id)
@@ -159,5 +164,79 @@ pub fn zk_spec_version(execution_version: ExecutionVersion) -> Option<ZkSpecId> 
     // pre-mainnet legacy execution versions are deliberately not retained as live mappings.
     match execution_version {
         ExecutionVersion::V7 => Some(ZkSpecId::AtlasV3),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, B256};
+    use revm::ExecuteCommitEvm;
+    use revm::context_interface::Transaction as RevmTransaction;
+    use revm::database::{CacheDB, EmptyDB};
+    use revm::state::AccountInfo;
+    use zksync_os_revm::transaction::abstraction::ZkTxTr;
+    use zksync_os_revm::{DefaultZk, ZkBuilder, ZkContext};
+    use zksync_os_types::{
+        L1Tx, L1UpgradeEnvelope, SystemTxEnvelope, UpgradeTxType, ZkTransaction,
+    };
+
+    #[test]
+    fn upgrade_then_max_salt_system_tx_executes_in_revm() {
+        let upgrade: ZkTransaction = L1UpgradeEnvelope {
+            inner: L1Tx::<UpgradeTxType> {
+                hash: B256::ZERO,
+                initiator: Address::from_word(B256::with_last_byte(0x07)),
+                to: Address::from_word(B256::with_last_byte(0x0f)),
+                gas_limit: 72_000_000,
+                gas_per_pubdata_byte_limit: 800,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
+                nonce: 32,
+                value: U256::ZERO,
+                to_mint: U256::ZERO,
+                refund_recipient: Address::ZERO,
+                input: Bytes::new(),
+                factory_deps: vec![],
+                marker: std::marker::PhantomData,
+            },
+        }
+        .into();
+        let placeholder: ZkTransaction = SystemTxEnvelope::set_sl_chain_id(31_337, u64::MAX).into();
+        assert_eq!(placeholder.nonce(), u64::MAX);
+
+        let upgrade = zk_tx_into_revm_tx(&upgrade, 0, true, 72_000_000, None).unwrap();
+        let placeholder = zk_tx_into_revm_tx(&placeholder, 0, true, 72_000_000, None).unwrap();
+
+        assert_eq!(upgrade.tx_type(), 0x7e);
+        assert!(upgrade.is_l1_to_l2_tx());
+        assert_eq!(placeholder.tx_type(), 0x7d);
+        assert_eq!(placeholder.nonce(), 0);
+        assert!(!placeholder.service_tx);
+        assert!(placeholder.is_service_tx());
+
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            upgrade.caller(),
+            AccountInfo {
+                nonce: u64::MAX,
+                ..Default::default()
+            },
+        );
+        db.insert_account_info(
+            placeholder.caller(),
+            AccountInfo {
+                nonce: u64::MAX,
+                ..Default::default()
+            },
+        );
+        let mut evm = ZkContext::<EmptyDB>::default()
+            .with_db(db)
+            .modify_cfg_chained(|cfg| cfg.spec = ZkSpecId::AtlasV3)
+            .build_zk();
+        evm.transact_commit(upgrade)
+            .expect("upgrade tx must bypass account nonce validation");
+        evm.transact_commit(placeholder)
+            .expect("service tx must bypass account nonce validation");
     }
 }

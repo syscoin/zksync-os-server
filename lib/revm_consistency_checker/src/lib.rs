@@ -4,3 +4,5 @@ mod metrics;
 pub mod node;
 pub mod revm_state_provider;
 pub mod storage_diff_comp;
+// SYSCOIN: Mirror native gas-tank settlement for post-execution REVM consistency checks.
+mod syscoin_gas_tank;

@@ -107,6 +107,31 @@ impl RepositoryManager {
             tracing::debug!("waiting for `db_ready_to_process_blocks`");
         }
     }
+
+    // SYSCOIN: Fresh replay-only main nodes successfully validate genesis but intentionally emit
+    // no block to `populate`. Release their repository latch only at the executor's post-validation
+    // callback and only while both repository layers still contain exactly canonical genesis.
+    pub fn mark_ready_after_genesis_replay(&self) {
+        let db_block_number = self.db.get_latest_block();
+        let in_memory_block_number = self.in_memory.get_latest_block();
+        assert!(
+            genesis_only_repository_heads(db_block_number, in_memory_block_number),
+            "cannot complete genesis-only repository replay with DB head {db_block_number} and in-memory head {in_memory_block_number}"
+        );
+
+        if !self
+            .db_ready_to_process_blocks
+            .swap(true, Ordering::Relaxed)
+        {
+            tracing::info!("Repo DB is ready after canonical genesis replay");
+        }
+    }
+}
+
+// SYSCOIN: This predicate documents the narrow state in which readiness does not require a
+// non-genesis `populate` call. Any drift fails closed in `mark_ready_after_genesis_replay`.
+fn genesis_only_repository_heads(db_block_number: u64, in_memory_block_number: u64) -> bool {
+    db_block_number == 0 && in_memory_block_number == 0
 }
 
 impl LogIndex for RepositoryManager {
@@ -253,5 +278,20 @@ impl WriteRepository for RepositoryManager {
 impl SubscribeToBlocks for RepositoryManager {
     fn subscribe_to_blocks(&self) -> broadcast::Receiver<BlockNotification> {
         self.block_sender.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::genesis_only_repository_heads;
+
+    // SYSCOIN: The exceptional readiness path is valid only when neither repository layer has
+    // advanced beyond genesis; ordinary replay must continue through `populate`.
+    #[test]
+    fn genesis_only_readiness_rejects_repository_drift() {
+        assert!(genesis_only_repository_heads(0, 0));
+        assert!(!genesis_only_repository_heads(1, 0));
+        assert!(!genesis_only_repository_heads(0, 1));
+        assert!(!genesis_only_repository_heads(1, 1));
     }
 }

@@ -3321,6 +3321,80 @@ mod tests {
         }
     }
 
+    fn set_bitcoin_da_credentials(
+        config: &mut Config,
+        url: Option<&str>,
+        user: Option<&str>,
+        password: Option<&str>,
+    ) {
+        config.batcher_config.bitcoin_da_rpc_url = url.map(str::to_owned);
+        config.batcher_config.bitcoin_da_rpc_user =
+            user.map(|value| SecretString::new(value.to_owned().into()));
+        config.batcher_config.bitcoin_da_rpc_password =
+            password.map(|value| SecretString::new(value.to_owned().into()));
+    }
+
+    // SYSCOIN: Credential presence never defines topology: compact producers and verifiers require
+    // a complete triplet, while compact RPC admission is optional only when every field is absent.
+    #[test]
+    fn compact_edge_da_credentials_follow_consumer_topology() {
+        let invalid_credentials = [
+            (None, None, None),
+            (Some("http://bitcoin-da"), None, None),
+            (Some("http://bitcoin-da"), Some("user"), None),
+            (None, Some("user"), Some("password")),
+            (Some(" "), Some("user"), Some("password")),
+        ];
+        for credentials in invalid_credentials {
+            let mut producer = base_config(NodeRole::MainNode);
+            set_bitcoin_da_credentials(&mut producer, credentials.0, credentials.1, credentials.2);
+            assert!(crate::syscoin_edge_da_commit_target_required(
+                &producer,
+                NodeRole::MainNode,
+                Some(PubdataMode::Blobs),
+            ));
+            assert!(
+                crate::validate_syscoin_edge_da_credentials(
+                    &producer,
+                    NodeRole::MainNode,
+                    Some(PubdataMode::Blobs),
+                )
+                .is_err()
+            );
+        }
+
+        let mut external = base_config(NodeRole::ExternalNode);
+        external.batcher_config.enabled = false;
+        external.l1_sender_config.pubdata_mode = None;
+        set_bitcoin_da_credentials(&mut external, None, None, None);
+        crate::validate_syscoin_edge_da_credentials(&external, NodeRole::ExternalNode, None)
+            .unwrap();
+
+        external.batch_verification_config.client_enabled = true;
+        assert!(
+            crate::validate_syscoin_edge_da_credentials(&external, NodeRole::ExternalNode, None)
+                .is_err()
+        );
+        external.batch_verification_config.client_enabled = false;
+
+        external.l1_sender_config.pubdata_mode = Some(PubdataMode::Blobs);
+        crate::validate_syscoin_edge_da_credentials(&external, NodeRole::ExternalNode, None)
+            .unwrap();
+        set_bitcoin_da_credentials(&mut external, Some("http://bitcoin-da"), None, None);
+        assert!(
+            crate::validate_syscoin_edge_da_credentials(&external, NodeRole::ExternalNode, None)
+                .is_err()
+        );
+        set_bitcoin_da_credentials(
+            &mut external,
+            Some("http://bitcoin-da"),
+            Some("user"),
+            Some("password"),
+        );
+        crate::validate_syscoin_edge_da_credentials(&external, NodeRole::ExternalNode, None)
+            .unwrap();
+    }
+
     // SYSCOIN: Keep the unauthenticated prover API default on loopback only.
     #[tokio::test]
     async fn prover_api_default_loopback_bind_does_not_require_auth() {

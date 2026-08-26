@@ -124,7 +124,7 @@ export ZKSYNC_OS_SERVER_PATH="$REPO_ROOT"
 export PROTOCOL_VERSION=run-local
 # SYSCOIN: These values are part of the canonical guest. Local native execution
 # must use them exactly; otherwise sequencing and proof execution would disagree.
-export SYSCOIN_EDGE_DA_COMMIT_TARGET=0x64ef2f0c4168eb76fe95993f2a7c7b35dcf3fe19
+export SYSCOIN_EDGE_DA_COMMIT_TARGET=0xd0ec30807902886b61a86d9bd209fe353c1d912b
 export SYSCOIN_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 # Every server binary uses the locally patched final zksync-os v0.4.0 source.
 export ZKSYNC_OS_FORCE_PATCHED_WORKSPACE=true

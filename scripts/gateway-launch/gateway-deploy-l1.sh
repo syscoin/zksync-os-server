@@ -33,8 +33,53 @@ cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 forge build --skip test
 
 mkdir -p "${ZKSYNC_ERA_PATH}/etc/env/file_based"
+SYSCOIN_CANONICAL_GENESIS="${ZKSYNC_ERA_PATH}/contracts/configs/genesis/zksync-os/latest.json"
+SYSCOIN_GENERATED_GENESIS="${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
+SYSCOIN_CANONICAL_GENESIS_SHA256="5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95"
+# SYSCOIN: A stale upstream genesis artifact survived the gatewayChainId tuple-layout
+# change. Bind launch to the exact fully regenerated postimage before the generator can
+# rewrite its in-tree input, then require the emitted launch file to be byte-identical.
+python3 - "${SYSCOIN_CANONICAL_GENESIS}" "${SYSCOIN_CANONICAL_GENESIS_SHA256}" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected = sys.argv[2]
+actual = hashlib.sha256(path.read_bytes()).hexdigest()
+if actual != expected:
+    raise SystemExit(
+        f"canonical Syscoin V32 genesis digest mismatch before generation: "
+        f"expected={expected} actual={actual}"
+    )
+PY
 cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
-cargo run --release -- --output-file "${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
+cargo run \
+  --locked \
+  --release \
+  --bin zksync-os-genesis-gen \
+  -- \
+  --output-file "${SYSCOIN_GENERATED_GENESIS}"
+python3 - \
+  "${SYSCOIN_CANONICAL_GENESIS}" \
+  "${SYSCOIN_GENERATED_GENESIS}" \
+  "${SYSCOIN_CANONICAL_GENESIS_SHA256}" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+canonical_path, generated_path = map(Path, sys.argv[1:3])
+expected = sys.argv[3]
+canonical = canonical_path.read_bytes()
+generated = generated_path.read_bytes()
+if generated != canonical:
+    raise SystemExit("generated Syscoin V32 genesis is not byte-identical to the committed config")
+actual = hashlib.sha256(generated).hexdigest()
+if actual != expected:
+    raise SystemExit(
+        f"generated Syscoin V32 genesis digest mismatch: expected={expected} actual={actual}"
+    )
+PY
 
 cd "${GATEWAY_DIR}"
 gl_zkstack_pty zkstack dev contracts
