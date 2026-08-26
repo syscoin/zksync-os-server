@@ -1,8 +1,31 @@
 # shellcheck shell=bash
 # Source-only: shared paths and helpers for gateway-launch/*.sh
 # shellcheck disable=SC2034
-GL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ZKSYNC_OS_SERVER_PATH="${ZKSYNC_OS_SERVER_PATH:-$(cd "${GL_DIR}/../.." && pwd)}"
+_gl_actual_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+if [ "${GL_DIR+x}" = x ]; then
+  if ! _gl_supplied_dir="$(cd "${GL_DIR}" 2>/dev/null && pwd -P)" ||
+    [ "${_gl_supplied_dir}" != "${_gl_actual_dir}" ]; then
+    echo "gateway-launch: GL_DIR must resolve to ${_gl_actual_dir}" >&2
+    exit 1
+  fi
+fi
+# SYSCOIN: Preserve only the canonical physical spelling after validation. An
+# accepted relative path or symlink must not change meaning after a later cd or retarget.
+GL_DIR="${_gl_actual_dir}"
+readonly GL_DIR
+_gl_repo_root="$(cd "${GL_DIR}/../.." && pwd -P)"
+if [ -n "${ZKSYNC_OS_SERVER_PATH:-}" ]; then
+  if ! _gl_supplied_repo_root="$(cd "${ZKSYNC_OS_SERVER_PATH}" 2>/dev/null && pwd -P)" ||
+    [ "${_gl_supplied_repo_root}" != "${_gl_repo_root}" ]; then
+    echo "gateway-launch: ZKSYNC_OS_SERVER_PATH must resolve to ${_gl_repo_root}" >&2
+    exit 1
+  fi
+fi
+# SYSCOIN: This checkout contains the pending-fixture marker and the attested
+# patch helpers. Do not let callers redirect that security trust root later.
+ZKSYNC_OS_SERVER_PATH="${_gl_repo_root}"
+readonly ZKSYNC_OS_SERVER_PATH
+unset _gl_actual_dir _gl_supplied_dir _gl_repo_root _gl_supplied_repo_root
 
 # Ensure required CLI tooling is discoverable in non-interactive shells.
 for _tool_dir in "${HOME}/.foundry/bin" "${HOME}/.cargo/bin"; do
@@ -72,6 +95,33 @@ gl_validate_prover_mode() {
   esac
   PROVER_MODE="${prover_mode_lc}"
   export PROVER_MODE
+}
+
+# SYSCOIN: The pending V8 key does not authorize the canonical fixture, but an
+# exact no-proofs deployment may materialize the reviewed source pair in order
+# to reproduce and authenticate the Gateway identity. Keep this gate identical
+# in strength to the Era-contract source-materialization exception.
+gl_pending_v8_mock_launch_enabled() {
+  local gateway_mode edge_mode
+  [ "${PROTOCOL_VERSION:-}" = "v32.0" ] || return 1
+  [ "${PROVER_MODE:-}" = "no-proofs" ] || return 1
+  [ "${SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER:-}" = "true" ] || return 1
+  gateway_mode="${GATEWAY_PROVER_MODE:-${PROVER_MODE:-}}"
+  edge_mode="${EDGE_PROVER_MODE:-${PROVER_MODE:-}}"
+  [ "${gateway_mode}" = "no-proofs" ] || return 1
+  [ "${edge_mode}" = "no-proofs" ] || return 1
+  case "${L1_NETWORK:-}:${L1_CHAIN_ID:-}" in
+  localhost:31337 | tanenbaum:5700) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+gl_pending_v8_mock_zkstack_cli_sha() {
+  printf '%s\n' "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
+}
+
+gl_pending_v8_mock_contracts_sha() {
+  printf '%s\n' "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 }
 
 gl_reject_no_proofs_on_mainnet() {
@@ -275,10 +325,20 @@ gl_l1_broadcast_preflight() {
 gl_sha_from_versions() {
   gl_require PROTOCOL_VERSION
   local key="$1"
-  # SYSCOIN: Refuse to materialize the canonical lane from a placeholder fixture.
+  # SYSCOIN: Refuse to materialize the canonical lane from a placeholder
+  # fixture. The sole exception resolves only the exact reviewed source pair
+  # for a fake-prover launch; it does not make the absent fixture canonical.
   local pending_marker="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/CANONICAL_V8_REGENERATION_REQUIRED"
-  [ ! -f "$pending_marker" ] || \
-    gl_die "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: ${pending_marker}"
+  if [ -f "$pending_marker" ]; then
+    gl_pending_v8_mock_launch_enabled || \
+      gl_die "local-chain fixture is blocked pending canonical v32.0/V8 regeneration: ${pending_marker}"
+    case "$key" in
+    era-contracts) gl_pending_v8_mock_contracts_sha ;;
+    zkstack-cli) gl_pending_v8_mock_zkstack_cli_sha ;;
+    *) gl_die "pending-V8 mock launch has no reviewed source pin for ${key}" ;;
+    esac
+    return 0
+  fi
   local vf="${ZKSYNC_OS_SERVER_PATH}/local-chains/${PROTOCOL_VERSION}/versions.yaml"
   [ -f "$vf" ] || gl_die "missing ${vf}"
   VERSIONS_YAML="$vf" VERSIONS_KEY="$key" python3 - <<'PY'
@@ -304,12 +364,35 @@ gl_zkstack_cli_sha_from_versions() {
   gl_sha_from_versions "zkstack-cli"
 }
 
+# SYSCOIN: Resolve and authenticate source pins even when callers pre-populate
+# REQUIRED_* variables. This closes the lazy parameter-expansion path that
+# otherwise bypasses the pending-fixture marker entirely.
+gl_resolve_required_source_pins() {
+  gl_require PROTOCOL_VERSION
+  local expected_contracts expected_zkstack
+  expected_contracts="$(gl_contracts_sha_from_versions)" || \
+    gl_die "failed to resolve the reviewed Era-contracts source pin"
+  expected_zkstack="$(gl_zkstack_cli_sha_from_versions)" || \
+    gl_die "failed to resolve the reviewed zkstack source pin"
+
+  if [ -n "${REQUIRED_CONTRACTS_SHA:-}" ] && [ "${REQUIRED_CONTRACTS_SHA}" != "${expected_contracts}" ]; then
+    gl_die "REQUIRED_CONTRACTS_SHA=${REQUIRED_CONTRACTS_SHA} does not match reviewed source pin ${expected_contracts}"
+  fi
+  if [ -n "${REQUIRED_ZKSTACK_CLI_SHA:-}" ] && [ "${REQUIRED_ZKSTACK_CLI_SHA}" != "${expected_zkstack}" ]; then
+    gl_die "REQUIRED_ZKSTACK_CLI_SHA=${REQUIRED_ZKSTACK_CLI_SHA} does not match reviewed source pin ${expected_zkstack}"
+  fi
+
+  export REQUIRED_CONTRACTS_SHA="${expected_contracts}"
+  export REQUIRED_ZKSTACK_CLI_SHA="${expected_zkstack}"
+}
+
 gl_syscoin_edge_da_commit_target_from_gateway_config() {
   gl_require GATEWAY_DIR
   local gateway_chain_name
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   GATEWAY_CONFIG="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" python3 - <<'PY'
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -322,11 +405,13 @@ if not isinstance(data, dict):
     raise SystemExit(f"invalid Gateway config: {path}")
 addr = data.get("validator_timelock_addr")
 if isinstance(addr, int):
-    addr = "0x" + format(addr & ((1 << 160) - 1), "040x")
+    if addr <= 0 or addr >= 1 << 160:
+        raise SystemExit(f"invalid validator_timelock_addr in {path}: {addr}")
+    addr = "0x" + format(addr, "040x")
 if not isinstance(addr, str) or not addr.strip():
     raise SystemExit(f"missing validator_timelock_addr in {path}")
 addr = addr.strip().lower()
-if not addr.startswith("0x") or len(addr) != 42:
+if not re.fullmatch(r"0x[0-9a-f]{40}", addr):
     raise SystemExit(f"invalid validator_timelock_addr in {path}: {addr}")
 if addr == "0x" + "0" * 40:
     raise SystemExit(f"validator_timelock_addr must be nonzero in {path}")
@@ -377,6 +462,235 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
     fi
   done
   export SYSCOIN_EDGE_DA_COMMIT_TARGET="${expected}"
+}
+
+gl_published_gateway_commit_target() {
+  printf '%s\n' "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+}
+
+gl_published_gateway_relay() {
+  printf '%s\n' "0x758b06cda80bdd016f79afd0df1a984039067a21"
+}
+
+gl_gateway_generated_rpc_url() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name config_path address port
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  config_path="${GATEWAY_DIR}/os-server-configs/${gateway_chain_name}/config.yaml"
+  [ -f "${config_path}" ] && [ ! -L "${config_path}" ] || \
+    gl_die "missing or unsafe Gateway runtime config: ${config_path}"
+  address="$(awk '$0 == "rpc:" { if (getline > 0 && $1 == "address:") print $2; exit }' "${config_path}")"
+  [[ "${address}" =~ ^(0\.0\.0\.0|127\.0\.0\.1|localhost):([1-9][0-9]{0,4})$ ]] || \
+    gl_die "invalid rpc.address in Gateway runtime config ${config_path}: ${address}"
+  port="${BASH_REMATCH[2]}"
+  [ "${port}" -le 65535 ] || gl_die "invalid Gateway RPC port in ${config_path}: ${port}"
+  printf 'http://127.0.0.1:%s\n' "${port}"
+}
+
+gl_gateway_runtime_rpc_url() {
+  printf '%s\n' "${GATEWAY_RPC_URL:-http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
+}
+
+gl_gateway_chain_id_from_config() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  GATEWAY_CONFIG="${GATEWAY_DIR}/chains/${gateway_chain_name}/ZkStack.yaml" python3 - <<'PY'
+import os
+from pathlib import Path
+
+import yaml
+
+path = Path(os.environ["GATEWAY_CONFIG"])
+if not path.is_file():
+    raise SystemExit(f"missing Gateway chain config: {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+chain_id = data.get("chain_id") if isinstance(data, dict) else None
+if isinstance(chain_id, str):
+    chain_id = int(chain_id, 16 if chain_id.lower().startswith("0x") else 10)
+if isinstance(chain_id, bool) or not isinstance(chain_id, int) or not 0 < chain_id < 2**256:
+    raise SystemExit(f"invalid Gateway chain_id in {path}")
+print(chain_id)
+PY
+}
+
+# SYSCOIN: The candidate code/address checks are deployment-agnostic. Pin the
+# first launcher-owned Gateway's immutable block 0 so direct additional-edge
+# helpers cannot attach to another V32 Gateway with the same chain ID and code.
+gl_assert_gateway_genesis_stamp() {
+  local gateway_rpc="${1:?Gateway RPC URL required}"
+  local chain_id="${2:?Gateway chain ID required}"
+  local allow_create="${3:-false}"
+  local block_zero_hash gateway_chain_name stamp_path expected
+  case "${allow_create}" in
+  true | false) ;;
+  *) gl_die "invalid Gateway genesis-stamp policy: ${allow_create}" ;;
+  esac
+  block_zero_hash="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
+    gl_die "failed to read Gateway block-0 hash from ${gateway_rpc}"
+  block_zero_hash="$(gl_to_lower "$(printf '%s' "${block_zero_hash}" | tr -d '[:space:]')")"
+  [[ "${block_zero_hash}" =~ ^0x[0-9a-f]{64}$ ]] || \
+    gl_die "invalid Gateway block-0 hash from ${gateway_rpc}: ${block_zero_hash}"
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  stamp_path="${GATEWAY_DIR}/.gateway-launch/${gateway_chain_name}-runtime-genesis.v1"
+  expected="${chain_id} ${block_zero_hash}"
+  GATEWAY_GENESIS_STAMP="${stamp_path}" \
+  GATEWAY_GENESIS_EXPECTED="${expected}" \
+  GATEWAY_GENESIS_ALLOW_CREATE="${allow_create}" python3 - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+path = Path(os.environ["GATEWAY_GENESIS_STAMP"])
+expected = os.environ["GATEWAY_GENESIS_EXPECTED"] + "\n"
+allow_create = os.environ["GATEWAY_GENESIS_ALLOW_CREATE"] == "true"
+if not path.exists() and not path.is_symlink():
+    if not allow_create:
+        raise SystemExit(f"missing Gateway genesis stamp {path}; run the main launcher first")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags, 0o600), "w", encoding="utf-8") as stream:
+        stream.write(expected)
+        stream.flush()
+        os.fsync(stream.fileno())
+info = path.lstat()
+if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+    raise SystemExit(f"Gateway genesis stamp must be a regular non-symlink file: {path}")
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    raise SystemExit(f"unsafe Gateway genesis stamp ownership or permissions: {path}")
+actual = path.read_text(encoding="utf-8")
+if actual != expected:
+    raise SystemExit(f"Gateway deployment genesis mismatch in {path}")
+PY
+}
+
+gl_gateway_relay_from_gateway_config() {
+  gl_require GATEWAY_DIR
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  GATEWAY_CONFIG="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+import yaml
+
+path = Path(os.environ["GATEWAY_CONFIG"])
+if not path.exists():
+    raise SystemExit(f"missing Gateway config: {path}")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid Gateway config: {path}")
+addr = data.get("relayed_sl_da_validator")
+if isinstance(addr, int):
+    if addr <= 0 or addr >= 1 << 160:
+        raise SystemExit(f"invalid relayed_sl_da_validator in {path}: {addr}")
+    addr = "0x" + format(addr, "040x")
+if not isinstance(addr, str):
+    raise SystemExit(f"missing relayed_sl_da_validator in {path}")
+addr = addr.strip().lower()
+if not re.fullmatch(r"0x[0-9a-f]{40}", addr) or addr == "0x" + "0" * 40:
+    raise SystemExit(f"invalid relayed_sl_da_validator in {path}: {addr}")
+print(addr)
+PY
+}
+
+# SYSCOIN: A fresh source-only mock deployment may reach Gateway conversion,
+# but it must not create an edge against a deployment identity different from
+# the app-bound integration candidate. A mismatch is the expected signal to
+# stop, attest the new deployment inputs, and repin through review.
+gl_assert_gateway_config_identity() {
+  local actual_target expected_target actual_relay expected_relay
+  actual_target="$(gl_syscoin_edge_da_commit_target_from_gateway_config)"
+  expected_target="$(gl_published_gateway_commit_target)"
+  [ "${actual_target}" = "${expected_target}" ] || \
+    gl_die "fresh Gateway validator_timelock_addr=${actual_target} differs from app-bound target ${expected_target}; stopped before edge creation for identity repinning/review"
+
+  actual_relay="$(gl_gateway_relay_from_gateway_config)"
+  expected_relay="$(gl_published_gateway_relay)"
+  [ "${actual_relay}" = "${expected_relay}" ] || \
+    gl_die "fresh Gateway relayed_sl_da_validator=${actual_relay} differs from app-bound relay ${expected_relay}; stopped before edge creation for identity repinning/review"
+}
+
+gl_assert_rpc_runtime_identity() {
+  local rpc_url="${1:?rpc url required}"
+  local address="${2:?address required}"
+  local expected_size="${3:?expected size required}"
+  local expected_hash="${4:?expected hash required}"
+  local label="${5:?label required}"
+  local code code_hex actual_size actual_hash
+
+  code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast code "${address}" --rpc-url "${rpc_url}")" || \
+    gl_die "failed to read ${label} runtime at ${address} from ${rpc_url}"
+  code="$(printf '%s' "${code}" | tr -d '[:space:]')"
+  [ "${code#0x}" != "${code}" ] && [ "${code}" != "0x" ] || \
+    gl_die "missing ${label} runtime at ${address} on ${rpc_url}"
+  code_hex="${code#0x}"
+  [ $(( ${#code_hex} % 2 )) -eq 0 ] || gl_die "malformed ${label} runtime at ${address}"
+  actual_size=$(( ${#code_hex} / 2 ))
+  if [ "${expected_size}" -ne 0 ]; then
+    [ "${actual_size}" -eq "${expected_size}" ] || \
+      gl_die "${label} runtime size mismatch at ${address}: expected=${expected_size} actual=${actual_size}"
+  fi
+  actual_hash="$(cast keccak "${code}")"
+  actual_hash="$(gl_to_lower "${actual_hash}")"
+  expected_hash="$(gl_to_lower "${expected_hash}")"
+  [ "${actual_hash}" = "${expected_hash}" ] || \
+    gl_die "${label} runtime hash mismatch at ${address}: expected=${expected_hash} actual=${actual_hash}"
+}
+
+gl_assert_gateway_runtime_identity() {
+  local expected_owner_pid="${1:-}"
+  local allow_genesis_stamp_creation="${2:-false}"
+  local gateway_rpc_override="${3:-}"
+  local gateway_rpc target relay factory expected_chain_id actual_chain_id
+  case "${allow_genesis_stamp_creation}" in
+  true | false) ;;
+  *) gl_die "invalid Gateway runtime genesis-stamp policy: ${allow_genesis_stamp_creation}" ;;
+  esac
+  if [ -n "${expected_owner_pid}" ]; then
+    [[ "${expected_owner_pid}" =~ ^[1-9][0-9]*$ ]] && \
+      kill -0 "${expected_owner_pid}" 2>/dev/null || \
+      gl_die "launcher-owned Gateway PID is not alive: ${expected_owner_pid}"
+  elif [ "${allow_genesis_stamp_creation}" = true ]; then
+    gl_die "creating the Gateway genesis stamp requires a live launcher-owned PID"
+  fi
+  gateway_rpc="${gateway_rpc_override:-$(gl_gateway_runtime_rpc_url)}"
+  if [ "${allow_genesis_stamp_creation}" = true ]; then
+    [ "${gateway_rpc}" = "$(gl_gateway_generated_rpc_url)" ] || \
+      gl_die "launcher-owned Gateway stamp creation must attest its generated local RPC endpoint"
+  fi
+  gl_assert_gateway_config_identity
+  expected_chain_id="$(gl_gateway_chain_id_from_config)"
+  actual_chain_id="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast chain-id --rpc-url "${gateway_rpc}")" || \
+    gl_die "failed to read Gateway chain ID from ${gateway_rpc}"
+  [[ "${actual_chain_id}" =~ ^[0-9]+$ ]] || \
+    gl_die "invalid Gateway RPC chain ID from ${gateway_rpc}: ${actual_chain_id}"
+  [ "${actual_chain_id}" = "${expected_chain_id}" ] || \
+    gl_die "Gateway RPC chain ID mismatch: config=${expected_chain_id} rpc=${actual_chain_id}"
+  target="$(gl_published_gateway_commit_target)"
+  relay="$(gl_published_gateway_relay)"
+  factory="0x4e59b44847b379578588920ca78fbf26c0b4956c"
+
+  # SYSCOIN: These hashes and sizes are part of the reviewed V32 application
+  # identity. Check all three live postimages before an edge can settle here.
+  gl_assert_rpc_runtime_identity \
+    "${gateway_rpc}" "${target}" 2840 \
+    "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777" \
+    "Gateway ValidatorTimelock"
+  gl_assert_rpc_runtime_identity \
+    "${gateway_rpc}" "${relay}" 0 \
+    "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0" \
+    "compact Edge-DA relay"
+  gl_assert_rpc_runtime_identity \
+    "${gateway_rpc}" "${factory}" 0 \
+    "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989" \
+    "Arachnid CREATE2 factory"
+  gl_assert_gateway_genesis_stamp \
+    "${gateway_rpc}" "${expected_chain_id}" "${allow_genesis_stamp_creation}"
 }
 
 # SYSCOIN: zkSYS gas-tank address recorded in the edge chain's contracts
@@ -491,6 +805,7 @@ gl_export_syscoin_gas_tank_address_from_edge_config() {
 }
 
 gl_assert_contracts_sha() {
+  gl_resolve_required_source_pins
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_CONTRACTS_SHA
   local head
@@ -500,6 +815,7 @@ gl_assert_contracts_sha() {
 }
 
 gl_checkout_contracts_sha() {
+  gl_resolve_required_source_pins
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_CONTRACTS_SHA
   git -C "${ZKSYNC_ERA_PATH}" submodule update --init contracts
@@ -510,6 +826,7 @@ gl_checkout_contracts_sha() {
 }
 
 gl_assert_zksync_era_sha() {
+  gl_resolve_required_source_pins
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_ZKSTACK_CLI_SHA
   local head
@@ -615,6 +932,7 @@ gl_ensure_zkstack_cli_release_current() {
 }
 
 gl_prepare_zksync_era_repo() {
+  gl_resolve_required_source_pins
   gl_require ZKSYNC_ERA_PATH
   gl_require REQUIRED_ZKSTACK_CLI_SHA
   gl_require REQUIRED_CONTRACTS_SHA
@@ -679,6 +997,7 @@ gl_workspace_matches_required_pins() {
 # Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
 # If ZKSYNC_ERA_PATH is unset, uses a clean shared source cache and a per-ecosystem mutable working clone.
 gl_ensure_zksync_era_workspace() {
+  gl_resolve_required_source_pins
   gl_require ZKSYNC_OS_SERVER_PATH
   gl_require PROTOCOL_VERSION
   gl_require REQUIRED_ZKSTACK_CLI_SHA

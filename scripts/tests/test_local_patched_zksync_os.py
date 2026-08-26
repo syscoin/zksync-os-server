@@ -35,6 +35,8 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9fb99cf591c553447cd3839489cc4d327eb424b4"
 PUBLISHED_ERA_PATCHED_TREE = "ea1c0600ebbcafbada4e0080aa0178311084f86a"
+PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
+PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
     "0xec4a6d11ed43e56364b38684633718eea0c3c270849ccef03dfcf2721a2b77fb"
 )
@@ -1072,6 +1074,382 @@ class CanonicalFixtureGateStaticTests(unittest.TestCase):
         self.assertFalse(
             (REPO_ROOT / "local-chains" / "v32.0" / "versions.yaml").exists()
         )
+
+    def test_pending_v8_mock_source_pins_require_the_full_testnet_gate(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        command = r'''
+source "$COMMON"
+gl_resolve_required_source_pins
+printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
+'''
+
+        def run_gate(overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+            env = os.environ.copy()
+            for name in (
+                "PROTOCOL_VERSION",
+                "PROVER_MODE",
+                "GATEWAY_PROVER_MODE",
+                "EDGE_PROVER_MODE",
+                "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER",
+                "L1_NETWORK",
+                "L1_CHAIN_ID",
+                "REQUIRED_ZKSTACK_CLI_SHA",
+                "REQUIRED_CONTRACTS_SHA",
+            ):
+                env.pop(name, None)
+            env.update({"COMMON": str(common), **overrides})
+            return subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        exact = {
+            "PROTOCOL_VERSION": "v32.0",
+            "PROVER_MODE": "no-proofs",
+            "GATEWAY_PROVER_MODE": "no-proofs",
+            "EDGE_PROVER_MODE": "no-proofs",
+            "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "true",
+            "L1_NETWORK": "tanenbaum",
+            "L1_CHAIN_ID": "5700",
+        }
+        expected = f"{PENDING_V8_MOCK_ZKSTACK_SHA}|{PENDING_V8_MOCK_CONTRACTS_SHA}"
+        accepted = run_gate(exact)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(accepted.stdout.strip(), expected)
+
+        localhost = run_gate(
+            {**exact, "L1_NETWORK": "localhost", "L1_CHAIN_ID": "31337"}
+        )
+        self.assertEqual(localhost.returncode, 0, localhost.stderr)
+        self.assertEqual(localhost.stdout.strip(), expected)
+
+        rejected = (
+            {k: v for k, v in exact.items() if k != "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER"},
+            {**exact, "PROVER_MODE": "gpu"},
+            {**exact, "GATEWAY_PROVER_MODE": "gpu"},
+            {**exact, "EDGE_PROVER_MODE": "gpu"},
+            {**exact, "L1_NETWORK": "mainnet", "L1_CHAIN_ID": "57"},
+            {**exact, "L1_NETWORK": "localhost", "L1_CHAIN_ID": "5700"},
+            {
+                **exact,
+                "REQUIRED_ZKSTACK_CLI_SHA": "1" * 40,
+                "REQUIRED_CONTRACTS_SHA": PENDING_V8_MOCK_CONTRACTS_SHA,
+            },
+            {
+                **exact,
+                "REQUIRED_ZKSTACK_CLI_SHA": PENDING_V8_MOCK_ZKSTACK_SHA,
+                "REQUIRED_CONTRACTS_SHA": "2" * 40,
+            },
+            {
+                **exact,
+                "PROVER_MODE": "gpu",
+                "REQUIRED_ZKSTACK_CLI_SHA": PENDING_V8_MOCK_ZKSTACK_SHA,
+                "REQUIRED_CONTRACTS_SHA": PENDING_V8_MOCK_CONTRACTS_SHA,
+            },
+        )
+        for candidate in rejected:
+            with self.subTest(candidate=candidate):
+                result = run_gate(candidate)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_gateway_identity_is_authenticated_before_edge_creation(self) -> None:
+        launcher = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
+        ).read_text(encoding="utf-8")
+        common = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        ).read_text(encoding="utf-8")
+        edge_create_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-create-init.sh"
+        ).read_text(encoding="utf-8")
+        edge_migrate_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        repair = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+
+        settlement = launcher.index('"gl.gateway_settlement"')
+        config_identity = launcher.index("gl_assert_gateway_config_identity", settlement)
+        gateway_config = launcher.index('"gl.os_configs_gateway"', config_identity)
+        gateway_start = launcher.index("\nstart_gateway_for_migration\n", gateway_config)
+        edge_create = launcher.index('"gl.edge_chain_inited"', gateway_start)
+        self.assertLess(settlement, config_identity)
+        self.assertLess(config_identity, gateway_config)
+        self.assertLess(gateway_config, gateway_start)
+        self.assertLess(gateway_start, edge_create)
+
+        start_function = launcher.index("start_gateway_for_migration()")
+        owned_pid = launcher.index("GATEWAY_NODE_PID=$!", start_function)
+        first_attestation = launcher.index(
+            'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}"',
+            owned_pid,
+        )
+        self.assertLess(owned_pid, first_attestation)
+        self.assertIn(
+            'kill -0 "${GATEWAY_NODE_PID}"',
+            launcher[start_function:first_attestation],
+        )
+        self.assertIn(
+            'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}"',
+            launcher[start_function:owned_pid],
+        )
+        self.assertIn(
+            'export GATEWAY_RPC_URL="${owned_gateway_rpc}"', launcher
+        )
+        self.assertIn("PID exited during re-attestation", launcher)
+        self.assertIn("PID exited during first attestation", launcher)
+        self.assertLess(
+            edge_create_helper.index("gl_assert_gateway_runtime_identity"),
+            edge_create_helper.index("zkstack chain create"),
+        )
+        migration_identity = edge_migrate_helper.index(
+            "gl_assert_gateway_runtime_identity"
+        )
+        self.assertLess(
+            migration_identity,
+            edge_migrate_helper.index("gateway_acquire_execute_operator_lock"),
+        )
+        self.assertLess(
+            migration_identity, edge_migrate_helper.index("gl_l1_broadcast_preflight")
+        )
+        for direct_helper in (edge_create_helper, edge_migrate_helper):
+            self.assertLess(
+                direct_helper.index("gl_ensure_zkstack_cli_release_current"),
+                direct_helper.index("gl_path_for_zkstack"),
+            )
+        self.assertIn("gl_ensure_zkstack_cli_release_current", repair)
+        self.assertNotIn(
+            'if [ ! -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ]',
+            repair,
+        )
+
+        for expected in (
+            PUBLISHED_PATCH_TARGET,
+            PUBLISHED_PATCH_TARGET_RUNTIME_HASH,
+            PUBLISHED_EDGE_RELAY,
+            PUBLISHED_EDGE_RELAY_RUNTIME_HASH,
+            "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989",
+            "stopped before edge creation for identity repinning/review",
+            "Gateway RPC chain ID mismatch",
+            "cast block 0 --field hash",
+            "runtime-genesis.v1",
+            "creating the Gateway genesis stamp requires a live launcher-owned PID",
+        ):
+            self.assertIn(expected, common)
+        self.assertNotIn("runtime-launch.json", common)
+        self.assertNotIn("/proc/", common)
+        self.assertIn(
+            "Gateway RPC is already reachable before this launcher started it",
+            launcher,
+        )
+
+    def test_gateway_genesis_stamp_rejects_missing_or_different_deployment(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        block_a = "0x" + "aa" * 32
+        block_b = "0x" + "bb" * 32
+        command = r'''
+source "$COMMON"
+gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
+'''
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_cast = bin_dir / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[ \"${1:-}\" = block ] || exit 2\n"
+                "printf '%s\\n' \"${TEST_BLOCK_HASH:?}\"\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+
+            def run_stamp(
+                block_hash: str, allow_create: bool
+            ) -> subprocess.CompletedProcess[str]:
+                env = os.environ.copy()
+                env.pop("ZKSYNC_OS_SERVER_PATH", None)
+                env.update(
+                    {
+                        "ALLOW_CREATE": str(allow_create).lower(),
+                        "COMMON": str(common),
+                        "GATEWAY_DIR": str(root / "gateway"),
+                        "GATEWAY_RPC_URL": "https://authenticated-gateway.invalid",
+                        "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                        "TEST_BLOCK_HASH": block_hash,
+                    }
+                )
+                return subprocess.run(
+                    ["bash", "-c", command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+
+            missing = run_stamp(block_a, False)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("missing Gateway genesis stamp", missing.stderr)
+
+            created = run_stamp(block_a, True)
+            self.assertEqual(created.returncode, 0, created.stderr)
+            stamp = root / "gateway" / ".gateway-launch" / "gateway-runtime-genesis.v1"
+            self.assertEqual(stamp.read_text(encoding="utf-8"), f"57057 {block_a}\n")
+            self.assertEqual(stamp.stat().st_mode & 0o777, 0o600)
+
+            reused = run_stamp(block_a, False)
+            self.assertEqual(reused.returncode, 0, reused.stderr)
+
+            mismatched = run_stamp(block_b, False)
+            self.assertNotEqual(mismatched.returncode, 0)
+            self.assertIn("Gateway deployment genesis mismatch", mismatched.stderr)
+
+    def test_gateway_common_rejects_an_alternate_repository_trust_root(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as alternate_root:
+            env = os.environ.copy()
+            env["ZKSYNC_OS_SERVER_PATH"] = alternate_root
+            result = subprocess.run(
+                ["bash", "-c", 'source "$COMMON"'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**env, "COMMON": str(common)},
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ZKSYNC_OS_SERVER_PATH must resolve", result.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_link = root / "gateway-launch-link"
+            repo_link = root / "server-link"
+            gateway_link.symlink_to(common.parent, target_is_directory=True)
+            repo_link.symlink_to(REPO_ROOT, target_is_directory=True)
+            accepted = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; cd /; printf "%s|%s\\n" "$GL_DIR" "$ZKSYNC_OS_SERVER_PATH"',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "GL_DIR": str(gateway_link),
+                    "ZKSYNC_OS_SERVER_PATH": str(repo_link),
+                },
+            )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(
+            accepted.stdout.strip(),
+            f"{common.parent.resolve()}|{REPO_ROOT.resolve()}",
+        )
+
+    def test_gateway_fee_payer_is_provisioned_before_deposits_reopen(self) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        sequence = (
+            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
+            '  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            '  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
+        )
+        final_sequence = (
+            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
+            'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            'ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
+        )
+        self.assertIn(sequence, migration)
+        self.assertIn(final_sequence, migration)
+        self.assertEqual(
+            migration.count(
+                'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"'
+            ),
+            2,
+        )
+        fee_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "provision-edge-settlement-fee-payer.sh"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            fee_helper.index("gl_assert_gateway_runtime_identity"),
+            fee_helper.index('provision_edge_fee_payer "${edge_name}"'),
+        )
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_execute_operator_lock.sh", generator)
+        self.assertIn("gateway_acquire_execute_operator_lock", generator)
+        self.assertIn("fcntl.LOCK_EX | fcntl.LOCK_NB", lock_helper)
+
+    def test_gateway_config_identity_mismatch_fails_closed(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        command = r'''
+source "$COMMON"
+gl_syscoin_edge_da_commit_target_from_gateway_config() { printf '%s\n' "$TEST_TARGET"; }
+gl_gateway_relay_from_gateway_config() { printf '%s\n' "$TEST_RELAY"; }
+gl_assert_gateway_config_identity
+'''
+
+        def run_identity(target: str, relay: str) -> subprocess.CompletedProcess[str]:
+            env = os.environ.copy()
+            env.update(
+                {
+                    "COMMON": str(common),
+                    "TEST_TARGET": target,
+                    "TEST_RELAY": relay,
+                }
+            )
+            return subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        exact = run_identity(PUBLISHED_PATCH_TARGET, PUBLISHED_EDGE_RELAY)
+        self.assertEqual(exact.returncode, 0, exact.stderr)
+
+        wrong_target = run_identity(OTHER_TARGET, PUBLISHED_EDGE_RELAY)
+        self.assertNotEqual(wrong_target.returncode, 0)
+        self.assertIn("stopped before edge creation", wrong_target.stderr)
+
+        wrong_relay = run_identity(PUBLISHED_PATCH_TARGET, OTHER_TARGET)
+        self.assertNotEqual(wrong_relay.returncode, 0)
+        self.assertIn("stopped before edge creation", wrong_relay.stderr)
 
 
 class RunLocalBehaviorTests(unittest.TestCase):

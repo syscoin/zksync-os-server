@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 gl_validate_prover_mode
 gl_reject_no_proofs_on_mainnet
 
@@ -220,6 +222,13 @@ export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
 export PROVER_MODE
+
+# SYSCOIN: Refuse to materialize an edge signer whose declared address does not
+# match its private key. The generated start script repeats this check against
+# the exact config it will execute before acquiring the shared nonce lock.
+if [ "${MATERIALIZE_EDGE_CONFIG}" = "true" ]; then
+  gateway_execute_operator_lock_key "${EDGE_CHAIN_NAME}" >/dev/null
+fi
 
 python3 - <<'PY'
 from pathlib import Path
@@ -820,6 +829,16 @@ else
 fi
 """
 
+    operator_lock_block = ""
+    if chain_name != os.environ["GATEWAY_CHAIN_NAME"]:
+        operator_lock_block = f"""
+# SYSCOIN: The L1 sender owns the execute-operator nonce stream. Hold the same
+# advisory lock used by settlement-fee provisioning for the node lifetime.
+# shellcheck source=/dev/null
+source "{server_root / 'scripts/gateway-launch/_execute_operator_lock.sh'}"
+gateway_acquire_execute_operator_lock "{chain_name}" "{config_path}"
+"""
+
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 # SYSCOIN: do not source HOME-relative Cargo env files in generated node
@@ -845,7 +864,7 @@ cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
-export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}{operator_lock_block}
 exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)

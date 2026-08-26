@@ -4,11 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 gl_require ZKSYNC_ERA_PATH
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_zksync_era_sha
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${L1_RPC_URL:?L1_RPC_URL is required}"
@@ -16,7 +19,7 @@ cd "${GATEWAY_DIR}"
 
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
-: "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
+: "${GATEWAY_RPC_URL:=http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME:=BlobsZKsyncOS}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:=4}"
@@ -38,6 +41,15 @@ if [ -n "${L2_BRIDGEHUB_ADDRESS:-}" ]; then
   fi
 fi
 readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
+
+# SYSCOIN: Direct migration entry points must bind to the exact fresh Gateway
+# deployment before acquiring its shared execute-operator nonce lock or mutating state.
+gl_assert_gateway_runtime_identity
+
+# SYSCOIN: V32 nodes do not support live settlement-layer migration. Take the
+# execute-operator/Gateway nonce lock before any migration/admin work and retain
+# it through fee-payer provisioning and deposit unpause.
+gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
 
 gl_l1_broadcast_preflight
 
@@ -273,6 +285,7 @@ cleanup_generated_gateway_governor_keystore() {
     rm -rf "${GATEWAY_GOVERNOR_TEMP_DIR}"
     GATEWAY_GOVERNOR_TEMP_DIR=""
   fi
+  gateway_release_execute_operator_lock
 }
 trap cleanup_generated_gateway_governor_keystore EXIT
 
@@ -810,6 +823,20 @@ PY
   done
 }
 
+provision_gateway_settlement_fee_payer() {
+  local chain_name="${1:?chain name required}"
+
+  # SYSCOIN: An edge execute operator pays interop settlement fees in wrapped
+  # Gateway base token. Provision and authenticate that opt-in before deposits
+  # reopen, including on idempotent migration resumes.
+  GATEWAY_DIR="${GATEWAY_DIR}" \
+    GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME}" \
+    GATEWAY_RPC_URL="${GATEWAY_RPC_URL}" \
+    GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}" \
+    EDGE_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" "${chain_name}"
+}
+
 repair_da_pair_on_gateway() {
   local chain_name="${1:?chain name required}"
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
@@ -1030,6 +1057,7 @@ if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   gateway_committer_role_set "${EDGE_CHAIN_NAME}" "${edge_committer_addr}"; then
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and committer role set; ensuring committer balance and deposits are unpaused"
   ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
+  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
@@ -1137,4 +1165,5 @@ fi
 
 ensure_gateway_commit_sender_validator "${EDGE_CHAIN_NAME}"
 ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
+provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"

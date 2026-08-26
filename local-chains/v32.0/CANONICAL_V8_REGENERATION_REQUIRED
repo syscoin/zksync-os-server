@@ -26,7 +26,11 @@ unknown candidate inputs remain null sentinels and cannot authorize keygen.
 Then regenerate the V32 guest tree, app/VK, genesis state, L1 state, databases,
 contract addresses, and metadata atomically. If either the final target or relay
 identity/runtime differs from the integration candidate, replace every guest/server
-pin before keygen. All repository launch and test helpers must refuse this fixture
-while this marker exists. Remove the marker only with the complete generated set.
+pin before keygen. All canonical fixture and GPU helpers must refuse this fixture
+while this marker exists. The Gateway launcher may materialize only the exact reviewed
+source pair under the explicit no-proofs + testnet-verifier gate, and must authenticate
+the candidate target, relay, and factory before it creates an edge. A mismatch stops
+for repinning and review; this exception does not make the fixture canonical. Remove
+the marker only with the complete generated set.
 
 Do not copy or rename any V30, V31, or stock V32 fixture into this directory.

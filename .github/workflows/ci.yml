@@ -73,7 +73,11 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Test patched zksync-os workspace tooling
-        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest scripts.tests.test_local_patched_zksync_os -v
+        run: >-
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+          scripts.tests.test_local_patched_zksync_os
+          scripts.tests.test_gateway_settlement_fee_payer
+          -v
 
       - name: Run clippy
         env:

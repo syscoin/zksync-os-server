@@ -110,13 +110,10 @@ export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 # SYSCOIN: Repair checkpoints only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
-export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+gl_resolve_required_source_pins
 
 gl_ensure_zksync_era_workspace
-if [ ! -x "${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack" ]; then
-  gl_build_zkstack_cli_release
-fi
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 
 gl_checkpoint_state_init

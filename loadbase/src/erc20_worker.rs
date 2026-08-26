@@ -40,6 +40,7 @@ pub struct WorkerConfig {
     pub rpc_url:     String,
     pub all_addrs:   Vec<Address>,
     pub rng:         Arc<RwLock<StdRng>>,
+    pub receipt_timeout: Duration,
 }
 
 fn jitter_amount(mean: U256, rng: &RwLock<StdRng>) -> U256 {
@@ -108,16 +109,15 @@ fn spawn_receipt_waiter(
     permit:   tokio::sync::OwnedSemaphorePermit,
     provider: Provider<Http>,
     metrics:  Metrics,
+    receipt_timeout: Duration,
 ) {
-    const RECEIPT_TIMEOUT: Duration = Duration::from_secs(5);
-
     tokio::spawn(async move {
         let t_inc = Instant::now();
         loop {
-            if t_inc.elapsed() >= RECEIPT_TIMEOUT {
+            if t_inc.elapsed() >= receipt_timeout {
                 panic!(
                     "tx {tx_hash:?} unconfirmed for {}s - node dropped it",
-                    RECEIPT_TIMEOUT.as_secs()
+                    receipt_timeout.as_secs()
                 );
             }
             match provider.get_transaction_receipt(tx_hash).await {
@@ -141,6 +141,7 @@ fn process_replies(
     replies:  Vec<Value>,
     provider: &Provider<Http>,
     metrics:  &Metrics,
+    receipt_timeout: Duration,
 ) {
     for (tx, reply) in batch.into_iter().zip(replies) {
         let sub_ms = tx.sent_at.elapsed().as_millis() as u64;
@@ -148,7 +149,13 @@ fn process_replies(
         if let Some(tx_hash_str) = reply.get("result").and_then(|v| v.as_str()) {
             let tx_hash: H256 = tx_hash_str.parse().unwrap_or_default();
             metrics.record_submitted(sub_ms);
-            spawn_receipt_waiter(tx_hash, tx.permit, provider.clone(), metrics.clone());
+            spawn_receipt_waiter(
+                tx_hash,
+                tx.permit,
+                provider.clone(),
+                metrics.clone(),
+                receipt_timeout,
+            );
         } else {
             if let Some(err) = reply.get("error") {
                 eprintln!("❗ tx error {err}");
@@ -224,7 +231,7 @@ async fn run_wallet(
             continue;
         };
 
-        process_replies(batch, replies, &provider, &metrics);
+        process_replies(batch, replies, &provider, &metrics, cfg.receipt_timeout);
     }
 }
 

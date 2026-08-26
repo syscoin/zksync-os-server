@@ -168,8 +168,9 @@ if [ "${REUSE_ECOSYSTEM}" = true ] &&
   { [ -n "${GATEWAY_WALLET_CREATION:-}" ] || [ -n "${GATEWAY_WALLET_PATH:-}" ]; }; then
   gl_die "GATEWAY_WALLET_CREATION/GATEWAY_WALLET_PATH are ignored with --reuse-ecosystem; unset them or use a fresh GATEWAY_DIR"
 fi
-export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+# SYSCOIN: Resolve pins unconditionally so pre-set REQUIRED_* values cannot
+# bypass the pending-fixture policy through lazy shell expansion.
+gl_resolve_required_source_pins
 
 json_rpc_hex_to_dec() {
   local rpc_url="${1:?rpc url required}"
@@ -218,9 +219,8 @@ wait_for_rpc() {
 }
 
 gateway_rpc_ready() {
-  local rpc_port block_no
-  rpc_port="${GATEWAY_OS_RPC_PORT:-3052}"
-  block_no="$(json_rpc_hex_to_dec "http://127.0.0.1:${rpc_port}" "eth_blockNumber" 2>/dev/null || true)"
+  local gateway_rpc="${1:-$(gl_gateway_runtime_rpc_url)}" block_no
+  block_no="$(json_rpc_hex_to_dec "${gateway_rpc}" "eth_blockNumber" 2>/dev/null || true)"
   [ -n "${block_no}" ]
 }
 
@@ -311,10 +311,14 @@ PY
 }
 
 start_gateway_for_migration() {
-  local start_script log_file i start_timeout_s poll_interval_s max_checks chain_name
+  local start_script log_file i start_timeout_s poll_interval_s max_checks chain_name owned_gateway_rpc
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
+  owned_gateway_rpc="$(gl_gateway_generated_rpc_url)"
+  # This launcher owns a local node; keep all child helpers on that exact RPC.
+  # Standalone helpers retain GATEWAY_RPC_URL support for split-host operation.
+  export GATEWAY_RPC_URL="${owned_gateway_rpc}"
   set_gateway_runtime_l1_rpc_url
   if [ -n "${BITCOIN_DA_RPC_URL:-}" ]; then
     # SYSCOIN: checkpointed migration reruns may skip config materialization,
@@ -322,10 +326,18 @@ start_gateway_for_migration() {
     gl_prepare_bitcoin_da_wallet
   fi
 
-  if gateway_rpc_ready; then
-    echo "migrate-edge: Gateway RPC already reachable; reusing running node"
-    print_gateway_prover_mode_hint
-    return 0
+  if gateway_rpc_ready "${owned_gateway_rpc}"; then
+    if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ]; then
+      [ -n "${GATEWAY_NODE_PID}" ] && kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
+        gl_die "migrate-edge: launcher-owned Gateway PID is no longer alive: ${GATEWAY_NODE_PID:-<unset>}"
+      gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}"
+      kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
+        gl_die "migrate-edge: launcher-owned Gateway PID exited during re-attestation"
+      echo "migrate-edge: reusing the Gateway node started by this launcher"
+      print_gateway_prover_mode_hint
+      return 0
+    fi
+    gl_die "migrate-edge: Gateway RPC is already reachable before this launcher started it; stop the stale/independent node or choose a fresh GATEWAY_OS_RPC_PORT"
   fi
 
   : "${GATEWAY_MIGRATION_GATEWAY_LOG:=${HOME}/gateway-migration-gateway-node.log}"
@@ -383,17 +395,22 @@ PY
   }
 
   for i in $(seq 1 "${max_checks}"); do
-    if gateway_rpc_ready; then
-      echo "migrate-edge: Gateway RPC is up"
-      print_gateway_prover_mode_hint
-      return 0
-    fi
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
       print_gateway_migration_log_excerpt "${log_file}"
       if gateway_replay_assertion_failed "${log_file}"; then
         gl_die "migrate-edge: Gateway node failed during replay with block_executor assertion mismatch. This usually means stale gateway DB state from a prior incompatible run. Remove ${GATEWAY_DIR}/os-server-configs/${chain_name}/db and rerun."
       fi
       gl_die "migrate-edge: Gateway node exited before RPC came up; see ${log_file}"
+    fi
+    if gateway_rpc_ready "${owned_gateway_rpc}"; then
+      # The first launcher-owned start is the only path allowed to create the
+      # immutable block-0 deployment stamp. Every reuse merely verifies it.
+      gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}"
+      kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
+        gl_die "migrate-edge: launcher-owned Gateway PID exited during first attestation"
+      echo "migrate-edge: Gateway RPC is up"
+      print_gateway_prover_mode_hint
+      return 0
     fi
     sleep "${poll_interval_s}"
   done
@@ -599,7 +616,14 @@ run_checkpoint_with_validation "gl.wallets_funded" validate_wallets_funded "${SC
 run_checkpoint_with_validation "gl.l1_ecosystem_deployed" validate_l1_deployed step_l1_ecosystem_deployed || exit $?
 run_checkpoint_with_validation "gl.gateway_chain_inited" validate_gateway_chain_inited "${SCRIPT_DIR}/gateway-chain-init.sh" || exit $?
 run_checkpoint_with_validation "gl.gateway_settlement" validate_gateway_settlement "${SCRIPT_DIR}/gateway-convert-settlement.sh" || exit $?
+# SYSCOIN: The pending source-only mock route may deploy and convert a fresh
+# Gateway, but a different deployment identity requires an app repin. Stop
+# before creating an edge or compiling a node against incompatible constants.
+gl_assert_gateway_config_identity
 run_checkpoint_with_validation "gl.os_configs_gateway" validate_os_configs_gateway env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
+# SYSCOIN: Authenticate the live Gateway postimages before an edge can be
+# created against it. Keep this node running through migration when requested.
+start_gateway_for_migration
 run_checkpoint_with_validation "gl.edge_chain_inited" validate_edge_chain_inited step_edge_chain_inited || exit $?
 
 if [ "${MIGRATE_EDGE}" != true ] && [ "$(gl_checkpoint_get_status "gl.migration")" != "passed" ]; then
@@ -608,6 +632,7 @@ if [ "${MIGRATE_EDGE}" != true ] && [ "$(gl_checkpoint_get_status "gl.migration"
   echo "gateway-launch: edge chain is initialized; migration was not run."
   echo "gateway-launch: rerun this command with --migrate-edge when ready to pause deposits and migrate/finalize edge settlement."
   echo "gateway-launch: final os-server configs will be generated after migration completes."
+  stop_gateway_for_migration
   trap - EXIT INT TERM
   exit 0
 fi
@@ -628,6 +653,10 @@ else
   fi
   gl_checkpoint_mark_passed "gl.migration"
 fi
+
+# The identity-attestation start above may also run when migration was already
+# checkpointed. Never leave that temporary process behind.
+stop_gateway_for_migration
 
 run_checkpoint_with_validation "gl.os_configs_final" validate_os_configs_final "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
 

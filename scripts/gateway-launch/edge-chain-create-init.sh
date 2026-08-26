@@ -10,6 +10,7 @@ gl_require L1_RPC_URL
 : "${PROTOCOL_VERSION:=v32.0}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_zksync_era_sha
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 gl_export_foundry_evm_version
 : "${GATEWAY_DIR:=${HOME}/gateway}"
@@ -37,6 +38,11 @@ if [ -z "${EDGE_PROVER_MODE}" ]; then
   fi
 fi
 gl_reject_no_proofs_on_mainnet
+
+# SYSCOIN: This helper is also used directly for additional edges and by the
+# repair command. Authenticate the configured and live Gateway before any edge
+# wallet is consumed or chain-creation transaction can be broadcast.
+gl_assert_gateway_runtime_identity
 
 if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   gl_require EDGE_WALLET_PATH
