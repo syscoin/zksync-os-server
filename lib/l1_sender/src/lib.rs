@@ -211,16 +211,15 @@ where
         // SYSCOIN: Recovery must use the same settlement-layer snapshot as the inbound queue.
         // Capture its nonce before waiting for a first non-passthrough command can let that
         // snapshot age out of history.
-        let confirmed_nonce = if self.config.pipelining_enabled {
-            Some(Ok(self.confirmed_nonce_baseline().await?))
-        } else if !self.config.force_transaction_resubmission {
-            // SYSCOIN: Upstream moved this lookup before the first-command wait, but using `?`
-            // here bypasses stop-and-wait's established best-effort recovery boundary. Capture
-            // the result early while preserving its warn-and-continue handling below.
-            Some(self.confirmed_nonce_baseline().await)
-        } else {
-            None
-        };
+        let confirmed_nonce =
+            if self.config.pipelining_enabled || !self.config.force_transaction_resubmission {
+                // SYSCOIN: Capture the result early but defer handling it until after passthroughs
+                // are drained. Pipeline recovery then propagates it, while stop-and-wait keeps
+                // its established warn-and-continue boundary below.
+                Some(self.confirmed_nonce_baseline().await)
+            } else {
+                None
+            };
 
         // Process all potential passthrough commands first
         if self
@@ -1788,6 +1787,28 @@ mod tests {
                 .expect_err("task should be cancelled")
                 .is_cancelled()
         );
+    }
+
+    #[tokio::test]
+    async fn pipelined_nonce_failure_is_deferred_until_recovery() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        asserter.push_failure(ErrorPayload {
+            code: -32000,
+            message: "historical state temporarily unavailable".into(),
+            data: None,
+        });
+
+        let sender = mocked_l1_sender(provider, true);
+        let (input_tx, input_rx) = mpsc::channel(1);
+        drop(input_tx);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_deferred_test");
+
+        sender
+            .run_l1_sender(PeekableReceiver::new(input_rx), output_tx, state_reporter)
+            .await
+            .expect("a nonce failure must not preempt passthrough draining");
     }
 
     #[tokio::test]
