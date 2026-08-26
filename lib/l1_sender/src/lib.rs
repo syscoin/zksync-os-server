@@ -211,12 +211,16 @@ where
         // SYSCOIN: Recovery must use the same settlement-layer snapshot as the inbound queue.
         // Capture its nonce before waiting for a first non-passthrough command can let that
         // snapshot age out of history.
-        let confirmed_nonce =
-            if self.config.pipelining_enabled || !self.config.force_transaction_resubmission {
-                Some(self.confirmed_nonce_baseline().await?)
-            } else {
-                None
-            };
+        let confirmed_nonce = if self.config.pipelining_enabled {
+            Some(Ok(self.confirmed_nonce_baseline().await?))
+        } else if !self.config.force_transaction_resubmission {
+            // SYSCOIN: Upstream moved this lookup before the first-command wait, but using `?`
+            // here bypasses stop-and-wait's established best-effort recovery boundary. Capture
+            // the result early while preserving its warn-and-continue handling below.
+            Some(self.confirmed_nonce_baseline().await)
+        } else {
+            None
+        };
 
         // Process all potential passthrough commands first
         if self
@@ -236,7 +240,7 @@ where
                 inbound,
                 outbound,
                 state_reporter,
-                confirmed_nonce.expect("pipelined sender must capture the nonce baseline"),
+                confirmed_nonce.expect("pipelined sender must capture the nonce baseline")?,
             ))
             .await
         } else {
@@ -252,7 +256,7 @@ where
         mut inbound: PeekableReceiver<L1SenderCommand<Input>>,
         outbound: mpsc::Sender<SignedBatchEnvelope<FriProof>>,
         state_reporter: ComponentStateReporter,
-        confirmed_nonce: Option<u64>,
+        confirmed_nonce: Option<anyhow::Result<u64>>,
     ) -> anyhow::Result<()> {
         let command_name = Input::COMPONENT_ID.as_str();
         let fee_config = self.config.fee_config;
@@ -265,12 +269,16 @@ where
         let recovered = if force_transaction_resubmission {
             vec![]
         } else {
-            let confirmed_nonce =
-                confirmed_nonce.expect("stop-and-wait recovery must capture the nonce baseline");
-            match self
-                .recover_in_flight_txs(&mut inbound, &state_reporter, confirmed_nonce)
-                .await
+            let recovery_result = match confirmed_nonce
+                .expect("stop-and-wait recovery must capture the nonce baseline")
             {
+                Ok(confirmed_nonce) => {
+                    self.recover_in_flight_txs(&mut inbound, &state_reporter, confirmed_nonce)
+                        .await
+                }
+                Err(err) => Err(err),
+            };
+            match recovery_result {
                 Ok(paired) => paired,
                 Err(err) => {
                     tracing::warn!("Error during in-flight transaction recovery: {err}");
@@ -1707,13 +1715,11 @@ mod tests {
             .expect("mocked provider construction should succeed")
     }
 
-    #[tokio::test]
-    async fn captures_confirmed_nonce_before_waiting_for_first_command() {
-        let asserter = Asserter::new();
-        let provider = mocked_node_provider(&asserter).await;
-        asserter.push_success(&U64::from(7));
-
-        let sender = L1Sender::<CommitCommand> {
+    fn mocked_l1_sender(
+        provider: NodeProvider,
+        pipelining_enabled: bool,
+    ) -> L1Sender<CommitCommand> {
+        L1Sender {
             provider,
             config: L1SenderConfig {
                 operator_signer: SignerConfig::Local(
@@ -1729,7 +1735,7 @@ mod tests {
                 },
                 force_transaction_resubmission: false,
                 command_limit: 1,
-                pipelining_enabled: true,
+                pipelining_enabled,
                 poll_interval: Duration::from_millis(1),
                 transaction_timeout: Duration::from_secs(1),
                 tx_liveness_poll_interval: Duration::from_millis(1),
@@ -1745,7 +1751,26 @@ mod tests {
             gateway: false,
             commit_submitted_tx: None,
             sl_block_number: 42,
-        };
+        }
+    }
+
+    async fn wait_for_mock_requests(asserter: &Asserter) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !asserter.read_q().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expected mock requests were not issued");
+    }
+
+    #[tokio::test]
+    async fn captures_confirmed_nonce_before_waiting_for_first_command() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        asserter.push_success(&U64::from(7));
+
+        let sender = mocked_l1_sender(provider, true);
         let (_input_tx, input_rx) = mpsc::channel(1);
         let (output_tx, _output_rx) = mpsc::channel(1);
         let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_baseline_test");
@@ -1755,13 +1780,7 @@ mod tests {
                 .run_l1_sender(PeekableReceiver::new(input_rx), output_tx, state_reporter)
                 .await
         });
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !asserter.read_q().is_empty() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("confirmed nonce should be captured before waiting for input");
+        wait_for_mock_requests(&asserter).await;
 
         task.abort();
         assert!(
@@ -1769,6 +1788,29 @@ mod tests {
                 .expect_err("task should be cancelled")
                 .is_cancelled()
         );
+    }
+
+    #[tokio::test]
+    async fn stop_and_wait_nonce_failure_stays_inside_recovery_boundary() {
+        let asserter = Asserter::new();
+        let provider = mocked_node_provider(&asserter).await;
+        let sender = mocked_l1_sender(provider, false);
+        let (input_tx, input_rx) = mpsc::channel(1);
+        drop(input_tx);
+        let (output_tx, _output_rx) = mpsc::channel(1);
+        let (state_reporter, _state_rx) = ComponentStateReporter::new("nonce_fallback_test");
+
+        sender
+            .run_stop_and_wait(
+                PeekableReceiver::new(input_rx),
+                output_tx,
+                state_reporter,
+                Some(Err(anyhow::anyhow!(
+                    "historical state temporarily unavailable"
+                ))),
+            )
+            .await
+            .expect("stop-and-wait must preserve its best-effort recovery fallback");
     }
 
     #[test]
