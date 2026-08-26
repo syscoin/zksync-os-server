@@ -148,6 +148,7 @@ export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
+gl_resolve_gateway_dir planned
 # SYSCOIN: The checkpointed launcher targets the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 : "${REUSE_ECOSYSTEM:=false}"
@@ -579,9 +580,9 @@ step_ecosystem() {
     if [ "${REUSE_ECOSYSTEM}" = true ]; then
       gl_die "--reuse-ecosystem requested but no ecosystem exists at ${GATEWAY_DIR}/ZkStack.yaml"
     fi
-    "${SCRIPT_DIR}/gateway-ecosystem-create.sh"
+    "${SCRIPT_DIR}/gateway-ecosystem-create.sh" || return $?
   fi
-  gl_resolve_gateway_dir_after_ecosystem_create
+  gl_resolve_gateway_dir
 }
 
 step_l1_ecosystem_deployed() {

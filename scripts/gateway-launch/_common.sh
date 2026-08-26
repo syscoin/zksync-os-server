@@ -1034,16 +1034,24 @@ gl_path_for_zkstack() {
   export PATH="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release:${HOME}/.foundry/bin:${HOME}/.cargo/bin:${PATH}"
 }
 
-# zkstack ecosystem create writes the workspace under GATEWAY_ECOSYSTEM_PARENT_DIR using a filesystem-safe
-# directory name (observed: '-' in --ecosystem-name becomes '_' on disk). Subshell ecosystem-create does not
-# export back to run-gateway-launch, so we re-resolve GATEWAY_DIR here.
-gl_resolve_gateway_dir_after_ecosystem_create() {
+# zkstack writes the workspace under GATEWAY_ECOSYSTEM_PARENT_DIR using a
+# filesystem-safe name (observed: '-' becomes '_'). Resolve an existing output,
+# or preselect that output before checkpoint state is keyed by GATEWAY_DIR.
+gl_resolve_gateway_dir() {
   gl_require GATEWAY_DIR
-  local parent eco cand norm
+  local mode="${1:-existing}" parent eco cand norm
+
+  case "${mode}" in
+  existing | planned) ;;
+  *) gl_die "invalid Gateway directory resolution mode: ${mode}" ;;
+  esac
 
   parent="${GATEWAY_ECOSYSTEM_PARENT_DIR:-$(dirname "${GATEWAY_DIR}")}"
   parent="$(cd "${parent}" && pwd)"
-  eco="${GATEWAY_ECOSYSTEM_NAME:-$(basename "${GATEWAY_DIR}")}"
+  # Preserve the caller's logical ecosystem name before planned mode rewrites
+  # only its on-disk directory to zkstack's normalized spelling.
+  export GATEWAY_ECOSYSTEM_NAME="${GATEWAY_ECOSYSTEM_NAME:-$(basename "${GATEWAY_DIR}")}"
+  eco="${GATEWAY_ECOSYSTEM_NAME}"
 
   if [ -f "${GATEWAY_DIR}/ZkStack.yaml" ]; then
     GATEWAY_DIR="$(cd "$(dirname "${GATEWAY_DIR}")" && pwd)/$(basename "${GATEWAY_DIR}")"
@@ -1063,6 +1071,14 @@ gl_resolve_gateway_dir_after_ecosystem_create() {
   if [ -f "${cand}/ZkStack.yaml" ]; then
     export GATEWAY_DIR="${cand}"
     echo "gateway-launch: ecosystem directory ${GATEWAY_DIR} (zkstack normalized '${eco}' -> '${norm}')"
+    return 0
+  fi
+
+  if [ "${mode}" = "planned" ]; then
+    export GATEWAY_DIR="${cand}"
+    if [ "${eco}" != "${norm}" ]; then
+      echo "gateway-launch: planned ecosystem directory ${GATEWAY_DIR} (zkstack normalizes '${eco}' -> '${norm}')"
+    fi
     return 0
   fi
 

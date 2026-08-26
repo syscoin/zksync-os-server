@@ -56,6 +56,75 @@ def rust_address_bytes(address: str) -> str:
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_ecosystem_path_is_resolved_before_wallet_hardening(self) -> None:
+        helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "gateway-ecosystem-create.sh"
+        ).read_text(encoding="utf-8")
+        creation = helper.index("gl_zkstack_pty zkstack ecosystem create")
+        resolution = helper.index("gl_resolve_gateway_dir")
+        hardening = helper.index("gl_secure_generated_wallet_file", resolution)
+        persistence = helper.index("gl_persist_wallet_file", hardening)
+        self.assertLess(creation, resolution)
+        self.assertLess(resolution, hardening)
+        self.assertLess(hardening, persistence)
+
+        for launcher_name in (
+            "run-gateway-launch.sh",
+            "gateway-launch-repair.sh",
+        ):
+            launcher = (
+                REPO_ROOT / "scripts" / "gateway-launch" / launcher_name
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                '"${SCRIPT_DIR}/gateway-ecosystem-create.sh" || return $?',
+                launcher,
+            )
+            self.assertLess(
+                launcher.index("gl_resolve_gateway_dir planned"),
+                launcher.index("gl_checkpoint_state_init"),
+            )
+
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            env = os.environ.copy()
+            env.pop("ZKSYNC_OS_SERVER_PATH", None)
+            env.pop("GATEWAY_ECOSYSTEM_NAME", None)
+            env.pop("GATEWAY_ECOSYSTEM_PARENT_DIR", None)
+            env.update(
+                {
+                    "COMMON": str(common),
+                    "ROOT": temporary_dir,
+                }
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+source "$COMMON"
+export GATEWAY_DIR="$ROOT/gateway-v32-test"
+gl_resolve_gateway_dir planned >/dev/null
+printf "%s\n" "$GATEWAY_DIR"
+printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout.splitlines(),
+                [
+                    str(Path(temporary_dir) / "gateway_v32_test"),
+                    "gateway-v32-test",
+                ],
+            )
+
     def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
         launcher = (
             REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"

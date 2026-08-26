@@ -60,6 +60,10 @@ gl_zkstack_pty zkstack ecosystem create \
   --start-containers false \
   --zksync-os
 
+# SYSCOIN: zkstack normalizes filesystem-unsafe ecosystem names (for example,
+# `gateway-v32-test` to `gateway_v32_test`). Resolve that emitted directory
+# before hardening or persisting its generated private-key files.
+gl_resolve_gateway_dir
 gl_secure_generated_wallet_file "${GATEWAY_DIR}/configs/wallets.yaml"
 if [ -f "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml" ]; then
   gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"

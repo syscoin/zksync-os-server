@@ -108,6 +108,7 @@ export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
+gl_resolve_gateway_dir planned
 # SYSCOIN: Repair checkpoints only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 gl_resolve_required_source_pins
@@ -174,9 +175,9 @@ perform_repair_step() {
     ;;
   gl.ecosystem)
     if [ ! -f "${GATEWAY_DIR}/ZkStack.yaml" ]; then
-      "${SCRIPT_DIR}/gateway-ecosystem-create.sh"
+      "${SCRIPT_DIR}/gateway-ecosystem-create.sh" || return $?
     fi
-    gl_resolve_gateway_dir_after_ecosystem_create
+    gl_resolve_gateway_dir
     ;;
   gl.wallets_funded)
     "${SCRIPT_DIR}/fund-wallets.sh"
