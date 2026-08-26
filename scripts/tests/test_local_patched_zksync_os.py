@@ -12,6 +12,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
 PUBLISHED_PATCH_TARGET = "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+PUBLISHED_PATCH_TARGET_RUNTIME_SIZE = 2840
+PUBLISHED_PATCH_TARGET_RUNTIME_HASH = (
+    "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777"
+)
 PUBLISHED_EDGE_RELAY = "0x758b06cda80bdd016f79afd0df1a984039067a21"
 PUBLISHED_EDGE_RELAY_RUNTIME_HASH = (
     "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0"
@@ -311,6 +315,8 @@ class LauncherStaticTests(unittest.TestCase):
             f"ZKSYNC_OS_HELPER_SHA256: {hashlib.sha256(helper).hexdigest()}",
             f'APP_IDENTITY_SOURCE_TREE: {PUBLISHED_ZKSYNC_OS_PATCHED_TREE}',
             f'SYSCOIN_EDGE_DA_COMMIT_TARGET: "{PUBLISHED_PATCH_TARGET}"',
+            f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: "{PUBLISHED_PATCH_TARGET_RUNTIME_SIZE}"',
+            f'SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "{PUBLISHED_PATCH_TARGET_RUNTIME_HASH}"',
             f'SYSCOIN_EDGE_DA_RELAY_EMITTER: "{PUBLISHED_EDGE_RELAY}"',
             f'SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH: "{PUBLISHED_EDGE_RELAY_RUNTIME_HASH}"',
             "GATEWAY_TARGET_IDENTITY_STATUS: regeneration-required",
@@ -319,6 +325,7 @@ class LauncherStaticTests(unittest.TestCase):
             f"GATEWAY_TARGET_IDENTITY_SHA256: {hashlib.sha256(gateway_identity).hexdigest()}",
             "Gateway target derivation must be frozen before app/VK generation",
             "Gateway identity artifact has incomplete production derivation inputs",
+            "native server does not contain the approved Gateway target identity",
             'gateway_target: {',
             'validator_timelock: $gateway_target',
             'relay_emitter: $gateway_relay',
@@ -331,6 +338,14 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertEqual(
             gateway_identity_data["outputs"]["validator_timelock"],
             PUBLISHED_PATCH_TARGET,
+        )
+        self.assertEqual(
+            gateway_identity_data["outputs"]["validator_timelock_runtime_size"],
+            PUBLISHED_PATCH_TARGET_RUNTIME_SIZE,
+        )
+        self.assertEqual(
+            gateway_identity_data["outputs"]["validator_timelock_runtime_keccak256"],
+            PUBLISHED_PATCH_TARGET_RUNTIME_HASH,
         )
         self.assertEqual(
             gateway_identity_data["outputs"]["relay_emitter"],
@@ -396,6 +411,11 @@ class LauncherStaticTests(unittest.TestCase):
             REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
         ).read_text(encoding="utf-8").lower()
         self.assertIn(PUBLISHED_EDGE_RELAY, types)
+        self.assertIn(PUBLISHED_PATCH_TARGET_RUNTIME_HASH.removeprefix("0x"), types)
+        self.assertIn(
+            "syscoin_compact_edge_da_commit_target_runtime_size: u32 = 2_840",
+            types,
+        )
         self.assertIn(PUBLISHED_EDGE_RELAY_RUNTIME_HASH.removeprefix("0x"), types)
         self.assertIn(PUBLISHED_EDGE_RELAY, era_patch)
         self.assertIn(PUBLISHED_EDGE_RELAY_RUNTIME_HASH, era_patch)

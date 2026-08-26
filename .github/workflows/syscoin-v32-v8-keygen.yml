@@ -556,8 +556,17 @@ jobs:
               raise SystemExit("reviewed guest patch does not contain the approved Gateway target")
           if relay_bytes not in " ".join(guest_patch.split()):
               raise SystemExit("reviewed guest patch does not contain the approved relay")
-          if target not in server_types:
-              raise SystemExit("native server does not contain the approved Gateway target")
+          target_runtime_size_constant = re.search(
+              r"pub const syscoin_compact_edge_da_commit_target_runtime_size:\s*u32\s*=\s*([0-9_]+);",
+              server_types,
+          )
+          if (
+              target not in server_types
+              or target_runtime_hash[2:] not in server_types
+              or target_runtime_size_constant is None
+              or int(target_runtime_size_constant.group(1).replace("_", "")) != target_runtime_size
+          ):
+              raise SystemExit("native server does not contain the approved Gateway target identity")
           if relay not in server_types or relay_runtime_hash[2:] not in server_types:
               raise SystemExit("native server does not contain the approved relay identity")
           if relay not in migration or relay_runtime_hash not in migration:

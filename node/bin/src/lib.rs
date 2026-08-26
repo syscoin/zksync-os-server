@@ -142,7 +142,8 @@ use zksync_os_storage_api::{
 };
 use zksync_os_types::{
     BlockStartCursors, ExecutionVersion, NodeRole, NotAcceptingReason, ProvingVersion, PubdataMode,
-    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
     SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH, SYSCOIN_EDGE_DA_RELAY_FACTORY,
     SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_ADDRESS,
     SYSCOIN_GAS_TANK_RUNTIME_HASH, SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
@@ -1312,6 +1313,7 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         &l1_state,
         chain_id,
         &local_eth_call,
+        &state,
         syscoin_edge_da_required,
         defer_gateway_local_target_until_rebuild,
     )
@@ -1371,6 +1373,7 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
                     }
                     result = wait_for_gateway_local_syscoin_edge_da_commit_target(
                         &local_eth_call,
+                        &target_bootstrap_state,
                         ctm_asset_id,
                         poll_interval,
                     ) => result.expect("failed to resolve Gateway compact Edge-DA target after pipeline startup"),
@@ -1383,6 +1386,13 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
                     );
                 let live_target =
                     validate_syscoin_edge_da_commit_target(live_target, None, true);
+                assert!(
+                    validate_syscoin_edge_da_gateway_local_target_runtime(&target_bootstrap_state)
+                        .expect(
+                            "failed to re-authenticate Gateway ValidatorTimelock before target publication",
+                        ),
+                    "Gateway ValidatorTimelock disappeared before target publication"
+                );
                 syscoin_edge_da_commit_target_sender.send_replace(Some(live_target));
                 tracing::info!(
                     %ctm_asset_id,
@@ -3214,9 +3224,10 @@ fn syscoin_edge_da_uses_gateway_local_target(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SyscoinEdgeDaCommitTargetResolution {
     target: Option<Address>,
-    // SYSCOIN: The Gateway-local CTM mapping is installed by a canonical L1 priority tx, which
-    // cannot execute until the local pipeline is running. Retain the already-authenticated L1
-    // asset ID so startup can finish the local half of discovery after launching that pipeline.
+    // SYSCOIN: The Gateway-local CTM mapping and target runtime are installed by a canonical L1
+    // priority sequence, which cannot finish until the local pipeline is running. Retain the
+    // already-authenticated L1 asset ID so startup can finish discovery without publishing a
+    // merely address-shaped capability.
     pending_gateway_ctm_asset_id: Option<B256>,
 }
 
@@ -3224,6 +3235,7 @@ async fn resolve_syscoin_edge_da_commit_target(
     l1_state: &L1State,
     chain_id: u64,
     local_eth_call: &dyn LocalEthCall,
+    local_state: &impl ReadStateHistory,
     required: bool,
     defer_gateway_local_lookup: bool,
 ) -> anyhow::Result<SyscoinEdgeDaCommitTargetResolution> {
@@ -3236,10 +3248,12 @@ async fn resolve_syscoin_edge_da_commit_target(
         required,
     )?;
     let mut pending_gateway_ctm_asset_id = None;
+    let mut resolved_gateway_ctm_asset_id = None;
     let live_target = if !required {
         None
     } else if uses_gateway_local_target {
         let ctm_asset_id = resolve_gateway_l1_syscoin_ctm_asset_id(l1_state).await?;
+        resolved_gateway_ctm_asset_id = Some(ctm_asset_id);
         if defer_gateway_local_lookup {
             // SYSCOIN: Never inspect a pre-rebuild local snapshot. Even a canonical-looking value
             // there is stale authorization until BlockApplier publishes the rebuilt WAL frontier.
@@ -3263,7 +3277,7 @@ async fn resolve_syscoin_edge_da_commit_target(
     };
 
     let configured_target = syscoin_edge_da_commit_target_from_env();
-    let target = match live_target {
+    let mut target = match live_target {
         Some(live_target) => Some(validate_syscoin_edge_da_commit_target(
             live_target,
             configured_target,
@@ -3280,6 +3294,15 @@ async fn resolve_syscoin_edge_da_commit_target(
             None
         }
     };
+    if target.is_some()
+        && uses_gateway_local_target
+        && !validate_syscoin_edge_da_gateway_local_target_runtime(local_state)?
+    {
+        // SYSCOIN: The mapping may become visible one priority block before the exact proxy
+        // runtime. Missing/empty code stays pending; any wrong nonempty code fails validation.
+        pending_gateway_ctm_asset_id = resolved_gateway_ctm_asset_id;
+        target = None;
+    }
 
     Ok(SyscoinEdgeDaCommitTargetResolution {
         target,
@@ -3338,15 +3361,19 @@ fn resolve_gateway_local_syscoin_edge_da_commit_target(
 // L1 identity and the CTM asset ID were already authenticated in the startup topology snapshot.
 async fn wait_for_gateway_local_syscoin_edge_da_commit_target(
     local_eth_call: &dyn LocalEthCall,
+    local_state: &impl ReadStateHistory,
     ctm_asset_id: B256,
     poll_interval: Duration,
 ) -> anyhow::Result<Address> {
     let poll_interval = poll_interval.max(Duration::from_millis(10));
     loop {
-        if let Some(target) =
+        if let Some(live_target) =
             resolve_gateway_local_syscoin_edge_da_commit_target(local_eth_call, ctm_asset_id)?
         {
-            return Ok(target);
+            let live_target = validate_syscoin_edge_da_commit_target(live_target, None, true);
+            if validate_syscoin_edge_da_gateway_local_target_runtime(local_state)? {
+                return Ok(live_target);
+            }
         }
         tokio::time::sleep(poll_interval).await;
     }
@@ -3518,9 +3545,51 @@ fn validate_syscoin_gas_tank_observed_runtime(
     Ok(true)
 }
 
-// SYSCOIN: Authenticate both the frozen relay and Arachnid factory before any component may
-// reconstruct settlement-critical compact Edge-DA roots. Gateway nodes read their canonical local
-// state; edge nodes read the exact settlement-layer snapshot already selected by L1 discovery.
+// SYSCOIN: Resolve the current Gateway-local ValidatorTimelock account independently of the CTM
+// address calls. A canonical multi-block bootstrap may temporarily have no runtime, but a
+// nonempty proxy shell is authority-bearing and must match both attested dimensions exactly.
+fn validate_syscoin_edge_da_gateway_local_target_runtime(
+    state: &impl ReadStateHistory,
+) -> anyhow::Result<bool> {
+    let latest_state_block = *state.block_range_available().end();
+    let mut view = state
+        .state_view_at(latest_state_block)
+        .context("failed to open Gateway state for ValidatorTimelock attestation")?;
+    let observed = view
+        .get_account(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET)
+        .map(|account| {
+            (
+                account.observable_bytecode_len,
+                B256::from(account.observable_bytecode_hash.as_u8_array()),
+            )
+        });
+    validate_syscoin_edge_da_commit_target_observed_runtime(observed)
+}
+
+// SYSCOIN: Missing/empty target code is retryable only while the canonical priority bootstrap is
+// incomplete. Any nonempty mismatch is a corrupted or incompatible snapshot and fails closed.
+fn validate_syscoin_edge_da_commit_target_observed_runtime(
+    observed: Option<(u32, B256)>,
+) -> anyhow::Result<bool> {
+    let Some((runtime_len, actual_hash)) = observed.filter(|(runtime_len, _)| *runtime_len != 0)
+    else {
+        return Ok(false);
+    };
+    anyhow::ensure!(
+        runtime_len == SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE,
+        "canonical Gateway ValidatorTimelock runtime size mismatch at {SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET}: expected {SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE}, found {runtime_len}"
+    );
+    anyhow::ensure!(
+        actual_hash == SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+        "canonical Gateway ValidatorTimelock runtime mismatch at {SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET}: expected {SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH}, found {actual_hash}"
+    );
+    Ok(true)
+}
+
+// SYSCOIN: Authenticate the commit target, frozen relay, and Arachnid factory before any component
+// may reconstruct or submit settlement-critical compact Edge-DA state. Gateway nodes authenticate
+// the target at its mapping/publication boundary; edge nodes read every identity from the exact
+// settlement-layer snapshot already selected by L1 discovery.
 async fn validate_syscoin_edge_da_relay_identity(
     l1_state: &L1State,
     state: &impl ReadStateHistory,
@@ -3544,14 +3613,22 @@ async fn validate_syscoin_edge_da_relay_identity(
         let snapshot =
             alloy::eips::BlockId::Number(BlockNumberOrTag::Number(l1_state.sl_block_number));
         let provider = l1_state.diamond_proxy_sl.provider();
-        for (address, expected_hash, name) in [
+        for (address, expected_runtime_size, expected_hash, name) in [
+            (
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
+                Some(SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE),
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+                "Gateway ValidatorTimelock",
+            ),
             (
                 SYSCOIN_EDGE_DA_RELAY_FACTORY,
+                None,
                 SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
                 "Arachnid CREATE2 factory",
             ),
             (
                 SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+                None,
                 SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
                 "compact Edge-DA relay",
             ),
@@ -3570,6 +3647,13 @@ async fn validate_syscoin_edge_da_relay_identity(
                 !code.is_empty(),
                 "canonical {name} has no code at {address}"
             );
+            if let Some(expected_runtime_size) = expected_runtime_size {
+                anyhow::ensure!(
+                    code.len() == expected_runtime_size as usize,
+                    "canonical {name} runtime size mismatch at {address}: expected {expected_runtime_size}, found {}",
+                    code.len()
+                );
+            }
             let actual_hash = keccak256(code.as_ref());
             anyhow::ensure!(
                 actual_hash == expected_hash,
@@ -3911,6 +3995,7 @@ mod tests {
         resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
         syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
         validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        validate_syscoin_edge_da_commit_target_observed_runtime,
         validate_syscoin_edge_da_observed_local_runtime,
         validate_syscoin_gas_tank_observed_runtime, wait_for_liveness_bound_startup_signal,
         wait_for_node_startup, wait_for_one_shot_startup_signal,
@@ -3933,9 +4018,11 @@ mod tests {
     };
     use zksync_os_types::{
         NodeRole, NotAcceptingReason, PubdataMode, SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET,
-        SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER, SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH,
-        SYSCOIN_EDGE_DA_RELAY_FACTORY, SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH,
-        SYSCOIN_GAS_TANK_RUNTIME_HASH, SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
+        SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+        SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE, SYSCOIN_COMPACT_EDGE_DA_RELAY_EMITTER,
+        SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH, SYSCOIN_EDGE_DA_RELAY_FACTORY,
+        SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_RUNTIME_HASH,
+        SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
     };
 
     // SYSCOIN: Production presence policy accepts only the launcher's documented 0/1 values.
@@ -3971,11 +4058,47 @@ mod tests {
         );
     }
 
-    // SYSCOIN: A valid pre-rebuild snapshot is not cached authority. Either relay identity changing
-    // in the rebuilt snapshot must fail the same policy invoked immediately before target release.
+    // SYSCOIN: Address equality alone is not authority. Missing code remains pending during the
+    // canonical priority sequence, while any nonempty size/hash mismatch is immediately fatal.
+    #[test]
+    fn gateway_commit_target_runtime_policy_is_exact_and_fail_closed() {
+        for observed in [None, Some((0, B256::ZERO))] {
+            assert!(!validate_syscoin_edge_da_commit_target_observed_runtime(observed).unwrap());
+        }
+        for observed in [
+            Some((
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE - 1,
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+            )),
+            Some((
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE + 1,
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+            )),
+            Some((
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE,
+                B256::repeat_byte(0x66),
+            )),
+        ] {
+            assert!(validate_syscoin_edge_da_commit_target_observed_runtime(observed).is_err());
+        }
+        assert!(
+            validate_syscoin_edge_da_commit_target_observed_runtime(Some((
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE,
+                SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+            )))
+            .unwrap()
+        );
+    }
+
+    // SYSCOIN: A valid pre-rebuild snapshot is not cached authority. Any target, relay, or factory
+    // mutation in the rebuilt snapshot must fail the policy invoked immediately before release.
     #[test]
     fn gateway_relay_identity_defers_stale_precheck_and_rechecks_rebuild() {
-        let validate_snapshot = |factory, relay| -> anyhow::Result<()> {
+        let validate_snapshot = |target, factory, relay| -> anyhow::Result<()> {
+            anyhow::ensure!(
+                validate_syscoin_edge_da_commit_target_observed_runtime(target)?,
+                "Gateway ValidatorTimelock is missing"
+            );
             validate_syscoin_edge_da_observed_local_runtime(
                 factory,
                 SYSCOIN_EDGE_DA_RELAY_FACTORY,
@@ -3989,6 +4112,10 @@ mod tests {
                 "compact Edge-DA relay",
             )
         };
+        let target = Some((
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE,
+            SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH,
+        ));
         let factory = Some((1, SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH));
         let relay = Some((1, SYSCOIN_COMPACT_EDGE_DA_RELAY_RUNTIME_HASH));
 
@@ -3998,12 +4125,24 @@ mod tests {
             SYSCOIN_GATEWAY_CHAIN_ID,
             true
         ));
-        assert!(validate_snapshot(Some((1, B256::repeat_byte(0x44))), relay).is_err());
-        validate_snapshot(factory, relay).expect("pre-rebuild identities must authenticate");
+        assert!(validate_snapshot(target, Some((1, B256::repeat_byte(0x44))), relay).is_err());
+        validate_snapshot(target, factory, relay)
+            .expect("pre-rebuild identities must authenticate");
 
         // Conversely, a mutation introduced by rebuild cannot inherit the successful precheck.
-        assert!(validate_snapshot(factory, Some((1, B256::repeat_byte(0x55)))).is_err());
-        assert!(validate_snapshot(None, relay).is_err());
+        assert!(
+            validate_snapshot(
+                Some((
+                    SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE,
+                    B256::repeat_byte(0x77),
+                )),
+                factory,
+                relay,
+            )
+            .is_err()
+        );
+        assert!(validate_snapshot(target, factory, Some((1, B256::repeat_byte(0x55)))).is_err());
+        assert!(validate_snapshot(target, None, relay).is_err());
         assert!(!defer_syscoin_gateway_local_identity(
             SYSCOIN_GATEWAY_CHAIN_ID,
             false
