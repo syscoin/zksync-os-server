@@ -1435,8 +1435,9 @@ payload = {
     "era_head": git(["rev-parse", "HEAD"]).decode().strip(),
     # Include patched tracked changes because the Syscoin patch is applied on top
     # of the pinned zkstack revision before building the release binary.
+    # SYSCOIN: Full index IDs keep this fingerprint clone/object-count independent.
     "zkstack_cli_head_diff_sha256": hashlib.sha256(
-        git(["diff", "HEAD", "--binary", "--", "zkstack_cli"])
+        git(["diff", "HEAD", "--full-index", "--binary", "--", "zkstack_cli"])
     ).hexdigest(),
 }
 

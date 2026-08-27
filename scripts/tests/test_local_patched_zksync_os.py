@@ -2354,6 +2354,18 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn('gl.l1_ecosystem_deployed)', repair)
         self.assertIn('"${SCRIPT_DIR}/gateway-deploy-l1.sh"', repair)
 
+    def test_zkstack_release_fingerprint_is_clone_independent(self) -> None:
+        common = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        ).read_text(encoding="utf-8")
+        fingerprint = common.split(
+            "gl_zkstack_cli_release_fingerprint() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn(
+            'git(["diff", "HEAD", "--full-index", "--binary", "--", "zkstack_cli"])',
+            fingerprint,
+        )
+
     def test_multivm_build_fails_closed_on_unpatched_execution_source(self) -> None:
         build_rs = (REPO_ROOT / "lib" / "multivm" / "build.rs").read_text(
             encoding="utf-8"
