@@ -82,6 +82,11 @@ class LauncherStaticTests(unittest.TestCase):
             '.env("ETH_PASSWORD", &self.password_path)',
             "fs::Permissions::from_mode(0o700)",
             "fs::Permissions::from_mode(0o600)",
+            "fn bind_private_key_sender(&mut self)",
+            'argument_uses_flag(argument, "--sender")',
+            "ForgeScriptArg::Sender {",
+            'address: format!("{address:#x}")',
+            "self.bind_private_key_sender();",
             "self.private_key = Some(private_key);",
             "self.args.reject_raw_secret_args()?;",
             "const RAW_SECRET_ARGS: [&str; 6]",
@@ -110,16 +115,21 @@ class LauncherStaticTests(unittest.TestCase):
             signer_creation,
             patch.index("         if self.args.resume", signer_creation),
         )
+        public_sender_binding = patch.index("+        self.bind_private_key_sender();")
+        self.assertLess(
+            public_sender_binding,
+            patch.index("         let args_no_resume = self.args.build();"),
+        )
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "b3cdaa066399085369141a01cfd0345fb4aa8e17c055aac7ae0a76b127eec718",
+            "8f921f0bd5cb3c44f45c3f046c13dfb0ea11399f8f8740cb77d8ae491035fc72",
         )
         for expected in (
-            'EXPECTED_PATCH_SHA256="b3cdaa066399085369141a01cfd0345fb4aa8e17c055aac7ae0a76b127eec718"',
+            'EXPECTED_PATCH_SHA256="8f921f0bd5cb3c44f45c3f046c13dfb0ea11399f8f8740cb77d8ae491035fc72"',
             'EXPECTED_PATCH_PATH_COUNT="14"',
             'EXPECTED_PATCH_PATHS_SHA256="3e068f5438c569c17e98ccbce686b72f8fd90737c8d01b37e456ce8df3d6f170"',
-            'EXPECTED_PATCHED_TREE="4f72053786df7257568e70d889bcc915356e2dc2"',
+            'EXPECTED_PATCHED_TREE="919b642161e5df0a3d591c28bd7d93468f34e523"',
         ):
             self.assertIn(expected, applicator)
 

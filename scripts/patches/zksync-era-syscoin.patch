@@ -114,7 +114,7 @@ index 7af8fab..c4fd1b4 100644
 +# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
 +tempfile.workspace = true
 diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
-index dbc8fd8..b1495b1 100644
+index dbc8fd8..41a9699 100644
 --- a/zkstack_cli/crates/common/src/forge.rs
 +++ b/zkstack_cli/crates/common/src/forge.rs
 @@ -1,18 +1,28 @@
@@ -224,11 +224,40 @@ index dbc8fd8..b1495b1 100644
  }
  
  impl ForgeScript {
++    // SYSCOIN: Forge does not infer tx.origin from an encrypted keystore. Bind
++    // the final generated key's public address after all builder calls while
++    // keeping the key itself out of argv and command logs.
++    fn bind_private_key_sender(&mut self) {
++        let Some(address) = self.private_key.as_ref().map(|private_key| {
++            LocalWallet::from_bytes(private_key.as_bytes())
++                .unwrap()
++                .address()
++        }) else {
++            return;
++        };
++        let has_sender = self
++            .args
++            .args
++            .iter()
++            .any(|arg| matches!(arg, ForgeScriptArg::Sender { .. }))
++            || self
++                .args
++                .additional_args
++                .iter()
++                .any(|argument| argument_uses_flag(argument, "--sender"));
++        if !has_sender {
++            self.args.add_arg(ForgeScriptArg::Sender {
++                address: format!("{address:#x}"),
++            });
++        }
++    }
++
      /// Run the forge script command.
      pub fn run(mut self, shell: &Shell) -> anyhow::Result<()> {
 +        // SYSCOIN: Reject caller-supplied raw credentials before building,
 +        // printing, or spawning a Forge command.
 +        self.args.reject_raw_secret_args()?;
++        self.bind_private_key_sender();
          // When running the DeployCTM script, we skip recompiling the Bridgehub
          // because it must be compiled with a low optimizer-runs value.
          if self.script_path == Path::new("deploy-scripts/DeployCTM.s.sol") {
@@ -443,6 +472,75 @@ index dbc8fd8..b1495b1 100644
 +                .collect(),
 +            ..ForgeScriptArgs::default()
 +        }
++    }
++
++    #[test]
++    fn generated_private_key_binds_only_its_public_sender() {
++        let private_key = H256::from_slice(&[7_u8; 32]);
++        let expected_sender = format!(
++            "--sender={:#x}",
++            LocalWallet::from_bytes(private_key.as_bytes())
++                .unwrap()
++                .address()
++        );
++        let secret = hex::encode(private_key.as_bytes());
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(private_key);
++
++        assert_eq!(script.private_key, Some(private_key));
++        script.bind_private_key_sender();
++        script.bind_private_key_sender();
++        let arguments = script.args.build();
++        assert_eq!(
++            arguments
++                .iter()
++                .filter(|argument| *argument == &expected_sender)
++                .count(),
++            1
++        );
++        assert!(!arguments.iter().any(|argument| argument.contains(&secret)));
++    }
++
++    #[test]
++    fn generated_private_key_preserves_explicit_sender() {
++        let private_key = H256::from_slice(&[8_u8; 32]);
++        let explicit_sender = "0x1111111111111111111111111111111111111111";
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(private_key)
++            .with_sender(explicit_sender.to_string());
++        script.bind_private_key_sender();
++        let arguments = script.args.build();
++
++        assert_eq!(
++            arguments
++                .iter()
++                .filter(|argument| argument.starts_with("--sender="))
++                .count(),
++            1
++        );
++        assert_eq!(arguments[0], format!("--sender={explicit_sender}"));
++    }
++
++    #[test]
++    fn replacing_generated_private_key_rebinds_sender() {
++        let first_private_key = H256::from_slice(&[7_u8; 32]);
++        let final_private_key = H256::from_slice(&[8_u8; 32]);
++        let expected_sender = format!(
++            "--sender={:#x}",
++            LocalWallet::from_bytes(final_private_key.as_bytes())
++                .unwrap()
++                .address()
++        );
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(first_private_key)
++            .with_private_key(final_private_key);
++
++        script.bind_private_key_sender();
++        assert_eq!(script.private_key, Some(final_private_key));
++        assert_eq!(script.args.build(), vec![expected_sender]);
 +    }
 +
 +    #[test]
