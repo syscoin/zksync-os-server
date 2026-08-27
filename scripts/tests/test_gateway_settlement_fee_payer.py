@@ -676,6 +676,9 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 saved_fd9 = os.dup(9)
             except OSError:
                 saved_fd9 = None
+                saved_fd9_inheritable = None
+            else:
+                saved_fd9_inheritable = os.get_inheritable(9)
             os.dup2(lock.fileno(), 9)
             os.set_inheritable(9, True)
             try:
@@ -694,8 +697,11 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 if saved_fd9 is None:
                     os.close(9)
                 else:
-                    os.dup2(saved_fd9, 9)
-                    os.close(saved_fd9)
+                    try:
+                        os.dup2(saved_fd9, 9)
+                        os.set_inheritable(9, saved_fd9_inheritable)
+                    finally:
+                        os.close(saved_fd9)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("execute_operator is in use", blocked.stderr)
