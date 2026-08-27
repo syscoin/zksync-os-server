@@ -1472,7 +1472,11 @@ gl_ensure_era_contracts_syscoin_postimage() {
 
 gl_ensure_zkstack_cli_release_current() {
   gl_require ZKSYNC_ERA_PATH
+  gl_require ZKSYNC_OS_SERVER_PATH
   gl_ensure_era_contracts_syscoin_postimage
+  # SYSCOIN: Attest the complete pinned zkstack postimage on every entrypoint,
+  # including restarts whose release stamp allows the build itself to be skipped.
+  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"
   local zkstack_bin stamp_file expected_fingerprint actual_fingerprint
   zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
   stamp_file="$(gl_zkstack_cli_release_stamp_file)"

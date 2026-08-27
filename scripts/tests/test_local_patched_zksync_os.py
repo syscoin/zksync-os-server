@@ -105,6 +105,13 @@ class LauncherStaticTests(unittest.TestCase):
             "L1Network::Tanenbaum | L1Network::Mainnet => {",
             "let min_validator_balance = match chain_config.l1_network",
             "_ => U256::from(10).pow(19.into()),",
+            "// SYSCOIN: This zkstack revision is paired with newer V32 contracts.",
+            'cmd!(shell, "yarn install --frozen-lockfile --ignore-scripts")',
+            'cmd!(shell, "yarn check --integrity --ignore-scripts")',
+            'cmd!(shell, "yarn install --frozen-lockfile")',
+            'cmd!(shell, "yarn check --integrity")',
+            "// SYSCOIN: A failed dependency install must abort the build; the legacy",
+            'build_dependencies().context("It was not possible to install project dependencies")?;',
         ):
             self.assertIn(expected, added)
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
@@ -123,13 +130,14 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "8f921f0bd5cb3c44f45c3f046c13dfb0ea11399f8f8740cb77d8ae491035fc72",
+            "5af6c26d603b4ffbbb4143782f64b963dd101839b25f72ea8f24ee5fa3d2c96f",
         )
+        self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="8f921f0bd5cb3c44f45c3f046c13dfb0ea11399f8f8740cb77d8ae491035fc72"',
-            'EXPECTED_PATCH_PATH_COUNT="14"',
-            'EXPECTED_PATCH_PATHS_SHA256="3e068f5438c569c17e98ccbce686b72f8fd90737c8d01b37e456ce8df3d6f170"',
-            'EXPECTED_PATCHED_TREE="919b642161e5df0a3d591c28bd7d93468f34e523"',
+            'EXPECTED_PATCH_SHA256="5af6c26d603b4ffbbb4143782f64b963dd101839b25f72ea8f24ee5fa3d2c96f"',
+            'EXPECTED_PATCH_PATH_COUNT="16"',
+            'EXPECTED_PATCH_PATHS_SHA256="f08022b54abd3ef6061a342def9cd49791d9232212a71d5538f7e564885ebc54"',
+            'EXPECTED_PATCHED_TREE="fae6a4f75d6bd515664d3e13e3aeefd4cfac31f9"',
         ):
             self.assertIn(expected, applicator)
 
@@ -226,6 +234,7 @@ class LauncherStaticTests(unittest.TestCase):
                     "COMMON": str(common),
                     "GATEWAY_DIR": str(root),
                     "L1_RPC_URL": "http://127.0.0.1:1",
+                    "HOME": str(root),
                     "PATH": f"{bin_dir}:{os.environ['PATH']}",
                     **{f"TEST_{key.upper()}": value for key, value in addresses.items()},
                 },
@@ -957,6 +966,7 @@ gl_checkpoint_assert_fingerprint_matches
                         "COMMON": str(common),
                         "GATEWAY_DIR": str(root),
                         "L1_RPC_URL": "http://l1.invalid",
+                        "HOME": str(root),
                         "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                         "PYTHONPATH": str(bin_dir),
                         "TEST_FAKE_CAST": str(fake_cast),
@@ -1831,6 +1841,19 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         normal = (launch_dir / "run-gateway-launch.sh").read_text(encoding="utf-8")
         repair = (launch_dir / "gateway-launch-repair.sh").read_text(
             encoding="utf-8"
+        )
+        common_source = (launch_dir / "_common.sh").read_text(encoding="utf-8")
+        ensure_body = common_source.split(
+            "gl_ensure_zkstack_cli_release_current() {", 1
+        )[1].split("\n}", 1)[0]
+        patch_attestation = (
+            'bash "${ZKSYNC_OS_SERVER_PATH}/scripts/'
+            'apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"'
+        )
+        self.assertIn(patch_attestation, ensure_body)
+        self.assertLess(
+            ensure_body.index(patch_attestation),
+            ensure_body.index("expected_fingerprint="),
         )
         self.assertIn(
             'step_l1_ecosystem_deployed() {\n'
@@ -2841,6 +2864,7 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
                         "COMMON": str(common),
                         "GATEWAY_DIR": str(root / "gateway"),
                         "GATEWAY_RPC_URL": "https://authenticated-gateway.invalid",
+                        "HOME": str(root),
                         "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                         "TEST_BLOCK_HASH": block_hash,
                     }
