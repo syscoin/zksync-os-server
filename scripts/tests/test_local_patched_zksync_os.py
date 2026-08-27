@@ -120,8 +120,22 @@ class LauncherStaticTests(unittest.TestCase):
             "// SYSCOIN: zkOS chains use only the compact rollup validator. Persist",
             "let compact_da_only = chain_config.vm_option.is_zksync_os();",
             "blobs_zksync_os_l1_da_validator_addr: if compact_da_only",
+            "// SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.",
+            "access_control_restriction: Address,",
+            "access_control_restriction,",
+            "// SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.",
+            ".access_control_restriction_addr",
+            'context("no access_control_restriction_addr")?',
+            "// SYSCOIN: zkOS selects its L2 validator by commitment scheme and",
+            "args.l2_da_commitment_scheme",
         ):
             self.assertIn(expected, added)
+        self.assertEqual(
+            added.count(
+                "// SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper."
+            ),
+            4,
+        )
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
         self.assertNotIn("PrivateKey {", added)
         self.assertNotIn('to_string = "private-key=', added)
@@ -138,14 +152,14 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "ace1ef508952d2a4fc3428519d78ccb77d7dc48d244065c91ea83b5a33c7afc7",
+            "5df4aff394154ef5938f0492c62f4d742f8ee0eca222e8b0479e1c54a0331624",
         )
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="ace1ef508952d2a4fc3428519d78ccb77d7dc48d244065c91ea83b5a33c7afc7"',
-            'EXPECTED_PATCH_PATH_COUNT="19"',
-            'EXPECTED_PATCH_PATHS_SHA256="e8e33ffc0f9db2e715ad3468b85cafd4a50d97eace19664f445d3fffc3db18a3"',
-            'EXPECTED_PATCHED_TREE="cdfc6211cf0ccc7df68ae55de6b805c2177ec706"',
+            'EXPECTED_PATCH_SHA256="5df4aff394154ef5938f0492c62f4d742f8ee0eca222e8b0479e1c54a0331624"',
+            'EXPECTED_PATCH_PATH_COUNT="22"',
+            'EXPECTED_PATCH_PATHS_SHA256="006ef39a590831d268a6e877caa8e328a80fd8e985844ed6552dd377276d9ba4"',
+            'EXPECTED_PATCHED_TREE="977d0f2ca4942baf86e48a136a8733cfcf89b890"',
         ):
             self.assertIn(expected, applicator)
 

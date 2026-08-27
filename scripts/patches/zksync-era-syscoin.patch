@@ -638,7 +638,7 @@ index 67e80c6..d0c83b9 100644
              L1Network::Holesky => H256::zero(),
          }
 diff --git a/zkstack_cli/crates/zkstack/src/admin_functions.rs b/zkstack_cli/crates/zkstack/src/admin_functions.rs
-index 0ffe0e9..feda955 100644
+index 0ffe0e9..3b1b1c8 100644
 --- a/zkstack_cli/crates/zkstack/src/admin_functions.rs
 +++ b/zkstack_cli/crates/zkstack/src/admin_functions.rs
 @@ -1,9 +1,10 @@
@@ -782,7 +782,24 @@ index 0ffe0e9..feda955 100644
  }
  
  impl From<AdminScriptOutputInner> for AdminScriptOutput {
-@@ -996,3 +1079,29 @@ pub async fn start_migrate_chain_from_gateway(
+@@ -533,6 +616,8 @@ pub async fn set_da_validator_pair(
+     mode: AdminScriptMode,
+     chain_id: u64,
+     bridgehub: Address,
++    // SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.
++    access_control_restriction: Address,
+     l1_da_validator_address: Address,
+     l2_da_commitment_scheme: L2DACommitmentScheme,
+     l1_rpc_url: String,
+@@ -542,6 +627,7 @@ pub async fn set_da_validator_pair(
+             "setDAValidatorPair",
+             (
+                 bridgehub,
++                access_control_restriction,
+                 U256::from(chain_id),
+                 l1_da_validator_address,
+                 l2_da_commitment_scheme as u8,
+@@ -996,3 +1082,29 @@ pub async fn start_migrate_chain_from_gateway(
      )
      .await
  }
@@ -1643,10 +1660,22 @@ index 3b9aff781..a15b29e5d 100644
  pub enum L2PubdataValidator {
      Address(Address),
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
-index b982f3e5d..33081159b 100644
+index b982f3e5d..dd5bcb352 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
-@@ -335,7 +335,9 @@ pub(crate) async fn get_l1_da_validator(
+@@ -285,6 +285,11 @@ pub async fn send_priority_txs(
+         ),
+         chain_config.chain_id.as_u64(),
+         contracts_config.ecosystem_contracts.bridgehub_proxy_addr,
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?,
+         l1_da_validator_addr,
+         commitment_scheme,
+         l1_rpc_url.clone(),
+@@ -335,7 +340,9 @@ pub(crate) async fn get_l1_da_validator(
      let l1_da_validator_contract = match chain_config.l1_batch_commit_data_generator_mode {
          L1BatchCommitmentMode::Rollup => match chain_config.vm_option {
              VMOption::EraVM => contracts_config.l1.rollup_l1_da_validator_addr,
@@ -1702,3 +1731,90 @@ index e031e5e1f..70ae01fec 100644
              },
              proof_manager_contracts: self.proof_manager_contracts.clone(),
              // L2 fields will be set later, after L2 deployment
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
+index fdcee99f1..b1db1baef 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
+@@ -45,10 +45,6 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+     let contracts_config = chain_config.get_contracts_config()?;
+     let chain_id = chain_config.chain_id.as_u64();
+
+-    let l2_da_validator_address = contracts_config
+-        .l2
+-        .da_validator_addr
+-        .context("da_validator_addr")?;
+     let l1_rpc_url: String = chain_config
+         .get_secrets_config()
+         .await?
+@@ -122,6 +118,11 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+         );
+     } else {
+         let diamond_proxy_address = contracts_config.ecosystem_contracts.bridgehub_proxy_addr;
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        let access_control_restriction = contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?;
+
+         set_da_validator_pair(
+             shell,
+@@ -130,6 +131,7 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+             AdminScriptMode::Broadcast(chain_config.get_wallets_config()?.governor),
+             chain_id,
+             diamond_proxy_address,
++            access_control_restriction,
+             args.l1_da_validator,
+             args.l2_da_commitment_scheme,
+             l1_rpc_url,
+@@ -144,7 +146,9 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+         format!(
+             "{} {}",
+             hex::encode(args.l1_da_validator),
+-            hex::encode(l2_da_validator_address)
++            // SYSCOIN: zkOS selects its L2 validator by commitment scheme and
++            // therefore does not require an address in contracts.yaml.
++            args.l2_da_commitment_scheme
+         ),
+     );
+
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
+index d3b181751..046707bbf 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
+@@ -240,6 +240,11 @@ pub async fn run(args: MigrateFromGatewayArgs, shell: &Shell) -> anyhow::Result<
+         chain_contracts_config
+             .ecosystem_contracts
+             .bridgehub_proxy_addr,
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        chain_contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?,
+         l1_da_validator_addr,
+         l2_da_validator_commitment_scheme,
+         l1_url.clone(),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
+index 8da742ce3..1ea7a6328 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
+@@ -81,6 +81,12 @@ pub async fn run(shell: &Shell, args: SetDAValidatorPairCalldataArgs) -> anyhow:
+     };
+
+     let result = if l1_chain_id == used_settlement_layer {
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        let access_control_restriction = chain_config
++            .get_contracts_config()?
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?;
+         set_da_validator_pair(
+             shell,
+             &Default::default(),
+@@ -88,6 +94,7 @@ pub async fn run(shell: &Shell, args: SetDAValidatorPairCalldataArgs) -> anyhow:
+             AdminScriptMode::OnlySave,
+             args.chain_id,
+             args.bridgehub_address,
++            access_control_restriction,
+             args.sl_da_validator,
+             args.l2_da_validator_commitment_scheme,
+             args.l1_rpc_url,
