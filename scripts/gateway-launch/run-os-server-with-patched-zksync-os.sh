@@ -57,6 +57,22 @@ prebuilt_binary_path() {
   printf '%s\n' "${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
 }
 
+runner_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+runner_sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 configure_build_context() {
   uses_patched_workspace || return 0
 
@@ -103,14 +119,14 @@ configure_build_context() {
 
 prebuilt_digest() {
   local binary="$1" binary_sha256
-  binary_sha256="$(sha256sum "${binary}" | awk '{print $1}')"
+  binary_sha256="$(runner_sha256_file "${binary}")"
   printf '%s\0%s\0%s\0%s\0%s\0' \
     "${binary_sha256}" \
     "${WORKSPACE_NAME}" \
     "${PROTOCOL_VERSION}" \
     "${SYSCOIN_EDGE_DA_COMMIT_TARGET:-}" \
     "${SYSCOIN_GAS_TANK_ADDRESS:-}" |
-    sha256sum | awk '{print $1}'
+    runner_sha256_stdin
 }
 
 refresh_os_server_config_credentials() {

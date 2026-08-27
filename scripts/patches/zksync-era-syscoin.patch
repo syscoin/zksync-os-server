@@ -1,37 +1,53 @@
 diff --git a/core/lib/basic_types/src/network.rs b/core/lib/basic_types/src/network.rs
-index 3403ec404..ab790d38d 100644
+index 3403ec4..d55f8e1 100644
 --- a/core/lib/basic_types/src/network.rs
 +++ b/core/lib/basic_types/src/network.rs
+@@ -16,7 +16,7 @@ use crate::SLChainId;
+ #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+ #[serde(rename_all = "camelCase")]
+ pub enum Network {
+-    /// Ethereum Mainnet.
++    /// SYSCOIN: Syscoin mainnet.
+     Mainnet,
+     /// Ethereum Rinkeby testnet.
+     Rinkeby,
 @@ -28,6 +28,8 @@ pub enum Network {
      Sepolia,
      /// Ethereum Holešky testnet.
      Holesky,
-+    /// Syscoin Tanenbaum testnet.
++    /// SYSCOIN: Syscoin Tanenbaum testnet.
 +    Tanenbaum,
      /// Self-hosted Ethereum network.
      Localhost,
      /// Self-hosted L2 network.
-@@ -51,6 +53,7 @@ impl FromStr for Network {
+@@ -51,6 +53,8 @@ impl FromStr for Network {
              "localhostL2" => Self::LocalhostL2,
              "sepolia" => Self::Sepolia,
              "holesky" => Self::Holesky,
++            // SYSCOIN: recognize Tanenbaum in downstream network configs.
 +            "tanenbaum" => Self::Tanenbaum,
              "test" => Self::Test,
              another => return Err(another.to_owned()),
          })
-@@ -68,6 +71,7 @@ impl fmt::Display for Network {
+@@ -68,6 +72,8 @@ impl fmt::Display for Network {
              Self::LocalhostL2 => write!(f, "localhostL2"),
              Self::Sepolia => write!(f, "sepolia"),
              Self::Holesky => write!(f, "holesky"),
++            // SYSCOIN: serialize Tanenbaum consistently in generated configs.
 +            Self::Tanenbaum => write!(f, "tanenbaum"),
              Self::Unknown => write!(f, "unknown"),
              Self::Test => write!(f, "test"),
          }
-@@ -78,13 +82,14 @@ impl Network {
-     /// Returns the network chain ID on the Ethereum side.
+@@ -75,31 +81,35 @@ impl fmt::Display for Network {
+ }
+ 
+ impl Network {
+-    /// Returns the network chain ID on the Ethereum side.
++    /// SYSCOIN: Returns the network selected by the settlement-layer chain ID.
      pub fn from_chain_id(chain_id: SLChainId) -> Self {
          match *chain_id {
 -            1 => Self::Mainnet,
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum L1 chain IDs.
 +            57 => Self::Mainnet,
              3 => Self::Ropsten,
              4 => Self::Rinkeby,
@@ -43,11 +59,14 @@ index 3403ec404..ab790d38d 100644
              270 => Self::LocalhostL2,
              _ => Self::Unknown,
          }
-@@ -93,13 +98,14 @@ impl Network {
-     /// Returns the network chain ID on the Ethereum side.
+     }
+ 
+-    /// Returns the network chain ID on the Ethereum side.
++    /// SYSCOIN: Returns the settlement-layer chain ID.
      pub fn chain_id(self) -> SLChainId {
          match self {
 -            Self::Mainnet => SLChainId(1),
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum L1 chain IDs.
 +            Self::Mainnet => SLChainId(57),
              Self::Ropsten => SLChainId(3),
              Self::Rinkeby => SLChainId(4),
@@ -59,214 +78,6 @@ index 3403ec404..ab790d38d 100644
              Self::LocalhostL2 => SLChainId(270),
              Self::Unknown => panic!("Unknown chain ID"),
              Self::Test => panic!("Test chain ID"),
-diff --git a/zkstack_cli/crates/types/src/l1_network.rs b/zkstack_cli/crates/types/src/l1_network.rs
-index 1d6300f12..b6de9c8a2 100644
---- a/zkstack_cli/crates/types/src/l1_network.rs
-+++ b/zkstack_cli/crates/types/src/l1_network.rs
-@@ -1,4 +1,4 @@
--use std::str::FromStr;
-+use std::{env, str::FromStr};
-
- use clap::ValueEnum;
- use ethers::types::{Address, H256};
-@@ -25,6 +25,7 @@ pub enum L1Network {
-     Localhost,
-     Sepolia,
-     Holesky,
-+    Tanenbaum,
-     Mainnet,
- }
-
-@@ -35,7 +36,8 @@ impl L1Network {
-             L1Network::Localhost => 9,
-             L1Network::Sepolia => 11_155_111,
-             L1Network::Holesky => 17000,
--            L1Network::Mainnet => 1,
-+            L1Network::Tanenbaum => 5700,
-+            L1Network::Mainnet => 57,
-         }
-     }
-
-@@ -45,6 +47,7 @@ impl L1Network {
-             L1Network::Sepolia | L1Network::Holesky => {
-                 Some(Address::from_str("0x73d59fe232fce421d1365d6a5beec49acde3d0d9").unwrap())
-             }
-+            L1Network::Tanenbaum => None,
-             L1Network::Mainnet => None, // TODO: add mainnet address after it is known
-         }
-     }
-@@ -52,6 +55,14 @@ impl L1Network {
-
-     pub fn zk_token_asset_id(&self) -> H256 {
-+        if let Ok(value) = env::var("ZKSYS_ZK_TOKEN_ASSET_ID")
-+            .or_else(|_| env::var("ZK_TOKEN_ASSET_ID"))
-+        {
-+            return H256::from_str(&value)
-+                .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32");
-+        }
-+
-         match self {
-             L1Network::Localhost => {
-                 // When testing locally, we deploy the ZK token inside interop tests, so we need to derive its asset id
-@@ -68,8 +79,7 @@ impl L1Network {
-             L1Network::Mainnet => {
--                // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
--                H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
--                    .unwrap()
-+                panic!("ZKSYS_ZK_TOKEN_ASSET_ID must be set for Syscoin mainnet CTM deployment")
-             }
--            L1Network::Holesky => H256::zero(),
-+            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
-         }
-     }
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-index 707872ea0..9ae443887 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-@@ -246,7 +246,7 @@ async fn return_ecosystem_contracts(
-             L1Network::Localhost => {
-                 ContractsConfig::get_path_with_base_path(&ecosystem_config.config)
-             }
--            L1Network::Sepolia | L1Network::Holesky | L1Network::Mainnet => {
-+            L1Network::Sepolia | L1Network::Holesky | L1Network::Tanenbaum | L1Network::Mainnet => {
-                 ecosystem_preexisting_configs_path
-             }
-         });
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-index 37cad6768..0ae9fd838 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-@@ -21,7 +21,7 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     ContractsConfigForDeployERC20, CoreContractsConfig, EcosystemConfig,
- };
--use zkstack_cli_types::VMOption;
-+use zkstack_cli_types::{L1Network, VMOption};
-
- use super::args::init::EcosystemInitArgsFinal;
- use crate::{
-@@ -75,6 +75,9 @@ pub async fn deploy_l1_core_contracts(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
-
-@@ -121,6 +124,10 @@ pub async fn deploy_erc20(
-         .with_rpc_url(l1_rpc_url)
-         .with_broadcast();
-
-+    if ecosystem_config.l1_network == L1Network::Localhost {
-+        forge = forge.with_slow();
-+    }
-+
-     forge = fill_forge_private_key(
-         forge,
-         ecosystem_config.get_wallets()?.deployer.as_ref(),
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-index 03451dd9e..d751d24f8 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-@@ -16,7 +16,7 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     CoreContractsConfig, EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::{ProverMode, VMOption};
-+use zkstack_cli_types::{L1Network, ProverMode, VMOption};
-
- use crate::{
-     abi::IDEPLOYCTMABI_ABI,
-@@ -203,6 +203,9 @@ pub async fn deploy_new_ctm(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
-
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-index e667c383d..f7f70b107 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-@@ -9,7 +9,7 @@ use zkstack_cli_config::{
-     forge_interface::script_params::REGISTER_CTM_SCRIPT_PARAMS, traits::ReadConfig,
-     EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::VMOption;
-+use zkstack_cli_types::{L1Network, VMOption};
- use zksync_types::H160;
-
- use crate::{
-@@ -112,4 +112,7 @@ pub async fn register_ctm_on_existing_bh(
-
-     if !only_save_calldata {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-index de2718561..f8bb298b7 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-@@ -16,6 +16,7 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+use zkstack_cli_types::L1Network;
-
- use crate::{
-     abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
-@@ -104,6 +105,9 @@ pub async fn register_chain(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
-
-     if let Some(address) = sender {
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-index bec070eeb..3efce4fda 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-@@ -20,6 +20,7 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, DAValidatorType, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+use zkstack_cli_types::L1Network;
- use zksync_basic_types::commitment::L1BatchCommitmentMode;
-
- use crate::{
-@@ -354,6 +355,9 @@ async fn call_forge(
-
-     if with_broadcast {
-         forge = forge.with_broadcast();
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
-
-     if let Some(signature) = signature {
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-index 3a65c7110..5d4d6a1cb 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-@@ -182,6 +182,6 @@ pub(crate) async fn get_migrate_to_gateway_context(
-         validator: chain_secrets_config.operator.address,
-         prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
-         execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),
--        min_validator_balance: U256::from(10).pow(19.into()),
-+        min_validator_balance: U256::from(10).pow(18.into()),
-         refund_recipient: None,
-     };
 diff --git a/zkstack_cli/Cargo.lock b/zkstack_cli/Cargo.lock
 index d0fb63d..6ef9503 100644
 --- a/zkstack_cli/Cargo.lock
@@ -280,7 +91,7 @@ index d0fb63d..6ef9503 100644
   "tokio",
   "toml",
 diff --git a/zkstack_cli/Cargo.toml b/zkstack_cli/Cargo.toml
-index 7e97b56..bdd1a55 100644
+index 7e97b56..f8fff63 100644
 --- a/zkstack_cli/Cargo.toml
 +++ b/zkstack_cli/Cargo.toml
 @@ -72,6 +72,8 @@ sqruff-lib = "0.19.0"
@@ -289,11 +100,11 @@ index 7e97b56..bdd1a55 100644
  walkdir = "2.4.0"
 +# SYSCOIN: Materialize generated Forge signers as private ephemeral keystores.
 +tempfile = "3.14.0"
-
+ 
  [profile.release]
  strip = true
 diff --git a/zkstack_cli/crates/common/Cargo.toml b/zkstack_cli/crates/common/Cargo.toml
-index 7af8fab..5ea2516 100644
+index 7af8fab..c4fd1b4 100644
 --- a/zkstack_cli/crates/common/Cargo.toml
 +++ b/zkstack_cli/crates/common/Cargo.toml
 @@ -34,3 +34,5 @@ async-trait.workspace = true
@@ -303,17 +114,19 @@ index 7af8fab..5ea2516 100644
 +# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
 +tempfile.workspace = true
 diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
-index dbc8fd8..9441c82 100644
+index dbc8fd8..b1495b1 100644
 --- a/zkstack_cli/crates/common/src/forge.rs
 +++ b/zkstack_cli/crates/common/src/forge.rs
-@@ -1,18 +1,26 @@
+@@ -1,18 +1,28 @@
++// SYSCOIN: ephemeral Forge signers require private file handling and random
++// keystore credentials without placing secret material in process arguments.
  use std::{
 +    fs::{self, OpenOptions},
 +    io::Write,
      path::{Path, PathBuf},
 -    str::FromStr,
  };
-
+ 
 +#[cfg(unix)]
 +use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 +
@@ -334,17 +147,17 @@ index dbc8fd8..9441c82 100644
  use strum::Display;
 +use tempfile::TempDir;
  use xshell::{cmd, Shell};
-
+ 
  use crate::{
-@@ -42,15 +50,75 @@ impl Forge {
+@@ -42,7 +52,66 @@ impl Forge {
              base_path: self.path.clone(),
              script_path: path.to_path_buf(),
              args,
 +            private_key: None,
-         }
-     }
- }
-
++        }
++    }
++}
++
 +// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
 +// logs. Give Forge a short-lived encrypted keystore through child-only env.
 +struct EphemeralForgeSigner {
@@ -388,7 +201,7 @@ index dbc8fd8..9441c82 100644
 +        {
 +            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
 +            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
-+        }
+         }
 +
 +        Ok(Self {
 +            _directory: directory,
@@ -400,22 +213,30 @@ index dbc8fd8..9441c82 100644
 +    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
 +        cmd.env("ETH_KEYSTORE", &self.keystore_path)
 +            .env("ETH_PASSWORD", &self.password_path)
-+    }
-+}
-+
- /// ForgeScript is a wrapper around the forge script command.
- pub struct ForgeScript {
+     }
+ }
+ 
+@@ -51,11 +120,15 @@ pub struct ForgeScript {
      base_path: PathBuf,
      script_path: PathBuf,
      args: ForgeScriptArgs,
 +    private_key: Option<H256>,
  }
-
+ 
  impl ForgeScript {
-@@ -65,12 +133,20 @@ impl ForgeScript {
+     /// Run the forge script command.
+     pub fn run(mut self, shell: &Shell) -> anyhow::Result<()> {
++        // SYSCOIN: Reject caller-supplied raw credentials before building,
++        // printing, or spawning a Forge command.
++        self.args.reject_raw_secret_args()?;
+         // When running the DeployCTM script, we skip recompiling the Bridgehub
+         // because it must be compiled with a low optimizer-runs value.
+         if self.script_path == Path::new("deploy-scripts/DeployCTM.s.sol") {
+@@ -65,12 +138,22 @@ impl ForgeScript {
          let _dir_guard = shell.push_dir(&self.base_path);
          let script_path = self.script_path.as_os_str();
          let args_no_resume = self.args.build();
++        // SYSCOIN: one ephemeral signer spans the resume attempt and fallback run.
 +        let ephemeral_signer = self
 +            .private_key
 +            .as_ref()
@@ -429,6 +250,7 @@ index dbc8fd8..9441c82 100644
 -                .run();
 +            let mut cmd = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
 +                .with_piped_std_err();
++            // SYSCOIN: inject only private child-process keystore paths.
 +            if let Some(signer) = &ephemeral_signer {
 +                cmd = signer.apply(cmd);
 +            }
@@ -436,10 +258,11 @@ index dbc8fd8..9441c82 100644
              if !res.resume_not_successful_because_has_not_began() {
                  return Ok(res?);
              }
-@@ -91,6 +167,10 @@ impl ForgeScript {
+@@ -91,6 +174,11 @@ impl ForgeScript {
              "forge script {script_path} --legacy {args_no_resume...}"
          ));
-
+ 
++        // SYSCOIN: preserve the same private signer when resume falls back.
 +        if let Some(signer) = &ephemeral_signer {
 +            cmd = signer.apply(cmd);
 +        }
@@ -447,17 +270,18 @@ index dbc8fd8..9441c82 100644
          if self.args.resume {
              cmd = cmd.with_piped_std_err();
          }
-@@ -104,7 +184,7 @@ impl ForgeScript {
+@@ -104,7 +192,8 @@ impl ForgeScript {
      }
-
+ 
      pub fn wallet_args_passed(&self) -> bool {
 -        self.args.wallet_args_passed()
++        // SYSCOIN: an in-memory signer satisfies the wallet requirement.
 +        self.private_key.is_some() || self.args.wallet_args_passed()
      }
-
+ 
      /// Add the ffi flag to the forge script command.
-@@ -169,23 +249,17 @@ impl ForgeScript {
-
+@@ -169,23 +258,17 @@ impl ForgeScript {
+ 
      /// Adds the private key of the deployer account.
      pub fn with_private_key(mut self, private_key: H256) -> Self {
 -        self.args.add_arg(ForgeScriptArg::PrivateKey {
@@ -468,7 +292,7 @@ index dbc8fd8..9441c82 100644
 +        self.private_key = Some(private_key);
          self
      }
-
+ 
      // Do not start the script if balance is not enough
      pub fn private_key(&self) -> Option<LocalWallet> {
 -        self.args.args.iter().find_map(|a| {
@@ -484,9 +308,63 @@ index dbc8fd8..9441c82 100644
 +            .as_ref()
 +            .map(|key| LocalWallet::from_bytes(key.as_bytes()).unwrap())
      }
-
+ 
      pub fn rpc_url(&self) -> Option<String> {
-@@ -259,10 +333,6 @@ pub enum ForgeScriptArg {
+@@ -228,18 +311,22 @@ const PROHIBITED_ARGS: [&str; 10] = [
+     "-s",
+ ];
+ 
+-const WALLET_ARGS: [&str; 18] = [
++// SYSCOIN: recognize every supported noninteractive Forge wallet selector.
++const WALLET_ARGS: [&str; 22] = [
+     "-a",
+     "--froms",
+     "-i",
+     "--private-keys",
+     "--private-key",
+     "--mnemonics",
++    "--mnemonic-passphrases",
+     "--mnenomic-passphrases",
+     "--mnemonic-derivation-paths",
+     "--mnemonic-indexes",
+     "--keystore",
++    "--keystores",
+     "--account",
++    "--accounts",
+     "--password",
+     "--password-file",
+     "-l",
+@@ -247,8 +334,29 @@ const WALLET_ARGS: [&str; 18] = [
+     "-t",
+     "--trezor",
+     "--aws",
++    "--gcp",
++];
++
++// SYSCOIN: These Forge selectors carry raw credentials. Passing them through
++// additional_args would expose secrets in process argv and command/error logs.
++const RAW_SECRET_ARGS: [&str; 6] = [
++    "--private-key",
++    "--private-keys",
++    "--mnemonics",
++    "--mnemonic-passphrases",
++    "--mnenomic-passphrases",
++    "--password",
+ ];
+ 
++// SYSCOIN: Match exact, equals, or legacy single-token whitespace forms while
++// avoiding prefix matches such as --password-file.
++fn argument_uses_flag(argument: &str, flag: &str) -> bool {
++    argument == flag
++        || argument.strip_prefix(flag).is_some_and(|suffix| {
++            suffix.starts_with('=') || suffix.starts_with(' ') || suffix.starts_with('\t')
++        })
++}
++
+ /// Set of known forge script arguments necessary for execution.
+ #[derive(Display, Debug, Serialize, Deserialize, Clone, PartialEq)]
+ #[strum(serialize_all = "kebab-case", prefix = "--")]
+@@ -259,10 +367,7 @@ pub enum ForgeScriptArg {
          api_key: String,
      },
      Ffi,
@@ -494,6 +372,532 @@ index dbc8fd8..9441c82 100644
 -    PrivateKey {
 -        private_key: String,
 -    },
++    // SYSCOIN: raw private keys live only in memory, never in rendered Forge arguments.
      #[strum(to_string = "rpc-url={url}")]
      RpcUrl {
          url: String,
+@@ -326,13 +431,30 @@ pub struct ForgeScriptArgs {
+     pub zksync: bool,
+     /// List of additional arguments that can be passed through the CLI.
+     ///
+-    /// e.g.: `zkstack init -a --private-key=<PRIVATE_KEY>`
++    /// e.g.: `zkstack init -a --keystore=<PATH> --password-file=<PATH>`
+     #[clap(long, short)]
+     #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = false)]
+     additional_args: Vec<String>,
+ }
+ 
+ impl ForgeScriptArgs {
++    // SYSCOIN: Fail closed without ever formatting the rejected value. The
++    // returned error names only the canonical flag, so the secret cannot leak.
++    fn reject_raw_secret_args(&self) -> anyhow::Result<()> {
++        for argument in &self.additional_args {
++            if let Some(flag) = RAW_SECRET_ARGS
++                .iter()
++                .copied()
++                .find(|flag| argument_uses_flag(argument, flag))
++            {
++                anyhow::bail!(
++                    "raw secret Forge argument {flag} is forbidden; use an account, keystore, hardware wallet, or KMS signer"
++                );
++            }
++        }
++        Ok(())
++    }
++
+     /// Build the forge script command arguments.
+     pub fn build(&mut self) -> Vec<String> {
+         self.add_verify_args();
+@@ -431,9 +553,12 @@ impl ForgeScriptArgs {
+     }
+ 
+     pub fn wallet_args_passed(&self) -> bool {
+-        self.additional_args
+-            .iter()
+-            .any(|arg| WALLET_ARGS.contains(&arg.as_ref()))
++        // SYSCOIN: accept both `--flag value` and `--flag=value` selector forms.
++        self.additional_args.iter().any(|argument| {
++            WALLET_ARGS
++                .iter()
++                .any(|flag| argument_uses_flag(argument, flag))
++        })
+     }
+ 
+     pub fn with_zksync(&mut self) {
+@@ -482,3 +607,55 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
+     }
+     false
+ }
++
++// SYSCOIN: Exercise the complete raw-credential boundary without invoking
++// Forge, and ensure diagnostics never echo the supplied secret value.
++#[cfg(test)]
++mod syscoin_tests {
++    use super::*;
++
++    fn forge_args(arguments: &[&str]) -> ForgeScriptArgs {
++        ForgeScriptArgs {
++            additional_args: arguments
++                .iter()
++                .map(|argument| argument.to_string())
++                .collect(),
++            ..ForgeScriptArgs::default()
++        }
++    }
++
++    #[test]
++    fn rejects_raw_secret_arguments_without_echoing_values() {
++        const SECRET: &str = "syscoin-secret-sentinel";
++        for flag in RAW_SECRET_ARGS {
++            let equals_argument = format!("{flag}={SECRET}");
++            for arguments in [vec![flag, SECRET], vec![equals_argument.as_str()]] {
++                let error = forge_args(&arguments)
++                    .reject_raw_secret_args()
++                    .expect_err("raw secret argument must be rejected")
++                    .to_string();
++                assert!(error.contains(flag));
++                assert!(!error.contains(SECRET));
++            }
++        }
++    }
++
++    #[test]
++    fn allows_non_secret_wallet_selectors() {
++        for arguments in [
++            vec!["--keystore", "/safe/signer.json"],
++            vec!["--keystore=/safe/signer.json"],
++            vec!["--account", "gateway"],
++            vec!["--password-file", "/safe/password"],
++            vec!["--ledger"],
++            vec!["--trezor"],
++            vec!["--aws"],
++            vec!["--gcp"],
++        ] {
++            forge_args(&arguments)
++                .reject_raw_secret_args()
++                .expect("non-secret selector must remain allowed");
++            assert!(forge_args(&arguments).wallet_args_passed());
++        }
++    }
++}
+diff --git a/zkstack_cli/crates/types/src/l1_network.rs b/zkstack_cli/crates/types/src/l1_network.rs
+index 67e80c6..d0c83b9 100644
+--- a/zkstack_cli/crates/types/src/l1_network.rs
++++ b/zkstack_cli/crates/types/src/l1_network.rs
+@@ -1,4 +1,5 @@
+-use std::str::FromStr;
++// SYSCOIN: read the deployment-specific zkSYS asset ID from the environment.
++use std::{env, str::FromStr};
+ 
+ use clap::ValueEnum;
+ use ethers::types::{Address, H256};
+@@ -25,6 +26,8 @@ pub enum L1Network {
+     Localhost,
+     Sepolia,
+     Holesky,
++    // SYSCOIN: expose Tanenbaum as a supported L1 network.
++    Tanenbaum,
+     Mainnet,
+ }
+ 
+@@ -35,7 +38,9 @@ impl L1Network {
+             L1Network::Localhost => 9,
+             L1Network::Sepolia => 11_155_111,
+             L1Network::Holesky => 17000,
+-            L1Network::Mainnet => 1,
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum chain IDs.
++            L1Network::Tanenbaum => 5700,
++            L1Network::Mainnet => 57,
+         }
+     }
+ 
+@@ -45,6 +50,8 @@ impl L1Network {
+             L1Network::Sepolia | L1Network::Holesky => {
+                 Some(Address::from_str("0x73d59fe232fce421d1365d6a5beec49acde3d0d9").unwrap())
+             }
++            // SYSCOIN: Tanenbaum does not use the upstream Avail validator.
++            L1Network::Tanenbaum => None,
+             L1Network::Mainnet => None, // TODO: add mainnet address after it is known
+         }
+     }
+@@ -62,10 +69,14 @@ impl L1Network {
+                 H256::from_str("0x0d643837c76916220dfe0d5e971cfc3dc2c7569b3ce12851c8e8f17646d86bca")
+                     .unwrap()
+             }
+-            L1Network::Mainnet => {
+-                // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
+-                H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
+-                    .unwrap()
++            // SYSCOIN: bind Syscoin CTM deployment to the derived zkSYS asset ID,
++            // without overriding upstream Localhost/Sepolia/Holesky identities.
++            L1Network::Tanenbaum | L1Network::Mainnet => {
++                let value = env::var("ZKSYS_ZK_TOKEN_ASSET_ID")
++                    .or_else(|_| env::var("ZK_TOKEN_ASSET_ID"))
++                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID must be set for Syscoin CTM deployment");
++                H256::from_str(&value)
++                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32")
+             }
+             L1Network::Holesky => H256::zero(),
+         }
+diff --git a/zkstack_cli/crates/zkstack/src/admin_functions.rs b/zkstack_cli/crates/zkstack/src/admin_functions.rs
+index 0ffe0e9..feda955 100644
+--- a/zkstack_cli/crates/zkstack/src/admin_functions.rs
++++ b/zkstack_cli/crates/zkstack/src/admin_functions.rs
+@@ -1,9 +1,10 @@
+ use std::path::{Path, PathBuf};
+ 
+-use anyhow::Context;
++// SYSCOIN: state-aware retries query ownership and fail on ambiguous state.
++use anyhow::{bail, Context};
+ use ethers::{
+     abi::Token,
+-    contract::BaseContract,
++    contract::{abigen, BaseContract},
+     types::{Address, Bytes},
+     utils::hex,
+ };
+@@ -11,6 +12,7 @@ use lazy_static::lazy_static;
+ use serde::{Deserialize, Serialize};
+ use xshell::Shell;
+ use zkstack_cli_common::{
++    ethereum::get_ethers_provider,
+     forge::{Forge, ForgeScript, ForgeScriptArgs},
+     spinner::Spinner,
+     wallets::Wallet,
+@@ -25,7 +27,7 @@ use zksync_basic_types::{commitment::L2DACommitmentScheme, U256};
+ 
+ use crate::{
+     abi::ADMINFUNCTIONSABI_ABI,
+-    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall},
++    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall as DecodedAdminCall},
+     messages::MSG_ACCEPTING_GOVERNANCE_SPINNER,
+     utils::forge::{check_the_balance, fill_forge_private_key, WalletOwner},
+ };
+@@ -34,6 +36,62 @@ lazy_static! {
+     static ref ADMIN_FUNCTIONS: BaseContract = BaseContract::from(ADMINFUNCTIONSABI_ABI.clone());
+ }
+ 
++// SYSCOIN: Forge resume is deliberately disabled for governance acceptance
++// calls. Query their live state before broadcasting so a whole-command retry is
++// idempotent without changing the pinned Era contract deployment artifacts.
++abigen!(
++    SyscoinOwnable2StepQuery,
++    r"[
++        function owner() external view returns (address)
++        function pendingOwner() external view returns (address)
++    ]"
++);
++abigen!(
++    SyscoinDiamondAdminQuery,
++    r"[function getAdmin() external view returns (address)]"
++);
++abigen!(
++    SyscoinDirectAdminQuery,
++    r"[function admin() external view returns (address)]"
++);
++
++fn owner_acceptance_required(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<bool> {
++    if current_owner == expected_owner {
++        if pending_owner == Address::zero() {
++            return Ok(false);
++        }
++        bail!("target is already owned by the governor but still has a pending owner");
++    }
++    if pending_owner != expected_owner {
++        bail!("governor is not the target's pending owner");
++    }
++    Ok(true)
++}
++
++async fn current_admin(target_address: Address, l1_rpc_url: &str) -> anyhow::Result<Address> {
++    let provider = get_ethers_provider(l1_rpc_url)?;
++    match SyscoinDiamondAdminQuery::new(target_address, provider.clone())
++        .get_admin()
++        .call()
++        .await
++    {
++        Ok(admin) => Ok(admin),
++        Err(get_admin_error) => SyscoinDirectAdminQuery::new(target_address, provider)
++            .admin()
++            .call()
++            .await
++            .with_context(|| {
++                format!(
++                    "target exposes neither getAdmin() nor admin(); getAdmin() failed: {get_admin_error:#}"
++                )
++            }),
++    }
++}
++
+ pub async fn accept_admin(
+     shell: &Shell,
+     foundry_contracts_path: PathBuf,
+@@ -43,6 +101,12 @@ pub async fn accept_admin(
+     forge_args: &ForgeScriptArgs,
+     l1_rpc_url: String,
+ ) -> anyhow::Result<()> {
++    // SYSCOIN: Replaying a completed zkstack init must not resubmit this
++    // non-idempotent acceptance transaction.
++    if current_admin(target_address, &l1_rpc_url).await? == admin {
++        return Ok(());
++    }
++
+     // Resume for accept admin doesn't work properly. Foundry assumes that if signature of the function is the same,
+     // than it's the same call, but because we are calling this function multiple times during the init process,
+     // code assumes that doing only once is enough, but actually we need to accept admin multiple times
+@@ -73,6 +137,24 @@ pub async fn accept_owner(
+     forge_args: &ForgeScriptArgs,
+     l1_rpc_url: String,
+ ) -> anyhow::Result<()> {
++    // SYSCOIN: Fail closed unless ownership is either already complete or is
++    // still in the exact state required for the intended acceptance.
++    let ownership =
++        SyscoinOwnable2StepQuery::new(target_address, get_ethers_provider(&l1_rpc_url)?);
++    let current_owner = ownership
++        .owner()
++        .call()
++        .await
++        .context("failed to query target owner")?;
++    let pending_owner = ownership
++        .pending_owner()
++        .call()
++        .await
++        .context("failed to query target pending owner")?;
++    if !owner_acceptance_required(current_owner, pending_owner, governor_contract)? {
++        return Ok(());
++    }
++
+     // resume doesn't properly work here.
+     let mut forge_args = forge_args.clone();
+     forge_args.resume = false;
+@@ -379,7 +461,8 @@ impl FileConfigTrait for AdminScriptOutputInner {}
+ #[derive(Debug, Clone, Default)]
+ pub struct AdminScriptOutput {
+     pub admin_address: Address,
+-    pub calls: Vec<AdminCall>,
++    // SYSCOIN: retain the upstream decoded-call type beside generated query bindings.
++    pub calls: Vec<DecodedAdminCall>,
+ }
+ 
+ impl From<AdminScriptOutputInner> for AdminScriptOutput {
+@@ -996,3 +1079,29 @@ pub async fn start_migrate_chain_from_gateway(
+     )
+     .await
+ }
++
++// SYSCOIN: lock the state-aware ownership retry invariants.
++#[cfg(test)]
++mod syscoin_tests {
++    use super::*;
++
++    #[test]
++    fn completed_owner_acceptance_is_a_noop_only_in_the_clean_state() {
++        let governor = Address::from_low_u64_be(1);
++
++        assert!(!owner_acceptance_required(governor, Address::zero(), governor).unwrap());
++        assert!(
++            owner_acceptance_required(governor, Address::from_low_u64_be(2), governor).is_err()
++        );
++    }
++
++    #[test]
++    fn pending_owner_must_be_the_intended_governor() {
++        let current = Address::from_low_u64_be(1);
++        let governor = Address::from_low_u64_be(2);
++
++        assert!(owner_acceptance_required(current, governor, governor).unwrap());
++        assert!(owner_acceptance_required(current, Address::zero(), governor).is_err());
++        assert!(owner_acceptance_required(current, Address::from_low_u64_be(3), governor).is_err());
++    }
++}
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
+index bec070e..7e41faa 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
+@@ -20,6 +20,8 @@ use zkstack_cli_config::{
+     ChainConfig, ContractsConfig, DAValidatorType, EcosystemConfig, ZkStackConfig,
+     ZkStackConfigTrait,
+ };
++// SYSCOIN: select the local-only conservative Forge broadcast mode.
++use zkstack_cli_types::L1Network;
+ use zksync_basic_types::commitment::L1BatchCommitmentMode;
+ 
+ use crate::{
+@@ -354,6 +356,10 @@ async fn call_forge(
+ 
+     if with_broadcast {
+         forge = forge.with_broadcast();
++        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++        if chain_config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+     }
+ 
+     if let Some(signature) = signature {
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
+index 1a57318..b0e0b9c 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
+@@ -6,7 +6,8 @@ use zkstack_cli_common::{
+     config::global_config, ethereum::get_ethers_provider, forge::ForgeScriptArgs, logger,
+ };
+ use zkstack_cli_config::{ChainConfig, GatewayChainConfigPatch, ZkStackConfig, ZkStackConfigTrait};
+-use zkstack_cli_types::L1BatchCommitmentMode;
++// SYSCOIN: scope the lower validator float to Syscoin settlement networks.
++use zkstack_cli_types::{L1BatchCommitmentMode, L1Network};
+ use zksync_basic_types::U256;
+ use zksync_system_constants::L2_BRIDGEHUB_ADDRESS;
+ 
+@@ -168,6 +169,13 @@ pub(crate) async fn get_migrate_to_gateway_context(
+     };
+     let chain_secrets_config = chain_config.get_wallets_config().unwrap();
+ 
++    // SYSCOIN: require a 1 SYS validator float while preserving upstream
++    // minimums for Localhost and Ethereum test networks.
++    let min_validator_balance = match chain_config.l1_network {
++        L1Network::Tanenbaum | L1Network::Mainnet => U256::from(10).pow(18.into()),
++        _ => U256::from(10).pow(19.into()),
++    };
++
+     let config = MigrateToGatewayConfig {
+         l1_rpc_url,
+         l1_bridgehub_addr: chain_contracts_config
+@@ -182,7 +190,8 @@ pub(crate) async fn get_migrate_to_gateway_context(
+         validator: chain_secrets_config.operator.address,
+         prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
+         execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),
+-        min_validator_balance: U256::from(10).pow(19.into()),
++        // SYSCOIN: apply the network-scoped validator float selected above.
++        min_validator_balance,
+         refund_recipient: None,
+     };
+ 
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
+index de27185..e5e9b91 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
+@@ -16,6 +16,8 @@ use zkstack_cli_config::{
+     ChainConfig, ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
+     ZkStackConfigTrait,
+ };
++// SYSCOIN: select the local-only conservative Forge broadcast mode.
++use zkstack_cli_types::L1Network;
+ 
+ use crate::{
+     abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
+@@ -104,6 +106,10 @@ pub async fn register_chain(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++        if chain_config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+     }
+ 
+     if let Some(address) = sender {
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+index 03451dd..767c5fb 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+@@ -16,7 +16,8 @@ use zkstack_cli_config::{
+     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
+     CoreContractsConfig, EcosystemConfig, ZkStackConfig,
+ };
+-use zkstack_cli_types::{ProverMode, VMOption};
++// SYSCOIN: select the local-only conservative Forge broadcast mode.
++use zkstack_cli_types::{L1Network, ProverMode, VMOption};
+ 
+ use crate::{
+     abi::IDEPLOYCTMABI_ABI,
+@@ -203,6 +204,10 @@ pub async fn deploy_new_ctm(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+ 
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+index 37cad67..1af9587 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+@@ -21,7 +21,8 @@ use zkstack_cli_config::{
+     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
+     ContractsConfigForDeployERC20, CoreContractsConfig, EcosystemConfig,
+ };
+-use zkstack_cli_types::VMOption;
++// SYSCOIN: select the local-only conservative Forge broadcast mode.
++use zkstack_cli_types::{L1Network, VMOption};
+ 
+ use super::args::init::EcosystemInitArgsFinal;
+ use crate::{
+@@ -75,6 +76,10 @@ pub async fn deploy_l1_core_contracts(
+ 
+     if broadcast {
+         forge = forge.with_broadcast();
++        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+ 
+@@ -121,6 +126,11 @@ pub async fn deploy_erc20(
+         .with_rpc_url(l1_rpc_url)
+         .with_broadcast();
+ 
++    // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++    if ecosystem_config.l1_network == L1Network::Localhost {
++        forge = forge.with_slow();
++    }
++
+     forge = fill_forge_private_key(
+         forge,
+         ecosystem_config.get_wallets()?.deployer.as_ref(),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
+index 4e0d622..e1dcb5e 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
+@@ -243,7 +243,8 @@ async fn return_ecosystem_contracts(
+             L1Network::Localhost => {
+                 ContractsConfig::get_path_with_base_path(&ecosystem_config.config)
+             }
+-            L1Network::Sepolia | L1Network::Holesky | L1Network::Mainnet => {
++            // SYSCOIN: Tanenbaum consumes remote-network preexisting contract configs.
++            L1Network::Sepolia | L1Network::Holesky | L1Network::Tanenbaum | L1Network::Mainnet => {
+                 ecosystem_preexisting_configs_path
+             }
+         });
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
+index e667c38..21a642f 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
+@@ -9,7 +9,8 @@ use zkstack_cli_config::{
+     forge_interface::script_params::REGISTER_CTM_SCRIPT_PARAMS, traits::ReadConfig,
+     EcosystemConfig, ZkStackConfig,
+ };
+-use zkstack_cli_types::VMOption;
++// SYSCOIN: select the local-only conservative Forge broadcast mode.
++use zkstack_cli_types::{L1Network, VMOption};
+ use zksync_types::H160;
+ 
+ use crate::{
+@@ -112,6 +113,10 @@ pub async fn register_ctm_on_existing_bh(
+ 
+     if !only_save_calldata {
+         forge = forge.with_broadcast();
++        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
++        if config.l1_network == L1Network::Localhost {
++            forge = forge.with_slow();
++        }
+         check_the_balance(&forge).await?;
+     }
+ 

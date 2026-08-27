@@ -745,8 +745,9 @@ work and bind recovery to one verifier mode. -->
 - The issuer uses a fixed remaining-cap curve: 20% in schedule year 1, 12% in year 2, 8% in year 3, then 5% per year afterward. Each annual amount is released pro-rata over `ZKSYS_ISSUER_PERIODS_PER_YEAR` periods, so scheduled issuance approaches but never exceeds the 210M zkSYS cap.
 <!-- SYSCOIN: Fake/real mode is part of durable prover recovery authority, not launcher cache state. -->
 - Do not switch prover mode (`PROVER_MODE` / effective `GATEWAY_PROVER_MODE`) while retaining a chain's proof storage or journal. Clearing `$GATEWAY_DIR/.gateway-launch` is not sufficient; use an explicitly planned verifier/config/chain-state transition instead of treating a production restart as a fake/real mode change.
-- During `gl.l1_ecosystem_deployed`, launcher clears `os-server-configs/gateway/db` before redeploy to avoid stale replay assertion panics.
-- During `gl.edge_chain_inited`, launcher clears `os-server-configs/zksys/db` (or configured edge chain name) before re-init for the same reason.
+- The launcher and repair command never delete runtime databases. If an explicitly
+  diagnosed incompatible replay requires a reset, first stop the node, then back
+  up and move the complete `os-server-configs/<chain>/db` directory before rerunning.
 - For `v32.x`, launcher build/run commands copy the current `zksync-os-server` tree into `$GATEWAY_DIR/.gateway-launch/zksync-os-server/`, rewrite only the `*_dev` `zksync-os` deps to the patched upstream checkout, and use that isolated workspace for Cargo.
 - The zkSYS external-node deployment invalidates the prior build stamp, builds each isolated patched workspace with `build-node.sh`, then publishes a stamp bound to the binary and compiled Syscoin address context before restarting its service. The generated `start-node.sh` only refreshes rotating Syscoin RPC cookie credentials, validates that stamp, and executes the prebuilt binary, so ordinary systemd or package-maintenance restarts do not rebuild Rust dependencies while the public RPC is offline. A failed or partial redeployment leaves the stamp invalid and later restarts fail closed rather than running a stale binary against new deployment state.
 - High-TPS runs can exhaust low default `nofile` limits; use at least `65536`, with `131072+` recommended.

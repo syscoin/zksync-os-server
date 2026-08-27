@@ -884,20 +884,32 @@ gl_assert_gateway_genesis_stamp() {
   local gateway_rpc="${1:?Gateway RPC URL required}"
   local chain_id="${2:?Gateway chain ID required}"
   local allow_create="${3:-false}"
+  local expected_owner_pid="${4:-${GATEWAY_RUNTIME_OWNER_PID:-}}"
   local block_zero_hash gateway_chain_name stamp_path expected
   case "${allow_create}" in
   true | false) ;;
   *) gl_die "invalid Gateway genesis-stamp policy: ${allow_create}" ;;
   esac
+  if [ -n "${expected_owner_pid}" ]; then
+    gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
+  fi
   block_zero_hash="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
     cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
     gl_die "failed to read Gateway block-0 hash from ${gateway_rpc}"
+  if [ -n "${expected_owner_pid}" ]; then
+    # SYSCOIN: Do not persist an RPC result after its launcher-owned listener disappeared.
+    gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
+  fi
   block_zero_hash="$(gl_to_lower "$(printf '%s' "${block_zero_hash}" | tr -d '[:space:]')")"
   [[ "${block_zero_hash}" =~ ^0x[0-9a-f]{64}$ ]] || \
     gl_die "invalid Gateway block-0 hash from ${gateway_rpc}: ${block_zero_hash}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   stamp_path="${GATEWAY_DIR}/.gateway-launch/${gateway_chain_name}-runtime-genesis.v1"
   expected="${chain_id} ${block_zero_hash}"
+  if [ -n "${expected_owner_pid}" ]; then
+    # SYSCOIN: Reconfirm ownership at the final boundary before persistence.
+    gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
+  fi
   GATEWAY_GENESIS_STAMP="${stamp_path}" \
   GATEWAY_GENESIS_EXPECTED="${expected}" \
   GATEWAY_GENESIS_ALLOW_CREATE="${allow_create}" python3 - <<'PY'
@@ -1051,8 +1063,119 @@ gl_assert_gateway_wrapped_base_token_pin() {
   export GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS="${expected}"
 }
 
+# SYSCOIN: RPC contents alone cannot distinguish the node launched by this
+# process from an unrelated local listener that wins the startup port race.
+gl_assert_gateway_listener_owned_by_pid() {
+  local expected_pid="${1:?expected PID required}"
+  local gateway_rpc="${2:?Gateway RPC URL required}"
+  local port
+  [[ "${expected_pid}" =~ ^[1-9][0-9]*$ ]] ||
+    gl_die "invalid launcher-owned Gateway PID: ${expected_pid}"
+  [[ "${gateway_rpc}" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})$ ]] ||
+    gl_die "listener ownership requires a generated loopback Gateway RPC URL: ${gateway_rpc}"
+  port="${BASH_REMATCH[1]}"
+  [ "${port}" -le 65535 ] || gl_die "invalid Gateway RPC port: ${port}"
+
+  python3 - "${expected_pid}" "${port}" <<'PY'
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+pid = int(sys.argv[1])
+port = int(sys.argv[2])
+
+
+def fail(reason):
+    raise SystemExit(
+        f"Gateway RPC listener on 127.0.0.1:{port} is not exclusively owned "
+        f"by launcher PID {pid}: {reason}"
+    )
+
+
+if sys.platform.startswith("linux"):
+    fd_dir = Path(f"/proc/{pid}/fd")
+    tcp = Path("/proc/net/tcp")
+    tcp6 = Path("/proc/net/tcp6")
+    if not fd_dir.is_dir() or not tcp.is_file():
+        fail("required Linux procfs entries are unavailable")
+    tables = [tcp, *([tcp6] if tcp6.is_file() else [])]
+
+    owner_inodes = set()
+    try:
+        entries = list(fd_dir.iterdir())
+    except OSError as error:
+        fail(f"cannot inspect process file descriptors ({error})")
+    for entry in entries:
+        try:
+            target = os.readlink(entry)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            fail(f"cannot inspect process file descriptor {entry.name} ({error})")
+        match = re.fullmatch(r"socket:\[(\d+)\]", target)
+        if match:
+            owner_inodes.add(match.group(1))
+
+    listener_inodes = set()
+    for table in tables:
+        try:
+            lines = table.read_text(encoding="ascii").splitlines()[1:]
+        except OSError as error:
+            fail(f"cannot inspect {table} ({error})")
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10:
+                fail(f"malformed row in {table}")
+            try:
+                local_port = int(fields[1].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                fail(f"malformed local address in {table}")
+            if fields[3] == "0A" and local_port == port:
+                inode = fields[9]
+                if not inode.isdecimal():
+                    fail(f"malformed listener inode in {table}")
+                listener_inodes.add(inode)
+
+    if not listener_inodes:
+        fail("no listening socket was found")
+    if not listener_inodes.issubset(owner_inodes):
+        fail("another process owns the listening socket")
+elif sys.platform == "darwin":
+    # SYSCOIN: Do not resolve this security check through caller-controlled PATH.
+    lsof = Path("/usr/sbin/lsof")
+    if not lsof.is_file() or not os.access(lsof, os.X_OK):
+        fail("lsof is unavailable")
+    result = subprocess.run(
+        [
+            str(lsof),
+            "-nP",
+            "-a",
+            f"-iTCP:{port}",
+            "-sTCP:LISTEN",
+            "-Fp",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail("lsof could not identify the listening process")
+    listener_pids = {
+        int(line[1:])
+        for line in result.stdout.splitlines()
+        if re.fullmatch(r"p[1-9][0-9]*", line)
+    }
+    if listener_pids != {pid}:
+        fail("another process owns the listening socket")
+else:
+    fail(f"unsupported platform {sys.platform}")
+PY
+}
+
 gl_assert_gateway_runtime_identity() {
-  local expected_owner_pid="${1:-}"
+  local expected_owner_pid="${1:-${GATEWAY_RUNTIME_OWNER_PID:-}}"
   local allow_genesis_stamp_creation="${2:-false}"
   local gateway_rpc_override="${3:-}"
   local gateway_rpc target relay factory expected_chain_id actual_chain_id
@@ -1068,6 +1191,9 @@ gl_assert_gateway_runtime_identity() {
     gl_die "creating the Gateway genesis stamp requires a live launcher-owned PID"
   fi
   gateway_rpc="${gateway_rpc_override:-$(gl_gateway_runtime_rpc_url)}"
+  if [ -n "${expected_owner_pid}" ]; then
+    gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
+  fi
   if [ "${allow_genesis_stamp_creation}" = true ]; then
     [ "${gateway_rpc}" = "$(gl_gateway_generated_rpc_url)" ] || \
       gl_die "launcher-owned Gateway stamp creation must attest its generated local RPC endpoint"
@@ -1099,8 +1225,14 @@ gl_assert_gateway_runtime_identity() {
     "${gateway_rpc}" "${factory}" 0 \
     "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989" \
     "Arachnid CREATE2 factory" || return $?
+  if [ -n "${expected_owner_pid}" ]; then
+    # SYSCOIN: First-start attestation may persist the immutable genesis stamp.
+    # Rebind the RPC socket to the exact launcher process immediately before it.
+    gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
+  fi
   gl_assert_gateway_genesis_stamp \
-    "${gateway_rpc}" "${expected_chain_id}" "${allow_genesis_stamp_creation}" || return $?
+    "${gateway_rpc}" "${expected_chain_id}" "${allow_genesis_stamp_creation}" \
+    "${expected_owner_pid}" || return $?
 }
 
 # SYSCOIN: zkSYS gas-tank address recorded in the edge chain's contracts
@@ -3326,20 +3458,29 @@ import yaml
 
 def address(value, label):
     if isinstance(value, int) and not isinstance(value, bool):
-        value = "0x" + format(value, "040x")
-    if not isinstance(value, str):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith(("0x", "0X")):
+            try:
+                parsed = int(raw[2:], 16)
+            except ValueError:
+                raise SystemExit(f"invalid {label}") from None
+        elif raw.isdecimal():
+            parsed = int(raw, 10)
+        else:
+            raise SystemExit(f"invalid {label}")
+    else:
         raise SystemExit(f"missing {label}")
-    raw = value.strip()
-    if not raw.startswith(("0x", "0X")) or len(raw) != 42:
-        raise SystemExit(f"invalid {label}")
-    parsed = int(raw[2:], 16)
     if parsed == 0 or parsed >= 1 << 160:
         raise SystemExit(f"invalid {label}")
     return "0x" + format(parsed, "040x")
 
 
 path = Path(sys.argv[1])
-data = yaml.safe_load(path.read_text(encoding="utf-8"))
+# SYSCOIN: zkstack stores bytecode payloads as unquoted decimal scalars. Keep
+# them as text so the Python integer-digit limit cannot block address validation.
+data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 if not isinstance(data, dict):
     raise SystemExit(f"invalid contracts config: {path}")
 core = data.get("core_ecosystem_contracts")
@@ -3470,15 +3611,27 @@ import yaml
 
 gateway_path, root_path = map(Path, sys.argv[1:])
 gateway = yaml.safe_load(gateway_path.read_text(encoding="utf-8"))
-root = yaml.safe_load(root_path.read_text(encoding="utf-8"))
+# SYSCOIN: Root contracts include very large decimal bytecode scalars; this
+# reader only consumes addresses, so parsing all scalars as text is safer.
+root = yaml.load(root_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
 def address(value, label):
     if isinstance(value, int) and not isinstance(value, bool):
-        value = "0x" + format(value, "040x")
-    if not isinstance(value, str) or not value.startswith(("0x", "0X")) or len(value) != 42:
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith(("0x", "0X")):
+            try:
+                parsed = int(raw[2:], 16)
+            except ValueError:
+                raise SystemExit(f"invalid {label}") from None
+        elif raw.isdecimal():
+            parsed = int(raw, 10)
+        else:
+            raise SystemExit(f"invalid {label}")
+    else:
         raise SystemExit(f"invalid {label}")
-    parsed = int(value[2:], 16)
     if parsed == 0 or parsed >= 1 << 160:
         raise SystemExit(f"invalid {label}")
     return "0x" + format(parsed, "040x")
@@ -3693,20 +3846,27 @@ import yaml
 
 def address(value, label):
     if isinstance(value, int) and not isinstance(value, bool):
-        value = "0x" + format(value, "040x")
-    if not isinstance(value, str):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith(("0x", "0X")):
+            try:
+                parsed = int(raw[2:], 16)
+            except ValueError:
+                raise SystemExit(f"invalid {label}") from None
+        elif raw.isdecimal():
+            parsed = int(raw, 10)
+        else:
+            raise SystemExit(f"invalid {label}")
+    else:
         raise SystemExit(f"missing {label}")
-    raw = value.strip()
-    if not raw.startswith(("0x", "0X")) or len(raw) != 42:
-        raise SystemExit(f"invalid {label}")
-    parsed = int(raw[2:], 16)
     if parsed == 0 or parsed >= 1 << 160:
         raise SystemExit(f"invalid {label}")
     return "0x" + format(parsed, "040x")
 
 
 root_path, chain_path = map(Path, sys.argv[1:])
-root = yaml.safe_load(root_path.read_text(encoding="utf-8"))
+root = yaml.load(root_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 chain = yaml.safe_load(chain_path.read_text(encoding="utf-8"))
 root_core = root.get("core_ecosystem_contracts") if isinstance(root, dict) else None
 chain_eco = chain.get("ecosystem_contracts") if isinstance(chain, dict) else None
@@ -3830,13 +3990,20 @@ from _wallet_identity import authenticate_wallet_entry  # noqa: E402
 
 def address(value, label):
     if isinstance(value, int) and not isinstance(value, bool):
-        value = "0x" + format(value, "040x")
-    if not isinstance(value, str):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith(("0x", "0X")):
+            try:
+                parsed = int(raw[2:], 16)
+            except ValueError:
+                raise SystemExit(f"invalid {label}: {value}") from None
+        elif raw.isdecimal():
+            parsed = int(raw, 10)
+        else:
+            raise SystemExit(f"invalid {label}: {value}")
+    else:
         raise SystemExit(f"missing {label}")
-    raw = value.strip()
-    if not raw.startswith(("0x", "0X")) or len(raw) != 42:
-        raise SystemExit(f"invalid {label}: {value}")
-    parsed = int(raw[2:], 16)
     if parsed == 0 or parsed >= 1 << 160:
         raise SystemExit(f"invalid {label}: {value}")
     return "0x" + format(parsed, "040x")
@@ -3893,7 +4060,9 @@ gateway_chain_id = chain_id(Path(sys.argv[4]), "Gateway", sys.argv[9])
 edge_chain_id = chain_id(Path(sys.argv[5]), "edge", sys.argv[10])
 
 contracts_path = Path(sys.argv[8])
-contracts = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+contracts = yaml.load(
+    contracts_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
+)
 core = contracts.get("core_ecosystem_contracts") if isinstance(contracts, dict) else None
 bridgehub = core.get("bridgehub_proxy_addr") if isinstance(core, dict) else None
 bridgehub = address(bridgehub, "L1 BridgeHub")
@@ -4071,26 +4240,6 @@ gl_probe_os_configs_final_ready() {
   gl_probe_materialized_os_chain_ready "${gateway_chain_name}" &&
     gl_probe_materialized_os_chain_ready "${edge_chain_name}" &&
     "${GL_DIR}/generate-os-server-configs.sh" --check-only >/dev/null
-}
-
-gl_clear_os_server_chain_db() {
-  gl_require GATEWAY_DIR
-  local chain_name="${1:?chain name required}"
-  local db_dir
-  if [[ ! "${chain_name}" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    gl_die "refusing to clear DB for unsafe chain name: ${chain_name}"
-  fi
-  db_dir="${GATEWAY_DIR}/os-server-configs/${chain_name}/db"
-  case "${db_dir}" in
-  "${GATEWAY_DIR}/os-server-configs/"*/db) ;;
-  *)
-    gl_die "refusing to clear unexpected DB path: ${db_dir}"
-    ;;
-  esac
-  if [ -d "${db_dir}" ]; then
-    echo "gateway-launch: clearing stale runtime DB at ${db_dir}"
-    rm -rf "${db_dir}"
-  fi
 }
 
 gl_probe_chain_contracts_schema_ready() {

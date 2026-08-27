@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -82,10 +83,23 @@ class LauncherStaticTests(unittest.TestCase):
             "fs::Permissions::from_mode(0o700)",
             "fs::Permissions::from_mode(0o600)",
             "self.private_key = Some(private_key);",
+            "self.args.reject_raw_secret_args()?;",
+            "const RAW_SECRET_ARGS: [&str; 6]",
+            "fn argument_uses_flag(argument: &str, flag: &str) -> bool",
+            '"--mnemonic-passphrases"',
+            '"--mnenomic-passphrases"',
+            "// SYSCOIN: Forge resume is deliberately disabled for governance acceptance",
+            "SyscoinOwnable2StepQuery",
+            "fn owner_acceptance_required(",
+            "async fn current_admin(",
+            '"target exposes neither getAdmin() nor admin()',
             "# SYSCOIN: Materialize generated Forge signers as private ephemeral keystores.",
             "# SYSCOIN: Keep generated signer material out of Forge argv and command logs.",
             'tempfile = "3.14.0"',
             "tempfile.workspace = true",
+            "L1Network::Tanenbaum | L1Network::Mainnet => {",
+            "let min_validator_balance = match chain_config.l1_network",
+            "_ => U256::from(10).pow(19.into()),",
         ):
             self.assertIn(expected, added)
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
@@ -99,13 +113,13 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "4cf47728ae163e1a3e24c189d2067e081f144127dbf9fecbb8ff2b84f8f76a70",
+            "b3cdaa066399085369141a01cfd0345fb4aa8e17c055aac7ae0a76b127eec718",
         )
         for expected in (
-            'EXPECTED_PATCH_SHA256="4cf47728ae163e1a3e24c189d2067e081f144127dbf9fecbb8ff2b84f8f76a70"',
-            'EXPECTED_PATCH_PATH_COUNT="13"',
-            'EXPECTED_PATCH_PATHS_SHA256="56bc01da0d7e3e992de32ad26cdbde094e71c0a4ecf2ecc5ccac089de85d03f5"',
-            'EXPECTED_PATCHED_TREE="8553d48c54542527bf301a1b1af1aac38a2ab5cd"',
+            'EXPECTED_PATCH_SHA256="b3cdaa066399085369141a01cfd0345fb4aa8e17c055aac7ae0a76b127eec718"',
+            'EXPECTED_PATCH_PATH_COUNT="14"',
+            'EXPECTED_PATCH_PATHS_SHA256="3e068f5438c569c17e98ccbce686b72f8fd90737c8d01b37e456ce8df3d6f170"',
+            'EXPECTED_PATCHED_TREE="4f72053786df7257568e70d889bcc915356e2dc2"',
         ):
             self.assertIn(expected, applicator)
 
@@ -129,6 +143,84 @@ class LauncherStaticTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "default|default")
+
+    def test_l1_probe_accepts_zkstack_huge_decimal_bytecode_scalars(self) -> None:
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("PyYAML is not installed in this test environment")
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        addresses = {
+            "bridgehub": "0x" + "11" * 20,
+            "ctm": "0x" + "22" * 20,
+            "supplier": "0x" + "33" * 20,
+            "genesis": "0x" + "44" * 20,
+            "verifier": "0x" + "55" * 20,
+            "router": "0x" + "66" * 20,
+            "handler": "0x" + "77" * 20,
+            "tracker": "0x" + "88" * 20,
+        }
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            contracts = root / "configs" / "contracts.yaml"
+            contracts.parent.mkdir(parents=True)
+            contracts.write_text(
+                "core_ecosystem_contracts:\n"
+                f"  bridgehub_proxy_addr: {int(addresses['bridgehub'], 16)}\n"
+                "zksync_os_ctm:\n"
+                f"  state_transition_proxy_addr: {int(addresses['ctm'], 16)}\n"
+                f"  l1_bytecodes_supplier_addr: {int(addresses['supplier'], 16)}\n"
+                f"  genesis_upgrade_addr: {int(addresses['genesis'], 16)}\n"
+                f"  verifier_addr: {int(addresses['verifier'], 16)}\n"
+                f"  diamond_cut_data: {'9' * 11562}\n"
+                f"  force_deployments_data: {'8' * 10097}\n",
+                encoding="utf-8",
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_cast = bin_dir / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "if [ \"${1:-}\" = code ]; then printf '%s\\n' 0x6000; exit 0; fi\n"
+                "[ \"${1:-}\" = call ] || exit 2\n"
+                "case \"${3:-}\" in\n"
+                "  'chainTypeManagerIsRegistered(address)(bool)'|'isZKsyncOS()(bool)') printf '%s\\n' true ;;\n"
+                "  'BRIDGE_HUB()(address)') printf '%s\\n' \"${TEST_BRIDGEHUB:?}\" ;;\n"
+                "  'getSemverProtocolVersion()(uint32,uint32,uint32)') printf '%s\\n' '0 32 0' ;;\n"
+                "  'l1GenesisUpgrade()(address)') printf '%s\\n' \"${TEST_GENESIS:?}\" ;;\n"
+                "  'L1_BYTECODES_SUPPLIER()(address)') printf '%s\\n' \"${TEST_SUPPLIER:?}\" ;;\n"
+                "  'protocolVersionVerifier(uint256)(address)') printf '%s\\n' \"${TEST_VERIFIER:?}\" ;;\n"
+                "  'storedBatchZero()(bytes32)'|'initialCutHash()(bytes32)') printf '0x%064d\\n' 1 ;;\n"
+                "  'ctmAssetIdFromAddress(address)(bytes32)') printf '0x%064d\\n' 2 ;;\n"
+                "  'ctmAssetIdToAddress(bytes32)(address)') printf '%s\\n' \"${TEST_CTM:?}\" ;;\n"
+                "  'assetRouter()(address)') printf '%s\\n' \"${TEST_ROUTER:?}\" ;;\n"
+                "  'chainAssetHandler()(address)') printf '%s\\n' \"${TEST_HANDLER:?}\" ;;\n"
+                "  'l1CtmDeployer()(address)') printf '%s\\n' \"${TEST_TRACKER:?}\" ;;\n"
+                "  'assetHandlerAddress(bytes32)(address)') printf '%s\\n' \"${TEST_HANDLER:?}\" ;;\n"
+                "  'assetDeploymentTracker(bytes32)(address)') printf '%s\\n' \"${TEST_TRACKER:?}\" ;;\n"
+                "  *) exit 3 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; gl_probe_l1_ecosystem_deployed_ready',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "GATEWAY_DIR": str(root),
+                    "L1_RPC_URL": "http://127.0.0.1:1",
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                    **{f"TEST_{key.upper()}": value for key, value in addresses.items()},
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_zkstack_nightly_detection_works_with_mawk(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
@@ -678,7 +770,11 @@ gl_checkpoint_assert_fingerprint_matches
             )
             fake_cast.chmod(0o755)
             (bin_dir / "yaml.py").write_text(
-                "from json import loads as safe_load\n",
+                "from json import loads\n"
+                "safe_load = loads\n"
+                "BaseLoader = object\n"
+                "def load(value, Loader=None):\n"
+                "    return loads(value)\n",
                 encoding="utf-8",
             )
 
@@ -1105,6 +1201,12 @@ gl_checkpoint_assert_fingerprint_matches
 
     def test_run_local_builds_one_patched_prebuilt_and_executes_it(self) -> None:
         script = (REPO_ROOT / "run_local.sh").read_text(encoding="utf-8")
+        runner = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "run-os-server-with-patched-zksync-os.sh"
+        ).read_text(encoding="utf-8")
         self.assertEqual(script.count("-- build-prebuilt"), 1)
         self.assertEqual(script.count("-- exec-prebuilt --"), 1)
         self.assertEqual(script.count('bash "$PATCHED_OS_RUNNER"'), 2)
@@ -1115,6 +1217,9 @@ gl_checkpoint_assert_fingerprint_matches
         self.assertNotIn("cargo run --release --manifest-path", script)
         self.assertIn('exit "$exit_status"', script)
         self.assertIn("trap cleanup EXIT", script)
+        self.assertIn("runner_sha256_file()", runner)
+        self.assertIn("runner_sha256_stdin()", runner)
+        self.assertEqual(runner.count("shasum -a 256"), 2)
 
     def test_generated_real_prover_storage_covers_the_full_queue_window(self) -> None:
         generator = (
@@ -1580,6 +1685,77 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("verifying the persisted bridge", function[disabled:attestation])
         self.assertIn("return 0", function[disabled:attestation])
         self.assertLess(disabled, attestation)
+
+    def test_l1_ecosystem_recovery_stays_inside_zkstack_resume(self) -> None:
+        deploy = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
+        ).read_text(encoding="utf-8")
+        resumable = deploy[
+            deploy.index("run_ecosystem_init() {") : deploy.index(
+                "\necosystem_contracts_ready() {"
+            )
+        ]
+        retry_start = deploy.index(
+            'if [ "${ecosystem_already_ready}" != true ]; then'
+        )
+        retry_loop = deploy[
+            retry_start : deploy.index(
+                "\ndeploy_zksys_l1_registry_bridge", retry_start
+            )
+        ]
+
+        self.assertIn("zkstack ecosystem init", resumable)
+        self.assertIn("resume_args+=(--resume)", resumable)
+        self.assertEqual(retry_loop.count('run_ecosystem_init "${resume_attempt}"'), 1)
+        self.assertIn('GATEWAY_ECOSYSTEM_RESUME_FIRST:=false', deploy)
+        self.assertIn('if [ "${attempt}" -gt 1 ]', retry_loop)
+        self.assertNotIn("wait_for_deployer_nonce_sync", retry_loop)
+        self.assertNotIn("run_ecosystem_init_resume", deploy)
+        self.assertNotIn("extract_l1_contracts_dir_from_log", deploy)
+        self.assertNotIn("LAST_L1_CONTRACTS_DIR", deploy)
+        self.assertNotIn(
+            "forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol",
+            deploy,
+        )
+        # The external-signer nonce drain remains scoped to its direct
+        # DeployErc20 retry path.
+        self.assertEqual(deploy.count("      wait_for_deployer_nonce_sync\n"), 1)
+
+        normal = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
+        ).read_text(encoding="utf-8")
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("GATEWAY_ECOSYSTEM_RESUME_FIRST=false", normal)
+        self.assertIn("REPAIR_PRIOR_STATUS=", repair)
+        self.assertIn("blocked | in_progress | passed)", repair)
+        self.assertIn("GATEWAY_ECOSYSTEM_RESUME_FIRST=true", repair)
+        self.assertIn("pending)", repair)
+
+    def test_launcher_never_deletes_runtime_databases_implicitly(self) -> None:
+        launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
+        production = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(launch_dir.glob("*.sh"))
+        )
+        self.assertNotIn("gl_clear_os_server_chain_db", production)
+        for line in production.splitlines():
+            if "rm -rf" in line:
+                self.assertNotIn("/db", line)
+                self.assertNotIn("os-server-configs", line)
+
+        normal = (launch_dir / "run-gateway-launch.sh").read_text(encoding="utf-8")
+        repair = (launch_dir / "gateway-launch-repair.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'step_l1_ecosystem_deployed() {\n'
+            '  # SYSCOIN: Never mutate runtime DB state',
+            normal,
+        )
+        self.assertIn('gl.l1_ecosystem_deployed)', repair)
+        self.assertIn('"${SCRIPT_DIR}/gateway-deploy-l1.sh"', repair)
 
     def test_multivm_build_fails_closed_on_unpatched_execution_source(self) -> None:
         build_rs = (REPO_ROOT / "lib" / "multivm" / "build.rs").read_text(
@@ -2192,11 +2368,32 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
 
         start_function = lifecycle.index("start_gateway_for_migration()")
         owned_pid = lifecycle.index("GATEWAY_NODE_PID=$!", start_function)
+        build_prebuilt = lifecycle.index('"${chain_name}" -- build-prebuilt', start_function)
+        post_build_port_check = lifecycle.index(
+            "Gateway RPC became reachable while preparing this launch",
+            build_prebuilt,
+        )
+        background_start = lifecycle.index(
+            'nohup bash "${start_script}"', post_build_port_check
+        )
         first_attestation = lifecycle.index(
             'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}"',
             owned_pid,
         )
+        first_listener_check = lifecycle.index(
+            'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
+            owned_pid,
+        )
+        first_listener_recheck = lifecycle.index(
+            'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
+            first_attestation,
+        )
+        self.assertLess(build_prebuilt, post_build_port_check)
+        self.assertLess(post_build_port_check, background_start)
+        self.assertLess(background_start, owned_pid)
         self.assertLess(owned_pid, first_attestation)
+        self.assertLess(first_listener_check, first_attestation)
+        self.assertLess(first_attestation, first_listener_recheck)
         self.assertIn(
             'kill -0 "${GATEWAY_NODE_PID}"',
             lifecycle[start_function:first_attestation],
@@ -2205,6 +2402,21 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}"',
             lifecycle[start_function:owned_pid],
         )
+        reuse_attestation = lifecycle.index(
+            'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}"',
+            start_function,
+        )
+        reuse_listener_check = lifecycle.rindex(
+            'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
+            start_function,
+            reuse_attestation,
+        )
+        reuse_listener_recheck = lifecycle.index(
+            'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
+            reuse_attestation,
+        )
+        self.assertLess(reuse_listener_check, reuse_attestation)
+        self.assertLess(reuse_attestation, reuse_listener_recheck)
         self.assertIn(
             'export GATEWAY_RPC_URL="${owned_gateway_rpc}"', lifecycle
         )
@@ -2227,6 +2439,13 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         )
         self.assertIn("PID exited during re-attestation", lifecycle)
         self.assertIn("PID exited during first attestation", lifecycle)
+        self.assertIn(
+            'export GATEWAY_RUNTIME_OWNER_PID="${GATEWAY_NODE_PID}"', lifecycle
+        )
+        self.assertIn(
+            'local expected_owner_pid="${1:-${GATEWAY_RUNTIME_OWNER_PID:-}}"',
+            common,
+        )
         self.assertLess(
             edge_create_helper.index("gl_assert_gateway_runtime_identity"),
             edge_create_helper.index("zkstack chain create"),
@@ -2300,11 +2519,140 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         ):
             self.assertIn(expected, common)
         self.assertNotIn("runtime-launch.json", common)
-        self.assertNotIn("/proc/", common)
+        self.assertIn('fd_dir = Path(f"/proc/{pid}/fd")', common)
+        self.assertNotIn("/proc/{pid}/cmdline", common)
         self.assertIn(
             "Gateway RPC is already reachable before this launcher started it",
             lifecycle,
         )
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('if chain_name == os.environ["GATEWAY_CHAIN_NAME"]', generator)
+        self.assertIn('"exec-prebuilt --"', generator)
+        self.assertIn('else "run --release --"', generator)
+        self.assertIn('-- {runner_mode} {start_config_args}', generator)
+        runtime_identity = common[
+            common.index("gl_assert_gateway_runtime_identity()") : common.index(
+                "\ngl_zksys_gas_tank_from_edge_config()"
+            )
+        ]
+        final_listener_check = runtime_identity.rindex(
+            "gl_assert_gateway_listener_owned_by_pid"
+        )
+        genesis_stamp = runtime_identity.index("gl_assert_gateway_genesis_stamp")
+        self.assertLess(final_listener_check, genesis_stamp)
+        genesis_identity = common[
+            common.index("gl_assert_gateway_genesis_stamp()") : common.index(
+                "\ngl_gateway_relay_from_gateway_config()"
+            )
+        ]
+        block_hash_read = genesis_identity.index("cast block 0 --field hash")
+        self.assertLess(
+            genesis_identity.index("gl_assert_gateway_listener_owned_by_pid"),
+            block_hash_read,
+        )
+        self.assertGreater(
+            genesis_identity.rindex("gl_assert_gateway_listener_owned_by_pid"),
+            block_hash_read,
+        )
+        self.assertLess(
+            genesis_identity.rindex("gl_assert_gateway_listener_owned_by_pid"),
+            genesis_identity.index("GATEWAY_GENESIS_STAMP="),
+        )
+
+    def test_gateway_listener_ownership_rejects_an_unrelated_live_pid(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        lifecycle = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_gateway_node_lifecycle.sh"
+        )
+        listener = subprocess.Popen(
+            [
+                "python3",
+                "-c",
+                "import socket,time; "
+                "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
+                "print(s.getsockname()[1],flush=True); time.sleep(30)",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        sleeper = subprocess.Popen(["sleep", "30"])
+        try:
+            assert listener.stdout is not None
+            port = listener.stdout.readline().strip()
+            if not port:
+                assert listener.stderr is not None
+                listener_error = listener.stderr.read()
+                if "PermissionError" in listener_error and "Operation not permitted" in listener_error:
+                    self.skipTest("test sandbox forbids loopback listener creation")
+                self.fail(f"listener failed to start: {listener_error}")
+
+            command = (
+                'source "$COMMON"; source "$LIFECYCLE"; '
+                'gl_assert_gateway_listener_owned_by_pid "$EXPECTED_PID" "$RPC_URL"'
+            )
+            base_env = {
+                **os.environ,
+                "COMMON": str(common),
+                "LIFECYCLE": str(lifecycle),
+                "RPC_URL": f"http://127.0.0.1:{port}",
+            }
+            base_env.pop("ZKSYNC_OS_SERVER_PATH", None)
+
+            owned = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**base_env, "EXPECTED_PID": str(listener.pid)},
+            )
+            self.assertEqual(owned.returncode, 0, owned.stderr)
+
+            unrelated = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**base_env, "EXPECTED_PID": str(sleeper.pid)},
+            )
+            self.assertNotEqual(unrelated.returncode, 0)
+            self.assertIn("is not exclusively owned", unrelated.stderr)
+
+            inherited = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; '
+                    'export GATEWAY_RUNTIME_OWNER_PID="$EXPECTED_PID"; '
+                    'gl_assert_gateway_runtime_identity "" false "$RPC_URL"',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**base_env, "EXPECTED_PID": str(sleeper.pid)},
+            )
+            self.assertNotEqual(inherited.returncode, 0)
+            self.assertIn("is not exclusively owned", inherited.stderr)
+        finally:
+            for process in (listener, sleeper):
+                process.terminate()
+            for process in (listener, sleeper):
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            for stream in (listener.stdout, listener.stderr):
+                if stream is not None:
+                    stream.close()
 
     def test_gateway_cleanup_parses_portable_pid_output_and_fails_closed(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"

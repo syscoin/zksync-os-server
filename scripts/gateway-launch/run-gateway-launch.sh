@@ -311,19 +311,14 @@ step_ecosystem() {
 }
 
 step_l1_ecosystem_deployed() {
-  local gateway_chain_name
-  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
-  # A fresh L1 ecosystem deployment can produce different replay envelopes.
-  # Clear stale runtime DB so gateway node does not panic on replay mismatch.
-  gl_clear_os_server_chain_db "${gateway_chain_name}" || return $?
-  "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+  # SYSCOIN: Never mutate runtime DB state as a side effect of an L1 repair or
+  # retry. A genuinely fresh deployment has no DB; incompatible state requires
+  # an explicit stopped-node backup/reset by the operator.
+  env GATEWAY_ECOSYSTEM_RESUME_FIRST=false \
+    "${SCRIPT_DIR}/gateway-deploy-l1.sh"
 }
 
 step_edge_chain_inited() {
-  local edge_chain_name
-  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
-  # Edge chain redeploy/init can also invalidate previously replayed runtime state.
-  gl_clear_os_server_chain_db "${edge_chain_name}" || return $?
   "${SCRIPT_DIR}/edge-chain-create-init.sh"
 }
 

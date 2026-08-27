@@ -231,8 +231,17 @@ perform_repair_step() {
     "${SCRIPT_DIR}/fund-wallets.sh"
     ;;
   gl.l1_ecosystem_deployed)
-    gl_clear_os_server_chain_db "${GATEWAY_CHAIN_NAME:-gateway}" || return $?
-    "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+    case "${REPAIR_PRIOR_STATUS}" in
+    blocked | in_progress | passed)
+      env GATEWAY_ECOSYSTEM_RESUME_FIRST=true \
+        "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+      ;;
+    pending)
+      env GATEWAY_ECOSYSTEM_RESUME_FIRST=false \
+        "${SCRIPT_DIR}/gateway-deploy-l1.sh"
+      ;;
+    *) gl_die "unsupported prior checkpoint status for L1 repair: ${REPAIR_PRIOR_STATUS}" ;;
+    esac
     ;;
   gl.gateway_chain_inited)
     echo "gateway-launch-repair: chain init is multi-stage and is not safe to replay automatically" >&2
@@ -270,6 +279,7 @@ if [ "${COMMAND}" != "repair" ]; then
 fi
 
 checkpoint_is_known "${CHECKPOINT_ID}" || gl_die "unknown checkpoint id: ${CHECKPOINT_ID}"
+REPAIR_PRIOR_STATUS="$(gl_checkpoint_get_status "${CHECKPOINT_ID}")"
 
 if (validate_checkpoint "${CHECKPOINT_ID}"); then
   gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"

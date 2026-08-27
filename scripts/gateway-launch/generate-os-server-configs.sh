@@ -925,6 +925,14 @@ source "{server_root / 'scripts/gateway-launch/_execute_operator_lock.sh'}"
 gateway_acquire_execute_operator_lock "{chain_name}" "{config_path}"
 """
 
+    # SYSCOIN: The launcher binds Gateway RPC identity to the exact process it
+    # starts. Only Gateway is prebuilt by that lifecycle; edge startup retains
+    # its existing Cargo path until its own deployment publishes a binary.
+    runner_mode = (
+        "exec-prebuilt --"
+        if chain_name == os.environ["GATEWAY_CHAIN_NAME"]
+        else "run --release --"
+    )
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 # SYSCOIN: do not source HOME-relative Cargo env files in generated node
@@ -951,7 +959,7 @@ export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
 export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}{operator_lock_block}
-exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- {runner_mode} {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
     ensure_mode(out_dir / "start-node.sh", 0o755)

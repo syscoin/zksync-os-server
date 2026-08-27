@@ -83,7 +83,9 @@ from pathlib import Path
 import yaml
 
 path = Path(sys.argv[1])
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+# SYSCOIN: Root contracts contain huge decimal bytecode scalars; this reader
+# consumes only the persisted registry bridge address.
+data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
 addr = data.get("zksys", {}).get("l1_registry_bridge_addr", "")
 if isinstance(addr, str) and addr.startswith(("0x", "0X")) and len(addr) == 42:
     print("0x" + format(int(addr[2:], 16), "040x"))

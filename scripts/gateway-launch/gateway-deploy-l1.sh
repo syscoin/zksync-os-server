@@ -487,14 +487,24 @@ from pathlib import Path
 import yaml
 
 path = Path(sys.argv[1])
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+# SYSCOIN: Root contracts contain decimal bytecode scalars larger than
+# Python's integer conversion limit; this reader only needs an address.
+data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
 addr = data.get("core_ecosystem_contracts", {}).get("bridgehub_proxy_addr", "")
-if isinstance(addr, int):
-    print("0x" + format(addr & ((1 << 160) - 1), "040x"))
-    raise SystemExit(0)
-if not isinstance(addr, str) or not addr.startswith(("0x", "0X")) or len(addr) != 42:
+if isinstance(addr, int) and not isinstance(addr, bool):
+    value = addr
+elif isinstance(addr, str) and addr.strip().isdecimal():
+    value = int(addr.strip(), 10)
+elif isinstance(addr, str) and addr.startswith(("0x", "0X")):
+    try:
+        value = int(addr[2:], 16)
+    except ValueError:
+        raise SystemExit(f"invalid core_ecosystem_contracts.bridgehub_proxy_addr in {path}") from None
+else:
     raise SystemExit(f"missing core_ecosystem_contracts.bridgehub_proxy_addr in {path}")
-print("0x" + format(int(addr[2:], 16), "040x"))
+if value == 0 or value >= 1 << 160:
+    raise SystemExit(f"invalid core_ecosystem_contracts.bridgehub_proxy_addr in {path}")
+print("0x" + format(value, "040x"))
 PY
 }
 
@@ -506,7 +516,7 @@ from pathlib import Path
 import yaml
 
 path = Path(sys.argv[1])
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+data = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader) or {}
 addr = data.get("zksys", {}).get("l1_registry_bridge_addr", "")
 if isinstance(addr, int):
     print("0x" + format(addr & ((1 << 160) - 1), "040x"))
@@ -1070,9 +1080,13 @@ fi
 
 cd "${GATEWAY_DIR}"
 
-run_ecosystem_init_once() {
+run_ecosystem_init() {
+  local resume="${1:?resume policy required}"
+  local -a resume_args=()
+  [ "${resume}" = false ] || resume_args+=(--resume)
   gl_zkstack_pty zkstack ecosystem init \
     --zksync-os \
+    "${resume_args[@]}" \
     --update-submodules false \
     --l1-rpc-url "${L1_RPC_URL}" \
     --deploy-ecosystem true \
@@ -1081,60 +1095,6 @@ run_ecosystem_init_once() {
     --ecosystem-only \
     --no-genesis \
     --observability false
-}
-
-extract_l1_contracts_dir_from_log() {
-  python3 - "${1}" "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-expected = Path(sys.argv[2]).resolve(strict=True)
-t = p.read_text(encoding="utf-8", errors="ignore")
-m = re.search(r"Transactions saved to:\s*(/[^ \n]+/contracts/l1-contracts/broadcast/DeployL1CoreContracts\.s\.sol/\d+/run-latest\.json)", t)
-if not m:
-    raise SystemExit(0)
-run_latest = Path(m.group(1)).resolve(strict=False)
-l1_contracts_dir = run_latest.parents[3]
-if l1_contracts_dir != expected:
-    print(
-        f"gateway-launch: ignoring forge resume path outside pinned checkout: {l1_contracts_dir}",
-        file=sys.stderr,
-    )
-    raise SystemExit(0)
-print(l1_contracts_dir)
-PY
-}
-
-run_ecosystem_init_resume() {
-  local l1_contracts_dir="${1}"
-  local expected_l1_contracts_dir
-  expected_l1_contracts_dir="$(python3 - "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" <<'PY'
-import sys
-from pathlib import Path
-print(Path(sys.argv[1]).resolve(strict=True))
-PY
-)"
-  l1_contracts_dir="$(python3 - "${l1_contracts_dir}" <<'PY'
-import sys
-from pathlib import Path
-print(Path(sys.argv[1]).resolve(strict=True))
-PY
-)"
-  if [ "${l1_contracts_dir}" != "${expected_l1_contracts_dir}" ]; then
-    gl_die "refusing forge resume outside pinned l1-contracts checkout: ${l1_contracts_dir}"
-  fi
-  (
-    cd "${l1_contracts_dir}"
-    forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol \
-      --legacy \
-      --ffi \
-      --rpc-url "${L1_RPC_URL}" \
-      "${DEPLOYER_FORGE_WALLET_ARGS[@]}" \
-      --broadcast \
-      --resume
-  )
 }
 
 ecosystem_contracts_ready() {
@@ -1170,8 +1130,11 @@ GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS="$(
 GATEWAY_RETRY_GAS_BUMP_PCT="$(
   normalize_uint GATEWAY_RETRY_GAS_BUMP_PCT "${GATEWAY_RETRY_GAS_BUMP_PCT}" 10000
 )"
-LAST_L1_CONTRACTS_DIR=""
-
+: "${GATEWAY_ECOSYSTEM_RESUME_FIRST:=false}"
+case "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" in
+true | false) ;;
+*) gl_die "GATEWAY_ECOSYSTEM_RESUME_FIRST must be true or false" ;;
+esac
 ecosystem_already_ready=false
 if ecosystem_contracts_ready; then
   # SYSCOIN: checkpoint repair/reruns can reach this step after L1 ecosystem
@@ -1190,7 +1153,8 @@ set_retry_gas_price() {
   if [ "${attempt}" -le 1 ]; then
     gas_price_wei="${base_wei}"
   else
-    # Attempt N uses base * (1 + bump_pct*(N-1)/100) to satisfy replacement rules.
+    # Attempt N raises the price for any new transaction emitted while zkstack
+    # resumes the interrupted workflow; Forge may only wait on an existing tx.
     bump_factor=$((100 + bump_pct * (attempt - 1)))
     gas_price_wei=$(( (base_wei * bump_factor + 99) / 100 ))
   fi
@@ -1205,20 +1169,17 @@ if [ "${ecosystem_already_ready}" != true ]; then
     echo "gateway-launch: ecosystem init attempt ${attempt}/${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS}"
     set_retry_gas_price "${attempt}"
     tmp_log="$(mktemp)"
-    set +e
-    if [ "${attempt}" -gt 1 ] && [ -n "${LAST_L1_CONTRACTS_DIR}" ] && [ -d "${LAST_L1_CONTRACTS_DIR}" ]; then
-      echo "gateway-launch: retrying DeployL1CoreContracts with forge --resume from ${LAST_L1_CONTRACTS_DIR}"
-      run_ecosystem_init_resume "${LAST_L1_CONTRACTS_DIR}" 2>&1 | tee "${tmp_log}"
-    else
-      run_ecosystem_init_once 2>&1 | tee "${tmp_log}"
+    resume_attempt=false
+    if [ "${attempt}" -gt 1 ] || [ "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" = true ]; then
+      resume_attempt=true
     fi
+    set +e
+    # SYSCOIN: A fresh checkpoint never consumes mutable Forge artifacts from a
+    # prior ecosystem. Same-run retries and explicit interrupted repairs stay
+    # inside zkstack's supported resume boundary with its generated signers.
+    run_ecosystem_init "${resume_attempt}" 2>&1 | tee "${tmp_log}"
     ec="${PIPESTATUS[0]}"
     set -e
-
-    current_l1_contracts_dir="$(extract_l1_contracts_dir_from_log "${tmp_log}" || true)"
-    if [ -n "${current_l1_contracts_dir}" ] && [ -d "${current_l1_contracts_dir}" ]; then
-      LAST_L1_CONTRACTS_DIR="${current_l1_contracts_dir}"
-    fi
 
     if [ "${ec}" -eq 0 ]; then
       rm -f "${tmp_log}"
@@ -1248,8 +1209,10 @@ PY
         echo "gateway-launch: ecosystem init failed after ${attempt} retryable/idempotent attempts" >&2
         exit 1
       fi
-      echo "gateway-launch: detected retryable/idempotent ecosystem init error; waiting for nonce sync before retry"
-      wait_for_deployer_nonce_sync
+      # SYSCOIN: The full init spans generated deployer and governor signers.
+      # Do not guess one nonce stream here or block pending transaction progress;
+      # zkstack/Forge resumes each exact broadcast artifact with its own signer.
+      echo "gateway-launch: detected retryable/idempotent ecosystem init error; backing off before zkstack resume"
       sleep 10
       attempt=$((attempt + 1))
       continue

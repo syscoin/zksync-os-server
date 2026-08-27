@@ -111,6 +111,7 @@ PY
 
 GATEWAY_NODE_PID=""
 GATEWAY_STARTED_FOR_MIGRATION=false
+unset GATEWAY_RUNTIME_OWNER_PID
 
 normalize_migration_start_uint() {
   local name="${1:?name required}"
@@ -131,7 +132,7 @@ PY
 }
 
 start_gateway_for_migration() {
-  local start_script log_file i start_timeout_s poll_interval_s max_checks chain_name owned_gateway_rpc
+  local start_script runner log_file i start_timeout_s poll_interval_s max_checks chain_name owned_gateway_rpc
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
@@ -150,7 +151,9 @@ start_gateway_for_migration() {
     if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ]; then
       [ -n "${GATEWAY_NODE_PID}" ] && kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
         gl_die "migrate-edge: launcher-owned Gateway PID is no longer alive: ${GATEWAY_NODE_PID:-<unset>}"
+      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
       gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}" || return $?
+      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
       kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
         gl_die "migrate-edge: launcher-owned Gateway PID exited during re-attestation"
       echo "migrate-edge: reusing the Gateway node started by this launcher"
@@ -158,6 +161,13 @@ start_gateway_for_migration() {
       return 0
     fi
     gl_die "migrate-edge: Gateway RPC is already reachable before this launcher started it; stop the stale/independent node or choose a fresh GATEWAY_OS_RPC_PORT"
+  fi
+
+  runner="${GL_DIR}/run-os-server-with-patched-zksync-os.sh"
+  echo "migrate-edge: building the stamped Gateway node binary"
+  bash "${runner}" "${chain_name}" -- build-prebuilt || return $?
+  if gateway_rpc_ready "${owned_gateway_rpc}"; then
+    gl_die "migrate-edge: Gateway RPC became reachable while preparing this launch; stop the stale/independent node or choose a fresh GATEWAY_OS_RPC_PORT"
   fi
 
   : "${GATEWAY_MIGRATION_GATEWAY_LOG:=${HOME}/gateway-migration-gateway-node.log}"
@@ -175,6 +185,7 @@ start_gateway_for_migration() {
   # Do not let an orphaned Gateway node retain the launcher's lifecycle lock.
   nohup bash "${start_script}" 8>&- >"${log_file}" 2>&1 &
   GATEWAY_NODE_PID=$!
+  export GATEWAY_RUNTIME_OWNER_PID="${GATEWAY_NODE_PID}"
   GATEWAY_STARTED_FOR_MIGRATION=true
 
   print_gateway_migration_log_excerpt() {
@@ -219,14 +230,16 @@ PY
     if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
       print_gateway_migration_log_excerpt "${log_file}"
       if gateway_replay_assertion_failed "${log_file}"; then
-        gl_die "migrate-edge: Gateway node failed during replay with block_executor assertion mismatch. This usually means stale gateway DB state from a prior incompatible run. Remove ${GATEWAY_DIR}/os-server-configs/${chain_name}/db and rerun."
+        gl_die "migrate-edge: Gateway node failed during replay with block_executor assertion mismatch. Stop the node, back up and move the complete ${GATEWAY_DIR}/os-server-configs/${chain_name}/db directory, then rerun."
       fi
       gl_die "migrate-edge: Gateway node exited before RPC came up; see ${log_file}"
     fi
     if gateway_rpc_ready "${owned_gateway_rpc}"; then
+      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
       # The first launcher-owned start is the only path allowed to create the
       # immutable block-0 deployment stamp. Every reuse merely verifies it.
       gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}" || return $?
+      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
       kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
         gl_die "migrate-edge: launcher-owned Gateway PID exited during first attestation"
       echo "migrate-edge: Gateway RPC is up"
@@ -346,6 +359,7 @@ PY
   fi
   GATEWAY_NODE_PID=""
   GATEWAY_STARTED_FOR_MIGRATION=false
+  unset GATEWAY_RUNTIME_OWNER_PID
   return "${cleanup_rc}"
 }
 
