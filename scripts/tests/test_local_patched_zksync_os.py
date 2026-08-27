@@ -182,18 +182,24 @@ class LauncherStaticTests(unittest.TestCase):
             "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json",
         )
         valid_bytecode = "11" * 32
-        valid = json.dumps({"bytecode": {"object": valid_bytecode}})
+        valid_raw_hash = hashlib.sha256(bytes.fromhex(valid_bytecode)).hexdigest()
+        valid = json.dumps(
+            {
+                "bytecode": {"object": valid_bytecode},
+                "hash": f"01000001{valid_raw_hash[8:]}",
+            }
+        )
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
             common_source = common.read_text(encoding="utf-8")
             expected_hashes = (
-                "54b0eff9f86d3f4ca267473355aab10e252b5a2f2428d4026fed48ad588145f5",
-                "e78f23f874de6d82789380ba873d723ec45979a1722512b2890809fcabb27d63",
-                "50bdefc01f4981e974afa980f3e8c278f8988affe7e06ecf558b92386279faa8",
-                "2c3cb0a889e3b75c3e3572cd9b228c950b13c18df1419cad1b7afe7b1adf7e20",
-                "358eff424df332dc3ed3542533f4da1804c01fe86e8e9b6575c5c286404d2229",
+                "06c66eeddc0a563432cf09c067382656be670c9d1473f07c5a7d8bad1a0278bc",
+                "336eab43a90ff4027ecb1ca04f44c1224d7ceba4e9fd485735e957205df11192",
+                "85f5af2cf699393d0f688a6949ed1273484a0172bde9970b87a151a6bb3fc9f5",
+                "5430626e41a7209a421f463a61643e862baff62c21e9af44053cb1aba2211633",
+                "fd301c8789798b93ce84d5a5a68b3e05455744bc522219f79406d798dda713ae",
             )
-            test_hash = hashlib.sha256(bytes.fromhex(valid_bytecode)).hexdigest()
+            test_hash = valid_raw_hash
             for expected_hash in expected_hashes:
                 self.assertIn(expected_hash, common_source)
                 common_source = common_source.replace(expected_hash, test_hash)
@@ -268,6 +274,12 @@ class LauncherStaticTests(unittest.TestCase):
                 (
                     "even-word bytecode",
                     json.dumps({"bytecode": {"object": "11" * 64}}),
+                ),
+                (
+                    "wrong Era bytecode hash",
+                    json.dumps(
+                        {"bytecode": {"object": valid_bytecode}, "hash": "0x00"}
+                    ),
                 ),
                 ("wrong bytecode", json.dumps({"bytecode": {"object": "22" * 32}})),
             )
@@ -427,6 +439,27 @@ class LauncherStaticTests(unittest.TestCase):
             contracts.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
             preflight = run("gl_assert_chain_contracts_da_preinit_safe")
             self.assertEqual(preflight.returncode, 0, preflight.stderr)
+
+            # zkstack's Rust YAML writer emits unquoted 0x addresses. PyYAML
+            # 1.1 loads those semantically valid scalars as integers, but the
+            # raw scalar must remain canonical hex; an equivalent decimalized
+            # corruption is not an authenticated deployment input.
+            quoted_text = yaml.safe_dump(config, sort_keys=False)
+            canonical_text = quoted_text.replace(f"'{rollup}'", rollup)
+            self.assertEqual(canonical_text.count(f": {rollup}\n"), 2)
+            contracts.write_text(canonical_text, encoding="utf-8")
+            integer_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertEqual(
+                integer_preflight.returncode, 0, integer_preflight.stderr
+            )
+            decimal_text = canonical_text.replace(rollup, str(int(rollup, 16)))
+            self.assertEqual(decimal_text.count(f": {int(rollup, 16)}\n"), 2)
+            contracts.write_text(decimal_text, encoding="utf-8")
+            decimal_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertNotEqual(decimal_preflight.returncode, 0)
+            self.assertIn("invalid ecosystem compact rollup", decimal_preflight.stderr)
+            contracts.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
             normalized = run("gl_ensure_chain_contracts_yaml_schema")
             self.assertEqual(normalized.returncode, 0, normalized.stderr)
             first = contracts.read_bytes()

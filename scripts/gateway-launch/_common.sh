@@ -1576,12 +1576,15 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).resolve(strict=True)
+# SHA-256 of creation bytecode forced from the reviewed Syscoin contracts
+# postimage above. Even unchanged contracts carry that exact compiler-input
+# metadata hash, so clean-upstream cache artifacts are intentionally rejected.
 artifacts = {
-    "l1-contracts/zkout/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json": "54b0eff9f86d3f4ca267473355aab10e252b5a2f2428d4026fed48ad588145f5",
-    "l1-contracts/zkout/Multicall3.sol/Multicall3.json": "e78f23f874de6d82789380ba873d723ec45979a1722512b2890809fcabb27d63",
-    "l2-contracts/zkout/ForceDeployUpgrader.sol/ForceDeployUpgrader.json": "50bdefc01f4981e974afa980f3e8c278f8988affe7e06ecf558b92386279faa8",
-    "l2-contracts/zkout/ConsensusRegistry.sol/ConsensusRegistry.json": "2c3cb0a889e3b75c3e3572cd9b228c950b13c18df1419cad1b7afe7b1adf7e20",
-    "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json": "358eff424df332dc3ed3542533f4da1804c01fe86e8e9b6575c5c286404d2229",
+    "l1-contracts/zkout/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json": "06c66eeddc0a563432cf09c067382656be670c9d1473f07c5a7d8bad1a0278bc",
+    "l1-contracts/zkout/Multicall3.sol/Multicall3.json": "336eab43a90ff4027ecb1ca04f44c1224d7ceba4e9fd485735e957205df11192",
+    "l2-contracts/zkout/ForceDeployUpgrader.sol/ForceDeployUpgrader.json": "85f5af2cf699393d0f688a6949ed1273484a0172bde9970b87a151a6bb3fc9f5",
+    "l2-contracts/zkout/ConsensusRegistry.sol/ConsensusRegistry.json": "5430626e41a7209a421f463a61643e862baff62c21e9af44053cb1aba2211633",
+    "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json": "fd301c8789798b93ce84d5a5a68b3e05455744bc522219f79406d798dda713ae",
 }
 
 for relative, expected_sha256 in artifacts.items():
@@ -1610,6 +1613,11 @@ for relative, expected_sha256 in artifacts.items():
     if actual_sha256 != expected_sha256:
         raise SystemExit(
             f"canonical zkout creation bytecode digest mismatch: {path}"
+        )
+    expected_bytecode_hash = f"0100{words:04x}{actual_sha256[8:]}"
+    if artifact.get("hash") != expected_bytecode_hash:
+        raise SystemExit(
+            f"canonical zkout Era bytecode hash mismatch: {path}"
         )
 PY
 }
@@ -1938,9 +1946,13 @@ if not contracts_path.exists():
 
 if contracts_path.is_symlink() or not contracts_path.is_file():
     raise SystemExit(f"invalid contracts config: {contracts_path}")
-data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+contracts_text = contracts_path.read_text(encoding="utf-8")
+data = yaml.safe_load(contracts_text)
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {contracts_path}")
+raw_data = yaml.load(contracts_text, Loader=yaml.BaseLoader)
+if not isinstance(raw_data, dict):
+    raise SystemExit(f"invalid raw YAML object in {contracts_path}")
 
 def is_zero_like(value):
     if isinstance(value, bool):
@@ -1954,22 +1966,41 @@ def is_zero_like(value):
         return True
     return re.fullmatch(r"0x0*", raw) is not None
 
-def require_canonical_nonzero_address(value, label):
-    if not isinstance(value, str) or re.fullmatch(r"0x[0-9a-f]{40}", value) is None:
+def require_canonical_nonzero_address(value, raw_value, label):
+    # PyYAML 1.1 parses an unquoted canonical 0x-prefixed address emitted by
+    # zkstack as an integer. Authenticate both the raw canonical spelling and
+    # its semantic value so decimalized/corrupted scalars still fail closed.
+    if not isinstance(raw_value, str) or re.fullmatch(r"0x[0-9a-f]{40}", raw_value) is None:
         raise SystemExit(f"invalid {label} in {contracts_path} before chain init")
-    if is_zero_like(value):
+    if isinstance(value, bool):
+        raise SystemExit(f"invalid {label} in {contracts_path} before chain init")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"0x[0-9a-f]{40}", value) is not None:
+        parsed = int(value[2:], 16)
+    else:
+        raise SystemExit(f"invalid {label} in {contracts_path} before chain init")
+    if parsed == 0:
         raise SystemExit(f"zero {label} in {contracts_path} before chain init")
+    if parsed < 0 or parsed >= 1 << 160:
+        raise SystemExit(f"invalid {label} in {contracts_path} before chain init")
+    if parsed != int(raw_value[2:], 16):
+        raise SystemExit(f"conflicting {label} in {contracts_path} before chain init")
 
 eco = data.get("ecosystem_contracts")
 l1 = data.get("l1")
-if not isinstance(eco, dict) or not isinstance(l1, dict):
+raw_eco = raw_data.get("ecosystem_contracts")
+raw_l1 = raw_data.get("l1")
+if not all(isinstance(value, dict) for value in (eco, l1, raw_eco, raw_l1)):
     raise SystemExit(f"missing DA contract sections in {contracts_path} before chain init")
 require_canonical_nonzero_address(
     eco.get("rollup_l1_da_validator_addr"),
+    raw_eco.get("rollup_l1_da_validator_addr"),
     "ecosystem compact rollup DA validator",
 )
 require_canonical_nonzero_address(
     l1.get("rollup_l1_da_validator_addr"),
+    raw_l1.get("rollup_l1_da_validator_addr"),
     "chain compact rollup DA validator",
 )
 for field in (
