@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
-gl_validate_prover_mode
 
 cleanup_repair_gateway() {
   stop_gateway_for_migration || true
@@ -22,18 +21,6 @@ handle_repair_terminate() {
   trap - EXIT INT TERM
   exit 143
 }
-trap cleanup_repair_gateway EXIT
-trap handle_repair_interrupt INT
-trap handle_repair_terminate TERM
-
-if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
-  if [ "${PROVER_MODE}" = "no-proofs" ]; then
-    export GATEWAY_PROVER_MODE="no-proofs"
-  else
-    export GATEWAY_PROVER_MODE="gpu"
-  fi
-fi
-
 L1_PROFILE=""
 COMMAND=""
 CHECKPOINT_ID=""
@@ -91,7 +78,6 @@ case "${L1_PROFILE}" in
 tanenbaum)
   export L1_CHAIN_ID=5700
   export L1_NETWORK=tanenbaum
-  gl_require L1_RPC_URL
   : "${BITCOIN_DA_RPC_URL:=http://127.0.0.1:18370}"
   : "${BITCOIN_DA_FINALITY_MODE:=Confirmations}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
@@ -102,7 +88,6 @@ tanenbaum)
 mainnet)
   export L1_CHAIN_ID=57
   export L1_NETWORK=mainnet
-  gl_require L1_RPC_URL
   : "${BITCOIN_DA_RPC_URL:=http://127.0.0.1:8370}"
   : "${BITCOIN_DA_FINALITY_MODE:=Chainlock}"
   : "${BITCOIN_DA_FINALITY_CONFIRMATIONS:=5}"
@@ -114,19 +99,7 @@ mainnet)
   gl_die "invalid --l1: ${L1_PROFILE}"
   ;;
 esac
-gl_reject_no_proofs_on_mainnet
-gl_validate_l1_signer_policy
-gl_normalize_canonical_deployment_inputs
 
-case "${L1_RPC_URL}" in
-http://* | https://*) ;;
-*) gl_die "L1_RPC_URL must be http:// or https://" ;;
-esac
-
-gl_export_foundry_evm_version
-export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
-# SYSCOIN: Keep explicit repairs on the launcher's deterministic Forge path.
-export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
@@ -154,6 +127,33 @@ for key, value in sorted((state.get("checkpoints") or {}).items()):
 PY
   exit 0
 fi
+
+gl_validate_prover_mode
+trap cleanup_repair_gateway EXIT
+trap handle_repair_interrupt INT
+trap handle_repair_terminate TERM
+if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
+  if [ "${PROVER_MODE}" = "no-proofs" ]; then
+    export GATEWAY_PROVER_MODE="no-proofs"
+  else
+    export GATEWAY_PROVER_MODE="gpu"
+  fi
+fi
+
+gl_require L1_RPC_URL
+gl_reject_no_proofs_on_mainnet
+gl_validate_l1_signer_policy
+gl_normalize_canonical_deployment_inputs
+
+case "${L1_RPC_URL}" in
+http://* | https://*) ;;
+*) gl_die "L1_RPC_URL must be http:// or https://" ;;
+esac
+
+gl_export_foundry_evm_version
+export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
+# SYSCOIN: Keep explicit repairs on the launcher's deterministic Forge path.
+export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 gl_acquire_gateway_launch_lock
 # SYSCOIN: Repair checkpoints only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"

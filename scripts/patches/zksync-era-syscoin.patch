@@ -114,7 +114,7 @@ index 7af8fab..c4fd1b4 100644
 +# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
 +tempfile.workspace = true
 diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
-index dbc8fd8..41a9699 100644
+index dbc8fd84ce503adb0f3180ba40c6ef742d751aaf..6c8fa8b0dd15d81b888c62d3f50d1e3d0544e07e 100644
 --- a/zkstack_cli/crates/common/src/forge.rs
 +++ b/zkstack_cli/crates/common/src/forge.rs
 @@ -1,18 +1,28 @@
@@ -149,15 +149,25 @@ index dbc8fd8..41a9699 100644
  use xshell::{cmd, Shell};
  
  use crate::{
-@@ -42,7 +52,66 @@ impl Forge {
+@@ -20,6 +30,9 @@ use crate::{
+     ethereum::create_ethers_client,
+ };
+
++// SYSCOIN: Syscoin's 2.5-minute target can exceed Forge's 120-second default.
++const SYSCOIN_BROADCAST_TIMEOUT_SECONDS: u64 = 1_800;
++
+ /// Forge is a wrapper around the forge binary.
+ pub struct Forge {
+     path: PathBuf,
+@@ -42,20 +55,112 @@ impl Forge {
              base_path: self.path.clone(),
              script_path: path.to_path_buf(),
              args,
 +            private_key: None,
-+        }
-+    }
-+}
-+
+         }
+     }
+ }
+
 +// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
 +// logs. Give Forge a short-lived encrypted keystore through child-only env.
 +struct EphemeralForgeSigner {
@@ -201,7 +211,7 @@ index dbc8fd8..41a9699 100644
 +        {
 +            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
 +            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
-         }
++        }
 +
 +        Ok(Self {
 +            _directory: directory,
@@ -213,10 +223,11 @@ index dbc8fd8..41a9699 100644
 +    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
 +        cmd.env("ETH_KEYSTORE", &self.keystore_path)
 +            .env("ETH_PASSWORD", &self.password_path)
-     }
- }
- 
-@@ -51,11 +120,15 @@ pub struct ForgeScript {
++    }
++}
++
+ /// ForgeScript is a wrapper around the forge script command.
+ pub struct ForgeScript {
      base_path: PathBuf,
      script_path: PathBuf,
      args: ForgeScriptArgs,
@@ -261,7 +272,7 @@ index dbc8fd8..41a9699 100644
          // When running the DeployCTM script, we skip recompiling the Bridgehub
          // because it must be compiled with a low optimizer-runs value.
          if self.script_path == Path::new("deploy-scripts/DeployCTM.s.sol") {
-@@ -65,12 +138,22 @@ impl ForgeScript {
+@@ -65,12 +170,22 @@ impl ForgeScript {
          let _dir_guard = shell.push_dir(&self.base_path);
          let script_path = self.script_path.as_os_str();
          let args_no_resume = self.args.build();
@@ -287,7 +298,7 @@ index dbc8fd8..41a9699 100644
              if !res.resume_not_successful_because_has_not_began() {
                  return Ok(res?);
              }
-@@ -91,6 +174,11 @@ impl ForgeScript {
+@@ -91,6 +206,11 @@ impl ForgeScript {
              "forge script {script_path} --legacy {args_no_resume...}"
          ));
  
@@ -299,7 +310,7 @@ index dbc8fd8..41a9699 100644
          if self.args.resume {
              cmd = cmd.with_piped_std_err();
          }
-@@ -104,7 +192,8 @@ impl ForgeScript {
+@@ -104,7 +224,8 @@ impl ForgeScript {
      }
  
      pub fn wallet_args_passed(&self) -> bool {
@@ -309,7 +320,20 @@ index dbc8fd8..41a9699 100644
      }
  
      /// Add the ffi flag to the forge script command.
-@@ -169,23 +258,17 @@ impl ForgeScript {
+@@ -128,6 +249,12 @@ impl ForgeScript {
+     /// Add the broadcast flag to the forge script command.
+     pub fn with_broadcast(mut self) -> Self {
+         self.args.add_arg(ForgeScriptArg::Broadcast);
++        // SYSCOIN: deployment journals are safety evidence; serialize every
++        // broadcast so a predecessor must confirm successfully before its successor.
++        self.args.add_arg(ForgeScriptArg::Slow);
++        self.args.add_arg(ForgeScriptArg::Timeout {
++            timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
++        });
+         self
+     }
+
+@@ -169,23 +296,17 @@ impl ForgeScript {
  
      /// Adds the private key of the deployer account.
      pub fn with_private_key(mut self, private_key: H256) -> Self {
@@ -339,7 +363,7 @@ index dbc8fd8..41a9699 100644
      }
  
      pub fn rpc_url(&self) -> Option<String> {
-@@ -228,18 +311,22 @@ const PROHIBITED_ARGS: [&str; 10] = [
+@@ -228,18 +349,22 @@ const PROHIBITED_ARGS: [&str; 10] = [
      "-s",
  ];
  
@@ -363,7 +387,7 @@ index dbc8fd8..41a9699 100644
      "--password",
      "--password-file",
      "-l",
-@@ -247,8 +334,29 @@ const WALLET_ARGS: [&str; 18] = [
+@@ -247,8 +372,29 @@ const WALLET_ARGS: [&str; 18] = [
      "-t",
      "--trezor",
      "--aws",
@@ -393,7 +417,7 @@ index dbc8fd8..41a9699 100644
  /// Set of known forge script arguments necessary for execution.
  #[derive(Display, Debug, Serialize, Deserialize, Clone, PartialEq)]
  #[strum(serialize_all = "kebab-case", prefix = "--")]
-@@ -259,10 +367,7 @@ pub enum ForgeScriptArg {
+@@ -259,10 +405,7 @@ pub enum ForgeScriptArg {
          api_key: String,
      },
      Ffi,
@@ -405,7 +429,19 @@ index dbc8fd8..41a9699 100644
      #[strum(to_string = "rpc-url={url}")]
      RpcUrl {
          url: String,
-@@ -326,13 +431,30 @@ pub struct ForgeScriptArgs {
+@@ -272,6 +415,11 @@ pub enum ForgeScriptArg {
+         sig: String,
+     },
+     Slow,
++    // SYSCOIN: typed timeout for serialized deployment broadcasts.
++    #[strum(to_string = "timeout={timeout}")]
++    Timeout {
++        timeout: u64,
++    },
+     #[strum(to_string = "verifier={verifier}")]
+     Verifier {
+         verifier: String,
+@@ -326,13 +474,30 @@ pub struct ForgeScriptArgs {
      pub zksync: bool,
      /// List of additional arguments that can be passed through the CLI.
      ///
@@ -437,7 +473,7 @@ index dbc8fd8..41a9699 100644
      /// Build the forge script command arguments.
      pub fn build(&mut self) -> Vec<String> {
          self.add_verify_args();
-@@ -431,9 +553,12 @@ impl ForgeScriptArgs {
+@@ -431,9 +596,12 @@ impl ForgeScriptArgs {
      }
  
      pub fn wallet_args_passed(&self) -> bool {
@@ -453,7 +489,7 @@ index dbc8fd8..41a9699 100644
      }
  
      pub fn with_zksync(&mut self) {
-@@ -482,3 +607,55 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
+@@ -482,3 +650,142 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
      }
      false
  }
@@ -472,6 +508,24 @@ index dbc8fd8..41a9699 100644
 +                .collect(),
 +            ..ForgeScriptArgs::default()
 +        }
++    }
++
++    #[test]
++    fn broadcasts_are_serialized() {
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_broadcast();
++        assert_eq!(
++            script.args.build(),
++            vec![
++                ForgeScriptArg::Broadcast.to_string(),
++                ForgeScriptArg::Slow.to_string(),
++                ForgeScriptArg::Timeout {
++                    timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
++                }
++                .to_string(),
++            ],
++        );
 +    }
 +
 +    #[test]
@@ -829,30 +883,6 @@ index 0ffe0e9..3b1b1c8 100644
 +        assert!(owner_acceptance_required(current, Address::from_low_u64_be(3), governor).is_err());
 +    }
 +}
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-index bec070e..7e41faa 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-@@ -20,6 +20,8 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, DAValidatorType, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+// SYSCOIN: select the local-only conservative Forge broadcast mode.
-+use zkstack_cli_types::L1Network;
- use zksync_basic_types::commitment::L1BatchCommitmentMode;
- 
- use crate::{
-@@ -354,6 +356,10 @@ async fn call_forge(
- 
-     if with_broadcast {
-         forge = forge.with_broadcast();
-+        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
- 
-     if let Some(signature) = signature {
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 index 1a57318..b0e0b9c 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
@@ -891,92 +921,6 @@ index 1a57318..b0e0b9c 100644
          refund_recipient: None,
      };
  
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-index de27185..e5e9b91 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-@@ -16,6 +16,8 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+// SYSCOIN: select the local-only conservative Forge broadcast mode.
-+use zkstack_cli_types::L1Network;
- 
- use crate::{
-     abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
-@@ -104,6 +106,10 @@ pub async fn register_chain(
- 
-     if broadcast {
-         forge = forge.with_broadcast();
-+        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
- 
-     if let Some(address) = sender {
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-index 03451dd..767c5fb 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-@@ -16,7 +16,8 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     CoreContractsConfig, EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::{ProverMode, VMOption};
-+// SYSCOIN: select the local-only conservative Forge broadcast mode.
-+use zkstack_cli_types::{L1Network, ProverMode, VMOption};
- 
- use crate::{
-     abi::IDEPLOYCTMABI_ABI,
-@@ -203,6 +204,10 @@ pub async fn deploy_new_ctm(
- 
-     if broadcast {
-         forge = forge.with_broadcast();
-+        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
- 
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-index 37cad67..1af9587 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-@@ -21,7 +21,8 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     ContractsConfigForDeployERC20, CoreContractsConfig, EcosystemConfig,
- };
--use zkstack_cli_types::VMOption;
-+// SYSCOIN: select the local-only conservative Forge broadcast mode.
-+use zkstack_cli_types::{L1Network, VMOption};
- 
- use super::args::init::EcosystemInitArgsFinal;
- use crate::{
-@@ -75,6 +76,10 @@ pub async fn deploy_l1_core_contracts(
- 
-     if broadcast {
-         forge = forge.with_broadcast();
-+        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
- 
-@@ -121,6 +126,11 @@ pub async fn deploy_erc20(
-         .with_rpc_url(l1_rpc_url)
-         .with_broadcast();
- 
-+    // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+    if ecosystem_config.l1_network == L1Network::Localhost {
-+        forge = forge.with_slow();
-+    }
-+
-     forge = fill_forge_private_key(
-         forge,
-         ecosystem_config.get_wallets()?.deployer.as_ref(),
 diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
 index 4e0d622..e1dcb5e 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
@@ -991,31 +935,6 @@ index 4e0d622..e1dcb5e 100644
                  ecosystem_preexisting_configs_path
              }
          });
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-index e667c38..21a642f 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-@@ -9,7 +9,8 @@ use zkstack_cli_config::{
-     forge_interface::script_params::REGISTER_CTM_SCRIPT_PARAMS, traits::ReadConfig,
-     EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::VMOption;
-+// SYSCOIN: select the local-only conservative Forge broadcast mode.
-+use zkstack_cli_types::{L1Network, VMOption};
- use zksync_types::H160;
- 
- use crate::{
-@@ -112,6 +113,10 @@ pub async fn register_ctm_on_existing_bh(
- 
-     if !only_save_calldata {
-         forge = forge.with_broadcast();
-+        // SYSCOIN: serialize local Anvil broadcasts to avoid nonce races in launch tests.
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
- 
 diff --git a/yarn.lock b/yarn.lock
 index 7426ba1b6..8cc3ad676 100644
 --- a/yarn.lock
@@ -1714,7 +1633,7 @@ index e031e5e1f..70ae01fec 100644
                  transaction_filterer_addr: self.l1.transaction_filterer_addr,
                  verifier_addr: ctm.verifier_addr,
                  base_token_asset_id: Some(encode_ntv_asset_id(
-@@ -99,5 +107,13 @@ impl CoreContractsConfig {
+@@ -99,6 +107,14 @@ impl CoreContractsConfig {
                  multicall3_addr: self.multicall3_addr,
 -                avail_l1_da_validator_addr: Some(ctm.avail_l1_da_validator_addr),
 -                no_da_validium_l1_validator_addr: Some(ctm.no_da_validium_l1_validator_addr),

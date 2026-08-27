@@ -26,10 +26,10 @@ fi
 # idempotency could accept a partial or locally modified deployment tool.
 EXPECTED_BASE_COMMIT="d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 EXPECTED_BASE_TREE="6d8ac3b2867f9aeb561ba9a2174cd459d6362585"
-EXPECTED_PATCH_SHA256="5df4aff394154ef5938f0492c62f4d742f8ee0eca222e8b0479e1c54a0331624"
-EXPECTED_PATCH_PATH_COUNT="22"
-EXPECTED_PATCH_PATHS_SHA256="006ef39a590831d268a6e877caa8e328a80fd8e985844ed6552dd377276d9ba4"
-EXPECTED_PATCHED_TREE="977d0f2ca4942baf86e48a136a8733cfcf89b890"
+EXPECTED_PATCH_SHA256="c91d1768f9a49fafb8b5bb4400a7a606160aa8fe42204859e01b08c176a4997d"
+EXPECTED_PATCH_PATH_COUNT="17"
+EXPECTED_PATCH_PATHS_SHA256="8fb5ff5da9260244fed73e80e28be2a7bd9c3aaa9f92175d8b05f8b9813f3f10"
+EXPECTED_PATCHED_TREE="65e70304cd44b7550d48896cb206b41ba760f854"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -106,11 +106,11 @@ verify_worktree_scope() {
 }
 
 patch_forward_applicable() {
-  git -C "${ERA_PATH}" apply --check --recount --whitespace=error-all "${PATCH_FILE}" >/dev/null 2>&1
+  git -C "${ERA_PATH}" apply --check --whitespace=error-all "${PATCH_FILE}" >/dev/null 2>&1
 }
 
 patch_reverse_applicable() {
-  git -C "${ERA_PATH}" apply --reverse --check --recount "${PATCH_FILE}" >/dev/null 2>&1
+  git -C "${ERA_PATH}" apply --reverse --check "${PATCH_FILE}" >/dev/null 2>&1
 }
 
 verify_patched_tree() {
@@ -151,7 +151,7 @@ patch_reverse_applicable && reverse=true
 
 if [[ "${forward}" == true ]]; then
   echo "Applying exact Syscoin/Tanenbaum zkstack compatibility patch..."
-  git -C "${ERA_PATH}" apply --recount --whitespace=error-all "${PATCH_FILE}"
+  git -C "${ERA_PATH}" apply --whitespace=error-all "${PATCH_FILE}"
 else
   echo "Exact Syscoin/Tanenbaum zkstack patch is already applied."
 fi

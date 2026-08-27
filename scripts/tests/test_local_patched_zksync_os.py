@@ -89,6 +89,11 @@ class LauncherStaticTests(unittest.TestCase):
             "self.bind_private_key_sender();",
             "self.private_key = Some(private_key);",
             "self.args.reject_raw_secret_args()?;",
+            "// SYSCOIN: deployment journals are safety evidence; serialize every",
+            "self.args.add_arg(ForgeScriptArg::Slow);",
+            "const SYSCOIN_BROADCAST_TIMEOUT_SECONDS: u64 = 1_800;",
+            "ForgeScriptArg::Timeout {",
+            "// SYSCOIN: typed timeout for serialized deployment broadcasts.",
             "const RAW_SECRET_ARGS: [&str; 6]",
             "fn argument_uses_flag(argument: &str, flag: &str) -> bool",
             '"--mnemonic-passphrases"',
@@ -139,6 +144,8 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
         self.assertNotIn("PrivateKey {", added)
         self.assertNotIn('to_string = "private-key=', added)
+        self.assertNotIn("serialize local Anvil broadcasts", patch)
+        self.assertNotIn("select the local-only conservative Forge broadcast mode", patch)
         signer_creation = patch.index("+        let ephemeral_signer = self")
         self.assertLess(
             signer_creation,
@@ -152,16 +159,50 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "5df4aff394154ef5938f0492c62f4d742f8ee0eca222e8b0479e1c54a0331624",
+            "c91d1768f9a49fafb8b5bb4400a7a606160aa8fe42204859e01b08c176a4997d",
         )
+        self.assertNotIn("--recount", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="5df4aff394154ef5938f0492c62f4d742f8ee0eca222e8b0479e1c54a0331624"',
-            'EXPECTED_PATCH_PATH_COUNT="22"',
-            'EXPECTED_PATCH_PATHS_SHA256="006ef39a590831d268a6e877caa8e328a80fd8e985844ed6552dd377276d9ba4"',
-            'EXPECTED_PATCHED_TREE="977d0f2ca4942baf86e48a136a8733cfcf89b890"',
+            'EXPECTED_PATCH_SHA256="c91d1768f9a49fafb8b5bb4400a7a606160aa8fe42204859e01b08c176a4997d"',
+            'EXPECTED_PATCH_PATH_COUNT="17"',
+            'EXPECTED_PATCH_PATHS_SHA256="8fb5ff5da9260244fed73e80e28be2a7bd9c3aaa9f92175d8b05f8b9813f3f10"',
+            'EXPECTED_PATCHED_TREE="65e70304cd44b7550d48896cb206b41ba760f854"',
         ):
             self.assertIn(expected, applicator)
+
+    def test_repair_status_requires_no_deployment_or_rpc_inputs(self) -> None:
+        repair = REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            env = os.environ.copy()
+            for name in (
+                "L1_RPC_URL",
+                "GATEWAY_CREATE2_FACTORY_ADDR",
+                "GATEWAY_CREATE2_FACTORY_SALT",
+                "GATEWAY_PROVER_MODE",
+                "PROVER_MODE",
+                "ZKSYS_ZK_TOKEN_ASSET_ID",
+                "ZK_TOKEN_ASSET_ID",
+            ):
+                env.pop(name, None)
+            env.update(
+                {
+                    "HOME": str(root),
+                    "GATEWAY_DIR": str(root / "gateway"),
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(repair), "--l1", "tanenbaum", "status"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("state: not initialized", result.stdout)
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_gateway_chain_init_rebuilds_and_validates_exact_zkout_inputs(self) -> None:
         if importlib.util.find_spec("yaml") is None:
