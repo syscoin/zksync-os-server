@@ -1604,3 +1604,101 @@ index 5d077b77f..ca6b2f735 100644
 -        .context("Failed to install dependencies")
 +        .context("Failed to verify installed dependencies")
  }
+diff --git a/core/lib/basic_types/src/commitment.rs b/core/lib/basic_types/src/commitment.rs
+index 3b9aff781..a15b29e5d 100644
+--- a/core/lib/basic_types/src/commitment.rs
++++ b/core/lib/basic_types/src/commitment.rs
+@@ -137,7 +137,10 @@ impl FromStr for L2DACommitmentScheme {
+             "EmptyNoDA" => Ok(Self::EmptyNoDA),
+             "PubdataKeccak256" => Ok(Self::PubdataKeccak256),
+             "BlobsAndPubdataKeccak256" => Ok(Self::BlobsAndPubdataKeccak256),
+-            _ => Err("Incorrect L2 DA commitment scheme; expected one of `None`, `EmptyNoDA`, `PubdataKeccak256`, `BlobsAndPubdataKeccak256`"),
++            // SYSCOIN: scheme 4 is the canonical zkOS batch encoding and must
++            // be accepted by zkstack's standalone DA-pair recovery command.
++            "BlobsZksyncOS" | "BlobsZKsyncOS" => Ok(Self::BlobsZksyncOS),
++            _ => Err("Incorrect L2 DA commitment scheme; expected one of `None`, `EmptyNoDA`, `PubdataKeccak256`, `BlobsAndPubdataKeccak256`, `BlobsZksyncOS`"),
+         }
+     }
+ }
+@@ -145,3 +148,21 @@ impl FromStr for L2DACommitmentScheme {
++#[cfg(test)]
++mod tests {
++    use super::L2DACommitmentScheme;
++
++    #[test]
++    fn parses_zksync_os_da_commitment_scheme() {
++        // SYSCOIN: bind both zkstack's enum spelling and the persisted server alias to scheme 4.
++        for value in ["BlobsZksyncOS", "BlobsZKsyncOS"] {
++            assert_eq!(value.parse(), Ok(L2DACommitmentScheme::BlobsZksyncOS));
++        }
++        assert_eq!(
++            L2DACommitmentScheme::try_from(4),
++            Ok(L2DACommitmentScheme::BlobsZksyncOS)
++        );
++        assert!("blobszksyncos".parse::<L2DACommitmentScheme>().is_err());
++    }
++}
++
+ #[derive(Copy, Debug, Clone, PartialEq, Serialize, Deserialize)]
+ pub enum L2PubdataValidator {
+     Address(Address),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
+index b982f3e5d..33081159b 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
+@@ -335,7 +335,9 @@ pub(crate) async fn get_l1_da_validator(
+     let l1_da_validator_contract = match chain_config.l1_batch_commit_data_generator_mode {
+         L1BatchCommitmentMode::Rollup => match chain_config.vm_option {
+             VMOption::EraVM => contracts_config.l1.rollup_l1_da_validator_addr,
+-            VMOption::ZKSyncOsVM => contracts_config.l1.blobs_zksync_os_l1_da_validator_addr,
++            // SYSCOIN: zkOS uses the canonical compact-rollup validator; the
++            // unsupported EIP-4844/blob validator schema slot remains zero.
++            VMOption::ZKSyncOsVM => contracts_config.l1.rollup_l1_da_validator_addr,
+         },
+         L1BatchCommitmentMode::Validium => {
+             // Use CLI param if provided, otherwise read from general config
+diff --git a/zkstack_cli/crates/config/src/contracts.rs b/zkstack_cli/crates/config/src/contracts.rs
+index e031e5e1f..70ae01fec 100644
+--- a/zkstack_cli/crates/config/src/contracts.rs
++++ b/zkstack_cli/crates/config/src/contracts.rs
+@@ -57,6 +57,10 @@ impl CoreContractsConfig {
+         chain_config: &ChainConfig,
+     ) -> ContractsConfig {
+         let ctm = self.ctm(chain_config.vm_option);
++        // SYSCOIN: zkOS chains use only the compact rollup validator. Persist
++        // exact zero sentinels for unsupported chain-local DA alternatives so
++        // a fresh post-registration config is safe for restart validation.
++        let compact_da_only = chain_config.vm_option.is_zksync_os();
+         ContractsConfig {
+             create2_factory_addr: self.create2_factory_addr,
+             create2_factory_salt: self.create2_factory_salt,
+@@ -88,7 +92,11 @@ impl CoreContractsConfig {
+                 validator_timelock_addr: ctm.validator_timelock_addr,
+                 base_token_addr: chain_config.base_token.address,
+                 rollup_l1_da_validator_addr: Some(ctm.rollup_l1_da_validator_addr),
+-                blobs_zksync_os_l1_da_validator_addr: ctm.blobs_zksync_os_l1_da_validator_addr,
++                blobs_zksync_os_l1_da_validator_addr: if compact_da_only {
++                    Some(Address::zero())
++                } else {
++                    ctm.blobs_zksync_os_l1_da_validator_addr
++                },
+                 transaction_filterer_addr: self.l1.transaction_filterer_addr,
+                 verifier_addr: ctm.verifier_addr,
+                 base_token_asset_id: Some(encode_ntv_asset_id(
+@@ -99,5 +107,13 @@ impl CoreContractsConfig {
+                 multicall3_addr: self.multicall3_addr,
+-                avail_l1_da_validator_addr: Some(ctm.avail_l1_da_validator_addr),
+-                no_da_validium_l1_validator_addr: Some(ctm.no_da_validium_l1_validator_addr),
++                avail_l1_da_validator_addr: Some(if compact_da_only {
++                    Address::zero()
++                } else {
++                    ctm.avail_l1_da_validator_addr
++                }),
++                no_da_validium_l1_validator_addr: Some(if compact_da_only {
++                    Address::zero()
++                } else {
++                    ctm.no_da_validium_l1_validator_addr
++                }),
+             },
+             proof_manager_contracts: self.proof_manager_contracts.clone(),
+             // L2 fields will be set later, after L2 deployment

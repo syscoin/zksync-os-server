@@ -25,7 +25,11 @@ gl_validate_l1_network_pair
 gl_normalize_canonical_deployment_inputs
 gl_bind_gateway_launch_context
 gl_assert_gateway_chain_config_matches_expected
+# SYSCOIN: Reject stale/pre-fix DA alternatives before the first chain-init
+# broadcast. Fresh patched zkstack output materializes exact zero sentinels.
+gl_assert_chain_contracts_da_preinit_safe "${GATEWAY_CHAIN_NAME}"
 gl_l1_broadcast_preflight
+gl_prepare_gateway_chain_init_contract_artifacts
 
 gl_zkstack_private_pty zkstack chain init \
   --chain "${GATEWAY_CHAIN_NAME}" \

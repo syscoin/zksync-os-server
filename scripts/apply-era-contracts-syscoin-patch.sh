@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ASSERT_APPLIED=false
+if [[ "${1:-}" == "--assert-applied" ]]; then
+  ASSERT_APPLIED=true
+  shift
+fi
+
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 /absolute/path/to/era-contracts" >&2
+  echo "Usage: $0 [--assert-applied] /absolute/path/to/era-contracts" >&2
   exit 1
 fi
 
@@ -790,25 +796,42 @@ verify_worktree_postimage_tree() {
   # SYSCOIN: Reproduce the reviewed patched tree with an isolated index. This
   # binds the mock-only exception to every postimage byte without touching the
   # operator's real index or accepting an equivalent-but-unreviewed patch.
-  local temporary_dir temporary_index actual_patched_tree relative_path
+  local temporary_dir temporary_index temporary_objects canonical_objects
+  local existing_alternates
+  local actual_patched_tree relative_path
   temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/syscoin-era-patch-index.XXXXXX")"
   temporary_index="${temporary_dir}/index"
+  temporary_objects="${temporary_dir}/objects"
+  mkdir "${temporary_objects}"
+  canonical_objects="$(git -C "${CONTRACTS_PATH}" rev-parse --git-path objects)"
+  if [[ "${canonical_objects}" != /* ]]; then
+    canonical_objects="${CONTRACTS_PATH}/${canonical_objects}"
+  fi
+  canonical_objects="$(cd "${canonical_objects}" && pwd -P)"
+  existing_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
 
-  if ! actual_patched_tree="$({
+  if ! (
     export GIT_INDEX_FILE="${temporary_index}"
+    # SYSCOIN: Assertion-only attestation must not insert blobs or trees into
+    # the reviewed checkout's object database. Read canonical objects through
+    # an alternate and direct every write into the disposable directory.
+    export GIT_OBJECT_DIRECTORY="${temporary_objects}"
+    export GIT_ALTERNATE_OBJECT_DIRECTORIES="${canonical_objects}"
+    if [[ -n "${existing_alternates}" ]]; then
+      export GIT_ALTERNATE_OBJECT_DIRECTORIES="${canonical_objects}:${existing_alternates}"
+    fi
     git -C "${CONTRACTS_PATH}" read-tree HEAD || exit 1
     while IFS= read -r relative_path; do
       [[ -n "${relative_path}" ]] || continue
       git -C "${CONTRACTS_PATH}" add -A -- "${relative_path}" || exit 1
     done <<< "${PATCH_PATHS}"
-    git -C "${CONTRACTS_PATH}" write-tree || exit 1
-  })"; then
-    rm -f "${temporary_index}" "${temporary_index}.lock"
-    rmdir "${temporary_dir}"
+    git -C "${CONTRACTS_PATH}" write-tree >"${temporary_dir}/tree"
+  ); then
+    rm -rf "${temporary_dir}"
     die "failed to calculate canonical patched Era-contracts tree"
   fi
-  rm -f "${temporary_index}" "${temporary_index}.lock"
-  rmdir "${temporary_dir}"
+  actual_patched_tree="$(tr -d '\r\n' <"${temporary_dir}/tree")"
+  rm -rf "${temporary_dir}"
 
   [[ "${actual_patched_tree}" == "${EXPECTED_PATCHED_TREE}" ]] ||
     die "patched Era-contracts tree mismatch: expected=${EXPECTED_PATCHED_TREE} actual=${actual_patched_tree}"
@@ -827,6 +850,8 @@ if [[ "${BASE_FORWARD}" != true && "${BASE_REVERSE}" != true ]]; then
 fi
 
 if [[ "${BASE_FORWARD}" == true ]]; then
+  [[ "${ASSERT_APPLIED}" != true ]] ||
+    die "assert-applied mode refuses to materialize the canonical Era-contracts patch"
   if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain --untracked-files=all)" ]]; then
     git -C "${CONTRACTS_PATH}" status --porcelain --untracked-files=all >&2
     die "Era-contracts worktree must be clean before canonical patch application"
@@ -846,10 +871,12 @@ else
 fi
 
 # SYSCOIN: Forge auto-discovers remappings from nested dependencies and commits them to IPFS
-# metadata. Populate the exact recursive graph so standalone application reproduces the baked
-# validator bytecode hashes used by the canonical launch path.
-git -C "${CONTRACTS_PATH}" submodule sync --recursive
-git -C "${CONTRACTS_PATH}" submodule update --init --recursive
+# metadata. Materialization mode populates the exact graph; assertion-only mode
+# must never repair source after a build and instead requires it to be present.
+if [[ "${ASSERT_APPLIED}" != true ]]; then
+  git -C "${CONTRACTS_PATH}" submodule sync --recursive
+  git -C "${CONTRACTS_PATH}" submodule update --init --recursive
+fi
 
 EXPECTED_GITLINK="$(git -C "${CONTRACTS_PATH}" ls-tree HEAD "${NESTED_PATH}" | awk '{print $3}')"
 [[ "${EXPECTED_GITLINK}" == "${EXPECTED_NESTED_SHA}" ]] ||

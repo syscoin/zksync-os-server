@@ -112,6 +112,14 @@ class LauncherStaticTests(unittest.TestCase):
             'cmd!(shell, "yarn check --integrity")',
             "// SYSCOIN: A failed dependency install must abort the build; the legacy",
             'build_dependencies().context("It was not possible to install project dependencies")?;',
+            '// SYSCOIN: zkOS uses the canonical compact-rollup validator; the',
+            "VMOption::ZKSyncOsVM => contracts_config.l1.rollup_l1_da_validator_addr",
+            '// SYSCOIN: scheme 4 is the canonical zkOS batch encoding and must',
+            '"BlobsZksyncOS" | "BlobsZKsyncOS" => Ok(Self::BlobsZksyncOS)',
+            "fn parses_zksync_os_da_commitment_scheme()",
+            "// SYSCOIN: zkOS chains use only the compact rollup validator. Persist",
+            "let compact_da_only = chain_config.vm_option.is_zksync_os();",
+            "blobs_zksync_os_l1_da_validator_addr: if compact_da_only",
         ):
             self.assertIn(expected, added)
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
@@ -130,16 +138,452 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "5af6c26d603b4ffbbb4143782f64b963dd101839b25f72ea8f24ee5fa3d2c96f",
+            "ace1ef508952d2a4fc3428519d78ccb77d7dc48d244065c91ea83b5a33c7afc7",
         )
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="5af6c26d603b4ffbbb4143782f64b963dd101839b25f72ea8f24ee5fa3d2c96f"',
-            'EXPECTED_PATCH_PATH_COUNT="16"',
-            'EXPECTED_PATCH_PATHS_SHA256="f08022b54abd3ef6061a342def9cd49791d9232212a71d5538f7e564885ebc54"',
-            'EXPECTED_PATCHED_TREE="fae6a4f75d6bd515664d3e13e3aeefd4cfac31f9"',
+            'EXPECTED_PATCH_SHA256="ace1ef508952d2a4fc3428519d78ccb77d7dc48d244065c91ea83b5a33c7afc7"',
+            'EXPECTED_PATCH_PATH_COUNT="19"',
+            'EXPECTED_PATCH_PATHS_SHA256="e8e33ffc0f9db2e715ad3468b85cafd4a50d97eace19664f445d3fffc3db18a3"',
+            'EXPECTED_PATCHED_TREE="cdfc6211cf0ccc7df68ae55de6b805c2177ec706"',
         ):
             self.assertIn(expected, applicator)
+
+    def test_gateway_chain_init_rebuilds_and_validates_exact_zkout_inputs(self) -> None:
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("PyYAML is not installed in this test environment")
+        import yaml
+
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        chain_init = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-chain-init.sh"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            chain_init.index("gl_prepare_gateway_chain_init_contract_artifacts"),
+            chain_init.index("gl_zkstack_private_pty zkstack chain init"),
+        )
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        repair_case = repair.split("perform_repair_step() {", 1)[1].split(
+            "if [ \"${COMMAND}\" != \"repair\" ]", 1
+        )[0]
+        gateway_repair = repair_case.split("gl.gateway_chain_inited)", 1)[1].split(
+            "gl.gateway_settlement)", 1
+        )[0]
+        self.assertIn("not safe to replay automatically", gateway_repair)
+        self.assertNotIn("gateway-chain-init.sh", gateway_repair)
+
+        artifacts = (
+            "l1-contracts/zkout/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json",
+            "l1-contracts/zkout/Multicall3.sol/Multicall3.json",
+            "l2-contracts/zkout/ForceDeployUpgrader.sol/ForceDeployUpgrader.json",
+            "l2-contracts/zkout/ConsensusRegistry.sol/ConsensusRegistry.json",
+            "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json",
+        )
+        valid_bytecode = "11" * 32
+        valid = json.dumps({"bytecode": {"object": valid_bytecode}})
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            common_source = common.read_text(encoding="utf-8")
+            expected_hashes = (
+                "54b0eff9f86d3f4ca267473355aab10e252b5a2f2428d4026fed48ad588145f5",
+                "e78f23f874de6d82789380ba873d723ec45979a1722512b2890809fcabb27d63",
+                "50bdefc01f4981e974afa980f3e8c278f8988affe7e06ecf558b92386279faa8",
+                "2c3cb0a889e3b75c3e3572cd9b228c950b13c18df1419cad1b7afe7b1adf7e20",
+                "358eff424df332dc3ed3542533f4da1804c01fe86e8e9b6575c5c286404d2229",
+            )
+            test_hash = hashlib.sha256(bytes.fromhex(valid_bytecode)).hexdigest()
+            for expected_hash in expected_hashes:
+                self.assertIn(expected_hash, common_source)
+                common_source = common_source.replace(expected_hash, test_hash)
+            test_common = root / "_common.sh"
+            test_common.write_text(common_source, encoding="utf-8")
+            era = root / "era"
+            gateway = root / "gateway"
+            trace = root / "trace"
+            gateway.mkdir()
+            (gateway / "chains" / "gateway").mkdir(parents=True)
+            (gateway / "ZkStack.yaml").write_text(
+                yaml.safe_dump({"link_to_code": str(era)}), encoding="utf-8"
+            )
+            (gateway / "chains" / "gateway" / "ZkStack.yaml").write_text(
+                yaml.safe_dump(
+                    {"link_to_code": str(era), "contracts_path": str(era / "contracts")}
+                ),
+                encoding="utf-8",
+            )
+
+            def restore() -> None:
+                for relative in artifacts:
+                    path = era / "contracts" / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    if path.is_symlink() or path.exists():
+                        path.unlink()
+                    path.write_text(valid, encoding="utf-8")
+
+            def run(*, build_rc: int = 0, attest_rc: int = 0):
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; '
+                        "gl_zkstack_pty() { printf '%s|%s\\n' \"$PWD\" \"$*\" >\"$TRACE\"; return \"$TEST_BUILD_RC\"; }; "
+                        "gl_assert_era_contracts_syscoin_postimage() { return \"$TEST_ATTEST_RC\"; }; "
+                        "gl_prepare_gateway_chain_init_contract_artifacts",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "COMMON": str(test_common),
+                        "GATEWAY_DIR": str(gateway),
+                        "ZKSYNC_ERA_PATH": str(era),
+                        "TRACE": str(trace),
+                        "TEST_BUILD_RC": str(build_rc),
+                        "TEST_ATTEST_RC": str(attest_rc),
+                    },
+                )
+
+            restore()
+            accepted = run()
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(
+                trace.read_text(encoding="utf-8").strip(),
+                f"{gateway}|env FOUNDRY_PROFILE=default FOUNDRY_EVM_VERSION=cancun FOUNDRY_FORCE=true zkstack dev contracts --l1 --l2",
+            )
+
+            build_failed = run(build_rc=7)
+            self.assertEqual(build_failed.returncode, 7)
+            attest_failed = run(attest_rc=8)
+            self.assertEqual(attest_failed.returncode, 8)
+
+            target = era / "contracts" / artifacts[0]
+            invalid_cases = (
+                ("missing", None),
+                ("malformed JSON", "{"),
+                ("missing bytecode", json.dumps({})),
+                ("unaligned bytecode", json.dumps({"bytecode": {"object": "11"}})),
+                (
+                    "even-word bytecode",
+                    json.dumps({"bytecode": {"object": "11" * 64}}),
+                ),
+                ("wrong bytecode", json.dumps({"bytecode": {"object": "22" * 32}})),
+            )
+            for label, contents in invalid_cases:
+                with self.subTest(label=label):
+                    restore()
+                    target.unlink()
+                    if contents is not None:
+                        target.write_text(contents, encoding="utf-8")
+                    rejected = run()
+                    self.assertNotEqual(rejected.returncode, 0)
+
+            restore()
+            target.unlink()
+            ordinary_out = Path(str(target).replace("/zkout/", "/out/"))
+            ordinary_out.parent.mkdir(parents=True, exist_ok=True)
+            ordinary_out.write_text(valid, encoding="utf-8")
+            rejected_out_only = run()
+            self.assertNotEqual(rejected_out_only.returncode, 0)
+            self.assertIn("missing canonical zkout artifact", rejected_out_only.stderr)
+
+            restore()
+            if trace.exists():
+                trace.unlink()
+            (gateway / "ZkStack.yaml").write_text(
+                yaml.safe_dump({"link_to_code": str(root / "wrong-source")}),
+                encoding="utf-8",
+            )
+            self.assertNotEqual(run().returncode, 0)
+            self.assertFalse(trace.exists())
+            (gateway / "ZkStack.yaml").write_text(
+                yaml.safe_dump({"link_to_code": str(era)}), encoding="utf-8"
+            )
+
+            if trace.exists():
+                trace.unlink()
+            (gateway / "ZkStack.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "link_to_code": str(era),
+                        "era_source_files": {
+                            "contracts_path": str(root / "wrong-contracts"),
+                            "default_configs_path": str(era / "etc"),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertNotEqual(run().returncode, 0)
+            self.assertFalse(trace.exists())
+            (gateway / "ZkStack.yaml").write_text(
+                yaml.safe_dump({"link_to_code": str(era)}), encoding="utf-8"
+            )
+
+            import shutil
+
+            restore()
+            zkout = target.parents[1]
+            shutil.rmtree(zkout)
+            redirected = root / "redirected-zkout"
+            redirected.mkdir()
+            zkout.symlink_to(redirected, target_is_directory=True)
+            symlinked = run()
+            self.assertNotEqual(symlinked.returncode, 0)
+            self.assertIn("symlinked canonical zkout path component", symlinked.stderr)
+
+    def test_compact_rollup_da_schema_is_singular_and_fail_closed(self) -> None:
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("PyYAML is not installed in this test environment")
+        import yaml
+
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        common_source = common.read_text(encoding="utf-8")
+        chain_init = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-chain-init.sh"
+        ).read_text(encoding="utf-8")
+        self.assertLess(
+            chain_init.index("gl_assert_chain_contracts_da_preinit_safe"),
+            chain_init.index("gl_l1_broadcast_preflight"),
+        )
+        self.assertLess(
+            chain_init.index("gl_assert_chain_contracts_da_preinit_safe"),
+            chain_init.index("gl_zkstack_private_pty zkstack chain init"),
+        )
+        pair_assertion = common_source.split("gl_assert_gateway_da_pair_ready() {", 1)[
+            1
+        ].split("\n}", 1)[0]
+        self.assertIn('l1.get("rollup_l1_da_validator_addr")', pair_assertion)
+        self.assertNotIn("blobs_zksync_os_l1_da_validator_addr", pair_assertion)
+        self.assertIn('[ "${scheme}" = "4" ]', pair_assertion)
+        zero = "0x" + "00" * 20
+        rollup = "0x" + "81" * 20
+
+        def addr(byte: int) -> str:
+            return "0x" + f"{byte:02x}" * 20
+
+        config = {
+            "create2_factory_addr": addr(1),
+            "create2_factory_salt": "0x" + "00" * 32,
+            "l2": {
+                "default_l2_upgrader": zero,
+                "testnet_paymaster_addr": zero,
+                "zksys_gas_tank_addr": zero,
+                "da_validator_addr": zero,
+            },
+            "ecosystem_contracts": {
+                "bridgehub_proxy_addr": addr(2),
+                "transparent_proxy_admin_addr": addr(3),
+                "governance": addr(4),
+                "chain_admin": addr(5),
+                "proxy_admin": addr(6),
+                "state_transition_proxy_addr": addr(7),
+                "validator_timelock_addr": addr(8),
+                "diamond_cut_data": "0x00",
+                "l1_bytecodes_supplier_addr": addr(9),
+                "server_notifier_proxy_addr": addr(10),
+                "default_upgrade_addr": addr(11),
+                "genesis_upgrade_addr": addr(12),
+                "verifier_addr": addr(13),
+                "l1_rollup_da_manager": addr(14),
+                "rollup_l1_da_validator_addr": rollup,
+                "no_da_validium_l1_validator_addr": addr(15),
+                "avail_l1_da_validator_addr": addr(16),
+            },
+            "l1": {
+                "diamond_proxy_addr": addr(17),
+                "rollup_l1_da_validator_addr": rollup,
+                "blobs_zksync_os_l1_da_validator_addr": None,
+                "no_da_validium_l1_validator_addr": "0x0",
+                "avail_l1_da_validator_addr": zero,
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            contracts = root / "chains" / "gateway" / "configs" / "contracts.yaml"
+            contracts.parent.mkdir(parents=True)
+            (root / "chains" / "gateway" / "ZkStack.yaml").write_text(
+                yaml.safe_dump({"chain_id": 57001}), encoding="utf-8"
+            )
+            (root / "configs").mkdir()
+
+            def run(function: str, chain: str = "gateway"):
+                return subprocess.run(
+                    ["bash", "-c", f'source "$COMMON"; {function} "$CHAIN"'],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "COMMON": str(common),
+                        "GATEWAY_DIR": str(root),
+                        "CHAIN": chain,
+                    },
+                )
+
+            contracts.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+            preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            normalized = run("gl_ensure_chain_contracts_yaml_schema")
+            self.assertEqual(normalized.returncode, 0, normalized.stderr)
+            first = contracts.read_bytes()
+            data = yaml.safe_load(first)
+            self.assertEqual(data["l1"]["rollup_l1_da_validator_addr"], rollup)
+            self.assertEqual(
+                data["ecosystem_contracts"]["rollup_l1_da_validator_addr"], rollup
+            )
+            self.assertEqual(
+                data["ecosystem_contracts"]["no_da_validium_l1_validator_addr"],
+                addr(15),
+            )
+            self.assertEqual(
+                data["ecosystem_contracts"]["avail_l1_da_validator_addr"],
+                addr(16),
+            )
+            for field in (
+                "blobs_zksync_os_l1_da_validator_addr",
+                "no_da_validium_l1_validator_addr",
+                "avail_l1_da_validator_addr",
+            ):
+                self.assertEqual(data["l1"][field], zero)
+            schema_ready = run("gl_probe_chain_contracts_schema_ready")
+            self.assertEqual(
+                schema_ready.returncode,
+                0,
+                schema_ready.stderr + contracts.read_text(encoding="utf-8"),
+            )
+            self.assertEqual(run("gl_ensure_chain_contracts_yaml_schema").returncode, 0)
+            self.assertEqual(contracts.read_bytes(), first)
+
+            (root / "configs" / "contracts.yaml").write_text(
+                yaml.safe_dump(
+                    {
+                        "core_ecosystem_contracts": {
+                            "bridgehub_proxy_addr": config["ecosystem_contracts"][
+                                "bridgehub_proxy_addr"
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            def run_pair(output: str):
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; '
+                        'cast() { printf \'%s\\n\' "${TEST_CAST_PAIR:?}"; }; '
+                        "gl_assert_gateway_da_pair_ready",
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "COMMON": str(common),
+                        "GATEWAY_DIR": str(root),
+                        "L1_RPC_URL": "http://127.0.0.1:1",
+                        "TEST_CAST_PAIR": output,
+                    },
+                )
+
+            exact_pair = run_pair(f"{rollup}\n4")
+            self.assertEqual(exact_pair.returncode, 0, exact_pair.stderr)
+            self.assertNotEqual(run_pair(f"{rollup}\n3").returncode, 0)
+            self.assertNotEqual(run_pair(f"{addr(18)}\n4").returncode, 0)
+            self.assertNotEqual(run_pair(f"{rollup}\n4\n5").returncode, 0)
+            self.assertNotEqual(run_pair("malformed").returncode, 0)
+
+            drifted = yaml.safe_load(first)
+            drifted["l1"]["blobs_zksync_os_l1_da_validator_addr"] = "0x0"
+            contracts.write_text(yaml.safe_dump(drifted, sort_keys=False), encoding="utf-8")
+            self.assertNotEqual(run("gl_probe_chain_contracts_schema_ready").returncode, 0)
+            contracts.write_bytes(first)
+
+            unsupported = json.loads(json.dumps(config))
+            unsupported["l1"]["blobs_zksync_os_l1_da_validator_addr"] = addr(18)
+            contracts.write_text(
+                yaml.safe_dump(unsupported, sort_keys=False), encoding="utf-8"
+            )
+            unsupported_result = run("gl_ensure_chain_contracts_yaml_schema")
+            self.assertNotEqual(unsupported_result.returncode, 0)
+            self.assertIn("unsupported non-zero", unsupported_result.stderr)
+            unsupported_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertNotEqual(unsupported_preflight.returncode, 0)
+            self.assertIn("before any broadcast", unsupported_preflight.stderr)
+
+            contracts.unlink()
+            fresh_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertEqual(fresh_preflight.returncode, 0, fresh_preflight.stderr)
+            candidate = contracts.with_name("contracts_57001.yaml")
+            candidate.write_text(
+                yaml.safe_dump(unsupported, sort_keys=False), encoding="utf-8"
+            )
+            candidate_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
+            self.assertNotEqual(candidate_preflight.returncode, 0)
+            self.assertIn("before any broadcast", candidate_preflight.stderr)
+            candidate.write_bytes(first)
+            valid_candidate_preflight = run(
+                "gl_assert_chain_contracts_da_preinit_safe"
+            )
+            self.assertEqual(
+                valid_candidate_preflight.returncode,
+                0,
+                valid_candidate_preflight.stderr,
+            )
+            missing_rollup = yaml.safe_load(first)
+            missing_rollup["l1"]["rollup_l1_da_validator_addr"] = zero
+            candidate.write_text(
+                yaml.safe_dump(missing_rollup, sort_keys=False), encoding="utf-8"
+            )
+            missing_rollup_preflight = run(
+                "gl_assert_chain_contracts_da_preinit_safe"
+            )
+            self.assertNotEqual(missing_rollup_preflight.returncode, 0)
+            self.assertIn("before chain init", missing_rollup_preflight.stderr)
+            candidate.unlink()
+            contracts.write_bytes(first)
+
+            gateway_global_rollup = addr(21)
+            edge_rollup = addr(22)
+            gateway_config = json.loads(json.dumps(config))
+            gateway_config["ecosystem_contracts"][
+                "rollup_l1_da_validator_addr"
+            ] = gateway_global_rollup
+            gateway_config["l1"]["rollup_l1_da_validator_addr"] = rollup
+            contracts.write_text(
+                yaml.safe_dump(gateway_config, sort_keys=False), encoding="utf-8"
+            )
+            edge_contracts = root / "chains" / "zksys" / "configs" / "contracts.yaml"
+            edge_contracts.parent.mkdir(parents=True)
+            edge_config = json.loads(json.dumps(config))
+            edge_config["ecosystem_contracts"][
+                "rollup_l1_da_validator_addr"
+            ] = gateway_global_rollup
+            edge_config["l1"]["rollup_l1_da_validator_addr"] = edge_rollup
+            edge_contracts.write_text(
+                yaml.safe_dump(edge_config, sort_keys=False), encoding="utf-8"
+            )
+            edge_result = run("gl_ensure_chain_contracts_yaml_schema", "zksys")
+            self.assertEqual(edge_result.returncode, 0, edge_result.stderr)
+            edge_data = yaml.safe_load(edge_contracts.read_text(encoding="utf-8"))
+            self.assertEqual(
+                edge_data["ecosystem_contracts"]["rollup_l1_da_validator_addr"],
+                gateway_global_rollup,
+            )
+            self.assertEqual(edge_data["l1"]["rollup_l1_da_validator_addr"], edge_rollup)
+
+            no_rollup = json.loads(json.dumps(config))
+            no_rollup["ecosystem_contracts"]["rollup_l1_da_validator_addr"] = zero
+            no_rollup["l1"]["rollup_l1_da_validator_addr"] = zero
+            contracts.write_text(yaml.safe_dump(no_rollup, sort_keys=False), encoding="utf-8")
+            self.assertNotEqual(
+                run("gl_ensure_chain_contracts_yaml_schema").returncode, 0
+            )
 
     def test_gateway_common_binds_default_foundry_profile_for_children(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
@@ -565,7 +1009,6 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
             variations = (
                 ("GATEWAY_CHAIN_ID", "57002", "gateway_chain_id"),
                 ("EDGE_CHAIN_ID", "57900001", "edge_chain_id"),
-                ("GATEWAY_COMMIT_MODE", "validium", "gateway_commit_mode"),
                 (
                     "GATEWAY_SETTLEMENT_FEE",
                     str(15 * 10**18 + 1),
@@ -645,6 +1088,7 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
                 {"EDGE_GATEWAY_COMMITTER_WALLET_NAME": "execute_operator"},
                 {"GATEWAY_PROVER_MODE": "typo"},
                 {"EDGE_PROVER_MODE": "typo"},
+                {"GATEWAY_COMMIT_MODE": "validium"},
                 {"GATEWAY_COMMIT_MODE": "typo"},
                 {"SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "false"},
                 {"PROVER_MODE": "gpu"},
@@ -1921,6 +2365,9 @@ class EraAttestationStaticTests(unittest.TestCase):
             "stock verifier artifact rejected",
             "canonical V8 VK regeneration required",
             "no app-bound security100 verifier hashes are approved",
+            'if [[ "${1:-}" == "--assert-applied" ]]; then',
+            "assert-applied mode refuses to materialize the canonical Era-contracts patch",
+            'if [[ "${ASSERT_APPLIED}" != true ]]; then',
             "SYSCOIN_EDGE_DA_RELAY_ADDRESS = 0x758b06cDA80BDD016F79AFd0df1A984039067A21",
             "actualRelayCodeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
             "_validateSyscoinEdgeDARelayArtifact();",

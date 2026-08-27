@@ -147,8 +147,8 @@ gl_normalize_canonical_deployment_inputs() {
   *) gl_die "EDGE_PROVER_MODE must be gpu or no-proofs" ;;
   esac
   case "${gateway_commit_mode}" in
-  rollup | validium) ;;
-  *) gl_die "GATEWAY_COMMIT_MODE must be rollup or validium" ;;
+  rollup) ;;
+  *) gl_die "GATEWAY_COMMIT_MODE must be rollup for compact zkOS DA" ;;
   esac
   [[ "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:-4}" =~ ^0*4$ ]] ||
     gl_die "GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE must be 4 (BlobsZKsyncOS)"
@@ -767,7 +767,7 @@ if actual_prover != expected_prover:
         f"persisted={actual_prover}"
     )
 
-commitments = {"rollup": "Rollup", "validium": "Validium"}
+commitments = {"rollup": "Rollup"}
 expected_commit_raw = os.environ["CHAIN_EXPECTED_COMMIT"].strip().lower()
 expected_commit = commitments.get(expected_commit_raw)
 if expected_commit is None:
@@ -1470,6 +1470,150 @@ gl_ensure_era_contracts_syscoin_postimage() {
     "${ZKSYNC_ERA_PATH}/contracts"
 }
 
+gl_assert_era_contracts_syscoin_postimage() {
+  gl_require ZKSYNC_ERA_PATH
+  gl_require ZKSYNC_OS_SERVER_PATH
+  bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" \
+    --assert-applied "${ZKSYNC_ERA_PATH}/contracts"
+}
+
+gl_prepare_gateway_chain_init_contract_artifacts() {
+  gl_require GATEWAY_DIR
+  gl_require ZKSYNC_ERA_PATH
+  gl_require ZKSYNC_OS_SERVER_PATH
+  gl_export_foundry_evm_version
+  gl_assert_era_contracts_syscoin_postimage || return $?
+
+  local gateway_chain_name
+  gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  python3 - \
+    "${GATEWAY_DIR}/ZkStack.yaml" \
+    "${GATEWAY_DIR}/chains/${gateway_chain_name}/ZkStack.yaml" \
+    "${ZKSYNC_ERA_PATH}" <<'PY' || return $?
+import sys
+from pathlib import Path
+
+import yaml
+
+ecosystem_path, chain_path, expected_source = map(Path, sys.argv[1:])
+expected_source = expected_source.resolve(strict=True)
+expected_contracts = (expected_source / "contracts").resolve(strict=True)
+
+def load(path):
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"invalid zkstack path config: {path}")
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SystemExit(f"invalid zkstack path config: {path}")
+    return value
+
+def exact_path(value, expected, label):
+    if not isinstance(value, str) or not Path(value).is_absolute():
+        raise SystemExit(f"invalid {label}")
+    candidate = Path(value)
+    if candidate != expected:
+        raise SystemExit(f"{label} does not name the reviewed source tree exactly")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        raise SystemExit(f"invalid {label}") from None
+    if resolved != expected:
+        raise SystemExit(f"{label} does not match the reviewed source tree")
+
+ecosystem = load(ecosystem_path)
+chain = load(chain_path)
+exact_path(ecosystem.get("link_to_code"), expected_source, "ecosystem link_to_code")
+exact_path(chain.get("link_to_code"), expected_source, "Gateway link_to_code")
+exact_path(chain.get("contracts_path"), expected_contracts, "Gateway contracts_path")
+
+# `zkstack dev contracts` is invoked from the ecosystem directory and resolves
+# the Era build tree through this optional override before `link_to_code`.
+era_source_files = ecosystem.get("era_source_files")
+if era_source_files is not None:
+    if not isinstance(era_source_files, dict):
+        raise SystemExit("invalid ecosystem era_source_files")
+    exact_path(
+        era_source_files.get("contracts_path"),
+        expected_contracts,
+        "ecosystem era_source_files.contracts_path",
+    )
+
+# Reject redirects before a forced build can clear or write ignored artifacts.
+for relative in (
+    "l1-contracts/zkout/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json",
+    "l1-contracts/zkout/Multicall3.sol/Multicall3.json",
+    "l2-contracts/zkout/ForceDeployUpgrader.sol/ForceDeployUpgrader.json",
+    "l2-contracts/zkout/ConsensusRegistry.sol/ConsensusRegistry.json",
+    "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json",
+):
+    current = expected_contracts
+    for component in Path(relative).parts:
+        current /= component
+        if current.is_symlink():
+            raise SystemExit(f"symlinked canonical zkout path component: {current}")
+        if not current.exists():
+            break
+PY
+
+  # SYSCOIN: chain init simulates several priority deployments before Forge
+  # broadcasts them. Rebuild the ignored zkout inputs from the exact reviewed
+  # contracts tree so a stale or missing artifact cannot fail after registration.
+  (
+    cd "${GATEWAY_DIR}"
+    gl_zkstack_pty env \
+      FOUNDRY_PROFILE=default \
+      FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION}" \
+      FOUNDRY_FORCE=true \
+      zkstack dev contracts --l1 --l2
+  ) || return $?
+  gl_assert_era_contracts_syscoin_postimage || return $?
+
+  python3 - "${ZKSYNC_ERA_PATH}/contracts" <<'PY'
+import json
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+artifacts = {
+    "l1-contracts/zkout/TransparentUpgradeableProxy.sol/TransparentUpgradeableProxy.json": "54b0eff9f86d3f4ca267473355aab10e252b5a2f2428d4026fed48ad588145f5",
+    "l1-contracts/zkout/Multicall3.sol/Multicall3.json": "e78f23f874de6d82789380ba873d723ec45979a1722512b2890809fcabb27d63",
+    "l2-contracts/zkout/ForceDeployUpgrader.sol/ForceDeployUpgrader.json": "50bdefc01f4981e974afa980f3e8c278f8988affe7e06ecf558b92386279faa8",
+    "l2-contracts/zkout/ConsensusRegistry.sol/ConsensusRegistry.json": "2c3cb0a889e3b75c3e3572cd9b228c950b13c18df1419cad1b7afe7b1adf7e20",
+    "l2-contracts/zkout/TimestampAsserter.sol/TimestampAsserter.json": "358eff424df332dc3ed3542533f4da1804c01fe86e8e9b6575c5c286404d2229",
+}
+
+for relative, expected_sha256 in artifacts.items():
+    path = root / relative
+    current = root
+    for component in Path(relative).parts:
+        current /= component
+        if current.is_symlink():
+            raise SystemExit(f"symlinked canonical zkout path component: {current}")
+    if not path.is_file():
+        raise SystemExit(f"missing canonical zkout artifact: {path}")
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid canonical zkout artifact {path}: {error}") from None
+    bytecode = artifact.get("bytecode") if isinstance(artifact, dict) else None
+    value = bytecode.get("object") if isinstance(bytecode, dict) else None
+    if not isinstance(value, str) or re.fullmatch(r"(?:[0-9a-fA-F]{2})+", value) is None:
+        raise SystemExit(f"invalid creation bytecode in canonical zkout artifact: {path}")
+    raw = bytes.fromhex(value)
+    byte_length = len(raw)
+    words, remainder = divmod(byte_length, 32)
+    if remainder != 0 or words % 2 == 0 or words >= 2**16:
+        raise SystemExit(f"invalid zkSync bytecode length in canonical zkout artifact: {path}")
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise SystemExit(
+            f"canonical zkout creation bytecode digest mismatch: {path}"
+        )
+PY
+}
+
 gl_ensure_zkstack_cli_release_current() {
   gl_require ZKSYNC_ERA_PATH
   gl_require ZKSYNC_OS_SERVER_PATH
@@ -1754,6 +1898,92 @@ gl_zkstack_private_pty() {
   # SYSCOIN: zkstack may create private-key wallet files before returning.
   # Apply the restrictive umask at creation time, including failure paths.
   (umask 077 && gl_zkstack_pty "$@")
+}
+
+gl_assert_chain_contracts_da_preinit_safe() {
+  gl_require GATEWAY_DIR
+  local chain_name
+  chain_name="${1:?chain name required}"
+  python3 - \
+    "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" \
+    "${GATEWAY_DIR}/chains/${chain_name}/ZkStack.yaml" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+contracts_path = Path(sys.argv[1])
+chain_path = Path(sys.argv[2])
+if contracts_path.is_symlink():
+    raise SystemExit(f"invalid contracts config: {contracts_path}")
+if not contracts_path.exists():
+    if chain_path.is_symlink() or not chain_path.is_file():
+        raise SystemExit(f"invalid chain config: {chain_path}")
+    chain = yaml.safe_load(chain_path.read_text(encoding="utf-8"))
+    if not isinstance(chain, dict) or chain.get("chain_id") is None:
+        raise SystemExit(f"missing chain_id in {chain_path}")
+    try:
+        chain_id = int(chain["chain_id"])
+    except (TypeError, ValueError):
+        raise SystemExit(f"invalid chain_id in {chain_path}") from None
+    candidate = contracts_path.with_name(f"contracts_{chain_id}.yaml")
+    if candidate.is_symlink():
+        raise SystemExit(f"invalid contracts config: {candidate}")
+    if not candidate.exists():
+        # A genuinely fresh chain has no per-chain contracts output yet. The
+        # patched zkstack writer emits canonical zero sentinels after register.
+        sys.exit(0)
+    contracts_path = candidate
+
+if contracts_path.is_symlink() or not contracts_path.is_file():
+    raise SystemExit(f"invalid contracts config: {contracts_path}")
+data = yaml.safe_load(contracts_path.read_text(encoding="utf-8"))
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid YAML object in {contracts_path}")
+
+def is_zero_like(value):
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == 0
+    if not isinstance(value, str):
+        return False
+    raw = value.strip().lower()
+    if raw == "0":
+        return True
+    return re.fullmatch(r"0x0*", raw) is not None
+
+def require_canonical_nonzero_address(value, label):
+    if not isinstance(value, str) or re.fullmatch(r"0x[0-9a-f]{40}", value) is None:
+        raise SystemExit(f"invalid {label} in {contracts_path} before chain init")
+    if is_zero_like(value):
+        raise SystemExit(f"zero {label} in {contracts_path} before chain init")
+
+eco = data.get("ecosystem_contracts")
+l1 = data.get("l1")
+if not isinstance(eco, dict) or not isinstance(l1, dict):
+    raise SystemExit(f"missing DA contract sections in {contracts_path} before chain init")
+require_canonical_nonzero_address(
+    eco.get("rollup_l1_da_validator_addr"),
+    "ecosystem compact rollup DA validator",
+)
+require_canonical_nonzero_address(
+    l1.get("rollup_l1_da_validator_addr"),
+    "chain compact rollup DA validator",
+)
+for field in (
+    "blobs_zksync_os_l1_da_validator_addr",
+    "no_da_validium_l1_validator_addr",
+    "avail_l1_da_validator_addr",
+):
+    value = l1.get(field)
+    if value is not None and not is_zero_like(value):
+        raise SystemExit(
+            f"unsupported non-zero l1.{field} in {contracts_path}; "
+            "refusing chain-init replay before any broadcast"
+        )
+PY
 }
 
 gl_ensure_chain_contracts_yaml_schema() {
@@ -2072,9 +2302,6 @@ required_eco_fields = {
     "default_upgrade_addr": ("default_upgrade_addr",),
     "genesis_upgrade_addr": (),
     "verifier_addr": ("verifier_addr",),
-    "rollup_l1_da_validator_addr": ("rollup_l1_da_validator_addr",),
-    "no_da_validium_l1_validator_addr": ("no_da_validium_l1_validator_addr",),
-    "avail_l1_da_validator_addr": ("avail_l1_da_validator_addr",),
     "l1_rollup_da_manager": (),
 }
 
@@ -2090,9 +2317,6 @@ address_ctm_fields = {
     "default_upgrade_addr",
     "genesis_upgrade_addr",
     "verifier_addr",
-    "rollup_l1_da_validator_addr",
-    "no_da_validium_l1_validator_addr",
-    "avail_l1_da_validator_addr",
     "l1_rollup_da_manager",
 }
 shared_admin_fields = {
@@ -2155,37 +2379,89 @@ if unresolved:
         f"unable to auto-heal required ecosystem_contracts fields in {contracts_path}: {unresolved_csv}"
     )
 
-# Required L1-level DA validator fields used by zkstack init/migration code paths.
-required_l1_da_fields = (
-    "blobs_zksync_os_l1_da_validator_addr",
-    "rollup_l1_da_validator_addr",
-    "no_da_validium_l1_validator_addr",
-    "avail_l1_da_validator_addr",
+# SYSCOIN: Preserve the distinct ecosystem-global and chain-local compact
+# validators. Unsupported chain-local slots may be absent/zero, but an explicit
+# non-zero value is deployment drift; CTM/global alternatives remain intact.
+zero_address = "0x0000000000000000000000000000000000000000"
+
+def require_nonzero_address(candidate, label):
+    normalized = normalize_address(candidate)
+    if not isinstance(normalized, str) or re.fullmatch(r"0x[0-9a-f]{40}", normalized) is None:
+        raise SystemExit(f"invalid {label} in {contracts_path}")
+    if normalized == zero_address:
+        raise SystemExit(f"zero {label} in {contracts_path}")
+    return normalized
+
+def choose_rollup(current, fallback, label, require_fallback_match=False):
+    current_value = None
+    fallback_value = None
+    if current is not None and not is_zero_like_address(current):
+        current_value = require_nonzero_address(current, label)
+    if fallback is not None and not is_zero_like_address(fallback):
+        fallback_value = require_nonzero_address(fallback, label)
+    if require_fallback_match and current_value and fallback_value and current_value != fallback_value:
+        raise SystemExit(f"conflicting {label} in {contracts_path}")
+    chosen = current_value or fallback_value
+    if chosen is None:
+        raise SystemExit(f"missing {label} in {contracts_path}")
+    return chosen
+
+if chain_name == gateway_chain_name:
+    ecosystem_rollup_fallback = maybe_get(l1, "rollup_l1_da_validator_addr")
+    chain_rollup_fallback = maybe_get(eco, "rollup_l1_da_validator_addr")
+    require_ecosystem_match = False
+else:
+    ecosystem_rollup_fallback = maybe_get(gateway_eco, "rollup_l1_da_validator_addr")
+    chain_rollup_fallback = None
+    require_ecosystem_match = True
+
+ecosystem_rollup = choose_rollup(
+    maybe_get(eco, "rollup_l1_da_validator_addr"),
+    ecosystem_rollup_fallback,
+    "ecosystem compact rollup DA validator",
+    require_ecosystem_match,
 )
-for l1_key in required_l1_da_fields:
-    current_value = l1.get(l1_key)
-    eco_value = maybe_get(eco, l1_key)
-    gw_l1_value = maybe_get(gateway_l1, l1_key)
-    gw_eco_value = maybe_get(gateway_eco, l1_key)
-    value = pick_value(
-        current_value,
-        eco_value,
-        gw_l1_value,
-        gw_eco_value,
-        prefer_non_zero=True,
-    )
-    if value is None:
-        raise SystemExit(
-            f"unable to auto-heal required l1 DA field in {contracts_path}: {l1_key}"
-        )
-    value = normalize_address(value)
-    if current_value != value:
-        l1[l1_key] = value
+chain_rollup = choose_rollup(
+    maybe_get(l1, "rollup_l1_da_validator_addr"),
+    chain_rollup_fallback,
+    "chain compact rollup DA validator",
+)
+for section_name, section, value in (
+    ("ecosystem_contracts", eco, ecosystem_rollup),
+    ("l1", l1, chain_rollup),
+):
+    if section.get("rollup_l1_da_validator_addr") != value:
+        section["rollup_l1_da_validator_addr"] = value
         updated = True
         print(
             f"gateway-launch: patched {contracts_path} for {chain_name} "
-            f"(set l1.{l1_key}={value})"
+            f"(set {section_name}.rollup_l1_da_validator_addr={value})"
         )
+
+for section_name, section, fields in (
+    (
+        "l1",
+        l1,
+        (
+            "blobs_zksync_os_l1_da_validator_addr",
+            "no_da_validium_l1_validator_addr",
+            "avail_l1_da_validator_addr",
+        ),
+    ),
+):
+    for field in fields:
+        current = section.get(field)
+        if current is not None and normalize_address(current) != zero_address:
+            raise SystemExit(
+                f"unsupported non-zero {section_name}.{field} in {contracts_path}"
+            )
+        if current != zero_address:
+            section[field] = zero_address
+            updated = True
+            print(
+                f"gateway-launch: patched {contracts_path} for {chain_name} "
+                f"(set {section_name}.{field}={zero_address})"
+            )
 
 address_key_hints = {
     "consensus_registry",
@@ -3922,14 +4198,14 @@ import yaml
 path = Path(sys.argv[1])
 data = yaml.safe_load(path.read_text(encoding="utf-8"))
 l1 = data.get("l1") if isinstance(data, dict) else None
-value = l1.get("blobs_zksync_os_l1_da_validator_addr") if isinstance(l1, dict) else None
+value = l1.get("rollup_l1_da_validator_addr") if isinstance(l1, dict) else None
 if isinstance(value, int) and not isinstance(value, bool):
     value = "0x" + format(value, "040x")
 if not isinstance(value, str) or not value.startswith(("0x", "0X")) or len(value) != 42:
-    raise SystemExit(f"invalid Gateway zkSync OS L1 DA validator in {path}")
+    raise SystemExit(f"invalid Gateway compact rollup L1 DA validator in {path}")
 parsed = int(value[2:], 16)
 if parsed == 0 or parsed >= 1 << 160:
-    raise SystemExit(f"invalid Gateway zkSync OS L1 DA validator in {path}")
+    raise SystemExit(f"invalid Gateway compact rollup L1 DA validator in {path}")
 print("0x" + format(parsed, "040x"))
 PY
 )" || return $?
@@ -4254,6 +4530,7 @@ gl_probe_chain_contracts_schema_ready() {
   [ -f "${contracts_yaml}" ] || return 1
 
   python3 - "${contracts_yaml}" <<'PY'
+import re
 import sys
 from pathlib import Path
 
@@ -4277,5 +4554,31 @@ required_l2 = ("default_l2_upgrader", "da_validator_addr")
 for key in required_l2:
     if key not in l2:
         raise SystemExit(1)
+
+def canonical_nonzero_address(value):
+    if not isinstance(value, str) or re.fullmatch(r"0x[0-9a-f]{40}", value) is None:
+        raise SystemExit(1)
+    if value == "0x0000000000000000000000000000000000000000":
+        raise SystemExit(1)
+    return value
+
+# SYSCOIN: Readiness means both compact-rollup scopes are authenticated and all
+# unsupported chain-local L1 DA slots remain the canonical zero sentinel.
+eco = data.get("ecosystem_contracts")
+l1 = data.get("l1")
+if not isinstance(eco, dict) or not isinstance(l1, dict):
+    raise SystemExit(1)
+zero = "0x0000000000000000000000000000000000000000"
+canonical_nonzero_address(eco.get("rollup_l1_da_validator_addr"))
+canonical_nonzero_address(l1.get("rollup_l1_da_validator_addr"))
+if any(
+    l1.get(field) != zero
+    for field in (
+        "blobs_zksync_os_l1_da_validator_addr",
+        "no_da_validium_l1_validator_addr",
+        "avail_l1_da_validator_addr",
+    )
+):
+    raise SystemExit(1)
 PY
 }
