@@ -6,9 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
 gl_require L1_RPC_URL
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
 # SYSCOIN: Initialize only the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+export PROTOCOL_VERSION
+gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
@@ -17,11 +20,20 @@ gl_export_foundry_evm_version
 cd "${GATEWAY_DIR}"
 
 : "${EDGE_CHAIN_NAME:=zksys}"
-: "${EDGE_CHAIN_ID:=57057}"
+if [ -z "${EDGE_CHAIN_ID:-}" ]; then
+  [ "${EDGE_CHAIN_NAME}" = "zksys" ] ||
+    gl_die "EDGE_CHAIN_ID is required for non-default edge ${EDGE_CHAIN_NAME}"
+  EDGE_CHAIN_ID=57057
+fi
 : "${EDGE_PROVER_MODE:=}"
 : "${EDGE_WALLET_CREATION:=}"
 : "${EDGE_WALLET_PATH:=${GATEWAY_DIR}/.${EDGE_CHAIN_NAME}-wallets.yaml}"
 : "${EDGE_REUSE_GATEWAY_GOVERNOR:=true}"
+EDGE_REUSE_GATEWAY_GOVERNOR="$(gl_to_lower "${EDGE_REUSE_GATEWAY_GOVERNOR}")"
+case "${EDGE_REUSE_GATEWAY_GOVERNOR}" in
+true | false) ;;
+*) gl_die "EDGE_REUSE_GATEWAY_GOVERNOR must be true or false" ;;
+esac
 if [ -z "${SKIP_FUND:-}" ]; then
   SKIP_FUND=false
 fi
@@ -37,7 +49,11 @@ if [ -z "${EDGE_PROVER_MODE}" ]; then
     EDGE_PROVER_MODE="gpu"
   fi
 fi
+gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
+gl_validate_l1_network_pair
+gl_bind_gateway_launch_context
+gl_l1_broadcast_preflight
 
 # SYSCOIN: This helper is also used directly for additional edges and by the
 # repair command. Authenticate the configured and live Gateway before any edge
@@ -58,7 +74,7 @@ edge_chain_created=false
 if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
   echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} already exists; skipping chain create"
 else
-  gl_zkstack_pty zkstack chain create \
+  gl_zkstack_private_pty zkstack chain create \
     --chain-name "${EDGE_CHAIN_NAME}" \
     --chain-id "${EDGE_CHAIN_ID}" \
     --prover-mode "${EDGE_PROVER_MODE}" \
@@ -71,23 +87,27 @@ else
     --evm-emulator false \
     --zksync-os
   edge_chain_created=true
-
-  if [ "${EDGE_WALLET_CREATION}" = "random" ] && [ ! -e "${EDGE_WALLET_PATH}" ] && [ ! -L "${EDGE_WALLET_PATH}" ]; then
-    gl_persist_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
-    echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
-  fi
 fi
 
 if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" ]; then
   gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml"
 fi
+gl_assert_edge_chain_config_matches_expected
 
-if [ "${edge_chain_created}" = true ] && [ "$(gl_to_lower "${EDGE_REUSE_GATEWAY_GOVERNOR}")" = "true" ]; then
+if [ "${EDGE_REUSE_GATEWAY_GOVERNOR}" = "true" ]; then
+  gl_assert_existing_edge_chain_admin_safe_for_governor_reuse "${edge_chain_created}"
+  wallet_identity_cast_bin="$(command -v cast || true)"
+  if [ -z "${wallet_identity_cast_bin}" ] && [ -x "${HOME}/.foundry/bin/cast" ]; then
+    wallet_identity_cast_bin="${HOME}/.foundry/bin/cast"
+  fi
+  [ -n "${wallet_identity_cast_bin}" ] || gl_die "cast is required to authenticate the Gateway governor key"
   python3 - \
     "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME:-gateway}/configs/wallets.yaml" \
     "${GATEWAY_DIR}/configs/wallets.yaml" \
     "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" \
-    "${EDGE_WALLET_PATH}" <<'PY'
+    "${EDGE_WALLET_PATH}" \
+    "${wallet_identity_cast_bin}" \
+    "${SCRIPT_DIR}" <<'PY'
 import os
 import sys
 import tempfile
@@ -95,33 +115,32 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, sys.argv[6])
+from _wallet_identity import (  # noqa: E402
+    authenticate_wallet_entry,
+    normalize_address,
+    normalize_private_key,
+)
+
 gateway_wallet_paths = [Path(sys.argv[1]), Path(sys.argv[2])]
 edge_wallet_paths = [Path(sys.argv[3]), Path(sys.argv[4])]
-
-
-def hex_string(value, bytes_len):
-    if isinstance(value, int):
-        return "0x" + format(value & ((1 << (8 * bytes_len)) - 1), f"0{bytes_len * 2}x")
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped.startswith(("0x", "0X")):
-            return "0x" + stripped[2:].zfill(bytes_len * 2).lower()
-        if stripped.isdecimal():
-            return "0x" + format(int(stripped, 10), f"0{bytes_len * 2}x")
-        return stripped
-    return value
+cast_bin = sys.argv[5]
 
 
 def normalize_wallet_hex_fields(data):
     if not isinstance(data, dict):
         return data
-    for wallet in data.values():
+    for wallet_name, wallet in data.items():
         if not isinstance(wallet, dict):
             continue
         if "address" in wallet:
-            wallet["address"] = hex_string(wallet["address"], 20)
+            wallet["address"] = normalize_address(
+                wallet["address"], f"{wallet_name} address"
+            )
         if "private_key" in wallet:
-            wallet["private_key"] = hex_string(wallet["private_key"], 32)
+            wallet["private_key"] = normalize_private_key(
+                wallet["private_key"], f"{wallet_name} private key"
+            )
     return data
 
 
@@ -181,12 +200,23 @@ gateway_source = None
 for path in gateway_wallet_paths:
     if not path.exists():
         continue
-    data = normalize_wallet_hex_fields(yaml.safe_load(path.read_text(encoding="utf-8")))
+    data = normalize_wallet_hex_fields(
+        yaml.safe_load(path.read_text(encoding="utf-8"))
+    )
     if not isinstance(data, dict):
         continue
     governor = data.get("governor")
-    if isinstance(governor, dict) and governor.get("address") is not None and governor.get("private_key") is not None:
+    if (
+        isinstance(governor, dict)
+        and governor.get("address") is not None
+        and governor.get("private_key") not in (None, "")
+    ):
         gateway_governor = dict(governor)
+        address, private_key = authenticate_wallet_entry(
+            governor, f"Gateway governor in {path}", cast_bin
+        )
+        gateway_governor["address"] = address
+        gateway_governor["private_key"] = private_key
         gateway_source = path
         break
 
@@ -197,27 +227,38 @@ if gateway_governor is None:
     )
 
 updated = []
-for path in edge_wallet_paths:
-    if not path.exists():
+seen = set()
+for edge_wallet_path in edge_wallet_paths:
+    identity = os.path.abspath(edge_wallet_path)
+    if identity in seen or not edge_wallet_path.exists():
         continue
-    data = normalize_wallet_hex_fields(yaml.safe_load(path.read_text(encoding="utf-8")))
+    seen.add(identity)
+    data = normalize_wallet_hex_fields(
+        yaml.safe_load(edge_wallet_path.read_text(encoding="utf-8"))
+    )
     if not isinstance(data, dict) or not isinstance(data.get("governor"), dict):
-        raise SystemExit(f"invalid edge governor wallet entry in {path}")
+        raise SystemExit(f"invalid edge governor wallet entry in {edge_wallet_path}")
     data["governor"] = dict(gateway_governor)
-    write_wallet_file_securely(path, data)
-    updated.append(path)
+    write_wallet_file_securely(edge_wallet_path, data)
+    updated.append(edge_wallet_path)
 
 if not updated:
     raise SystemExit("no edge wallet files found to update with Gateway governor")
 
-address = gateway_governor["address"]
-if isinstance(address, int):
-    address = "0x" + format(address & ((1 << 160) - 1), "040x")
 print(
-    f"gateway-launch: reused Gateway governor {address} from {gateway_source} "
-    f"for edge wallets: {', '.join(str(p) for p in updated)}"
+    f"gateway-launch: reused Gateway governor {gateway_governor['address']} "
+    f"from {gateway_source} for edge wallets: "
+    + ", ".join(str(path) for path in updated)
 )
 PY
+fi
+
+if [ "${EDGE_WALLET_CREATION}" = "random" ] &&
+  [ ! -e "${EDGE_WALLET_PATH}" ] && [ ! -L "${EDGE_WALLET_PATH}" ]; then
+  # SYSCOIN: Persist on a resume too; chain creation may have completed before
+  # an interruption in the governor-authentication window.
+  gl_persist_wallet_file "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/wallets.yaml" "${EDGE_WALLET_PATH}"
+  echo "gateway-launch: persisted edge wallets to ${EDGE_WALLET_PATH}"
 fi
 
 if [ "${SKIP_FUND}" != "true" ]; then
@@ -227,7 +268,7 @@ else
 fi
 
 init_output=""
-if ! init_output="$(gl_zkstack_pty zkstack chain init \
+if ! init_output="$(gl_zkstack_private_pty zkstack chain init \
   --chain "${EDGE_CHAIN_NAME}" \
   --no-genesis \
   --deploy-paymaster false \
@@ -248,3 +289,8 @@ else
 fi
 
 gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
+
+# SYSCOIN: Wallet replacement must survive a resume after `chain create`, and
+# every governor policy must bind its authenticated key and persisted diamond
+# to the live L1 BridgeHub registration.
+gl_assert_edge_chain_admin_owned_by_configured_governor

@@ -267,3 +267,233 @@ index 3a65c7110..5d4d6a1cb 100644
 +        min_validator_balance: U256::from(10).pow(18.into()),
          refund_recipient: None,
      };
+diff --git a/zkstack_cli/Cargo.lock b/zkstack_cli/Cargo.lock
+index d0fb63d..6ef9503 100644
+--- a/zkstack_cli/Cargo.lock
++++ b/zkstack_cli/Cargo.lock
+@@ -8046,6 +8046,7 @@ dependencies = [
+  "serde_yaml",
+  "sqlx",
+  "strum 0.26.3",
++ "tempfile",
+  "thiserror 2.0.12",
+  "tokio",
+  "toml",
+diff --git a/zkstack_cli/Cargo.toml b/zkstack_cli/Cargo.toml
+index 7e97b56..bdd1a55 100644
+--- a/zkstack_cli/Cargo.toml
++++ b/zkstack_cli/Cargo.toml
+@@ -72,6 +72,8 @@ sqruff-lib = "0.19.0"
+ reqwest = { version = "0.12.8", features = ["blocking"] }
+ sha2 = "0.10.6"
+ walkdir = "2.4.0"
++# SYSCOIN: Materialize generated Forge signers as private ephemeral keystores.
++tempfile = "3.14.0"
+
+ [profile.release]
+ strip = true
+diff --git a/zkstack_cli/crates/common/Cargo.toml b/zkstack_cli/crates/common/Cargo.toml
+index 7af8fab..5ea2516 100644
+--- a/zkstack_cli/crates/common/Cargo.toml
++++ b/zkstack_cli/crates/common/Cargo.toml
+@@ -34,3 +34,5 @@ async-trait.workspace = true
+ zksync_system_constants.workspace = true
+ zksync_types.workspace = true
+ zksync_web3_decl.workspace = true
++# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
++tempfile.workspace = true
+diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
+index dbc8fd8..9441c82 100644
+--- a/zkstack_cli/crates/common/src/forge.rs
++++ b/zkstack_cli/crates/common/src/forge.rs
+@@ -1,18 +1,26 @@
+ use std::{
++    fs::{self, OpenOptions},
++    io::Write,
+     path::{Path, PathBuf},
+-    str::FromStr,
+ };
+
++#[cfg(unix)]
++use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
++
+ use clap::{Parser, ValueEnum};
+ use ethers::{
+-    core::types::Bytes,
++    core::{
++        rand::{thread_rng, RngCore},
++        types::Bytes,
++    },
+     middleware::Middleware,
+     prelude::{LocalWallet, Signer},
+     types::{Address, H256, U256},
+-    utils::{hex, hex::ToHexExt},
++    utils::hex,
+ };
+ use serde::{Deserialize, Serialize};
+ use strum::Display;
++use tempfile::TempDir;
+ use xshell::{cmd, Shell};
+
+ use crate::{
+@@ -42,15 +50,75 @@ impl Forge {
+             base_path: self.path.clone(),
+             script_path: path.to_path_buf(),
+             args,
++            private_key: None,
+         }
+     }
+ }
+
++// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
++// logs. Give Forge a short-lived encrypted keystore through child-only env.
++struct EphemeralForgeSigner {
++    _directory: TempDir,
++    keystore_path: PathBuf,
++    password_path: PathBuf,
++}
++
++impl EphemeralForgeSigner {
++    fn new(private_key: &H256) -> anyhow::Result<Self> {
++        let directory = tempfile::Builder::new()
++            .prefix("zkstack-forge-signer-")
++            .tempdir()?;
++        #[cfg(unix)]
++        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
++
++        let mut rng = thread_rng();
++        let mut random_password = [0_u8; 32];
++        rng.fill_bytes(&mut random_password);
++        let password = hex::encode(random_password);
++        let keystore_name = "signer.json";
++        LocalWallet::encrypt_keystore(
++            directory.path(),
++            &mut rng,
++            private_key.as_bytes(),
++            password.as_bytes(),
++            Some(keystore_name),
++        )?;
++        let keystore_path = directory.path().join(keystore_name);
++
++        let password_path = directory.path().join("password");
++        let mut options = OpenOptions::new();
++        options.write(true).create_new(true);
++        #[cfg(unix)]
++        options.mode(0o600);
++        options
++            .open(&password_path)?
++            .write_all(password.as_bytes())?;
++
++        #[cfg(unix)]
++        {
++            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
++            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
++        }
++
++        Ok(Self {
++            _directory: directory,
++            keystore_path,
++            password_path,
++        })
++    }
++
++    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
++        cmd.env("ETH_KEYSTORE", &self.keystore_path)
++            .env("ETH_PASSWORD", &self.password_path)
++    }
++}
++
+ /// ForgeScript is a wrapper around the forge script command.
+ pub struct ForgeScript {
+     base_path: PathBuf,
+     script_path: PathBuf,
+     args: ForgeScriptArgs,
++    private_key: Option<H256>,
+ }
+
+ impl ForgeScript {
+@@ -65,12 +133,20 @@ impl ForgeScript {
+         let _dir_guard = shell.push_dir(&self.base_path);
+         let script_path = self.script_path.as_os_str();
+         let args_no_resume = self.args.build();
++        let ephemeral_signer = self
++            .private_key
++            .as_ref()
++            .map(EphemeralForgeSigner::new)
++            .transpose()?;
+         if self.args.resume {
+             let mut args = args_no_resume.clone();
+             args.push(ForgeScriptArg::Resume.to_string());
+-            let res = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
+-                .with_piped_std_err()
+-                .run();
++            let mut cmd = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
++                .with_piped_std_err();
++            if let Some(signer) = &ephemeral_signer {
++                cmd = signer.apply(cmd);
++            }
++            let res = cmd.run();
+             if !res.resume_not_successful_because_has_not_began() {
+                 return Ok(res?);
+             }
+@@ -91,6 +167,10 @@ impl ForgeScript {
+             "forge script {script_path} --legacy {args_no_resume...}"
+         ));
+
++        if let Some(signer) = &ephemeral_signer {
++            cmd = signer.apply(cmd);
++        }
++
+         if self.args.resume {
+             cmd = cmd.with_piped_std_err();
+         }
+@@ -104,7 +184,7 @@ impl ForgeScript {
+     }
+
+     pub fn wallet_args_passed(&self) -> bool {
+-        self.args.wallet_args_passed()
++        self.private_key.is_some() || self.args.wallet_args_passed()
+     }
+
+     /// Add the ffi flag to the forge script command.
+@@ -169,23 +249,17 @@ impl ForgeScript {
+
+     /// Adds the private key of the deployer account.
+     pub fn with_private_key(mut self, private_key: H256) -> Self {
+-        self.args.add_arg(ForgeScriptArg::PrivateKey {
+-            private_key: private_key.encode_hex(),
+-        });
++        // SYSCOIN: retain signer identity in memory and materialize it only as
++        // a private ephemeral keystore when Forge is spawned.
++        self.private_key = Some(private_key);
+         self
+     }
+
+     // Do not start the script if balance is not enough
+     pub fn private_key(&self) -> Option<LocalWallet> {
+-        self.args.args.iter().find_map(|a| {
+-            if let ForgeScriptArg::PrivateKey { private_key } = a {
+-                let key = H256::from_str(private_key).unwrap();
+-                let key = LocalWallet::from_bytes(key.as_bytes()).unwrap();
+-                Some(key)
+-            } else {
+-                None
+-            }
+-        })
++        self.private_key
++            .as_ref()
++            .map(|key| LocalWallet::from_bytes(key.as_bytes()).unwrap())
+     }
+
+     pub fn rpc_url(&self) -> Option<String> {
+@@ -259,10 +333,6 @@ pub enum ForgeScriptArg {
+         api_key: String,
+     },
+     Ffi,
+-    #[strum(to_string = "private-key={private_key}")]
+-    PrivateKey {
+-        private_key: String,
+-    },
+     #[strum(to_string = "rpc-url={url}")]
+     RpcUrl {
+         url: String,

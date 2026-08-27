@@ -5,10 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 gl_require ZKSYNC_ERA_PATH
+gl_require L1_RPC_URL
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
 # SYSCOIN: Convert settlement only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+export PROTOCOL_VERSION
+gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
@@ -17,32 +22,19 @@ gl_path_for_zkstack
 export GATEWAY_DIR NATIVE_TOKEN_PRICE_USD GATEWAY_INTEROP_FEE_USD
 cd "${GATEWAY_DIR}"
 
-if [ -z "${GATEWAY_SETTLEMENT_FEE:-}" ]; then
-  export GATEWAY_SETTLEMENT_FEE="$(
-    python3 - <<'PY'
-import os
-from decimal import Decimal, ROUND_CEILING, getcontext
+# SYSCOIN: Keep direct conversion on the reviewed Gateway/L1 pair; both
+# zkstack subcommands below can broadcast irreversible settlement changes.
+gl_validate_l1_network_pair
+gl_normalize_canonical_deployment_inputs
+gl_bind_gateway_launch_context
+gl_assert_gateway_chain_config_matches_expected
+gl_l1_broadcast_preflight
+conversion_deployer="$(gl_authenticate_chain_wallet_roles --print-addresses "${GATEWAY_CHAIN_NAME}" deployer)"
+# SYSCOIN: Persist the one transient whitelist principal before conversion.
+# Wallet rotation must never hide an interrupted run's still-privileged deployer.
+gl_bind_gateway_conversion_deployer "${conversion_deployer}"
 
-getcontext().prec = 80
-
-target_usd = Decimal(os.environ["GATEWAY_INTEROP_FEE_USD"])
-native_price_usd = Decimal(os.environ["NATIVE_TOKEN_PRICE_USD"])
-decimals = int(os.environ.get("GATEWAY_INTEROP_FEE_TOKEN_DECIMALS", "18"))
-
-if target_usd < 0:
-    raise SystemExit("GATEWAY_INTEROP_FEE_USD must be non-negative")
-if native_price_usd <= 0:
-    raise SystemExit("NATIVE_TOKEN_PRICE_USD must be positive")
-if decimals < 0:
-    raise SystemExit("GATEWAY_INTEROP_FEE_TOKEN_DECIMALS must be non-negative")
-
-fee = (target_usd / native_price_usd * (Decimal(10) ** decimals)).to_integral_value(
-    rounding=ROUND_CEILING
-)
-print(int(fee))
-PY
-  )"
-fi
+GATEWAY_SETTLEMENT_FEE="$(gl_effective_gateway_settlement_fee)" || exit $?
 export GATEWAY_SETTLEMENT_FEE
 echo "gateway-launch: Gateway interop settlement fee=${GATEWAY_SETTLEMENT_FEE} base units (target ${GATEWAY_INTEROP_FEE_USD} USD at native token ${NATIVE_TOKEN_PRICE_USD} USD)"
 
@@ -71,5 +63,12 @@ config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
 print(f"gateway-launch: wrote {config_path} gateway_settlement_fee={config['gateway_settlement_fee']}")
 PY
 
-gl_zkstack_pty zkstack chain gateway create-tx-filterer --chain "${GATEWAY_CHAIN_NAME}"
-gl_zkstack_pty zkstack chain gateway convert-to-gateway --chain "${GATEWAY_CHAIN_NAME}"
+gl_zkstack_pty zkstack chain gateway create-tx-filterer \
+  --chain "${GATEWAY_CHAIN_NAME}" \
+  --l1-rpc-url "${L1_RPC_URL}"
+gl_zkstack_pty zkstack chain gateway convert-to-gateway \
+  --chain "${GATEWAY_CHAIN_NAME}" \
+  --l1-rpc-url "${L1_RPC_URL}"
+
+gl_probe_gateway_settlement_ready ||
+  gl_die "Gateway conversion completed but live settlement postconditions are not ready"

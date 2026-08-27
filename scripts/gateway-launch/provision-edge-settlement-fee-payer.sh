@@ -24,13 +24,16 @@ readonly UINT256_MAX="1157920892373161954235709850086879078532699846656405640394
 FEE_PAYER_KEYSTORE_DIR=""
 FEE_PAYER_KEYSTORE_ACCOUNT="gateway-launch-edge-execute-operator"
 FEE_PAYER_SIGNER_ARGS=()
+FEE_PAYER_CHECK_ONLY=false
 
 usage() {
   cat <<'EOF'
-Usage: provision-edge-settlement-fee-payer.sh [EDGE_CHAIN_NAME ...]
+Usage: provision-edge-settlement-fee-payer.sh [--check-only] [EDGE_CHAIN_NAME ...]
 
 With no arguments, EDGE_CHAIN_NAME (default: zksys) is provisioned. Each named
 edge must already exist under GATEWAY_DIR/chains and settle on GATEWAY_RPC_URL.
+Standalone/split-host use must set GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS from an
+independently trusted deployment record, never from GATEWAY_RPC_URL itself.
 EOF
 }
 
@@ -293,13 +296,19 @@ provision_edge_fee_payer() {
 
   [[ "${edge_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] ||
     gl_die "invalid edge chain name: ${edge_name}"
-  gateway_acquire_execute_operator_lock "${edge_name}"
+  if [ "${FEE_PAYER_CHECK_ONLY}" != true ]; then
+    gateway_acquire_execute_operator_lock "${edge_name}"
+  fi
 
   edge_config="${GATEWAY_DIR}/chains/${edge_name}/ZkStack.yaml"
   gateway_config="${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/ZkStack.yaml"
   wallet_path="${GATEWAY_DIR}/chains/${edge_name}/configs/wallets.yaml"
   [ -f "${wallet_path}" ] || gl_die "missing edge wallet file: ${wallet_path}"
-  gl_prepare_wallet_file_for_in_file "${wallet_path}"
+  if [ "${FEE_PAYER_CHECK_ONLY}" = true ]; then
+    gl_validate_secret_file "${wallet_path}" "edge wallet file"
+  else
+    gl_prepare_wallet_file_for_in_file "${wallet_path}"
+  fi
 
   edge_chain_id="$(chain_id_from_yaml "${edge_config}")"
   expected_gateway_chain_id="$(chain_id_from_yaml "${gateway_config}")"
@@ -316,9 +325,7 @@ provision_edge_fee_payer() {
     gl_die "Gateway Bridgehub edge proxy for ${edge_name} has no code at ${edge_proxy}"
   address_has_code "${GW_ASSET_TRACKER_ADDRESS}" ||
     gl_die "GWAssetTracker has no code at ${GW_ASSET_TRACKER_ADDRESS}"
-  wrapped_token="$(require_address \
-    "$(gateway_cast call "${GW_ASSET_TRACKER_ADDRESS}" "wrappedZKToken()(address)" --rpc-url "${GATEWAY_RPC_URL}")" \
-    "GWAssetTracker wrappedZKToken")"
+  wrapped_token="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"
   address_has_code "${wrapped_token}" || gl_die "wrapped Gateway base token has no code at ${wrapped_token}"
 
   live_fee="$(parse_uint \
@@ -332,6 +339,8 @@ provision_edge_fee_payer() {
     "$(gateway_cast call "${wrapped_token}" "balanceOf(address)(uint256)" "${operator_address}" --rpc-url "${GATEWAY_RPC_URL}")" \
     "execute_operator wrapped balance")"
   if uint_lt "${wrapped_balance}" "${target_wei}"; then
+    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
+      gl_die "${edge_name} execute_operator wrapped balance is below the live settlement target"
     deficit="$(python3 - "${target_wei}" "${wrapped_balance}" <<'PY'
 import sys
 
@@ -371,6 +380,8 @@ PY
     "$(gateway_cast call "${wrapped_token}" "allowance(address,address)(uint256)" "${operator_address}" "${GW_ASSET_TRACKER_ADDRESS}" --rpc-url "${GATEWAY_RPC_URL}")" \
     "execute_operator GWAssetTracker allowance")"
   if [ "${allowance}" != "${UINT256_MAX}" ]; then
+    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
+      gl_die "${edge_name} execute_operator GWAssetTracker allowance is not ready"
     [ "${#FEE_PAYER_SIGNER_ARGS[@]}" -gt 0 ] ||
       prepare_execute_operator_keystore "${wallet_path}" "${operator_address}"
     echo "gateway-launch: approving GWAssetTracker for ${edge_name} execute_operator ${operator_address}"
@@ -392,6 +403,8 @@ PY
     "${edge_chain_id}" \
     --rpc-url "${GATEWAY_RPC_URL}" | awk '{print tolower($1)}')"
   if [ "${agreement}" != "true" ]; then
+    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
+      gl_die "${edge_name} execute_operator settlement-fee agreement is not enabled"
     [ "${#FEE_PAYER_SIGNER_ARGS[@]}" -gt 0 ] ||
       prepare_execute_operator_keystore "${wallet_path}" "${operator_address}"
     echo "gateway-launch: enabling Gateway settlement-fee agreement for ${edge_name} (${edge_chain_id}) execute_operator ${operator_address}"
@@ -440,6 +453,10 @@ PY
 
 main() {
   local edge_names=()
+  if [ "${1:-}" = "--check-only" ]; then
+    FEE_PAYER_CHECK_ONLY=true
+    shift
+  fi
   if [ "$#" -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
     usage
     return 0
@@ -451,10 +468,15 @@ main() {
   fi
 
   command -v cast >/dev/null 2>&1 || gl_die "cast is required"
-  command -v openssl >/dev/null 2>&1 || gl_die "openssl is required"
+  if [ "${FEE_PAYER_CHECK_ONLY}" != true ]; then
+    command -v openssl >/dev/null 2>&1 || gl_die "openssl is required"
+  fi
   # SYSCOIN: This standalone signing entry point must authenticate the same
   # immutable Gateway deployment stamp as edge creation and migration helpers.
   gl_assert_gateway_runtime_identity
+  # SYSCOIN: the native-value transaction target must be independently pinned;
+  # same-RPC code and postcondition reads cannot authenticate a dynamic target.
+  gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"
   for edge_name in "${edge_names[@]}"; do
     provision_edge_fee_payer "${edge_name}"
   done

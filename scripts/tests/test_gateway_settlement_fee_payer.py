@@ -61,8 +61,25 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         edge_chain = self.gateway_dir / "chains" / "edge-a"
         (gateway_chain / "configs").mkdir(parents=True)
         (edge_chain / "configs").mkdir(parents=True)
+        (self.gateway_dir / "ZkStack.yaml").write_text(
+            "prover_version: Gpu\n"
+            "l1_network: localhost\n",
+            encoding="utf-8",
+        )
         (gateway_chain / "ZkStack.yaml").write_text(
-            "chain_id: 57001\n", encoding="utf-8"
+            "name: gateway\n"
+            "chain_id: 57001\n"
+            "prover_version: Gpu\n"
+            "l1_batch_commit_data_generator_mode: Rollup\n"
+            "vm_option: ZKSyncOsVM\n"
+            "evm_emulator: false\n"
+            "legacy_bridge: false\n"
+            "l1_network: localhost\n"
+            "base_token:\n"
+            "  address: '0x0000000000000000000000000000000000000001'\n"
+            "  nominator: 1\n"
+            "  denominator: 1\n",
+            encoding="utf-8",
         )
         (gateway_chain / "configs" / "gateway.yaml").write_text(
             f"validator_timelock_addr: '{GATEWAY_TARGET}'\n"
@@ -89,6 +106,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self._write_state(
             {
                 "fee": 15 * 10**18,
+                "wrapped_token": WRAPPED_TOKEN,
                 "wrapped_balance": 10 * 10**18,
                 "native_balance": 100 * 10**18,
                 "allowance": 0,
@@ -111,6 +129,8 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 "HOME": str(self.home_dir),
                 "GATEWAY_DIR": str(self.gateway_dir),
                 "GATEWAY_RPC_URL": "http://gateway.invalid",
+                "GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS": WRAPPED_TOKEN,
+                "L1_NETWORK": "localhost",
                 "TEST_CAST_STATE": str(self.state_path),
                 "TEST_EXPECTED_ADDRESS": OPERATOR,
                 "PYTHONPATH": f"{self.bin_dir}:{self.env.get('PYTHONPATH', '')}",
@@ -175,8 +195,11 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                     output = str(state["native_balance"])
                 elif args[0] == "call":
                     signature = args[2]
-                    if signature == "wrappedZKToken()(address)":
-                        output = "{WRAPPED_TOKEN}"
+                    if signature in {{
+                        "WETH_TOKEN()(address)",
+                        "wrappedZKToken()(address)",
+                    }}:
+                        output = state["wrapped_token"]
                     elif signature == "getZKChain(uint256)(address)":
                         output = "{EDGE_PROXY}"
                     elif signature == "gatewaySettlementFee()(uint256)":
@@ -275,14 +298,31 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                             elif current and stripped.startswith("operator_execute_sk:"):
                                 result[current]["operator_execute_sk"] = stripped.split(":", 1)[1].strip().strip("'\\\"")
                         return result
-                    for line in lines:
-                        if line.startswith("chain_id:"):
-                            return {"chain_id": int(line.split(":", 1)[1].strip(), 0)}
                     result = {}
+                    current = None
                     for line in lines:
+                        stripped = line.strip()
                         key, _, value = line.partition(":")
                         if key in {"validator_timelock_addr", "relayed_sl_da_validator"}:
                             result[key] = value.strip().strip("'\\\"")
+                            continue
+                        if not line.startswith((" ", "\\t")):
+                            current = key
+                            raw = value.strip().strip("'\\\"")
+                            if key == "base_token":
+                                result[key] = {}
+                            elif raw.lower() in {"true", "false"}:
+                                result[key] = raw.lower() == "true"
+                            elif raw.isdecimal():
+                                result[key] = int(raw, 10)
+                            elif raw:
+                                result[key] = raw
+                        elif current == "base_token":
+                            nested_key, _, nested_value = stripped.partition(":")
+                            raw = nested_value.strip().strip("'\\\"")
+                            result[current][nested_key] = (
+                                int(raw, 10) if raw.isdecimal() else raw
+                            )
                     if result:
                         return result
                     return None
@@ -319,6 +359,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertEqual(len(sends), 3, sends)
 
         deposit = next(call for call in sends if call[2] == "deposit()")
+        self.assertEqual(deposit[1].lower(), WRAPPED_TOKEN.lower())
         self.assertEqual(int(deposit[deposit.index("--value") + 1]), 65 * 10**18)
         self.assertTrue(any(call[2] == "approve(address,uint256)" for call in sends))
         self.assertTrue(
@@ -356,6 +397,34 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("gatewaySettlementFee must be non-zero", result.stderr)
         self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_requires_an_independently_trusted_wrapped_token_pin(self) -> None:
+        self.env.pop("GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS")
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS", result.stderr)
+        self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_rejects_rpc_selected_wrapped_token_before_signing(self) -> None:
+        state = self._state()
+        state["wrapped_token"] = "0xdead00000000000000000000000000000000beef"
+        self._write_state(state)
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wrapped base-token pin mismatch", result.stderr)
+        self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_rejects_malformed_or_zero_wrapped_token_pins(self) -> None:
+        for pin in ("not-an-address", "0x" + "00" * 20):
+            with self.subTest(pin=pin):
+                state = self._state()
+                state["calls"] = []
+                self._write_state(state)
+                result = self._run(GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS=pin)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(
+                    any(call[0] == "send" for call in self._state()["calls"])
+                )
 
     def test_rejects_target_above_cap_without_broadcasting(self) -> None:
         result = self._run(
@@ -486,7 +555,10 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
             migration.index(acquire),
             migration.index('gateway_chain_id="$(get_chain_id_from_zkstack_yaml'),
         )
-        self.assertLess(migration.index(acquire), migration.index("pause-deposits --chain"))
+        self.assertLess(
+            migration.index(acquire),
+            migration.index("zkstack chain pause-deposits"),
+        )
         self.assertIn(
             'GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"',
             migration,

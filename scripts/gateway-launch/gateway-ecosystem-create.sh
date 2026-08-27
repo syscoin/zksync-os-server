@@ -14,6 +14,7 @@ export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sh
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 gl_assert_zksync_era_sha
 gl_assert_contracts_sha
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 
 : "${GATEWAY_DIR:=${HOME}/gateway}"
@@ -25,7 +26,10 @@ gl_path_for_zkstack
 : "${L1_NETWORK:=localhost}"
 : "${GATEWAY_WALLET_CREATION:=}"
 : "${GATEWAY_WALLET_PATH:=${GATEWAY_DIR}.wallets.yaml}"
+gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
+gl_resolve_gateway_dir planned
+gl_acquire_gateway_launch_lock
 
 if [ -z "${GATEWAY_WALLET_CREATION}" ]; then
   GATEWAY_WALLET_CREATION="$(gl_wallet_creation_for_path "${GATEWAY_WALLET_PATH}")"
@@ -43,7 +47,15 @@ if [ "${GATEWAY_WALLET_CREATION}" = "in-file" ]; then
   wallet_args+=(--wallet-path "${GATEWAY_WALLET_PATH}")
 fi
 
-gl_zkstack_pty zkstack ecosystem create \
+# SYSCOIN: the pinned era superproject records an older contracts gitlink than
+# the independently pinned, attested Syscoin contracts postimage. Scope Git's
+# documented `update=none` policy to this child process so zkstack preserves
+# only that submodule while continuing to initialize its other submodules.
+gl_zkstack_private_pty env \
+  GIT_CONFIG_COUNT=1 \
+  GIT_CONFIG_KEY_0=submodule.contracts.update \
+  GIT_CONFIG_VALUE_0=none \
+  zkstack ecosystem create \
   --ecosystem-name "${GATEWAY_ECOSYSTEM_NAME}" \
   --l1-network "${L1_NETWORK}" \
   --link-to-code "${ZKSYNC_ERA_PATH}" \
@@ -68,14 +80,15 @@ gl_secure_generated_wallet_file "${GATEWAY_DIR}/configs/wallets.yaml"
 if [ -f "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml" ]; then
   gl_secure_generated_wallet_file "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
 fi
-
-# `zkstack ecosystem create --link-to-code` runs a recursive submodule update on the linked
-# checkout, which resets `contracts/` to the top-level repo's recorded submodule revision.
-# Restore the versions.yaml-pinned contracts SHA before subsequent gateway-launch steps.
-gl_checkout_contracts_sha
-gl_assert_contracts_sha
+gl_bind_gateway_launch_context
+gl_assert_gateway_chain_config_matches_expected
 
 if [ "${GATEWAY_WALLET_CREATION}" = "random" ] && [ ! -e "${GATEWAY_WALLET_PATH}" ] && [ ! -L "${GATEWAY_WALLET_PATH}" ]; then
   gl_persist_wallet_file "${GATEWAY_DIR}/configs/wallets.yaml" "${GATEWAY_WALLET_PATH}"
   echo "gateway-launch: persisted ecosystem wallets to ${GATEWAY_WALLET_PATH}"
 fi
+
+# Re-attest both the contracts HEAD and the complete reviewed postimage after
+# returning from the subprocess; the scoped Git policy must not become trust.
+gl_ensure_era_contracts_syscoin_postimage
+gl_assert_contracts_sha

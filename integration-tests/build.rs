@@ -101,6 +101,9 @@ fn main() {
         .arg("build")
         .arg("--root")
         .arg("test-contracts")
+        // SYSCOIN: The Rust crate embeds artifacts from src/ only. Solidity
+        // tests have deployment-only Era deps and run separately with Forge.
+        .arg("src")
         .output()
     {
         Ok(output) if output.status.success() => {

@@ -6,11 +6,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_execute_operator_lock.sh"
+CONFIG_CHECK_ONLY=false
+if [ "${1:-}" = "--check-only" ]; then
+  CONFIG_CHECK_ONLY=true
+  shift
+fi
+[ "$#" -eq 0 ] || gl_die "usage: generate-os-server-configs.sh [--check-only]"
 gl_validate_prover_mode
 gl_reject_no_proofs_on_mainnet
 
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH
+if [ "${CONFIG_CHECK_ONLY}" != true ]; then
+  gl_acquire_gateway_launch_lock
+fi
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
@@ -222,6 +231,21 @@ export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
 export PROVER_MODE
+export CONFIG_CHECK_ONLY
+
+# SYSCOIN: A standalone config materialization must remain bound to the exact
+# deployment identity already checkpointed for this workspace. Check-only is
+# deliberately read-only; mutating generation reuses the lock acquired above.
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
+gl_require L1_RPC_URL
+gl_validate_l1_network_pair
+gl_resolve_required_source_pins
+if [ "${CONFIG_CHECK_ONLY}" = true ]; then
+  gl_checkpoint_assert_fingerprint_matches
+else
+  gl_bind_gateway_launch_context
+fi
 
 # SYSCOIN: Refuse to materialize an edge signer whose declared address does not
 # match its private key. The generated start script repeats this check against
@@ -238,6 +262,18 @@ import re
 import shutil
 import tempfile
 import yaml
+
+check_only = os.environ.get("CONFIG_CHECK_ONLY", "false") == "true"
+
+
+def require_regular_file(path: Path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise SystemExit(f"materialized config is missing: {path}") from None
+    if path.is_symlink() or not path.is_file():
+        raise SystemExit(f"materialized config is not a regular file: {path}")
+    return info
 
 
 def load_yaml_base(path: Path):
@@ -269,17 +305,33 @@ def normalize_address(value: str, label: str) -> str:
 
 
 def write_text(path: Path, text: str):
+    if check_only:
+        require_regular_file(path)
+        if path.read_text(encoding="utf-8") != text:
+            raise SystemExit(f"materialized config differs from effective inputs: {path}")
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
 
 
 def remove_if_exists(path: Path):
+    if check_only and (path.exists() or path.is_symlink()):
+        raise SystemExit(f"stale materialized config must be absent: {path}")
+    if check_only:
+        return
     path.unlink(missing_ok=True)
 
 
 def write_secret_text(path: Path, text: str, mode: int = 0o600):
     # SYSCOIN: generated OS server configs contain operator private keys; create
     # them independent of the caller's umask so staging artifacts are not world-readable.
+    if check_only:
+        info = require_regular_file(path)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise SystemExit(f"materialized secret file has unsafe ownership/mode: {path}")
+        if path.read_text(encoding="utf-8") != text:
+            raise SystemExit(f"materialized secret config differs from effective inputs: {path}")
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = None
     try:
@@ -299,6 +351,31 @@ def write_secret_text(path: Path, text: str, mode: int = 0o600):
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def copy_materialized(source: Path, destination: Path, mode: int | None = None):
+    if check_only:
+        info = require_regular_file(destination)
+        if destination.read_bytes() != source.read_bytes():
+            raise SystemExit(f"materialized copy differs from source: {destination}")
+        if mode is not None and (
+            info.st_uid != os.geteuid() or info.st_mode & 0o077
+        ):
+            raise SystemExit(f"materialized secret file has unsafe ownership/mode: {destination}")
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    if mode is not None:
+        destination.chmod(mode)
+
+
+def ensure_mode(path: Path, mode: int):
+    if check_only:
+        info = require_regular_file(path)
+        if info.st_mode & 0o777 != mode:
+            raise SystemExit(f"materialized config has wrong mode: {path}")
+        return
+    path.chmod(mode)
 
 
 def yaml_scalar(value: str) -> str:
@@ -351,24 +428,30 @@ def patch_zkstack_gateway_chain_rpc_files(
     if gen.exists():
         data = yaml.safe_load(gen.read_text(encoding="utf-8"))
         if data is not None:
+            original = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
             sync_zkstack_gateway_l2_rpc_in_yaml(data, port)
-            gen.write_text(
-                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
+            updated = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+            if check_only:
+                if original != updated:
+                    raise SystemExit(f"zkstack Gateway RPC config differs from effective port: {gen}")
+            else:
+                gen.write_text(updated, encoding="utf-8")
     ext = cfg_dir / "external_node.yaml"
     if ext.exists():
         data = yaml.safe_load(ext.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("main_node_url"), str):
+            original = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
             port_s = str(port)
             mu = data["main_node_url"]
             mu = re.sub(r"127\.0\.0\.1:\d+", f"127.0.0.1:{port_s}", mu)
             mu = re.sub(r"localhost:\d+", f"localhost:{port_s}", mu)
             data["main_node_url"] = mu
-            ext.write_text(
-                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
+            updated = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+            if check_only:
+                if original != updated:
+                    raise SystemExit(f"zkstack Gateway external-node config differs from effective port: {ext}")
+            else:
+                ext.write_text(updated, encoding="utf-8")
 
 
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
@@ -521,7 +604,11 @@ def materialize_chain(
     if not source_dir.exists():
         return
     out_dir = output_root / chain_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if check_only:
+        if not out_dir.is_dir() or out_dir.is_symlink():
+            raise SystemExit(f"materialized chain config directory is missing or unsafe: {out_dir}")
+    else:
+        out_dir.mkdir(parents=True, exist_ok=True)
 
     wallets_yaml = source_dir / "wallets.yaml"
     genesis_json = source_dir / "genesis.json"
@@ -750,12 +837,11 @@ def materialize_chain(
 
     write_secret_text(out_dir / "config.yaml", "\n".join(config_lines))
 
-    shutil.copy2(contracts_source, out_dir / "contracts.yaml")
-    shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
+    copy_materialized(contracts_source, out_dir / "contracts.yaml")
+    copy_materialized(wallets_yaml, out_dir / "wallets.yaml", mode=0o600)
     # SYSCOIN: wallets.yaml is copied for operator convenience but still carries
     # private keys, so force the generated copy to owner-only permissions.
-    (out_dir / "wallets.yaml").chmod(0o600)
-    shutil.copy2(genesis_json, out_dir / "genesis.json")
+    copy_materialized(genesis_json, out_dir / "genesis.json")
 
     config_path = out_dir / "config.yaml"
     start_config_args = f'--config "{config_path}"'
@@ -868,7 +954,7 @@ export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
 exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
-    (out_dir / "start-node.sh").chmod(0o755)
+    ensure_mode(out_dir / "start-node.sh", 0o755)
 
     if prover_api_nginx_enabled:
         write_text(
@@ -879,7 +965,7 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
         remove_if_exists(out_dir / "prover-api.nginx.conf")
     stale_proxy_helper = out_dir / "start-prover-api-proxy.sh"
     if stale_proxy_helper.exists():
-        stale_proxy_helper.unlink()
+        remove_if_exists(stale_proxy_helper)
 
 materialize_chain(
     chain_name=os.environ["GATEWAY_CHAIN_NAME"],
@@ -957,7 +1043,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 """
         write_text(output_root / "install-prover-api-nginx.sh", install_script)
-        (output_root / "install-prover-api-nginx.sh").chmod(0o755)
+        ensure_mode(output_root / "install-prover-api-nginx.sh", 0o755)
     else:
         remove_if_exists(output_root / "prover-api.nginx.conf")
         remove_if_exists(output_root / "install-prover-api-nginx.sh")
@@ -973,6 +1059,6 @@ patch_zkstack_gateway_chain_rpc_files(
 print(output_root)
 PY
 
-if [ -n "${BITCOIN_DA_RPC_URL}" ]; then
+if [ "${CONFIG_CHECK_ONLY}" != true ] && [ -n "${BITCOIN_DA_RPC_URL}" ]; then
   gl_prepare_bitcoin_da_wallet
 fi

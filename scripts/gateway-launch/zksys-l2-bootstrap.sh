@@ -11,7 +11,31 @@ gl_export_foundry_evm_version
 gl_require ZKSYS_L2_RPC_URL
 gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 gl_require ZKSYS_ISSUER_START_TIME
+: "${GATEWAY_DIR:=${HOME}/gateway}"
+: "${EDGE_CHAIN_NAME:=zksys}"
+export GATEWAY_DIR EDGE_CHAIN_NAME L1_CHAIN_ID L1_NETWORK
+gl_require L1_NETWORK
+gl_require L1_CHAIN_ID
+gl_validate_l1_network_pair
+gl_assert_edge_chain_config_matches_expected
+# SYSCOIN: CREATE2 and role wiring must target the selected edge, never a
+# same-looking Gateway or sibling RPC supplied by mistake.
+gl_assert_rpc_chain_id_matches_config \
+  "${ZKSYS_L2_RPC_URL}" "${EDGE_CHAIN_NAME}" "edge"
 : "${ZKSYNC_ERA_PATH:=$(cd "${ZKSYNC_OS_SERVER_PATH}/.." && pwd)/zksync-era}"
+# SYSCOIN: This helper compiles and grants roles to privileged L2 contracts.
+# Bind its caller-selected Era workspace and every deterministic deployment
+# input to the same reviewed V32 launch before deriving any init code.
+: "${PROTOCOL_VERSION:=v32.0}"
+export PROTOCOL_VERSION ZKSYNC_ERA_PATH
+gl_resolve_required_source_pins
+gl_assert_zksync_era_sha
+gl_assert_contracts_sha
+gl_ensure_era_contracts_syscoin_postimage
+gl_normalize_canonical_deployment_inputs
+gl_require L1_RPC_URL
+gl_l1_broadcast_preflight
+gl_bind_gateway_launch_context
 
 # SYSCOIN: exact Arachnid deterministic-deployment-proxy attestation. Merely
 # finding code at this address is insufficient on a custom-genesis chain.
@@ -237,12 +261,14 @@ prepare_zksys_l2_wallet_args() {
   account)
     account_name="${ZKSYS_L2_DEPLOYER_ACCOUNT_NAME:-${DEPLOYER_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}}"
     [ -n "${account_name}" ] || gl_die "ZKSYS_L2_DEPLOYER_ACCOUNT_NAME must not be empty"
+    gl_validate_foundry_account_keystore \
+      "${account_name}" "ZKSYS_L2_DEPLOYER_ACCOUNT_NAME"
     ZKSYS_L2_CAST_WALLET_ARGS+=(--account "${account_name}")
     ;;
   keystore)
     keystore_path="${ZKSYS_L2_DEPLOYER_KEYSTORE:-${DEPLOYER_KEYSTORE:-${FUNDER_KEYSTORE:-}}}"
     [ -n "${keystore_path}" ] || gl_die "ZKSYS_L2_DEPLOYER_KEYSTORE is required when ZKSYS_L2_DEPLOYER_SIGNER=keystore"
-    [ -f "${keystore_path}" ] || gl_die "ZKSYS_L2_DEPLOYER_KEYSTORE does not exist: ${keystore_path}"
+    gl_validate_secret_file "${keystore_path}" "ZKSYS_L2_DEPLOYER_KEYSTORE"
     ZKSYS_L2_CAST_WALLET_ARGS+=(--keystore "${keystore_path}")
     ;;
   ledger)
@@ -264,20 +290,26 @@ prepare_zksys_l2_wallet_args() {
 
   password_file="${ZKSYS_L2_DEPLOYER_PASSWORD_FILE:-${DEPLOYER_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}}"
   if [ -n "${password_file}" ]; then
-    [ -f "${password_file}" ] || gl_die "ZKSYS_L2_DEPLOYER_PASSWORD_FILE does not exist: ${password_file}"
+    gl_validate_secret_file "${password_file}" "ZKSYS_L2_DEPLOYER_PASSWORD_FILE"
     ZKSYS_L2_CAST_WALLET_ARGS+=(--password-file "${password_file}")
   fi
 }
 
 ZKSYS_L2_CREATE2_DEPLOYER="$(normalize_nonzero_address_env ZKSYS_L2_CREATE2_DEPLOYER)"
 ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_nonzero_address_env ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
-if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${ZERO_ADDRESS}" ]; then
-  configured_l1_registry_bridge="$(load_l1_registry_bridge_address_from_gateway_config || true)"
-  if [ -n "${configured_l1_registry_bridge}" ]; then
-    ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${configured_l1_registry_bridge}"
-  fi
+configured_l1_registry_bridge="$(load_l1_registry_bridge_address_from_gateway_config || true)"
+if [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${ZERO_ADDRESS}" ] &&
+  [ -n "${configured_l1_registry_bridge}" ]; then
+  ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${configured_l1_registry_bridge}"
 fi
 ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="$(normalize_address_env ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS)"
+if [ "${L1_NETWORK}" = tanenbaum ] || [ "${L1_NETWORK}" = mainnet ]; then
+  [ -n "${configured_l1_registry_bridge}" ] &&
+    [ "${configured_l1_registry_bridge}" != "${ZERO_ADDRESS}" ] ||
+    gl_die "canonical L2 bootstrap requires persisted zksys.l1_registry_bridge_addr"
+  [ "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}" = "${configured_l1_registry_bridge}" ] ||
+    gl_die "ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS must equal persisted zksys.l1_registry_bridge_addr"
+fi
 export ZKSYS_L2_CREATE2_DEPLOYER
 export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
@@ -285,7 +317,7 @@ export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
 case "${ZKSYS_L2_TOKEN_DECIMALS}" in
 ''|*[!0-9]*) gl_die "ZKSYS_L2_TOKEN_DECIMALS must be a uint8" ;;
 esac
-[ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 255 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 255"
+[ "${ZKSYS_L2_TOKEN_DECIMALS}" -le 59 ] || gl_die "ZKSYS_L2_TOKEN_DECIMALS must be <= 59"
 for schedule_var in ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS; do
   case "${!schedule_var}" in
   ''|*[!0-9]*) gl_die "${schedule_var} must be a decimal uint256" ;;
@@ -322,6 +354,135 @@ ZKSYS_L2_ISSUER_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_ISSUER_PROXY_SALT 0
 ZKSYS_L2_STAKING_VAULT_IMPL_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_IMPL_SALT 0x7a6b7379732d7374616b696e672d7661756c742d696d706c0000000000000000)"
 ZKSYS_L2_STAKING_VAULT_PROXY_SALT="$(normalize_bytes32_env ZKSYS_L2_STAKING_VAULT_PROXY_SALT 0x7a6b7379732d7374616b696e672d7661756c742d70726f787900000000000000)"
 ZKSYS_L2_GAS_TANK_SALT="$(normalize_bytes32_env ZKSYS_L2_GAS_TANK_SALT 0x7a6b7379732d6761732d74616e6b000000000000000000000000000000000000)"
+export ZKSYS_L2_PROXY_ADMIN_SALT ZKSYS_L2_TOKEN_IMPL_SALT ZKSYS_L2_TOKEN_PROXY_SALT
+export ZKSYS_L2_REGISTRY_IMPL_SALT ZKSYS_L2_REGISTRY_PROXY_SALT
+export ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT
+export ZKSYS_L2_ISSUER_IMPL_SALT ZKSYS_L2_ISSUER_PROXY_SALT
+export ZKSYS_L2_STAKING_VAULT_IMPL_SALT ZKSYS_L2_STAKING_VAULT_PROXY_SALT
+export ZKSYS_L2_GAS_TANK_SALT ZKSYS_L2_TOKEN_NAME ZKSYS_L2_TOKEN_SYMBOL
+export ZKSYS_L2_TOKEN_DECIMALS ZKSYS_ISSUER_START_TIME ZKSYS_ISSUER_PERIOD_SECONDS
+export ZKSYS_ISSUER_PERIODS_PER_YEAR ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS
+
+bind_zksys_l2_bootstrap_manifest() {
+  local manifest_path
+  manifest_path="$(gl_checkpoint_state_dir)/zksys-l2-bootstrap.json"
+  python3 - \
+    "${manifest_path}" "${GL_DIR}" \
+    "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+import yaml
+
+manifest_path = Path(sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from _checkpoint_state_io import atomic_write_json
+
+chain_path = Path(sys.argv[3])
+chain = yaml.safe_load(chain_path.read_text(encoding="utf-8")) or {}
+chain_id = chain.get("chain_id")
+if isinstance(chain_id, str):
+    chain_id = int(chain_id, 0)
+if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id <= 0:
+    raise SystemExit(f"invalid edge chain id in {chain_path}")
+
+names = (
+    "ZKSYS_L2_PROXY_ADMIN_SALT",
+    "ZKSYS_L2_TOKEN_IMPL_SALT",
+    "ZKSYS_L2_TOKEN_PROXY_SALT",
+    "ZKSYS_L2_REGISTRY_IMPL_SALT",
+    "ZKSYS_L2_REGISTRY_PROXY_SALT",
+    "ZKSYS_L2_WEIGHT_REGISTRY_IMPL_SALT",
+    "ZKSYS_L2_WEIGHT_REGISTRY_PROXY_SALT",
+    "ZKSYS_L2_ISSUER_IMPL_SALT",
+    "ZKSYS_L2_ISSUER_PROXY_SALT",
+    "ZKSYS_L2_STAKING_VAULT_IMPL_SALT",
+    "ZKSYS_L2_STAKING_VAULT_PROXY_SALT",
+    "ZKSYS_L2_GAS_TANK_SALT",
+    "ZKSYS_L2_TOKEN_NAME",
+    "ZKSYS_L2_TOKEN_SYMBOL",
+    "ZKSYS_L2_TOKEN_DECIMALS",
+    "ZKSYS_ISSUER_START_TIME",
+    "ZKSYS_ISSUER_PERIOD_SECONDS",
+    "ZKSYS_ISSUER_PERIODS_PER_YEAR",
+    "ZKSYS_WEIGHT_ACTIVATION_DELAY_PERIODS",
+)
+derived_names = (
+    "ZKSYS_L2_PROXY_ADMIN_ADDRESS",
+    "ZKSYS_L2_TOKEN_IMPL_ADDRESS",
+    "ZKSYS_L2_TOKEN_ADDRESS",
+    "ZKSYS_L2_REGISTRY_IMPL_ADDRESS",
+    "ZKSYS_L2_REGISTRY_ADDRESS",
+    "ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS",
+    "ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS",
+    "ZKSYS_L2_ISSUER_IMPL_ADDRESS",
+    "ZKSYS_L2_ISSUER_ADDRESS",
+    "ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS",
+    "ZKSYS_L2_STAKING_VAULT_ADDRESS",
+    "ZKSYS_L2_GAS_TANK_ADDRESS",
+)
+init_hash_names = (
+    "ZKSYS_L2_PROXY_ADMIN_INIT_CODE_HASH",
+    "ZKSYS_L2_TOKEN_IMPL_INIT_CODE_HASH",
+    "ZKSYS_L2_TOKEN_PROXY_INIT_CODE_HASH",
+    "ZKSYS_L2_REGISTRY_IMPL_INIT_CODE_HASH",
+    "ZKSYS_L2_REGISTRY_PROXY_INIT_CODE_HASH",
+    "ZKSYS_L2_WEIGHT_REGISTRY_IMPL_INIT_CODE_HASH",
+    "ZKSYS_L2_WEIGHT_REGISTRY_PROXY_INIT_CODE_HASH",
+    "ZKSYS_L2_ISSUER_IMPL_INIT_CODE_HASH",
+    "ZKSYS_L2_ISSUER_PROXY_INIT_CODE_HASH",
+    "ZKSYS_L2_STAKING_VAULT_IMPL_INIT_CODE_HASH",
+    "ZKSYS_L2_STAKING_VAULT_PROXY_INIT_CODE_HASH",
+    "ZKSYS_L2_GAS_TANK_INIT_CODE_HASH",
+)
+
+
+def normalized_hex(name, nybbles):
+    value = os.environ[name].strip().lower()
+    if not re.fullmatch(rf"0x[0-9a-f]{{{nybbles}}}", value):
+        raise SystemExit(f"invalid derived bootstrap identity {name}")
+    return value
+
+
+payload = {
+    "schema_version": 2,
+    "protocol_version": os.environ["PROTOCOL_VERSION"],
+    "required_zkstack_cli_sha": os.environ["REQUIRED_ZKSTACK_CLI_SHA"],
+    "required_contracts_sha": os.environ["REQUIRED_CONTRACTS_SHA"],
+    "l1_chain_id": os.environ["L1_CHAIN_ID"],
+    "l1_network": os.environ["L1_NETWORK"],
+    "edge_chain_name": os.environ.get("EDGE_CHAIN_NAME", "zksys"),
+    "edge_chain_id": str(chain_id),
+    "l2_rpc_url_sha256": hashlib.sha256(os.environ["ZKSYS_L2_RPC_URL"].encode()).hexdigest(),
+    "l2_create2_deployer": os.environ["ZKSYS_L2_CREATE2_DEPLOYER"].lower(),
+    "l2_token_admin": os.environ["ZKSYS_L2_TOKEN_ADMIN_ADDRESS"].lower(),
+    "l1_registry_bridge": os.environ["ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS"].lower(),
+    "inputs": {name: os.environ[name] for name in names},
+    "derived_addresses": {name: normalized_hex(name, 40) for name in derived_names},
+    "init_code_hashes": {name: normalized_hex(name, 64) for name in init_hash_names},
+}
+
+if manifest_path.exists() or manifest_path.is_symlink():
+    info = os.lstat(manifest_path)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise SystemExit(f"unsafe zkSYS bootstrap manifest: {manifest_path}")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(f"unsafe zkSYS bootstrap manifest ownership/mode: {manifest_path}")
+    current = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if current != payload:
+        changed = sorted(key for key in payload if current.get(key) != payload.get(key))
+        raise SystemExit(
+            "zkSYS bootstrap identity differs from its first run: " + ", ".join(changed)
+        )
+else:
+    atomic_write_json(manifest_path, payload)
+PY
+}
 
 inspect_dir="${ZKSYNC_OS_SERVER_PATH}/contracts"
 [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
@@ -384,6 +545,12 @@ ZKSYS_L2_REGISTRY_ADDRESS="$(
     --salt "${ZKSYS_L2_REGISTRY_PROXY_SALT}" \
     --init-code "${registry_proxy_init_code}"
 )"
+
+if [ "${L1_NETWORK}" = tanenbaum ] || [ "${L1_NETWORK}" = mainnet ]; then
+  # SYSCOIN: setL1RegistryBridge is one-shot. Reuse the full deterministic L1
+  # deployment attestor without its signer or mutation paths before any L2 send.
+  "${SCRIPT_DIR}/zksys-l1-registry-bridge-only.sh" --check-only
+fi
 
 weight_registry_impl_init_code="$(forge_inspect_bytecode ZkSysRewardWeightRegistry)"
 ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS="$(
@@ -476,6 +643,35 @@ PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 [ "$(printf '%s' "${ZKSYS_L2_GAS_TANK_ADDRESS}" | tr '[:upper:]' '[:lower:]')" = \
   "${PUBLISHED_GAS_TANK_ADDRESS}" ] || \
   gl_die "derived gas tank ${ZKSYS_L2_GAS_TANK_ADDRESS} differs from the canonical app value ${PUBLISHED_GAS_TANK_ADDRESS}; changing it requires a new app, VK, and verifier"
+
+# SYSCOIN: Bind both the normalized inputs and their complete derived CREATE2
+# graph before the first deployment. A retry after any source/tooling change
+# therefore fails closed instead of creating a second privileged contract set.
+ZKSYS_L2_PROXY_ADMIN_INIT_CODE_HASH="$(cast keccak "${proxy_admin_init_code}")"
+ZKSYS_L2_TOKEN_IMPL_INIT_CODE_HASH="$(cast keccak "${token_impl_init_code}")"
+ZKSYS_L2_TOKEN_PROXY_INIT_CODE_HASH="$(cast keccak "${token_proxy_init_code}")"
+ZKSYS_L2_REGISTRY_IMPL_INIT_CODE_HASH="$(cast keccak "${registry_impl_init_code}")"
+ZKSYS_L2_REGISTRY_PROXY_INIT_CODE_HASH="$(cast keccak "${registry_proxy_init_code}")"
+ZKSYS_L2_WEIGHT_REGISTRY_IMPL_INIT_CODE_HASH="$(cast keccak "${weight_registry_impl_init_code}")"
+ZKSYS_L2_WEIGHT_REGISTRY_PROXY_INIT_CODE_HASH="$(cast keccak "${weight_registry_proxy_init_code}")"
+ZKSYS_L2_ISSUER_IMPL_INIT_CODE_HASH="$(cast keccak "${issuer_impl_init_code}")"
+ZKSYS_L2_ISSUER_PROXY_INIT_CODE_HASH="$(cast keccak "${issuer_proxy_init_code}")"
+ZKSYS_L2_STAKING_VAULT_IMPL_INIT_CODE_HASH="$(cast keccak "${staking_vault_impl_init_code}")"
+ZKSYS_L2_STAKING_VAULT_PROXY_INIT_CODE_HASH="$(cast keccak "${staking_vault_proxy_init_code}")"
+ZKSYS_L2_GAS_TANK_INIT_CODE_HASH="${gas_tank_init_code_hash}"
+export ZKSYS_L2_PROXY_ADMIN_ADDRESS ZKSYS_L2_TOKEN_IMPL_ADDRESS ZKSYS_L2_TOKEN_ADDRESS
+export ZKSYS_L2_REGISTRY_IMPL_ADDRESS ZKSYS_L2_REGISTRY_ADDRESS
+export ZKSYS_L2_WEIGHT_REGISTRY_IMPL_ADDRESS ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS
+export ZKSYS_L2_ISSUER_IMPL_ADDRESS ZKSYS_L2_ISSUER_ADDRESS
+export ZKSYS_L2_STAKING_VAULT_IMPL_ADDRESS ZKSYS_L2_STAKING_VAULT_ADDRESS
+export ZKSYS_L2_GAS_TANK_ADDRESS
+export ZKSYS_L2_PROXY_ADMIN_INIT_CODE_HASH ZKSYS_L2_TOKEN_IMPL_INIT_CODE_HASH
+export ZKSYS_L2_TOKEN_PROXY_INIT_CODE_HASH ZKSYS_L2_REGISTRY_IMPL_INIT_CODE_HASH
+export ZKSYS_L2_REGISTRY_PROXY_INIT_CODE_HASH ZKSYS_L2_WEIGHT_REGISTRY_IMPL_INIT_CODE_HASH
+export ZKSYS_L2_WEIGHT_REGISTRY_PROXY_INIT_CODE_HASH ZKSYS_L2_ISSUER_IMPL_INIT_CODE_HASH
+export ZKSYS_L2_ISSUER_PROXY_INIT_CODE_HASH ZKSYS_L2_STAKING_VAULT_IMPL_INIT_CODE_HASH
+export ZKSYS_L2_STAKING_VAULT_PROXY_INIT_CODE_HASH ZKSYS_L2_GAS_TANK_INIT_CODE_HASH
+bind_zksys_l2_bootstrap_manifest
 
 require_create2_deployer
 deploy_create2 "zkSYS proxy admin" "${ZKSYS_L2_PROXY_ADMIN_ADDRESS}" "${ZKSYS_L2_PROXY_ADMIN_SALT}" "${proxy_admin_init_code}"

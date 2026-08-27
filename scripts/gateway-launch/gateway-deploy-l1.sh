@@ -12,8 +12,14 @@ gl_require ZKSYNC_ERA_PATH
 gl_require ZKSYNC_OS_SERVER_PATH
 gl_require L1_RPC_URL
 gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
+gl_validate_l1_network_pair
+gl_reject_no_proofs_on_mainnet
+gl_validate_l1_signer_policy
+gl_normalize_canonical_deployment_inputs
 # SYSCOIN: Deploy the pinned L1 contracts for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
+export PROTOCOL_VERSION
 export REQUIRED_CONTRACTS_SHA="${REQUIRED_CONTRACTS_SHA:-$(gl_contracts_sha_from_versions)}"
 export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
 gl_assert_contracts_sha
@@ -21,24 +27,34 @@ gl_assert_zksync_era_sha
 gl_path_for_zkstack
 
 gl_export_foundry_evm_version
+# SYSCOIN: Keep every Forge/zkstack artifact inspection and broadcast on the
+# reviewed profile even when the operator environment exports another profile.
+export FOUNDRY_PROFILE=default
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
+# SYSCOIN: Bind direct invocation to the same serialized deployment identity
+# as the canonical launcher before Forge can broadcast.
+gl_bind_gateway_launch_context
+gl_assert_gateway_chain_config_matches_expected
 gl_l1_broadcast_preflight
 
 cd "${GATEWAY_DIR}"
-bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-era-contracts-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}/contracts"
+gl_ensure_era_contracts_syscoin_postimage
 
 gl_ensure_zkstack_cli_release_current
 
+# SYSCOIN: Keep the real deployment artifacts on the configured Syscoin L1
+# target. Canonical L2 genesis reproduction uses an isolated Prague build below.
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
-forge build --skip test
+FOUNDRY_PROFILE=default FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION}" \
+  forge build --skip test --force
 
 mkdir -p "${ZKSYNC_ERA_PATH}/etc/env/file_based"
 SYSCOIN_CANONICAL_GENESIS="${ZKSYNC_ERA_PATH}/contracts/configs/genesis/zksync-os/latest.json"
 SYSCOIN_GENERATED_GENESIS="${ZKSYNC_ERA_PATH}/etc/env/file_based/genesis.json"
 SYSCOIN_CANONICAL_GENESIS_SHA256="5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95"
 # SYSCOIN: A stale upstream genesis artifact survived the gatewayChainId tuple-layout
-# change. Bind launch to the exact fully regenerated postimage before the generator can
-# rewrite its in-tree input, then require the emitted launch file to be byte-identical.
+# change. Bind launch to the exact fully regenerated postimage, then reproduce it from
+# an isolated Prague artifact tree without letting the generator rewrite reviewed source.
 python3 - "${SYSCOIN_CANONICAL_GENESIS}" "${SYSCOIN_CANONICAL_GENESIS_SHA256}" <<'PY'
 import hashlib
 import sys
@@ -53,36 +69,86 @@ if actual != expected:
         f"expected={expected} actual={actual}"
     )
 PY
-cd "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen"
-cargo run \
-  --locked \
-  --release \
-  --bin zksync-os-genesis-gen \
-  -- \
-  --output-file "${SYSCOIN_GENERATED_GENESIS}"
-python3 - \
-  "${SYSCOIN_CANONICAL_GENESIS}" \
-  "${SYSCOIN_GENERATED_GENESIS}" \
-  "${SYSCOIN_CANONICAL_GENESIS_SHA256}" <<'PY'
+(
+  SYSCOIN_GENESIS_WORK_DIR=""
+  cleanup_genesis_work_dir() {
+    local rc=$?
+    trap - EXIT HUP INT TERM
+    local cleanup_rc=0
+    if [ -n "${SYSCOIN_GENESIS_WORK_DIR}" ]; then
+      rm -rf -- "${SYSCOIN_GENESIS_WORK_DIR:?}" || cleanup_rc=$?
+    fi
+    if [ "${rc}" -ne 0 ]; then
+      exit "${rc}"
+    fi
+    exit "${cleanup_rc}"
+  }
+  trap cleanup_genesis_work_dir EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  SYSCOIN_GENESIS_WORK_DIR="$(mktemp -d "${ZKSYNC_ERA_PATH}/.syscoin-genesis.XXXXXX")"
+
+  SYSCOIN_REVIEWED_GENESIS="${SYSCOIN_GENESIS_WORK_DIR}/reviewed.json"
+  SYSCOIN_TEMP_CANONICAL_GENESIS="${SYSCOIN_GENESIS_WORK_DIR}/contracts/configs/genesis/zksync-os/latest.json"
+  SYSCOIN_TEMP_GENERATED_GENESIS="${SYSCOIN_GENESIS_WORK_DIR}/generated.json"
+  mkdir -p \
+    "${SYSCOIN_GENESIS_WORK_DIR}/contracts/configs/genesis/zksync-os" \
+    "${SYSCOIN_GENESIS_WORK_DIR}/contracts/l1-contracts" \
+    "${SYSCOIN_GENESIS_WORK_DIR}/contracts/tools/zksync-os-genesis-gen"
+  cp -p -- "${SYSCOIN_CANONICAL_GENESIS}" "${SYSCOIN_REVIEWED_GENESIS}"
+  cp -p -- "${SYSCOIN_CANONICAL_GENESIS}" "${SYSCOIN_TEMP_CANONICAL_GENESIS}"
+
+  cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
+  FOUNDRY_PROFILE=default FOUNDRY_EVM_VERSION=prague \
+    forge build \
+      --skip test \
+      --force \
+      --out "${SYSCOIN_GENESIS_WORK_DIR}/contracts/l1-contracts/out" \
+      --cache-path "${SYSCOIN_GENESIS_WORK_DIR}/forge-cache"
+
+  cd "${SYSCOIN_GENESIS_WORK_DIR}/contracts/tools/zksync-os-genesis-gen"
+  cargo +nightly-2026-01-22 run \
+    --manifest-path "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen/Cargo.toml" \
+    --locked \
+    --release \
+    --bin zksync-os-genesis-gen \
+    -- \
+    --output-file "${SYSCOIN_TEMP_GENERATED_GENESIS}"
+  python3 - \
+    "${SYSCOIN_REVIEWED_GENESIS}" \
+    "${SYSCOIN_TEMP_CANONICAL_GENESIS}" \
+    "${SYSCOIN_TEMP_GENERATED_GENESIS}" \
+    "${SYSCOIN_GENERATED_GENESIS}" \
+    "${SYSCOIN_CANONICAL_GENESIS_SHA256}" <<'PY'
 import hashlib
+import os
 import sys
 from pathlib import Path
 
-canonical_path, generated_path = map(Path, sys.argv[1:3])
-expected = sys.argv[3]
+snapshot_path, canonical_path, generated_path, destination_path = map(Path, sys.argv[1:5])
+expected = sys.argv[5]
+reviewed = snapshot_path.read_bytes()
 canonical = canonical_path.read_bytes()
 generated = generated_path.read_bytes()
-if generated != canonical:
-    raise SystemExit("generated Syscoin V32 genesis is not byte-identical to the committed config")
+if canonical != reviewed:
+    raise SystemExit("generator rewrote the reviewed Syscoin V32 genesis")
+if generated != reviewed:
+    raise SystemExit("generated Syscoin V32 genesis is not byte-identical to the reviewed snapshot")
 actual = hashlib.sha256(generated).hexdigest()
 if actual != expected:
     raise SystemExit(
         f"generated Syscoin V32 genesis digest mismatch: expected={expected} actual={actual}"
     )
+generated_path.chmod(0o644)
+os.replace(generated_path, destination_path)
+if destination_path.read_bytes() != reviewed:
+    raise SystemExit("installed Syscoin V32 genesis differs from the reviewed snapshot")
 PY
+)
 
 cd "${GATEWAY_DIR}"
-gl_zkstack_pty zkstack dev contracts
+gl_zkstack_pty env FOUNDRY_PROFILE=default zkstack dev contracts
 
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 export PERMANENT_VALUES_INPUT="/script-config/permanent-values.toml"
@@ -149,6 +215,11 @@ if v < 0 or v >= (1 << 160):
 print("0x" + format(v, "040x"))
 PY
 )"
+if [ "${L1_NETWORK}" = "tanenbaum" ] || [ "${L1_NETWORK}" = "mainnet" ]; then
+  canonical_create2_factory="0x4e59b44847b379578588920ca78fbf26c0b4956c"
+  [ "$(gl_to_lower "${CREATE2_FACTORY_ADDR}")" = "${canonical_create2_factory}" ] ||
+    gl_die "create2_factory_addr must be the canonical Arachnid factory ${canonical_create2_factory}"
+fi
 
 case "${L1_CHAIN_ID}" in
 5700)
@@ -200,7 +271,7 @@ import os
 import sys
 
 name, default = sys.argv[1:]
-raw = os.environ.get(name, default).strip()
+raw = (os.environ.get(name) or default).strip()
 if raw.startswith(("0x", "0X")):
     value = int(raw[2:] or "0", 16)
 elif raw.isdecimal():
@@ -222,8 +293,20 @@ name, raw = sys.argv[1:]
 addr = raw.strip()
 if not addr.startswith(("0x", "0X")) or len(addr) != 42:
     raise SystemExit(f"{name} must be a 20-byte hex address")
-print("0x" + format(int(addr[2:], 16), "040x"))
+value = int(addr[2:], 16)
+if value == 0:
+    raise SystemExit(f"{name} must not be zero")
+print("0x" + format(value, "040x"))
 PY
+}
+
+normalize_zksys_create2_deployer() {
+  local deployer expected
+  deployer="$(normalize_zksys_address_var ZKSYS_L2_CREATE2_DEPLOYER)" || return $?
+  expected="0x4e59b44847b379578588920ca78fbf26c0b4956c"
+  [ "$(gl_to_lower "${deployer}")" = "${expected}" ] ||
+    gl_die "ZKSYS_L2_CREATE2_DEPLOYER must be the canonical Arachnid factory ${expected}"
+  printf '%s\n' "${deployer}"
 }
 
 normalize_zksys_uint_var() {
@@ -235,7 +318,7 @@ import os
 import sys
 
 name, default, max_raw = sys.argv[1:]
-raw = os.environ.get(name, default).strip()
+raw = (os.environ.get(name) or default).strip()
 if not raw.isdecimal():
     raise SystemExit(f"{name} must be an unsigned decimal integer")
 value = int(raw, 10)
@@ -259,11 +342,13 @@ forge_inspect_zksys_bytecode() {
 }
 
 derive_and_export_zksys_zk_token_asset_id() {
-  if [ "$(gl_to_lower "${L1_NETWORK:-}")" != "mainnet" ]; then
+  case "$(gl_to_lower "${L1_NETWORK:-}")" in
+  tanenbaum | mainnet) ;;
+  *)
     return 0
-  fi
+    ;;
+  esac
 
-  gl_require GATEWAY_CHAIN_ID
   gl_require ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   [ -d "${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts" ] ||
@@ -274,19 +359,18 @@ derive_and_export_zksys_zk_token_asset_id() {
   local create2_deployer proxy_admin_salt token_impl_salt token_proxy_salt
   local proxy_admin_ctor_args proxy_admin_init_code proxy_admin_address
   local token_impl_init_code token_impl_address token_init_data token_proxy_ctor_args token_proxy_init_code
-  local token_address encoded_asset_id_inputs
+  local token_address token_decimals zksys_origin_chain_id encoded_asset_id_inputs
 
   create2_deployer="${ZKSYS_L2_CREATE2_DEPLOYER:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
   export ZKSYS_L2_CREATE2_DEPLOYER="${create2_deployer}"
-  create2_deployer="$(normalize_zksys_address_var ZKSYS_L2_CREATE2_DEPLOYER)"
+  create2_deployer="$(normalize_zksys_create2_deployer)"
   ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
-  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
-    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
   export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   proxy_admin_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
   token_impl_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_TOKEN_IMPL_SALT 0x7a6b7379732d746f6b656e2d696d706c00000000000000000000000000000000)"
   token_proxy_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_TOKEN_PROXY_SALT 0x7a6b7379732d746f6b656e2d70726f7879000000000000000000000000000000)"
+  token_decimals="$(normalize_zksys_uint_var ZKSYS_L2_TOKEN_DECIMALS 18 59)"
 
   proxy_admin_ctor_args="$(cast abi-encode "constructor(address)" "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")"
   proxy_admin_init_code="$(forge_inspect_zksys_bytecode ZkSysProxyAdmin)${proxy_admin_ctor_args#0x}"
@@ -310,7 +394,7 @@ derive_and_export_zksys_zk_token_asset_id() {
       "initialize(string,string,uint8,address)" \
       "${ZKSYS_L2_TOKEN_NAME:-ZKSYS}" \
       "${ZKSYS_L2_TOKEN_SYMBOL:-ZKSYS}" \
-      "${ZKSYS_L2_TOKEN_DECIMALS:-18}" \
+      "${token_decimals}" \
       "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}"
   )"
   token_proxy_ctor_args="$(cast abi-encode "constructor(address,address,bytes)" "${token_impl_address}" "${proxy_admin_address}" "${token_init_data}")"
@@ -324,10 +408,14 @@ derive_and_export_zksys_zk_token_asset_id() {
 
   # V32 InteropCenter resolves the fixed-fee token via
   # L2NativeTokenVault.tokenAddress(keccak256(abi.encode(originChainId, L2_NTV, token))).
+  # SYSCOIN: zkSYS originates on the edge, not Gateway; bind the asset ID to
+  # the chain where zksys-l2-bootstrap.sh deploys and registers the token.
+  zksys_origin_chain_id="$(normalize_zksys_uint_var EDGE_CHAIN_ID "${EDGE_CHAIN_ID:-57057}" 4294967295)"
+  [ "${zksys_origin_chain_id}" != "0" ] || gl_die "EDGE_CHAIN_ID must be positive"
   encoded_asset_id_inputs="$(
     cast abi-encode \
       "constructor(uint256,address,address)" \
-      "${GATEWAY_CHAIN_ID}" \
+      "${zksys_origin_chain_id}" \
       "0x0000000000000000000000000000000000010004" \
       "${token_address}"
   )"
@@ -352,10 +440,8 @@ derive_zksys_l2_registry_address() {
 
   create2_deployer="${ZKSYS_L2_CREATE2_DEPLOYER:-0x4e59b44847b379578588920cA78FbF26c0B4956C}"
   export ZKSYS_L2_CREATE2_DEPLOYER="${create2_deployer}"
-  create2_deployer="$(normalize_zksys_address_var ZKSYS_L2_CREATE2_DEPLOYER)"
+  create2_deployer="$(normalize_zksys_create2_deployer)"
   ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
-  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
-    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
   export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   proxy_admin_salt="$(normalize_zksys_bytes32_var ZKSYS_L2_PROXY_ADMIN_SALT 0x7a6b7379732d70726f78792d61646d696e000000000000000000000000000000)"
@@ -483,11 +569,25 @@ PY
 
 deploy_zksys_l1_registry_bridge() {
   : "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE:=true}"
-  case "$(gl_to_lower "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE}")" in
+  : "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY:=false}"
+  ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY="$(gl_to_lower "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}")"
+  ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE="$(gl_to_lower "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE}")"
+  export ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE
+  case "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" in
+  true | false) ;;
+  *) gl_die "ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY must be true or false" ;;
+  esac
+  case "${ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE}" in
   true) ;;
   false)
-    echo "gateway-launch: skipping zkSYS L1 registry bridge deployment"
-    return 0
+    if [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" = true ]; then
+      # SYSCOIN: Deployment policy must not bypass the exact bridge attestation
+      # required before the L2 registry performs its one-shot bridge binding.
+      echo "gateway-launch: automatic zkSYS L1 registry bridge deployment is disabled; verifying the persisted bridge"
+    else
+      echo "gateway-launch: skipping zkSYS L1 registry bridge deployment"
+      return 0
+    fi
     ;;
   *) gl_die "ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE must be true or false" ;;
   esac
@@ -505,23 +605,21 @@ deploy_zksys_l1_registry_bridge() {
   local actual_seniority_height1 actual_seniority_height2 actual_seniority_level1_bps actual_seniority_level2_bps
 
   ZKSYS_L2_TOKEN_ADMIN_ADDRESS="$(normalize_zksys_address_var ZKSYS_L2_TOKEN_ADMIN_ADDRESS)"
-  [ "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}" != "0x0000000000000000000000000000000000000000" ] ||
-    gl_die "ZKSYS_L2_TOKEN_ADMIN_ADDRESS must not be zero"
   export ZKSYS_L2_TOKEN_ADMIN_ADDRESS
 
   bridgehub="$(get_l1_bridgehub_proxy_addr)"
-  zksys_chain_id="$(normalize_zksys_uint_var EDGE_CHAIN_ID "${EDGE_CHAIN_ID:-57057}" 18446744073709551615)"
+  zksys_chain_id="$(normalize_zksys_uint_var EDGE_CHAIN_ID "${EDGE_CHAIN_ID:-57057}" 4294967295)"
+  [ "${zksys_chain_id}" != "0" ] || gl_die "EDGE_CHAIN_ID must be positive"
   l2_registry="$(derive_zksys_l2_registry_address)"
   nevm_start_block="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK 1317500 4294967295)"
+  [ "${nevm_start_block}" != "0" ] || gl_die "ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK must be positive"
   seniority_height1="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1 210240 4294967295)"
   seniority_height2="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2 525600 4294967295)"
-  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 0 65535)"
-  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 0 65535)"
+  seniority_level1_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS 0 10000)"
+  seniority_level2_bps="$(normalize_zksys_uint_var ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS 0 10000)"
   proxy_admin_owner="${ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS:-${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}}"
   export ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS="${proxy_admin_owner}"
   proxy_admin_owner="$(normalize_zksys_address_var ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS)"
-  [ "${proxy_admin_owner}" != "0x0000000000000000000000000000000000000000" ] ||
-    gl_die "ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS must not be zero"
 
   if [ "${seniority_height1}" = "0" ] || [ "${seniority_height2}" -le "${seniority_height1}" ] ||
     [ "${seniority_level2_bps}" -lt "${seniority_level1_bps}" ]; then
@@ -584,9 +682,15 @@ deploy_zksys_l1_registry_bridge() {
   else
     expected_address="${derived_proxy_address}"
   fi
+  if [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" = true ] &&
+    [ "$(gl_to_lower "${expected_address}")" != "$(gl_to_lower "${derived_proxy_address}")" ]; then
+    gl_die "persisted zkSYS L1 registry bridge does not match the exact current deterministic proxy"
+  fi
 
   code="$(cast_code_or_die "${proxy_admin_address}")"
   if [ "${code}" = "0x" ]; then
+    [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" != true ] ||
+      gl_die "zkSYS L1 registry bridge ProxyAdmin is not deployed"
     echo "gateway-launch: deploying zkSYS L1 registry bridge proxy admin to ${proxy_admin_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
@@ -601,6 +705,8 @@ deploy_zksys_l1_registry_bridge() {
 
   code="$(cast_code_or_die "${bridge_impl_address}")"
   if [ "${code}" = "0x" ]; then
+    [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" != true ] ||
+      gl_die "zkSYS L1 registry bridge implementation is not deployed"
     echo "gateway-launch: deploying zkSYS L1 registry bridge implementation to ${bridge_impl_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
@@ -615,6 +721,8 @@ deploy_zksys_l1_registry_bridge() {
 
   code="$(cast_code_or_die "${expected_address}")"
   if [ "${code}" = "0x" ]; then
+    [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" != true ] ||
+      gl_die "zkSYS L1 registry bridge proxy is not deployed"
     echo "gateway-launch: deploying zkSYS L1 registry bridge proxy to ${expected_address}"
     cast send \
       --rpc-url "${L1_RPC_URL}" \
@@ -637,6 +745,8 @@ deploy_zksys_l1_registry_bridge() {
 
   actual_bridge_impl="$(cast call "${proxy_admin_address}" "getProxyImplementation(address)(address)" "${expected_address}" --rpc-url "${L1_RPC_URL}")"
   if [ "$(gl_to_lower "${actual_bridge_impl}")" != "$(gl_to_lower "${bridge_impl_address}")" ]; then
+    [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" != true ] ||
+      gl_die "zkSYS L1 registry bridge implementation is not the exact deterministic implementation"
     [ "$(gl_to_lower "${DEPLOYER_ADDRESS}")" = "$(gl_to_lower "${actual_proxy_admin_owner}")" ] ||
       gl_die "zkSYS L1 registry bridge upgrade requires ProxyAdmin owner signer ${actual_proxy_admin_owner}; active deployer signer is ${DEPLOYER_ADDRESS}"
     echo "gateway-launch: upgrading zkSYS L1 registry bridge implementation ${actual_bridge_impl} -> ${bridge_impl_address}"
@@ -684,7 +794,9 @@ deploy_zksys_l1_registry_bridge() {
 
   ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS="${expected_address}"
   export ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS
-  persist_zksys_l1_registry_bridge_address "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  if [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" != true ]; then
+    persist_zksys_l1_registry_bridge_address "${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
+  fi
   echo "gateway-launch: zkSYS L1 registry bridge proxy admin: ${proxy_admin_address} owner=${proxy_admin_owner}"
   echo "gateway-launch: zkSYS L1 registry bridge implementation: ${bridge_impl_address}"
   echo "gateway-launch: zkSYS L1 registry bridge ready at ${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
@@ -778,13 +890,14 @@ prepare_deployer_wallet_args() {
   account)
     local account_name="${DEPLOYER_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
     [ -n "${account_name}" ] || gl_die "DEPLOYER_ACCOUNT_NAME must not be empty"
+    gl_validate_foundry_account_keystore "${account_name}" "DEPLOYER_ACCOUNT_NAME"
     DEPLOYER_FORGE_WALLET_ARGS+=(--account "${account_name}")
     DEPLOYER_CAST_WALLET_ARGS+=(--account "${account_name}")
     ;;
   keystore)
     local keystore_path="${DEPLOYER_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
     [ -n "${keystore_path}" ] || gl_die "DEPLOYER_KEYSTORE is required when DEPLOYER_SIGNER=keystore"
-    [ -f "${keystore_path}" ] || gl_die "deployer keystore does not exist: ${keystore_path}"
+    gl_validate_secret_file "${keystore_path}" "deployer keystore"
     DEPLOYER_FORGE_WALLET_ARGS+=(--keystore "${keystore_path}")
     DEPLOYER_CAST_WALLET_ARGS+=(--keystore "${keystore_path}")
     ;;
@@ -811,7 +924,7 @@ prepare_deployer_wallet_args() {
 
   password_file="${DEPLOYER_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
   if [ -n "${password_file}" ]; then
-    [ -f "${password_file}" ] || gl_die "deployer password file does not exist: ${password_file}"
+    gl_validate_secret_file "${password_file}" "deployer password file"
     DEPLOYER_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
     DEPLOYER_CAST_WALLET_ARGS+=(--password-file "${password_file}")
   fi
@@ -1025,28 +1138,10 @@ PY
 }
 
 ecosystem_contracts_ready() {
-  local contracts_file bridgehub_addr bytecodes_addr
-  contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
-  [ -f "${contracts_file}" ] || return 1
-
-  # SYSCOIN: contracts.yaml stores these deployment outputs under the current
-  # zkstack schema sections, not a top-level contracts map.
-  read -r bridgehub_addr bytecodes_addr < <(python3 - "${contracts_file}" <<'PY'
-import sys, yaml
-from pathlib import Path
-p = Path(sys.argv[1])
-d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-bridgehub = d.get("core_ecosystem_contracts", {}).get("bridgehub_proxy_addr", "")
-bytecodes = d.get("zksync_os_ctm", {}).get("l1_bytecodes_supplier_addr", "")
-print(bridgehub, bytecodes)
-PY
-)
-
-  [ -n "${bridgehub_addr}" ] || return 1
-  [ -n "${bytecodes_addr}" ] || return 1
-  address_has_code_or_die "${bridgehub_addr}" || return 1
-  address_has_code_or_die "${bytecodes_addr}" || return 1
-  return 0
+  # SYSCOIN: deployment output is ready only after the zkSync OS CTM itself is
+  # registered in BridgeHub; zkstack can persist addresses before that
+  # governance transaction succeeds.
+  gl_probe_l1_ecosystem_deployed_ready
 }
 
 : "${GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS:=3}"

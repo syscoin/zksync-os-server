@@ -5,7 +5,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
 gl_validate_prover_mode
+
+cleanup_repair_gateway() {
+  stop_gateway_for_migration || true
+}
+handle_repair_interrupt() {
+  cleanup_repair_gateway
+  trap - EXIT INT TERM
+  exit 130
+}
+handle_repair_terminate() {
+  cleanup_repair_gateway
+  trap - EXIT INT TERM
+  exit 143
+}
+trap cleanup_repair_gateway EXIT
+trap handle_repair_interrupt INT
+trap handle_repair_terminate TERM
 
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
   if [ "${PROVER_MODE}" = "no-proofs" ]; then
@@ -97,6 +116,7 @@ mainnet)
 esac
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_signer_policy
+gl_normalize_canonical_deployment_inputs
 
 case "${L1_RPC_URL}" in
 http://* | https://*) ;;
@@ -105,12 +125,39 @@ esac
 
 gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
+# SYSCOIN: Keep explicit repairs on the launcher's deterministic Forge path.
+export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
 gl_resolve_gateway_dir planned
+if [ "${COMMAND}" = "status" ]; then
+  state_file="$(gl_checkpoint_state_file)"
+  echo "state_file: ${state_file}"
+  python3 - "${state_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+if not state_path.exists():
+    print("state: not initialized")
+    raise SystemExit(0)
+state = json.loads(state_path.read_text(encoding="utf-8"))
+print("run_id:", state.get("run_id"))
+print("updated_at:", state.get("updated_at"))
+print("current_checkpoint:", state.get("current_checkpoint"))
+print("last_error:", state.get("last_error"))
+print("checkpoints:")
+for key, value in sorted((state.get("checkpoints") or {}).items()):
+    print(f"  - {key}: {value.get('status')} ({value.get('at')})")
+PY
+  exit 0
+fi
+gl_acquire_gateway_launch_lock
 # SYSCOIN: Repair checkpoints only for the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
+export PROTOCOL_VERSION
 gl_resolve_required_source_pins
 
 gl_ensure_zksync_era_workspace
@@ -135,7 +182,7 @@ validate_checkpoint() {
     gl_probe_workspace_ready && gl_l1_broadcast_preflight
     ;;
   gl.ecosystem)
-    gl_probe_ecosystem_ready
+    gl_probe_ecosystem_ready && gl_assert_gateway_chain_config_matches_expected
     ;;
   gl.wallets_funded)
     gl_probe_wallets_funded_ready
@@ -153,10 +200,11 @@ validate_checkpoint() {
     gl_probe_os_configs_gateway_ready
     ;;
   gl.edge_chain_inited)
-    gl_probe_edge_chain_inited_ready
+    run_with_gateway_for_migration gl_probe_edge_chain_inited_and_governor_ready
     ;;
   gl.migration)
-    "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" >/dev/null 2>&1
+    run_with_gateway_for_migration \
+      "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --check-only >/dev/null 2>&1
     ;;
   gl.os_configs_final)
     gl_probe_os_configs_final_ready
@@ -183,24 +231,30 @@ perform_repair_step() {
     "${SCRIPT_DIR}/fund-wallets.sh"
     ;;
   gl.l1_ecosystem_deployed)
-    gl_clear_os_server_chain_db "${GATEWAY_CHAIN_NAME:-gateway}"
+    gl_clear_os_server_chain_db "${GATEWAY_CHAIN_NAME:-gateway}" || return $?
     "${SCRIPT_DIR}/gateway-deploy-l1.sh"
     ;;
   gl.gateway_chain_inited)
-    "${SCRIPT_DIR}/gateway-chain-init.sh"
-    ;;
+    echo "gateway-launch-repair: chain init is multi-stage and is not safe to replay automatically" >&2
+    return 1
+  ;;
   gl.gateway_settlement)
-    "${SCRIPT_DIR}/gateway-convert-settlement.sh"
+    echo "gateway-launch-repair: Gateway conversion is multi-stage and is not safe to replay automatically" >&2
+    return 1
     ;;
   gl.os_configs_gateway)
     env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh"
     ;;
   gl.edge_chain_inited)
-    gl_clear_os_server_chain_db "${EDGE_CHAIN_NAME:-zksys}"
-    "${SCRIPT_DIR}/edge-chain-create-init.sh"
-    ;;
+    echo "gateway-launch-repair: edge init is multi-stage and is not safe to replay automatically" >&2
+    return 1
+  ;;
   gl.migration)
-    "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh"
+    # SYSCOIN: migration pauses deposits and finalizes settlement changes.
+    # Never replay it from repair; this checkpoint can only re-attest an
+    # already-completed migration through the read-only validator above.
+    echo "gateway-launch-repair: gl.migration is not automatically repairable; reconcile the live settlement state before marking it repaired" >&2
+    return 1
     ;;
   gl.os_configs_final)
     "${SCRIPT_DIR}/generate-os-server-configs.sh"
@@ -211,37 +265,13 @@ perform_repair_step() {
   esac
 }
 
-if [ "${COMMAND}" = "status" ]; then
-  state_file="$(gl_checkpoint_state_file)"
-  echo "state_file: ${state_file}"
-  python3 - "${state_file}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-state_path = Path(sys.argv[1])
-if not state_path.exists():
-    print("state: not initialized")
-    raise SystemExit(0)
-state = json.loads(state_path.read_text(encoding="utf-8"))
-print("run_id:", state.get("run_id"))
-print("updated_at:", state.get("updated_at"))
-print("current_checkpoint:", state.get("current_checkpoint"))
-print("last_error:", state.get("last_error"))
-print("checkpoints:")
-for key, value in sorted((state.get("checkpoints") or {}).items()):
-    print(f"  - {key}: {value.get('status')} ({value.get('at')})")
-PY
-  exit 0
-fi
-
 if [ "${COMMAND}" != "repair" ]; then
   usage 1
 fi
 
 checkpoint_is_known "${CHECKPOINT_ID}" || gl_die "unknown checkpoint id: ${CHECKPOINT_ID}"
 
-if validate_checkpoint "${CHECKPOINT_ID}"; then
+if (validate_checkpoint "${CHECKPOINT_ID}"); then
   gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"
   echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; marked repaired"
   exit 0
@@ -260,7 +290,7 @@ if [ "${step_rc}" -ne 0 ]; then
   exit "${step_rc}"
 fi
 
-if ! validate_checkpoint "${CHECKPOINT_ID}"; then
+if ! (validate_checkpoint "${CHECKPOINT_ID}"); then
   gl_checkpoint_mark_blocked "${CHECKPOINT_ID}" "repair command completed but validation failed"
   gl_die "checkpoint validation failed after repair: ${CHECKPOINT_ID}"
 fi

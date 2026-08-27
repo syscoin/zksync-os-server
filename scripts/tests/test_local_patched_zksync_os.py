@@ -56,6 +56,152 @@ def rust_address_bytes(address: str) -> str:
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_zkstack_generated_signers_never_enter_forge_argv(self) -> None:
+        patch_path = (
+            REPO_ROOT / "scripts" / "patches" / "zksync-era-syscoin.patch"
+        )
+        patch = patch_path.read_text(encoding="utf-8")
+        applicator = (
+            REPO_ROOT / "scripts" / "apply-zksync-era-syscoin-patch.sh"
+        ).read_text(encoding="utf-8")
+        added = "\n".join(
+            line[1:]
+            for line in patch.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        )
+
+        # SYSCOIN: Keep the upstream delta surgical while testing its complete
+        # signer boundary here in the server repository.
+        for expected in (
+            "// SYSCOIN: Generated zkstack signers must never enter Forge argv",
+            "struct EphemeralForgeSigner",
+            "private_key: Option<H256>",
+            "LocalWallet::encrypt_keystore(",
+            'cmd.env("ETH_KEYSTORE", &self.keystore_path)',
+            '.env("ETH_PASSWORD", &self.password_path)',
+            "fs::Permissions::from_mode(0o700)",
+            "fs::Permissions::from_mode(0o600)",
+            "self.private_key = Some(private_key);",
+            "# SYSCOIN: Materialize generated Forge signers as private ephemeral keystores.",
+            "# SYSCOIN: Keep generated signer material out of Forge argv and command logs.",
+            'tempfile = "3.14.0"',
+            "tempfile.workspace = true",
+        ):
+            self.assertIn(expected, added)
+        self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
+        self.assertNotIn("PrivateKey {", added)
+        self.assertNotIn('to_string = "private-key=', added)
+        signer_creation = patch.index("+        let ephemeral_signer = self")
+        self.assertLess(
+            signer_creation,
+            patch.index("         if self.args.resume", signer_creation),
+        )
+
+        self.assertEqual(
+            hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+            "4cf47728ae163e1a3e24c189d2067e081f144127dbf9fecbb8ff2b84f8f76a70",
+        )
+        for expected in (
+            'EXPECTED_PATCH_SHA256="4cf47728ae163e1a3e24c189d2067e081f144127dbf9fecbb8ff2b84f8f76a70"',
+            'EXPECTED_PATCH_PATH_COUNT="13"',
+            'EXPECTED_PATCH_PATHS_SHA256="56bc01da0d7e3e992de32ad26cdbde094e71c0a4ecf2ecc5ccac089de85d03f5"',
+            'EXPECTED_PATCHED_TREE="8553d48c54542527bf301a1b1af1aac38a2ab5cd"',
+        ):
+            self.assertIn(expected, applicator)
+
+    def test_gateway_common_binds_default_foundry_profile_for_children(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$COMMON"; printf "%s|" "$FOUNDRY_PROFILE"; '
+                "bash -c 'printf %s \"$FOUNDRY_PROFILE\"'",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "COMMON": str(common),
+                "FOUNDRY_PROFILE": "anvil-interop",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "default|default")
+
+    def test_zkstack_nightly_detection_works_with_mawk(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            bin_dir = Path(temporary_dir)
+            rustup = bin_dir / "rustup"
+            rustup.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \\\n"
+                "  nightly-2026-01-22-x86_64-unknown-linux-gnu \\\n"
+                "  'nightly-2026-02-10-x86_64-unknown-linux-gnu (active, default)' \\\n"
+                "  stable-x86_64-unknown-linux-gnu\n",
+                encoding="utf-8",
+            )
+            rustup.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", 'source "$COMMON"; gl_detect_gateway_zkstack_nightly'],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout.strip(),
+                "nightly-2026-02-10-x86_64-unknown-linux-gnu",
+            )
+
+    def test_private_zkstack_wrapper_protects_failure_artifacts_and_restores_umask(
+        self,
+    ) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output = Path(temporary_dir) / "wallets.yaml"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+source "$COMMON"
+umask 022
+before="$(umask)"
+gl_zkstack_pty() {
+  printf '%s\n' secret >"$OUTPUT"
+  return 73
+}
+set +e
+gl_zkstack_private_pty zkstack ignored
+rc=$?
+set -e
+after="$(umask)"
+printf '%s|%s|%s\n' "$rc" "$before" "$after"
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "OUTPUT": str(output),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            status, before, after = result.stdout.strip().split("|")
+            self.assertEqual(status, "73")
+            self.assertEqual(after, before)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
     def test_ecosystem_path_is_resolved_before_wallet_hardening(self) -> None:
         helper = (
             REPO_ROOT
@@ -63,13 +209,37 @@ class LauncherStaticTests(unittest.TestCase):
             / "gateway-launch"
             / "gateway-ecosystem-create.sh"
         ).read_text(encoding="utf-8")
-        creation = helper.index("gl_zkstack_pty zkstack ecosystem create")
-        resolution = helper.index("gl_resolve_gateway_dir")
+        planned_resolution = helper.index("gl_resolve_gateway_dir planned")
+        creation = helper.index("gl_zkstack_private_pty env")
+        resolution = helper.index("gl_resolve_gateway_dir\n", creation)
         hardening = helper.index("gl_secure_generated_wallet_file", resolution)
+        binding = helper.index("gl_bind_gateway_launch_context", hardening)
         persistence = helper.index("gl_persist_wallet_file", hardening)
+        self.assertLess(planned_resolution, creation)
         self.assertLess(creation, resolution)
         self.assertLess(resolution, hardening)
+        self.assertLess(hardening, binding)
         self.assertLess(hardening, persistence)
+        self.assertIn("GIT_CONFIG_COUNT=1", helper)
+        self.assertIn("GIT_CONFIG_KEY_0=submodule.contracts.update", helper)
+        self.assertIn("GIT_CONFIG_VALUE_0=none", helper)
+        self.assertNotIn("--update-submodules", helper)
+        self.assertNotIn("gl_checkout_contracts_sha", helper)
+        self.assertGreater(
+            helper.index("gl_ensure_era_contracts_syscoin_postimage", creation), creation
+        )
+
+        edge_create = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "edge-chain-create-init.sh"
+        ).read_text(encoding="utf-8")
+        gateway_init = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-chain-init.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn("gl_zkstack_private_pty zkstack chain create", edge_create)
+        self.assertIn("gl_zkstack_private_pty zkstack chain init", edge_create)
+        self.assertIn("gl_zkstack_private_pty zkstack chain init", gateway_init)
+        self.assertNotIn("--update-submodules", edge_create)
+        self.assertNotIn("--update-submodules", gateway_init)
 
         for launcher_name in (
             "run-gateway-launch.sh",
@@ -81,6 +251,9 @@ class LauncherStaticTests(unittest.TestCase):
             self.assertIn(
                 '"${SCRIPT_DIR}/gateway-ecosystem-create.sh" || return $?',
                 launcher,
+            )
+            self.assertIn(
+                'export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"', launcher
             )
             self.assertLess(
                 launcher.index("gl_resolve_gateway_dir planned"),
@@ -125,6 +298,655 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
                 ],
             )
 
+    def test_checkpoint_fingerprint_binds_deployment_identity(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            base_env = {
+                "PATH": os.environ["PATH"],
+                "COMMON": str(common),
+                "REQUIRED_ZKSTACK_CLI_SHA": "1" * 40,
+                "REQUIRED_CONTRACTS_SHA": "2" * 40,
+                "L1_CHAIN_ID": "5700",
+                "L1_NETWORK": "tanenbaum",
+                "L1_RPC_URL": "http://127.0.0.1:8545",
+                "GATEWAY_DIR": str(Path(temporary_dir) / "gateway_v32_test"),
+                "GATEWAY_ECOSYSTEM_NAME": "gateway-v32-test",
+                "GATEWAY_CHAIN_NAME": "gateway",
+                "EDGE_CHAIN_NAME": "zksys",
+                "PROVER_MODE": "no-proofs",
+                "GATEWAY_PROVER_MODE": "no-proofs",
+                "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "true",
+                "FOUNDRY_EVM_VERSION": "cancun",
+                "GATEWAY_CREATE2_FACTORY_SALT": "0x" + "99" * 32,
+                "ZKSYS_L2_TOKEN_ADMIN_ADDRESS": "0x" + "11" * 20,
+            }
+
+            def fingerprint(**overrides: str) -> dict:
+                result = subprocess.run(
+                    ["bash", "-c", 'source "$COMMON"; gl_checkpoint_fingerprint_json'],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**base_env, **overrides},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            baseline = fingerprint()
+            self.assertEqual(baseline, fingerprint(PROTOCOL_VERSION="v32.0"))
+            self.assertEqual(baseline["gateway_chain_id"], "57001")
+            self.assertEqual(baseline["edge_chain_id"], "57057")
+            self.assertEqual(baseline["edge_prover_mode"], "no-proofs")
+            self.assertEqual(baseline["gateway_commit_mode"], "rollup")
+            self.assertEqual(baseline["zksync_os_mock_verifier"], "true")
+            self.assertEqual(
+                baseline["gateway_settlement_fee"], "15000000000000000000"
+            )
+            self.assertEqual(baseline["edge_reuse_gateway_governor"], "true")
+            self.assertEqual(
+                baseline["gateway_l2_da_commitment_scheme_value"], "4"
+            )
+            self.assertEqual(
+                baseline["edge_gateway_committer_wallet_name"], "blob_operator"
+            )
+            self.assertEqual(
+                baseline,
+                fingerprint(
+                    GATEWAY_CHAIN_ID="057001",
+                    EDGE_CHAIN_ID="057057",
+                    EDGE_PROVER_MODE="no-proofs",
+                    GATEWAY_COMMIT_MODE="rollup",
+                    SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="TRUE",
+                    ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE="TRUE",
+                    L1_WETH_TOKEN_ADDRESS="0xa66b2E50c2b805F31712beA422D0D9e7D0Fd0F35",
+                    ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1="0210240",
+                    EDGE_REUSE_GATEWAY_GOVERNOR="TRUE",
+                    GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE="04",
+                    EDGE_GATEWAY_COMMITTER_WALLET_NAME="blob_operator",
+                    GATEWAY_SETTLEMENT_FEE=hex(15 * 10**18),
+                ),
+            )
+            self.assertEqual(
+                baseline,
+                fingerprint(
+                    GATEWAY_INTEROP_FEE_USD="0.30",
+                    NATIVE_TOKEN_PRICE_USD="0.02",
+                ),
+            )
+            self.assertEqual(
+                baseline,
+                fingerprint(GATEWAY_ECOSYSTEM_NAME="gateway_v32_test"),
+            )
+
+            variations = (
+                ("GATEWAY_CHAIN_ID", "57002", "gateway_chain_id"),
+                ("EDGE_CHAIN_ID", "57900001", "edge_chain_id"),
+                ("GATEWAY_COMMIT_MODE", "validium", "gateway_commit_mode"),
+                (
+                    "GATEWAY_SETTLEMENT_FEE",
+                    str(15 * 10**18 + 1),
+                    "gateway_settlement_fee",
+                ),
+                (
+                    "EDGE_REUSE_GATEWAY_GOVERNOR",
+                    "false",
+                    "edge_reuse_gateway_governor",
+                ),
+            )
+            for variable, value, field in variations:
+                with self.subTest(variable=variable):
+                    changed = fingerprint(**{variable: value})
+                    self.assertEqual(changed[field], value)
+                    self.assertNotEqual(changed, baseline)
+
+            bridge_drift = fingerprint(
+                ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1="210241"
+            )
+            self.assertEqual(
+                bridge_drift["zksys_l1_registry_bridge"]["seniority_height1"],
+                "210241",
+            )
+            self.assertNotEqual(bridge_drift, baseline)
+
+            short_salt = fingerprint(ZKSYS_L2_REGISTRY_IMPL_SALT="1")
+            padded_salt = fingerprint(
+                ZKSYS_L2_REGISTRY_IMPL_SALT="0x" + "0" * 63 + "1"
+            )
+            self.assertEqual(short_salt, padded_salt)
+            self.assertEqual(
+                fingerprint(GATEWAY_CREATE2_FACTORY_SALT="1"),
+                fingerprint(
+                    GATEWAY_CREATE2_FACTORY_SALT="0x" + "0" * 63 + "1"
+                ),
+            )
+
+            bridge_disabled = fingerprint(ZKSYS_DEPLOY_L1_REGISTRY_BRIDGE="false")
+            self.assertIn("zksys_l2_deployment", bridge_disabled)
+            self.assertNotIn(
+                "registry_impl_salt", bridge_disabled["zksys_l2_deployment"]
+            )
+
+            mainnet = fingerprint(
+                L1_CHAIN_ID="57",
+                L1_NETWORK="mainnet",
+                PROVER_MODE="gpu",
+                GATEWAY_PROVER_MODE="gpu",
+                EDGE_PROVER_MODE="gpu",
+                SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="false",
+            )
+            spaced_name = fingerprint(
+                L1_CHAIN_ID="57",
+                L1_NETWORK="mainnet",
+                PROVER_MODE="gpu",
+                GATEWAY_PROVER_MODE="gpu",
+                EDGE_PROVER_MODE="gpu",
+                SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER="false",
+                ZKSYS_L2_TOKEN_NAME=" ZKSYS ",
+            )
+            self.assertEqual(
+                spaced_name["zksys_l2_deployment"]["token_name"], " ZKSYS "
+            )
+            self.assertNotEqual(spaced_name, mainnet)
+
+            for invalid in (
+                {"EDGE_REUSE_GATEWAY_GOVERNOR": "truthy"},
+                {"GATEWAY_CHAIN_ID": "0"},
+                {"GATEWAY_CHAIN_ID": str(1 << 32)},
+                {"EDGE_CHAIN_ID": "0"},
+                {"EDGE_CHAIN_ID": str(1 << 32)},
+                {"GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE": "256"},
+                {"GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE": "0"},
+                {"GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE": "5"},
+                {"GATEWAY_L2_DA_COMMITMENT_SCHEME": "Calldata"},
+                {"EDGE_GATEWAY_COMMITTER_WALLET_NAME": "execute_operator"},
+                {"GATEWAY_PROVER_MODE": "typo"},
+                {"EDGE_PROVER_MODE": "typo"},
+                {"GATEWAY_COMMIT_MODE": "typo"},
+                {"SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "false"},
+                {"PROVER_MODE": "gpu"},
+                {"GATEWAY_PROVER_MODE": "gpu"},
+                {"EDGE_PROVER_MODE": "gpu"},
+                {"L1_CHAIN_ID": "57", "L1_NETWORK": "mainnet"},
+                {
+                    "PROVER_MODE": "gpu",
+                    "GATEWAY_PROVER_MODE": "gpu",
+                    "EDGE_PROVER_MODE": "gpu",
+                },
+                {"GATEWAY_SETTLEMENT_FEE": "-1"},
+                {"GATEWAY_SETTLEMENT_FEE": str(1 << 256)},
+                {
+                    "GATEWAY_INTEROP_FEE_USD": str(1 << 256),
+                    "NATIVE_TOKEN_PRICE_USD": "1",
+                },
+                {"NATIVE_TOKEN_PRICE_USD": "0"},
+                {"GATEWAY_INTEROP_FEE_TOKEN_DECIMALS": "-1"},
+                {"GATEWAY_INTEROP_FEE_TOKEN_DECIMALS": "256"},
+                {"L1_WETH_TOKEN_ADDRESS": "0x" + "00" * 20},
+                {"GATEWAY_CREATE2_FACTORY_SALT": ""},
+                {"GATEWAY_CREATE2_FACTORY_SALT": "   "},
+                {"ZKSYS_L2_TOKEN_ADMIN_ADDRESS": ""},
+                {"ZKSYS_L2_TOKEN_ADMIN_ADDRESS": "0x" + "00" * 20},
+                {"ZKSYS_L2_CREATE2_DEPLOYER": "0x" + "00" * 20},
+                {"ZKSYS_L2_CREATE2_DEPLOYER": "0x" + "12" * 20},
+                {"ZKSYS_L2_TOKEN_DECIMALS": "60"},
+                {
+                    "ZKSYS_L1_REGISTRY_BRIDGE_PROXY_ADMIN_OWNER_ADDRESS": "0x"
+                    + "00" * 20
+                },
+                {"ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT1": "0"},
+                {"ZKSYS_L1_REGISTRY_BRIDGE_NEVM_START_BLOCK": "0"},
+                {"ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_HEIGHT2": "210240"},
+                {"ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS": "10001"},
+                {"ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS": "10001"},
+                {
+                    "ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL1_BPS": "1",
+                    "ZKSYS_L1_REGISTRY_BRIDGE_SENIORITY_LEVEL2_BPS": "0",
+                },
+                {"USE_DUMMY_MESSAGE_ROOT": "true"},
+                {"ZKSYS_ZK_TOKEN_ASSET_ID": "0x" + "77" * 32},
+                {"ZK_TOKEN_ASSET_ID": "0x" + "88" * 32},
+            ):
+                with self.subTest(invalid=invalid):
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            'source "$COMMON"; gl_checkpoint_fingerprint_json',
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={**base_env, **invalid},
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+
+            mismatch = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+source "$COMMON"
+gl_checkpoint_state_init
+gl_checkpoint_set_fingerprint_if_empty
+export EDGE_CHAIN_ID=57900001
+gl_checkpoint_assert_fingerprint_matches
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=base_env,
+            )
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("edge_chain_id", mismatch.stderr)
+
+            salt_mismatch = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; export GATEWAY_CREATE2_FACTORY_SALT=1; '
+                    "gl_checkpoint_assert_fingerprint_matches",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=base_env,
+            )
+            self.assertNotEqual(salt_mismatch.returncode, 0)
+            self.assertIn("gateway_create2_factory_salt", salt_mismatch.stderr)
+            gateway_dir = Path(base_env["GATEWAY_DIR"])
+            state_key = hashlib.sha256(
+                os.path.realpath(gateway_dir).encode("utf-8")
+            ).hexdigest()
+            state = json.loads(
+                (
+                    gateway_dir.parent
+                    / ".gateway-launch-state"
+                    / state_key
+                    / "state.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                state["fingerprint"]["gateway_create2_factory_salt"],
+                "0x" + "99" * 32,
+            )
+
+    def test_launch_lock_ignores_unmarked_wrapper_fd8_then_reuses_its_own(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'exec 8</dev/null; source "$COMMON"; '
+                    "gl_acquire_gateway_launch_lock; "
+                    "gl_acquire_gateway_launch_lock; "
+                    'test -n "$GATEWAY_LAUNCH_LOCK_FD8_KEY"',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "GATEWAY_DIR": str(Path(temporary_dir) / "gateway"),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_zksys_asset_id_uses_the_edge_origin_chain(self) -> None:
+        deploy = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
+        ).read_text(encoding="utf-8")
+        start = deploy.index("derive_and_export_zksys_zk_token_asset_id()")
+        end = deploy.index("\nderive_zksys_l2_registry_address()", start)
+        derivation = deploy[start:end]
+        self.assertIn("normalize_zksys_uint_var EDGE_CHAIN_ID", derivation)
+        self.assertIn('"${zksys_origin_chain_id}"', derivation)
+        self.assertNotIn('"${GATEWAY_CHAIN_ID}"', derivation)
+
+    def test_reused_gateway_governor_is_authenticated_on_l1(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        governor = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+        other = "0x" + "22" * 20
+        bridgehub = "0x" + "33" * 20
+        diamond = "0x" + "44" * 20
+        gateway_diamond = "0x" + "77" * 20
+        zero = "0x" + "00" * 20
+        chain_admin = "0x" + "33" * 20
+        gateway_chain_admin = "0x" + "88" * 20
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_wallet = root / "chains" / "gateway" / "configs" / "wallets.yaml"
+            edge_wallet = root / "chains" / "zksys" / "configs" / "wallets.yaml"
+            gateway_zkstack = root / "chains" / "gateway" / "ZkStack.yaml"
+            edge_zkstack = root / "chains" / "zksys" / "ZkStack.yaml"
+            gateway_contracts = root / "chains" / "gateway" / "configs" / "contracts.yaml"
+            edge_contracts = root / "chains" / "zksys" / "configs" / "contracts.yaml"
+            ecosystem_contracts = root / "configs" / "contracts.yaml"
+            gateway_wallet.parent.mkdir(parents=True)
+            edge_wallet.parent.mkdir(parents=True)
+            ecosystem_contracts.parent.mkdir(parents=True)
+            gateway_wallet.write_text(
+                json.dumps(
+                    {
+                        "governor": {
+                            "address": governor,
+                            "private_key": "0x" + "00" * 31 + "01",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ecosystem_contracts.write_text(
+                json.dumps(
+                    {
+                        "core_ecosystem_contracts": {
+                            "bridgehub_proxy_addr": bridgehub
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_cast = bin_dir / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "case \"${1:-}\" in\n"
+                "  keccak)\n"
+                "    if [ \"${2:-}\" = '0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8' ]; then suffix=\"${TEST_GATEWAY_GOVERNOR#0x}\"; else suffix=\"${TEST_OTHER_ADDRESS#0x}\"; fi\n"
+                "    printf '%s%s\\n' '0x000000000000000000000000' \"${suffix}\" ;;\n"
+                "  code)\n"
+                "    if [ \"${2:-}\" = \"${TEST_GATEWAY_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_GATEWAY_CHAIN_ADMIN_CODE:?}\"; elif [ \"${2:-}\" = \"${TEST_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_CHAIN_ADMIN_CODE:?}\"; else exit 3; fi ;;\n"
+                "  call)\n"
+                "    if [ \"${3:-}\" = 'getZKChain(uint256)(address)' ] && [ \"${2:-}\" != \"${TEST_BRIDGEHUB:?}\" ]; then exit 3; fi\n"
+                "    case \"${3:-}\" in\n"
+                "      'getZKChain(uint256)(address)')\n"
+                "        if [ \"${4:-}\" = 57001 ]; then [ \"${TEST_GATEWAY_QUERY_FAIL:-false}\" != true ] || exit 9; printf '%s\\n' \"${TEST_GATEWAY_DIAMOND:?}\"; elif [ \"${4:-}\" = 57057 ]; then printf '%s\\n' \"${TEST_EDGE_DIAMOND:?}\"; else exit 3; fi ;;\n"
+                "      'getAdmin()(address)')\n"
+                "        if [ \"${2:-}\" = \"${TEST_GATEWAY_DIAMOND:?}\" ]; then printf '%s\\n' \"${TEST_GATEWAY_CHAIN_ADMIN:?}\"; elif [ \"${2:-}\" = \"${TEST_EDGE_DIAMOND:?}\" ]; then printf '%s\\n' \"${TEST_CHAIN_ADMIN:?}\"; else exit 3; fi ;;\n"
+                "      'owner()(address)')\n"
+                "        if [ \"${2:-}\" = \"${TEST_GATEWAY_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_GATEWAY_OWNER:?}\"; elif [ \"${2:-}\" = \"${TEST_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_CHAIN_ADMIN_OWNER:?}\"; else exit 3; fi ;;\n"
+                "      *) exit 3 ;;\n"
+                "    esac ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            (bin_dir / "yaml.py").write_text(
+                "from json import loads as safe_load\n",
+                encoding="utf-8",
+            )
+
+            def run_check(
+                *,
+                edge_governor: str,
+                registered_diamond: str,
+                owner: str = governor,
+                gateway_owner: str = governor,
+                gateway_private_key: str = "0x" + "00" * 31 + "01",
+                registered_gateway_diamond: str = gateway_diamond,
+                code: str = "0x6000",
+                gateway_code: str = "0x6000",
+                gateway_query_failure: bool = False,
+                persisted_gateway_diamond: str = gateway_diamond,
+                edge_created: bool = False,
+                post_init: bool = False,
+                gateway_chain_id: int = 57001,
+                edge_chain_id: int = 57057,
+            ):
+                gateway_wallet.write_text(
+                    json.dumps(
+                        {
+                            "governor": {
+                                "address": governor,
+                                "private_key": gateway_private_key,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                def chain_config(name: str, chain_id: int) -> dict:
+                    return {
+                        "name": name,
+                        "chain_id": chain_id,
+                        "prover_version": "Gpu",
+                        "l1_batch_commit_data_generator_mode": "Rollup",
+                        "vm_option": "ZKSyncOsVM",
+                        "evm_emulator": False,
+                        "base_token": {
+                            "address": "0x" + "00" * 19 + "01",
+                            "nominator": 1,
+                            "denominator": 1,
+                        },
+                    }
+
+                gateway_zkstack.write_text(
+                    json.dumps(chain_config("gateway", gateway_chain_id)),
+                    encoding="utf-8",
+                )
+                edge_zkstack.write_text(
+                    json.dumps(chain_config("zksys", edge_chain_id)),
+                    encoding="utf-8",
+                )
+                gateway_contracts.write_text(
+                    json.dumps(
+                        {
+                            "ecosystem_contracts": {
+                                "bridgehub_proxy_addr": bridgehub
+                            },
+                            "l1": {"diamond_proxy_addr": persisted_gateway_diamond},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                edge_contracts.write_text(
+                    json.dumps(
+                        {
+                            "ecosystem_contracts": {
+                                "bridgehub_proxy_addr": bridgehub
+                            },
+                            "l1": {"diamond_proxy_addr": registered_diamond},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                edge_wallet.write_text(
+                    json.dumps(
+                        {
+                            "governor": {
+                                "address": edge_governor,
+                                "private_key": (
+                                    "0x" + "00" * 31 + "01"
+                                    if edge_governor == governor
+                                    else "0x" + "66" * 32
+                                ),
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                wallet_before = edge_wallet.read_bytes()
+                env = os.environ.copy()
+                env.pop("ZKSYNC_OS_SERVER_PATH", None)
+                env.update(
+                    {
+                        "COMMON": str(common),
+                        "GATEWAY_DIR": str(root),
+                        "L1_RPC_URL": "http://l1.invalid",
+                        "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                        "PYTHONPATH": str(bin_dir),
+                        "TEST_FAKE_CAST": str(fake_cast),
+                        "TEST_CHAIN_ADMIN_CODE": code,
+                        "TEST_GATEWAY_CHAIN_ADMIN_CODE": gateway_code,
+                        "TEST_CHAIN_ADMIN_OWNER": owner,
+                        "TEST_EDGE_DIAMOND": registered_diamond,
+                        "TEST_CHAIN_ADMIN": chain_admin,
+                        "TEST_GATEWAY_DIAMOND": registered_gateway_diamond,
+                        "TEST_GATEWAY_CHAIN_ADMIN": gateway_chain_admin,
+                        "TEST_GATEWAY_OWNER": gateway_owner,
+                        "TEST_GATEWAY_GOVERNOR": governor,
+                        "TEST_OTHER_ADDRESS": other,
+                        "TEST_GATEWAY_QUERY_FAIL": str(gateway_query_failure).lower(),
+                        "TEST_BRIDGEHUB": bridgehub,
+                    }
+                )
+                function = (
+                    "gl_assert_edge_chain_admin_owned_by_gateway_governor"
+                    if post_init
+                    else "gl_assert_existing_edge_chain_admin_safe_for_governor_reuse"
+                )
+                args = "" if post_init else str(edge_created).lower()
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'source "$COMMON"; cast() {{ "$TEST_FAKE_CAST" "$@"; }}; {function} {args}',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(edge_wallet.read_bytes(), wallet_before)
+                return result
+
+            accepted = run_check(
+                edge_governor=other,
+                registered_diamond=diamond,
+                owner=governor.upper().replace("0X", "0x"),
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            mismatch = run_check(
+                edge_governor=other,
+                registered_diamond=diamond,
+                owner=other,
+            )
+            self.assertNotEqual(mismatch.returncode, 0)
+            self.assertIn("edge ChainAdmin owner mismatch", mismatch.stderr)
+            gateway_mismatch = run_check(
+                edge_governor=other,
+                registered_diamond=diamond,
+                gateway_owner=other,
+            )
+            self.assertNotEqual(gateway_mismatch.returncode, 0)
+            self.assertIn("Gateway ChainAdmin owner mismatch", gateway_mismatch.stderr)
+
+            gateway_unregistered = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                registered_gateway_diamond=zero,
+            )
+            self.assertNotEqual(gateway_unregistered.returncode, 0)
+            self.assertIn("persisted Gateway diamond", gateway_unregistered.stderr)
+
+            gateway_missing_runtime = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                gateway_code="0x",
+            )
+            self.assertNotEqual(gateway_missing_runtime.returncode, 0)
+            self.assertIn("missing Gateway ChainAdmin runtime", gateway_missing_runtime.stderr)
+
+            gateway_query_failed = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                gateway_query_failure=True,
+            )
+            self.assertNotEqual(gateway_query_failed.returncode, 0)
+            self.assertIn("failed to query L1 BridgeHub registration for Gateway", gateway_query_failed.stderr)
+
+            key_mismatch = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                gateway_private_key="0x" + "00" * 31 + "02",
+            )
+            self.assertNotEqual(key_mismatch.returncode, 0)
+            self.assertIn("address/private-key mismatch", key_mismatch.stderr)
+
+            stale_gateway = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                gateway_chain_id=57002,
+            )
+            self.assertNotEqual(stale_gateway.returncode, 0)
+            self.assertIn("Gateway chain_id mismatch", stale_gateway.stderr)
+            stale_edge = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                edge_chain_id=57058,
+            )
+            self.assertNotEqual(stale_edge.returncode, 0)
+            self.assertIn("edge chain_id mismatch", stale_edge.stderr)
+
+            # A separately governed edge is still bound to its configured ID.
+            edge_zkstack.write_text(
+                json.dumps({"chain_id": 57058}), encoding="utf-8"
+            )
+            reuse_disabled_env = os.environ.copy()
+            reuse_disabled_env.pop("ZKSYNC_OS_SERVER_PATH", None)
+            reuse_disabled_env.update(
+                {
+                    "COMMON": str(common),
+                    "GATEWAY_DIR": str(root),
+                    "EDGE_CHAIN_ID": "57057",
+                    "EDGE_REUSE_GATEWAY_GOVERNOR": "false",
+                    "PYTHONPATH": str(bin_dir),
+                }
+            )
+            reuse_disabled = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; gl_probe_edge_chain_inited_ready() { return 0; }; '
+                    "gl_probe_edge_chain_inited_and_governor_ready",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=reuse_disabled_env,
+            )
+            self.assertNotEqual(reuse_disabled.returncode, 0)
+            self.assertIn("edge chain_id mismatch", reuse_disabled.stderr)
+
+            already_rewritten = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+            )
+            self.assertEqual(already_rewritten.returncode, 0, already_rewritten.stderr)
+            ambiguous = run_check(
+                edge_governor=other,
+                registered_diamond=zero,
+            )
+            self.assertNotEqual(ambiguous.returncode, 0)
+            self.assertIn("refusing to overwrite", ambiguous.stderr)
+            just_created = run_check(
+                edge_governor=other,
+                registered_diamond=zero,
+                edge_created=True,
+            )
+            self.assertEqual(just_created.returncode, 0, just_created.stderr)
+
+            missing_post_init = run_check(
+                edge_governor=governor,
+                registered_diamond=zero,
+                post_init=True,
+            )
+            self.assertNotEqual(missing_post_init.returncode, 0)
+            self.assertIn("still unregistered on L1 after init", missing_post_init.stderr)
+            missing_runtime = run_check(
+                edge_governor=governor,
+                registered_diamond=diamond,
+                code="0x",
+                post_init=True,
+            )
+            self.assertNotEqual(missing_runtime.returncode, 0)
+            self.assertIn("missing edge ChainAdmin runtime", missing_runtime.stderr)
+
     def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
         launcher = (
             REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
@@ -139,12 +961,62 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
             launcher,
         )
         self.assertIn(
-            "generated Syscoin V32 genesis is not byte-identical to the committed config",
+            "generated Syscoin V32 genesis is not byte-identical to the reviewed snapshot",
             launcher,
         )
-        self.assertIn("if generated != canonical:", launcher)
+        self.assertIn("if canonical != reviewed:", launcher)
+        self.assertIn("if generated != reviewed:", launcher)
+        self.assertIn(
+            'FOUNDRY_PROFILE=default FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION}"',
+            launcher,
+        )
+        self.assertEqual(launcher.count("FOUNDRY_EVM_VERSION=prague"), 1)
+        self.assertIn(
+            '--out "${SYSCOIN_GENESIS_WORK_DIR}/contracts/l1-contracts/out"',
+            launcher,
+        )
+        self.assertIn(
+            '--cache-path "${SYSCOIN_GENESIS_WORK_DIR}/forge-cache"',
+            launcher,
+        )
+        self.assertIn(
+            'cd "${SYSCOIN_GENESIS_WORK_DIR}/contracts/tools/zksync-os-genesis-gen"',
+            launcher,
+        )
+        self.assertIn("cargo +nightly-2026-01-22 run", launcher)
+        self.assertIn(
+            '--manifest-path "${ZKSYNC_ERA_PATH}/contracts/tools/zksync-os-genesis-gen/Cargo.toml"',
+            launcher,
+        )
+        self.assertIn(
+            "export FOUNDRY_PROFILE=default",
+            launcher,
+        )
+        self.assertIn("os.replace(generated_path, destination_path)", launcher)
+        self.assertIn(
+            "installed Syscoin V32 genesis differs from the reviewed snapshot",
+            launcher,
+        )
+        self.assertLess(
+            launcher.index("trap cleanup_genesis_work_dir EXIT"),
+            launcher.index('SYSCOIN_GENESIS_WORK_DIR="$(mktemp'),
+        )
+        self.assertNotIn(
+            '--output-file "${SYSCOIN_GENERATED_GENESIS}"',
+            launcher,
+        )
         self.assertIn("--bin zksync-os-genesis-gen", launcher)
         self.assertIn("--locked", launcher)
+        self.assertLess(
+            launcher.index('FOUNDRY_EVM_VERSION="${FOUNDRY_EVM_VERSION}"'),
+            launcher.index("FOUNDRY_EVM_VERSION=prague"),
+        )
+        self.assertLess(
+            launcher.index("os.replace(generated_path, destination_path)"),
+            launcher.index(
+                "gl_zkstack_pty env FOUNDRY_PROFILE=default zkstack dev contracts"
+            ),
+        )
 
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
@@ -516,10 +1388,11 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
         self.assertEqual(migration.count(relay_preflight), 1)
         self.assertLess(
             migration.index(relay_preflight),
-            migration.index("zkstack chain pause-deposits --chain"),
+            migration.index("zkstack chain pause-deposits \\"),
         )
         self.assertLess(
-            migration.index(relay_preflight), migration.index("migrate-to-gateway")
+            migration.index(relay_preflight),
+            migration.index("zkstack chain gateway migrate-to-gateway"),
         )
         self.assertLess(
             migration.index(relay_preflight),
@@ -581,6 +1454,24 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
             bootstrap.index("require_create2_deployer\n"),
             bootstrap.index('deploy_create2 "zkSYS proxy admin"'),
         )
+        manifest_bind = bootstrap.rindex("\nbind_zksys_l2_bootstrap_manifest\n")
+        self.assertLess(
+            bootstrap.index('ZKSYS_L2_GAS_TANK_ADDRESS="$('), manifest_bind
+        )
+        self.assertLess(manifest_bind, bootstrap.index("require_create2_deployer\n"))
+        self.assertIn('"schema_version": 2', bootstrap)
+        self.assertIn('"derived_addresses":', bootstrap)
+        self.assertIn('"init_code_hashes":', bootstrap)
+        for identity in (
+            "ZKSYS_L2_PROXY_ADMIN_ADDRESS",
+            "ZKSYS_L2_TOKEN_ADDRESS",
+            "ZKSYS_L2_REGISTRY_ADDRESS",
+            "ZKSYS_L2_WEIGHT_REGISTRY_ADDRESS",
+            "ZKSYS_L2_ISSUER_ADDRESS",
+            "ZKSYS_L2_STAKING_VAULT_ADDRESS",
+            "ZKSYS_L2_GAS_TANK_ADDRESS",
+        ):
+            self.assertIn(f'    "{identity}",', bootstrap)
 
         # SYSCOIN: pin the constructor-specific compiler output independently
         # of its CREATE2 address as part of the app/VK release surface.
@@ -658,6 +1549,37 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         wrong_hash = run_probe("0xaaaa", "0xwrong")
         self.assertNotEqual(wrong_hash.returncode, 0)
         self.assertIn("runtime hash", wrong_hash.stderr)
+
+    def test_direct_mutators_bind_identity_and_bridge_check_cannot_be_disabled(
+        self,
+    ) -> None:
+        launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
+        funder = (launch_dir / "fund-wallets.sh").read_text(encoding="utf-8")
+        generator = (launch_dir / "generate-os-server-configs.sh").read_text(
+            encoding="utf-8"
+        )
+        common = (launch_dir / "_common.sh").read_text(encoding="utf-8")
+        deploy = (launch_dir / "gateway-deploy-l1.sh").read_text(encoding="utf-8")
+
+        for script in (funder, generator):
+            self.assertIn("gl_resolve_required_source_pins", script)
+            self.assertIn("gl_checkpoint_assert_fingerprint_matches", script)
+            self.assertIn("gl_bind_gateway_launch_context", script)
+        self.assertIn("address_for_private_key", common)
+        self.assertIn("missing private key for required server signer", common)
+        self.assertLess(
+            common.index("server_signer_roles ="),
+            common.index("if check_only:", common.index("server_signer_roles =")),
+        )
+
+        function = deploy[deploy.index("deploy_zksys_l1_registry_bridge() {") :]
+        disabled = function.index(
+            'if [ "${ZKSYS_L1_REGISTRY_BRIDGE_CHECK_ONLY}" = true ]'
+        )
+        attestation = function.index("actual_proxy_admin_owner=", disabled)
+        self.assertIn("verifying the persisted bridge", function[disabled:attestation])
+        self.assertIn("return 0", function[disabled:attestation])
+        self.assertLess(disabled, attestation)
 
     def test_multivm_build_fails_closed_on_unpatched_execution_source(self) -> None:
         build_rs = (REPO_ROOT / "lib" / "multivm" / "build.rs").read_text(
@@ -1231,6 +2153,12 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         common = (
             REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         ).read_text(encoding="utf-8")
+        lifecycle = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_gateway_node_lifecycle.sh"
+        ).read_text(encoding="utf-8")
         edge_create_helper = (
             REPO_ROOT
             / "scripts"
@@ -1253,36 +2181,89 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         settlement = launcher.index('"gl.gateway_settlement"')
         config_identity = launcher.index("gl_assert_gateway_config_identity", settlement)
         gateway_config = launcher.index('"gl.os_configs_gateway"', config_identity)
-        gateway_start = launcher.index("\nstart_gateway_for_migration\n", gateway_config)
+        gateway_start = launcher.index(
+            "\nstart_gateway_for_migration || exit $?\n", gateway_config
+        )
         edge_create = launcher.index('"gl.edge_chain_inited"', gateway_start)
         self.assertLess(settlement, config_identity)
         self.assertLess(config_identity, gateway_config)
         self.assertLess(gateway_config, gateway_start)
         self.assertLess(gateway_start, edge_create)
 
-        start_function = launcher.index("start_gateway_for_migration()")
-        owned_pid = launcher.index("GATEWAY_NODE_PID=$!", start_function)
-        first_attestation = launcher.index(
+        start_function = lifecycle.index("start_gateway_for_migration()")
+        owned_pid = lifecycle.index("GATEWAY_NODE_PID=$!", start_function)
+        first_attestation = lifecycle.index(
             'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}"',
             owned_pid,
         )
         self.assertLess(owned_pid, first_attestation)
         self.assertIn(
             'kill -0 "${GATEWAY_NODE_PID}"',
-            launcher[start_function:first_attestation],
+            lifecycle[start_function:first_attestation],
         )
         self.assertIn(
             'gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" false "${owned_gateway_rpc}"',
-            launcher[start_function:owned_pid],
+            lifecycle[start_function:owned_pid],
         )
         self.assertIn(
-            'export GATEWAY_RPC_URL="${owned_gateway_rpc}"', launcher
+            'export GATEWAY_RPC_URL="${owned_gateway_rpc}"', lifecycle
         )
-        self.assertIn("PID exited during re-attestation", launcher)
-        self.assertIn("PID exited during first attestation", launcher)
+        # SYSCOIN: the submitter RPC may verify an independently supplied pin,
+        # but it must never manufacture the native-value recipient pin itself.
+        self.assertNotIn("gl_export_gateway_wrapped_base_token_from_owned_rpc", common)
+        self.assertNotIn("gl_export_gateway_wrapped_base_token_from_owned_rpc", lifecycle)
+        self.assertIn(
+            '["pgrep", "-u", str(os.geteuid()), "-f", "zksync-os-server"]',
+            lifecycle,
+        )
+        self.assertIn(
+            '["ps", "-ww", "-p", str(pid), "-o", "command="]', lifecycle
+        )
+        self.assertIn("if result.returncode == 1:", lifecycle)
+        self.assertIn("if result.returncode != 0:", lifecycle)
+        self.assertEqual(
+            lifecycle.count("except (ProcessLookupError, PermissionError):"),
+            4,
+        )
+        self.assertIn("PID exited during re-attestation", lifecycle)
+        self.assertIn("PID exited during first attestation", lifecycle)
         self.assertLess(
             edge_create_helper.index("gl_assert_gateway_runtime_identity"),
             edge_create_helper.index("zkstack chain create"),
+        )
+        pre_rewrite_owner_check = edge_create_helper.index(
+            "gl_assert_existing_edge_chain_admin_safe_for_governor_reuse"
+        )
+        wallet_rewrite = edge_create_helper.index("python3 - \\", pre_rewrite_owner_check)
+        rewrite_invocation_end = edge_create_helper.index("<<'PY'", wallet_rewrite)
+        edge_init = edge_create_helper.index("zkstack chain init", wallet_rewrite)
+        post_init_owner_check = edge_create_helper.index(
+            "gl_assert_edge_chain_admin_owned_by_configured_governor", edge_init
+        )
+        self.assertLess(pre_rewrite_owner_check, wallet_rewrite)
+        self.assertLess(wallet_rewrite, edge_init)
+        self.assertLess(edge_init, post_init_owner_check)
+        self.assertIn(
+            "EDGE_WALLET_PATH",
+            edge_create_helper[wallet_rewrite:rewrite_invocation_end],
+        )
+        self.assertGreater(
+            edge_create_helper.index("gl_persist_wallet_file", wallet_rewrite),
+            wallet_rewrite,
+        )
+        self.assertIn("edge_chain_created=false", edge_create_helper)
+        self.assertIn(
+            'gl_assert_existing_edge_chain_admin_safe_for_governor_reuse "${edge_chain_created}"',
+            edge_create_helper,
+        )
+        self.assertIn(
+            "validate_edge_chain_inited() { gl_probe_edge_chain_inited_and_governor_ready; }",
+            launcher,
+        )
+        self.assertIn("gl_probe_edge_chain_inited_and_governor_ready", repair)
+        self.assertIn(
+            "EDGE_REUSE_GATEWAY_GOVERNOR must be true or false",
+            edge_create_helper,
         )
         migration_identity = edge_migrate_helper.index(
             "gl_assert_gateway_runtime_identity"
@@ -1322,8 +2303,78 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertNotIn("/proc/", common)
         self.assertIn(
             "Gateway RPC is already reachable before this launcher started it",
-            launcher,
+            lifecycle,
         )
+
+    def test_gateway_cleanup_parses_portable_pid_output_and_fails_closed(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        lifecycle = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_gateway_node_lifecycle.sh"
+        )
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+GATEWAY_STARTED_FOR_MIGRATION=true
+GATEWAY_NODE_PID=""
+stop_gateway_for_migration
+'''
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            pgrep = bin_dir / "pgrep"
+            ps = bin_dir / "ps"
+            pgrep.write_text(
+                "#!/usr/bin/env bash\nprintf '%s\\n' 99999999\n",
+                encoding="utf-8",
+            )
+            ps.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"zksync-os-server --config "
+                "${GATEWAY_DIR}/os-server-configs/gateway/config.yaml\"\n",
+                encoding="utf-8",
+            )
+            pgrep.chmod(0o755)
+            ps.chmod(0o755)
+            env = {
+                **os.environ,
+                "COMMON": str(common),
+                "LIFECYCLE": str(lifecycle),
+                "GATEWAY_DIR": str(root / "gateway"),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            }
+
+            found = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(found.returncode, 0, found.stderr)
+            self.assertIn(
+                "stopping Gateway node child processes [99999999]", found.stdout
+            )
+
+            pgrep.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' 'synthetic pgrep failure' >&2\n"
+                "exit 2\n",
+                encoding="utf-8",
+            )
+            failed = subprocess.run(
+                ["bash", "-c", command],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("pgrep failed while locating Gateway children", failed.stderr)
 
     def test_gateway_genesis_stamp_rejects_missing_or_different_deployment(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
@@ -1457,6 +2508,16 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
             ),
             2,
         )
+        pin_assertion = migration.index(
+            'gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"'
+        )
+        self.assertLess(pin_assertion, migration.index("gl_l1_broadcast_preflight"))
+        self.assertEqual(
+            migration.count(
+                'GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"'
+            ),
+            2,
+        )
         fee_helper = (
             REPO_ROOT
             / "scripts"
@@ -1465,7 +2526,14 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         ).read_text(encoding="utf-8")
         self.assertLess(
             fee_helper.index("gl_assert_gateway_runtime_identity"),
+            fee_helper.index("gl_assert_gateway_wrapped_base_token_pin"),
+        )
+        self.assertLess(
+            fee_helper.index("gl_assert_gateway_wrapped_base_token_pin"),
             fee_helper.index('provision_edge_fee_payer "${edge_name}"'),
+        )
+        self.assertIn(
+            'wrapped_token="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"', fee_helper
         )
         generator = (
             REPO_ROOT
@@ -1487,6 +2555,7 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         command = r'''
 source "$COMMON"
+gl_assert_gateway_chain_config_matches_expected() { :; }
 gl_syscoin_edge_da_commit_target_from_gateway_config() { printf '%s\n' "$TEST_TARGET"; }
 gl_gateway_relay_from_gateway_config() { printf '%s\n' "$TEST_RELAY"; }
 gl_assert_gateway_config_identity
