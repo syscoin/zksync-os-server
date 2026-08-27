@@ -113,7 +113,14 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 "agreement": False,
                 "fee_reads": 0,
                 "fee_after_first_read": None,
-                "send_gas_cost": 10**18,
+                "latest_nonce": 0,
+                "pending_nonce": 0,
+                "gas_price": 1000,
+                "gas_estimates": {
+                    "deposit()": 100_000,
+                    "approve(address,uint256)": 80_000,
+                    "setSettlementFeePayerAgreement(uint256,bool)": 90_000,
+                },
                 "calls": [],
             }
         )
@@ -166,6 +173,13 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                     output = os.environ["TEST_EXPECTED_ADDRESS"]
                 elif args[0] == "chain-id":
                     output = "57001"
+                elif args[0] == "nonce":
+                    block = args[args.index("--block") + 1]
+                    output = str(state[f"{{block}}_nonce"])
+                elif args[0] == "gas-price":
+                    output = str(state["gas_price"])
+                elif args[0] == "estimate":
+                    output = str(state["gas_estimates"][args[2]])
                 elif args[0] == "code":
                     address = args[1].lower()
                     if address == "{GATEWAY_TARGET}":
@@ -233,7 +247,11 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                         state["agreement"] = True
                     else:
                         raise SystemExit(f"unexpected cast send: {{args}}")
-                    state["native_balance"] -= state["send_gas_cost"]
+                    gas_limit = int(args[args.index("--gas-limit") + 1])
+                    gas_price = int(args[args.index("--gas-price") + 1])
+                    state["native_balance"] -= gas_limit * gas_price
+                    state["latest_nonce"] += 1
+                    state["pending_nonce"] = state["latest_nonce"]
                     output = "transactionHash 0x01"
                 else:
                     raise SystemExit(f"unexpected cast invocation: {{args}}")
@@ -351,6 +369,14 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
             env=env,
         )
 
+    @staticmethod
+    def _bounded_gas_cost(state: dict[str, object], signatures: list[str]) -> int:
+        max_fee_per_gas = int(state["gas_price"]) * 2
+        estimates = state["gas_estimates"]
+        return max_fee_per_gas * sum(
+            (int(estimates[signature]) * 5 + 3) // 4 for signature in signatures
+        )
+
     def test_provisions_live_fee_target_then_is_idempotent(self) -> None:
         first = self._run()
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -371,6 +397,27 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertEqual(first_state["wrapped_balance"], 75 * 10**18)
         self.assertEqual(first_state["allowance"], UINT256_MAX)
         self.assertTrue(first_state["agreement"])
+        estimates = [call for call in first_state["calls"] if call[0] == "estimate"]
+        self.assertEqual(
+            [call[2] for call in estimates],
+            [
+                "deposit()",
+                "approve(address,uint256)",
+                "setSettlementFeePayerAgreement(uint256,bool)",
+            ],
+        )
+        for estimate, send in zip(estimates, sends, strict=True):
+            self.assertEqual(
+                send[send.index("--gas-limit") + 1],
+                str((int(first_state["gas_estimates"][estimate[2]]) * 5 + 3) // 4),
+            )
+            self.assertEqual(
+                estimate[estimate.index("--gas-price") + 1],
+                send[send.index("--gas-price") + 1],
+            )
+            self.assertEqual(
+                estimate[estimate.index("--from") + 1].lower(), OPERATOR.lower()
+            )
         self.assertTrue(self._lock_path().is_file())
         self.assertFalse(
             (self.gateway_dir / ".gateway-launch-locks" / "edge-a-execute-operator.lock").exists()
@@ -448,13 +495,144 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("wrapped Gateway base-token balance verification failed", result.stderr)
 
-    def test_fails_if_transactions_consume_the_native_reserve(self) -> None:
+    def test_full_native_requirement_fails_before_any_broadcast(self) -> None:
         state = self._state()
-        state["native_balance"] = 77 * 10**18
+        signatures = list(state["gas_estimates"])
+        deficit = 65 * 10**18
+        reserve = 10 * 10**18
+        state["native_balance"] = (
+            deficit + reserve + self._bounded_gas_cost(state, signatures) - 1
+        )
         self._write_state(state)
         result = self._run()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("native gas reserve verification failed", result.stderr)
+        self.assertIn("before broadcasting deposit approval agreement", result.stderr)
+        final_state = self._state()
+        self.assertFalse(any(call[0] == "send" for call in final_state["calls"]))
+        self.assertEqual(final_state["wrapped_balance"], 10 * 10**18)
+        self.assertEqual(final_state["allowance"], 0)
+        self.assertFalse(final_state["agreement"])
+
+    def test_exact_native_requirement_retains_the_reserve(self) -> None:
+        state = self._state()
+        signatures = list(state["gas_estimates"])
+        reserve = 10 * 10**18
+        state["native_balance"] = (
+            65 * 10**18 + reserve + self._bounded_gas_cost(state, signatures)
+        )
+        self._write_state(state)
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self._state()["native_balance"], reserve)
+
+    def test_every_pending_send_combination_is_preflighted(self) -> None:
+        signatures = [
+            "deposit()",
+            "approve(address,uint256)",
+            "setSettlementFeePayerAgreement(uint256,bool)",
+        ]
+        for mask in range(1, 8):
+            with self.subTest(mask=mask):
+                state = self._state()
+                state.update(
+                    {
+                        "wrapped_balance": 10 * 10**18 if mask & 1 else 75 * 10**18,
+                        "allowance": 0 if mask & 2 else UINT256_MAX,
+                        "agreement": not bool(mask & 4),
+                        "fee_reads": 0,
+                        "calls": [],
+                    }
+                )
+                planned = [
+                    signature
+                    for bit, signature in enumerate(signatures)
+                    if mask & (1 << bit)
+                ]
+                deficit = 65 * 10**18 if mask & 1 else 0
+                reserve = 10 * 10**18
+                state["native_balance"] = (
+                    deficit + reserve + self._bounded_gas_cost(state, planned) - 1
+                )
+                self._write_state(state)
+
+                result = self._run()
+                self.assertNotEqual(result.returncode, 0)
+                final_state = self._state()
+                self.assertEqual(
+                    [call[2] for call in final_state["calls"] if call[0] == "estimate"],
+                    planned,
+                )
+                self.assertFalse(
+                    any(call[0] == "send" for call in final_state["calls"])
+                )
+
+    def test_invalid_gas_inputs_fail_before_broadcast(self) -> None:
+        for field, value, expected in (
+            ("gas_price", UINT256_MAX, "scaled transaction gas bound overflows"),
+            ("gas_estimates", {"deposit()": "invalid"}, "invalid wrapped-token deposit gas estimate"),
+        ):
+            with self.subTest(field=field):
+                state = self._state()
+                state["calls"] = []
+                state["gas_price"] = 1000
+                state["gas_estimates"] = {
+                    "deposit()": 100_000,
+                    "approve(address,uint256)": 80_000,
+                    "setSettlementFeePayerAgreement(uint256,bool)": 90_000,
+                }
+                if field == "gas_estimates":
+                    state[field] = {**state[field], **value}
+                else:
+                    state[field] = value
+                self._write_state(state)
+                result = self._run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertFalse(
+                    any(call[0] == "send" for call in self._state()["calls"])
+                )
+
+    def test_check_only_never_estimates_or_broadcasts(self) -> None:
+        result = subprocess.run(
+            ["bash", str(HELPER), "--check-only", "edge-a"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=self.env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wrapped balance is below", result.stderr)
+        self.assertFalse(
+            any(
+                call[0] in {"gas-price", "estimate", "send"}
+                for call in self._state()["calls"]
+            )
+        )
+
+    def test_pending_operator_transaction_blocks_all_provisioning(self) -> None:
+        for already_ready in (False, True):
+            with self.subTest(already_ready=already_ready):
+                state = self._state()
+                state["calls"] = []
+                if already_ready:
+                    state.update(
+                        {
+                            "wrapped_balance": 75 * 10**18,
+                            "allowance": UINT256_MAX,
+                            "agreement": True,
+                        }
+                    )
+                state["pending_nonce"] = state["latest_nonce"] + 1
+                self._write_state(state)
+                result = self._run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("has pending Gateway transactions", result.stderr)
+                self.assertFalse(
+                    any(
+                        call[0] in {"gas-price", "estimate", "send"}
+                        for call in self._state()["calls"]
+                    )
+                )
 
     def test_rejects_a_concurrent_execute_operator_user(self) -> None:
         lock_root = self.gateway_dir / ".gateway-launch-locks"
@@ -629,6 +807,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertIn("--interactive", source)
         self.assertIn("--keystore", source)
         self.assertIn("--password-file", source)
+        self.assertIn("-u CAST_ASYNC", source)
         self.assertNotIn("PRIVATE_KEY=", source)
 
 

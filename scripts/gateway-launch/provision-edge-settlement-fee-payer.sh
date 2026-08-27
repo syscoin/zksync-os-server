@@ -20,6 +20,9 @@ source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 readonly GW_ASSET_TRACKER_ADDRESS="0x0000000000000000000000000000000000010010"
 readonly GATEWAY_BRIDGEHUB_ADDRESS="0x0000000000000000000000000000000000010002"
 readonly UINT256_MAX="115792089237316195423570985008687907853269984665640564039457584007913129639935"
+readonly BPS_DENOMINATOR="10000"
+readonly GAS_PRICE_HEADROOM_BPS="20000"
+readonly GAS_LIMIT_HEADROOM_BPS="12500"
 
 FEE_PAYER_KEYSTORE_DIR=""
 FEE_PAYER_KEYSTORE_ACCOUNT="gateway-launch-edge-execute-operator"
@@ -56,7 +59,7 @@ gateway_cast() {
   # read calls or signed Gateway transactions.
   env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
     -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS \
-    -u ETH_MAX_PRIORITY_FEE_PER_GAS cast "$@"
+    -u ETH_MAX_PRIORITY_FEE_PER_GAS -u ETH_GAS_LIMIT -u CAST_ASYNC cast "$@"
 }
 
 require_address() {
@@ -91,6 +94,51 @@ if value < 0 or value >= 2**256:
     raise SystemExit(f"{label} is outside uint256")
 print(value)
 PY
+}
+
+scale_uint_ceil() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import sys
+
+UINT256_MAX = 2**256 - 1
+value, numerator, denominator = (int(raw, 10) for raw in sys.argv[1:])
+if value < 0 or numerator < 0 or denominator <= 0:
+    raise SystemExit("invalid unsigned scaling inputs")
+scaled = (value * numerator + denominator - 1) // denominator
+if scaled > UINT256_MAX:
+    raise SystemExit("scaled transaction gas bound overflows uint256")
+print(scaled)
+PY
+}
+
+native_requirement_wei() {
+  python3 - "$@" <<'PY'
+import sys
+
+UINT256_MAX = 2**256 - 1
+deficit, reserve, max_fee, *gas_limits = (int(raw, 10) for raw in sys.argv[1:])
+gas_units = sum(gas_limits)
+if gas_units > UINT256_MAX or (max_fee and gas_units > UINT256_MAX // max_fee):
+    raise SystemExit("bounded provisioning gas cost overflows uint256")
+gas_budget = max_fee * gas_units
+required = deficit + reserve + gas_budget
+if required > UINT256_MAX:
+    raise SystemExit("provisioning native requirement overflows uint256")
+print(gas_budget, required)
+PY
+}
+
+gateway_tx_gas_limit() {
+  local operator_address="${1:?operator address required}"
+  local max_fee_per_gas="${2:?max fee per gas required}"
+  local label="${3:?gas estimate label required}"
+  local estimate
+  shift 3
+
+  estimate="$(parse_uint \
+    "$(gateway_cast estimate "$@" --from "${operator_address}" --gas-price "${max_fee_per_gas}" --rpc-url "${GATEWAY_RPC_URL}")" \
+    "${label}")"
+  scale_uint_ceil "${estimate}" "${GAS_LIMIT_HEADROOM_BPS}" "${BPS_DENOMINATOR}"
 }
 
 uint_lt() {
@@ -292,6 +340,10 @@ provision_edge_fee_payer() {
   local wallet_path edge_config gateway_config edge_chain_id expected_gateway_chain_id
   local actual_gateway_chain_id operator_address edge_proxy wrapped_token live_fee target_wei
   local wrapped_balance deficit native_balance reserve required_native allowance agreement
+  local gas_price max_fee_per_gas requirement provisioning_gas_budget
+  local deposit_gas_limit approval_gas_limit agreement_gas_limit
+  local latest_nonce pending_nonce
+  local planned_transactions=()
   local final_fee final_target
 
   [[ "${edge_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] ||
@@ -338,6 +390,21 @@ provision_edge_fee_payer() {
   wrapped_balance="$(parse_uint \
     "$(gateway_cast call "${wrapped_token}" "balanceOf(address)(uint256)" "${operator_address}" --rpc-url "${GATEWAY_RPC_URL}")" \
     "execute_operator wrapped balance")"
+  allowance="$(parse_uint \
+    "$(gateway_cast call "${wrapped_token}" "allowance(address,address)(uint256)" "${operator_address}" "${GW_ASSET_TRACKER_ADDRESS}" --rpc-url "${GATEWAY_RPC_URL}")" \
+    "execute_operator GWAssetTracker allowance")"
+  agreement="$(gateway_cast call \
+    "${GW_ASSET_TRACKER_ADDRESS}" \
+    "settlementFeePayerAgreement(address,uint256)(bool)" \
+    "${operator_address}" \
+    "${edge_chain_id}" \
+    --rpc-url "${GATEWAY_RPC_URL}" | awk '{print tolower($1)}')"
+
+  deficit=0
+  deposit_gas_limit=0
+  approval_gas_limit=0
+  agreement_gas_limit=0
+  max_fee_per_gas=0
   if uint_lt "${wrapped_balance}" "${target_wei}"; then
     [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
       gl_die "${edge_name} execute_operator wrapped balance is below the live settlement target"
@@ -347,72 +414,105 @@ import sys
 print(int(sys.argv[1], 10) - int(sys.argv[2], 10))
 PY
 )"
-    native_balance="$(parse_uint \
-      "$(gateway_cast balance "${operator_address}" --rpc-url "${GATEWAY_RPC_URL}")" \
-      "execute_operator Gateway native balance")"
-    required_native="$(python3 - "${deficit}" "${reserve}" <<'PY'
-import sys
+    planned_transactions+=(deposit)
+  fi
+  if [ "${allowance}" != "${UINT256_MAX}" ]; then
+    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
+      gl_die "${edge_name} execute_operator GWAssetTracker allowance is not ready"
+    planned_transactions+=(approval)
+  fi
+  if [ "${agreement}" != "true" ]; then
+    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
+      gl_die "${edge_name} execute_operator settlement-fee agreement is not enabled"
+    planned_transactions+=(agreement)
+  fi
 
-deficit = int(sys.argv[1], 10)
-reserve = int(sys.argv[2], 10)
-if deficit > 2**256 - 1 - reserve:
-    raise SystemExit("wrapped-token deficit plus native gas reserve overflows uint256")
-print(deficit + reserve)
-PY
-)"
-    if uint_lt "${native_balance}" "${required_native}"; then
-      gl_die "${edge_name} execute_operator ${operator_address} needs ${required_native} Gateway native wei to wrap ${deficit} wei while retaining the ${reserve} wei gas reserve; current=${native_balance}"
+  latest_nonce="$(parse_uint \
+    "$(gateway_cast nonce "${operator_address}" --block latest --rpc-url "${GATEWAY_RPC_URL}")" \
+    "execute_operator latest Gateway nonce")"
+  pending_nonce="$(parse_uint \
+    "$(gateway_cast nonce "${operator_address}" --block pending --rpc-url "${GATEWAY_RPC_URL}")" \
+    "execute_operator pending Gateway nonce")"
+  [ "${latest_nonce}" = "${pending_nonce}" ] ||
+    gl_die "${edge_name} execute_operator ${operator_address} has pending Gateway transactions (latest nonce=${latest_nonce}, pending nonce=${pending_nonce}); wait for them before provisioning"
+
+  if [ "${#planned_transactions[@]}" -gt 0 ]; then
+    gas_price="$(parse_uint \
+      "$(gateway_cast gas-price --rpc-url "${GATEWAY_RPC_URL}")" \
+      "Gateway gas price")"
+    max_fee_per_gas="$(scale_uint_ceil \
+      "${gas_price}" "${GAS_PRICE_HEADROOM_BPS}" "${BPS_DENOMINATOR}")"
+    if [ "${deficit}" != "0" ]; then
+      deposit_gas_limit="$(gateway_tx_gas_limit \
+        "${operator_address}" "${max_fee_per_gas}" "wrapped-token deposit gas estimate" \
+        "${wrapped_token}" "deposit()" --value "${deficit}")"
+    fi
+    if [ "${allowance}" != "${UINT256_MAX}" ]; then
+      approval_gas_limit="$(gateway_tx_gas_limit \
+        "${operator_address}" "${max_fee_per_gas}" "GWAssetTracker approval gas estimate" \
+        "${wrapped_token}" "approve(address,uint256)" "${GW_ASSET_TRACKER_ADDRESS}" "${UINT256_MAX}")"
+    fi
+    if [ "${agreement}" != "true" ]; then
+      agreement_gas_limit="$(gateway_tx_gas_limit \
+        "${operator_address}" "${max_fee_per_gas}" "settlement-fee agreement gas estimate" \
+        "${GW_ASSET_TRACKER_ADDRESS}" "setSettlementFeePayerAgreement(uint256,bool)" "${edge_chain_id}" true)"
     fi
 
+    requirement="$(native_requirement_wei \
+      "${deficit}" "${reserve}" "${max_fee_per_gas}" \
+      "${deposit_gas_limit}" "${approval_gas_limit}" "${agreement_gas_limit}")"
+    read -r provisioning_gas_budget required_native <<<"${requirement}"
+    native_balance="$(parse_uint \
+      "$(gateway_cast balance "${operator_address}" --block latest --rpc-url "${GATEWAY_RPC_URL}")" \
+      "execute_operator latest Gateway native balance")"
+    if uint_lt "${native_balance}" "${required_native}"; then
+      gl_die "${edge_name} execute_operator ${operator_address} needs ${required_native} Gateway native wei before broadcasting ${planned_transactions[*]} (wrap=${deficit}, retained reserve=${reserve}, bounded gas=${provisioning_gas_budget}); current=${native_balance}"
+    fi
+
+    # SYSCOIN: generated nodes and launch tools serialize this dedicated signer.
+    # Bind the preflight liability to synchronous sends so provisioning cannot
+    # consume the retained native reserve.
     prepare_execute_operator_keystore "${wallet_path}" "${operator_address}"
+  fi
+
+  if [ "${deficit}" != "0" ]; then
     echo "gateway-launch: wrapping ${deficit} Gateway base-token wei for ${edge_name} execute_operator ${operator_address}"
     gateway_cast send \
       "${wrapped_token}" \
       "deposit()" \
       --value "${deficit}" \
+      --gas-limit "${deposit_gas_limit}" \
+      --gas-price "${max_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
       "${FEE_PAYER_SIGNER_ARGS[@]}"
   fi
 
-  allowance="$(parse_uint \
-    "$(gateway_cast call "${wrapped_token}" "allowance(address,address)(uint256)" "${operator_address}" "${GW_ASSET_TRACKER_ADDRESS}" --rpc-url "${GATEWAY_RPC_URL}")" \
-    "execute_operator GWAssetTracker allowance")"
   if [ "${allowance}" != "${UINT256_MAX}" ]; then
-    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
-      gl_die "${edge_name} execute_operator GWAssetTracker allowance is not ready"
-    [ "${#FEE_PAYER_SIGNER_ARGS[@]}" -gt 0 ] ||
-      prepare_execute_operator_keystore "${wallet_path}" "${operator_address}"
     echo "gateway-launch: approving GWAssetTracker for ${edge_name} execute_operator ${operator_address}"
     gateway_cast send \
       "${wrapped_token}" \
       "approve(address,uint256)" \
       "${GW_ASSET_TRACKER_ADDRESS}" \
       "${UINT256_MAX}" \
+      --gas-limit "${approval_gas_limit}" \
+      --gas-price "${max_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
       "${FEE_PAYER_SIGNER_ARGS[@]}"
   fi
 
-  agreement="$(gateway_cast call \
-    "${GW_ASSET_TRACKER_ADDRESS}" \
-    "settlementFeePayerAgreement(address,uint256)(bool)" \
-    "${operator_address}" \
-    "${edge_chain_id}" \
-    --rpc-url "${GATEWAY_RPC_URL}" | awk '{print tolower($1)}')"
   if [ "${agreement}" != "true" ]; then
-    [ "${FEE_PAYER_CHECK_ONLY}" != true ] ||
-      gl_die "${edge_name} execute_operator settlement-fee agreement is not enabled"
-    [ "${#FEE_PAYER_SIGNER_ARGS[@]}" -gt 0 ] ||
-      prepare_execute_operator_keystore "${wallet_path}" "${operator_address}"
     echo "gateway-launch: enabling Gateway settlement-fee agreement for ${edge_name} (${edge_chain_id}) execute_operator ${operator_address}"
     gateway_cast send \
       "${GW_ASSET_TRACKER_ADDRESS}" \
       "setSettlementFeePayerAgreement(uint256,bool)" \
       "${edge_chain_id}" \
       true \
+      --gas-limit "${agreement_gas_limit}" \
+      --gas-price "${max_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
