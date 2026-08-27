@@ -555,23 +555,81 @@ PY
 persist_zksys_l1_registry_bridge_address() {
   local address="${1:?address required}"
   python3 - "${GATEWAY_DIR}/configs/contracts.yaml" "${address}" <<'PY'
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 import yaml
 
-if hasattr(sys, "set_int_max_str_digits"):
-    sys.set_int_max_str_digits(0)
-
 path = Path(sys.argv[1])
 address = sys.argv[2]
-data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-section = data.setdefault("zksys", {})
-section["l1_registry_bridge_addr"] = address
+if not re.fullmatch(r"0x[0-9a-fA-F]{40}", address) or int(address[2:], 16) == 0:
+    raise SystemExit("invalid zkSYS L1 registry bridge address")
+
+text = path.read_text(encoding="utf-8")
+# SYSCOIN: zkstack emits unquoted 0x scalars. PyYAML safe_load/safe_dump turns
+# those into decimal integers, making the upstream Address parser reject the
+# entire file. Validate the document, but edit only our dedicated top-level key.
+data = yaml.load(text, Loader=yaml.BaseLoader) or {}
+if not isinstance(data, dict):
+    raise SystemExit(f"invalid ecosystem contracts mapping in {path}")
+section = data.get("zksys")
+if section is not None and not isinstance(section, dict):
+    raise SystemExit(f"invalid zksys section in {path}")
+
+lines = text.splitlines(keepends=True)
+section_lines = [
+    i for i, line in enumerate(lines) if re.match(r"^zksys\s*:", line.rstrip("\r\n"))
+]
+if len(section_lines) > 1:
+    raise SystemExit(f"duplicate top-level zksys sections in {path}")
+if section is not None and not section_lines:
+    raise SystemExit(f"unsupported top-level zksys formatting in {path}")
+if section_lines and not re.fullmatch(
+    r"zksys:\s*(?:#.*)?", lines[section_lines[0]].rstrip("\r\n")
+):
+    raise SystemExit(f"unsupported top-level zksys formatting in {path}")
+
+entry = f"  l1_registry_bridge_addr: '{address}'\n"
+if not section_lines:
+    if text and not text.endswith(("\n", "\r")):
+        lines.append("\n")
+    lines.extend(("zksys:\n", entry))
+else:
+    section_start = section_lines[0]
+    section_end = len(lines)
+    for i in range(section_start + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped and not stripped.startswith("#") and not lines[i].startswith((" ", "\t")):
+            section_end = i
+            break
+    matches = [
+        i
+        for i in range(section_start + 1, section_end)
+        if re.match(r"^  l1_registry_bridge_addr\s*:", lines[i])
+    ]
+    if section is not None and (
+        ("l1_registry_bridge_addr" in section) != bool(matches)
+    ):
+        raise SystemExit(
+            f"unsupported zksys.l1_registry_bridge_addr formatting in {path}"
+        )
+    if len(matches) > 1:
+        raise SystemExit(f"duplicate zksys.l1_registry_bridge_addr entries in {path}")
+    if matches:
+        newline = "\r\n" if lines[matches[0]].endswith("\r\n") else "\n"
+        lines[matches[0]] = entry.rstrip("\n") + newline
+    else:
+        lines.insert(section_start + 1, entry)
+
+updated = "".join(lines)
+parsed = yaml.load(updated, Loader=yaml.BaseLoader) or {}
+if parsed.get("zksys", {}).get("l1_registry_bridge_addr") != address:
+    raise SystemExit(f"failed to persist zksys.l1_registry_bridge_addr in {path}")
 
 with tempfile.NamedTemporaryFile("w", delete=False, dir=path.parent, encoding="utf-8") as tmp:
-    yaml.safe_dump(data, tmp, sort_keys=False)
+    tmp.write(updated)
     tmp_name = tmp.name
 Path(tmp_name).replace(path)
 PY

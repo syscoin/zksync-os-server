@@ -222,6 +222,79 @@ class LauncherStaticTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_registry_bridge_persistence_preserves_upstream_hex_scalars(self) -> None:
+        if importlib.util.find_spec("yaml") is None:
+            self.skipTest("PyYAML is not installed in this test environment")
+        deploy = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
+        ).read_text(encoding="utf-8")
+        start = deploy.index("persist_zksys_l1_registry_bridge_address() {")
+        end = deploy.index("\n}\n\ndeploy_zksys_l1_registry_bridge()", start) + len(
+            "\n}"
+        )
+        function = deploy[start:end]
+        first_address = "0x" + "ab" * 20
+        second_address = "0x" + "cd" * 20
+        original = (
+            "create2_factory_addr: 0x4e59b44847b379578588920cA78FbF26c0B4956C\n"
+            "create2_factory_salt: 0x0000000000000000000000000000000000000000000000000000000000000001\n"
+            "multicall3_addr: 0xcA11bde05977b3631167028862bE2a173976CA11\n"
+            "l1:\n"
+            "  transaction_filterer_addr: null\n"
+            "zksync_os_ctm:\n"
+            "  diamond_cut_data: 0x2000000000000000\n"
+            "  force_deployments_data: 0x00ff\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            contracts = root / "configs" / "contracts.yaml"
+            contracts.parent.mkdir(parents=True)
+            contracts.write_text(original, encoding="utf-8")
+            script = (
+                'set -euo pipefail\nGATEWAY_DIR="$1"\n'
+                + function
+                + '\npersist_zksys_l1_registry_bridge_address "$TEST_ADDRESS"\n'
+            )
+
+            def persist(address: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", "-c", script, "bash", str(root)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "TEST_ADDRESS": address},
+                )
+
+            first = persist(first_address)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(
+                contracts.read_text(encoding="utf-8"),
+                original
+                + "zksys:\n"
+                + f"  l1_registry_bridge_addr: '{first_address}'\n",
+            )
+
+            second = persist(second_address)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(
+                contracts.read_text(encoding="utf-8"),
+                original
+                + "zksys:\n"
+                + f"  l1_registry_bridge_addr: '{second_address}'\n",
+            )
+
+            unsupported = (
+                original
+                + "zksys:\n"
+                + f"  'l1_registry_bridge_addr': '{first_address}'\n"
+            )
+            contracts.write_text(unsupported, encoding="utf-8")
+            rejected = persist(second_address)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("unsupported zksys.l1_registry_bridge_addr formatting", rejected.stderr)
+            self.assertEqual(contracts.read_text(encoding="utf-8"), unsupported)
+
     def test_zkstack_nightly_detection_works_with_mawk(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         with tempfile.TemporaryDirectory() as temporary_dir:

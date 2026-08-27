@@ -672,22 +672,30 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         lock_root.mkdir()
         with self._lock_path().open("w", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-            def inherit_as_fd9() -> None:
-                os.dup2(lock.fileno(), 9)
-
-            env = self.env.copy()
-            env["GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD"] = "9"
-            result = subprocess.run(
-                ["bash", str(HELPER), "edge-a"],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-                pass_fds=(lock.fileno(),),
-                preexec_fn=inherit_as_fd9,
-            )
-            blocked = self._run()
+            try:
+                saved_fd9 = os.dup(9)
+            except OSError:
+                saved_fd9 = None
+            os.dup2(lock.fileno(), 9)
+            os.set_inheritable(9, True)
+            try:
+                env = self.env.copy()
+                env["GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD"] = "9"
+                result = subprocess.run(
+                    ["bash", str(HELPER), "edge-a"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    pass_fds=(9,),
+                )
+                blocked = self._run()
+            finally:
+                if saved_fd9 is None:
+                    os.close(9)
+                else:
+                    os.dup2(saved_fd9, 9)
+                    os.close(saved_fd9)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("execute_operator is in use", blocked.stderr)
