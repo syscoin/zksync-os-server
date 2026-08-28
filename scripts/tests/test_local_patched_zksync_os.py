@@ -1018,6 +1018,55 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
                 ],
             )
 
+    def test_explicit_sealed_workspace_is_preserved(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+
+        def run(resumable: bool) -> list[str]:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+source "$COMMON"
+gl_resolve_required_source_pins() { :; }
+gl_workspace_has_resumable_syscoin_release() {
+  printf '%s\n' resumable
+  [ "$RESUMABLE" = true ]
+}
+gl_prepare_zksync_era_repo() { printf '%s\n' prepare; }
+export ZKSYNC_OS_SERVER_PATH=/reviewed/server
+export PROTOCOL_VERSION=v32.0
+export REQUIRED_ZKSTACK_CLI_SHA=1111111111111111111111111111111111111111
+export REQUIRED_CONTRACTS_SHA=2222222222222222222222222222222222222222
+export ZKSYNC_ERA_PATH=/reviewed/mutable-workspace
+gl_ensure_zksync_era_workspace
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "RESUMABLE": str(resumable).lower(),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout.splitlines()
+
+        self.assertEqual(run(True), ["resumable"])
+        self.assertEqual(run(False), ["resumable", "prepare"])
+
+        for caller in (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh",
+            REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh",
+        ):
+            self.assertIn(
+                "gl_ensure_zksync_era_workspace\n"
+                "gl_ensure_zkstack_cli_release_current\n",
+                caller.read_text(),
+            )
+
     def test_checkpoint_fingerprint_binds_deployment_identity(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -2382,11 +2431,17 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         ensure_body = common_source.split(
             "gl_ensure_zkstack_cli_release_current() {", 1
         )[1].split("\n}", 1)[0]
+        contracts_attestation = "gl_ensure_era_contracts_syscoin_postimage"
         patch_attestation = (
             'bash "${ZKSYNC_OS_SERVER_PATH}/scripts/'
             'apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"'
         )
+        self.assertIn(contracts_attestation, ensure_body)
         self.assertIn(patch_attestation, ensure_body)
+        self.assertLess(
+            ensure_body.index(contracts_attestation),
+            ensure_body.index("expected_fingerprint="),
+        )
         self.assertLess(
             ensure_body.index(patch_attestation),
             ensure_body.index("expected_fingerprint="),

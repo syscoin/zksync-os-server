@@ -1707,6 +1707,20 @@ gl_workspace_matches_required_pins() {
   [ "${top_head}" = "${REQUIRED_ZKSTACK_CLI_SHA}" ] && [ "${contracts_head}" = "${REQUIRED_CONTRACTS_SHA}" ]
 }
 
+gl_workspace_has_resumable_syscoin_release() {
+  gl_workspace_matches_required_pins || return 1
+
+  local zkstack_bin stamp_file expected_fingerprint actual_fingerprint
+  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
+  stamp_file="$(gl_zkstack_cli_release_stamp_file)" || return 1
+  [ -f "${zkstack_bin}" ] && [ -x "${zkstack_bin}" ] && [ ! -L "${zkstack_bin}" ] || return 1
+  [ -f "${stamp_file}" ] && [ ! -L "${stamp_file}" ] || return 1
+  gl_assert_era_contracts_syscoin_postimage >/dev/null 2>&1 || return 1
+  expected_fingerprint="$(gl_zkstack_cli_release_fingerprint)" || return 1
+  actual_fingerprint="$(tr -d '[:space:]' <"${stamp_file}")" || return 1
+  [ -n "${expected_fingerprint}" ] && [ "${actual_fingerprint}" = "${expected_fingerprint}" ]
+}
+
 # Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
 # If ZKSYNC_ERA_PATH is unset, uses a clean shared source cache and a per-ecosystem mutable working clone.
 gl_ensure_zksync_era_workspace() {
@@ -1717,6 +1731,11 @@ gl_ensure_zksync_era_workspace() {
   gl_require REQUIRED_CONTRACTS_SHA
 
   if [ -n "${ZKSYNC_ERA_PATH:-}" ]; then
+    # SYSCOIN: Preserve only an already sealed Syscoin release. The caller's
+    # immediately following postimage applicators perform the full attestation.
+    if gl_workspace_has_resumable_syscoin_release; then
+      return 0
+    fi
     gl_prepare_zksync_era_repo
     return 0
   fi
