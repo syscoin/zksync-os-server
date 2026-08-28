@@ -2299,6 +2299,20 @@ gl_checkpoint_assert_fingerprint_matches
             ),
         )
 
+    def test_forge_inspect_artifacts_stay_out_of_read_only_source(self) -> None:
+        for script_name in ("gateway-deploy-l1.sh", "zksys-l2-bootstrap.sh"):
+            script = (
+                REPO_ROOT / "scripts" / "gateway-launch" / script_name
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                'inspect_artifacts_dir="${GATEWAY_DIR}/.gateway-launch/forge-inspect"',
+                script,
+            )
+            self.assertIn('--out "${inspect_artifacts_dir}/out"', script)
+            self.assertIn('--cache-path "${inspect_artifacts_dir}/cache"', script)
+            self.assertNotIn('--out "${ZKSYNC_OS_SERVER_PATH}', script)
+            self.assertNotIn('--cache-path "${ZKSYNC_OS_SERVER_PATH}', script)
+
     def test_gateway_settlement_uses_isolated_canonical_relay_artifact(self) -> None:
         settlement = (
             REPO_ROOT

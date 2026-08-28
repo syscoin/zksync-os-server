@@ -331,9 +331,15 @@ PY
 
 forge_inspect_zksys_bytecode() {
   local contract="${1:?contract required}"
+  local inspect_artifacts_dir="${GATEWAY_DIR}/.gateway-launch/forge-inspect"
+  # SYSCOIN: production launchers mount reviewed server source read-only. Keep
+  # Forge's generated artifacts in durable launch state, never in source.
+  mkdir -p "${inspect_artifacts_dir}/out" "${inspect_artifacts_dir}/cache"
   forge inspect "${contract}" bytecode \
     --no-metadata \
     --root "${ZKSYNC_OS_SERVER_PATH}/contracts" \
+    --out "${inspect_artifacts_dir}/out" \
+    --cache-path "${inspect_artifacts_dir}/cache" \
     -R "@openzeppelin/contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/" \
     -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
     -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \
