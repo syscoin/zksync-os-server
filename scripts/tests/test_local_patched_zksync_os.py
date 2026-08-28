@@ -547,6 +547,33 @@ class LauncherStaticTests(unittest.TestCase):
                 0,
                 schema_ready.stderr + contracts.read_text(encoding="utf-8"),
             )
+
+            raw_ready = first.decode().replace(f"'{rollup}'", rollup)
+            raw_ready = raw_ready.replace(f"'{zero}'", zero)
+            self.assertEqual(raw_ready.count(f": {rollup}\n"), 2)
+            self.assertGreaterEqual(raw_ready.count(f": {zero}\n"), 3)
+            contracts.write_text(raw_ready, encoding="utf-8")
+            raw_schema_ready = run("gl_probe_chain_contracts_schema_ready")
+            self.assertEqual(
+                raw_schema_ready.returncode, 0, raw_schema_ready.stderr
+            )
+
+            decimal_ready = raw_ready.replace(rollup, str(int(rollup, 16)), 1)
+            contracts.write_text(decimal_ready, encoding="utf-8")
+            self.assertNotEqual(
+                run("gl_probe_chain_contracts_schema_ready").returncode, 0
+            )
+            uppercase_ready = raw_ready.replace(rollup, "0x" + "AB" * 20, 1)
+            contracts.write_text(uppercase_ready, encoding="utf-8")
+            self.assertNotEqual(
+                run("gl_probe_chain_contracts_schema_ready").returncode, 0
+            )
+            tagged_ready = raw_ready.replace(rollup, f"!invalid {rollup}", 1)
+            contracts.write_text(tagged_ready, encoding="utf-8")
+            self.assertNotEqual(
+                run("gl_probe_chain_contracts_schema_ready").returncode, 0
+            )
+            contracts.write_bytes(first)
             self.assertEqual(run("gl_ensure_chain_contracts_yaml_schema").returncode, 0)
             self.assertEqual(contracts.read_bytes(), first)
 
@@ -607,6 +634,9 @@ class LauncherStaticTests(unittest.TestCase):
             unsupported_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
             self.assertNotEqual(unsupported_preflight.returncode, 0)
             self.assertIn("before any broadcast", unsupported_preflight.stderr)
+            self.assertNotEqual(
+                run("gl_probe_chain_contracts_schema_ready").returncode, 0
+            )
 
             contracts.unlink()
             fresh_preflight = run("gl_assert_chain_contracts_da_preinit_safe")
@@ -675,6 +705,9 @@ class LauncherStaticTests(unittest.TestCase):
             contracts.write_text(yaml.safe_dump(no_rollup, sort_keys=False), encoding="utf-8")
             self.assertNotEqual(
                 run("gl_ensure_chain_contracts_yaml_schema").returncode, 0
+            )
+            self.assertNotEqual(
+                run("gl_probe_chain_contracts_schema_ready").returncode, 0
             )
 
     def test_gateway_common_binds_default_foundry_profile_for_children(self) -> None:

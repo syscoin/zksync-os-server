@@ -4580,6 +4580,10 @@ gl_probe_chain_contracts_schema_ready() {
   contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
   [ -f "${contracts_yaml}" ] || return 1
 
+  # SYSCOIN: retain the typed/raw DA authentication before reading zkstack's
+  # unquoted canonical 0x scalars without PyYAML 1.1 integer coercion.
+  gl_assert_chain_contracts_da_preinit_safe "${chain_name}" >/dev/null 2>&1 || return 1
+
   python3 - "${contracts_yaml}" <<'PY'
 import re
 import sys
@@ -4588,7 +4592,9 @@ from pathlib import Path
 import yaml
 
 p = Path(sys.argv[1])
-data = yaml.safe_load(p.read_text(encoding="utf-8"))
+# SYSCOIN: the typed/raw preflight above rejects tag/type ambiguity; BaseLoader
+# preserves the authenticated spelling of zkstack's unquoted 0x scalars.
+data = yaml.load(p.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 if not isinstance(data, dict):
     raise SystemExit(1)
 
