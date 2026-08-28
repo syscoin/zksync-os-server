@@ -266,17 +266,19 @@ stop_gateway_for_migration() {
   if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ]; then
     python3 - "${config_path}" <<'PY' || cleanup_rc=$?
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
 
 config_path = sys.argv[1]
-needle = f"zksync-os-server --config {config_path}"
 current = {os.getpid(), os.getppid()}
 
 # SYSCOIN: request only same-effective-UID PIDs here, then inspect argv with
-# portable ps flags. Darwin's pgrep -a does not print argv as procps does.
+# portable ps flags. Darwin's pgrep -a does not print argv as procps does. Match
+# the executable and config option as exact tokens so a sibling config cannot
+# be mistaken for the launcher-owned node.
 result = subprocess.run(
     ["pgrep", "-u", str(os.geteuid()), "-f", "zksync-os-server"],
     stdout=subprocess.PIPE,
@@ -289,6 +291,25 @@ if result.returncode != 0:
     raise SystemExit(
         f"pgrep failed while locating Gateway children: {result.stderr.strip()}"
     )
+
+
+def uses_gateway_config(pid, rendered_argv):
+    try:
+        args = shlex.split(rendered_argv)
+    except ValueError as error:
+        raise SystemExit(f"cannot parse same-UID process {pid} argv: {error}")
+    if not args or os.path.basename(args[0]) != "zksync-os-server":
+        return False
+    for index, arg in enumerate(args[1:], start=1):
+        if arg == "--":
+            break
+        if arg == f"--config={config_path}":
+            return True
+        if arg == "--config" and index + 1 < len(args):
+            if args[index + 1] == config_path:
+                return True
+    return False
+
 
 pids = []
 for line in result.stdout.splitlines():
@@ -314,7 +335,7 @@ for line in result.stdout.splitlines():
         raise SystemExit(
             f"ps failed while inspecting Gateway child {pid}: {argv.stderr.strip()}"
         )
-    if needle in argv.stdout.strip():
+    if uses_gateway_config(pid, argv.stdout.strip()):
         pids.append(pid)
 
 if not pids:

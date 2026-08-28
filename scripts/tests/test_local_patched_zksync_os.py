@@ -3915,8 +3915,7 @@ stop_gateway_for_migration
             )
             ps.write_text(
                 "#!/usr/bin/env bash\n"
-                "printf '%s\\n' \"zksync-os-server --config "
-                "${GATEWAY_DIR}/os-server-configs/gateway/config.yaml\"\n",
+                "printf '%s\\n' \"${TEST_PS_COMMAND:?}\"\n",
                 encoding="utf-8",
             )
             pgrep.chmod(0o755)
@@ -3928,17 +3927,66 @@ stop_gateway_for_migration
                 "GATEWAY_DIR": str(root / "gateway"),
                 "PATH": f"{bin_dir}:{os.environ['PATH']}",
             }
+            config_path = root / "gateway/os-server-configs/gateway/config.yaml"
 
-            found = subprocess.run(
+            cases = (
+                (
+                    "split config option",
+                    f"/opt/zksync-os-server --config {config_path}",
+                    True,
+                ),
+                (
+                    "equals config option",
+                    f"/opt/zksync-os-server --config={config_path}",
+                    True,
+                ),
+                (
+                    "config path prefix",
+                    f"/opt/zksync-os-server --config {config_path}.backup",
+                    False,
+                ),
+                (
+                    "different executable",
+                    f"/opt/not-zksync-os-server --config {config_path}",
+                    False,
+                ),
+                (
+                    "config after end of options",
+                    f"/opt/zksync-os-server -- --config {config_path}",
+                    False,
+                ),
+            )
+            for name, ps_command, should_match in cases:
+                with self.subTest(name=name):
+                    result = subprocess.run(
+                        ["bash", "-c", command],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={**env, "TEST_PS_COMMAND": ps_command},
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    match_message = (
+                        "stopping Gateway node child processes [99999999]"
+                    )
+                    if should_match:
+                        self.assertIn(match_message, result.stdout, result.stderr)
+                    else:
+                        self.assertNotIn(match_message, result.stdout, result.stderr)
+
+            malformed = subprocess.run(
                 ["bash", "-c", command],
                 check=False,
                 capture_output=True,
                 text=True,
-                env=env,
+                env={
+                    **env,
+                    "TEST_PS_COMMAND": "/opt/zksync-os-server --config '",
+                },
             )
-            self.assertEqual(found.returncode, 0, found.stderr)
+            self.assertNotEqual(malformed.returncode, 0, malformed.stderr)
             self.assertIn(
-                "stopping Gateway node child processes [99999999]", found.stdout
+                "cannot parse same-UID process 99999999 argv", malformed.stderr
             )
 
             pgrep.write_text(
