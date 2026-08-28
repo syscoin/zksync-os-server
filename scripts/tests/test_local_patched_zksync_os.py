@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -1402,6 +1404,386 @@ gl_checkpoint_assert_fingerprint_matches
                 },
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_execute_operator_lock_rejects_symlinked_lock_root(self) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            victim = root / "victim"
+            gateway_dir.mkdir()
+            victim.mkdir()
+            victim.chmod(0o755)
+            (gateway_dir / ".gateway-launch-locks").symlink_to(
+                victim, target_is_directory=True
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "LOCK_HELPER": str(lock_helper),
+                    "GATEWAY_DIR": str(gateway_dir),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("non-symlink directory", result.stderr)
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o755)
+            self.assertFalse((victim / "fixed-key.lock").exists())
+
+    def test_execute_operator_lock_rejects_symlinked_lock_file(self) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            lock_root = gateway_dir / ".gateway-launch-locks"
+            victim = root / "victim"
+            lock_root.mkdir(parents=True)
+            lock_root.chmod(0o700)
+            victim.write_text("must remain intact", encoding="utf-8")
+            victim.chmod(0o640)
+            (lock_root / "fixed-key.lock").symlink_to(victim)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "LOCK_HELPER": str(lock_helper),
+                    "GATEWAY_DIR": str(gateway_dir),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("non-symlink directory", result.stderr)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "must remain intact")
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o640)
+
+    def test_execute_operator_lock_acquires_and_reuses_exact_inode(self) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            gateway_dir = Path(temporary_dir) / "gateway"
+            gateway_dir.mkdir()
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge; "
+                    "gateway_acquire_execute_operator_lock edge; "
+                    'test "$GATEWAY_EXECUTE_OPERATOR_LOCK_KEY" = fixed-key',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "LOCK_HELPER": str(lock_helper),
+                    "GATEWAY_DIR": str(gateway_dir),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lock_root = gateway_dir / ".gateway-launch-locks"
+            lock_file = lock_root / "fixed-key.lock"
+            self.assertFalse(lock_root.is_symlink())
+            self.assertTrue(lock_file.is_dir())
+            self.assertFalse(lock_file.is_symlink())
+            self.assertEqual(lock_root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(lock_file.stat().st_mode & 0o777, 0o700)
+
+    def test_execute_operator_lock_rejects_hardlinked_lock_file(self) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            lock_root = gateway_dir / ".gateway-launch-locks"
+            victim = root / "victim"
+            lock_root.mkdir(parents=True)
+            lock_root.chmod(0o700)
+            victim.write_text("must remain intact", encoding="utf-8")
+            victim.chmod(0o640)
+            os.link(victim, lock_root / "fixed-key.lock")
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "LOCK_HELPER": str(lock_helper),
+                    "GATEWAY_DIR": str(gateway_dir),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("non-symlink directory", result.stderr)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "must remain intact")
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(victim.stat().st_nlink, 2)
+
+    def test_execute_operator_lock_rejects_lock_root_swap_after_validation(
+        self,
+    ) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            lock_root = gateway_dir / ".gateway-launch-locks"
+            original_lock_root = root / "original-lock-root"
+            alternate_lock_root = root / "alternate-lock-root"
+            bin_dir = root / "bin"
+            gateway_dir.mkdir()
+            alternate_lock_root.mkdir()
+            bin_dir.mkdir()
+            python_wrapper = bin_dir / "python3"
+            python_wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                '"$REAL_PYTHON" "$@"\n'
+                'if mkdir "$SWAP_MARKER" 2>/dev/null; then\n'
+                '  mv "$LOCK_ROOT" "$ORIGINAL_LOCK_ROOT"\n'
+                '  ln -s "$ALTERNATE_LOCK_ROOT" "$LOCK_ROOT"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            python_wrapper.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "ALTERNATE_LOCK_ROOT": str(alternate_lock_root),
+                    "GATEWAY_DIR": str(gateway_dir),
+                    "LOCK_HELPER": str(lock_helper),
+                    "LOCK_ROOT": str(lock_root),
+                    "ORIGINAL_LOCK_ROOT": str(original_lock_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REAL_PYTHON": sys.executable,
+                    "SWAP_MARKER": str(root / "swap-marker"),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("could not open execute_operator lock", result.stderr)
+            self.assertTrue(lock_root.is_symlink())
+            self.assertTrue((original_lock_root / "fixed-key.lock").is_dir())
+            self.assertFalse((alternate_lock_root / "fixed-key.lock").exists())
+
+    def test_execute_operator_lock_rejects_final_symlink_swap(self) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            victim = root / "victim"
+            original_lock = root / "original-lock"
+            bin_dir = root / "bin"
+            gateway_dir.mkdir()
+            bin_dir.mkdir()
+            victim.write_text("must remain intact", encoding="utf-8")
+            victim.chmod(0o640)
+            python_wrapper = bin_dir / "python3"
+            python_wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                '"$REAL_PYTHON" "$@"\n'
+                'if mkdir "$SWAP_MARKER" 2>/dev/null; then\n'
+                '  mv "$LOCK_LEAF" "$ORIGINAL_LOCK"\n'
+                '  ln -s "$VICTIM" "$LOCK_LEAF"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            python_wrapper.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "GATEWAY_DIR": str(gateway_dir),
+                    "LOCK_LEAF": str(
+                        gateway_dir
+                        / ".gateway-launch-locks"
+                        / "fixed-key.lock"
+                    ),
+                    "LOCK_HELPER": str(lock_helper),
+                    "ORIGINAL_LOCK": str(original_lock),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REAL_PYTHON": sys.executable,
+                    "SWAP_MARKER": str(root / "swap-marker"),
+                    "VICTIM": str(victim),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("could not open execute_operator lock", result.stderr)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "must remain intact")
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o640)
+            self.assertTrue(original_lock.is_dir())
+
+    def test_execute_operator_lock_rejects_permissive_modes_without_chmod(
+        self,
+    ) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        for permissive_target in ("root", "leaf"):
+            with self.subTest(permissive_target=permissive_target):
+                with tempfile.TemporaryDirectory() as temporary_dir:
+                    gateway_dir = Path(temporary_dir) / "gateway"
+                    lock_root = gateway_dir / ".gateway-launch-locks"
+                    lock_leaf = lock_root / "fixed-key.lock"
+                    gateway_dir.mkdir()
+                    lock_root.mkdir(mode=0o700)
+                    target = lock_root
+                    if permissive_target == "leaf":
+                        lock_leaf.mkdir(mode=0o700)
+                        target = lock_leaf
+                    target.chmod(0o755)
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            'source "$LOCK_HELPER"; '
+                            "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                            "gateway_acquire_execute_operator_lock edge",
+                        ],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "GATEWAY_DIR": str(gateway_dir),
+                            "LOCK_HELPER": str(lock_helper),
+                        },
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("mode 0700", result.stderr)
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+                    if permissive_target == "root":
+                        self.assertFalse(lock_leaf.exists())
+
+    def test_execute_operator_lock_rejects_lock_root_fifo_swap_without_blocking(
+        self,
+    ) -> None:
+        lock_helper = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "_execute_operator_lock.sh"
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            lock_root = gateway_dir / ".gateway-launch-locks"
+            original_lock_root = root / "original-lock-root"
+            bin_dir = root / "bin"
+            gateway_dir.mkdir()
+            bin_dir.mkdir()
+            python_wrapper = bin_dir / "python3"
+            python_wrapper.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                '"$REAL_PYTHON" "$@"\n'
+                'if mkdir "$SWAP_MARKER" 2>/dev/null; then\n'
+                '  mv "$LOCK_ROOT" "$ORIGINAL_LOCK_ROOT"\n'
+                '  mkfifo "$LOCK_ROOT"\n'
+                "fi\n",
+                encoding="utf-8",
+            )
+            python_wrapper.chmod(0o755)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$LOCK_HELPER"; '
+                    "gateway_execute_operator_lock_key() { printf '%s\\n' fixed-key; }; "
+                    "gateway_acquire_execute_operator_lock edge",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env={
+                    **os.environ,
+                    "GATEWAY_DIR": str(gateway_dir),
+                    "LOCK_HELPER": str(lock_helper),
+                    "LOCK_ROOT": str(lock_root),
+                    "ORIGINAL_LOCK_ROOT": str(original_lock_root),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                    "REAL_PYTHON": sys.executable,
+                    "SWAP_MARKER": str(root / "swap-marker"),
+                },
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("could not open execute_operator lock", result.stderr)
+            self.assertTrue(stat.S_ISFIFO(lock_root.lstat().st_mode))
+            self.assertTrue((original_lock_root / "fixed-key.lock").is_dir())
 
     def test_zksys_asset_id_uses_the_edge_origin_chain(self) -> None:
         deploy = (

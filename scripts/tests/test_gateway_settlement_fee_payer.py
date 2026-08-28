@@ -418,10 +418,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
             self.assertEqual(
                 estimate[estimate.index("--from") + 1].lower(), OPERATOR.lower()
             )
-        self.assertTrue(self._lock_path().is_file())
-        self.assertFalse(
-            (self.gateway_dir / ".gateway-launch-locks" / "edge-a-execute-operator.lock").exists()
-        )
+        self.assertTrue(self._lock_path().is_dir())
 
         second = self._run()
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -636,11 +633,15 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
 
     def test_rejects_a_concurrent_execute_operator_user(self) -> None:
         lock_root = self.gateway_dir / ".gateway-launch-locks"
-        lock_root.mkdir()
+        lock_root.mkdir(mode=0o700)
         lock_path = self._lock_path()
-        with lock_path.open("w", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_path.mkdir(mode=0o700)
+        lock_fd = os.open(lock_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = self._run()
+        finally:
+            os.close(lock_fd)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("execute_operator is in use", result.stderr)
         self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
@@ -659,19 +660,27 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         wallet_path.chmod(0o600)
 
         lock_root = self.gateway_dir / ".gateway-launch-locks"
-        lock_root.mkdir()
-        with self._lock_path().open("w", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_root.mkdir(mode=0o700)
+        lock_path = self._lock_path()
+        lock_path.mkdir(mode=0o700)
+        lock_fd = os.open(lock_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             result = self._run("edge-b")
+        finally:
+            os.close(lock_fd)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("execute_operator is in use", result.stderr)
         self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
 
     def test_migration_inherited_lock_is_reused_without_deadlock(self) -> None:
         lock_root = self.gateway_dir / ".gateway-launch-locks"
-        lock_root.mkdir()
-        with self._lock_path().open("w", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_root.mkdir(mode=0o700)
+        lock_path = self._lock_path()
+        lock_path.mkdir(mode=0o700)
+        lock_fd = os.open(lock_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:
                 saved_fd9 = os.dup(9)
             except OSError:
@@ -679,7 +688,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 saved_fd9_inheritable = None
             else:
                 saved_fd9_inheritable = os.get_inheritable(9)
-            os.dup2(lock.fileno(), 9)
+            os.dup2(lock_fd, 9)
             os.set_inheritable(9, True)
             try:
                 env = self.env.copy()
@@ -702,6 +711,8 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                         os.set_inheritable(9, saved_fd9_inheritable)
                     finally:
                         os.close(saved_fd9)
+        finally:
+            os.close(lock_fd)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("execute_operator is in use", blocked.stderr)
