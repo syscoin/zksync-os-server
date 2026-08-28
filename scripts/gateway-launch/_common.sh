@@ -51,6 +51,15 @@ gl_to_lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
+# SYSCOIN: Bind generated deployment executables to their reviewed source stamp.
+gl_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 gl_l1_network_requires_external_signer() {
   case "$(gl_to_lower "${L1_NETWORK:-}")" in
   tanenbaum | mainnet) return 0 ;;
@@ -1481,12 +1490,37 @@ print(hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest())
 PY
 }
 
+# SYSCOIN: A source-only stamp must never authorize a replaced zkstack binary.
+gl_zkstack_cli_release_stamp_matches() {
+  gl_require ZKSYNC_ERA_PATH
+  local zkstack_bin stamp_file expected_fingerprint actual_binary_sha
+  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
+  stamp_file="$(gl_zkstack_cli_release_stamp_file)" || return 1
+  [ -f "${zkstack_bin}" ] && [ -x "${zkstack_bin}" ] && [ ! -L "${zkstack_bin}" ] || return 1
+  [ -f "${stamp_file}" ] && [ ! -L "${stamp_file}" ] || return 1
+  expected_fingerprint="$(gl_zkstack_cli_release_fingerprint)" || return 1
+  actual_binary_sha="$(gl_sha256_file "${zkstack_bin}")" || return 1
+  [[ "${expected_fingerprint}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "${actual_binary_sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  cmp -s "${stamp_file}" <(
+    printf 'source_fingerprint=%s\nzkstack_sha256=%s\n' \
+      "${expected_fingerprint}" "${actual_binary_sha}"
+  )
+}
+
 gl_write_zkstack_cli_release_stamp() {
-  local stamp_file fingerprint
+  local stamp_file fingerprint zkstack_bin binary_sha
   stamp_file="$(gl_zkstack_cli_release_stamp_file)"
+  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
+  [ -f "${zkstack_bin}" ] && [ -x "${zkstack_bin}" ] && [ ! -L "${zkstack_bin}" ] ||
+    gl_die "cannot stamp a missing or unsafe zkstack executable"
   fingerprint="$(gl_zkstack_cli_release_fingerprint)"
+  binary_sha="$(gl_sha256_file "${zkstack_bin}")"
+  [[ "${fingerprint}" =~ ^[0-9a-f]{64}$ ]] || gl_die "invalid zkstack source fingerprint"
+  [[ "${binary_sha}" =~ ^[0-9a-f]{64}$ ]] || gl_die "invalid zkstack executable digest"
   mkdir -p "$(dirname "${stamp_file}")"
-  printf '%s\n' "${fingerprint}" >"${stamp_file}"
+  printf 'source_fingerprint=%s\nzkstack_sha256=%s\n' \
+    "${fingerprint}" "${binary_sha}" >"${stamp_file}"
 }
 
 gl_ensure_era_contracts_syscoin_postimage() {
@@ -1658,15 +1692,7 @@ gl_ensure_zkstack_cli_release_current() {
   # SYSCOIN: Attest the complete pinned zkstack postimage on every entrypoint,
   # including restarts whose release stamp allows the build itself to be skipped.
   bash "${ZKSYNC_OS_SERVER_PATH}/scripts/apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"
-  local zkstack_bin stamp_file expected_fingerprint actual_fingerprint
-  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
-  stamp_file="$(gl_zkstack_cli_release_stamp_file)"
-  expected_fingerprint="$(gl_zkstack_cli_release_fingerprint)"
-  actual_fingerprint=""
-  if [ -f "${stamp_file}" ]; then
-    actual_fingerprint="$(tr -d '[:space:]' <"${stamp_file}")"
-  fi
-  if [ ! -x "${zkstack_bin}" ] || [ "${actual_fingerprint}" != "${expected_fingerprint}" ]; then
+  if ! gl_zkstack_cli_release_stamp_matches; then
     echo "gateway-launch: building zkstack CLI"
     gl_build_zkstack_cli_release
   fi
@@ -1738,15 +1764,8 @@ gl_workspace_matches_required_pins() {
 gl_workspace_has_resumable_syscoin_release() {
   gl_workspace_matches_required_pins || return 1
 
-  local zkstack_bin stamp_file expected_fingerprint actual_fingerprint
-  zkstack_bin="${ZKSYNC_ERA_PATH}/zkstack_cli/target/release/zkstack"
-  stamp_file="$(gl_zkstack_cli_release_stamp_file)" || return 1
-  [ -f "${zkstack_bin}" ] && [ -x "${zkstack_bin}" ] && [ ! -L "${zkstack_bin}" ] || return 1
-  [ -f "${stamp_file}" ] && [ ! -L "${stamp_file}" ] || return 1
   gl_assert_era_contracts_syscoin_postimage >/dev/null 2>&1 || return 1
-  expected_fingerprint="$(gl_zkstack_cli_release_fingerprint)" || return 1
-  actual_fingerprint="$(tr -d '[:space:]' <"${stamp_file}")" || return 1
-  [ -n "${expected_fingerprint}" ] && [ "${actual_fingerprint}" = "${expected_fingerprint}" ]
+  gl_zkstack_cli_release_stamp_matches
 }
 
 # Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.

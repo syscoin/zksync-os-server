@@ -2994,15 +2994,17 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             'bash "${ZKSYNC_OS_SERVER_PATH}/scripts/'
             'apply-zksync-era-syscoin-patch.sh" "${ZKSYNC_ERA_PATH}"'
         )
+        stamp_attestation = "gl_zkstack_cli_release_stamp_matches"
         self.assertIn(contracts_attestation, ensure_body)
         self.assertIn(patch_attestation, ensure_body)
+        self.assertIn(stamp_attestation, ensure_body)
         self.assertLess(
             ensure_body.index(contracts_attestation),
-            ensure_body.index("expected_fingerprint="),
+            ensure_body.index(stamp_attestation),
         )
         self.assertLess(
             ensure_body.index(patch_attestation),
-            ensure_body.index("expected_fingerprint="),
+            ensure_body.index(stamp_attestation),
         )
         self.assertIn(
             'step_l1_ecosystem_deployed() {\n'
@@ -3072,11 +3074,12 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
                 "bash",
                 "-c",
                 'source "$COMMON"; '
-                "gl_write_zkstack_cli_release_stamp() { "
-                "printf 'fresh-stamp\\n' >\"$(gl_zkstack_cli_release_stamp_file)\"; "
+                "gl_zkstack_cli_release_fingerprint() { "
+                "printf '%s\\n' \"$EXPECTED_FINGERPRINT\"; "
                 "}; "
                 "gl_build_zkstack_cli_release",
             ]
+            fingerprint = "a" * 64
             base_env = {
                 key: value
                 for key, value in os.environ.items()
@@ -3095,6 +3098,7 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
                     "ZKSYNC_ERA_PATH": str(era),
                     "ZKSYNC_OS_SERVER_PATH": str(REPO_ROOT),
                     "GATEWAY_ZKSTACK_CARGO_TOOLCHAIN": "test-nightly",
+                    "EXPECTED_FINGERPRINT": fingerprint,
                     "CARGO_ARGV_TRACE": str(trace),
                     "EXPECTED_APPLICATOR": str(
                         REPO_ROOT / "scripts" / "apply-zksync-era-syscoin-patch.sh"
@@ -3120,7 +3124,12 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             result = run(CARGO_TARGET_DIR=str(root / "wrong-target"))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(zkstack_bin.read_text(encoding="utf-8"), "fresh")
-            self.assertEqual(stamp.read_text(encoding="utf-8"), "fresh-stamp\n")
+            binary_sha = hashlib.sha256(b"fresh").hexdigest()
+            canonical_stamp = (
+                f"source_fingerprint={fingerprint}\n"
+                f"zkstack_sha256={binary_sha}\n"
+            ).encode()
+            self.assertEqual(stamp.read_bytes(), canonical_stamp)
             argv = trace.read_bytes().split(b"\0")[:-1]
             target_flag = argv.index(b"--target-dir")
             self.assertEqual(
@@ -3128,6 +3137,37 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
                 str(era / "zkstack_cli" / "target").encode(),
             )
             self.assertNotIn(str(root / "wrong-target").encode(), argv)
+
+            check_command = [
+                "bash",
+                "-c",
+                'source "$COMMON"; '
+                "gl_zkstack_cli_release_fingerprint() { "
+                "printf '%s\\n' \"$EXPECTED_FINGERPRINT\"; "
+                "}; "
+                "gl_zkstack_cli_release_stamp_matches",
+            ]
+
+            def check_stamp() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    check_command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=base_env,
+                    cwd=root,
+                )
+
+            current = check_stamp()
+            self.assertEqual(current.returncode, 0, current.stderr)
+            stamp.write_text(f"{fingerprint}\n", encoding="utf-8")
+            self.assertNotEqual(check_stamp().returncode, 0)
+            stamp.write_bytes(canonical_stamp.replace(b"\n", b"\0junk\n", 1))
+            self.assertNotEqual(check_stamp().returncode, 0)
+            stamp.write_bytes(canonical_stamp)
+            zkstack_bin.write_text("tampered", encoding="utf-8")
+            zkstack_bin.chmod(0o755)
+            self.assertNotEqual(check_stamp().returncode, 0)
 
             rejected_cases = [
                 (
