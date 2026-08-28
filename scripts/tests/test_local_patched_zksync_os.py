@@ -12,10 +12,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
-PUBLISHED_PATCH_TARGET = "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+PUBLISHED_PATCH_TARGET = "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
 PUBLISHED_PATCH_TARGET_RUNTIME_SIZE = 2840
 PUBLISHED_PATCH_TARGET_RUNTIME_HASH = (
-    "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777"
+    "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4"
 )
 PUBLISHED_EDGE_RELAY = "0x758b06cda80bdd016f79afd0df1a984039067a21"
 PUBLISHED_EDGE_RELAY_RUNTIME_HASH = (
@@ -34,7 +34,7 @@ PUBLISHED_EDGE_SOURCE_SHA256 = (
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
-PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9fb99cf591c553447cd3839489cc4d327eb424b4"
+PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9e677f536230cc87c1bce8011f3a8074eb39e37a"
 PUBLISHED_ERA_PATCHED_TREE = "74b8ada2e8aa06701aa7496206dd72febf85346a"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
@@ -1144,6 +1144,13 @@ gl_ensure_zksync_era_workspace
             self.assertEqual(
                 baseline["gateway_settlement_fee"], "15000000000000000000"
             )
+            self.assertEqual(
+                baseline["published_gateway_commit_target"],
+                PUBLISHED_PATCH_TARGET,
+            )
+            self.assertEqual(
+                baseline["published_gateway_relay"], PUBLISHED_EDGE_RELAY
+            )
             self.assertEqual(baseline["edge_reuse_gateway_governor"], "true")
             self.assertEqual(
                 baseline["gateway_l2_da_commitment_scheme_value"], "4"
@@ -2066,9 +2073,9 @@ gl_checkpoint_assert_fingerprint_matches
         for expected in (
             'EXPECTED_BASE_COMMIT="69bc430549e88f9264066d14f2001707572c5d33"',
             'EXPECTED_BASE_TREE="233b36e77843e460ee9da3e344ee227fa8cce04a"',
-            'EXPECTED_PATCHED_TREE="9fb99cf591c553447cd3839489cc4d327eb424b4"',
+            'EXPECTED_PATCHED_TREE="9e677f536230cc87c1bce8011f3a8074eb39e37a"',
             'EXPECTED_PATCH_SIZE="275841"',
-            'EXPECTED_PATCH_SHA256="556a223a7c095e30030a869c4d08d102c24ac00c8623f50649d17a07a9193965"',
+            'EXPECTED_PATCH_SHA256="d95e595ddc4d1fa45c291b12cbaa77308c67ff23221c249b0eb5f7907a8f7287"',
             'EXPECTED_PATCH_PATH_COUNT="64"',
             'EXPECTED_PATCH_PATHS_SHA256="33a2714fec3c4c61e754ed699f94c1529fbddc549bd033ced143162deb4bcf7a"',
         ):
@@ -2077,7 +2084,7 @@ gl_checkpoint_assert_fingerprint_matches
             REPO_ROOT / "scripts" / "_patched-zksync-os-workspace.sh"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="9fb99cf591c553447cd3839489cc4d327eb424b4"',
+            'SYSCOIN_EXPECTED_ZKSYNC_OS_PATCHED_TREE="9e677f536230cc87c1bce8011f3a8074eb39e37a"',
             workspace_helper,
         )
         self.assertIn('require_text "${tagged_path}" "SYSCOIN:"', applicator)
@@ -2219,6 +2226,7 @@ gl_checkpoint_assert_fingerprint_matches
         era_patch = (
             REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
         ).read_text(encoding="utf-8").lower()
+        self.assertIn(PUBLISHED_PATCH_TARGET, types)
         self.assertIn(PUBLISHED_EDGE_RELAY, types)
         self.assertIn(PUBLISHED_PATCH_TARGET_RUNTIME_HASH.removeprefix("0x"), types)
         self.assertIn(

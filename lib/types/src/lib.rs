@@ -4,7 +4,7 @@ use alloy::primitives::{Address, B256, U256, address, b256, keccak256};
 /// transactions. A runtime deployment must match this address before it can collect or verify
 /// compact edge references.
 pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
-    address!("0xd0ec30807902886b61a86d9bd209fe353c1d912b");
+    address!("0xca38dbb6ea5f740cc8252f1450def4dcede94478");
 
 /// SYSCOIN: Exact deployed EVM runtime identity of
 /// [`SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET`]. Both length and hash are attested so a partial or
@@ -12,7 +12,7 @@ pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET: Address =
 /// shell. The upgradeable implementation remains governed by the canonical on-chain proxy state.
 pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: u32 = 2_840;
 pub const SYSCOIN_COMPACT_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: B256 =
-    b256!("ed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777");
+    b256!("d98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4");
 
 /// SYSCOIN: Canonical zkSYS fee-tank address baked into the V8 guest.
 pub const SYSCOIN_GAS_TANK_ADDRESS: Address =

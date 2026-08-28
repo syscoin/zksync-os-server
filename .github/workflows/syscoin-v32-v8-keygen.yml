@@ -26,24 +26,24 @@ env:
   ZKSYNC_OS_REPOSITORY: https://github.com/matter-labs/zksync-os.git
   ZKSYNC_OS_BASE_COMMIT: 69bc430549e88f9264066d14f2001707572c5d33
   ZKSYNC_OS_BASE_TREE: 233b36e77843e460ee9da3e344ee227fa8cce04a
-  ZKSYNC_OS_PATCHED_TREE: 9fb99cf591c553447cd3839489cc4d327eb424b4
+  ZKSYNC_OS_PATCHED_TREE: 9e677f536230cc87c1bce8011f3a8074eb39e37a
   ZKSYNC_OS_PATCH_SIZE: "275841"
-  ZKSYNC_OS_PATCH_SHA256: 556a223a7c095e30030a869c4d08d102c24ac00c8623f50649d17a07a9193965
+  ZKSYNC_OS_PATCH_SHA256: d95e595ddc4d1fa45c291b12cbaa77308c67ff23221c249b0eb5f7907a8f7287
   ZKSYNC_OS_HELPER_SIZE: "7323"
-  ZKSYNC_OS_HELPER_SHA256: 750917415dfb0404acf1fa7e986ed30bd4604a759a05d870d43c24f2ed47356b
+  ZKSYNC_OS_HELPER_SHA256: 10b725e22695168c1d1aaf6d11b5458df2607c55f1eb77ef66bf5b67e1369b42
 
   # SYSCOIN: The Gateway-local ValidatorTimelock address is an application input. The current
   # value is the integration candidate produced by the unmodified V32 conversion; keygen remains
   # disabled until the final salts, governance, bytecodes, and ownership derivation are attested.
-  SYSCOIN_EDGE_DA_COMMIT_TARGET: "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+  SYSCOIN_EDGE_DA_COMMIT_TARGET: "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
   SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_SIZE: "2840"
-  SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777"
+  SYSCOIN_EDGE_DA_COMMIT_TARGET_RUNTIME_HASH: "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4"
   SYSCOIN_EDGE_DA_RELAY_EMITTER: "0x758b06cda80bdd016f79afd0df1a984039067a21"
   SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH: "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0"
   GATEWAY_TARGET_IDENTITY_STATUS: regeneration-required
   GATEWAY_TARGET_IDENTITY_PATH: local-chains/v32.0/gateway-identity.v1.json
-  GATEWAY_TARGET_IDENTITY_SIZE: "7588"
-  GATEWAY_TARGET_IDENTITY_SHA256: 7fc69783ffcc163b4997e1da17b825298059c13389d37e5b74fbb7f193521f2e
+  GATEWAY_TARGET_IDENTITY_SIZE: "8860"
+  GATEWAY_TARGET_IDENTITY_SHA256: 09bfa8ae16d333c08e782a957d9c9462d8fe59ad00e15813e5ce1d83c3842c95
   GATEWAY_DERIVATION_RECORD_SCHEMA: syscoin-v32-gateway-create2-derivation-v1
 
   AIRBENDER_REPOSITORY: https://github.com/matter-labs/zksync-airbender.git
@@ -64,7 +64,7 @@ env:
   # but old app identities must never look canonical. Replace every zero below from two clean
   # builds of this exact tree, install the same values in the server FRI verifier, and only then
   # change APP_IDENTITY_STATUS to `attested`.
-  APP_IDENTITY_SOURCE_TREE: 9fb99cf591c553447cd3839489cc4d327eb424b4
+  APP_IDENTITY_SOURCE_TREE: 9e677f536230cc87c1bce8011f3a8074eb39e37a
   APP_IDENTITY_STATUS: regeneration-required
   APP_BIN_SIZE: "0"
   APP_BIN_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
@@ -292,6 +292,9 @@ jobs:
               outputs.get("relay_runtime_keccak256"), "artifact relay runtime hash"
           ) != relay_runtime_hash:
               raise SystemExit("Gateway identity artifact relay runtime mismatch")
+          relay_runtime_size = require_positive_int(
+              outputs.get("relay_runtime_size"), "artifact relay runtime size"
+          )
           require_address(outputs.get("chain_type_manager_proxy"), "artifact chain type manager")
 
           if identity.get("sources", {}).get("era_base_commit") != os.environ["ERA_BASE_COMMIT"]:
@@ -313,17 +316,26 @@ jobs:
           if any(toolchain.get(field) != value for field, value in expected_toolchain.items()):
               raise SystemExit("Gateway identity artifact contract toolchain mismatch")
 
-          # SYSCOIN: Keep the ecosystem.init salt, chain-init L1 deployment salt,
-          # conversion L1 deployment salt, and zero Gateway vote/inner-deployment salt distinct.
-          # The target/relay CREATE2 deployer identities remain explicit null sentinels until
-          # the complete derivation is independently reproduced.
+          # SYSCOIN: Keep the ecosystem, chain-init, conversion, Gateway CTM, and inner
+          # deployment salts distinct. The integration candidate establishes the CTM /
+          # ValidatorTimelock salt and the relay derivation; unresolved target-deployer and
+          # production postimages remain null until independently reproduced.
           integration = identity.get("integration_inputs", {})
+          if integration.get("environment") != "anvil-fork":
+              raise SystemExit("unexpected integration evidence environment")
           require_positive_int(integration.get("l1_chain_id"), "integration L1 chain ID")
           require_positive_int(integration.get("gateway_chain_id"), "integration Gateway chain ID")
+          require_positive_int(integration.get("era_chain_id"), "integration Era chain ID")
+          require_positive_int(
+              integration.get("l1_fork_block_number"), "integration L1 fork block"
+          )
+          require_b256(integration.get("l1_fork_block_hash"), "integration L1 fork hash")
           for field in (
-              "owner", "deployer", "ecosystem_create2_factory",
+              "owner", "governance", "deployer", "ecosystem_deployer",
+              "ecosystem_governor", "gateway_governor", "ecosystem_create2_factory",
               "gateway_chain_create2_factory", "gateway_conversion_create2_factory",
-              "gateway_bridgehub", "gateway_ctm_proxy",
+              "l1_bridgehub", "gateway_system_bridgehub", "source_zksync_os_ctm_proxy",
+              "gateway_ctm_proxy", "gateway_chain_admin", "gateway_chain_proxy_admin",
           ):
               require_address(integration.get(field), f"integration {field}")
           if integration.get("deployment_mode") not in DEPLOYMENT_MODES:
@@ -331,25 +343,26 @@ jobs:
           require_b256(
               integration.get("ecosystem_initialization_salt"),
               "integration ecosystem initialization salt",
-              allow_zero=True,
+          )
+          gateway_ctm_salt = require_b256(
+              integration.get("gateway_ctm_create2_salt"),
+              "integration Gateway CTM salt",
           )
           for field in (
-              "gateway_chain_deployment_salt", "gateway_conversion_deployment_salt",
               "gateway_vote_create2_salt", "validator_timelock_create2_salt",
-              "relay_create2_salt",
           ):
-              require_b256(integration.get(field), f"integration {field}", allow_zero=True)
-          for field in (
-              "validator_timelock_create2_factory", "relay_create2_factory",
-          ):
-              if integration.get(field) is not None:
-                  require_address(integration.get(field), f"integration {field}")
-          if integration.get("gateway_chain_create2_salt_input") is not None:
-              require_b256(
-                  integration.get("gateway_chain_create2_salt_input"),
-                  "integration gateway_chain_create2_salt_input",
-                  allow_zero=True,
+              if require_b256(integration.get(field), f"integration {field}") != gateway_ctm_salt:
+                  raise SystemExit(f"integration {field} does not match the Gateway CTM salt")
+          if any(
+              integration.get(field) is not None
+              for field in (
+                  "gateway_chain_create2_salt_input", "gateway_chain_deployment_salt",
+                  "gateway_conversion_deployment_salt", "validator_timelock_create2_factory",
               )
+          ):
+              raise SystemExit("integration candidate overstates an unresolved CREATE2 input")
+          require_address(integration.get("relay_create2_factory"), "integration relay factory")
+          require_b256(integration.get("relay_create2_salt"), "integration relay salt")
           if integration.get("conversion_command") != "protocol-ops chain.gateway.convert":
               raise SystemExit("unexpected integration conversion command")
           if integration.get("conversion_calldata_unmodified") is not True:

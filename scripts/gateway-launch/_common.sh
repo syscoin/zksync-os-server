@@ -638,7 +638,7 @@ gl_export_syscoin_edge_da_commit_target_from_gateway_config() {
 }
 
 gl_published_gateway_commit_target() {
-  printf '%s\n' "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+  printf '%s\n' "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
 }
 
 gl_published_gateway_relay() {
@@ -1215,7 +1215,7 @@ gl_assert_gateway_runtime_identity() {
   # identity. Check all three live postimages before an edge can settle here.
   gl_assert_rpc_runtime_identity \
     "${gateway_rpc}" "${target}" 2840 \
-    "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777" \
+    "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4" \
     "Gateway ValidatorTimelock" || return $?
   gl_assert_rpc_runtime_identity \
     "${gateway_rpc}" "${relay}" 0 \
@@ -3215,9 +3215,14 @@ gl_checkpoint_fingerprint_json() {
   gl_require L1_NETWORK
   gl_require GATEWAY_DIR
   gl_normalize_canonical_deployment_inputs
-  local gateway_settlement_fee
+  local gateway_settlement_fee published_gateway_commit_target published_gateway_relay
   gateway_settlement_fee="$(gl_effective_gateway_settlement_fee)" || return $?
-  GL_EFFECTIVE_GATEWAY_SETTLEMENT_FEE="${gateway_settlement_fee}" python3 - <<'PY'
+  published_gateway_commit_target="$(gl_published_gateway_commit_target)" || return $?
+  published_gateway_relay="$(gl_published_gateway_relay)" || return $?
+  GL_EFFECTIVE_GATEWAY_SETTLEMENT_FEE="${gateway_settlement_fee}" \
+  GL_PUBLISHED_GATEWAY_COMMIT_TARGET="${published_gateway_commit_target}" \
+  GL_PUBLISHED_GATEWAY_RELAY="${published_gateway_relay}" \
+  python3 - <<'PY'
 import hashlib
 import json
 import os
@@ -3448,6 +3453,14 @@ payload = {
     ),
     "gateway_commit_mode": raw_effective("GATEWAY_COMMIT_MODE", "rollup"),
     "gateway_settlement_fee": os.environ["GL_EFFECTIVE_GATEWAY_SETTLEMENT_FEE"],
+    # SYSCOIN: Resume state is bound to both consensus-authenticated Gateway
+    # endpoints so a candidate repin cannot inherit an older launch checkpoint.
+    "published_gateway_commit_target": normalize_nonzero_address(
+        "GL_PUBLISHED_GATEWAY_COMMIT_TARGET"
+    ),
+    "published_gateway_relay": normalize_nonzero_address(
+        "GL_PUBLISHED_GATEWAY_RELAY"
+    ),
     "edge_chain_name": raw_effective("EDGE_CHAIN_NAME", "zksys"),
     "edge_chain_id": normalize_nonzero_uint(
         "EDGE_CHAIN_ID", "57057", (1 << 32) - 1

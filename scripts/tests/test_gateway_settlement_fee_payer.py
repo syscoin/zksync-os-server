@@ -30,7 +30,7 @@ TRACKER = "0x0000000000000000000000000000000000010010"
 WRAPPED_TOKEN = "0x0000000000000000000000000000000000002000"
 OPERATOR = "0x19E7E376E7C213B7E7e7e46cc70a5dD086DAff2A"
 EDGE_PROXY = "0x0000000000000000000000000000000000004000"
-GATEWAY_TARGET = "0xd0ec30807902886b61a86d9bd209fe353c1d912b"
+GATEWAY_TARGET = "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
 GATEWAY_RELAY = "0x758b06cda80bdd016f79afd0df1a984039067a21"
 CREATE2_FACTORY = "0x4e59b44847b379578588920ca78fbf26c0b4956c"
 GATEWAY_BLOCK_ZERO = "0x" + "dd" * 32
@@ -192,7 +192,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                         output = "0x6000"
                 elif args[0] == "keccak":
                     if args[1] == "0x" + "aa" * 2840:
-                        output = "0xed00d115b16594117ebb53b6d0322ada70270ee75e2b7e8eed5e33967c3fb777"
+                        output = "0xd98965fa7f49fc4302a2d161454fb0ef619516fbb05a24724e64bb3a3e06e5c4"
                     elif args[1] == "0xbb":
                         output = "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0"
                     elif args[1] == "0xcc":
