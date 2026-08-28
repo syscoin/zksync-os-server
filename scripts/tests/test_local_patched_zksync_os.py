@@ -196,6 +196,7 @@ class LauncherStaticTests(unittest.TestCase):
             'cmd!(shell, "yarn check --integrity --ignore-scripts")',
             'cmd!(shell, "yarn install --frozen-lockfile")',
             'cmd!(shell, "yarn check --integrity")',
+            "// SYSCOIN: Keep the pinned contracts lock immutable during settlement builds.",
             "// SYSCOIN: A failed dependency install must abort the build; the legacy",
             'build_dependencies().context("It was not possible to install project dependencies")?;',
             '// SYSCOIN: zkOS uses the canonical compact-rollup validator; the',
@@ -227,6 +228,11 @@ class LauncherStaticTests(unittest.TestCase):
             4,
         )
         self.assertEqual(added.count("cmd = signer.apply(cmd);"), 2)
+        yarn_installs = [line for line in added.splitlines() if "yarn install" in line]
+        self.assertEqual(len(yarn_installs), 3)
+        for command in yarn_installs:
+            self.assertIn("--frozen-lockfile", command)
+        self.assertNotIn('cmd!(shell, "yarn install")', added)
         self.assertNotIn("PrivateKey {", added)
         self.assertNotIn('to_string = "private-key=', added)
         self.assertNotIn("serialize local Anvil broadcasts", patch)
@@ -244,15 +250,15 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "3524793b2e17754a7ed7113c9182006f19828816b794bc6374d9fc2b9eeb6182",
+            "440e6c06754cfa86826ae84187e02e3fd803376c8674bd255ae62aab50af5387",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="3524793b2e17754a7ed7113c9182006f19828816b794bc6374d9fc2b9eeb6182"',
-            'EXPECTED_PATCH_PATH_COUNT="18"',
-            'EXPECTED_PATCH_PATHS_SHA256="9780732ab76b6e1fc1065880896d9d06befb6c8a70ee13a23401becad9de0b4e"',
-            'EXPECTED_PATCHED_TREE="3b6a1e15e232f1e2986cb19d3fadcc6ab63d9a60"',
+            'EXPECTED_PATCH_SHA256="440e6c06754cfa86826ae84187e02e3fd803376c8674bd255ae62aab50af5387"',
+            'EXPECTED_PATCH_PATH_COUNT="19"',
+            'EXPECTED_PATCH_PATHS_SHA256="2a6fc1855915a4f4bf5304dcbec59ecbc40d7519a5f2b4f5a80da41d2a875cc9"',
+            'EXPECTED_PATCHED_TREE="d044cb9501ec8bdd0c7f9e61aff3bb547ee53c57"',
         ):
             self.assertIn(expected, applicator)
 

@@ -1797,3 +1797,13 @@ index 86d0cbfeb..6c3aff2bb 100644
 +        assert!(source_date_epoch_timestamp("9223372036854775807").is_err());
 +    }
 +}
+diff --git a/zkstack_cli/crates/common/src/contracts.rs b/zkstack_cli/crates/common/src/contracts.rs
+index a2565b9..a598459 100644
+--- a/zkstack_cli/crates/common/src/contracts.rs
++++ b/zkstack_cli/crates/common/src/contracts.rs
+@@ -34,3 +34,4 @@ pub fn install_yarn_dependencies(shell: &Shell, link_to_code: &Path) -> anyhow::
+     let _dir_guard = shell.push_dir(link_to_code);
+-    Ok(Cmd::new(cmd!(shell, "yarn install")).run()?)
++    // SYSCOIN: Keep the pinned contracts lock immutable during settlement builds.
++    Ok(Cmd::new(cmd!(shell, "yarn install --frozen-lockfile")).run()?)
+ }
