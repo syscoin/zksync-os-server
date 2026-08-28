@@ -137,6 +137,10 @@ PY
 GATEWAY_NODE_PID=""
 GATEWAY_STARTED_FOR_MIGRATION=false
 GATEWAY_MIGRATION_FOREGROUND_PID=""
+GATEWAY_MIGRATION_VALIDATOR_PID=""
+GATEWAY_MIGRATION_VALIDATOR_CONTROL_DIR=""
+GATEWAY_MIGRATION_CANCEL_SIGNAL=""
+GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
 unset GATEWAY_RUNTIME_OWNER_PID
 
 normalize_migration_start_uint() {
@@ -221,6 +225,22 @@ gateway_wait_for_job_exit() {
   done
 }
 
+gateway_job_leads_process_group() {
+  local group_leader_pid="${1:?group leader PID required}" actual_pgid
+  gateway_launcher_job_is_active "${group_leader_pid}" || return 1
+  actual_pgid="$(python3 - "${group_leader_pid}" <<'PY'
+import os
+import sys
+
+try:
+    print(os.getpgid(int(sys.argv[1])))
+except (OSError, ValueError):
+    raise SystemExit(1)
+PY
+  )" || return $?
+  [ "${actual_pgid}" = "${group_leader_pid}" ]
+}
+
 gateway_terminate_launcher_job() {
   local gateway_pid="${1:?Gateway PID required}"
   local term_timeout_s="${2:?TERM timeout required}"
@@ -242,6 +262,76 @@ gateway_terminate_launcher_job() {
   wait "${gateway_pid}" 2>/dev/null || true
 }
 
+gateway_terminate_launcher_group() {
+  local group_leader_pid="${1:?group leader PID required}"
+  local forwarded_signal="${2:?forwarded signal required}"
+  local term_timeout_s="${3:?signal timeout required}"
+  local job_label="${4:-validator process group}"
+  local deadline now remaining_ms sleep_ms graceful_rc=0
+
+  [[ "${group_leader_pid}" =~ ^[1-9][0-9]*$ ]] || return 1
+  case "${forwarded_signal}" in INT | TERM) ;; *) return 1 ;; esac
+  gateway_job_leads_process_group "${group_leader_pid}" || {
+    echo "migrate-edge: ${job_label} is not led by PID ${group_leader_pid}" >&2
+    return 1
+  }
+
+  if kill -"${forwarded_signal}" -- "-${group_leader_pid}" 2>/dev/null; then
+    if now="$(migration_monotonic_millis)"; then
+      deadline=$((now + term_timeout_s * 1000))
+      while gateway_launcher_job_is_active "${group_leader_pid}"; do
+        now="$(migration_monotonic_millis)" || { graceful_rc=$?; break; }
+        remaining_ms=$((deadline - now))
+        [ "${remaining_ms}" -gt 0 ] || break
+        sleep_ms=100
+        [ "${sleep_ms}" -le "${remaining_ms}" ] || sleep_ms="${remaining_ms}"
+        sleep "$(migration_millis_as_seconds "${sleep_ms}")"
+      done
+    else
+      graceful_rc=$?
+    fi
+  else
+    graceful_rc=$?
+  fi
+  # SYSCOIN: the ready validator leader cannot exit voluntarily; while this
+  # exact Bash job is live, its PGID cannot be recycled under the group KILL.
+  gateway_launcher_job_is_active "${group_leader_pid}" || {
+    wait "${group_leader_pid}" 2>/dev/null || true
+    echo "migrate-edge: ${job_label} lost its owned leader before SIGKILL" >&2
+    return 1
+  }
+  echo "migrate-edge: ${job_label} did not exit after SIG${forwarded_signal}; sending SIGKILL" >&2
+  kill -KILL -- "-${group_leader_pid}" 2>/dev/null || return 1
+  if ! gateway_wait_for_job_exit "${group_leader_pid}" 5; then
+    echo "migrate-edge: ${job_label} leader survived SIGKILL: ${group_leader_pid}" >&2
+    return 1
+  fi
+  wait "${group_leader_pid}" 2>/dev/null || true
+  [ "${graceful_rc}" -eq 0 ] || \
+    echo "migrate-edge: ${job_label} graceful shutdown failed; forced cleanup completed" >&2
+  return 0
+}
+
+gateway_kill_completed_validator_group() {
+  local group_leader_pid="${1:?group leader PID required}"
+  gateway_job_leads_process_group "${group_leader_pid}" || return 1
+  # SYSCOIN: the command is complete, so atomically kill its held leader and
+  # every same-group straggler before reaping and releasing the PGID identity.
+  kill -KILL -- "-${group_leader_pid}" 2>/dev/null || return 1
+  gateway_wait_for_job_exit "${group_leader_pid}" 5 || return 1
+  wait "${group_leader_pid}" 2>/dev/null || true
+}
+
+gateway_clear_validator_control_dir() {
+  local control_dir="${GATEWAY_MIGRATION_VALIDATOR_CONTROL_DIR:-}"
+  [ -n "${control_dir}" ] || return 0
+  rm -f -- "${control_dir}/go" "${control_dir}/ready" \
+    "${control_dir}/go.tmp" "${control_dir}/ready.tmp" "${control_dir}/status" \
+    "${control_dir}/status.tmp"
+  rmdir "${control_dir}" 2>/dev/null || true
+  GATEWAY_MIGRATION_VALIDATOR_CONTROL_DIR=""
+}
+
 cleanup_gateway_for_migration_on_exit() {
   # SYSCOIN: do not let a repeated signal interrupt bounded child cleanup.
   trap '' INT TERM
@@ -250,6 +340,10 @@ cleanup_gateway_for_migration_on_exit() {
 
 handle_gateway_migration_interrupt() {
   trap '' INT TERM
+  GATEWAY_MIGRATION_CANCEL_SIGNAL=INT
+  # SYSCOIN: repair's scoped EXIT handler performs cleanup, then atomically
+  # blocks the checkpoint; ordinary launchers retain direct signal cleanup.
+  [ "${GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND}" = true ] && exit 130
   trap - EXIT
   cleanup_gateway_for_migration_on_exit
   exit 130
@@ -257,9 +351,21 @@ handle_gateway_migration_interrupt() {
 
 handle_gateway_migration_terminate() {
   trap '' INT TERM
+  GATEWAY_MIGRATION_CANCEL_SIGNAL=TERM
+  [ "${GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND}" = true ] && exit 143
   trap - EXIT
   cleanup_gateway_for_migration_on_exit
   exit 143
+}
+
+gateway_dispatch_migration_signal() {
+  local received_signal="${1:?signal required}"
+  [ -n "${pending_signal:-}" ] || pending_signal="${received_signal}"
+  trap '' INT TERM
+  case "${pending_signal}" in
+  INT) handle_gateway_migration_interrupt ;;
+  TERM) handle_gateway_migration_terminate ;;
+  esac
 }
 
 install_gateway_migration_cleanup_traps() {
@@ -279,6 +385,154 @@ migration_wait_for_owned_job() {
 migration_interruptible_sleep() {
   sleep "${1:?sleep duration required}" &
   migration_wait_for_owned_job "$!"
+}
+
+run_gateway_repair_validator_in_owned_group() {
+  local had_monitor=false group_leader_pid pending_signal="" validation_rc=0
+  local control_dir ready_checks=0 result_kind result_line setup_cleanup_rc=0
+  case "$-" in *m*) had_monitor=true ;; esac
+
+  control_dir="$(mktemp -d "${TMPDIR:-/tmp}/gateway-validator.XXXXXX")" || exit $?
+  chmod 700 "${control_dir}" || {
+    rmdir "${control_dir}" 2>/dev/null || true
+    exit 1
+  }
+  # SYSCOIN: close the fork/ownership publication window. A parent-only signal
+  # is replayed through the normal handler only after the exact group is known.
+  trap '[ -n "${pending_signal}" ] || pending_signal=INT' INT
+  trap '[ -n "${pending_signal}" ] || pending_signal=TERM' TERM
+  set -m
+  (
+    local child_rc=0 child_exit_rc
+    readonly GATEWAY_VALIDATOR_CHILD_CONTROL_DIR="${control_dir}"
+    set +e
+    # SYSCOIN: disable nested job-control groups so every validator descendant
+    # remains under this one parent-owned PGID.
+    set +m
+    validator_publish_and_hold() {
+      local result_kind="${1:?result kind required}" result_rc="${2:?result code required}"
+      trap - EXIT
+      trap '' INT TERM
+      if ! printf '%s:%s\n' "${result_kind}" "${result_rc}" > "${GATEWAY_VALIDATOR_CHILD_CONTROL_DIR}/status.tmp" || \
+        ! mv "${GATEWAY_VALIDATOR_CHILD_CONTROL_DIR}/status.tmp" "${GATEWAY_VALIDATOR_CHILD_CONTROL_DIR}/status"; then
+        # SYSCOIN: only a child-authenticated PGID may be signaled here. Before
+        # that handshake, wake the repair parent to perform exact cleanup.
+        if [ -n "${GATEWAY_VALIDATOR_CHILD_PGID:-}" ]; then
+          if ! kill -KILL -- "-${GATEWAY_VALIDATOR_CHILD_PGID}" 2>/dev/null; then
+            kill -TERM "$$" 2>/dev/null || true
+          fi
+        else
+          kill -TERM "$$" 2>/dev/null || true
+        fi
+      fi
+      while :; do sleep 3600; done
+    }
+    validator_fatal_exit() {
+      child_exit_rc=$?
+      validator_publish_and_hold fatal "${child_exit_rc}"
+    }
+    trap validator_fatal_exit EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    : > "${control_dir}/ready.tmp" && mv "${control_dir}/ready.tmp" "${control_dir}/ready"
+    while [ ! -f "${control_dir}/go" ]; do sleep 0.01; done
+    child_group_pgid=""
+    IFS= read -r child_group_pgid < "${control_dir}/go" || \
+      validator_publish_and_hold fatal 1
+    actual_child_pgid="$(python3 - <<'PY'
+import os
+print(os.getpgrp())
+PY
+    )" || validator_publish_and_hold fatal 1
+    [[ "${child_group_pgid}" =~ ^[1-9][0-9]*$ ]] && \
+      [ "${child_group_pgid}" = "${actual_child_pgid}" ] || \
+      validator_publish_and_hold fatal 1
+    readonly GATEWAY_VALIDATOR_CHILD_PGID="${child_group_pgid}"
+    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
+    "$@" || child_rc=$?
+    trap - EXIT
+    validator_publish_and_hold return "${child_rc}"
+  ) &
+  group_leader_pid=$!
+  [ "${had_monitor}" = true ] || set +m
+
+  while [ ! -f "${control_dir}/ready" ]; do
+    if ! gateway_launcher_job_is_active "${group_leader_pid}"; then
+      wait "${group_leader_pid}" || validation_rc=$?
+      break
+    fi
+    [ "${ready_checks}" -lt 500 ] || break
+    ready_checks=$((ready_checks + 1))
+    sleep 0.01
+  done
+  if [ ! -f "${control_dir}/ready" ] || ! gateway_job_leads_process_group "${group_leader_pid}"; then
+    GATEWAY_MIGRATION_VALIDATOR_CONTROL_DIR="${control_dir}"
+    if gateway_job_leads_process_group "${group_leader_pid}"; then
+      GATEWAY_MIGRATION_VALIDATOR_PID="${group_leader_pid}"
+      gateway_kill_completed_validator_group "${group_leader_pid}" || setup_cleanup_rc=$?
+      [ "${setup_cleanup_rc}" -ne 0 ] || GATEWAY_MIGRATION_VALIDATOR_PID=""
+    else
+      # SYSCOIN: before PGID authentication the held child has not received
+      # the go token. KILL only that exact job, then bound and reap its exit.
+      GATEWAY_MIGRATION_FOREGROUND_PID="${group_leader_pid}"
+      if gateway_launcher_job_is_active "${group_leader_pid}"; then
+        kill -KILL "${group_leader_pid}" 2>/dev/null || setup_cleanup_rc=$?
+        [ "${setup_cleanup_rc}" -ne 0 ] || \
+          gateway_wait_for_job_exit "${group_leader_pid}" 5 || setup_cleanup_rc=$?
+      fi
+      if [ "${setup_cleanup_rc}" -eq 0 ]; then
+        wait "${group_leader_pid}" 2>/dev/null || true
+        GATEWAY_MIGRATION_FOREGROUND_PID=""
+      fi
+    fi
+    [ "${setup_cleanup_rc}" -ne 0 ] || gateway_clear_validator_control_dir
+    trap 'gateway_dispatch_migration_signal INT' INT
+    trap 'gateway_dispatch_migration_signal TERM' TERM
+    [ -z "${pending_signal}" ] || gateway_dispatch_migration_signal "${pending_signal}"
+    [ "${setup_cleanup_rc}" -eq 0 ] || exit 1
+    trap handle_gateway_migration_interrupt INT
+    trap handle_gateway_migration_terminate TERM
+    exit 1
+  fi
+
+  GATEWAY_MIGRATION_VALIDATOR_PID="${group_leader_pid}"
+  GATEWAY_MIGRATION_VALIDATOR_CONTROL_DIR="${control_dir}"
+  # SYSCOIN: arm a first-signal dispatcher before replaying any signal latched
+  # during fork, so neither signal type can be lost or supersede the first.
+  trap 'gateway_dispatch_migration_signal INT' INT
+  trap 'gateway_dispatch_migration_signal TERM' TERM
+  [ -z "${pending_signal}" ] || gateway_dispatch_migration_signal "${pending_signal}"
+  printf '%s\n' "${group_leader_pid}" > "${control_dir}/go.tmp" && \
+    mv "${control_dir}/go.tmp" "${control_dir}/go" || exit $?
+
+  while [ ! -s "${control_dir}/status" ]; do
+    gateway_launcher_job_is_active "${group_leader_pid}" || {
+      wait "${group_leader_pid}" || validation_rc=$?
+      GATEWAY_MIGRATION_VALIDATOR_PID=""
+      gateway_clear_validator_control_dir
+      trap handle_gateway_migration_interrupt INT
+      trap handle_gateway_migration_terminate TERM
+      exit 1
+    }
+    migration_interruptible_sleep 0.05 || true
+  done
+  IFS= read -r result_line < "${control_dir}/status" || result_line=""
+  result_kind="${result_line%%:*}"
+  validation_rc="${result_line#*:}"
+  case "${result_kind}" in return | fatal) ;; *) result_kind=fatal; validation_rc=1 ;; esac
+  [[ "${validation_rc}" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]] || \
+    { result_kind=fatal; validation_rc=1; }
+  [ "${result_kind}" != fatal ] || [ "${validation_rc}" -ne 0 ] || validation_rc=1
+  gateway_kill_completed_validator_group "${group_leader_pid}" || exit $?
+  GATEWAY_MIGRATION_VALIDATOR_PID=""
+  gateway_clear_validator_control_dir
+  if [ "${result_kind}" = fatal ]; then
+    exit "${validation_rc}"
+  fi
+  trap handle_gateway_migration_interrupt INT
+  trap handle_gateway_migration_terminate TERM
+  [ "${validation_rc}" -ne 0 ] && return "${validation_rc}"
+  return "${validation_rc}"
 }
 
 start_gateway_for_migration() {
@@ -410,7 +664,8 @@ stop_gateway_for_migration() {
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
 
-  if [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ] || {
+  if [ -n "${GATEWAY_MIGRATION_VALIDATOR_PID}" ] || \
+    [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ] || {
     [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]
   }; then
     if stop_timeout_s="$(normalize_migration_start_uint \
@@ -422,14 +677,31 @@ stop_gateway_for_migration() {
       stop_timeout_s=10
     fi
   fi
-  if [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ]; then
-    # SYSCOIN: make the startup poll sleep an exact job so the repair shell's
-    # signal trap can stop both that wait and the launcher-owned node.
-    gateway_terminate_launcher_job \
-      "${GATEWAY_MIGRATION_FOREGROUND_PID}" "${stop_timeout_s}" \
-      "startup wait" || cleanup_rc=$?
-    GATEWAY_MIGRATION_FOREGROUND_PID=""
+  if [ -n "${GATEWAY_MIGRATION_VALIDATOR_PID}" ]; then
+    if gateway_terminate_launcher_group \
+      "${GATEWAY_MIGRATION_VALIDATOR_PID}" \
+      "${GATEWAY_MIGRATION_CANCEL_SIGNAL:-TERM}" "${stop_timeout_s}" \
+      "repair validator process group"; then
+      GATEWAY_MIGRATION_VALIDATOR_PID=""
+      gateway_clear_validator_control_dir
+    else
+      cleanup_rc=$?
+    fi
   fi
+  if [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ]; then
+    # SYSCOIN: make the startup/poll sleep an exact job so the repair shell's
+    # signal trap can stop both that wait and the launcher-owned node.
+    if gateway_terminate_launcher_job \
+      "${GATEWAY_MIGRATION_FOREGROUND_PID}" "${stop_timeout_s}" \
+      "startup wait"; then
+      GATEWAY_MIGRATION_FOREGROUND_PID=""
+    else
+      cleanup_rc=$?
+    fi
+  fi
+  [ -n "${GATEWAY_MIGRATION_VALIDATOR_PID}" ] || \
+    [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ] || \
+    gateway_clear_validator_control_dir
   if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]; then
     echo "migrate-edge: stopping Gateway node (pid ${GATEWAY_NODE_PID})"
     # SYSCOIN: never let a TERM-ignoring node block the cleanup path that
@@ -563,11 +835,21 @@ run_with_gateway_for_migration() {
 
   start_gateway_for_migration || start_rc=$?
   if [ "${start_rc}" -ne 0 ]; then
-    stop_gateway_for_migration || true
+    stop_gateway_for_migration || cleanup_rc=$?
+    [ "${GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND}" = true ] && \
+      [ "${cleanup_rc}" -ne 0 ] && exit "${cleanup_rc}"
     return "${start_rc}"
   fi
-  "$@" || command_rc=$?
+  if [ "${GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND}" = true ]; then
+    # SYSCOIN: repair keeps Gateway ownership in this shell while isolating the
+    # validator command and its descendants in a separately owned PGID.
+    run_gateway_repair_validator_in_owned_group "$@" || command_rc=$?
+  else
+    "$@" || command_rc=$?
+  fi
   stop_gateway_for_migration || cleanup_rc=$?
+  [ "${GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND}" = true ] && \
+    [ "${cleanup_rc}" -ne 0 ] && exit "${cleanup_rc}"
   if [ "${command_rc}" -ne 0 ]; then
     return "${command_rc}"
   fi

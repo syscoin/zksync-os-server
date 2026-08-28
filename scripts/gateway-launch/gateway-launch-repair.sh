@@ -203,9 +203,8 @@ handle_direct_gateway_validation_exit() {
   local exit_rc=$?
   trap '' INT TERM
   trap - EXIT
-  # SYSCOIN: same-shell validation lets the repair trap own the node, but a
-  # fatal attestation must still retire the prior checkpoint as the old
-  # isolated validation/failed-repair path did.
+  # SYSCOIN: retire a fatally aborted repair validation only after its exact
+  # validator group and launcher-owned Gateway node have been cleaned up.
   cleanup_gateway_for_migration_on_exit
   if [ "${exit_rc}" -ne 0 ]; then
     (
@@ -220,12 +219,13 @@ validate_checkpoint_for_repair() {
   local validation_rc=0
   case "${1:?checkpoint id required}" in
   gl.edge_chain_inited | gl.migration)
-    # SYSCOIN: these validators temporarily own a Gateway node. Run them in
-    # this trapped repair shell so PID state and parent-only signals cannot be
-    # hidden behind the ordinary probe-isolation subshell.
+    # SYSCOIN: keep Gateway state in this repair shell, but isolate the actual
+    # validator and all of its descendants in an exact supervised process group.
     trap handle_direct_gateway_validation_exit EXIT
+    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
     validate_checkpoint "$1" || validation_rc=$?
-    trap cleanup_gateway_for_migration_on_exit EXIT
+    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
+    install_gateway_migration_cleanup_traps
     return "${validation_rc}"
     ;;
   *) (validate_checkpoint "$1") ;;

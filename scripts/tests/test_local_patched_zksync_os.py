@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -61,7 +62,10 @@ FINAL_PATCHED_REV = "4" * 40
 
 
 def run_bash_harness(
-    command: str, env: dict[str, str], timeout: float = 5
+    command: str,
+    env: dict[str, str],
+    timeout: float = 5,
+    owned_group_files: tuple[tuple[Path, Path], ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     args = ["bash", "-c", command]
     process = subprocess.Popen(
@@ -75,11 +79,43 @@ def run_bash_harness(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # A validator deliberately runs in another PGID. Clean it only while a
+        # live test child authenticates that group with a fresh private token.
+        token = env.get("HARNESS_GROUP_TOKEN", "")
+        for info_name, heartbeat_name in owned_group_files:
+            try:
+                pid_raw, pgid_raw, child_token, deadline_raw = info_name.read_text(
+                    encoding="utf-8"
+                ).split(":")
+                heartbeat_token, heartbeat_raw = heartbeat_name.read_text(
+                    encoding="utf-8"
+                ).split(":")
+                pid, pgid = int(pid_raw), int(pgid_raw)
+                now_ns = time.monotonic_ns()
+                if not (
+                    token
+                    and child_token == heartbeat_token == token
+                    and now_ns - int(heartbeat_raw) < 1_000_000_000
+                    and int(deadline_raw) - now_ns > 1_000_000_000
+                    and os.getpgid(pid) == pgid
+                    and pgid != process.pid
+                ):
+                    continue
+                os.killpg(pgid, signal.SIGKILL)
+            except (OSError, OverflowError, UnicodeError, ValueError):
+                pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        process.communicate()
+        try:
+            process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.wait(timeout=2)
         raise
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
@@ -3590,18 +3626,22 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             "validate_checkpoint_for_repair() {", 1
         )[1].split("\n}", 1)[0]
         self.assertIn("gl.edge_chain_inited | gl.migration", repair_validation)
-        self.assertIn('    validate_checkpoint "$1"', repair_validation)
-        self.assertIn('*) (validate_checkpoint "$1")', repair_validation)
-        self.assertIn("trap handle_direct_gateway_validation_exit EXIT", repair_validation)
-        fatal_validation = repair.split(
-            "handle_direct_gateway_validation_exit() {", 1
-        )[1].split("\n}", 1)[0]
-        self.assertIn("gl_checkpoint_mark_blocked", fatal_validation)
-        self.assertLess(
-            fatal_validation.index("cleanup_gateway_for_migration_on_exit"),
-            fatal_validation.index("gl_checkpoint_mark_blocked"),
+        self.assertIn(
+            "GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true",
+            repair_validation,
         )
-        self.assertIn(") || true", fatal_validation)
+        self.assertIn("trap handle_direct_gateway_validation_exit EXIT", repair_validation)
+        self.assertIn('*) (validate_checkpoint "$1")', repair_validation)
+        direct_exit = repair.split(
+            "handle_direct_gateway_validation_exit() {", 1
+        )[1].split("validate_checkpoint_for_repair() {", 1)[0]
+        self.assertLess(
+            direct_exit.index("cleanup_gateway_for_migration_on_exit"),
+            direct_exit.index("gl_checkpoint_mark_blocked"),
+        )
+        self.assertIn('(\n      gl_checkpoint_mark_blocked', direct_exit)
+        self.assertIn('kill -"${forwarded_signal}" -- "-${group_leader_pid}"', lifecycle)
+        self.assertIn('kill -KILL -- "-${group_leader_pid}"', lifecycle)
 
         settlement = launcher.index(
             'run_checkpoint_with_validation "gl.gateway_settlement"'
@@ -4056,6 +4096,28 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
                 server.join(timeout=5)
 
     def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
+        def process_is_running(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            proc_stat = Path(f"/proc/{pid}/stat")
+            try:
+                state = (
+                    proc_stat.read_text(encoding="utf-8")
+                    .rsplit(")", 1)[1]
+                    .split()[0]
+                )
+                return state != "Z"
+            except (FileNotFoundError, IndexError):
+                return True
+
+        def assert_process_stopped(pid: int) -> None:
+            deadline = time.monotonic() + 1
+            while process_is_running(pid) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(process_is_running(pid), f"PID {pid} is still running")
+
         command = r'''
 source "$COMMON"
 source "$LIFECYCLE"
@@ -4071,6 +4133,50 @@ spawn_ignoring_child() {
     sleep 0.01
   done
 }
+group_member_pid=""
+spawn_group_member() {
+  python3 - "$1" "$2" "$3" "$4" "$HARNESS_GROUP_TOKEN" <<'PY' &
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+info_path, ready_path, heartbeat_path, signal_path = map(Path, sys.argv[1:5])
+token = sys.argv[5]
+deadline_ns = time.monotonic_ns() + 30_000_000_000
+info_tmp = Path(f"{info_path}.tmp")
+heartbeat_tmp = Path(f"{heartbeat_path}.tmp")
+
+def record(signum, _frame):
+    if str(signal_path) != "-":
+        signal_path.write_text(str(signum), encoding="utf-8")
+
+signal.signal(signal.SIGINT, record)
+signal.signal(signal.SIGTERM, record)
+info_tmp.write_text(
+    f"{os.getpid()}:{os.getpgrp()}:{token}:{deadline_ns}", encoding="utf-8"
+)
+os.replace(info_tmp, info_path)
+ready_path.touch()
+while time.monotonic_ns() < deadline_ns:
+    heartbeat_tmp.write_text(f"{token}:{time.monotonic_ns()}", encoding="utf-8")
+    os.replace(heartbeat_tmp, heartbeat_path)
+    time.sleep(0.05)
+PY
+  group_member_pid=$!
+}
+if [ "$TEST_MODE" = timeout_cleanup ]; then
+  set -m
+  (
+    set +m
+    spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
+      "$VALIDATOR_HEARTBEAT_FILE" -
+    wait "$group_member_pid"
+  ) &
+  set +m
+  while :; do sleep 30; done
+fi
 if [ "$TEST_MODE" = bounded ]; then
   trap 'kill -KILL "$test_child_pid" 2>/dev/null || true' EXIT
   spawn_ignoring_child
@@ -4097,6 +4203,52 @@ if [ "$TEST_MODE" = bounded ]; then
   assert_status 7 7 0 9
   assert_status 8 0 8 9
   assert_status 9 0 0 9
+  grouped_cleanup_rc=0
+  (
+    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
+    run_gateway_repair_validator_in_owned_group() { return 8; }
+    TEST_START_RC=0 TEST_STOP_RC=9 \
+      run_with_gateway_for_migration synthetic_command
+  ) || grouped_cleanup_rc=$?
+  [ "$grouped_cleanup_rc" -eq 9 ]
+  supervisor_rc=0
+  (
+    mktemp() { return 42; }
+    run_gateway_repair_validator_in_owned_group true
+    : > "$SUPERVISOR_RETURNED_FILE"
+  ) || supervisor_rc=$?
+  [ "$supervisor_rc" -eq 42 ]
+  [ ! -e "$SUPERVISOR_RETURNED_FILE" ]
+  setup_rc=0
+  (
+    gateway_job_leads_process_group() { return 1; }
+    run_gateway_repair_validator_in_owned_group true
+    : > "$SUPERVISOR_RETURNED_FILE"
+  ) || setup_rc=$?
+  [ "$setup_rc" -eq 1 ]
+  [ ! -e "$SUPERVISOR_RETURNED_FILE" ]
+  group_command() {
+    spawn_group_member "$NORMAL_STRAGGLER_FILE" "$NORMAL_READY_FILE" \
+      "$NORMAL_HEARTBEAT_FILE" -
+    while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
+    while [ ! -f "$GROUP_OBSERVED_FILE" ]; do sleep 0.01; done
+    printf 'group stdout\n'
+    printf 'group stderr\n' >&2
+    return 7
+  }
+  group_rc=0
+  (
+    while [ ! -f "$NORMAL_READY_FILE" ]; do sleep 0.01; done
+    IFS=: read -r normal_pid normal_pgid _ _ < "$NORMAL_STRAGGLER_FILE"
+    actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$normal_pgid")"
+    [ "$actual_pgid" = "$normal_pgid" ] && \
+      printf 'owned\n' > "$GROUP_OBSERVED_FILE"
+  ) &
+  run_gateway_repair_validator_in_owned_group group_command \
+    >"$GROUP_STDOUT_FILE" 2>"$GROUP_STDERR_FILE" || group_rc=$?
+  [ "$group_rc" -eq 7 ]
+  [ "$(cat "$GROUP_STDOUT_FILE")" = "group stdout" ]
+  [ "$(cat "$GROUP_STDERR_FILE")" = "group stderr" ]
   gateway_terminate_launcher_job "$SIBLING_PID" 0 sibling
   kill -0 "$SIBLING_PID"
   exit 0
@@ -4108,54 +4260,77 @@ start_gateway_for_migration() {
   GATEWAY_NODE_PID="$test_child_pid"
   GATEWAY_STARTED_FOR_MIGRATION=true
   GATEWAY_RUNTIME_OWNER_PID="$GATEWAY_NODE_PID"
-  printf '%s\n' "$GATEWAY_NODE_PID" > "$PID_FILE"
-  [ "$TEST_MODE" != die ] || gl_die "synthetic post-launch failure"
-  if [ "$TEST_MODE" = signal ]; then
-    : > "$COMMAND_READY_FILE"
-    migration_interruptible_sleep 30
-  fi
+  node_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$GATEWAY_NODE_PID")"
+  printf '%s:%s\n' "$GATEWAY_NODE_PID" "$node_pgid" > "$PID_FILE"
 }
-foreground_validator() {
-  python3 -c 'import os,signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8"); Path(sys.argv[2]).touch(); time.sleep(3)' "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE"
+validator_with_ignoring_grandchild() {
+  spawn_group_member "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE" \
+    "$VALIDATOR_HEARTBEAT_FILE" "$VALIDATOR_SIGNAL_FILE"
+  wait "$group_member_pid"
+}
+fatal_validator() {
+  spawn_group_member "$VALIDATOR_PID_FILE" "$FATAL_READY_FILE" \
+    "$VALIDATOR_HEARTBEAT_FILE" -
+  while [ ! -f "$FATAL_READY_FILE" ]; do sleep 0.01; done
+  [ "$TEST_MODE" != fatal_zero ] || exit 0
+  gl_die "synthetic validator failure"
 }
 GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT=1
-if [ "$TEST_MODE" = die ]; then
-  run_with_gateway_for_migration true
-  exit 99
+GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
+if [ "$TEST_MODE" = die ] || [ "$TEST_MODE" = fatal_zero ]; then
+  run_with_gateway_for_migration fatal_validator
+  exit 98
 fi
 (
   while [ ! -f "$COMMAND_READY_FILE" ]; do sleep 0.01; done
+  IFS=: read -r _ validator_pgid _ _ < "$VALIDATOR_PID_FILE"
+  actual_pgid="$(python3 -c 'import os,sys; print(os.getpgid(int(sys.argv[1])))' "$validator_pgid")"
+  [ "$actual_pgid" = "$validator_pgid" ] && \
+    printf 'owned\n' > "$GROUP_OBSERVED_FILE"
   sleep 0.1
-  kill -TERM "$$"
-  if [ "$TEST_MODE" = signal ]; then
+  if [ "$TEST_MODE" = interrupt ]; then
+    kill -INT "$$"
+  else
+    kill -TERM "$$"
     sleep 0.1
     kill -INT "$$" 2>/dev/null || true
   fi
 ) &
-if [ "$TEST_MODE" = foreground ]; then
-  run_with_gateway_for_migration foreground_validator
-else
-  run_with_gateway_for_migration true
-fi
+run_with_gateway_for_migration validator_with_ignoring_grandchild
 exit 99
 '''
 
         def test_env(root: Path, mode: str, sibling_pid: int = 0) -> dict[str, str]:
             bin_dir = root / "bin"
             bin_dir.mkdir()
+            harness_tmp = root / "tmp"
+            harness_tmp.mkdir()
             pgrep = bin_dir / "pgrep"
             pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
             pgrep.chmod(0o755)
+            group_token = os.urandom(16).hex()
             return gateway_harness_env(
                 root,
                 GATEWAY_DIR=str(root / "gateway"),
+                GROUP_STDOUT_FILE=str(root / "group-stdout"),
+                GROUP_STDERR_FILE=str(root / "group-stderr"),
+                GROUP_OBSERVED_FILE=str(root / "group-observed"),
+                HARNESS_GROUP_TOKEN=group_token,
+                FATAL_READY_FILE=str(root / "fatal-ready"),
+                NORMAL_READY_FILE=str(root / "normal-ready"),
+                NORMAL_HEARTBEAT_FILE=str(root / "normal-heartbeat"),
+                NORMAL_STRAGGLER_FILE=str(root / "normal-straggler"),
                 PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 PID_FILE=str(root / "pid"),
                 READY_FILE=str(root / "ready"),
                 COMMAND_READY_FILE=str(root / "command-ready"),
                 VALIDATOR_PID_FILE=str(root / "validator-pid"),
+                VALIDATOR_HEARTBEAT_FILE=str(root / "validator-heartbeat"),
+                VALIDATOR_SIGNAL_FILE=str(root / "validator-signal"),
                 SIBLING_PID=str(sibling_pid),
+                SUPERVISOR_RETURNED_FILE=str(root / "supervisor-returned"),
                 TEST_MODE=mode,
+                TMPDIR=str(harness_tmp),
             )
 
         sibling = subprocess.Popen(["sleep", "30"])
@@ -4163,46 +4338,150 @@ exit 99
             with tempfile.TemporaryDirectory() as temporary_dir:
                 root = Path(temporary_dir)
                 result = run_bash_harness(
-                    command, test_env(root, "bounded", sibling.pid), timeout=8
+                    command,
+                    test_env(root, "bounded", sibling.pid),
+                    timeout=15,
+                    owned_group_files=(
+                        (root / "normal-straggler", root / "normal-heartbeat"),
+                    ),
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNone(sibling.poll())
                 self.assertIn("sending SIGKILL", result.stderr)
+                normal_fields = (root / "normal-straggler").read_text(
+                    encoding="utf-8"
+                ).split(":")
+                normal_pid, normal_pgid = map(int, normal_fields[:2])
+                self.assertNotEqual(normal_pid, normal_pgid)
+                self.assertEqual(
+                    (root / "group-observed").read_text(encoding="utf-8"), "owned\n"
+                )
+                assert_process_stopped(normal_pid)
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                root = Path(temporary_dir)
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    run_bash_harness(
+                        command,
+                        test_env(root, "timeout_cleanup", sibling.pid),
+                        timeout=0.5,
+                        owned_group_files=(
+                            (root / "validator-pid", root / "validator-heartbeat"),
+                        ),
+                    )
+                timed_out_pid = int(
+                    (root / "validator-pid")
+                    .read_text(encoding="utf-8")
+                    .split(":", 1)[0]
+                )
+                assert_process_stopped(timed_out_pid)
+            for mode, expected_rc in (
+                ("die", 1),
+                ("fatal_zero", 1),
+                ("signal", 143),
+                ("interrupt", 130),
+            ):
+                with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary_dir:
+                    root = Path(temporary_dir)
+                    pid_file = root / "pid"
+                    result = run_bash_harness(
+                        command,
+                        test_env(root, mode, sibling.pid),
+                        timeout=15,
+                        owned_group_files=(
+                            (root / "validator-pid", root / "validator-heartbeat"),
+                        ),
+                    )
+                    child_pid, child_pgid = map(
+                        int, pid_file.read_text(encoding="utf-8").split(":")
+                    )
+                    self.assertEqual(result.returncode, expected_rc, result.stderr)
+                    assert_process_stopped(child_pid)
+                    validator_fields = (root / "validator-pid").read_text(
+                        encoding="utf-8"
+                    ).split(":")
+                    validator_pid, validator_pgid = map(int, validator_fields[:2])
+                    assert_process_stopped(validator_pid)
+                    if mode in {"signal", "interrupt"}:
+                        self.assertNotEqual(validator_pgid, child_pgid)
+                        self.assertEqual(
+                            (root / "group-observed").read_text(encoding="utf-8"),
+                            "owned\n",
+                        )
+                        self.assertEqual(
+                            int((root / "validator-signal").read_text(encoding="utf-8")),
+                            signal.SIGINT if mode == "interrupt" else signal.SIGTERM,
+                        )
+                        self.assertIsNone(sibling.poll())
+                    expected_signal = "INT" if mode == "interrupt" else "TERM"
+                    expected_label = (
+                        "repair validator process group"
+                        if mode in {"signal", "interrupt"}
+                        else "Gateway node"
+                    )
+                    self.assertIn(
+                        f"{expected_label} did not exit after SIG{expected_signal}; sending SIGKILL",
+                        result.stderr,
+                    )
         finally:
             sibling.kill()
             sibling.wait(timeout=5)
 
-        for mode, expected_rc in (("die", 1), ("signal", 143), ("foreground", 143)):
+    def test_repair_validation_abort_cleans_before_blocking(self) -> None:
+        repair = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        handlers = "handle_direct_gateway_validation_exit() {" + repair.split(
+            "handle_direct_gateway_validation_exit() {", 1
+        )[1].split("validate_checkpoint_for_repair() {", 1)[0]
+        command = rf'''
+source "$LIFECYCLE"
+cleanup_gateway_for_migration_on_exit() {{
+  printf 'cleanup:%s\n' "${{GATEWAY_MIGRATION_CANCEL_SIGNAL:-none}}" >> "$ORDER_FILE"
+}}
+gl_checkpoint_mark_blocked() {{
+  printf 'blocked:%s:%s\n' "$1" "$2" >> "$ORDER_FILE"
+}}
+CHECKPOINT_ID=gl.migration
+GATEWAY_MIGRATION_CANCEL_SIGNAL=""
+{handlers}
+trap handle_direct_gateway_validation_exit EXIT
+trap handle_gateway_migration_interrupt INT
+trap handle_gateway_migration_terminate TERM
+GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
+case "$ABORT_MODE" in
+fatal) exit 1 ;;
+INT) kill -INT "$$" ;;
+TERM) kill -TERM "$$" ;;
+esac
+exit 99
+'''
+        for mode, expected_rc, cleanup_signal in (
+            ("fatal", 1, "none"),
+            ("INT", 130, "INT"),
+            ("TERM", 143, "TERM"),
+        ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary_dir:
-                root = Path(temporary_dir)
-                pid_file = root / "pid"
+                order_file = Path(temporary_dir) / "order"
                 result = run_bash_harness(
-                    command, test_env(root, mode), timeout=8
+                    command,
+                    {
+                        **os.environ,
+                        "ABORT_MODE": mode,
+                        "GL_DIR": temporary_dir,
+                        "LIFECYCLE": str(GATEWAY_LIFECYCLE),
+                        "ORDER_FILE": str(order_file),
+                    },
                 )
-                child_pid = int(pid_file.read_text(encoding="utf-8"))
-                try:
-                    self.assertEqual(result.returncode, expected_rc, result.stderr)
-                    with self.assertRaises(ProcessLookupError):
-                        os.kill(child_pid, 0)
-                finally:
-                    try:
-                        os.kill(child_pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                if mode == "foreground":
-                    validator_pid = int(
-                        (root / "validator-pid").read_text(encoding="utf-8")
-                    )
-                    try:
-                        with self.assertRaises(ProcessLookupError):
-                            os.kill(validator_pid, 0)
-                    finally:
-                        try:
-                            os.kill(validator_pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                self.assertIn(
-                    "did not exit after SIGTERM; sending SIGKILL", result.stderr
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                self.assertEqual(
+                    order_file.read_text(encoding="utf-8").splitlines(),
+                    [
+                        f"cleanup:{cleanup_signal}",
+                        f"blocked:gl.migration:repair validation aborted with exit code {expected_rc}",
+                    ],
                 )
 
     def test_gateway_cleanup_parses_portable_pid_output_and_fails_closed(self) -> None:
