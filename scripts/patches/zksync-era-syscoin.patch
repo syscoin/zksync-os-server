@@ -1737,3 +1737,63 @@ index 8da742ce3..1ea7a6328 100644
              args.sl_da_validator,
              args.l2_da_validator_commitment_scheme,
              args.l1_rpc_url,
+diff --git a/zkstack_cli/crates/git_version_macro/src/lib.rs b/zkstack_cli/crates/git_version_macro/src/lib.rs
+index 86d0cbfeb..6c3aff2bb 100644
+--- a/zkstack_cli/crates/git_version_macro/src/lib.rs
++++ b/zkstack_cli/crates/git_version_macro/src/lib.rs
+@@ -7,10 +7,31 @@ use proc_macro::TokenStream;
+ /// Can be used to include the build timestamp in the binary.
+ #[proc_macro]
+ pub fn build_timestamp(_item: TokenStream) -> TokenStream {
+-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
++    // SYSCOIN: Honor the standard reproducible-build epoch when the sealed
++    // production builder supplies it; keep upstream's wall clock for ordinary
++    // developer builds where SOURCE_DATE_EPOCH is absent.
++    let now = match std::env::var("SOURCE_DATE_EPOCH") {
++        Ok(epoch) => source_date_epoch_timestamp(&epoch)
++            .unwrap_or_else(|err| panic!("Invalid SOURCE_DATE_EPOCH: {err}")),
++        Err(std::env::VarError::NotPresent) => chrono::Local::now()
++            .format("%Y-%m-%d %H:%M:%S")
++            .to_string(),
++        Err(std::env::VarError::NotUnicode(_)) => {
++            panic!("SOURCE_DATE_EPOCH is not valid Unicode")
++        }
++    };
+     encode_as_str(&now)
+ }
+
++fn source_date_epoch_timestamp(epoch: &str) -> Result<String, String> {
++    let seconds = epoch
++        .parse::<i64>()
++        .map_err(|err| format!("{epoch:?} is not an integer: {err}"))?;
++    let timestamp = chrono::DateTime::from_timestamp(seconds, 0)
++        .ok_or_else(|| format!("{seconds} is outside chrono's supported range"))?;
++    Ok(timestamp.format("%Y-%m-%d %H:%M:%S").to_string())
++}
++
+ /// Outputs the current git branch as a string literal.
+ #[proc_macro]
+ pub fn build_git_branch(_item: TokenStream) -> TokenStream {
+@@ -79,3 +100,22 @@ fn encode_as_str(s: &str) -> TokenStream {
+     TokenStream::from_str(format!("\"{}\"", s).as_str())
+         .unwrap_or_else(|_| panic!("Unable to encode string: {}", s))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::source_date_epoch_timestamp;
++
++    #[test]
++    fn source_date_epoch_is_formatted_in_utc() {
++        assert_eq!(
++            source_date_epoch_timestamp("1769904000").unwrap(),
++            "2026-02-01 00:00:00"
++        );
++    }
++
++    #[test]
++    fn invalid_source_date_epoch_is_rejected() {
++        assert!(source_date_epoch_timestamp("not-an-epoch").is_err());
++        assert!(source_date_epoch_timestamp("9223372036854775807").is_err());
++    }
++}

@@ -133,6 +133,10 @@ class LauncherStaticTests(unittest.TestCase):
             'context("no access_control_restriction_addr")?',
             "// SYSCOIN: zkOS selects its L2 validator by commitment scheme and",
             "args.l2_da_commitment_scheme",
+            "// SYSCOIN: Honor the standard reproducible-build epoch when the sealed",
+            'std::env::var("SOURCE_DATE_EPOCH")',
+            "source_date_epoch_timestamp",
+            '"2026-02-01 00:00:00"',
         ):
             self.assertIn(expected, added)
         self.assertEqual(
@@ -159,15 +163,15 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "c91d1768f9a49fafb8b5bb4400a7a606160aa8fe42204859e01b08c176a4997d",
+            "3524793b2e17754a7ed7113c9182006f19828816b794bc6374d9fc2b9eeb6182",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="c91d1768f9a49fafb8b5bb4400a7a606160aa8fe42204859e01b08c176a4997d"',
-            'EXPECTED_PATCH_PATH_COUNT="17"',
-            'EXPECTED_PATCH_PATHS_SHA256="8fb5ff5da9260244fed73e80e28be2a7bd9c3aaa9f92175d8b05f8b9813f3f10"',
-            'EXPECTED_PATCHED_TREE="65e70304cd44b7550d48896cb206b41ba760f854"',
+            'EXPECTED_PATCH_SHA256="3524793b2e17754a7ed7113c9182006f19828816b794bc6374d9fc2b9eeb6182"',
+            'EXPECTED_PATCH_PATH_COUNT="18"',
+            'EXPECTED_PATCH_PATHS_SHA256="9780732ab76b6e1fc1065880896d9d06befb6c8a70ee13a23401becad9de0b4e"',
+            'EXPECTED_PATCHED_TREE="3b6a1e15e232f1e2986cb19d3fadcc6ab63d9a60"',
         ):
             self.assertIn(expected, applicator)
 
