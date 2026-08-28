@@ -228,6 +228,10 @@ gl_reject_no_proofs_on_mainnet() {
 gl_require() {
   local n="$1"
   [ -n "${!n:-}" ] || gl_die "unset required env: $n"
+  # SYSCOIN: Relative Era paths can change meaning after launcher helpers cd.
+  if [ "${n}" = "ZKSYNC_ERA_PATH" ] && [[ "${!n}" != /* ]]; then
+    gl_die "ZKSYNC_ERA_PATH must be absolute"
+  fi
 }
 
 gl_prepare_wallet_file_for_in_file() {
@@ -1404,7 +1408,31 @@ gl_build_zkstack_cli_release() {
   local toolchain
   toolchain="${GATEWAY_ZKSTACK_CARGO_TOOLCHAIN:-$(gl_detect_gateway_zkstack_nightly)}"
   [ -n "${toolchain}" ] || gl_die "no nightly Rust toolchain found; install one with rustup"
-  (cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && cargo +"${toolchain}" build --release --locked -Znext-lockfile-bump -p zkstack)
+  local zkstack_cli_dir target_dir zkstack_bin stamp_file
+  zkstack_cli_dir="$(cd "${ZKSYNC_ERA_PATH}/zkstack_cli" && pwd -P)" ||
+    gl_die "cannot resolve the zkstack_cli workspace"
+  target_dir="${zkstack_cli_dir}/target"
+  zkstack_bin="${target_dir}/release/zkstack"
+  stamp_file="$(gl_zkstack_cli_release_stamp_file)"
+  [ "${CARGO_BUILD_TARGET+x}" != x ] ||
+    gl_die "CARGO_BUILD_TARGET must be unset for the repo-local zkstack executable"
+  # SYSCOIN: Invalidate the exact consumed artifact before Cargo runs. A
+  # redirected build must not bless a stale host binary with a fresh stamp.
+  rm -f -- "${zkstack_bin}" "${stamp_file}" ||
+    gl_die "cannot invalidate the previous zkstack release"
+  # SYSCOIN: Override ambient CARGO_TARGET_DIR with the canonical physical
+  # repo-local path attested and consumed by the launcher.
+  (
+    cd "${zkstack_cli_dir}"
+    cargo +"${toolchain}" build \
+      --release \
+      --locked \
+      -Znext-lockfile-bump \
+      --target-dir "${target_dir}" \
+      -p zkstack
+  ) || gl_die "Cargo failed to build the repo-local zkstack executable"
+  [ -f "${zkstack_bin}" ] && [ -x "${zkstack_bin}" ] && [ ! -L "${zkstack_bin}" ] ||
+    gl_die "Cargo did not produce the repo-local zkstack executable"
   gl_write_zkstack_cli_release_stamp
 }
 

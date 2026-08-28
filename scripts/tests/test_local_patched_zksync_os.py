@@ -3024,6 +3024,146 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             fingerprint,
         )
 
+    def test_zkstack_release_build_binds_native_repo_local_target(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir).resolve()
+            era = root / "era"
+            bin_dir = root / "bin"
+            (era / "zkstack_cli").mkdir(parents=True)
+            bin_dir.mkdir()
+            trace = root / "cargo-argv"
+            release_dir = era / "zkstack_cli" / "target" / "release"
+            zkstack_bin = release_dir / "zkstack"
+            stamp = release_dir / ".zkstack-syscoin-build-stamp"
+            cargo = bin_dir / "cargo"
+            cargo.write_text(
+                "#!/bin/bash\n"
+                'printf "%s\\0" "$@" >"${CARGO_ARGV_TRACE:?}"\n'
+                '[ -z "${FAKE_CARGO_FAIL:-}" ] || exit 42\n'
+                "target_dir=\n"
+                'while [ "$#" -gt 0 ]; do\n'
+                '  if [ "$1" = "--target-dir" ]; then\n'
+                "    shift\n"
+                '    target_dir="$1"\n'
+                "  fi\n"
+                "  shift\n"
+                "done\n"
+                '[ -n "${target_dir}" ] || exit 1\n'
+                'if [ -n "${FAKE_CARGO_REDIRECT:-}" ]; then\n'
+                '  target_dir="${target_dir}/cross-target"\n'
+                "fi\n"
+                'mkdir -p "${target_dir}/release"\n'
+                'printf fresh >"${target_dir}/release/zkstack"\n'
+                'chmod 755 "${target_dir}/release/zkstack"\n',
+                encoding="utf-8",
+            )
+            cargo.chmod(0o755)
+            fake_bash = bin_dir / "bash"
+            fake_bash.write_text(
+                "#!/bin/bash\n"
+                'if [ "${1:-}" = "${EXPECTED_APPLICATOR:?}" ]; then exit 0; fi\n'
+                'exec /bin/bash "$@"\n',
+                encoding="utf-8",
+            )
+            fake_bash.chmod(0o755)
+
+            command = [
+                "bash",
+                "-c",
+                'source "$COMMON"; '
+                "gl_write_zkstack_cli_release_stamp() { "
+                "printf 'fresh-stamp\\n' >\"$(gl_zkstack_cli_release_stamp_file)\"; "
+                "}; "
+                "gl_build_zkstack_cli_release",
+            ]
+            base_env = {
+                key: value
+                for key, value in os.environ.items()
+                if key
+                not in {
+                    "CARGO_BUILD_TARGET",
+                    "CARGO_TARGET_DIR",
+                    "FAKE_CARGO_FAIL",
+                    "FAKE_CARGO_REDIRECT",
+                }
+            }
+            base_env.update(
+                {
+                    "COMMON": str(common),
+                    "HOME": str(root / "home"),
+                    "ZKSYNC_ERA_PATH": str(era),
+                    "ZKSYNC_OS_SERVER_PATH": str(REPO_ROOT),
+                    "GATEWAY_ZKSTACK_CARGO_TOOLCHAIN": "test-nightly",
+                    "CARGO_ARGV_TRACE": str(trace),
+                    "EXPECTED_APPLICATOR": str(
+                        REPO_ROOT / "scripts" / "apply-zksync-era-syscoin-patch.sh"
+                    ),
+                    "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                }
+            )
+
+            def run(**extra_env: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**base_env, **extra_env},
+                    cwd=root,
+                )
+
+            release_dir.mkdir(parents=True)
+            zkstack_bin.write_text("stale", encoding="utf-8")
+            zkstack_bin.chmod(0o755)
+            stamp.write_text("stale-stamp\n", encoding="utf-8")
+            result = run(CARGO_TARGET_DIR=str(root / "wrong-target"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(zkstack_bin.read_text(encoding="utf-8"), "fresh")
+            self.assertEqual(stamp.read_text(encoding="utf-8"), "fresh-stamp\n")
+            argv = trace.read_bytes().split(b"\0")[:-1]
+            target_flag = argv.index(b"--target-dir")
+            self.assertEqual(
+                argv[target_flag + 1],
+                str(era / "zkstack_cli" / "target").encode(),
+            )
+            self.assertNotIn(str(root / "wrong-target").encode(), argv)
+
+            rejected_cases = [
+                (
+                    {"CARGO_BUILD_TARGET": "cross-target"},
+                    "CARGO_BUILD_TARGET must be unset",
+                ),
+                ({"ZKSYNC_ERA_PATH": "era"}, "ZKSYNC_ERA_PATH must be absolute"),
+            ]
+            for extra_env, message in rejected_cases:
+                trace.unlink(missing_ok=True)
+                stamp.unlink(missing_ok=True)
+                rejected = run(**extra_env)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn(message, rejected.stderr)
+                self.assertFalse(trace.exists())
+                self.assertFalse(stamp.exists())
+
+            stamp.write_text("stale-stamp\n", encoding="utf-8")
+            failed = run(FAKE_CARGO_FAIL="1")
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("Cargo failed to build", failed.stderr)
+            self.assertFalse(zkstack_bin.exists())
+            self.assertFalse(stamp.exists())
+
+            zkstack_bin.write_text("stale", encoding="utf-8")
+            zkstack_bin.chmod(0o755)
+            stamp.write_text("stale-stamp\n", encoding="utf-8")
+            redirected = run(FAKE_CARGO_REDIRECT="1")
+            self.assertNotEqual(redirected.returncode, 0)
+            self.assertIn(
+                "Cargo did not produce the repo-local zkstack executable",
+                redirected.stderr,
+            )
+            self.assertFalse(zkstack_bin.exists())
+            self.assertFalse(stamp.exists())
+
     def test_multivm_build_fails_closed_on_unpatched_execution_source(self) -> None:
         build_rs = (REPO_ROOT / "lib" / "multivm" / "build.rs").read_text(
             encoding="utf-8"
