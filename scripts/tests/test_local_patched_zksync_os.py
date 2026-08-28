@@ -35,7 +35,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9fb99cf591c553447cd3839489cc4d327eb424b4"
-PUBLISHED_ERA_PATCHED_TREE = "ea1c0600ebbcafbada4e0080aa0178311084f86a"
+PUBLISHED_ERA_PATCHED_TREE = "74b8ada2e8aa06701aa7496206dd72febf85346a"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -1792,6 +1792,56 @@ gl_checkpoint_assert_fingerprint_matches
             ),
         )
 
+    def test_gateway_settlement_uses_isolated_canonical_relay_artifact(self) -> None:
+        settlement = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "gateway-convert-settlement.sh"
+        ).read_text(encoding="utf-8")
+        patch = (
+            REPO_ROOT / "scripts" / "patches" / "era-contracts-syscoin.patch"
+        ).read_text(encoding="utf-8")
+
+        for expected in (
+            'FOUNDRY_PROFILE=default FOUNDRY_EVM_VERSION=prague FOUNDRY_FORCE=true',
+            "contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol",
+            '"${SYSCOIN_EDGE_DA_RELAY_WORK_DIR}/out"',
+            '"${SYSCOIN_EDGE_DA_RELAY_WORK_DIR}/cache"',
+            'export SYSCOIN_EDGE_DA_RELAY_ARTIFACT',
+            "0x3b2e17477401a6d3df4356c346fdc18278330bbefca56154a81da87cbfd44bf2",
+            "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0",
+            "relay artifact is missing, not regular, or a symlink",
+        ):
+            self.assertIn(expected, settlement)
+        self.assertLess(
+            settlement.index("trap cleanup_syscoin_edge_da_relay_artifact EXIT"),
+            settlement.index('mktemp -d "${SYSCOIN_EDGE_DA_RELAY_SCRIPT_OUT}'),
+        )
+        self.assertLess(
+            settlement.index("gl_export_foundry_evm_version"),
+            settlement.index("gl_bind_gateway_launch_context"),
+        )
+        self.assertLess(
+            settlement.index("forge build"),
+            settlement.index("zkstack chain gateway create-tx-filterer"),
+        )
+        self.assertLess(
+            settlement.index("actual_hash != expected_hash"),
+            settlement.index("zkstack chain gateway create-tx-filterer"),
+        )
+        self.assertEqual(settlement.count("gl_assert_era_contracts_syscoin_postimage"), 2)
+
+        for expected in (
+            'Utils.vm.envOr("SYSCOIN_EDGE_DA_RELAY_ARTIFACT", defaultArtifact)',
+            'Utils.vm.parseJsonBytes(artifact, ".bytecode.object")',
+            'Utils.vm.parseJsonBytes(artifact, ".deployedBytecode.object")',
+            "actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH",
+            "actualRuntimeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH",
+            "actualAddress != SYSCOIN_EDGE_DA_RELAY_ADDRESS",
+        ):
+            self.assertIn(expected, patch)
+
     def test_server_verifier_uses_the_final_v8_airbender_graph(self) -> None:
         manifest = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
         lock = (REPO_ROOT / "Cargo.lock").read_text(encoding="utf-8")
@@ -2496,8 +2546,8 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1419459"',
-            'EXPECTED_PATCH_SHA256="b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9"',
+            'EXPECTED_PATCH_SIZE="1419746"',
+            'EXPECTED_PATCH_SHA256="0e72ce962a53e928838205fba3efcd6e8140eaaf66e56c903a531e89252304c7"',
             'EXPECTED_PATCH_PATH_COUNT="59"',
             'EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
@@ -2630,7 +2680,7 @@ class EraAttestationStaticTests(unittest.TestCase):
             ),
             (
                 "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol",
-                "22d5c9ed58e078d7984757c6c4d023bc0afb64f4f8aff240a576783f92b96fb1",
+                "9bf5790131827c8671a648587e2f68794ff7bdc7b54b6a5539c6ee95aed91cca",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",

@@ -6,8 +6,8 @@
   "sources": {
     "era_repository": "https://github.com/matter-labs/era-contracts.git",
     "era_base_commit": "8fb7c29a4e3174335c6480b23f57822e054f9d5f",
-    "era_source_patched_tree": "ea1c0600ebbcafbada4e0080aa0178311084f86a",
-    "era_patch_sha256": "b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9",
+    "era_source_patched_tree": "74b8ada2e8aa06701aa7496206dd72febf85346a",
+    "era_patch_sha256": "0e72ce962a53e928838205fba3efcd6e8140eaaf66e56c903a531e89252304c7",
     "zksync_os_patched_tree": "9fb99cf591c553447cd3839489cc4d327eb424b4"
   },
   "toolchain": {

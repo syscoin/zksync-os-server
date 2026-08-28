@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1419459"
-EXPECTED_PATCH_SHA256="b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9"
+EXPECTED_PATCH_SIZE="1419746"
+EXPECTED_PATCH_SHA256="0e72ce962a53e928838205fba3efcd6e8140eaaf66e56c903a531e89252304c7"
 EXPECTED_PATCH_PATH_COUNT="59"
 EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="ea1c0600ebbcafbada4e0080aa0178311084f86a"
+EXPECTED_PATCHED_TREE="74b8ada2e8aa06701aa7496206dd72febf85346a"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -195,7 +195,7 @@ verify_postimage_manifest() {
 14452 db6f5326495f0e9926a15632ae8001d64887d9cb83fb64a1a8ffc3a0dbe35588 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 21890 285f15bd41c33ac64f19e20fb3853e867bd8491625b4d6968666166bb3a02260 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 26354 9fdb904b1613e219fa29f9e4dbaea017ba2311bec6e2ca358c41beb341bb2f36 l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-41377 22d5c9ed58e078d7984757c6c4d023bc0afb64f4f8aff240a576783f92b96fb1 l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
+41665 9bf5790131827c8671a648587e2f68794ff7bdc7b54b6a5539c6ee95aed91cca l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 21027 6ebceffb5d2a5f6c083c8d78e79e0b97110e2653e5bd64c164f53d3cdc63f6de l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 45338 212349849a53a7712cd68cb1065e00cc5a1abc451c2e4481df4c200c804ef3ed l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 31333 13eb6e18cd1806cf5154083c82299e4f1da1107d16812e125ee5040fd8832e5c l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
@@ -598,6 +598,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
     "_validateSyscoinEdgeDARelayArtifact();"
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.envOr("SYSCOIN_EDGE_DA_RELAY_ARTIFACT", defaultArtifact)'
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.parseJsonBytes(artifact, ".bytecode.object")'
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.parseJsonBytes(artifact, ".deployedBytecode.object")'
   forbid_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
     "syscoinEdgeDARelayCalldata"

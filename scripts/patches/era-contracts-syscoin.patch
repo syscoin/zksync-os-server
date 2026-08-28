@@ -2506,7 +2506,7 @@ index f5bf734e7deeb01a47c0754280b2803fe8abf1a3..ca850778095dfcab65e23a14e0bb2ea3
 -
 +        // SYSCOIN: Leave pubdata pricing in Rollup mode; the removed Validium branch is unsupported.
 diff --git a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f47eb668e 100644
+index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..29da2611af1f202dd207ec3cd705e00f330b1bb6 100644
 --- a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 +++ b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 @@ -30,0 +31,10 @@ import {BytecodeUtils} from "../utils/bytecode/BytecodeUtils.s.sol";
@@ -2532,25 +2532,24 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +        // SYSCOIN: Genesis already installs the constructorless relay. Reproduce its exact
 +        // artifact and frozen CREATE2 identity offline before calculating any dependent address.
 +        _validateSyscoinEdgeDARelayArtifact();
-@@ -197,0 +212,30 @@ library GatewayCTMDeployerHelper {
+@@ -197,0 +212,29 @@ library GatewayCTMDeployerHelper {
 +    /// @dev SYSCOIN: Reproduce the frozen genesis relay artifact/address before calculating
 +    /// Gateway deployments. Any compiler, source, import, optimizer, or metadata drift fails.
 +    function _validateSyscoinEdgeDARelayArtifact() private {
-+        bytes memory initCode = BytecodeUtils.readBytecodeL1(
-+            true,
-+            "SyscoinRelayedSLDAValidator.sol",
-+            "SyscoinRelayedSLDAValidator"
++        // SYSCOIN: The relay is Prague-genesis; ordinary artifacts retain the deployment EVM target.
++        string memory defaultArtifact = string.concat(
++            Utils.vm.projectRoot(),
++            "/../l1-contracts/out/SyscoinRelayedSLDAValidator.sol/SyscoinRelayedSLDAValidator.json"
 +        );
++        string memory artifactPath = Utils.vm.envOr("SYSCOIN_EDGE_DA_RELAY_ARTIFACT", defaultArtifact);
++        string memory artifact = Utils.vm.readFile(artifactPath);
++        bytes memory initCode = Utils.vm.parseJsonBytes(artifact, ".bytecode.object");
 +        bytes32 actualInitCodeHash = keccak256(initCode);
 +        if (actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH) {
 +            revert SyscoinEdgeDARelayArtifactHashMismatch(SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH, actualInitCodeHash);
 +        }
 +
-+        bytes memory runtimeCode = BytecodeUtils.readDeployedBytecodeL1(
-+            true,
-+            "SyscoinRelayedSLDAValidator.sol",
-+            "SyscoinRelayedSLDAValidator"
-+        );
++        bytes memory runtimeCode = Utils.vm.parseJsonBytes(artifact, ".deployedBytecode.object");
 +        bytes32 actualRuntimeHash = keccak256(runtimeCode);
 +        if (actualRuntimeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH) {
 +            revert SyscoinEdgeDARelayArtifactHashMismatch(SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH, actualRuntimeHash);
@@ -2563,25 +2562,25 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +        _logGatewayVerifyContract(SYSCOIN_EDGE_DA_RELAY_ADDRESS, "SyscoinRelayedSLDAValidator", hex"");
 +    }
 +
-@@ -201,0 +246,3 @@ library GatewayCTMDeployerHelper {
+@@ -201,0 +245,3 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: compact Gateway DA has no generic Era deployment branch.
 +        require(config.isZKsyncOS, "Syscoin compact Gateway DA requires ZKsync OS");
 +
-@@ -306 +353,5 @@ library GatewayCTMDeployerHelper {
+@@ -306 +352,5 @@ library GatewayCTMDeployerHelper {
 -        bytes memory constructorArgs = abi.encode(verifiersConfig);
 +        // SYSCOIN: the zkOS testnet wrapper must receive the ultimate L1 identity even though
 +        // its constructor executes on Gateway. Keep generic Era constructor encoding unchanged.
 +        bytes memory constructorArgs = config.isZKsyncOS
 +            ? abi.encode(verifiersConfig, config.l1ChainId)
 +            : abi.encode(verifiersConfig);
-@@ -317 +368,2 @@ library GatewayCTMDeployerHelper {
+@@ -317 +367,2 @@ library GatewayCTMDeployerHelper {
 -        result = _calculateVerifiersDeployerAddresses(deployer, verifiersConfig, config.isZKsyncOS);
 +        // SYSCOIN: predicted verifier addresses use the same ultimate-L1-aware constructor encoding.
 +        result = _calculateVerifiersDeployerAddresses(deployer, verifiersConfig, config.l1ChainId, config.isZKsyncOS);
-@@ -519 +571 @@ library GatewayCTMDeployerHelper {
+@@ -519 +570 @@ library GatewayCTMDeployerHelper {
 -        bool _isZKsyncOS
 +        bool _isEVMBytecode
-@@ -523,3 +575,7 @@ library GatewayCTMDeployerHelper {
+@@ -523,3 +574,7 @@ library GatewayCTMDeployerHelper {
 -        result.rollupDAManager = _deployInternalEmptyParams(
 -            "RollupDAManager",
 -            "RollupDAManager.sol",
@@ -2592,7 +2591,7 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +            "SyscoinRollupDAManager",
 +            "SyscoinRollupDAManager.sol",
 +            abi.encode(result.rollupSLDAValidator),
-@@ -527,13 +583 @@ library GatewayCTMDeployerHelper {
+@@ -527,13 +582 @@ library GatewayCTMDeployerHelper {
 -            _isZKsyncOS
 -        );
 -        result.validiumDAValidator = _deployInternalEmptyParams(
@@ -2607,24 +2606,24 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 -            innerConfig,
 -            _isZKsyncOS
 +            _isEVMBytecode
-@@ -587,0 +632 @@ library GatewayCTMDeployerHelper {
+@@ -587,0 +631 @@ library GatewayCTMDeployerHelper {
 +        uint256 _l1ChainId,
-@@ -591,0 +637,2 @@ library GatewayCTMDeployerHelper {
+@@ -591,0 +636,2 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: retain the pinned-upstream zkOS FFLONK artifact and deployment surface.
 +        // The V8 verifier wrapper keeps it introspectable but never routes proofs to it.
-@@ -610,0 +658 @@ library GatewayCTMDeployerHelper {
+@@ -610,0 +657 @@ library GatewayCTMDeployerHelper {
 +            // SYSCOIN: deploy the dormant FFLONK/active PLONK pair into canonical slot 8.
-@@ -612,0 +661 @@ library GatewayCTMDeployerHelper {
+@@ -612,0 +660 @@ library GatewayCTMDeployerHelper {
 +                config.testnetVerifier,
-@@ -615 +664,2 @@ library GatewayCTMDeployerHelper {
+@@ -615 +663,2 @@ library GatewayCTMDeployerHelper {
 -                config.aliasedGovernanceAddress
 +                config.aliasedGovernanceAddress,
 +                _l1ChainId
-@@ -779,0 +830 @@ library GatewayCTMDeployerHelper {
+@@ -779,0 +829 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: copy only the compact DA pair; the legacy validium result remains zero.
-@@ -782 +832,0 @@ library GatewayCTMDeployerHelper {
+@@ -782 +831,0 @@ library GatewayCTMDeployerHelper {
 -        contracts.daContracts.validiumDAValidator = daResult.validiumDAValidator;
-@@ -877,59 +927,4 @@ library GatewayCTMDeployerHelper {
+@@ -877,59 +926,4 @@ library GatewayCTMDeployerHelper {
 -    function getListOfFactoryDeps(
 -        GatewayCTMDeployerConfig memory config
 -    ) external returns (bytes[] memory dependencies) {
