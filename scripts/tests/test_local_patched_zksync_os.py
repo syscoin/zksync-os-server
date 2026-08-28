@@ -3066,17 +3066,37 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             / "gateway-launch-repair.sh"
         ).read_text(encoding="utf-8")
 
-        settlement = launcher.index('"gl.gateway_settlement"')
+        settlement = launcher.index(
+            'run_checkpoint_with_validation "gl.gateway_settlement"'
+        )
         config_identity = launcher.index("gl_assert_gateway_config_identity", settlement)
+        stop_after = launcher.index(
+            'if [ "${STOP_AFTER_CHECKPOINT}" = "gl.gateway_settlement" ]',
+            config_identity,
+        )
         gateway_config = launcher.index('"gl.os_configs_gateway"', config_identity)
         gateway_start = launcher.index(
             "\nstart_gateway_for_migration || exit $?\n", gateway_config
         )
         edge_create = launcher.index('"gl.edge_chain_inited"', gateway_start)
         self.assertLess(settlement, config_identity)
-        self.assertLess(config_identity, gateway_config)
+        self.assertLess(config_identity, stop_after)
+        self.assertLess(stop_after, gateway_config)
         self.assertLess(gateway_config, gateway_start)
         self.assertLess(gateway_start, edge_create)
+
+        self.assertIn('STOP_AFTER_CHECKPOINT=""', launcher)
+        self.assertIn(
+            '[ "${2:-}" = "gl.gateway_settlement" ] ||', launcher
+        )
+        stop_body = launcher[stop_after:gateway_config]
+        self.assertIn(
+            "gateway-launch: stopped after validated checkpoint gl.gateway_settlement",
+            stop_body,
+        )
+        self.assertIn("trap - EXIT INT TERM", stop_body)
+        self.assertIn("exit 0", stop_body)
+        self.assertNotIn("gl_checkpoint_mark_", stop_body)
 
         start_function = lifecycle.index("start_gateway_for_migration()")
         owned_pid = lifecycle.index("GATEWAY_NODE_PID=$!", start_function)
@@ -3275,6 +3295,34 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             genesis_identity.rindex("gl_assert_gateway_listener_owned_by_pid"),
             genesis_identity.index("GATEWAY_GENESIS_STAMP="),
         )
+
+    def test_gateway_launcher_rejects_unsupported_stop_boundary_early(self) -> None:
+        launcher = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
+        )
+        for args in (
+            ["--stop-after"],
+            ["--stop-after", "gl.gateway_chain_inited"],
+            ["--stop-after", "gl.os_configs_gateway"],
+        ):
+            with self.subTest(args=args), tempfile.TemporaryDirectory() as temporary_dir:
+                result = subprocess.run(
+                    ["bash", str(launcher), *args],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "HOME": temporary_dir,
+                        "PROVER_MODE": "no-proofs",
+                    },
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "--stop-after currently requires exactly gl.gateway_settlement",
+                    result.stderr,
+                )
+                self.assertEqual(list(Path(temporary_dir).iterdir()), [])
 
     def test_gateway_listener_ownership_rejects_an_unrelated_live_pid(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"

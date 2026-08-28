@@ -24,6 +24,10 @@ if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
 fi
 
 L1_PROFILE=""
+# SYSCOIN: This restricted selector is a terminal prefix boundary, never a
+# checkpoint skip. Keep it local and outside the durable launch fingerprint so
+# a later normal invocation revalidates settlement before continuing.
+STOP_AFTER_CHECKPOINT=""
 
 usage() {
   cat <<'EOF'
@@ -57,6 +61,8 @@ Options:
   --log PATH
   --reuse-ecosystem            reuse an existing GATEWAY_DIR/ZkStack.yaml instead of creating wallets/ecosystem
   --migrate-edge               pause deposits and migrate/finalize edge settlement to Gateway
+  --stop-after gl.gateway_settlement
+                              stop after Gateway settlement passes live validation
   -h, --help
 EOF
   exit "${1:-0}"
@@ -79,6 +85,12 @@ while [ "${1:-}" != "" ]; do
   --migrate-edge)
     MIGRATE_EDGE=true
     shift
+    ;;
+  --stop-after)
+    [ "${2:-}" = "gl.gateway_settlement" ] ||
+      gl_die "--stop-after currently requires exactly gl.gateway_settlement"
+    STOP_AFTER_CHECKPOINT="$2"
+    shift 2
     ;;
   -h | --help) usage 0 ;;
   *)
@@ -341,6 +353,13 @@ run_checkpoint_with_validation "gl.gateway_settlement" validate_gateway_settleme
 # Gateway, but a different deployment identity requires an app repin. Stop
 # before creating an edge or compiling a node against incompatible constants.
 gl_assert_gateway_config_identity
+# SYSCOIN: Settlement-only rehearsals and first production conversions stop at
+# this fully validated boundary. No Gateway lifecycle process has started yet.
+if [ "${STOP_AFTER_CHECKPOINT}" = "gl.gateway_settlement" ]; then
+  echo "gateway-launch: stopped after validated checkpoint gl.gateway_settlement"
+  trap - EXIT INT TERM
+  exit 0
+fi
 run_checkpoint_with_validation "gl.os_configs_gateway" validate_os_configs_gateway env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh" || exit $?
 # SYSCOIN: Authenticate the live Gateway postimages before an edge can be
 # created against it. Keep this node running through migration when requested.
