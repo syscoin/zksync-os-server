@@ -4,15 +4,22 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_COMMON = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+GATEWAY_LIFECYCLE = (
+    REPO_ROOT / "scripts" / "gateway-launch" / "_gateway_node_lifecycle.sh"
+)
 OTHER_TARGET = "0x1111111111111111111111111111111111111111"
 PUBLISHED_PATCH_TARGET = "0xca38dbb6ea5f740cc8252f1450def4dcede94478"
 PUBLISHED_PATCH_TARGET_RUNTIME_SIZE = 2840
@@ -51,6 +58,42 @@ FINAL_OS_TAG = "v0.4.0"
 OTHER_OS_TAG = "v0.2.10-interface-v0.1.3-2026-02-10"
 FINAL_LOCKED_REV = "3" * 40
 FINAL_PATCHED_REV = "4" * 40
+
+
+def run_bash_harness(
+    command: str, env: dict[str, str], timeout: float = 5
+) -> subprocess.CompletedProcess[str]:
+    args = ["bash", "-c", command]
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def gateway_harness_env(root: Path, **extra: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("ZKSYNC_OS_SERVER_PATH", None)
+    env.update(
+        COMMON=str(GATEWAY_COMMON),
+        LIFECYCLE=str(GATEWAY_LIFECYCLE),
+        HOME=str(root),
+        **extra,
+    )
+    return env
 
 
 def rust_address_bytes(address: str) -> str:
@@ -3539,6 +3582,27 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             / "gateway-launch-repair.sh"
         ).read_text(encoding="utf-8")
 
+        for trapped_launcher in (launcher, repair):
+            self.assertIn("install_gateway_migration_cleanup_traps", trapped_launcher)
+        self.assertIn("trap '' INT TERM", lifecycle)
+        self.assertIn("trap - EXIT", lifecycle)
+        repair_validation = repair.split(
+            "validate_checkpoint_for_repair() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn("gl.edge_chain_inited | gl.migration", repair_validation)
+        self.assertIn('    validate_checkpoint "$1"', repair_validation)
+        self.assertIn('*) (validate_checkpoint "$1")', repair_validation)
+        self.assertIn("trap handle_direct_gateway_validation_exit EXIT", repair_validation)
+        fatal_validation = repair.split(
+            "handle_direct_gateway_validation_exit() {", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn("gl_checkpoint_mark_blocked", fatal_validation)
+        self.assertLess(
+            fatal_validation.index("cleanup_gateway_for_migration_on_exit"),
+            fatal_validation.index("gl_checkpoint_mark_blocked"),
+        )
+        self.assertIn(") || true", fatal_validation)
+
         settlement = launcher.index(
             'run_checkpoint_with_validation "gl.gateway_settlement"'
         )
@@ -3886,6 +3950,260 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             for stream in (listener.stdout, listener.stderr):
                 if stream is not None:
                     stream.close()
+
+    def test_gateway_startup_timeout_caps_probe_and_final_sleep(self) -> None:
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+json_rpc_hex_to_dec() {
+  [ "$#" -eq 3 ] || return 2
+  return 1
+}
+sleep 30 &
+gateway_pid=$!
+cleanup_test_gateway() {
+  kill -KILL "$gateway_pid" 2>/dev/null || true
+  wait "$gateway_pid" 2>/dev/null || true
+}
+trap cleanup_test_gateway EXIT
+start_ms="$(migration_monotonic_millis)"
+startup_rc=0
+gateway_wait_for_rpc_start \
+  "$gateway_pid" "http://127.0.0.1:1" 1 3600 || startup_rc=$?
+end_ms="$(migration_monotonic_millis)"
+printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
+[ "$startup_rc" -eq 124 ] || {
+  echo "unexpected startup wait status: $startup_rc" >&2
+  exit 1
+}
+'''
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            elapsed_file = root / "elapsed"
+            result = run_bash_harness(
+                command,
+                gateway_harness_env(root, ELAPSED_FILE=str(elapsed_file)),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            elapsed_ms = int(elapsed_file.read_text(encoding="utf-8"))
+            self.assertGreater(elapsed_ms, 700)
+            self.assertLess(elapsed_ms, 2_000)
+
+    def test_gateway_rpc_probe_has_a_total_wall_clock_deadline(self) -> None:
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+deadline_ms="$(migration_monotonic_millis)"
+deadline_ms=$((deadline_ms + 1000))
+start_ms="$(migration_monotonic_millis)"
+rpc_rc=0
+json_rpc_hex_to_dec "$RPC_URL" eth_blockNumber "$deadline_ms" \
+  >/dev/null 2>&1 || rpc_rc=$?
+end_ms="$(migration_monotonic_millis)"
+printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
+[ "$rpc_rc" -ne 0 ]
+'''
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            listener = socket.socket()
+            try:
+                listener.bind(("127.0.0.1", 0))
+            except PermissionError as error:
+                listener.close()
+                if "Operation not permitted" in str(error):
+                    self.skipTest("test sandbox forbids loopback listener creation")
+                raise
+            listener.listen()
+            listener.settimeout(5)
+            accepted = threading.Event()
+            release = threading.Event()
+
+            def serve_partial_response() -> None:
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.recv(4096)
+                        connection.sendall(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"
+                            b'{"jsonrpc":"2.0","result":"0x'
+                        )
+                        accepted.set()
+                        release.wait(5)
+                except OSError:
+                    pass
+
+            server = threading.Thread(target=serve_partial_response, daemon=True)
+            server.start()
+            try:
+                elapsed_file = root / "elapsed"
+                result = run_bash_harness(
+                    command,
+                    gateway_harness_env(
+                        root,
+                        ELAPSED_FILE=str(elapsed_file),
+                        RPC_URL=f"http://127.0.0.1:{listener.getsockname()[1]}",
+                    ),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(accepted.is_set())
+                elapsed_ms = int(elapsed_file.read_text(encoding="utf-8"))
+                self.assertLess(elapsed_ms, 2_500)
+            finally:
+                release.set()
+                listener.close()
+                server.join(timeout=5)
+
+    def test_gateway_jobs_are_bounded_exact_and_signal_safe(self) -> None:
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+test_child_pid=""
+spawn_ignoring_child() {
+  rm -f "$READY_FILE"
+  python3 -c 'import signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).write_text("ready\n", encoding="utf-8"); time.sleep(30)' "$READY_FILE" &
+  test_child_pid=$!
+  local ready_checks=0
+  while [ ! -f "$READY_FILE" ]; do
+    [ "$ready_checks" -lt 200 ] || return 2
+    ready_checks=$((ready_checks + 1))
+    sleep 0.01
+  done
+}
+if [ "$TEST_MODE" = bounded ]; then
+  trap 'kill -KILL "$test_child_pid" 2>/dev/null || true' EXIT
+  spawn_ignoring_child
+  GATEWAY_STARTED_FOR_MIGRATION=true
+  GATEWAY_NODE_PID="$test_child_pid"
+  GATEWAY_RUNTIME_OWNER_PID="$test_child_pid"
+  GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT=1
+  stop_gateway_for_migration
+  ! kill -0 "$test_child_pid" 2>/dev/null
+  test_child_pid=""
+  [ -z "$GATEWAY_NODE_PID" ]
+  [ "$GATEWAY_STARTED_FOR_MIGRATION" = false ]
+  [ -z "${GATEWAY_RUNTIME_OWNER_PID+x}" ]
+
+  start_gateway_for_migration() { return "$TEST_START_RC"; }
+  stop_gateway_for_migration() { return "$TEST_STOP_RC"; }
+  synthetic_command() { return "$TEST_COMMAND_RC"; }
+  assert_status() {
+    local expected="$1" actual=0
+    TEST_START_RC="$2" TEST_COMMAND_RC="$3" TEST_STOP_RC="$4" \
+      run_with_gateway_for_migration synthetic_command || actual=$?
+    [ "$actual" -eq "$expected" ]
+  }
+  assert_status 7 7 0 9
+  assert_status 8 0 8 9
+  assert_status 9 0 0 9
+  gateway_terminate_launcher_job "$SIBLING_PID" 0 sibling
+  kill -0 "$SIBLING_PID"
+  exit 0
+fi
+
+install_gateway_migration_cleanup_traps
+start_gateway_for_migration() {
+  spawn_ignoring_child
+  GATEWAY_NODE_PID="$test_child_pid"
+  GATEWAY_STARTED_FOR_MIGRATION=true
+  GATEWAY_RUNTIME_OWNER_PID="$GATEWAY_NODE_PID"
+  printf '%s\n' "$GATEWAY_NODE_PID" > "$PID_FILE"
+  [ "$TEST_MODE" != die ] || gl_die "synthetic post-launch failure"
+  if [ "$TEST_MODE" = signal ]; then
+    : > "$COMMAND_READY_FILE"
+    migration_interruptible_sleep 30
+  fi
+}
+foreground_validator() {
+  python3 -c 'import os,signal,sys,time; from pathlib import Path; signal.signal(signal.SIGTERM, signal.SIG_IGN); Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8"); Path(sys.argv[2]).touch(); time.sleep(3)' "$VALIDATOR_PID_FILE" "$COMMAND_READY_FILE"
+}
+GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT=1
+if [ "$TEST_MODE" = die ]; then
+  run_with_gateway_for_migration true
+  exit 99
+fi
+(
+  while [ ! -f "$COMMAND_READY_FILE" ]; do sleep 0.01; done
+  sleep 0.1
+  kill -TERM "$$"
+  if [ "$TEST_MODE" = signal ]; then
+    sleep 0.1
+    kill -INT "$$" 2>/dev/null || true
+  fi
+) &
+if [ "$TEST_MODE" = foreground ]; then
+  run_with_gateway_for_migration foreground_validator
+else
+  run_with_gateway_for_migration true
+fi
+exit 99
+'''
+
+        def test_env(root: Path, mode: str, sibling_pid: int = 0) -> dict[str, str]:
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            pgrep = bin_dir / "pgrep"
+            pgrep.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+            pgrep.chmod(0o755)
+            return gateway_harness_env(
+                root,
+                GATEWAY_DIR=str(root / "gateway"),
+                PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                PID_FILE=str(root / "pid"),
+                READY_FILE=str(root / "ready"),
+                COMMAND_READY_FILE=str(root / "command-ready"),
+                VALIDATOR_PID_FILE=str(root / "validator-pid"),
+                SIBLING_PID=str(sibling_pid),
+                TEST_MODE=mode,
+            )
+
+        sibling = subprocess.Popen(["sleep", "30"])
+        try:
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                root = Path(temporary_dir)
+                result = run_bash_harness(
+                    command, test_env(root, "bounded", sibling.pid), timeout=8
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(sibling.poll())
+                self.assertIn("sending SIGKILL", result.stderr)
+        finally:
+            sibling.kill()
+            sibling.wait(timeout=5)
+
+        for mode, expected_rc in (("die", 1), ("signal", 143), ("foreground", 143)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary_dir:
+                root = Path(temporary_dir)
+                pid_file = root / "pid"
+                result = run_bash_harness(
+                    command, test_env(root, mode), timeout=8
+                )
+                child_pid = int(pid_file.read_text(encoding="utf-8"))
+                try:
+                    self.assertEqual(result.returncode, expected_rc, result.stderr)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(child_pid, 0)
+                finally:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if mode == "foreground":
+                    validator_pid = int(
+                        (root / "validator-pid").read_text(encoding="utf-8")
+                    )
+                    try:
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(validator_pid, 0)
+                    finally:
+                        try:
+                            os.kill(validator_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                self.assertIn(
+                    "did not exit after SIGTERM; sending SIGKILL", result.stderr
+                )
 
     def test_gateway_cleanup_parses_portable_pid_output_and_fails_closed(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"

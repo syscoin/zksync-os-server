@@ -9,13 +9,33 @@
 json_rpc_hex_to_dec() {
   local rpc_url="${1:?rpc url required}"
   local method="${2:?rpc method required}"
-  python3 - "${rpc_url}" "${method}" <<'PY'
+  local request_deadline_ms="${3:-0}"
+  python3 - "${rpc_url}" "${method}" "${request_deadline_ms}" <<'PY'
 import json
+import re
+import signal
 import sys
+import time
 import urllib.request
 
 rpc_url = sys.argv[1]
 method = sys.argv[2]
+deadline_raw = sys.argv[3]
+if not deadline_raw.isdecimal():
+    raise SystemExit(1)
+deadline_ms = int(deadline_raw, 10)
+if deadline_ms:
+    remaining_s = (deadline_ms - time.monotonic_ns() // 1_000_000) / 1000
+    if remaining_s <= 0:
+        raise SystemExit(1)
+    timeout_s = min(remaining_s, 3.0)
+else:
+    timeout_s = 3.0
+
+# SYSCOIN: urllib's socket timeout is per operation. Bound the complete local
+# readiness probe so a partial response cannot overrun the startup deadline.
+signal.signal(signal.SIGALRM, lambda *_: sys.exit(1))
+signal.setitimer(signal.ITIMER_REAL, timeout_s)
 payload = json.dumps(
     {"jsonrpc": "2.0", "method": method, "params": [], "id": 1}
 ).encode("utf-8")
@@ -29,18 +49,23 @@ req = urllib.request.Request(
     },
     method="POST",
 )
-with urllib.request.urlopen(req, timeout=3) as resp:
+with urllib.request.urlopen(req, timeout=timeout_s) as resp:
     body = resp.read().decode("utf-8")
 obj = json.loads(body)
 result = obj.get("result")
-if not isinstance(result, str) or not result.startswith("0x"):
+if not isinstance(result, str) or len(result) > 66 or not re.fullmatch(
+    r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", result
+):
     raise SystemExit(1)
-print(int(result, 16))
+output = str(int(result, 16))
+signal.setitimer(signal.ITIMER_REAL, 0)
+print(output)
 PY
 }
 gateway_rpc_ready() {
-  local gateway_rpc="${1:-$(gl_gateway_runtime_rpc_url)}" block_no
-  block_no="$(json_rpc_hex_to_dec "${gateway_rpc}" "eth_blockNumber" 2>/dev/null || true)"
+  local gateway_rpc="${1:-$(gl_gateway_runtime_rpc_url)}"
+  local request_deadline_ms="${2:-0}" block_no
+  block_no="$(json_rpc_hex_to_dec "${gateway_rpc}" "eth_blockNumber" "${request_deadline_ms}" 2>/dev/null || true)"
   [ -n "${block_no}" ]
 }
 
@@ -111,6 +136,7 @@ PY
 
 GATEWAY_NODE_PID=""
 GATEWAY_STARTED_FOR_MIGRATION=false
+GATEWAY_MIGRATION_FOREGROUND_PID=""
 unset GATEWAY_RUNTIME_OWNER_PID
 
 normalize_migration_start_uint() {
@@ -131,8 +157,132 @@ print(value)
 PY
 }
 
+# SYSCOIN: macOS ships Bash 3.2 without a timed wait. Use monotonic milliseconds
+# and the shell's exact background-job table for portable bounded waits.
+migration_monotonic_millis() {
+  python3 - <<'PY'
+import time
+print(time.monotonic_ns() // 1_000_000)
+PY
+}
+
+migration_millis_as_seconds() {
+  local millis="${1:?milliseconds required}"
+  printf '%d.%03d\n' "$((millis / 1000))" "$((millis % 1000))"
+}
+
+gateway_launcher_job_is_active() {
+  local expected_pid="${1:?expected PID required}" job_pid
+  while IFS= read -r job_pid; do
+    [ "${job_pid}" = "${expected_pid}" ] && return 0
+  done < <(jobs -p)
+  return 1
+}
+
+gateway_wait_for_rpc_start() {
+  local gateway_pid="${1:?Gateway PID required}"
+  local gateway_rpc="${2:?Gateway RPC required}"
+  local timeout_s="${3:?startup timeout required}"
+  local poll_s="${4:?startup poll required}"
+  local deadline now remaining_ms sleep_ms
+
+  now="$(migration_monotonic_millis)" || return $?
+  deadline=$((now + timeout_s * 1000))
+  while gateway_launcher_job_is_active "${gateway_pid}"; do
+    now="$(migration_monotonic_millis)" || return $?
+    remaining_ms=$((deadline - now))
+    [ "${remaining_ms}" -gt 0 ] || return 124
+    gateway_rpc_ready "${gateway_rpc}" "${deadline}" && return 0
+    gateway_launcher_job_is_active "${gateway_pid}" || return 125
+    now="$(migration_monotonic_millis)" || return $?
+    remaining_ms=$((deadline - now))
+    [ "${remaining_ms}" -gt 0 ] || return 124
+    sleep_ms=$((poll_s * 1000))
+    [ "${sleep_ms}" -le "${remaining_ms}" ] || sleep_ms="${remaining_ms}"
+    migration_interruptible_sleep "$(migration_millis_as_seconds "${sleep_ms}")" || return $?
+  done
+  return 125
+}
+
+gateway_wait_for_job_exit() {
+  local gateway_pid="${1:?Gateway PID required}"
+  local timeout_s="${2:?shutdown timeout required}"
+  local deadline now remaining_ms sleep_ms
+
+  now="$(migration_monotonic_millis)" || return $?
+  deadline=$((now + timeout_s * 1000))
+  while gateway_launcher_job_is_active "${gateway_pid}"; do
+    now="$(migration_monotonic_millis)" || return $?
+    remaining_ms=$((deadline - now))
+    [ "${remaining_ms}" -gt 0 ] || return 1
+    sleep_ms=200
+    [ "${sleep_ms}" -le "${remaining_ms}" ] || sleep_ms="${remaining_ms}"
+    sleep "$(migration_millis_as_seconds "${sleep_ms}")"
+  done
+}
+
+gateway_terminate_launcher_job() {
+  local gateway_pid="${1:?Gateway PID required}"
+  local term_timeout_s="${2:?TERM timeout required}"
+  local job_label="${3:-Gateway node}"
+
+  if gateway_launcher_job_is_active "${gateway_pid}"; then
+    kill "${gateway_pid}" 2>/dev/null || true
+    if ! gateway_wait_for_job_exit "${gateway_pid}" "${term_timeout_s}"; then
+      echo "migrate-edge: ${job_label} did not exit after SIGTERM; sending SIGKILL" >&2
+      gateway_launcher_job_is_active "${gateway_pid}" && \
+        kill -KILL "${gateway_pid}" 2>/dev/null || true
+      if ! gateway_wait_for_job_exit "${gateway_pid}" 5; then
+        echo "migrate-edge: launcher-owned ${job_label} PID survived SIGKILL: ${gateway_pid}" >&2
+        return 1
+      fi
+    fi
+  fi
+  # The exact job is no longer active, so this reap cannot block.
+  wait "${gateway_pid}" 2>/dev/null || true
+}
+
+cleanup_gateway_for_migration_on_exit() {
+  # SYSCOIN: do not let a repeated signal interrupt bounded child cleanup.
+  trap '' INT TERM
+  stop_gateway_for_migration || true
+}
+
+handle_gateway_migration_interrupt() {
+  trap '' INT TERM
+  trap - EXIT
+  cleanup_gateway_for_migration_on_exit
+  exit 130
+}
+
+handle_gateway_migration_terminate() {
+  trap '' INT TERM
+  trap - EXIT
+  cleanup_gateway_for_migration_on_exit
+  exit 143
+}
+
+install_gateway_migration_cleanup_traps() {
+  trap cleanup_gateway_for_migration_on_exit EXIT
+  trap handle_gateway_migration_interrupt INT
+  trap handle_gateway_migration_terminate TERM
+}
+
+migration_wait_for_owned_job() {
+  local owned_pid="${1:?owned PID required}" wait_rc=0
+  GATEWAY_MIGRATION_FOREGROUND_PID="${owned_pid}"
+  wait "${owned_pid}" || wait_rc=$?
+  GATEWAY_MIGRATION_FOREGROUND_PID=""
+  return "${wait_rc}"
+}
+
+migration_interruptible_sleep() {
+  sleep "${1:?sleep duration required}" &
+  migration_wait_for_owned_job "$!"
+}
+
 start_gateway_for_migration() {
-  local start_script runner log_file i start_timeout_s poll_interval_s max_checks chain_name owned_gateway_rpc
+  local start_script runner log_file start_timeout_s poll_interval_s chain_name owned_gateway_rpc startup_rc
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
@@ -177,8 +327,6 @@ start_gateway_for_migration() {
   start_timeout_s="$(normalize_migration_start_uint GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT "${GATEWAY_MIGRATION_GATEWAY_START_TIMEOUT}" 86400)" || return $?
   poll_interval_s="$(normalize_migration_start_uint GATEWAY_MIGRATION_GATEWAY_START_POLL "${GATEWAY_MIGRATION_GATEWAY_START_POLL}" 3600)" || return $?
   [ "${poll_interval_s}" -gt 0 ] || poll_interval_s=2
-  max_checks=$((start_timeout_s / poll_interval_s))
-  [ "${max_checks}" -gt 0 ] || max_checks=1
 
   log_file="${GATEWAY_MIGRATION_GATEWAY_LOG}"
   echo "migrate-edge: starting Gateway node via ${start_script} -> ${log_file}"
@@ -226,42 +374,68 @@ raise SystemExit(0 if ok else 1)
 PY
   }
 
-  for i in $(seq 1 "${max_checks}"); do
-    if ! kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null; then
-      print_gateway_migration_log_excerpt "${log_file}"
+  # SYSCOIN: enforce startup as a wall-clock deadline, including each RPC probe
+  # and the final sleep, rather than multiplying a poll count by an interval.
+  startup_rc=0
+  gateway_wait_for_rpc_start \
+    "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" \
+    "${start_timeout_s}" "${poll_interval_s}" || startup_rc=$?
+  if [ "${startup_rc}" -ne 0 ]; then
+    print_gateway_migration_log_excerpt "${log_file}"
+    if [ "${startup_rc}" -eq 125 ]; then
       if gateway_replay_assertion_failed "${log_file}"; then
         gl_die "migrate-edge: Gateway node failed during replay with block_executor assertion mismatch. Stop the node, back up and move the complete ${GATEWAY_DIR}/os-server-configs/${chain_name}/db directory, then rerun."
       fi
       gl_die "migrate-edge: Gateway node exited before RPC came up; see ${log_file}"
     fi
-    if gateway_rpc_ready "${owned_gateway_rpc}"; then
-      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
-      # The first launcher-owned start is the only path allowed to create the
-      # immutable block-0 deployment stamp. Every reuse merely verifies it.
-      gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}" || return $?
-      gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
-      kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
-        gl_die "migrate-edge: launcher-owned Gateway PID exited during first attestation"
-      echo "migrate-edge: Gateway RPC is up"
-      print_gateway_prover_mode_hint
-      return 0
-    fi
-    sleep "${poll_interval_s}"
-  done
-  print_gateway_migration_log_excerpt "${log_file}"
-  gl_die "migrate-edge: Gateway RPC did not come up within ${start_timeout_s}s (see ${log_file})"
+    [ "${startup_rc}" -eq 124 ] || \
+      gl_die "migrate-edge: Gateway startup monitor failed with exit code ${startup_rc}"
+    gl_die "migrate-edge: Gateway RPC did not come up within ${start_timeout_s}s (see ${log_file})"
+  fi
+
+  gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
+  # The first launcher-owned start is the only path allowed to create the
+  # immutable block-0 deployment stamp. Every reuse merely verifies it.
+  gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}" || return $?
+  gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
+  kill -0 "${GATEWAY_NODE_PID}" 2>/dev/null || \
+    gl_die "migrate-edge: launcher-owned Gateway PID exited during first attestation"
+  echo "migrate-edge: Gateway RPC is up"
+  print_gateway_prover_mode_hint
 }
 
 stop_gateway_for_migration() {
-  local chain_name config_path cleanup_rc
+  local chain_name config_path cleanup_rc stop_timeout_s
   cleanup_rc=0
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
 
+  if [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ] || {
+    [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]
+  }; then
+    if stop_timeout_s="$(normalize_migration_start_uint \
+      GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT \
+      "${GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT:-10}" 300)"; then
+      :
+    else
+      cleanup_rc=$?
+      stop_timeout_s=10
+    fi
+  fi
+  if [ -n "${GATEWAY_MIGRATION_FOREGROUND_PID}" ]; then
+    # SYSCOIN: make the startup poll sleep an exact job so the repair shell's
+    # signal trap can stop both that wait and the launcher-owned node.
+    gateway_terminate_launcher_job \
+      "${GATEWAY_MIGRATION_FOREGROUND_PID}" "${stop_timeout_s}" \
+      "startup wait" || cleanup_rc=$?
+    GATEWAY_MIGRATION_FOREGROUND_PID=""
+  fi
   if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ] && [ -n "${GATEWAY_NODE_PID}" ]; then
     echo "migrate-edge: stopping Gateway node (pid ${GATEWAY_NODE_PID})"
-    kill "${GATEWAY_NODE_PID}" 2>/dev/null || true
-    wait "${GATEWAY_NODE_PID}" 2>/dev/null || true
+    # SYSCOIN: never let a TERM-ignoring node block the cleanup path that
+    # escalates it and locates any exact-config descendants left pre-exec.
+    gateway_terminate_launcher_job \
+      "${GATEWAY_NODE_PID}" "${stop_timeout_s}" || cleanup_rc=$?
   fi
   if [ "${GATEWAY_STARTED_FOR_MIGRATION}" = true ]; then
     python3 - "${config_path}" <<'PY' || cleanup_rc=$?

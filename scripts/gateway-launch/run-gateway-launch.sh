@@ -235,22 +235,7 @@ run_migrate_edge_with_retry() {
   done
 }
 
-cleanup() {
-  stop_gateway_for_migration || true
-}
-handle_interrupt() {
-  cleanup
-  trap - EXIT INT TERM
-  exit 130
-}
-handle_terminate() {
-  cleanup
-  trap - EXIT INT TERM
-  exit 143
-}
-trap cleanup EXIT
-trap handle_interrupt INT
-trap handle_terminate TERM
+install_gateway_migration_cleanup_traps
 
 run_checkpoint_with_validation() {
   local checkpoint_id="${1:?checkpoint id required}"

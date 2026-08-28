@@ -7,20 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
-
-cleanup_repair_gateway() {
-  stop_gateway_for_migration || true
-}
-handle_repair_interrupt() {
-  cleanup_repair_gateway
-  trap - EXIT INT TERM
-  exit 130
-}
-handle_repair_terminate() {
-  cleanup_repair_gateway
-  trap - EXIT INT TERM
-  exit 143
-}
 L1_PROFILE=""
 COMMAND=""
 CHECKPOINT_ID=""
@@ -129,9 +115,7 @@ PY
 fi
 
 gl_validate_prover_mode
-trap cleanup_repair_gateway EXIT
-trap handle_repair_interrupt INT
-trap handle_repair_terminate TERM
+install_gateway_migration_cleanup_traps
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
   if [ "${PROVER_MODE}" = "no-proofs" ]; then
     export GATEWAY_PROVER_MODE="no-proofs"
@@ -215,6 +199,39 @@ validate_checkpoint() {
   esac
 }
 
+handle_direct_gateway_validation_exit() {
+  local exit_rc=$?
+  trap '' INT TERM
+  trap - EXIT
+  # SYSCOIN: same-shell validation lets the repair trap own the node, but a
+  # fatal attestation must still retire the prior checkpoint as the old
+  # isolated validation/failed-repair path did.
+  cleanup_gateway_for_migration_on_exit
+  if [ "${exit_rc}" -ne 0 ]; then
+    (
+      gl_checkpoint_mark_blocked \
+        "${CHECKPOINT_ID}" "repair validation aborted with exit code ${exit_rc}"
+    ) || true
+  fi
+  exit "${exit_rc}"
+}
+
+validate_checkpoint_for_repair() {
+  local validation_rc=0
+  case "${1:?checkpoint id required}" in
+  gl.edge_chain_inited | gl.migration)
+    # SYSCOIN: these validators temporarily own a Gateway node. Run them in
+    # this trapped repair shell so PID state and parent-only signals cannot be
+    # hidden behind the ordinary probe-isolation subshell.
+    trap handle_direct_gateway_validation_exit EXIT
+    validate_checkpoint "$1" || validation_rc=$?
+    trap cleanup_gateway_for_migration_on_exit EXIT
+    return "${validation_rc}"
+    ;;
+  *) (validate_checkpoint "$1") ;;
+  esac
+}
+
 perform_repair_step() {
   local checkpoint_id="${1:?checkpoint id required}"
   case "${checkpoint_id}" in
@@ -281,7 +298,7 @@ fi
 checkpoint_is_known "${CHECKPOINT_ID}" || gl_die "unknown checkpoint id: ${CHECKPOINT_ID}"
 REPAIR_PRIOR_STATUS="$(gl_checkpoint_get_status "${CHECKPOINT_ID}")"
 
-if (validate_checkpoint "${CHECKPOINT_ID}"); then
+if validate_checkpoint_for_repair "${CHECKPOINT_ID}"; then
   gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"
   echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; marked repaired"
   exit 0
@@ -300,7 +317,7 @@ if [ "${step_rc}" -ne 0 ]; then
   exit "${step_rc}"
 fi
 
-if ! (validate_checkpoint "${CHECKPOINT_ID}"); then
+if ! validate_checkpoint_for_repair "${CHECKPOINT_ID}"; then
   gl_checkpoint_mark_blocked "${CHECKPOINT_ID}" "repair command completed but validation failed"
   gl_die "checkpoint validation failed after repair: ${CHECKPOINT_ID}"
 fi
