@@ -34,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1419746"
-EXPECTED_PATCH_SHA256="0e72ce962a53e928838205fba3efcd6e8140eaaf66e56c903a531e89252304c7"
-EXPECTED_PATCH_PATH_COUNT="59"
-EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"
+EXPECTED_PATCH_SIZE="1504202"
+EXPECTED_PATCH_SHA256="73a4587a15aabcc718a1ca0101fbac932af0909ef3422c0877fca6ef87403d6e"
+EXPECTED_PATCH_PATH_COUNT="60"
+EXPECTED_PATCH_PATHS_SHA256="daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="74b8ada2e8aa06701aa7496206dd72febf85346a"
+EXPECTED_PATCHED_TREE="02cb2cda34f47c09df404c3bce54cb592f72579d"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -190,6 +190,7 @@ verify_postimage_manifest() {
 10526 c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 2210 99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
+59314 e9a81f7e93a396ad203a5e050b7d9b857966d45954405ec849e1a05f0cc47759 l1-contracts/deploy-scripts/AdminFunctions.s.sol
 10730 73b5cd2659d89e12ecdbefe2ed0e9753b1967eadaa4bf7ddfe5877ffe56c72dd l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 31861 6af6435436f478f5723d0fe138771938b0f503ce9fdb7148cc98ae2742c8afc0 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 14452 db6f5326495f0e9926a15632ae8001d64887d9cb83fb64a1a8ffc3a0dbe35588 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
@@ -235,6 +236,14 @@ SYSCOIN_POSTIMAGE_MANIFEST
     die "postimage manifest path digest mismatch"
   [[ "${manifest_paths}" == "${PATCH_PATHS}" ]] ||
     die "postimage manifest does not exactly match the canonical patch path set"
+
+  # SYSCOIN: Ownership retry intentionally restores generic Utils.executeCalls
+  # byte-for-byte to upstream. Attest that security boundary even though the
+  # canonical patch envelope no longer modifies Utils.sol.
+  verify_exact_file \
+    "l1-contracts/deploy-scripts/utils/Utils.sol" \
+    "60917" \
+    "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3"
 }
 
 require_text() {
@@ -276,6 +285,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol" \
     "SYSCOIN: Retain the upstream config tuple shape, but reject its unsupported Validium branch."
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    "SYSCOIN: Scope lost-journal recovery to this exact, state-proven"
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    'require(governance.isOperationReady(operationId), "ownership operation is not ready");'
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    "already current, atomically overwrite any latent successor"
 
   # A fresh production deployment retains the pinned-upstream verifier pair at slot 8, but has
   # exactly one cryptographic route: final v0.4/V8 PLONK/type 2. FFLONK is deployment-compatible

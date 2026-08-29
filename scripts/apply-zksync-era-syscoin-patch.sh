@@ -26,10 +26,10 @@ fi
 # idempotency could accept a partial or locally modified deployment tool.
 EXPECTED_BASE_COMMIT="d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 EXPECTED_BASE_TREE="6d8ac3b2867f9aeb561ba9a2174cd459d6362585"
-EXPECTED_PATCH_SHA256="440e6c06754cfa86826ae84187e02e3fd803376c8674bd255ae62aab50af5387"
-EXPECTED_PATCH_PATH_COUNT="19"
-EXPECTED_PATCH_PATHS_SHA256="2a6fc1855915a4f4bf5304dcbec59ecbc40d7519a5f2b4f5a80da41d2a875cc9"
-EXPECTED_PATCHED_TREE="d044cb9501ec8bdd0c7f9e61aff3bb547ee53c57"
+EXPECTED_PATCH_SHA256="c63f0244645e74f6f833fa383bbe2e8b334209533feb832a18460dc88060faa1"
+EXPECTED_PATCH_PATH_COUNT="24"
+EXPECTED_PATCH_PATHS_SHA256="6a3b90058f9fe33691c7b337ce7d2717e98027ef8b3f42cb4a46427b879bc5e8"
+EXPECTED_PATCHED_TREE="a51bb0b63bde9c037322bd515425569419812046"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -106,11 +106,13 @@ verify_worktree_scope() {
 }
 
 patch_forward_applicable() {
-  git -C "${ERA_PATH}" apply --check --whitespace=error-all "${PATCH_FILE}" >/dev/null 2>&1
+  # SYSCOIN: The compact zero-context envelope is safe because both the exact
+  # upstream tree and complete postimage tree are independently attested.
+  git -C "${ERA_PATH}" apply --unidiff-zero --check --whitespace=error-all "${PATCH_FILE}" >/dev/null 2>&1
 }
 
 patch_reverse_applicable() {
-  git -C "${ERA_PATH}" apply --reverse --check "${PATCH_FILE}" >/dev/null 2>&1
+  git -C "${ERA_PATH}" apply --unidiff-zero --reverse --check "${PATCH_FILE}" >/dev/null 2>&1
 }
 
 verify_patched_tree() {
@@ -151,7 +153,7 @@ patch_reverse_applicable && reverse=true
 
 if [[ "${forward}" == true ]]; then
   echo "Applying exact Syscoin/Tanenbaum zkstack compatibility patch..."
-  git -C "${ERA_PATH}" apply --whitespace=error-all "${PATCH_FILE}"
+  git -C "${ERA_PATH}" apply --unidiff-zero --whitespace=error-all "${PATCH_FILE}"
 else
   echo "Exact Syscoin/Tanenbaum zkstack patch is already applied."
 fi

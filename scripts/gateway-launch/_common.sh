@@ -4093,13 +4093,55 @@ gl_probe_wallets_funded_ready() {
   "${GL_DIR}/fund-wallets.sh" --check-only >/dev/null
 }
 
-gl_probe_l1_ecosystem_deployed_ready() {
+# SYSCOIN: A deployment is not ready while an Ownable2Step target is still
+# controlled by the deployer or has any pending handoff.
+gl_probe_ownable_handoff_ready() {
+  local label="${1:?label required}" target="${2:?target required}"
+  local expected_owner="${3:?expected owner required}" owner pending_owner
+  owner="$(cast call "${target}" "owner()(address)" --rpc-url "${L1_RPC_URL}")" || return $?
+  pending_owner="$(cast call "${target}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}")" || return $?
+  owner="$(gl_normalize_cast_address "${label} owner" "${owner}")" || return $?
+  pending_owner="$(gl_normalize_cast_address "${label} pending owner" "${pending_owner}")" || return $?
+  if [ "${owner}" != "${expected_owner}" ] ||
+    [ "${pending_owner}" != "0x0000000000000000000000000000000000000000" ]; then
+    echo "gateway-launch: incomplete ${label} ownership: expected=${expected_owner} owner=${owner} pending=${pending_owner}" >&2
+    return 1
+  fi
+}
+
+# SYSCOIN: ProxyAdmin and beacon ownership is single-step Ownable state. Keep
+# it separate from the Ownable2Step gate because pendingOwner() must not be
+# assumed to exist on these production controls.
+gl_probe_owner_ready() {
+  local label="${1:?label required}" target="${2:?target required}"
+  local expected_owner="${3:?expected owner required}" owner
+  owner="$(cast call "${target}" "owner()(address)" --rpc-url "${L1_RPC_URL}")" || return $?
+  owner="$(gl_normalize_cast_address "${label} owner" "${owner}")" || return $?
+  if [ "${owner}" != "${expected_owner}" ]; then
+    echo "gateway-launch: incorrect ${label} owner: expected=${expected_owner} owner=${owner}" >&2
+    return 1
+  fi
+}
+
+# SYSCOIN: Authenticate the complete persisted V32 contract graph separately
+# from its authority handoffs so recovery can select the narrow owner-only path.
+_gl_probe_l1_ecosystem_deployment_state() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
+  local require_ownership="${1:?ownership policy required}"
+  case "${require_ownership}" in
+  true | false) ;;
+  *) gl_die "invalid L1 ecosystem ownership policy: ${require_ownership}" ;;
+  esac
   local contracts_file resolved bridgehub ctm bytecodes genesis verifier address code registered
   local is_os ctm_bridgehub semver live_genesis live_verifier live_supplier
   local asset_id mapped_ctm asset_router chain_asset_handler deployment_tracker zero_bytes32
   local router_asset_handler router_deployment_tracker stored_batch_zero initial_cut_hash
+  local root_governance root_chain_admin ctm_governance ctm_chain_admin governor
+  local configured_router native_token_vault l1_nullifier validator_timelock
+  local server_notifier rollup_da_manager asset_tracker chain_registration_sender
+  local shared_proxy_admin ctm_proxy_admin bridged_token_beacon
+  local server_notifier_proxy_admin server_notifier_admin_word bridgehub_admin ctm_admin
   contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
   [ -f "${contracts_file}" ] && [ ! -L "${contracts_file}" ] || return 1
   resolved="$(python3 - "${contracts_file}" <<'PY'
@@ -4138,7 +4180,10 @@ if not isinstance(data, dict):
     raise SystemExit(f"invalid contracts config: {path}")
 core = data.get("core_ecosystem_contracts")
 zksync_os_ctm = data.get("zksync_os_ctm")
-if not isinstance(core, dict) or not isinstance(zksync_os_ctm, dict):
+bridges = data.get("bridges")
+l1 = data.get("l1")
+shared = bridges.get("shared") if isinstance(bridges, dict) else None
+if not all(isinstance(value, dict) for value in (core, zksync_os_ctm, bridges, shared, l1)):
     raise SystemExit(f"missing ecosystem/zkSync OS CTM config: {path}")
 print(
     "|".join(
@@ -4148,13 +4193,36 @@ print(
             address(zksync_os_ctm.get("l1_bytecodes_supplier_addr"), "L1 bytecodes supplier"),
             address(zksync_os_ctm.get("genesis_upgrade_addr"), "zkSync OS genesis upgrade"),
             address(zksync_os_ctm.get("verifier_addr"), "zkSync OS verifier"),
+            address(l1.get("governance_addr"), "root Governance"),
+            address(l1.get("chain_admin_addr"), "root ChainAdmin"),
+            address(zksync_os_ctm.get("governance"), "zkSync OS CTM Governance"),
+            address(zksync_os_ctm.get("chain_admin"), "zkSync OS CTM ChainAdmin"),
+            address(shared.get("l1_address"), "L1 asset router"),
+            address(core.get("native_token_vault_addr"), "L1 native token vault"),
+            address(bridges.get("l1_nullifier_addr"), "L1 nullifier"),
+            address(zksync_os_ctm.get("validator_timelock_addr"), "validator timelock"),
+            address(zksync_os_ctm.get("server_notifier_proxy_addr"), "server notifier"),
+            address(zksync_os_ctm.get("l1_rollup_da_manager"), "rollup DA manager"),
+            address(
+                core.get("transparent_proxy_admin_addr"),
+                "shared transparent ProxyAdmin",
+            ),
+            address(zksync_os_ctm.get("proxy_admin"), "zkSync OS CTM ProxyAdmin"),
         )
     )
 )
 PY
 )" || return $?
-  IFS='|' read -r bridgehub ctm bytecodes genesis verifier <<<"${resolved}"
-  for address in "${bridgehub}" "${ctm}" "${bytecodes}" "${genesis}" "${verifier}"; do
+  IFS='|' read -r bridgehub ctm bytecodes genesis verifier \
+    root_governance root_chain_admin ctm_governance ctm_chain_admin \
+    configured_router native_token_vault l1_nullifier validator_timelock \
+    server_notifier rollup_da_manager shared_proxy_admin ctm_proxy_admin <<<"${resolved}"
+  for address in \
+    "${bridgehub}" "${ctm}" "${bytecodes}" "${genesis}" "${verifier}" \
+    "${root_governance}" "${root_chain_admin}" "${ctm_governance}" \
+    "${ctm_chain_admin}" "${configured_router}" "${native_token_vault}" \
+    "${l1_nullifier}" "${validator_timelock}" "${server_notifier}" \
+    "${rollup_da_manager}" "${shared_proxy_admin}" "${ctm_proxy_admin}"; do
     code="$(cast code "${address}" --rpc-url "${L1_RPC_URL}")" || return $?
     [ "$(printf '%s' "${code}" | tr -d '[:space:]')" != "0x" ] || return 1
   done
@@ -4215,7 +4283,94 @@ PY
   router_asset_handler="$(cast call "${asset_router}" "assetHandlerAddress(bytes32)(address)" "${asset_id}" --rpc-url "${L1_RPC_URL}" | awk 'NF { print tolower($1); exit }')" || return $?
   router_deployment_tracker="$(cast call "${asset_router}" "assetDeploymentTracker(bytes32)(address)" "${asset_id}" --rpc-url "${L1_RPC_URL}" | awk 'NF { print tolower($1); exit }')" || return $?
   [ "${router_asset_handler}" = "${chain_asset_handler}" ] &&
-    [ "${router_deployment_tracker}" = "${deployment_tracker}" ]
+    [ "${router_deployment_tracker}" = "${deployment_tracker}" ] || return 1
+
+  # SYSCOIN: A code-complete deployment is not operationally complete until
+  # every deployer-to-governance handoff has reached its clean terminal state.
+  # Resolve addresses that zkstack omits from contracts.yaml from authenticated
+  # live parents, and bind the configured governor key before trusting the role.
+  [ "${asset_router}" = "${configured_router}" ] || return 1
+  asset_tracker="$(cast call \
+    "${native_token_vault}" \
+    "l1AssetTracker()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || return $?
+  chain_registration_sender="$(cast call \
+    "${bridgehub}" \
+    "chainRegistrationSender()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || return $?
+  bridged_token_beacon="$(cast call \
+    "${native_token_vault}" \
+    "bridgedTokenBeacon()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || return $?
+  asset_tracker="$(gl_normalize_cast_address "L1 asset tracker" "${asset_tracker}")" || return $?
+  chain_registration_sender="$(gl_normalize_cast_address \
+    "chain registration sender" "${chain_registration_sender}")" || return $?
+  bridged_token_beacon="$(gl_normalize_cast_address \
+    "bridged-token beacon" "${bridged_token_beacon}")" || return $?
+  server_notifier_admin_word="$(cast storage \
+    "${server_notifier}" \
+    "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103" \
+    --rpc-url "${L1_RPC_URL}")" || return $?
+  server_notifier_admin_word="$(gl_to_lower \
+    "$(printf '%s\n' "${server_notifier_admin_word}" | awk 'NF { print $1; exit }')")"
+  [[ "${server_notifier_admin_word}" =~ ^0x000000000000000000000000[0-9a-f]{40}$ ]] || return 1
+  server_notifier_proxy_admin="0x${server_notifier_admin_word:26}"
+  for address in \
+    "${asset_tracker}" "${chain_registration_sender}" \
+    "${bridged_token_beacon}" "${server_notifier_proxy_admin}"; do
+    [ "${address}" != "0x0000000000000000000000000000000000000000" ] || return 1
+    code="$(cast code "${address}" --rpc-url "${L1_RPC_URL}")" || return $?
+    [ "$(printf '%s' "${code}" | tr -d '[:space:]')" != "0x" ] || return 1
+  done
+
+  [ "${require_ownership}" = true ] || return 0
+
+  # SYSCOIN: Admin equality is an authority postcondition, not structural
+  # deployment state. Keeping it here lets a legitimate interrupted pending
+  # handoff reach the narrow reconciler while strict mode still fails closed.
+  bridgehub_admin="$(cast call "${bridgehub}" "admin()(address)" --rpc-url "${L1_RPC_URL}")" || return $?
+  ctm_admin="$(cast call "${ctm}" "admin()(address)" --rpc-url "${L1_RPC_URL}")" || return $?
+  bridgehub_admin="$(gl_normalize_cast_address "BridgeHub admin" "${bridgehub_admin}")" || return $?
+  ctm_admin="$(gl_normalize_cast_address "zkSync OS CTM admin" "${ctm_admin}")" || return $?
+  [ "${bridgehub_admin}" = "${root_chain_admin}" ] &&
+    [ "${ctm_admin}" = "${ctm_chain_admin}" ] || return 1
+
+  governor="$(gl_authenticate_chain_wallet_roles \
+    --print-addresses --ecosystem-only governor)" || return $?
+  governor="$(gl_normalize_cast_address "configured governor" "${governor}")" || return $?
+
+  gl_probe_ownable_handoff_ready "root Governance" "${root_governance}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "root ChainAdmin" "${root_chain_admin}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "zkSync OS CTM Governance" "${ctm_governance}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "zkSync OS CTM ChainAdmin" "${ctm_chain_admin}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "BridgeHub" "${bridgehub}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "L1 asset router" "${configured_router}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "L1 asset tracker" "${asset_tracker}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "L1 nullifier" "${l1_nullifier}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "CTM deployment tracker" "${deployment_tracker}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "chain asset handler" "${chain_asset_handler}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "chain registration sender" "${chain_registration_sender}" "${root_governance}" || return $?
+  gl_probe_ownable_handoff_ready "zkSync OS CTM" "${ctm}" "${ctm_governance}" || return $?
+  gl_probe_ownable_handoff_ready "zkSync OS verifier" "${verifier}" "${ctm_governance}" || return $?
+  gl_probe_ownable_handoff_ready "L1 native token vault" "${native_token_vault}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "validator timelock" "${validator_timelock}" "${governor}" || return $?
+  gl_probe_ownable_handoff_ready "server notifier" "${server_notifier}" "${ctm_chain_admin}" || return $?
+  gl_probe_ownable_handoff_ready "rollup DA manager" "${rollup_da_manager}" "${ctm_governance}" || return $?
+  gl_probe_owner_ready "bridged-token beacon" "${bridged_token_beacon}" "${governor}" || return $?
+  gl_probe_owner_ready "shared ProxyAdmin" "${shared_proxy_admin}" "${root_governance}" || return $?
+  gl_probe_owner_ready "zkSync OS CTM ProxyAdmin" "${ctm_proxy_admin}" "${ctm_governance}" || return $?
+  gl_probe_owner_ready "server-notifier ProxyAdmin" \
+    "${server_notifier_proxy_admin}" "${ctm_chain_admin}"
+}
+
+# SYSCOIN: Distinguish a complete deployment from complete authority handoff.
+# Broad deployment replay is forbidden once the structural graph exists.
+gl_probe_l1_ecosystem_structurally_deployed_ready() {
+  _gl_probe_l1_ecosystem_deployment_state false
+}
+
+gl_probe_l1_ecosystem_deployed_ready() {
+  _gl_probe_l1_ecosystem_deployment_state true
 }
 
 gl_probe_gateway_chain_inited_ready() {
@@ -4431,13 +4586,24 @@ gl_probe_edge_chain_inited_and_governor_ready() {
 # balances/roles as a valid migration postcondition.
 gl_authenticate_chain_wallet_roles() {
   gl_require GATEWAY_DIR
-  local emit_addresses=false
-  if [ "${1:-}" = "--print-addresses" ]; then
-    emit_addresses=true
+  local emit_addresses=false ecosystem_only=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --print-addresses) emit_addresses=true ;;
+    --ecosystem-only) ecosystem_only=true ;;
+    *) break ;;
+    esac
+    shift
+  done
+  local chain_name cast_bin common_dir
+  if [ "${ecosystem_only}" = true ]; then
+    # SYSCOIN: Root/CTM deployment uses the independently generated ecosystem
+    # wallet set, never a same-named default-chain wallet.
+    chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  else
+    chain_name="${1:?chain name required}"
     shift
   fi
-  local chain_name="${1:?chain name required}" cast_bin common_dir
-  shift
   [ "$#" -gt 0 ] || gl_die "at least one wallet role is required"
   cast_bin="$(command -v cast || true)"
   if [ -z "${cast_bin}" ] && [ -x "${HOME}/.foundry/bin/cast" ]; then
@@ -4447,6 +4613,7 @@ gl_authenticate_chain_wallet_roles() {
   common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   GL_WALLET_CAST_BIN="${cast_bin}" GL_WALLET_COMMON_DIR="${common_dir}" \
     GL_WALLET_EMIT_ADDRESSES="${emit_addresses}" \
+    GL_WALLET_ECOSYSTEM_ONLY="${ecosystem_only}" \
     python3 - \
       "${GATEWAY_DIR}/chains/${chain_name}/configs/wallets.yaml" \
       "${GATEWAY_DIR}/chains/${chain_name}/wallets.yaml" \
@@ -4462,6 +4629,8 @@ sys.path.insert(0, os.environ["GL_WALLET_COMMON_DIR"])
 from _wallet_identity import authenticate_wallet_entry  # noqa: E402
 
 paths = [Path(value) for value in sys.argv[1:4]]
+if os.environ["GL_WALLET_ECOSYSTEM_ONLY"] == "true":
+    paths = paths[2:]
 addresses = []
 for role in sys.argv[4:]:
     for path in paths:

@@ -47,7 +47,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9e677f536230cc87c1bce8011f3a8074eb39e37a"
-PUBLISHED_ERA_PATCHED_TREE = "74b8ada2e8aa06701aa7496206dd72febf85346a"
+PUBLISHED_ERA_PATCHED_TREE = "02cb2cda34f47c09df404c3bce54cb592f72579d"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -1175,6 +1175,12 @@ class LauncherStaticTests(unittest.TestCase):
             'std::env::var("SOURCE_DATE_EPOCH")',
             "source_date_epoch_timestamp",
             '"2026-02-01 00:00:00"',
+            "pub async fn ensure_owner_handoff_complete(",
+            ".l_1_asset_tracker()",
+            "pub async fn complete_core_owner_handoffs(",
+            "pub async fn complete_ctm_owner_handoffs(",
+            "pub ownership_only: bool",
+            "if final_ecosystem_args.ownership_only",
         ):
             self.assertIn(expected, added)
         self.assertEqual(
@@ -1194,27 +1200,28 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertNotIn("serialize local Anvil broadcasts", patch)
         self.assertNotIn("select the local-only conservative Forge broadcast mode", patch)
         signer_creation = patch.index("+        let ephemeral_signer = self")
-        self.assertLess(
-            signer_creation,
-            patch.index("         if self.args.resume", signer_creation),
-        )
         public_sender_binding = patch.index("+        self.bind_private_key_sender();")
         self.assertLess(
-            public_sender_binding,
-            patch.index("         let args_no_resume = self.args.build();"),
+            signer_creation,
+            patch.index(
+                "+        // SYSCOIN: preserve the same private signer when resume falls back.",
+                signer_creation,
+            ),
         )
+        self.assertLess(public_sender_binding, signer_creation)
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "440e6c06754cfa86826ae84187e02e3fd803376c8674bd255ae62aab50af5387",
+            "c63f0244645e74f6f833fa383bbe2e8b334209533feb832a18460dc88060faa1",
         )
         self.assertNotIn("--recount", applicator)
+        self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="440e6c06754cfa86826ae84187e02e3fd803376c8674bd255ae62aab50af5387"',
-            'EXPECTED_PATCH_PATH_COUNT="19"',
-            'EXPECTED_PATCH_PATHS_SHA256="2a6fc1855915a4f4bf5304dcbec59ecbc40d7519a5f2b4f5a80da41d2a875cc9"',
-            'EXPECTED_PATCHED_TREE="d044cb9501ec8bdd0c7f9e61aff3bb547ee53c57"',
+            'EXPECTED_PATCH_SHA256="c63f0244645e74f6f833fa383bbe2e8b334209533feb832a18460dc88060faa1"',
+            'EXPECTED_PATCH_PATH_COUNT="24"',
+            'EXPECTED_PATCH_PATHS_SHA256="6a3b90058f9fe33691c7b337ce7d2717e98027ef8b3f42cb4a46427b879bc5e8"',
+            'EXPECTED_PATCHED_TREE="a51bb0b63bde9c037322bd515425569419812046"',
         ):
             self.assertIn(expected, applicator)
 
@@ -1307,8 +1314,10 @@ class LauncherStaticTests(unittest.TestCase):
                 common_source = common_source.replace(expected_hash, test_hash)
             test_common = root / "_common.sh"
             test_common.write_text(common_source, encoding="utf-8")
-            era = root / "era"
-            gateway = root / "gateway"
+            # SYSCOIN: macOS exposes the temporary root through a /var symlink;
+            # write the same physical spelling that the production gate requires.
+            era = (root / "era").resolve()
+            gateway = (root / "gateway").resolve()
             trace = root / "trace"
             gateway.mkdir()
             (gateway / "chains" / "gateway").mkdir(parents=True)
@@ -1787,6 +1796,23 @@ class LauncherStaticTests(unittest.TestCase):
             "router": "0x" + "66" * 20,
             "handler": "0x" + "77" * 20,
             "tracker": "0x" + "88" * 20,
+            "root_governance": "0x" + "89" * 20,
+            "root_chain_admin": "0x" + "8a" * 20,
+            "ctm_governance": "0x" + "8b" * 20,
+            "ctm_chain_admin": "0x" + "8c" * 20,
+            "governor": "0x" + "8d" * 20,
+            "native_token_vault": "0x" + "8e" * 20,
+            "nullifier": "0x" + "8f" * 20,
+            "validator_timelock": "0x" + "90" * 20,
+            "server_notifier": "0x" + "91" * 20,
+            "rollup_da_manager": "0x" + "92" * 20,
+            "asset_tracker": "0x" + "93" * 20,
+            "registration_sender": "0x" + "94" * 20,
+            "bad_pending": "0x" + "95" * 20,
+            "shared_proxy_admin": "0x" + "96" * 20,
+            "ctm_proxy_admin": "0x" + "97" * 20,
+            "bridged_token_beacon": "0x" + "98" * 20,
+            "server_notifier_proxy_admin": "0x" + "99" * 20,
         }
         with tempfile.TemporaryDirectory() as temporary_dir:
             root = Path(temporary_dir)
@@ -1795,13 +1821,42 @@ class LauncherStaticTests(unittest.TestCase):
             contracts.write_text(
                 "core_ecosystem_contracts:\n"
                 f"  bridgehub_proxy_addr: {int(addresses['bridgehub'], 16)}\n"
+                f"  native_token_vault_addr: {int(addresses['native_token_vault'], 16)}\n"
+                f"  transparent_proxy_admin_addr: {int(addresses['shared_proxy_admin'], 16)}\n"
+                "bridges:\n"
+                "  shared:\n"
+                f"    l1_address: {int(addresses['router'], 16)}\n"
+                f"  l1_nullifier_addr: {int(addresses['nullifier'], 16)}\n"
+                "l1:\n"
+                f"  governance_addr: {int(addresses['root_governance'], 16)}\n"
+                f"  chain_admin_addr: {int(addresses['root_chain_admin'], 16)}\n"
                 "zksync_os_ctm:\n"
+                f"  governance: {int(addresses['ctm_governance'], 16)}\n"
+                f"  chain_admin: {int(addresses['ctm_chain_admin'], 16)}\n"
+                f"  proxy_admin: {int(addresses['ctm_proxy_admin'], 16)}\n"
                 f"  state_transition_proxy_addr: {int(addresses['ctm'], 16)}\n"
                 f"  l1_bytecodes_supplier_addr: {int(addresses['supplier'], 16)}\n"
                 f"  genesis_upgrade_addr: {int(addresses['genesis'], 16)}\n"
                 f"  verifier_addr: {int(addresses['verifier'], 16)}\n"
+                f"  validator_timelock_addr: {int(addresses['validator_timelock'], 16)}\n"
+                f"  server_notifier_proxy_addr: {int(addresses['server_notifier'], 16)}\n"
+                f"  l1_rollup_da_manager: {int(addresses['rollup_da_manager'], 16)}\n"
                 f"  diamond_cut_data: {'9' * 11562}\n"
                 f"  force_deployments_data: {'8' * 10097}\n",
+                encoding="utf-8",
+            )
+            (root / "configs" / "wallets.yaml").write_text(
+                "governor:\n"
+                f"  address: {addresses['governor']}\n"
+                f"  private_key: 0x{'0' * 63}1\n",
+                encoding="utf-8",
+            )
+            chain_wallets = root / "chains" / "gateway" / "configs" / "wallets.yaml"
+            chain_wallets.parent.mkdir(parents=True)
+            chain_wallets.write_text(
+                "governor:\n"
+                f"  address: {addresses['bad_pending']}\n"
+                f"  private_key: 0x{'0' * 63}1\n",
                 encoding="utf-8",
             )
             bin_dir = root / "bin"
@@ -1811,6 +1866,8 @@ class LauncherStaticTests(unittest.TestCase):
                 "#!/usr/bin/env bash\n"
                 "set -euo pipefail\n"
                 "if [ \"${1:-}\" = code ]; then printf '%s\\n' 0x6000; exit 0; fi\n"
+                "if [ \"${1:-}\" = keccak ]; then printf '0x%024d%s\\n' 0 \"${TEST_GOVERNOR#0x}\"; exit 0; fi\n"
+                "if [ \"${1:-}\" = storage ]; then printf '0x%024d%s\\n' 0 \"${TEST_SERVER_NOTIFIER_PROXY_ADMIN#0x}\"; exit 0; fi\n"
                 "[ \"${1:-}\" = call ] || exit 2\n"
                 "case \"${3:-}\" in\n"
                 "  'chainTypeManagerIsRegistered(address)(bool)'|'isZKsyncOS()(bool)') printf '%s\\n' true ;;\n"
@@ -1827,31 +1884,84 @@ class LauncherStaticTests(unittest.TestCase):
                 "  'l1CtmDeployer()(address)') printf '%s\\n' \"${TEST_TRACKER:?}\" ;;\n"
                 "  'assetHandlerAddress(bytes32)(address)') printf '%s\\n' \"${TEST_HANDLER:?}\" ;;\n"
                 "  'assetDeploymentTracker(bytes32)(address)') printf '%s\\n' \"${TEST_TRACKER:?}\" ;;\n"
+                "  'l1AssetTracker()(address)') printf '%s\\n' \"${TEST_ASSET_TRACKER:?}\" ;;\n"
+                "  'chainRegistrationSender()(address)') printf '%s\\n' \"${TEST_REGISTRATION_SENDER:?}\" ;;\n"
+                "  'bridgedTokenBeacon()(address)') printf '%s\\n' \"${TEST_BRIDGED_TOKEN_BEACON:?}\" ;;\n"
+                "  'admin()(address)')\n"
+                "    if [ -n \"${TEST_WRONG_ADMIN_TARGET:-}\" ] && [ \"$2\" = \"$TEST_WRONG_ADMIN_TARGET\" ]; then printf '%s\\n' \"${TEST_BAD_PENDING:?}\";\n"
+                "    elif [ \"$2\" = \"${TEST_BRIDGEHUB:?}\" ]; then printf '%s\\n' \"${TEST_ROOT_CHAIN_ADMIN:?}\";\n"
+                "    elif [ \"$2\" = \"${TEST_CTM:?}\" ]; then printf '%s\\n' \"${TEST_CTM_CHAIN_ADMIN:?}\";\n"
+                "    else exit 4; fi ;;\n"
+                "  'pendingOwner()(address)')\n"
+                "    if [ -n \"${TEST_PENDING_TARGET:-}\" ] && [ \"$2\" = \"$TEST_PENDING_TARGET\" ]; then\n"
+                "      printf '%s\\n' \"${TEST_BAD_PENDING:?}\";\n"
+                "    else printf '%s\\n' 0x0000000000000000000000000000000000000000; fi ;;\n"
+                "  'owner()(address)')\n"
+                "    if [ -n \"${TEST_WRONG_OWNER_TARGET:-}\" ] && [ \"$2\" = \"$TEST_WRONG_OWNER_TARGET\" ]; then printf '%s\\n' \"${TEST_BAD_PENDING:?}\"; exit 0; fi\n"
+                "    case \"$2\" in\n"
+                "      \"$TEST_ROOT_GOVERNANCE\"|\"$TEST_ROOT_CHAIN_ADMIN\"|\"$TEST_CTM_GOVERNANCE\"|\"$TEST_CTM_CHAIN_ADMIN\"|\"$TEST_NATIVE_TOKEN_VAULT\"|\"$TEST_VALIDATOR_TIMELOCK\") printf '%s\\n' \"$TEST_GOVERNOR\" ;;\n"
+                "      \"$TEST_BRIDGEHUB\"|\"$TEST_ROUTER\"|\"$TEST_ASSET_TRACKER\"|\"$TEST_NULLIFIER\"|\"$TEST_TRACKER\"|\"$TEST_HANDLER\"|\"$TEST_REGISTRATION_SENDER\") printf '%s\\n' \"$TEST_ROOT_GOVERNANCE\" ;;\n"
+                "      \"$TEST_CTM\"|\"$TEST_VERIFIER\"|\"$TEST_ROLLUP_DA_MANAGER\"|\"$TEST_CTM_PROXY_ADMIN\") printf '%s\\n' \"$TEST_CTM_GOVERNANCE\" ;;\n"
+                "      \"$TEST_SERVER_NOTIFIER\"|\"$TEST_SERVER_NOTIFIER_PROXY_ADMIN\") printf '%s\\n' \"$TEST_CTM_CHAIN_ADMIN\" ;;\n"
+                "      \"$TEST_BRIDGED_TOKEN_BEACON\") printf '%s\\n' \"$TEST_GOVERNOR\" ;;\n"
+                "      \"$TEST_SHARED_PROXY_ADMIN\") printf '%s\\n' \"$TEST_ROOT_GOVERNANCE\" ;;\n"
+                "      *) exit 5 ;;\n"
+                "    esac ;;\n"
                 "  *) exit 3 ;;\n"
                 "esac\n",
                 encoding="utf-8",
             )
             fake_cast.chmod(0o755)
-            result = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    'source "$COMMON"; gl_probe_l1_ecosystem_deployed_ready',
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env={
-                    **os.environ,
-                    "COMMON": str(common),
-                    "GATEWAY_DIR": str(root),
-                    "L1_RPC_URL": "http://127.0.0.1:1",
-                    "HOME": str(root),
-                    "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                    **{f"TEST_{key.upper()}": value for key, value in addresses.items()},
-                },
-            )
+            base_env = {
+                **os.environ,
+                "COMMON": str(common),
+                "GATEWAY_DIR": str(root),
+                "L1_RPC_URL": "http://127.0.0.1:1",
+                "HOME": str(root),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                **{f"TEST_{key.upper()}": value for key, value in addresses.items()},
+            }
+
+            def probe(
+                function: str = "gl_probe_l1_ecosystem_deployed_ready",
+                **environment: str,
+            ) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f'source "$COMMON"; {function}',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**base_env, **environment},
+                )
+
+            result = probe()
             self.assertEqual(result.returncode, 0, result.stderr)
+            incomplete = probe(TEST_PENDING_TARGET=addresses["native_token_vault"])
+            self.assertNotEqual(incomplete.returncode, 0)
+            self.assertIn("incomplete L1 native token vault ownership", incomplete.stderr)
+            structural = probe(
+                "gl_probe_l1_ecosystem_structurally_deployed_ready",
+                TEST_PENDING_TARGET=addresses["native_token_vault"],
+            )
+            self.assertEqual(structural.returncode, 0, structural.stderr)
+            wrong_owner = probe(TEST_WRONG_OWNER_TARGET=addresses["shared_proxy_admin"])
+            self.assertNotEqual(wrong_owner.returncode, 0)
+            self.assertIn("incorrect shared ProxyAdmin owner", wrong_owner.stderr)
+            wrong_admin = probe(TEST_WRONG_ADMIN_TARGET=addresses["ctm"])
+            self.assertNotEqual(wrong_admin.returncode, 0)
+            structural_wrong_admin = probe(
+                "gl_probe_l1_ecosystem_structurally_deployed_ready",
+                TEST_WRONG_ADMIN_TARGET=addresses["ctm"],
+            )
+            self.assertEqual(
+                structural_wrong_admin.returncode,
+                0,
+                structural_wrong_admin.stderr,
+            )
 
     def test_registry_bridge_persistence_preserves_upstream_hex_scalars(self) -> None:
         if importlib.util.find_spec("yaml") is None:
@@ -3904,7 +4014,9 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("return 0", function[disabled:attestation])
         self.assertLess(disabled, attestation)
 
-    def test_l1_ecosystem_recovery_stays_inside_zkstack_resume(self) -> None:
+    def test_l1_ecosystem_recovery_never_broadly_replays_a_structural_deployment(
+        self,
+    ) -> None:
         deploy = (
             REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
         ).read_text(encoding="utf-8")
@@ -3924,9 +4036,13 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
 
         self.assertIn("zkstack ecosystem init", resumable)
         self.assertIn("resume_args+=(--resume)", resumable)
+        self.assertIn("zkstack ecosystem init-core-contracts", resumable)
+        self.assertIn("--ownership-only", resumable)
         self.assertEqual(retry_loop.count('run_ecosystem_init "${resume_attempt}"'), 1)
         self.assertIn('GATEWAY_ECOSYSTEM_RESUME_FIRST:=false', deploy)
         self.assertIn('if [ "${attempt}" -gt 1 ]', retry_loop)
+        self.assertIn("gl_probe_l1_ecosystem_structurally_deployed_ready", deploy)
+        self.assertIn("partial L1 ecosystem state cannot be replayed", deploy)
         self.assertNotIn("wait_for_deployer_nonce_sync", retry_loop)
         self.assertNotIn("run_ecosystem_init_resume", deploy)
         self.assertNotIn("extract_l1_contracts_dir_from_log", deploy)
@@ -3935,9 +4051,70 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             "forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol",
             deploy,
         )
+        final_gate = (
+            'ecosystem_contracts_ready || \\\n'
+            '  gl_die "ecosystem init completed without the strict L1 ownership postcondition"'
+        )
+        self.assertIn(final_gate, deploy)
+        self.assertLess(
+            deploy.rindex(final_gate),
+            deploy.rindex("\ndeploy_zksys_l1_registry_bridge"),
+        )
+        gate_start = deploy.rindex("\necosystem_contracts_ready ||") + 1
+        gate_end = deploy.index("\ndeploy_zksys_l1_registry_bridge", gate_start)
+        gate = deploy[gate_start:gate_end]
+        failed_gate = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                "ecosystem_contracts_ready() { return 1; }\n"
+                "gl_die() { echo \"$*\" >&2; exit 23; }\n"
+                + gate
+                + "\nprintf 'unsafe continuation\\n'\n",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(failed_gate.returncode, 23)
+        self.assertIn("strict L1 ownership postcondition", failed_gate.stderr)
+        self.assertNotIn("unsafe continuation", failed_gate.stdout)
         # The external-signer nonce drain remains scoped to its direct
         # DeployErc20 retry path.
         self.assertEqual(deploy.count("      wait_for_deployer_nonce_sync\n"), 1)
+
+        decision_start = deploy.index("ecosystem_already_ready=false")
+        decision_end = deploy.index("\nset_retry_gas_price()", decision_start)
+        decision = deploy[decision_start:decision_end]
+        harness = textwrap.dedent(
+            f"""
+            set -euo pipefail
+            events=()
+            ownership_ready=false
+            GATEWAY_DIR="$1"
+            GATEWAY_ECOSYSTEM_RESUME_FIRST=false
+            gl_probe_l1_ecosystem_structurally_deployed_ready() {{ return 0; }}
+            ecosystem_contracts_ready() {{ [ "$ownership_ready" = true ]; }}
+            run_owner_reconciliation() {{ events+=(reconcile); ownership_ready=true; }}
+            run_ecosystem_init() {{ events+=(broad); }}
+            gl_die() {{ echo "$*" >&2; exit 1; }}
+            {decision}
+            if [ "$ecosystem_already_ready" != true ]; then
+              run_ecosystem_init false
+            fi
+            printf '%s\n' "${{events[@]}}"
+            """
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            result = subprocess.run(
+                ["bash", "-c", harness, "bash", temporary_dir],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1:], ["reconcile"])
 
         normal = (
             REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
@@ -4216,10 +4393,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1419746"',
-            'EXPECTED_PATCH_SHA256="0e72ce962a53e928838205fba3efcd6e8140eaaf66e56c903a531e89252304c7"',
-            'EXPECTED_PATCH_PATH_COUNT="59"',
-            'EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"',
+            'EXPECTED_PATCH_SIZE="1504202"',
+            'EXPECTED_PATCH_SHA256="73a4587a15aabcc718a1ca0101fbac932af0909ef3422c0877fca6ef87403d6e"',
+            'EXPECTED_PATCH_PATH_COUNT="60"',
+            'EXPECTED_PATCH_PATHS_SHA256="daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -4236,6 +4413,9 @@ class EraAttestationStaticTests(unittest.TestCase):
             '*.sol | *.rs | *.toml | *.gitignore)',
             'done <<< "${PATCH_PATHS}"',
             "postimage manifest does not exactly match the canonical patch path set",
+            "SYSCOIN: Scope lost-journal recovery to this exact, state-proven",
+            'require(governance.isOperationReady(operationId), "ownership operation is not ready");',
+            "already current, atomically overwrite any latent successor",
             "canonical source patch unexpectedly deletes an upstream path",
             "fflonkVerifiers[CANONICAL_ZKSYNC_OS_VERIFIER_VERSION] = _fflonkVerifier;",
             "function replaceVerifier(uint32 version, IVerifier newPlonkVerifier) external override onlyOwner",
@@ -4267,18 +4447,18 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 59)
+        self.assertEqual(len(patch_paths), 60)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff",
+            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 59)
+        self.assertEqual(len(manifest_entries), 60)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
@@ -4351,6 +4531,14 @@ class EraAttestationStaticTests(unittest.TestCase):
             (
                 "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol",
                 "9bf5790131827c8671a648587e2f68794ff7bdc7b54b6a5539c6ee95aed91cca",
+            ),
+            (
+                "l1-contracts/deploy-scripts/utils/Utils.sol",
+                "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3",
+            ),
+            (
+                "l1-contracts/deploy-scripts/AdminFunctions.s.sol",
+                "e9a81f7e93a396ad203a5e050b7d9b857966d45954405ec849e1a05f0cc47759",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",
@@ -4463,6 +4651,16 @@ class EraAttestationStaticTests(unittest.TestCase):
         )
         self.assertIn(
             "diff --git a/tools/zksync-os-genesis-gen/src/consts.rs",
+            patch,
+        )
+        self.assertIn(
+            "diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol",
+            patch,
+        )
+        self.assertIn("governance.getOperationState(operationId)", patch)
+        self.assertIn("ownership operation is not ready", patch)
+        self.assertNotIn(
+            "diff --git a/l1-contracts/deploy-scripts/utils/Utils.sol",
             patch,
         )
         self.assertIn(
@@ -4611,9 +4809,9 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "59"',
+            'ERA_PATCH_PATH_COUNT: "60"',
             "ERA_PATCH_PATHS_SHA256: "
-            "d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff",
+            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',

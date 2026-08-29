@@ -1,0 +1,2 @@
+# SYSCOIN: Unified diffs encode blank context lines as one space; they are not target-file whitespace.
+scripts/patches/*.patch whitespace=-blank-at-eol
