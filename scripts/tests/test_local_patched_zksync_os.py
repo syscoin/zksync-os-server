@@ -1014,6 +1014,9 @@ class LauncherStaticTests(unittest.TestCase):
                 self.assertIn(
                     '--cache-path "${inspect_artifacts_dir}/cache"', function
                 )
+                self.assertIn("NO_COLOR=1 forge inspect", function)
+                self.assertIn("--color never", function)
+                self.assertIn("gl_validate_forge_inspect_bytecode", function)
                 self.assertNotIn('--out "${ZKSYNC_OS_SERVER_PATH}', function)
                 self.assertNotIn('--cache-path "${ZKSYNC_OS_SERVER_PATH}', function)
                 self.assertNotIn('--out "${inspect_dir}', function)
@@ -1024,6 +1027,29 @@ class LauncherStaticTests(unittest.TestCase):
         helper = common[helper_start : common.index("\n}", helper_start)]
         self.assertIn('tempfile.mkdtemp(prefix="forge-inspect-", dir=state_dir)', helper)
         self.assertIn("stat.S_IMODE(info.st_mode) & 0o077", helper)
+
+        validator_command = (
+            'source "$COMMON"; gl_validate_forge_inspect_bytecode TestContract'
+        )
+        for bytecode, expected_success in (
+            ("0x6001\n", True),
+            ("\x1b[2K0x6001\n", False),
+            ("warning\n0x6001\n", False),
+            ("0x601\n", False),
+            ("0x\n", False),
+        ):
+            with self.subTest(bytecode=repr(bytecode)):
+                result = subprocess.run(
+                    ["bash", "-c", validator_command],
+                    input=bytecode,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={"PATH": os.environ["PATH"], "COMMON": str(GATEWAY_COMMON)},
+                )
+                self.assertEqual(result.returncode == 0, expected_success)
+                if expected_success:
+                    self.assertEqual(result.stdout, bytecode.rstrip())
 
         with tempfile.TemporaryDirectory() as temporary_dir:
             env = {

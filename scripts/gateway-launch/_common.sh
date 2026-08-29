@@ -3246,6 +3246,22 @@ gl_checkpoint_state_file() {
   printf '%s/state.json\n' "$(gl_checkpoint_state_dir)"
 }
 
+gl_validate_forge_inspect_bytecode() {
+  local contract="${1:?contract required}"
+  # SYSCOIN: CREATE2 inputs must never include Forge progress or warning text.
+  # Fail closed instead of trying to strip terminal output into valid bytecode.
+  python3 -c '
+import re
+import sys
+
+contract = sys.argv[1]
+raw = sys.stdin.buffer.read()
+if re.fullmatch(rb"0x(?:[0-9a-fA-F]{2})+(?:\r?\n)?", raw) is None:
+    raise SystemExit(f"forge inspect emitted invalid bytecode for {contract}")
+sys.stdout.buffer.write(raw.rstrip(b"\r\n"))
+' "${contract}"
+}
+
 gl_create_forge_inspect_artifacts_dir() {
   local state_dir
   gl_checkpoint_state_init || return $?

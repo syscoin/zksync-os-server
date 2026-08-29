@@ -242,7 +242,8 @@ forge_inspect_bytecode() {
   local inspect_artifacts_dir="${zksys_bootstrap_forge_inspect_dir}"
   # SYSCOIN: production launchers mount reviewed server source read-only. Keep
   # fresh Forge artifacts in owner-private launch state, never in source.
-  forge inspect "${contract}" bytecode \
+  NO_COLOR=1 forge inspect "${contract}" bytecode \
+    --color never \
     --no-metadata \
     --root "${inspect_dir}" \
     --out "${inspect_artifacts_dir}/out" \
@@ -251,7 +252,8 @@ forge_inspect_bytecode() {
     -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
     -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \
     -R "@openzeppelin/community-contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-community-contracts/contracts/" \
-    -R "forge-std/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/forge-std/src/"
+    -R "forge-std/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/forge-std/src/" | \
+    gl_validate_forge_inspect_bytecode "${contract}"
 }
 
 prepare_zksys_l2_wallet_args() {
