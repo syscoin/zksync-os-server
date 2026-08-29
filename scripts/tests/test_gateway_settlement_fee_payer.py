@@ -369,6 +369,19 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
             env=env,
         )
 
+    def _preflight_fee_target(
+        self, **env_overrides: str
+    ) -> subprocess.CompletedProcess[str]:
+        env = self.env.copy()
+        env.update(env_overrides)
+        return subprocess.run(
+            ["bash", str(HELPER), "--preflight-fee-target"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
     @staticmethod
     def _bounded_gas_cost(state: dict[str, object], signatures: list[str]) -> int:
         max_fee_per_gas = int(state["gas_price"]) * 2
@@ -442,6 +455,45 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertIn("gatewaySettlementFee must be non-zero", result.stderr)
         self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
 
+    def test_fee_target_preflight_rejects_zero_live_fee(self) -> None:
+        state = self._state()
+        state["fee"] = 0
+        self._write_state(state)
+        result = self._preflight_fee_target()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gatewaySettlementFee must be non-zero", result.stderr)
+        self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_fee_target_preflight_rejects_uint256_overflow(self) -> None:
+        state = self._state()
+        state["fee"] = 2
+        self._write_state(state)
+        result = self._preflight_fee_target(
+            GATEWAY_INTEROP_SETTLEMENT_OPERATION_BUDGET=str(UINT256_MAX),
+            GATEWAY_INTEROP_SETTLEMENT_MAX_WRAP_WEI=str(UINT256_MAX),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("gateway settlement fee target overflows uint256", result.stderr)
+        self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_fee_target_preflight_rejects_target_above_cap(self) -> None:
+        result = self._preflight_fee_target(
+            GATEWAY_INTEROP_SETTLEMENT_MAX_WRAP_WEI=str(74 * 10**18)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exceeds configured wrap cap", result.stderr)
+        calls = self._state()["calls"]
+        self.assertFalse(
+            any(call[0] in {"balance", "estimate", "send"} for call in calls)
+        )
+        self.assertFalse(
+            any(
+                call[0] == "call"
+                and call[2] == "getZKChain(uint256)(address)"
+                for call in calls
+            )
+        )
+
     def test_requires_an_independently_trusted_wrapped_token_pin(self) -> None:
         self.env.pop("GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS")
         result = self._run()
@@ -481,8 +533,39 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
     def test_rejects_zero_native_gas_reserve_without_broadcasting(self) -> None:
         result = self._run(GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI="0")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("native gas reserve must be non-zero", result.stderr)
+        self.assertIn(
+            "GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI must be between",
+            result.stderr,
+        )
         self.assertFalse(any(call[0] == "send" for call in self._state()["calls"]))
+
+    def test_config_only_validation_rejects_all_late_fee_payer_inputs(self) -> None:
+        def validate(**overrides: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["bash", str(HELPER), "--validate-config-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**self.env, **overrides},
+            )
+
+        valid = validate()
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        self.assertEqual(self._state()["calls"], [])
+
+        cases = (
+            ({"GATEWAY_INTEROP_SETTLEMENT_OPERATION_BUDGET": "0"}, "OPERATION_BUDGET"),
+            ({"GATEWAY_INTEROP_SETTLEMENT_MAX_WRAP_WEI": "bad"}, "MAX_WRAP_WEI"),
+            ({"GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI": "0"}, "NATIVE_GAS_RESERVE_WEI"),
+            ({"GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT": "0"}, "TX_TIMEOUT"),
+            ({"GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT": "86401"}, "TX_TIMEOUT"),
+        )
+        for overrides, label in cases:
+            with self.subTest(overrides=overrides):
+                result = validate(**overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(label, result.stderr)
+                self.assertEqual(self._state()["calls"], [])
 
     def test_fails_closed_if_live_fee_increases_during_provisioning(self) -> None:
         state = self._state()

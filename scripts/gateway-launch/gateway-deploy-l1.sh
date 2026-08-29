@@ -329,11 +329,29 @@ print(value)
 PY
 }
 
+gateway_deploy_forge_inspect_dir="$(gl_create_forge_inspect_artifacts_dir)" || exit $?
+readonly gateway_deploy_forge_inspect_dir
+cleanup_gateway_deploy_forge_inspect() {
+  local rc=$? cleanup_rc=0
+  trap - EXIT HUP INT TERM
+  gl_remove_forge_inspect_artifacts_dir "${gateway_deploy_forge_inspect_dir}" || cleanup_rc=$?
+  [ "${rc}" -eq 0 ] || exit "${rc}"
+  exit "${cleanup_rc}"
+}
+trap cleanup_gateway_deploy_forge_inspect EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 forge_inspect_zksys_bytecode() {
   local contract="${1:?contract required}"
+  local inspect_artifacts_dir="${gateway_deploy_forge_inspect_dir}"
+  # SYSCOIN: production launchers mount reviewed server source read-only. Keep
+  # fresh Forge artifacts in owner-private launch state, never in source.
   forge inspect "${contract}" bytecode \
     --no-metadata \
     --root "${ZKSYNC_OS_SERVER_PATH}/contracts" \
+    --out "${inspect_artifacts_dir}/out" \
+    --cache-path "${inspect_artifacts_dir}/cache" \
     -R "@openzeppelin/contracts/=${ZKSYNC_OS_SERVER_PATH}/integration-tests/test-contracts/lib/openzeppelin-contracts/contracts/" \
     -R "@openzeppelin/contracts-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-v4/contracts/" \
     -R "@openzeppelin/contracts-upgradeable-v4/=${ZKSYNC_ERA_PATH}/contracts/lib/openzeppelin-contracts-upgradeable-v4/contracts/" \

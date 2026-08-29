@@ -24,6 +24,18 @@ gl_validate_l1_network_pair
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
 gl_resolve_required_source_pins
+: "${GATEWAY_CHAIN_NAME:=gateway}"
+: "${GATEWAY_FUND_TARGET_CHAIN_NAME:=${GATEWAY_CHAIN_NAME}}"
+: "${GATEWAY_FUND_EDGE_CONTEXT:=false}"
+GATEWAY_FUND_EDGE_CONTEXT="$(gl_to_lower "${GATEWAY_FUND_EDGE_CONTEXT}")"
+case "${GATEWAY_FUND_EDGE_CONTEXT}" in
+true | false) ;;
+*) gl_die "GATEWAY_FUND_EDGE_CONTEXT must be true or false" ;;
+esac
+if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ] &&
+  [ "${GATEWAY_FUND_TARGET_CHAIN_NAME}" != "${EDGE_CHAIN_NAME:-zksys}" ]; then
+  gl_die "edge funding target must match EDGE_CHAIN_NAME"
+fi
 if [ "${FUND_CHECK_ONLY}" != true ]; then
   gl_validate_l1_signer_policy
   gl_acquire_gateway_launch_lock
@@ -34,14 +46,21 @@ gl_l1_broadcast_preflight
 if [ "${FUND_CHECK_ONLY}" = true ]; then
   # SYSCOIN: Validation remains read-only while rejecting a different launch
   # identity from the one durably bound to this workspace.
-  gl_checkpoint_assert_fingerprint_matches
+  if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ]; then
+    gl_assert_edge_launch_context
+  else
+    gl_checkpoint_assert_fingerprint_matches
+  fi
 else
-  gl_bind_gateway_launch_context
+  if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ]; then
+    gl_bind_edge_launch_context
+  else
+    gl_bind_gateway_launch_context
+  fi
 fi
-: "${GATEWAY_CHAIN_NAME:=gateway}"
 
 ROOT_W="${GATEWAY_DIR}/configs/wallets.yaml"
-CHAIN_W="${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
+CHAIN_W="${GATEWAY_DIR}/chains/${GATEWAY_FUND_TARGET_CHAIN_NAME}/configs/wallets.yaml"
 
 normalize_path() {
   python3 - "$1" <<'PY'

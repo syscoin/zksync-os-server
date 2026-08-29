@@ -150,8 +150,10 @@ if not isinstance(config, dict):
 
 fee_raw = os.environ["GATEWAY_SETTLEMENT_FEE"].strip()
 fee = int(fee_raw, 16) if fee_raw.lower().startswith("0x") else int(fee_raw, 10)
-if fee < 0:
-    raise SystemExit("GATEWAY_SETTLEMENT_FEE must be non-negative")
+# SYSCOIN: Fee-payer provisioning requires a live non-zero settlement fee;
+# reject an inconsistent deployment before either Gateway broadcast.
+if fee <= 0:
+    raise SystemExit("GATEWAY_SETTLEMENT_FEE must be non-zero")
 
 # zkstack accepts the historical hex string shape here; keep that style.
 config["gateway_settlement_fee"] = hex(fee)

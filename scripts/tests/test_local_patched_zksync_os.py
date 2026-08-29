@@ -4,12 +4,14 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -132,12 +134,940 @@ def gateway_harness_env(root: Path, **extra: str) -> dict[str, str]:
     return env
 
 
+def canonical_gateway_fingerprint_env(root: Path, **extra: str) -> dict[str, str]:
+    env = {
+        "PATH": os.environ["PATH"],
+        "COMMON": str(GATEWAY_COMMON),
+        "REQUIRED_ZKSTACK_CLI_SHA": "1" * 40,
+        "REQUIRED_CONTRACTS_SHA": "2" * 40,
+        "L1_CHAIN_ID": "5700",
+        "L1_NETWORK": "tanenbaum",
+        "L1_RPC_URL": "http://127.0.0.1:8545",
+        "GATEWAY_DIR": str(root / "gateway_v32_test"),
+        "GATEWAY_ECOSYSTEM_NAME": "gateway-v32-test",
+        "GATEWAY_CHAIN_NAME": "gateway",
+        "EDGE_CHAIN_NAME": "zksys",
+        "EDGE_CHAIN_ID": "57057",
+        "PROVER_MODE": "no-proofs",
+        "GATEWAY_PROVER_MODE": "no-proofs",
+        "EDGE_PROVER_MODE": "no-proofs",
+        "SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER": "true",
+        "FOUNDRY_EVM_VERSION": "cancun",
+        "GATEWAY_CREATE2_FACTORY_SALT": "0x" + "99" * 32,
+        "ZKSYS_L2_TOKEN_ADMIN_ADDRESS": "0x" + "11" * 20,
+    }
+    env.update(extra)
+    return env
+
+
+def gateway_checkpoint_state_file(env: dict[str, str]) -> Path:
+    gateway_dir = Path(env["GATEWAY_DIR"])
+    state_key = hashlib.sha256(
+        os.path.realpath(gateway_dir).encode("utf-8")
+    ).hexdigest()
+    return gateway_dir.parent / ".gateway-launch-state" / state_key / "state.json"
+
+
 def rust_address_bytes(address: str) -> str:
     value = address.removeprefix("0x")
     return ", ".join(f"0x{value[index:index + 2]}" for index in range(0, 40, 2))
 
 
+class AdditionalEdgeIndexTests(unittest.TestCase):
+    @staticmethod
+    def run_common(
+        env: dict[str, str], command: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", f'source "$COMMON"; {command}'],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def initialize_canonical(self, env: dict[str, str]) -> Path:
+        result = self.run_common(
+            env, "gl_checkpoint_state_init; gl_checkpoint_set_fingerprint_if_empty"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write_chain_index(
+            env,
+            env.get("GATEWAY_CHAIN_NAME", "gateway"),
+            int(env.get("GATEWAY_CHAIN_ID", "57001")),
+        )
+        self.write_chain_index(env, "zksys", 57057)
+        return gateway_checkpoint_state_file(env)
+
+    @staticmethod
+    def write_chain_index(env: dict[str, str], name: str, chain_id: int) -> Path:
+        path = Path(env["GATEWAY_DIR"]) / "chains" / name / "ZkStack.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"chain_id": chain_id}) + "\n", encoding="utf-8")
+        path.chmod(0o644)
+        return path
+
+    def test_additional_edge_binding_preserves_the_exact_canonical_fingerprint(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            canonical_env = canonical_gateway_fingerprint_env(Path(temporary_dir))
+            state_file = self.initialize_canonical(canonical_env)
+            canonical_bytes = state_file.read_bytes()
+            canonical_mode = stat.S_IMODE(state_file.stat().st_mode)
+
+            edge_env = {
+                **canonical_env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "057058",
+            }
+            result = self.run_common(edge_env, "gl_bind_edge_launch_context")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state_file.read_bytes(), canonical_bytes)
+            self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), canonical_mode)
+
+            missing = self.run_common(edge_env, "gl_assert_edge_launch_context")
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("not present in the zkstack chain index", missing.stderr)
+
+            edge_index = self.write_chain_index(edge_env, "edge-b", 57058)
+            edge_index_bytes = edge_index.read_bytes()
+            edge_index_mtime = edge_index.stat().st_mtime_ns
+
+            result = self.run_common(edge_env, "gl_bind_edge_launch_context")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            asserted = self.run_common(edge_env, "gl_assert_edge_launch_context")
+            self.assertEqual(asserted.returncode, 0, asserted.stderr)
+            self.assertEqual(edge_index.read_bytes(), edge_index_bytes)
+            self.assertEqual(edge_index.stat().st_mtime_ns, edge_index_mtime)
+            self.assertEqual(state_file.read_bytes(), canonical_bytes)
+
+            canonical_assert = self.run_common(
+                edge_env, "gl_checkpoint_assert_fingerprint_matches"
+            )
+            self.assertNotEqual(canonical_assert.returncode, 0)
+            self.assertIn("edge_chain_name", canonical_assert.stderr)
+            self.assertIn("edge_chain_id", canonical_assert.stderr)
+
+    def test_additional_edge_binding_rejects_global_drift_and_collisions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            canonical_env = canonical_gateway_fingerprint_env(root)
+            missing = self.run_common(
+                {
+                    **canonical_env,
+                    "EDGE_CHAIN_NAME": "edge-b",
+                    "EDGE_CHAIN_ID": "57058",
+                },
+                "gl_bind_edge_launch_context",
+            )
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("checkpoint state is not initialized", missing.stderr)
+
+            state_file = self.initialize_canonical(canonical_env)
+            edge_env = {
+                **canonical_env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+            }
+            bound = self.run_common(edge_env, "gl_bind_edge_launch_context")
+            self.assertEqual(bound.returncode, 0, bound.stderr)
+            self.write_chain_index(edge_env, "edge-b", 57058)
+            expected_state = state_file.read_bytes()
+            expected_chains = {"gateway", "zksys", "edge-b"}
+
+            failures = (
+                ({"GATEWAY_CREATE2_FACTORY_SALT": "1", "EDGE_CHAIN_NAME": "edge-c", "EDGE_CHAIN_ID": "57059"}, "checkpoint fingerprint mismatch"),
+                ({"EDGE_CHAIN_NAME": "edge-b", "EDGE_CHAIN_ID": "57059"}, "name collision"),
+                ({"EDGE_CHAIN_NAME": "edge-c", "EDGE_CHAIN_ID": "57058"}, "chain-id collision"),
+                ({"EDGE_CHAIN_NAME": "zksys", "EDGE_CHAIN_ID": "57059"}, "must not reuse canonical"),
+                ({"EDGE_CHAIN_NAME": "edge-c", "EDGE_CHAIN_ID": "57057"}, "must not reuse canonical"),
+                ({"EDGE_CHAIN_NAME": "gateway", "EDGE_CHAIN_ID": "57059"}, "must not reuse the Gateway"),
+                ({"EDGE_CHAIN_NAME": "edge-c", "EDGE_CHAIN_ID": "57001"}, "must not reuse the Gateway"),
+                ({"EDGE_CHAIN_NAME": "../edge-c", "EDGE_CHAIN_ID": "57059"}, "must match"),
+            )
+            for overrides, message in failures:
+                with self.subTest(overrides=overrides):
+                    result = self.run_common(
+                        {**edge_env, **overrides}, "gl_bind_edge_launch_context"
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    self.assertEqual(
+                        {
+                            path.name
+                            for path in (
+                                Path(canonical_env["GATEWAY_DIR"]) / "chains"
+                            ).iterdir()
+                        },
+                        expected_chains,
+                    )
+                    self.assertEqual(state_file.read_bytes(), expected_state)
+
+            gateway_index = (
+                Path(canonical_env["GATEWAY_DIR"])
+                / "chains"
+                / "gateway"
+                / "ZkStack.yaml"
+            )
+            zksys_index = (
+                Path(canonical_env["GATEWAY_DIR"])
+                / "chains"
+                / "zksys"
+                / "ZkStack.yaml"
+            )
+            for path, corrupt_id, message in (
+                (gateway_index, 57002, "differs from fingerprinted ID"),
+                (zksys_index, 57056, "must be 57057"),
+            ):
+                with self.subTest(corrupt_index=path.parent.name):
+                    original = path.read_bytes()
+                    path.write_text(
+                        json.dumps({"chain_id": corrupt_id}) + "\n",
+                        encoding="utf-8",
+                    )
+                    result = self.run_common(
+                        {
+                            **edge_env,
+                            "EDGE_CHAIN_NAME": "edge-c",
+                            "EDGE_CHAIN_ID": "57059",
+                        },
+                        "gl_bind_edge_launch_context",
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+                    path.write_bytes(original)
+
+            duplicate = self.write_chain_index(canonical_env, "edge-duplicate", 57058)
+            duplicate_result = self.run_common(
+                {
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_ID": "57059",
+                },
+                "gl_bind_edge_launch_context",
+            )
+            self.assertNotEqual(duplicate_result.returncode, 0)
+            self.assertIn("duplicate chain ID 57058", duplicate_result.stderr)
+            duplicate.unlink()
+            duplicate.parent.rmdir()
+
+            self.write_chain_index(canonical_env, "local-edge", 57060)
+            for name, chain_id, message in (
+                ("local-edge", "57061", "name collision"),
+                ("different-edge", "57060", "chain-id collision"),
+            ):
+                with self.subTest(local_name=name, local_id=chain_id):
+                    result = self.run_common(
+                        {
+                            **edge_env,
+                            "EDGE_CHAIN_NAME": name,
+                            "EDGE_CHAIN_ID": chain_id,
+                        },
+                        "gl_bind_edge_launch_context",
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr)
+
+    def test_additional_edge_uses_configured_gateway_chain_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            env = canonical_gateway_fingerprint_env(
+                Path(temporary_dir),
+                GATEWAY_CHAIN_NAME="settlement",
+                GATEWAY_CHAIN_ID="57002",
+            )
+            self.initialize_canonical(env)
+            edge_env = {
+                **env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+            }
+            self.write_chain_index(edge_env, "edge-b", 57058)
+            result = self.run_common(edge_env, "gl_assert_edge_launch_context")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_additional_edge_index_rejects_permissions_symlinks_and_hardlinks(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            canonical_env = canonical_gateway_fingerprint_env(root)
+            self.initialize_canonical(canonical_env)
+            edge_env = {
+                **canonical_env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+            }
+            config = self.write_chain_index(edge_env, "edge-b", 57058)
+            original = config.read_bytes()
+
+            chains_dir = Path(canonical_env["GATEWAY_DIR"]) / "chains"
+            edge_dir = config.parent
+            original_chains_mode = stat.S_IMODE(chains_dir.stat().st_mode)
+            original_edge_mode = stat.S_IMODE(edge_dir.stat().st_mode)
+            for directory, message in (
+                (chains_dir, "chains directory has unsafe"),
+                (edge_dir, "chain directory ownership/mode"),
+            ):
+                with self.subTest(unsafe_directory=directory):
+                    directory.chmod(0o775)
+                    unsafe_directory = self.run_common(
+                        edge_env, "gl_assert_edge_launch_context"
+                    )
+                    self.assertNotEqual(unsafe_directory.returncode, 0)
+                    self.assertIn(message, unsafe_directory.stderr)
+                    directory.chmod(
+                        original_chains_mode
+                        if directory == chains_dir
+                        else original_edge_mode
+                    )
+
+            config.chmod(0o666)
+            unsafe_mode = self.run_common(edge_env, "gl_assert_edge_launch_context")
+            self.assertNotEqual(unsafe_mode.returncode, 0)
+            self.assertIn("unsafe", unsafe_mode.stderr)
+            config.chmod(0o644)
+
+            victim = root / "victim.json"
+            victim.write_text("do not replace\n", encoding="utf-8")
+            config.unlink()
+            config.symlink_to(victim)
+            unsafe_link = self.run_common(edge_env, "gl_bind_edge_launch_context")
+            self.assertNotEqual(unsafe_link.returncode, 0)
+            self.assertIn("unsafe", unsafe_link.stderr)
+            self.assertEqual(victim.read_text(encoding="utf-8"), "do not replace\n")
+
+            config.unlink()
+            backing = root / "linked-config.json"
+            backing.write_bytes(original)
+            backing.chmod(0o644)
+            os.link(backing, config)
+            unsafe_hardlink = self.run_common(edge_env, "gl_bind_edge_launch_context")
+            self.assertNotEqual(unsafe_hardlink.returncode, 0)
+            self.assertIn("unsafe", unsafe_hardlink.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            canonical_env = canonical_gateway_fingerprint_env(root)
+            self.initialize_canonical(canonical_env)
+            chains_dir = Path(canonical_env["GATEWAY_DIR"]) / "chains"
+            victim_dir = root / "victim-chain"
+            victim_dir.mkdir(mode=0o700)
+            (chains_dir / "edge-b").symlink_to(victim_dir, target_is_directory=True)
+            result = self.run_common(
+                {
+                    **canonical_env,
+                    "EDGE_CHAIN_NAME": "edge-b",
+                    "EDGE_CHAIN_ID": "57058",
+                },
+                "gl_bind_edge_launch_context",
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("chain entry is unsafe", result.stderr)
+            self.assertEqual(list(victim_dir.iterdir()), [])
+
+    def test_additional_edge_binding_is_serialized_by_the_gateway_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            canonical_env = canonical_gateway_fingerprint_env(root)
+            state_file = self.initialize_canonical(canonical_env)
+            state_before = state_file.read_bytes()
+            edge_env = {
+                **canonical_env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+            }
+            ready = root / "lock-ready"
+            holder = subprocess.Popen(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; gl_acquire_gateway_launch_lock; '
+                    'touch "$LOCK_READY"; exec sleep 5',
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={**canonical_env, "LOCK_READY": str(ready)},
+            )
+            try:
+                deadline = time.monotonic() + 2
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "lock holder did not become ready")
+                blocked = self.run_common(edge_env, "gl_bind_edge_launch_context")
+                self.assertNotEqual(blocked.returncode, 0)
+                self.assertIn("could not acquire launch lock", blocked.stderr)
+                self.assertEqual(state_file.read_bytes(), state_before)
+                self.assertFalse(
+                    (Path(canonical_env["GATEWAY_DIR"]) / "chains" / "edge-b").exists()
+                )
+            finally:
+                holder.terminate()
+                holder.communicate(timeout=2)
+
+    def test_edge_only_config_preserves_gateway_and_existing_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway_v32_test"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "cast").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[ \"${1:-}\" = keccak ] || exit 2\n"
+                "printf '%s\\n' "
+                "'0x0000000000000000000000007e5f4552091a69125d5dfcb7b8c2659029395bdf'\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "cast").chmod(0o755)
+            (bin_dir / "yaml.py").write_text(
+                "import json, re\n"
+                "BaseLoader = object\n"
+                "def safe_load(text):\n"
+                "    try:\n"
+                "        return json.loads(text)\n"
+                "    except json.JSONDecodeError:\n"
+                "        result, parents = {}, []\n"
+                "        for line in text.splitlines():\n"
+                "            match = re.fullmatch(r'( *)([A-Za-z0-9_]+):(?:[ \\t]*(.*))?', line)\n"
+                "            if match is None:\n"
+                "                continue\n"
+                "            indent, key, raw = len(match.group(1)), match.group(2), (match.group(3) or '').strip()\n"
+                "            while parents and parents[-1][0] >= indent:\n"
+                "                parents.pop()\n"
+                "            current = result\n"
+                "            for _, parent in parents:\n"
+                "                current = current[parent]\n"
+                "            if not raw:\n"
+                "                current[key] = {}\n"
+                "                parents.append((indent, key))\n"
+                "            else:\n"
+                "                current[key] = raw.strip(chr(39) + chr(34))\n"
+                "        return result\n"
+                "def load(text, Loader=None):\n"
+                "    return safe_load(text)\n"
+                "def safe_dump(value, **kwargs):\n"
+                "    return json.dumps(value)\n",
+                encoding="utf-8",
+            )
+
+            private_key = "0x" + "0" * 63 + "1"
+            execute_address = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+            wallets = {
+                "blob_operator": {"private_key": private_key},
+                "prove_operator": {"private_key": private_key},
+                "execute_operator": {
+                    "address": execute_address,
+                    "private_key": private_key,
+                },
+                "fee_account": {"address": "0x" + "44" * 20},
+            }
+
+            def write_source_chain(name: str, chain_id: int) -> None:
+                chain_dir = gateway_dir / "chains" / name
+                configs = chain_dir / "configs"
+                configs.mkdir(parents=True, exist_ok=True)
+                (chain_dir / "ZkStack.yaml").write_text(
+                    json.dumps({"chain_id": chain_id}), encoding="utf-8"
+                )
+                (configs / "wallets.yaml").write_text(
+                    json.dumps(wallets), encoding="utf-8"
+                )
+                (configs / "contracts.yaml").write_text(
+                    json.dumps({"l2": {}}), encoding="utf-8"
+                )
+                (configs / "genesis.json").write_text("{}\n", encoding="utf-8")
+
+            for chain_name, chain_id in (
+                ("gateway", 57001),
+                ("zksys", 57057),
+                ("edge-b", 57058),
+            ):
+                write_source_chain(chain_name, chain_id)
+            ecosystem_configs = gateway_dir / "configs"
+            ecosystem_configs.mkdir()
+            (ecosystem_configs / "contracts.yaml").write_text(
+                json.dumps(
+                    {
+                        "core_ecosystem_contracts": {
+                            "bridgehub_proxy_addr": "0x" + "11" * 20
+                        },
+                        "zksync_os_ctm": {
+                            "l1_bytecodes_supplier_addr": "0x" + "22" * 20
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            output_root = gateway_dir / "os-server-configs"
+            auth_user = "prover"
+            auth_password = "p" * 32
+
+            def materialized_identity(
+                name: str,
+                rpc_port: int,
+                prover_port: int,
+                status_port: int,
+                prometheus_port: int,
+                domain: str,
+            ) -> None:
+                out = output_root / name
+                out.mkdir(parents=True)
+                config_path = out / "config.yaml"
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "rpc": {"address": f"0.0.0.0:{rpc_port}"},
+                            "prover_api": {
+                                "address": f"127.0.0.1:{prover_port}",
+                                "auth_user": auth_user,
+                                "auth_password": auth_password,
+                            },
+                            "status_server": {
+                                "address": f"0.0.0.0:{status_port}"
+                            },
+                            "observability": {
+                                "prometheus": {"port": prometheus_port}
+                            },
+                        },
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                config_path.chmod(0o600)
+                (out / "prover-api.nginx.conf").write_text(
+                    f"server {{\n    server_name {domain};\n}}\n",
+                    encoding="utf-8",
+                )
+                (out / "preserve.me").write_text(
+                    f"preserve {name}\n", encoding="utf-8"
+                )
+
+            materialized_identity("gateway", 3052, 3124, 3071, 3312, "gw.test")
+            materialized_identity("zksys", 3050, 3125, 3072, 3313, "zksys.test")
+
+            def snapshot(path: Path) -> dict[str, tuple[int, bytes]]:
+                return {
+                    str(item.relative_to(path)): (
+                        stat.S_IMODE(item.lstat().st_mode),
+                        item.read_bytes(),
+                    )
+                    for item in sorted(path.rglob("*"))
+                    if item.is_file() and not item.is_symlink()
+                }
+
+            gateway_before = snapshot(output_root / "gateway")
+            zksys_before = snapshot(output_root / "zksys")
+            canonical_env = canonical_gateway_fingerprint_env(
+                root,
+                PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                PYTHONPATH=str(bin_dir),
+                HOME=str(root),
+                ZKSYNC_OS_SERVER_PATH=str(REPO_ROOT),
+                REQUIRED_ZKSTACK_CLI_SHA=PENDING_V8_MOCK_ZKSTACK_SHA,
+                REQUIRED_CONTRACTS_SHA=PENDING_V8_MOCK_CONTRACTS_SHA,
+                PROVER_API_AUTH_USER=auth_user,
+                PROVER_API_AUTH_PASSWORD=auth_password,
+                GATEWAY_OS_RPC_PORT="3052",
+                GATEWAY_PROVER_API_PORT="3124",
+                GATEWAY_STATUS_PORT="3071",
+                GATEWAY_PROMETHEUS_PORT="3312",
+                GATEWAY_PROVER_API_DOMAIN="gw.test",
+            )
+            self.initialize_canonical(canonical_env)
+            edge_env = {
+                **canonical_env,
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+                "EDGE_OS_RPC_PORT": "4050",
+                "EDGE_PROVER_API_PORT": "4125",
+                "EDGE_STATUS_PORT": "4072",
+                "EDGE_PROMETHEUS_PORT": "4313",
+                "EDGE_PROVER_API_DOMAIN": "edge-b.test",
+            }
+            generator = (
+                REPO_ROOT / "scripts" / "gateway-launch" / "generate-os-server-configs.sh"
+            )
+            generated = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
+            self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
+            self.assertTrue((output_root / "edge-b" / "config.yaml").is_file())
+            combined = (output_root / "prover-api.nginx.conf").read_text(
+                encoding="utf-8"
+            )
+            for domain in ("gw.test", "zksys.test", "edge-b.test"):
+                self.assertIn(domain, combined)
+
+            checked = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+
+            saved_zksys = root / "saved-zksys-materialized"
+            (output_root / "zksys").rename(saved_zksys)
+            missing_canonical = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertNotEqual(missing_canonical.returncode, 0)
+            self.assertIn(
+                "indexed chains are missing materialized OS-server configs: zksys",
+                missing_canonical.stderr,
+            )
+            saved_zksys.rename(output_root / "zksys")
+
+            write_source_chain("edge-c", 57059)
+            saved_edge_b = root / "saved-edge-b-materialized"
+            (output_root / "edge-b").rename(saved_edge_b)
+            missing_prior_edge = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_ID": "57059",
+                    "EDGE_OS_RPC_PORT": "5050",
+                    "EDGE_PROVER_API_PORT": "5125",
+                    "EDGE_STATUS_PORT": "5072",
+                    "EDGE_PROMETHEUS_PORT": "5313",
+                    "EDGE_PROVER_API_DOMAIN": "edge-c.test",
+                },
+            )
+            self.assertNotEqual(missing_prior_edge.returncode, 0)
+            self.assertIn(
+                "indexed chains are missing materialized OS-server configs: edge-b",
+                missing_prior_edge.stderr,
+            )
+            saved_edge_b.rename(output_root / "edge-b")
+            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+
+            gateway_config_path = output_root / "gateway" / "config.yaml"
+            gateway_config_bytes = gateway_config_path.read_bytes()
+            gateway_config_path.chmod(0o644)
+            exposed_secret = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertNotEqual(exposed_secret.returncode, 0)
+            self.assertIn("secret config has unsafe", exposed_secret.stderr)
+            gateway_config_path.chmod(0o600)
+
+            gateway_config_data = json.loads(gateway_config_bytes)
+            gateway_config_data["prover_api"].pop("auth_user")
+            gateway_config_data["prover_api"].pop("auth_password")
+            gateway_config_path.write_text(
+                json.dumps(gateway_config_data, sort_keys=True), encoding="utf-8"
+            )
+            gateway_config_path.chmod(0o600)
+            stale_nginx = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertNotEqual(stale_nginx.returncode, 0)
+            self.assertIn("auth/nginx fragment mismatch", stale_nginx.stderr)
+            gateway_config_path.write_bytes(gateway_config_bytes)
+            gateway_config_path.chmod(0o600)
+
+            zksys_config_path = output_root / "zksys" / "config.yaml"
+            zksys_config_bytes = zksys_config_path.read_bytes()
+            zksys_config_data = json.loads(zksys_config_bytes)
+            zksys_config_data["rpc"]["address"] = "0.0.0.0:3052"
+            zksys_config_path.write_text(
+                json.dumps(zksys_config_data, sort_keys=True), encoding="utf-8"
+            )
+            zksys_config_path.chmod(0o600)
+            preexisting_collision = subprocess.run(
+                [str(generator), "--check-only", "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertNotEqual(preexisting_collision.returncode, 0)
+            self.assertIn("listener collision", preexisting_collision.stderr)
+            zksys_config_path.write_bytes(zksys_config_bytes)
+            zksys_config_path.chmod(0o600)
+
+            gateway_fragment = output_root / "gateway" / "prover-api.nginx.conf"
+            gateway_fragment_bytes = gateway_fragment.read_bytes()
+            gateway_fragment.write_text(
+                gateway_fragment_bytes.decode("utf-8").replace(
+                    "server_name gw.test;",
+                    "server_name gw.test shared.test;",
+                ),
+                encoding="utf-8",
+            )
+            write_source_chain("edge-multi-domain", 57062)
+            multi_name_collision = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-multi-domain",
+                    "EDGE_CHAIN_ID": "57062",
+                    "EDGE_OS_RPC_PORT": "7050",
+                    "EDGE_PROVER_API_PORT": "7125",
+                    "EDGE_STATUS_PORT": "7072",
+                    "EDGE_PROMETHEUS_PORT": "7313",
+                    "EDGE_PROVER_API_DOMAIN": "shared.test",
+                },
+            )
+            self.assertNotEqual(multi_name_collision.returncode, 0)
+            self.assertIn("domain collision", multi_name_collision.stderr)
+            gateway_fragment.write_bytes(gateway_fragment_bytes)
+            shutil.rmtree(gateway_dir / "chains" / "edge-multi-domain")
+
+            full_before = snapshot(output_root)
+            canonical_port_collision = subprocess.run(
+                [str(generator)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**canonical_env, "GATEWAY_OS_RPC_PORT": "4050"},
+            )
+            self.assertNotEqual(canonical_port_collision.returncode, 0)
+            self.assertIn("listener collision", canonical_port_collision.stderr)
+            self.assertEqual(snapshot(output_root), full_before)
+
+            gateway_config_data = json.loads(gateway_config_bytes)
+            gateway_config_data["prover_api"].pop("auth_user")
+            gateway_config_data["prover_api"].pop("auth_password")
+            gateway_config_path.write_text(
+                json.dumps(gateway_config_data, sort_keys=True), encoding="utf-8"
+            )
+            gateway_config_path.chmod(0o600)
+            mixed_profile_before = snapshot(output_root)
+            mixed_profile = subprocess.run(
+                [str(generator)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **canonical_env,
+                    "PROVER_API_AUTH_USER": "",
+                    "PROVER_API_AUTH_PASSWORD": "",
+                },
+            )
+            self.assertNotEqual(mixed_profile.returncode, 0)
+            self.assertIn("mixed prover API authentication profiles", mixed_profile.stderr)
+            self.assertEqual(snapshot(output_root), mixed_profile_before)
+            gateway_config_path.write_bytes(gateway_config_bytes)
+            gateway_config_path.chmod(0o600)
+
+            edge_config = output_root / "edge-b" / "config.yaml"
+            expected_edge_config = edge_config.read_bytes()
+            edge_config.write_bytes(expected_edge_config + b"# drift\n")
+            drifted = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=edge_env,
+            )
+            self.assertNotEqual(drifted.returncode, 0)
+            self.assertIn("differs from effective inputs", drifted.stderr)
+            self.assertEqual(
+                edge_config.read_bytes(), expected_edge_config + b"# drift\n"
+            )
+            edge_config.write_bytes(expected_edge_config)
+
+            write_source_chain("edge-c", 57059)
+            collision = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_ID": "57059",
+                    "EDGE_PROVER_API_DOMAIN": "edge-c.test",
+                },
+            )
+            self.assertNotEqual(collision.returncode, 0)
+            self.assertIn("listener collision", collision.stderr)
+            self.assertFalse((output_root / "edge-c").exists())
+            self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
+            self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
+            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+
+            write_source_chain("edge-domain", 57061)
+            domain_collision = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-domain",
+                    "EDGE_CHAIN_ID": "57061",
+                    "EDGE_OS_RPC_PORT": "6050",
+                    "EDGE_PROVER_API_PORT": "6125",
+                    "EDGE_STATUS_PORT": "6072",
+                    "EDGE_PROMETHEUS_PORT": "6313",
+                    "EDGE_PROVER_API_DOMAIN": "gw.test",
+                },
+            )
+            self.assertNotEqual(domain_collision.returncode, 0)
+            self.assertIn("domain collision", domain_collision.stderr)
+            self.assertFalse((output_root / "edge-domain").exists())
+            shutil.rmtree(gateway_dir / "chains" / "edge-domain")
+
+            aggregate_path = output_root / "prover-api.nginx.conf"
+            aggregate_path.write_text("stale aggregate\n", encoding="utf-8")
+            aggregate_path.chmod(0o644)
+            gateway_only = subprocess.run(
+                [str(generator)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**canonical_env, "MATERIALIZE_EDGE_CONFIG": "false"},
+            )
+            self.assertEqual(gateway_only.returncode, 0, gateway_only.stderr)
+            gateway_only_aggregate = aggregate_path.read_text(encoding="utf-8")
+            for domain in ("gw.test", "zksys.test", "edge-b.test"):
+                self.assertIn(domain, gateway_only_aggregate)
+
+            write_source_chain("edge-d", 57060)
+            victim = root / "config-victim"
+            victim.mkdir()
+            (victim / "untouched").write_text("untouched\n", encoding="utf-8")
+            (output_root / "edge-d").symlink_to(victim, target_is_directory=True)
+            unsafe = subprocess.run(
+                [str(generator), "--edge-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **edge_env,
+                    "EDGE_CHAIN_NAME": "edge-d",
+                    "EDGE_CHAIN_ID": "57060",
+                    "EDGE_OS_RPC_PORT": "5050",
+                    "EDGE_PROVER_API_PORT": "5125",
+                    "EDGE_STATUS_PORT": "5072",
+                    "EDGE_PROMETHEUS_PORT": "5313",
+                    "EDGE_PROVER_API_DOMAIN": "edge-d.test",
+                },
+            )
+            self.assertNotEqual(unsafe.returncode, 0)
+            self.assertIn("directory is unsafe", unsafe.stderr)
+            self.assertEqual(
+                (victim / "untouched").read_text(encoding="utf-8"), "untouched\n"
+            )
+
+
 class LauncherStaticTests(unittest.TestCase):
+    def test_forge_inspect_artifacts_never_write_to_reviewed_source(self) -> None:
+        launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
+        for script_name, function_name, cache_var in (
+            (
+                "gateway-deploy-l1.sh",
+                "forge_inspect_zksys_bytecode",
+                "gateway_deploy_forge_inspect_dir",
+            ),
+            (
+                "zksys-l2-bootstrap.sh",
+                "forge_inspect_bytecode",
+                "zksys_bootstrap_forge_inspect_dir",
+            ),
+        ):
+            with self.subTest(script=script_name):
+                script = (launch_dir / script_name).read_text(encoding="utf-8")
+                start = script.index(f"{function_name}() {{")
+                function = script[start : script.index("\n}", start)]
+                self.assertIn(
+                    f'{cache_var}="$(gl_create_forge_inspect_artifacts_dir)"',
+                    script,
+                )
+                self.assertNotIn("gl_create_forge_inspect_artifacts_dir", function)
+                self.assertIn(f'local inspect_artifacts_dir="${{{cache_var}}}"', function)
+                self.assertIn("gl_remove_forge_inspect_artifacts_dir", script)
+                self.assertIn('--out "${inspect_artifacts_dir}/out"', function)
+                self.assertIn(
+                    '--cache-path "${inspect_artifacts_dir}/cache"', function
+                )
+                self.assertNotIn('--out "${ZKSYNC_OS_SERVER_PATH}', function)
+                self.assertNotIn('--cache-path "${ZKSYNC_OS_SERVER_PATH}', function)
+                self.assertNotIn('--out "${inspect_dir}', function)
+                self.assertNotIn('--cache-path "${inspect_dir}', function)
+
+        common = GATEWAY_COMMON.read_text(encoding="utf-8")
+        helper_start = common.index("gl_create_forge_inspect_artifacts_dir() {")
+        helper = common[helper_start : common.index("\n}", helper_start)]
+        self.assertIn('tempfile.mkdtemp(prefix="forge-inspect-", dir=state_dir)', helper)
+        self.assertIn("stat.S_IMODE(info.st_mode) & 0o077", helper)
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            env = {
+                "PATH": os.environ["PATH"],
+                "COMMON": str(GATEWAY_COMMON),
+                "GATEWAY_DIR": str(Path(temporary_dir) / "gateway"),
+            }
+            created = []
+            for _ in range(2):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; gl_create_forge_inspect_artifacts_dir',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                path = Path(result.stdout.strip())
+                created.append(path)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+                for child in (path / "out", path / "cache"):
+                    self.assertTrue(child.is_dir())
+                    self.assertEqual(stat.S_IMODE(child.stat().st_mode), 0o700)
+            self.assertNotEqual(created[0], created[1])
+            for path in created:
+                removed = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; '
+                        'gl_remove_forge_inspect_artifacts_dir "$FORGE_DIR"',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**env, "FORGE_DIR": str(path)},
+                )
+                self.assertEqual(removed.returncode, 0, removed.stderr)
+                self.assertFalse(path.exists())
+
     def test_zkstack_generated_signers_never_enter_forge_argv(self) -> None:
         patch_path = (
             REPO_ROOT / "scripts" / "patches" / "zksync-era-syscoin.patch"
@@ -1369,7 +2299,10 @@ gl_ensure_zksync_era_workspace
                     "EDGE_PROVER_MODE": "gpu",
                 },
                 {"GATEWAY_SETTLEMENT_FEE": "-1"},
+                {"GATEWAY_SETTLEMENT_FEE": "0"},
+                {"GATEWAY_SETTLEMENT_FEE": "0x0"},
                 {"GATEWAY_SETTLEMENT_FEE": str(1 << 256)},
+                {"GATEWAY_INTEROP_FEE_USD": "0"},
                 {
                     "GATEWAY_INTEROP_FEE_USD": str(1 << 256),
                     "NATIVE_TOKEN_PRICE_USD": "1",
@@ -1415,6 +2348,24 @@ gl_ensure_zksync_era_workspace
                         env={**base_env, **invalid},
                     )
                     self.assertNotEqual(result.returncode, 0)
+
+            unbound = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; gl_checkpoint_state_init; '
+                    "gl_checkpoint_assert_fingerprint_matches",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **base_env,
+                    "GATEWAY_DIR": str(Path(temporary_dir) / "unbound_gateway"),
+                },
+            )
+            self.assertNotEqual(unbound.returncode, 0)
+            self.assertIn("checkpoint fingerprint is not initialized", unbound.stderr)
 
             mismatch = subprocess.run(
                 [
@@ -2319,6 +3270,7 @@ gl_checkpoint_assert_fingerprint_matches
             "0x3b2e17477401a6d3df4356c346fdc18278330bbefca56154a81da87cbfd44bf2",
             "0x4c86ffe57098cb09a48ee6dfa4f21b2cce8e327409e1da1dc6be4545220b89e0",
             "relay artifact is missing, not regular, or a symlink",
+            "GATEWAY_SETTLEMENT_FEE must be non-zero",
         ):
             self.assertIn(expected, settlement)
         self.assertLess(
@@ -2335,6 +3287,10 @@ gl_checkpoint_assert_fingerprint_matches
         )
         self.assertLess(
             settlement.index("actual_hash != expected_hash"),
+            settlement.index("zkstack chain gateway create-tx-filterer"),
+        )
+        self.assertLess(
+            settlement.index("if fee <= 0:"),
             settlement.index("zkstack chain gateway create-tx-filterer"),
         )
         self.assertEqual(settlement.count("gl_assert_era_contracts_syscoin_postimage"), 2)
@@ -4058,6 +5014,447 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             genesis_identity.rindex("gl_assert_gateway_listener_owned_by_pid"),
             genesis_identity.index("GATEWAY_GENESIS_STAMP="),
         )
+
+    def test_pending_migration_preflight_precedes_checkpoint_transition(self) -> None:
+        launcher = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
+        ).read_text(encoding="utf-8")
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        begin_start = launcher.index("begin_pending_migration() {")
+        begin_end = launcher.index(
+            "\n}\n\ninstall_gateway_migration_cleanup_traps", begin_start
+        ) + 2
+        begin_function = launcher[begin_start:begin_end]
+        self.assertLess(
+            begin_function.index("gateway_acquire_execute_operator_lock"),
+            begin_function.index("run_migrate_edge_preflight"),
+        )
+        self.assertLess(
+            begin_function.index("run_migrate_edge_preflight"),
+            begin_function.index('gl_checkpoint_mark_in_progress "gl.migration"'),
+        )
+        self.assertIn("stop_gateway_for_migration", begin_function)
+        self.assertIn("--check-only|--preflight", migration)
+        preflight_exit = migration.index(
+            'if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then\n'
+            '  echo "gateway-launch: read-only migration prerequisites'
+        )
+        for prerequisite in (
+            "gl_assert_edge_launch_context",
+            "gl_assert_gateway_runtime_identity",
+            "gl_assert_gateway_wrapped_base_token_pin",
+            "gl_probe_chain_contracts_schema_ready",
+            "gl_assert_edge_chain_admin_owned_by_configured_governor",
+            "gl_authenticate_chain_wallet_roles",
+            "configure_gateway_rpc_url_in_chain_secrets",
+            'l1_da_validator_addr="$(get_l1_da_validator_for_edge',
+            "--preflight-fee-target",
+        ):
+            self.assertLess(migration.index(prerequisite), preflight_exit)
+
+        validate_inputs = migration.index("\nvalidate_migration_config_inputs\n")
+        self.assertLess(validate_inputs, preflight_exit)
+        self.assertIn("--validate-config-only", migration[:preflight_exit])
+        self.assertIn("gl_validate_funder_signer_config", migration[:preflight_exit])
+        signer_identity = migration.index("\n  assert_gateway_governor_signer_identity\n")
+        self.assertLess(signer_identity, preflight_exit)
+        fee_target_preflight = migration.index(
+            '"${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" '
+            "--preflight-fee-target"
+        )
+        self.assertLess(fee_target_preflight, signer_identity)
+        self.assertLess(
+            fee_target_preflight,
+            migration.index("zkstack chain pause-deposits"),
+        )
+        self.assertIn(
+            'if [ "${MIGRATION_CHECK_ONLY}" != true ]; then',
+            migration[fee_target_preflight - 500 : signer_identity],
+        )
+
+        def run_begin(
+            preflight_rc: int, acquire_rc: int = 0
+        ) -> subprocess.CompletedProcess[str]:
+            harness = textwrap.dedent(
+                f"""
+                set -u
+                events=()
+                EDGE_CHAIN_NAME=zksys
+                GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+                gateway_acquire_execute_operator_lock() {{ events+=(lock); return "$ACQUIRE_RC"; }}
+                gateway_release_execute_operator_lock() {{ events+=(release); return 0; }}
+                run_migrate_edge_preflight() {{ events+=(preflight); return "$PREFLIGHT_RC"; }}
+                gl_checkpoint_mark_in_progress() {{ events+=("mark:$1"); return 0; }}
+                stop_gateway_for_migration() {{ events+=(stop); return 0; }}
+                {begin_function}
+                begin_pending_migration
+                rc=$?
+                printf 'rc=%s\\n' "$rc"
+                printf '%s\\n' "${{events[@]}}"
+                """
+            )
+            return subprocess.run(
+                ["bash", "-c", harness],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "PREFLIGHT_RC": str(preflight_rc),
+                    "ACQUIRE_RC": str(acquire_rc),
+                },
+            )
+
+        failed = run_begin(23)
+        self.assertEqual(failed.returncode, 0, failed.stderr)
+        self.assertEqual(
+            failed.stdout.splitlines(),
+            ["rc=23", "lock", "preflight", "release", "stop"],
+        )
+        lock_failed = run_begin(0, 29)
+        self.assertEqual(lock_failed.returncode, 0, lock_failed.stderr)
+        self.assertEqual(
+            lock_failed.stdout.splitlines(),
+            ["rc=29", "lock", "release", "stop"],
+        )
+        passed = run_begin(0)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertEqual(
+            passed.stdout.splitlines(),
+            ["rc=0", "lock", "preflight", "mark:gl.migration"],
+        )
+
+    def test_migration_gateway_rpc_secret_policies_are_read_only_and_exact(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("configure_gateway_rpc_url_in_chain_secrets() {")
+        end = migration.index(
+            '\n}\n\nif [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then', start
+        ) + 2
+        function = migration[start:end]
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            module_dir = root / "python"
+            module_dir.mkdir()
+            (module_dir / "yaml.py").write_text(
+                "import json\n"
+                "def safe_load(text): return json.loads(text)\n"
+                "def safe_dump(value, **kwargs): return json.dumps(value) + '\\n'\n",
+                encoding="utf-8",
+            )
+            secrets = root / "chains" / "zksys" / "configs" / "secrets.yaml"
+            secrets.parent.mkdir(parents=True)
+            secrets.write_text(json.dumps({"l1": {}}) + "\n", encoding="utf-8")
+            secrets.chmod(0o600)
+            expected_url = "http://127.0.0.1:3052"
+
+            def run(policy: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        function
+                        + "\nconfigure_gateway_rpc_url_in_chain_secrets "
+                        + 'zksys "$EXPECTED_URL" "$POLICY"',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "GATEWAY_DIR": str(root),
+                        "EXPECTED_URL": expected_url,
+                        "POLICY": policy,
+                        "PYTHONPATH": str(module_dir),
+                    },
+                )
+
+            missing_bytes = secrets.read_bytes()
+            missing_mtime = secrets.stat().st_mtime_ns
+            preflight = run("preflight")
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            self.assertEqual(secrets.read_bytes(), missing_bytes)
+            self.assertEqual(secrets.stat().st_mtime_ns, missing_mtime)
+
+            secrets.chmod(0o400)
+            readonly_preflight = run("preflight")
+            self.assertEqual(
+                readonly_preflight.returncode, 0, readonly_preflight.stderr
+            )
+            written = run("write")
+            self.assertEqual(written.returncode, 0, written.stderr)
+            self.assertEqual(stat.S_IMODE(secrets.stat().st_mode), 0o600)
+            self.assertEqual(
+                json.loads(secrets.read_text(encoding="utf-8"))["l1"][
+                    "gateway_rpc_url"
+                ],
+                expected_url,
+            )
+
+            secrets.write_bytes(missing_bytes)
+            secrets.chmod(0o600)
+            original_parent_mode = stat.S_IMODE(secrets.parent.stat().st_mode)
+            for mode in (0o500, 0o775):
+                with self.subTest(unsafe_parent_mode=oct(mode)):
+                    secrets.parent.chmod(mode)
+                    unsafe_parent = run("preflight")
+                    self.assertNotEqual(unsafe_parent.returncode, 0)
+                    self.assertIn("unsafe secrets config directory", unsafe_parent.stderr)
+                    self.assertEqual(secrets.read_bytes(), missing_bytes)
+            secrets.parent.chmod(original_parent_mode)
+
+            exact_missing = run("exact")
+            self.assertNotEqual(exact_missing.returncode, 0)
+            self.assertIn("missing l1.gateway_rpc_url", exact_missing.stderr)
+            self.assertEqual(secrets.read_bytes(), missing_bytes)
+
+            secrets.write_text(
+                json.dumps({"l1": {"gateway_rpc_url": "http://wrong:3052"}})
+                + "\n",
+                encoding="utf-8",
+            )
+            secrets.chmod(0o600)
+            mismatched_bytes = secrets.read_bytes()
+            for policy in ("preflight", "exact"):
+                with self.subTest(policy=policy):
+                    mismatched = run(policy)
+                    self.assertNotEqual(mismatched.returncode, 0)
+                    self.assertIn("Gateway RPC URL mismatch", mismatched.stderr)
+                    self.assertEqual(secrets.read_bytes(), mismatched_bytes)
+
+            secrets.write_text(
+                json.dumps({"l1": {"gateway_rpc_url": expected_url + " "}})
+                + "\n",
+                encoding="utf-8",
+            )
+            secrets.chmod(0o600)
+            whitespace_mismatch = run("exact")
+            self.assertNotEqual(whitespace_mismatch.returncode, 0)
+            self.assertIn("Gateway RPC URL mismatch", whitespace_mismatch.stderr)
+
+            secrets.write_text(
+                json.dumps({"l1": {"gateway_rpc_url": expected_url}}) + "\n",
+                encoding="utf-8",
+            )
+            secrets.chmod(0o600)
+            exact_bytes = secrets.read_bytes()
+            exact_mtime = secrets.stat().st_mtime_ns
+            exact = run("exact")
+            self.assertEqual(exact.returncode, 0, exact.stderr)
+            self.assertEqual(secrets.read_bytes(), exact_bytes)
+            self.assertEqual(secrets.stat().st_mtime_ns, exact_mtime)
+
+    def test_migration_preflight_rejects_wrong_account_or_keystore_governor(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        signer_config = extract(
+            "gateway_governor_signer() {",
+            "\nvalidate_migration_config_inputs() {",
+        )
+        prepare = extract(
+            "prepare_gateway_governor_forge_wallet_args() {",
+            "\nassert_gateway_governor_signer_identity() {",
+        )
+        identity = extract(
+            "assert_gateway_governor_signer_identity() {",
+            "\nget_l1_bridgehub_proxy_addr() {",
+        )
+        expected = "0x" + "11" * 20
+        wrong = "0x" + "22" * 20
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "cast").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "[ \"${1:-} ${2:-}\" = \"wallet address\" ] || exit 2\n"
+                "printf '%s\\n' \"$TEST_SIGNER_ADDRESS\"\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "cast").chmod(0o755)
+            account = root / ".foundry" / "keystores" / "funder"
+            account.parent.mkdir(parents=True)
+            account.write_text("{}\n", encoding="utf-8")
+            account.chmod(0o600)
+            keystore = root / "governor.json"
+            keystore.write_text("{}\n", encoding="utf-8")
+            keystore.chmod(0o600)
+            harness = (
+                'source "$COMMON"\n'
+                + signer_config
+                + "\n"
+                + prepare
+                + "\n"
+                + identity
+                + '\nget_chain_governor_from_wallets() { printf \'%s\\n\' "$EXPECTED_GOVERNOR"; }\n'
+                + "assert_gateway_governor_signer_identity\n"
+            )
+
+            for signer, overrides in (
+                ("account", {"FUNDER_SIGNER": "account"}),
+                (
+                    "keystore",
+                    {
+                        "EDGE_GATEWAY_GOVERNOR_SIGNER": "keystore",
+                        "EDGE_GATEWAY_GOVERNOR_KEYSTORE": str(keystore),
+                    },
+                ),
+            ):
+                with self.subTest(signer=signer):
+                    env = {
+                        **os.environ,
+                        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                        "HOME": str(root),
+                        "COMMON": str(GATEWAY_COMMON),
+                        "EDGE_CHAIN_NAME": "zksys",
+                        "L1_NETWORK": "tanenbaum",
+                        "EXPECTED_GOVERNOR": expected,
+                        "TEST_SIGNER_ADDRESS": wrong,
+                        **overrides,
+                    }
+                    mismatch = subprocess.run(
+                        ["bash", "-c", harness],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(mismatch.returncode, 0)
+                    self.assertIn("Gateway governor signer mismatch", mismatch.stderr)
+
+                    matched = subprocess.run(
+                        ["bash", "-c", harness],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={**env, "TEST_SIGNER_ADDRESS": expected},
+                    )
+                    self.assertEqual(matched.returncode, 0, matched.stderr)
+
+    def test_migration_preflight_validates_funder_separately_from_governor(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            account = root / ".foundry" / "keystores" / "funder"
+            account.parent.mkdir(parents=True)
+            account.write_text("{}\n", encoding="utf-8")
+            account.chmod(0o600)
+            password = root / "password"
+            password.write_text("", encoding="utf-8")
+            password.chmod(0o600)
+            base_env = {
+                "PATH": os.environ["PATH"],
+                "HOME": str(root),
+                "COMMON": str(GATEWAY_COMMON),
+                "L1_NETWORK": "tanenbaum",
+                "EDGE_GATEWAY_GOVERNOR_SIGNER": "account",
+                "FUNDER_SIGNER": "account",
+                "FUNDER_ACCOUNT_NAME": "funder",
+                "FUNDER_PASSWORD_FILE": str(password),
+            }
+
+            def validate(**overrides: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; gl_validate_funder_signer_config',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**base_env, **overrides},
+                )
+
+            valid = validate()
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            for overrides, message in (
+                ({"FUNDER_SIGNER": "bogus"}, "unsupported FUNDER_SIGNER"),
+                (
+                    {"FUNDER_ACCOUNT_NAME": "missing"},
+                    "FUNDER_ACCOUNT_NAME keystore does not exist",
+                ),
+                (
+                    {
+                        "FUNDER_SIGNER": "keystore",
+                        "FUNDER_KEYSTORE": str(root / "missing-keystore"),
+                    },
+                    "FUNDER_KEYSTORE does not exist",
+                ),
+                (
+                    {"FUNDER_PASSWORD_FILE": str(root / "missing-password")},
+                    "FUNDER_PASSWORD_FILE does not exist",
+                ),
+            ):
+                with self.subTest(overrides=overrides):
+                    invalid = validate(**overrides)
+                    self.assertNotEqual(invalid.returncode, 0)
+                    self.assertIn(message, invalid.stderr)
+
+    def test_full_launcher_rejects_noncanonical_edge_before_state_creation(
+        self,
+    ) -> None:
+        launcher = REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
+        launcher_text = launcher.read_text(encoding="utf-8")
+        guard = launcher_text.index(
+            'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"'
+        )
+        self.assertLess(guard, launcher_text.index("gl_resolve_gateway_dir planned"))
+        self.assertLess(guard, launcher_text.index("gl_acquire_gateway_launch_lock"))
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            env = canonical_gateway_fingerprint_env(
+                root,
+                HOME=str(root),
+                EDGE_CHAIN_NAME="edge-b",
+                EDGE_CHAIN_ID="57058",
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$COMMON"; gl_is_canonical_edge_context || '
+                    'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "requires canonical edge zksys/57057",
+                result.stdout + result.stderr,
+            )
+            self.assertFalse(Path(env["GATEWAY_DIR"]).exists())
+            self.assertFalse((root / ".gateway-launch-state").exists())
 
     def test_gateway_launcher_rejects_unsupported_stop_boundary_early(self) -> None:
         launcher = (

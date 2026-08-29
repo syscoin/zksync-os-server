@@ -52,7 +52,7 @@ fi
 gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_network_pair
-gl_bind_gateway_launch_context
+gl_bind_edge_launch_context
 gl_l1_broadcast_preflight
 
 # SYSCOIN: This helper is also used directly for additional edges and by the
@@ -262,7 +262,9 @@ if [ "${EDGE_WALLET_CREATION}" = "random" ] &&
 fi
 
 if [ "${SKIP_FUND}" != "true" ]; then
-  GATEWAY_CHAIN_NAME="${EDGE_CHAIN_NAME}" "${SCRIPT_DIR}/fund-wallets.sh"
+  GATEWAY_FUND_EDGE_CONTEXT=true \
+    GATEWAY_FUND_TARGET_CHAIN_NAME="${EDGE_CHAIN_NAME}" \
+    "${SCRIPT_DIR}/fund-wallets.sh"
 else
   echo "gateway-launch: SKIP_FUND=true, skipping edge wallet funding"
 fi

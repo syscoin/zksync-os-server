@@ -7,11 +7,19 @@ source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 MIGRATION_CHECK_ONLY=false
+MIGRATION_PREFLIGHT_ONLY=false
 if [ "${1:-}" = "--check-only" ]; then
   MIGRATION_CHECK_ONLY=true
   shift
+elif [ "${1:-}" = "--preflight" ]; then
+  MIGRATION_PREFLIGHT_ONLY=true
+  shift
 fi
-[ "$#" -eq 0 ] || gl_die "usage: edge-chain-migrate-to-gateway.sh [--check-only]"
+[ "$#" -eq 0 ] || gl_die "usage: edge-chain-migrate-to-gateway.sh [--check-only|--preflight]"
+MIGRATION_READ_ONLY=false
+if [ "${MIGRATION_CHECK_ONLY}" = true ] || [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  MIGRATION_READ_ONLY=true
+fi
 gl_require ZKSYNC_ERA_PATH
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
@@ -35,6 +43,146 @@ cd "${GATEWAY_DIR}"
 gl_normalize_canonical_deployment_inputs
 gl_validate_l1_network_pair
 
+gateway_governor_signer() {
+  gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-${FUNDER_SIGNER:-account}}"
+}
+
+validate_gateway_governor_signer_config() {
+  local governor_signer account_name keystore_path password_file
+  governor_signer="$(gateway_governor_signer)" || return $?
+
+  if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
+    echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
+    return 1
+  fi
+
+  case "${governor_signer}" in
+  generated | generated-wallet | wallet)
+    password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+    [ -n "${password_file}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE or FUNDER_PASSWORD_FILE is required for a generated-governor keystore" >&2
+      return 1
+    }
+    gl_validate_secret_file "${password_file}" "generated-governor password file"
+    command -v expect >/dev/null 2>&1 || {
+      echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
+      return 1
+    }
+    command -v cast >/dev/null 2>&1 || {
+      echo "gateway-launch: cast is required to import the generated governor key" >&2
+      return 1
+    }
+    ;;
+  account)
+    account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
+    [ -n "${account_name}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME must not be empty" >&2
+      return 1
+    }
+    gl_validate_foundry_account_keystore \
+      "${account_name}" "EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME"
+    ;;
+  keystore)
+    keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
+    [ -n "${keystore_path}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore" >&2
+      return 1
+    }
+    gl_validate_secret_file "${keystore_path}" "governor keystore"
+    ;;
+  ledger | trezor | aws | gcp) ;;
+  private-key)
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_SIGNER=private-key is not allowed on ${L1_NETWORK}; use a Foundry account/keystore, hardware wallet, or KMS signer" >&2
+      return 1
+    fi
+    if [ -z "${FUNDER_PRIVATE_KEY:-}" ] && gl_l1_network_requires_external_signer; then
+      echo "gateway-launch: FUNDER_PRIVATE_KEY is required when inheriting EDGE_GATEWAY_GOVERNOR_SIGNER=private-key from FUNDER_SIGNER=private-key" >&2
+      return 1
+    fi
+    ;;
+  *)
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected generated, account, keystore, ledger, trezor, aws, gcp, or private-key" >&2
+    return 1
+    ;;
+  esac
+
+  password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+  if [ -n "${password_file}" ]; then
+    gl_validate_secret_file "${password_file}" "governor password file"
+  fi
+}
+
+validate_migration_config_inputs() {
+  local sender_min_balance
+  sender_min_balance="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
+  # SYSCOIN: Parse every config-only value before gl.migration can advance.
+  # Later repair/finalization paths consume only these already-validated shapes.
+  python3 - \
+    "${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "${GATEWAY_FUND_GOVERNOR_BALANCE_WEI:-11000000000000000000}" \
+    "${sender_min_balance}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY:-5}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY:-5}" \
+    "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:-4}" \
+    "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY:-2}" \
+    "${GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY:-5}" <<'PY' || return $?
+import sys
+
+UINT256_MAX = 2**256 - 1
+
+def uint(raw: str, label: str, maximum: int) -> int:
+    raw = raw.strip()
+    try:
+        value = int(raw, 16 if raw.lower().startswith("0x") else 10)
+    except ValueError:
+        raise SystemExit(f"invalid {label}: {raw!r}") from None
+    if not 0 < value <= maximum:
+        raise SystemExit(f"{label} must be between 1 and {maximum}")
+    return value
+
+for raw, label in zip(
+    sys.argv[1:4],
+    (
+        "GATEWAY_MAX_L1_GAS_PRICE",
+        "GATEWAY_FUND_GOVERNOR_BALANCE_WEI",
+        "GATEWAY_SENDER_MIN_BALANCE_WEI",
+    ),
+):
+    uint(raw, label, UINT256_MAX)
+waits = (
+    ("GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY", 86_400),
+    ("GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY", 86_400),
+    ("GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY", 86_400),
+    ("GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY", 86_400),
+)
+for raw, (label, maximum) in zip(sys.argv[4:], waits):
+    uint(raw, label, maximum)
+PY
+  "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --validate-config-only || return $?
+  if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+    gl_validate_funder_signer_config || return $?
+    validate_gateway_governor_signer_config || return $?
+    command -v expect >/dev/null 2>&1 || {
+      echo "gateway-launch: expect is required for settlement-fee payer provisioning" >&2
+      return 1
+    }
+    command -v openssl >/dev/null 2>&1 || {
+      echo "gateway-launch: openssl is required for settlement-fee payer provisioning" >&2
+      return 1
+    }
+  fi
+}
+
+validate_migration_config_inputs
+
 # SYSCOIN: These identities are compiled into the current guest and native server. A production
 # deployment with different governance or salts must regenerate and repin all three atomically.
 readonly SYSCOIN_COMPACT_EDGE_DA_RELAY="0x758b06cda80bdd016f79afd0df1a984039067a21"
@@ -53,10 +201,13 @@ if [ -n "${L2_BRIDGEHUB_ADDRESS:-}" ]; then
 fi
 readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
 
-# SYSCOIN: Direct migration entry points must bind to the exact fresh Gateway
-# deployment before acquiring its shared execute-operator nonce lock or mutating state.
-if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
-  gl_bind_gateway_launch_context
+# SYSCOIN: Direct migration entry points bind the exact edge context before
+# acquiring its shared nonce lock or mutating state. Read-only validation only
+# asserts the existing canonical fingerprint and zkstack edge index.
+if [ "${MIGRATION_READ_ONLY}" = true ]; then
+  gl_assert_edge_launch_context
+else
+  gl_bind_edge_launch_context
 fi
 gl_assert_gateway_runtime_identity
 gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"
@@ -65,13 +216,13 @@ gl_assert_edge_chain_config_matches_expected
 # SYSCOIN: V32 nodes do not support live settlement-layer migration. Take the
 # execute-operator/Gateway nonce lock before any migration/admin work and retain
 # it through fee-payer provisioning and deposit unpause.
-if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+if [ "${MIGRATION_READ_ONLY}" != true ]; then
   gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
 fi
 
 gl_l1_broadcast_preflight
 
-if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
+if [ "${MIGRATION_READ_ONLY}" = true ]; then
   gl_probe_chain_contracts_schema_ready "${EDGE_CHAIN_NAME}" ||
     gl_die "edge contracts config is not ready for read-only migration validation"
   gl_probe_chain_contracts_schema_ready "${GATEWAY_CHAIN_NAME}" ||
@@ -90,22 +241,70 @@ gl_authenticate_chain_wallet_roles \
   prove_operator \
   execute_operator
 
-ensure_gateway_rpc_url_in_chain_secrets() {
+configure_gateway_rpc_url_in_chain_secrets() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc_url="${2:?gateway rpc url required}"
-  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/secrets.yaml" "${gateway_rpc_url}" <<'PY'
+  local policy="${3:?secrets policy required}"
+  local secrets_path="${GATEWAY_DIR}/chains/${chain_name}/configs/secrets.yaml"
+  case "${policy}" in
+  preflight | write | exact) ;;
+  *) gl_die "invalid Gateway RPC secrets policy: ${policy}" ;;
+  esac
+  python3 - "${secrets_path}" "${gateway_rpc_url}" "${policy}" <<'PY'
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 import yaml
 
 secrets_path = Path(sys.argv[1])
-gateway_rpc_url = sys.argv[2].strip()
-if gateway_rpc_url == "":
+gateway_rpc_url = sys.argv[2]
+policy = sys.argv[3]
+if gateway_rpc_url == "" or gateway_rpc_url != gateway_rpc_url.strip():
     raise SystemExit("empty gateway rpc url")
-if not secrets_path.exists():
+try:
+    parent_info = secrets_path.parent.lstat()
+except FileNotFoundError:
+    raise SystemExit(f"missing secrets config directory: {secrets_path.parent}")
+if (
+    stat.S_ISLNK(parent_info.st_mode)
+    or not stat.S_ISDIR(parent_info.st_mode)
+    or parent_info.st_uid != os.geteuid()
+    or stat.S_IMODE(parent_info.st_mode) & 0o022
+    or stat.S_IMODE(parent_info.st_mode) & 0o300 != 0o300
+):
+    raise SystemExit(f"unsafe secrets config directory ownership/mode: {secrets_path.parent}")
+try:
+    info = secrets_path.lstat()
+except FileNotFoundError:
     raise SystemExit(f"missing secrets config: {secrets_path}")
+if (
+    stat.S_ISLNK(info.st_mode)
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o077
+):
+    raise SystemExit(f"unsafe secrets config ownership/mode: {secrets_path}")
 
-data = yaml.safe_load(secrets_path.read_text(encoding="utf-8"))
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+try:
+    fd = os.open(secrets_path, flags)
+except OSError as exc:
+    raise SystemExit(f"cannot safely read secrets config {secrets_path}: {exc}") from exc
+try:
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        raise SystemExit(f"secrets config identity changed while opening: {secrets_path}")
+    with os.fdopen(fd, "rb", closefd=True) as stream:
+        raw = stream.read()
+    fd = -1
+finally:
+    if fd >= 0:
+        os.close(fd)
+
+data = yaml.safe_load(raw.decode("utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {secrets_path}")
 
@@ -117,21 +316,81 @@ if not isinstance(l1, dict):
     raise SystemExit(f"invalid l1 section in {secrets_path}")
 
 current = l1.get("gateway_rpc_url")
-if not isinstance(current, str) or current.strip() == "":
-    l1["gateway_rpc_url"] = gateway_rpc_url
-    secrets_path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    print(
-        f"gateway-launch: patched {secrets_path} "
-        "(set l1.gateway_rpc_url=<redacted>)"
+if not isinstance(current, str) or current == "":
+    if policy == "write":
+        l1["gateway_rpc_url"] = gateway_rpc_url
+        payload = yaml.safe_dump(
+            data, sort_keys=False, allow_unicode=True
+        ).encode("utf-8")
+        temp_fd = -1
+        temp_name = ""
+        try:
+            temp_fd, temp_name = tempfile.mkstemp(
+                prefix=f".{secrets_path.name}.", dir=secrets_path.parent
+            )
+            os.fchmod(temp_fd, 0o600)
+            with os.fdopen(temp_fd, "wb", closefd=True) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temp_fd = -1
+            current_parent = secrets_path.parent.lstat()
+            current_info = secrets_path.lstat()
+            if (current_parent.st_dev, current_parent.st_ino) != (
+                parent_info.st_dev,
+                parent_info.st_ino,
+            ):
+                raise SystemExit(
+                    f"secrets config directory identity changed: {secrets_path.parent}"
+                )
+            if (current_info.st_dev, current_info.st_ino) != (
+                info.st_dev,
+                info.st_ino,
+            ):
+                raise SystemExit(f"secrets config identity changed: {secrets_path}")
+            os.replace(temp_name, secrets_path)
+            temp_name = ""
+            dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            dir_fd = os.open(secrets_path.parent, dir_flags)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if temp_fd >= 0:
+                os.close(temp_fd)
+            if temp_name:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+        print(
+            f"gateway-launch: patched {secrets_path} "
+            "(set l1.gateway_rpc_url=<redacted>)"
+        )
+    elif policy == "preflight":
+        # Write mode uses an atomic sibling + replace, so patchability is the
+        # authenticated parent's owner write/execute permission checked above;
+        # the existing secret itself deliberately remains read-only here.
+        pass
+    else:
+        raise SystemExit(f"missing l1.gateway_rpc_url in {secrets_path}")
+elif current != gateway_rpc_url:
+    raise SystemExit(
+        f"Gateway RPC URL mismatch in {secrets_path}; "
+        "refusing to migrate through a different Gateway"
     )
 PY
 }
 
-if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
-  ensure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"
+if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  # SYSCOIN: Parse and authenticate existing secret inputs without patching
+  # files while gl.migration is still pending.
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" preflight
+elif [ "${MIGRATION_CHECK_ONLY}" = true ]; then
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" exact
+else
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" write
 fi
 
 get_chain_id_from_zkstack_yaml() {
@@ -425,12 +684,8 @@ prepare_gateway_governor_forge_wallet_args() {
     return 1
   fi
 
-  if [ -n "${EDGE_GATEWAY_GOVERNOR_SIGNER:-}" ]; then
-    governor_signer="${EDGE_GATEWAY_GOVERNOR_SIGNER}"
-  else
-    governor_signer="generated"
-  fi
-  governor_signer="$(gl_to_lower "${governor_signer}")"
+  validate_gateway_governor_signer_config || return $?
+  governor_signer="$(gateway_governor_signer)" || return $?
 
   case "${governor_signer}" in
   generated | generated-wallet | wallet)
@@ -494,6 +749,22 @@ prepare_gateway_governor_forge_wallet_args() {
     gl_validate_secret_file "${password_file}" "governor password file"
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
   fi
+}
+
+assert_gateway_governor_signer_identity() {
+  local expected_addr actual_addr
+  prepare_gateway_governor_forge_wallet_args || return $?
+  expected_addr="$(get_chain_governor_from_wallets "${EDGE_CHAIN_NAME}")" || return $?
+  actual_addr="$(cast wallet address "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}")" || {
+    echo "gateway-launch: failed to resolve the configured Gateway governor signer address" >&2
+    return 1
+  }
+  expected_addr="$(gl_to_lower "${expected_addr}")"
+  actual_addr="$(gl_to_lower "${actual_addr}")"
+  [ "${actual_addr}" = "${expected_addr}" ] || {
+    echo "gateway-launch: Gateway governor signer mismatch: expected ${expected_addr}, got ${actual_addr}" >&2
+    return 1
+  }
 }
 
 get_l1_bridgehub_proxy_addr() {
@@ -1133,13 +1404,35 @@ refresh_l1_admin_wallet_funding() {
   # even when the transaction would succeed. Migration can spend down wallets
   # after the earlier funding checkpoint, so refresh the chain wallet targets
   # immediately before zkstack admin broadcasts.
-  GATEWAY_CHAIN_NAME="${chain_name}" "${SCRIPT_DIR}/fund-wallets.sh"
+  GATEWAY_FUND_EDGE_CONTEXT=true \
+    GATEWAY_FUND_TARGET_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/fund-wallets.sh"
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
 edge_committer_wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
 edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${edge_committer_wallet_name}")"
+
+# SYSCOIN: Authenticate the guest-bound relay and its exact runtime before the
+# launcher changes gl.migration from pending. Normal migration reuses this
+# attested address for later DA-pair repair.
+l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
+if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+  # SYSCOIN: Reject a zero, overflowing, or cap-incompatible live settlement
+  # fee before gl.migration can advance or a direct migration can broadcast;
+  # edge registration is not needed for this read-only check.
+  "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --preflight-fee-target
+  # SYSCOIN: Prove the selected external signer resolves to the authenticated
+  # edge governor while gl.migration is still pending. Hardware/KMS signers may
+  # require their normal read-only interaction here.
+  assert_gateway_governor_signer_identity
+fi
+
+if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  echo "gateway-launch: read-only migration prerequisites are ready for ${EDGE_CHAIN_NAME}"
+  exit 0
+fi
 if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
   [ "${current_settlement_layer}" = "${gateway_chain_id}" ] ||
     gl_die "edge settlement layer does not match Gateway"
@@ -1165,11 +1458,6 @@ if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
-
-# SYSCOIN: Authenticate the guest-bound relay and its exact runtime before the first migration
-# broadcast. Reuse this attested address for any later DA-pair repair so a stale or malicious
-# Gateway configuration cannot pause, migrate, or finalize an edge chain before failing closed.
-l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
 
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""

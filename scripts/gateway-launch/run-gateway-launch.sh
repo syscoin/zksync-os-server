@@ -9,6 +9,8 @@ ORIG_ARGS=("$@")
 source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 gl_validate_prover_mode
 
 # SYSCOIN: do not source HOME-relative Cargo env files in the deployment
@@ -163,6 +165,10 @@ export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 export GATEWAY_DIR="${GATEWAY_DIR:-${HOME}/gateway}"
 export GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME:-gateway}"
 export EDGE_CHAIN_NAME="${EDGE_CHAIN_NAME:-zksys}"
+# SYSCOIN: This checkpoint namespace is the canonical zkSYS launch. Additional
+# edges use the serialized direct helpers and must never bind the global fingerprint.
+gl_is_canonical_edge_context ||
+  gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"
 gl_resolve_gateway_dir planned
 gl_acquire_gateway_launch_lock
 # SYSCOIN: The checkpointed launcher targets the canonical fresh V32 lane.
@@ -228,11 +234,52 @@ run_migrate_edge_with_retry() {
     migrate_output_lc="$(gl_to_lower "${migrate_output}")"
     if [[ "${migrate_output_lc}" == *"insufficient funds for transfer"* ]]; then
       echo "migrate-edge: insufficient funds detected; topping up and retrying"
-      "${SCRIPT_DIR}/fund-wallets.sh" || return $?
+      GATEWAY_FUND_EDGE_CONTEXT=true \
+        GATEWAY_FUND_TARGET_CHAIN_NAME="${EDGE_CHAIN_NAME}" \
+        "${SCRIPT_DIR}/fund-wallets.sh" || return $?
       continue
     fi
     return "${status}"
   done
+}
+
+run_migrate_edge_preflight() {
+  normalize_migration_start_uint \
+    GATEWAY_MIGRATE_EDGE_MAX_ATTEMPTS \
+    "${GATEWAY_MIGRATE_EDGE_MAX_ATTEMPTS:-2}" 10 >/dev/null || return $?
+  "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --preflight
+}
+
+begin_pending_migration() {
+  local preflight_rc=0 cleanup_rc=0
+
+  # SYSCOIN: Keep gl.migration pending until every read-only prerequisite has
+  # passed. Invalid pre-broadcast input remains directly retryable instead of
+  # requiring repair of an untouched chain.
+  if gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"; then
+    export GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"
+  else
+    preflight_rc=$?
+  fi
+  if [ "${preflight_rc}" -eq 0 ]; then
+    if run_migrate_edge_preflight; then
+      if gl_checkpoint_mark_in_progress "gl.migration"; then
+        return 0
+      else
+        preflight_rc=$?
+      fi
+    else
+      preflight_rc=$?
+    fi
+  fi
+
+  gateway_release_execute_operator_lock
+  unset GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD
+  stop_gateway_for_migration || cleanup_rc=$?
+  if [ "${cleanup_rc}" -ne 0 ]; then
+    echo "gateway-launch: Gateway cleanup after migration preflight failure also failed with exit code ${cleanup_rc}" >&2
+  fi
+  return "${preflight_rc}"
 }
 
 install_gateway_migration_cleanup_traps
@@ -384,7 +431,7 @@ if [ "${migration_status}" = "passed" ]; then
     gl_die "checkpoint gl.migration no longer satisfies its postconditions; run gateway-launch-repair.sh repair gl.migration"
   fi
 else
-  gl_checkpoint_mark_in_progress "gl.migration" || exit $?
+  begin_pending_migration || exit $?
   migration_rc=0
   if start_gateway_for_migration; then
     if run_migrate_edge_with_retry; then
@@ -407,6 +454,8 @@ else
       migration_rc="${stop_rc}"
     fi
   fi
+  gateway_release_execute_operator_lock
+  unset GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD
   if [ "${migration_rc}" -ne 0 ]; then
     gl_checkpoint_mark_blocked "gl.migration" "migration failed with exit code ${migration_rc}" || exit $?
     exit "${migration_rc}"

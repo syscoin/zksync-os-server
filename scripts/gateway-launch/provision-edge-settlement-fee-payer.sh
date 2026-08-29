@@ -28,10 +28,14 @@ FEE_PAYER_KEYSTORE_DIR=""
 FEE_PAYER_KEYSTORE_ACCOUNT="gateway-launch-edge-execute-operator"
 FEE_PAYER_SIGNER_ARGS=()
 FEE_PAYER_CHECK_ONLY=false
+FEE_PAYER_VALIDATE_CONFIG_ONLY=false
+FEE_PAYER_PREFLIGHT_FEE_TARGET=false
 
 usage() {
   cat <<'EOF'
 Usage: provision-edge-settlement-fee-payer.sh [--check-only] [EDGE_CHAIN_NAME ...]
+       provision-edge-settlement-fee-payer.sh --validate-config-only
+       provision-edge-settlement-fee-payer.sh --preflight-fee-target
 
 With no arguments, EDGE_CHAIN_NAME (default: zksys) is provisioned. Each named
 edge must already exist under GATEWAY_DIR/chains and settle on GATEWAY_RPC_URL.
@@ -93,6 +97,33 @@ except ValueError:
 if value < 0 or value >= 2**256:
     raise SystemExit(f"{label} is outside uint256")
 print(value)
+PY
+}
+
+validate_fee_payer_config() {
+  python3 - \
+    "${GATEWAY_INTEROP_SETTLEMENT_OPERATION_BUDGET}" \
+    "${GATEWAY_INTEROP_SETTLEMENT_MAX_WRAP_WEI}" \
+    "${GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI}" \
+    "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" <<'PY'
+import sys
+
+UINT256_MAX = 2**256 - 1
+
+def uint(raw: str, label: str, maximum: int) -> int:
+    raw = raw.strip()
+    try:
+        value = int(raw, 16 if raw.lower().startswith("0x") else 10)
+    except ValueError:
+        raise SystemExit(f"invalid {label}: {raw!r}") from None
+    if not 0 < value <= maximum:
+        raise SystemExit(f"{label} must be between 1 and {maximum}")
+    return value
+
+uint(sys.argv[1], "GATEWAY_INTEROP_SETTLEMENT_OPERATION_BUDGET", UINT256_MAX)
+uint(sys.argv[2], "GATEWAY_INTEROP_SETTLEMENT_MAX_WRAP_WEI", UINT256_MAX)
+uint(sys.argv[3], "GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI", UINT256_MAX)
+uint(sys.argv[4], "GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT", 86400)
 PY
 }
 
@@ -335,6 +366,22 @@ print(target)
 PY
 }
 
+live_gateway_settlement_fee() {
+  local label="${1:-gatewaySettlementFee}"
+  parse_uint \
+    "$(gateway_cast call "${GW_ASSET_TRACKER_ADDRESS}" "gatewaySettlementFee()(uint256)" --rpc-url "${GATEWAY_RPC_URL}")" \
+    "${label}"
+}
+
+preflight_live_settlement_target() {
+  local live_fee target_wei
+  address_has_code "${GW_ASSET_TRACKER_ADDRESS}" ||
+    gl_die "GWAssetTracker has no code at ${GW_ASSET_TRACKER_ADDRESS}"
+  live_fee="$(live_gateway_settlement_fee)" || return $?
+  target_wei="$(settlement_target_wei "${live_fee}")" || return $?
+  echo "gateway-launch: live Gateway settlement fee target is valid (fee=${live_fee}, target=${target_wei})"
+}
+
 provision_edge_fee_payer() {
   local edge_name="${1:?edge chain name required}"
   local wallet_path edge_config gateway_config edge_chain_id expected_gateway_chain_id
@@ -380,9 +427,7 @@ provision_edge_fee_payer() {
   wrapped_token="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"
   address_has_code "${wrapped_token}" || gl_die "wrapped Gateway base token has no code at ${wrapped_token}"
 
-  live_fee="$(parse_uint \
-    "$(gateway_cast call "${GW_ASSET_TRACKER_ADDRESS}" "gatewaySettlementFee()(uint256)" --rpc-url "${GATEWAY_RPC_URL}")" \
-    "gatewaySettlementFee")"
+  live_fee="$(live_gateway_settlement_fee)"
   target_wei="$(settlement_target_wei "${live_fee}")"
   reserve="$(parse_uint "${GATEWAY_INTEROP_SETTLEMENT_NATIVE_GAS_RESERVE_WEI}" "Gateway native gas reserve")"
   [ "${reserve}" != "0" ] || gl_die "Gateway native gas reserve must be non-zero"
@@ -531,9 +576,7 @@ PY
     "${operator_address}" \
     "${edge_chain_id}" \
     --rpc-url "${GATEWAY_RPC_URL}" | awk '{print tolower($1)}')"
-  final_fee="$(parse_uint \
-    "$(gateway_cast call "${GW_ASSET_TRACKER_ADDRESS}" "gatewaySettlementFee()(uint256)" --rpc-url "${GATEWAY_RPC_URL}")" \
-    "gatewaySettlementFee after provisioning")"
+  final_fee="$(live_gateway_settlement_fee "gatewaySettlementFee after provisioning")"
   final_target="$(settlement_target_wei "${final_fee}")"
   native_balance="$(parse_uint \
     "$(gateway_cast balance "${operator_address}" --rpc-url "${GATEWAY_RPC_URL}")" \
@@ -553,13 +596,27 @@ PY
 
 main() {
   local edge_names=()
-  if [ "${1:-}" = "--check-only" ]; then
+  if [ "${1:-}" = "--validate-config-only" ]; then
+    FEE_PAYER_VALIDATE_CONFIG_ONLY=true
+    shift
+  elif [ "${1:-}" = "--preflight-fee-target" ]; then
+    FEE_PAYER_PREFLIGHT_FEE_TARGET=true
+    shift
+  elif [ "${1:-}" = "--check-only" ]; then
     FEE_PAYER_CHECK_ONLY=true
     shift
   fi
   if [ "$#" -eq 1 ] && { [ "$1" = "-h" ] || [ "$1" = "--help" ]; }; then
     usage
     return 0
+  fi
+  validate_fee_payer_config
+  if [ "${FEE_PAYER_VALIDATE_CONFIG_ONLY}" = true ]; then
+    [ "$#" -eq 0 ] || gl_die "--validate-config-only does not accept edge names"
+    return 0
+  fi
+  if [ "${FEE_PAYER_PREFLIGHT_FEE_TARGET}" = true ]; then
+    [ "$#" -eq 0 ] || gl_die "--preflight-fee-target does not accept edge names"
   fi
   if [ "$#" -eq 0 ]; then
     edge_names=("${EDGE_CHAIN_NAME:-zksys}")
@@ -568,7 +625,8 @@ main() {
   fi
 
   command -v cast >/dev/null 2>&1 || gl_die "cast is required"
-  if [ "${FEE_PAYER_CHECK_ONLY}" != true ]; then
+  if [ "${FEE_PAYER_CHECK_ONLY}" != true ] &&
+    [ "${FEE_PAYER_PREFLIGHT_FEE_TARGET}" != true ]; then
     command -v openssl >/dev/null 2>&1 || gl_die "openssl is required"
   fi
   # SYSCOIN: This standalone signing entry point must authenticate the same
@@ -577,6 +635,10 @@ main() {
   # SYSCOIN: the native-value transaction target must be independently pinned;
   # same-RPC code and postcondition reads cannot authenticate a dynamic target.
   gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"
+  if [ "${FEE_PAYER_PREFLIGHT_FEE_TARGET}" = true ]; then
+    preflight_live_settlement_target
+    return 0
+  fi
   for edge_name in "${edge_names[@]}"; do
     provision_edge_fee_payer "${edge_name}"
   done

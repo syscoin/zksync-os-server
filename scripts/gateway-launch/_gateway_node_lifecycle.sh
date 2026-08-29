@@ -336,6 +336,10 @@ cleanup_gateway_for_migration_on_exit() {
   # SYSCOIN: do not let a repeated signal interrupt bounded child cleanup.
   trap '' INT TERM
   stop_gateway_for_migration || true
+  if declare -F gateway_release_execute_operator_lock >/dev/null 2>&1; then
+    gateway_release_execute_operator_lock || true
+    unset GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD
+  fi
 }
 
 handle_gateway_migration_interrupt() {

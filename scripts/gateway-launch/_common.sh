@@ -411,6 +411,8 @@ if raw_fee:
     fee = int(raw_fee, 16) if raw_fee.lower().startswith("0x") else int(raw_fee, 10)
     if fee < 0 or fee >= 1 << 256:
         raise SystemExit("GATEWAY_SETTLEMENT_FEE must fit uint256")
+    if fee == 0:
+        raise SystemExit("GATEWAY_SETTLEMENT_FEE must be non-zero")
     print(fee)
     raise SystemExit(0)
 
@@ -424,8 +426,8 @@ decimals_raw = os.environ.get("GATEWAY_INTEROP_FEE_TOKEN_DECIMALS", "18")
 target_usd = Decimal(target_raw)
 native_price_usd = Decimal(native_raw)
 decimals = int(decimals_raw)
-if not target_usd.is_finite() or target_usd < 0:
-    raise SystemExit("GATEWAY_INTEROP_FEE_USD must be non-negative")
+if not target_usd.is_finite() or target_usd <= 0:
+    raise SystemExit("GATEWAY_INTEROP_FEE_USD must be positive")
 if not native_price_usd.is_finite() or native_price_usd <= 0:
     raise SystemExit("NATIVE_TOKEN_PRICE_USD must be positive")
 if decimals < 0 or decimals > 255:
@@ -436,6 +438,8 @@ if os.environ.get("L1_NETWORK", "").strip().lower() in {"tanenbaum", "mainnet"} 
 fee = (target_usd / native_price_usd * (Decimal(10) ** decimals)).to_integral_value(
     rounding=ROUND_CEILING
 )
+if fee <= 0:
+    raise SystemExit("derived GATEWAY_SETTLEMENT_FEE must be non-zero")
 if fee >= 1 << 256:
     raise SystemExit("derived GATEWAY_SETTLEMENT_FEE must fit uint256")
 print(int(fee))
@@ -682,16 +686,42 @@ gl_chain_id_from_config() {
   local chain_name="${1:?chain name required}" label="${2:?chain label required}"
   CHAIN_CONFIG="${GATEWAY_DIR}/chains/${chain_name}/ZkStack.yaml" \
   CHAIN_LABEL="${label}" python3 - <<'PY'
+import json
 import os
+import stat
 from pathlib import Path
-
-import yaml
 
 label = os.environ["CHAIN_LABEL"]
 path = Path(os.environ["CHAIN_CONFIG"])
-if not path.is_file():
+parent_info = path.parent.lstat()
+if (
+    stat.S_ISLNK(parent_info.st_mode)
+    or not stat.S_ISDIR(parent_info.st_mode)
+    or parent_info.st_uid != os.geteuid()
+    or stat.S_IMODE(parent_info.st_mode) & 0o022
+):
+    raise SystemExit(f"unsafe {label} chain directory ownership/mode: {path.parent}")
+try:
+    info = path.lstat()
+except FileNotFoundError:
+    info = None
+if info is None:
     raise SystemExit(f"missing {label} chain config: {path}")
-data = yaml.safe_load(path.read_text(encoding="utf-8"))
+if (
+    stat.S_ISLNK(info.st_mode)
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o022
+):
+    raise SystemExit(f"unsafe {label} chain config ownership/mode: {path}")
+text = path.read_text(encoding="utf-8")
+try:
+    data = json.loads(text)
+except json.JSONDecodeError:
+    import yaml
+
+    data = yaml.safe_load(text)
 chain_id = data.get("chain_id") if isinstance(data, dict) else None
 if isinstance(chain_id, str):
     try:
@@ -2600,6 +2630,49 @@ if updated:
 PY
 }
 
+gl_validate_funder_signer_config() {
+  local funder_signer account_name keystore_path
+  if [ -z "${FUNDER_SIGNER:-}" ]; then
+    if gl_l1_network_requires_external_signer; then
+      FUNDER_SIGNER="account"
+    else
+      FUNDER_SIGNER="private-key"
+    fi
+  fi
+  funder_signer="$(gl_to_lower "${FUNDER_SIGNER}")"
+  case "${funder_signer}" in
+  account)
+    account_name="${FUNDER_ACCOUNT_NAME-funder}"
+    [ -n "${account_name}" ] || gl_die "FUNDER_ACCOUNT_NAME must not be empty"
+    gl_validate_foundry_account_keystore "${account_name}" "FUNDER_ACCOUNT_NAME"
+    ;;
+  keystore)
+    keystore_path="${FUNDER_KEYSTORE:-}"
+    [ -n "${keystore_path}" ] || gl_die "unset required env: FUNDER_KEYSTORE"
+    gl_validate_secret_file "${keystore_path}" "FUNDER_KEYSTORE"
+    ;;
+  ledger | trezor | aws | gcp) ;;
+  private-key)
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; import the funder into a Foundry account/keystore, use hardware/KMS signing, or set GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true for an explicit unsafe override"
+    fi
+    export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+    ;;
+  *)
+    gl_die "unsupported FUNDER_SIGNER=${funder_signer}; expected account, keystore, ledger, trezor, aws, gcp, or private-key"
+    ;;
+  esac
+  if [ "${funder_signer}" != private-key ] && [ -n "${FUNDER_PRIVATE_KEY:-}" ] &&
+    gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+    gl_die "FUNDER_PRIVATE_KEY is not accepted on ${L1_NETWORK}; use FUNDER_SIGNER with account, keystore, hardware wallet, or KMS signing"
+  fi
+  if [ -n "${FUNDER_PASSWORD_FILE:-}" ]; then
+    gl_validate_secret_file "${FUNDER_PASSWORD_FILE}" "FUNDER_PASSWORD_FILE"
+  fi
+  FUNDER_SIGNER="${funder_signer}"
+  export FUNDER_SIGNER
+}
+
 gl_fund_wallets_yaml() {
   gl_require GATEWAY_DIR
   gl_require L1_RPC_URL
@@ -2613,32 +2686,9 @@ gl_fund_wallets_yaml() {
   true | false) ;;
   *) gl_die "GATEWAY_FUND_CHECK_ONLY must be true or false" ;;
   esac
-  if [ "${check_only}" != true ] && [ -z "${FUNDER_SIGNER:-}" ]; then
-    if gl_l1_network_requires_external_signer; then
-      FUNDER_SIGNER="account"
-    else
-      FUNDER_SIGNER="private-key"
-    fi
+  if [ "${check_only}" != true ]; then
+    gl_validate_funder_signer_config
   fi
-  if [ "${check_only}" != true ] && [ "$(gl_to_lower "${FUNDER_SIGNER}")" = "private-key" ]; then
-    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
-      gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; import the funder into a Foundry account/keystore, use hardware/KMS signing, or set GATEWAY_ALLOW_INSECURE_PRIVATE_KEY_ARGV=true for an explicit unsafe override"
-    fi
-    export FUNDER_PRIVATE_KEY="${FUNDER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
-  elif [ "${check_only}" != true ] && [ -n "${FUNDER_PRIVATE_KEY:-}" ] && gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
-    gl_die "FUNDER_PRIVATE_KEY is not accepted on ${L1_NETWORK}; use FUNDER_SIGNER with account, keystore, hardware wallet, or KMS signing"
-  fi
-  if [ "${check_only}" != true ] && [ "$(gl_to_lower "${FUNDER_SIGNER}")" = "keystore" ]; then
-    gl_require FUNDER_KEYSTORE
-    gl_validate_secret_file "${FUNDER_KEYSTORE}" "FUNDER_KEYSTORE"
-  elif [ "${check_only}" != true ] && [ "$(gl_to_lower "${FUNDER_SIGNER}")" = "account" ]; then
-    gl_validate_foundry_account_keystore \
-      "${FUNDER_ACCOUNT_NAME:-funder}" "FUNDER_ACCOUNT_NAME"
-  fi
-  if [ "${check_only}" != true ] && [ -n "${FUNDER_PASSWORD_FILE:-}" ]; then
-    gl_validate_secret_file "${FUNDER_PASSWORD_FILE}" "FUNDER_PASSWORD_FILE"
-  fi
-  export FUNDER_SIGNER
   export GATEWAY_FUND_CHECK_ONLY="${check_only}"
   export WALLETS_YAML_PATHS
   python3 - <<'PY'
@@ -3196,6 +3246,70 @@ gl_checkpoint_state_file() {
   printf '%s/state.json\n' "$(gl_checkpoint_state_dir)"
 }
 
+gl_create_forge_inspect_artifacts_dir() {
+  local state_dir
+  gl_checkpoint_state_init || return $?
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  # SYSCOIN: Every bytecode-inspection process gets a fresh private Forge cache.
+  # This keeps reviewed source read-only without trusting artifacts from a prior run.
+  python3 - "${state_dir}" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+info = state_dir.lstat()
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+    raise SystemExit(f"checkpoint state directory is unsafe: {state_dir}")
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    raise SystemExit(f"checkpoint state directory ownership/permissions are unsafe: {state_dir}")
+run_dir = Path(tempfile.mkdtemp(prefix="forge-inspect-", dir=state_dir))
+run_dir.chmod(0o700)
+for name in ("out", "cache"):
+    (run_dir / name).mkdir(mode=0o700)
+print(run_dir)
+PY
+}
+
+gl_remove_forge_inspect_artifacts_dir() {
+  local run_dir="${1:?Forge inspection directory required}" state_dir
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  python3 - "${state_dir}" "${run_dir}" <<'PY'
+import os
+import re
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+state_dir, run_dir = map(Path, sys.argv[1:])
+state_info = state_dir.lstat()
+if (
+    stat.S_ISLNK(state_info.st_mode)
+    or not stat.S_ISDIR(state_info.st_mode)
+    or state_info.st_uid != os.geteuid()
+    or stat.S_IMODE(state_info.st_mode) & 0o077
+):
+    raise SystemExit(f"checkpoint state directory is unsafe: {state_dir}")
+if run_dir.parent != state_dir or not re.fullmatch(r"forge-inspect-[A-Za-z0-9_-]+", run_dir.name):
+    raise SystemExit(f"refusing unsafe Forge inspection cleanup target: {run_dir}")
+try:
+    run_info = run_dir.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+if (
+    stat.S_ISLNK(run_info.st_mode)
+    or not stat.S_ISDIR(run_info.st_mode)
+    or run_info.st_uid != os.geteuid()
+    or stat.S_IMODE(run_info.st_mode) & 0o077
+):
+    raise SystemExit(f"Forge inspection directory is unsafe: {run_dir}")
+shutil.rmtree(run_dir)
+PY
+}
+
 gl_checkpoint_state_init() {
   local state_dir state_file
   state_dir="$(gl_checkpoint_state_dir)" || return $?
@@ -3565,10 +3679,11 @@ PY
 }
 
 gl_checkpoint_assert_fingerprint_matches() {
-  local state_file fp_json
+  local state_file fp_json ignored_keys_json
+  ignored_keys_json="${1:-[]}"
   state_file="$(gl_checkpoint_state_file)" || return $?
   fp_json="$(gl_checkpoint_fingerprint_json)" || return $?
-  python3 - "${state_file}" "${fp_json}" <<'PY'
+  python3 - "${state_file}" "${fp_json}" "${ignored_keys_json}" <<'PY'
 import json
 import os
 import stat
@@ -3577,6 +3692,10 @@ from pathlib import Path
 
 state_path = Path(sys.argv[1])
 expected = json.loads(sys.argv[2])
+ignored = json.loads(sys.argv[3])
+if not isinstance(ignored, list) or any(not isinstance(key, str) for key in ignored):
+    raise SystemExit("invalid checkpoint fingerprint exclusion list")
+ignored = set(ignored)
 try:
     parent_info = os.lstat(state_path.parent)
     state_info = os.lstat(state_path)
@@ -3596,11 +3715,15 @@ if state_info.st_uid != os.geteuid() or stat.S_IMODE(state_info.st_mode) & 0o077
     )
 state = json.loads(state_path.read_text(encoding="utf-8"))
 current = state.get("fingerprint") or {}
-if current and current != expected:
+if not current:
+    raise SystemExit(f"checkpoint fingerprint is not initialized: {state_path}")
+current_compared = {key: value for key, value in current.items() if key not in ignored}
+expected_compared = {key: value for key, value in expected.items() if key not in ignored}
+if current and current_compared != expected_compared:
     diff_keys = sorted(
         key
-        for key in set(current.keys()) | set(expected.keys())
-        if current.get(key) != expected.get(key)
+        for key in set(current_compared) | set(expected_compared)
+        if current_compared.get(key) != expected_compared.get(key)
     )
     print("checkpoint fingerprint mismatch", file=sys.stderr)
     print("state file:", state_path, file=sys.stderr)
@@ -3618,6 +3741,129 @@ gl_bind_gateway_launch_context() {
   gl_checkpoint_state_init || return $?
   gl_checkpoint_set_fingerprint_if_empty || return $?
   gl_checkpoint_assert_fingerprint_matches
+}
+
+gl_effective_edge_chain_id() {
+  local edge_name="${EDGE_CHAIN_NAME:-zksys}" edge_id="${EDGE_CHAIN_ID:-}"
+  if [ -z "${edge_id}" ]; then
+    [ "${edge_name}" = "zksys" ] ||
+      gl_die "EDGE_CHAIN_ID is required for non-default edge ${edge_name}"
+    edge_id=57057
+  fi
+  python3 - "${edge_id}" <<'PY'
+import sys
+
+raw = sys.argv[1].strip()
+if not raw.isdecimal():
+    raise SystemExit("EDGE_CHAIN_ID must be an unsigned decimal integer")
+value = int(raw, 10)
+if value == 0 or value >= 2**32:
+    raise SystemExit("EDGE_CHAIN_ID must be between 1 and 4294967295")
+print(value)
+PY
+}
+
+gl_is_canonical_edge_context() {
+  [ "${EDGE_CHAIN_NAME:-zksys}" = "zksys" ] &&
+    [ "$(gl_effective_edge_chain_id)" = "57057" ]
+}
+
+gl_assert_additional_edge_chain_index() {
+  local require_existing="${1:?additional-edge index policy required}"
+  local edge_name edge_id gateway_name gateway_id expected_gateway_id canonical_zksys_id
+  local chains_dir chain_path chain_name chain_id i found=false
+  local -a chain_paths=() seen_ids=() seen_names=()
+  case "${require_existing}" in
+  true | false) ;;
+  *) gl_die "additional-edge index policy must be true or false" ;;
+  esac
+  edge_name="${EDGE_CHAIN_NAME:-zksys}"
+  edge_id="$(gl_effective_edge_chain_id)" || return $?
+  gateway_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  gateway_id="$(gl_chain_id_from_config "${gateway_name}" "Gateway")" || return $?
+  expected_gateway_id="$(python3 - "${GATEWAY_CHAIN_ID:-57001}" <<'PY'
+import sys
+
+raw = sys.argv[1].strip()
+if not raw.isdecimal() or not 0 < int(raw, 10) < 2**32:
+    raise SystemExit("GATEWAY_CHAIN_ID must be an unsigned non-zero uint32")
+print(int(raw, 10))
+PY
+)" || return $?
+  [ "${gateway_id}" = "${expected_gateway_id}" ] ||
+    gl_die "Gateway chain index ID ${gateway_id} differs from fingerprinted ID ${expected_gateway_id}"
+  canonical_zksys_id="$(gl_chain_id_from_config zksys "canonical zksys")" || return $?
+  [ "${canonical_zksys_id}" = 57057 ] ||
+    gl_die "canonical zksys chain index ID must be 57057, got ${canonical_zksys_id}"
+  # SYSCOIN: The zkstack chain directory is the durable off-chain index for
+  # edge identity. Serialize its creation; do not duplicate it in checkpoint state.
+  [[ "${edge_name}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] ||
+    gl_die "additional edge name must match [A-Za-z0-9][A-Za-z0-9_-]*"
+  if [ "${edge_name}" = zksys ] || [ "${edge_id}" = 57057 ]; then
+    gl_die "additional edge must not reuse canonical zksys name or chain ID 57057"
+  fi
+  if [ "${edge_name}" = "${gateway_name}" ] || [ "${edge_id}" = "${gateway_id}" ]; then
+    gl_die "additional edge must not reuse the Gateway name or chain ID"
+  fi
+  chains_dir="${GATEWAY_DIR}/chains"
+  [ -d "${chains_dir}" ] && [ ! -L "${chains_dir}" ] ||
+    gl_die "Gateway chains directory is missing or unsafe: ${chains_dir}"
+  python3 - "${chains_dir}" <<'PY' || return $?
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+info = os.lstat(path)
+if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+    raise SystemExit(f"Gateway chains directory has unsafe ownership/mode: {path}")
+PY
+  chain_paths=("${chains_dir}"/* "${chains_dir}"/.[!.]* "${chains_dir}"/..?*)
+  for chain_path in "${chain_paths[@]}"; do
+    [ -e "${chain_path}" ] || [ -L "${chain_path}" ] || continue
+    [ -d "${chain_path}" ] && [ ! -L "${chain_path}" ] ||
+      gl_die "Gateway chain entry is unsafe: ${chain_path}"
+    chain_name="$(basename "${chain_path}")"
+    chain_id="$(gl_chain_id_from_config "${chain_name}" "Gateway chain index")" || return $?
+    for i in "${!seen_ids[@]}"; do
+      [ "${seen_ids[${i}]}" != "${chain_id}" ] ||
+        gl_die "duplicate chain ID ${chain_id} in index entries ${seen_names[${i}]} and ${chain_name}"
+    done
+    seen_ids+=("${chain_id}")
+    seen_names+=("${chain_name}")
+    if [ "${chain_name}" = "${edge_name}" ]; then
+      [ "${chain_id}" = "${edge_id}" ] ||
+        gl_die "additional edge name collision: ${edge_name} is chain ${chain_id}, not ${edge_id}"
+      found=true
+    elif [ "${chain_id}" = "${edge_id}" ]; then
+      gl_die "additional edge chain-id collision: ${edge_id} is already bound to ${chain_name}"
+    fi
+  done
+  [ "${require_existing}" != true ] || [ "${found}" = true ] ||
+    gl_die "additional edge is not present in the zkstack chain index: ${edge_name}"
+}
+
+gl_bind_edge_launch_context() {
+  if gl_is_canonical_edge_context; then
+    gl_bind_gateway_launch_context
+    return $?
+  fi
+  # SYSCOIN: Additional edges share the immutable Gateway deployment but own
+  # their identity in zkstack's chain index. Never rewrite the canonical fingerprint.
+  gl_acquire_gateway_launch_lock || return $?
+  gl_checkpoint_assert_fingerprint_matches \
+    '["edge_chain_name","edge_chain_id","edge_prover_mode","edge_reuse_gateway_governor","edge_gateway_committer_wallet_name"]' || return $?
+  gl_assert_additional_edge_chain_index false
+}
+
+gl_assert_edge_launch_context() {
+  if gl_is_canonical_edge_context; then
+    gl_checkpoint_assert_fingerprint_matches
+    return $?
+  fi
+  gl_checkpoint_assert_fingerprint_matches \
+    '["edge_chain_name","edge_chain_id","edge_prover_mode","edge_reuse_gateway_governor","edge_gateway_committer_wallet_name"]' || return $?
+  gl_assert_additional_edge_chain_index true
 }
 
 gl_gateway_conversion_deployer_manifest_file() {
