@@ -4038,6 +4038,12 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("resume_args+=(--resume)", resumable)
         self.assertIn("zkstack ecosystem init-core-contracts", resumable)
         self.assertIn("--ownership-only", resumable)
+        self.assertIn("tanenbaum | mainnet", resumable)
+        self.assertIn("serialization_args=(-a --slow)", resumable)
+        self.assertLess(
+            resumable.index("--ownership-only"),
+            resumable.index('"${serialization_args[@]}"'),
+        )
         self.assertEqual(retry_loop.count('run_ecosystem_init "${resume_attempt}"'), 1)
         self.assertIn('GATEWAY_ECOSYSTEM_RESUME_FIRST:=false', deploy)
         self.assertIn('if [ "${attempt}" -gt 1 ]', retry_loop)
