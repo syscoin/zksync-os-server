@@ -713,10 +713,10 @@ work and bind recovery to one verifier mode. -->
 | `DEPLOYER_ACCOUNT_NAME` | Foundry keystore account name when `DEPLOYER_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `DEPLOYER_KEYSTORE` | Keystore file path when `DEPLOYER_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
 | `DEPLOYER_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |
-| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Optional governor signer override for Gateway migration repairs; defaults to `FUNDER_SIGNER` and supports `account`, `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
+| `EDGE_GATEWAY_GOVERNOR_SIGNER` | Optional governor signer override for Gateway migration repairs; defaults to the generated Gateway governor and supports `generated`, `account`, `keystore`, `ledger`, `trezor`, `aws`, `gcp`, or local-only `private-key` |
 | `EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME` | Foundry keystore account name when `EDGE_GATEWAY_GOVERNOR_SIGNER=account` (default: `FUNDER_ACCOUNT_NAME`, then `funder`) |
 | `EDGE_GATEWAY_GOVERNOR_KEYSTORE` | Keystore file path when `EDGE_GATEWAY_GOVERNOR_SIGNER=keystore` (default: `FUNDER_KEYSTORE`) |
-| `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional keystore password file passed to Forge without exposing the password in argv (default: `FUNDER_PASSWORD_FILE`) |
+| `EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE` | Optional password file used for the short-lived generated-governor or external keystore (default: `FUNDER_PASSWORD_FILE`; when neither is set for the generated governor, the launcher creates a random process-local password) |
 | `BITCOIN_DA_RPC_URL` / `BITCOIN_DA_RPC_USER` / `BITCOIN_DA_RPC_PASSWORD` | DA connectivity for gateway blobs mode |
 
 ## Notes

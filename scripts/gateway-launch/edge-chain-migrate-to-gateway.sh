@@ -44,7 +44,11 @@ gl_normalize_canonical_deployment_inputs
 gl_validate_l1_network_pair
 
 gateway_governor_signer() {
-  gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-${FUNDER_SIGNER:-account}}"
+  # SYSCOIN: fresh zkstack deployments generate a distinct Gateway governor
+  # and persist it in the authenticated edge wallet. Use that signer unless an
+  # operator explicitly selects an external account, keystore, hardware wallet,
+  # or KMS identity.
+  gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-generated}"
 }
 
 validate_gateway_governor_signer_config() {
@@ -59,11 +63,12 @@ validate_gateway_governor_signer_config() {
   case "${governor_signer}" in
   generated | generated-wallet | wallet)
     password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
-    [ -n "${password_file}" ] || {
-      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE or FUNDER_PASSWORD_FILE is required for a generated-governor keystore" >&2
-      return 1
-    }
-    gl_validate_secret_file "${password_file}" "generated-governor password file"
+    if [ -z "${password_file}" ]; then
+      command -v openssl >/dev/null 2>&1 || {
+        echo "gateway-launch: openssl is required to protect the temporary generated-governor keystore" >&2
+        return 1
+      }
+    fi
     command -v expect >/dev/null 2>&1 || {
       echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
       return 1
@@ -107,10 +112,14 @@ validate_gateway_governor_signer_config() {
     ;;
   esac
 
-  password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
-  if [ -n "${password_file}" ]; then
-    gl_validate_secret_file "${password_file}" "governor password file"
-  fi
+  case "${governor_signer}" in
+  generated | generated-wallet | wallet | account | keystore)
+    password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+    if [ -n "${password_file}" ]; then
+      gl_validate_secret_file "${password_file}" "governor password file"
+    fi
+    ;;
+  esac
 }
 
 validate_migration_config_inputs() {
@@ -590,11 +599,9 @@ prepare_generated_gateway_governor_keystore() {
   local account_name="gateway-launch-generated-governor"
   local expected_addr imported_addr
 
-  [ -n "${password_file}" ] || {
-    echo "gateway-launch: FUNDER_PASSWORD_FILE is required to encrypt the temporary generated-governor keystore" >&2
-    return 1
-  }
-  gl_validate_secret_file "${password_file}" "generated-governor password file"
+  if [ -n "${password_file}" ]; then
+    gl_validate_secret_file "${password_file}" "generated-governor password file"
+  fi
   command -v expect >/dev/null 2>&1 || {
     echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
     return 1
@@ -603,7 +610,14 @@ prepare_generated_gateway_governor_keystore() {
   if [ -z "${GATEWAY_GOVERNOR_TEMP_DIR}" ]; then
     GATEWAY_GOVERNOR_TEMP_DIR="$(mktemp -d)"
     chmod 700 "${GATEWAY_GOVERNOR_TEMP_DIR}"
-    install -m 600 "${password_file}" "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    if [ -n "${password_file}" ]; then
+      install -m 600 "${password_file}" "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    else
+      # SYSCOIN: this keystore is process-local and short-lived; do not require
+      # an unrelated funder credential merely to encrypt its generated key.
+      openssl rand -hex -out "${GATEWAY_GOVERNOR_TEMP_DIR}/password" 32
+      chmod 600 "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    fi
 
     GATEWAY_DIR="${GATEWAY_DIR}" \
       CHAIN_NAME="${chain_name}" \
@@ -677,7 +691,7 @@ EXPECT
 
 prepare_gateway_governor_forge_wallet_args() {
   GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
-  local governor_signer
+  local governor_signer password_file
 
   if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
     echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
@@ -686,6 +700,7 @@ prepare_gateway_governor_forge_wallet_args() {
 
   validate_gateway_governor_signer_config || return $?
   governor_signer="$(gateway_governor_signer)" || return $?
+  password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
 
   case "${governor_signer}" in
   generated | generated-wallet | wallet)
@@ -701,6 +716,9 @@ prepare_gateway_governor_forge_wallet_args() {
     gl_validate_foundry_account_keystore \
       "${account_name}" "EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME"
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--account "${account_name}")
+    if [ -n "${password_file}" ]; then
+      GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
+    fi
     ;;
   keystore)
     local keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
@@ -710,6 +728,9 @@ prepare_gateway_governor_forge_wallet_args() {
     }
     gl_validate_secret_file "${keystore_path}" "governor keystore"
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--keystore "${keystore_path}")
+    if [ -n "${password_file}" ]; then
+      GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
+    fi
     ;;
   ledger)
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--ledger)
@@ -744,11 +765,6 @@ prepare_gateway_governor_forge_wallet_args() {
     ;;
   esac
 
-  local password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
-  if [ -n "${password_file}" ]; then
-    gl_validate_secret_file "${password_file}" "governor password file"
-    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
-  fi
 }
 
 assert_gateway_governor_signer_identity() {

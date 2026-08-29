@@ -56,7 +56,7 @@ Optional env:
   GATEWAY_FUND_WALLETS_PATHS   optional extra wallets.yaml list (colon-separated)
   FUNDER_SIGNER                account|keystore|ledger|trezor|aws|gcp (default account)
   DEPLOYER_SIGNER              optional override; defaults to FUNDER_SIGNER
-  EDGE_GATEWAY_GOVERNOR_SIGNER optional override; defaults to FUNDER_SIGNER
+  EDGE_GATEWAY_GOVERNOR_SIGNER optional override; defaults to the generated Gateway governor
 
 Options:
   --l1 tanenbaum|mainnet

@@ -79,7 +79,7 @@ gl_validate_l1_signer_policy() {
   local funder_signer deployer_signer governor_signer
   funder_signer="$(gl_to_lower "${FUNDER_SIGNER:-account}")"
   deployer_signer="$(gl_to_lower "${DEPLOYER_SIGNER:-${FUNDER_SIGNER:-account}}")"
-  governor_signer="$(gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-${FUNDER_SIGNER:-account}}")"
+  governor_signer="$(gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-generated}")"
 
   if [ "${funder_signer}" = "private-key" ]; then
     gl_die "FUNDER_SIGNER=private-key is not allowed on ${L1_NETWORK}; use account, keystore, hardware wallet, or KMS signing"

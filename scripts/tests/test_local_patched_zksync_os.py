@@ -5257,7 +5257,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             self.assertEqual(secrets.read_bytes(), exact_bytes)
             self.assertEqual(secrets.stat().st_mtime_ns, exact_mtime)
 
-    def test_migration_preflight_rejects_wrong_account_or_keystore_governor(
+    def test_migration_preflight_uses_generated_and_authenticates_external_governor(
         self,
     ) -> None:
         migration = (
@@ -5274,6 +5274,31 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         signer_config = extract(
             "gateway_governor_signer() {",
             "\nvalidate_migration_config_inputs() {",
+        )
+        default_signer = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$COMMON"; ' + signer_config + "\ngateway_governor_signer",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if key != "EDGE_GATEWAY_GOVERNOR_SIGNER"
+                },
+                "COMMON": str(GATEWAY_COMMON),
+                "FUNDER_SIGNER": "account",
+            },
+        )
+        self.assertEqual(default_signer.returncode, 0, default_signer.stderr)
+        self.assertEqual(default_signer.stdout.strip(), "generated")
+        generated = extract(
+            "GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()",
+            "\nprepare_gateway_governor_forge_wallet_args() {",
         )
         prepare = extract(
             "prepare_gateway_governor_forge_wallet_args() {",
@@ -5298,6 +5323,22 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                 encoding="utf-8",
             )
             (bin_dir / "cast").chmod(0o755)
+            (bin_dir / "expect").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                "command cat >/dev/null\n"
+                "printf '{}\\n' >\"$KEYSTORE_DIR/$ACCOUNT_NAME\"\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "expect").chmod(0o755)
+            (bin_dir / "openssl").write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                '[ "$1" = rand ] && [ "$2" = -hex ] && [ "$3" = -out ] && [ "$5" = 32 ]\n'
+                "printf '%064d\\n' 0 >\"$4\"\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "openssl").chmod(0o755)
             account = root / ".foundry" / "keystores" / "funder"
             account.parent.mkdir(parents=True)
             account.write_text("{}\n", encoding="utf-8")
@@ -5305,19 +5346,143 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             keystore = root / "governor.json"
             keystore.write_text("{}\n", encoding="utf-8")
             keystore.chmod(0o600)
+            password = root / "password"
+            password.write_text("test-password\n", encoding="utf-8")
+            password.chmod(0o600)
             harness = (
-                'source "$COMMON"\n'
+                'set -e\nsource "$COMMON"\n'
                 + signer_config
                 + "\n"
                 + prepare
                 + "\n"
                 + identity
                 + '\nget_chain_governor_from_wallets() { printf \'%s\\n\' "$EXPECTED_GOVERNOR"; }\n'
-                + "assert_gateway_governor_signer_identity\n"
+                + "assert_gateway_governor_signer_identity || exit $?\n"
+                + 'printf \'args=%s\\n\' "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[*]}"\n'
             )
 
+            generated_harness = (
+                'set -e\nsource "$COMMON"\n'
+                + signer_config
+                + "\n"
+                + generated
+                + "\n"
+                + prepare
+                + "\n"
+                + identity
+                + '\ngateway_release_execute_operator_lock() { :; }\n'
+                + 'get_chain_governor_from_wallets() { printf \'%s\\n\' "$EXPECTED_GOVERNOR"; }\n'
+                + "assert_gateway_governor_signer_identity\n"
+                + 'printf \'temp=%s\\n\' "$GATEWAY_GOVERNOR_TEMP_DIR"\n'
+                + 'printf \'args=%s\\n\' "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[*]}"\n'
+                + "python3 -c 'import os, stat, sys; p=sys.argv[1]; "
+                + 'print(f"mode={stat.S_IMODE(os.stat(p).st_mode):o}"); '
+                + 'print(f"size={os.path.getsize(p)}")\' '
+                + '"$GATEWAY_GOVERNOR_TEMP_DIR/password"\n'
+            )
+            generated_env = {
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if key
+                    not in {
+                        "EDGE_GATEWAY_GOVERNOR_SIGNER",
+                        "EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE",
+                        "FUNDER_PASSWORD_FILE",
+                    }
+                },
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "HOME": str(root),
+                "COMMON": str(GATEWAY_COMMON),
+                "GATEWAY_DIR": str(root),
+                "EDGE_CHAIN_NAME": "zksys",
+                "L1_NETWORK": "tanenbaum",
+                "EXPECTED_GOVERNOR": expected,
+                "TEST_SIGNER_ADDRESS": expected,
+                "FUNDER_SIGNER": "account",
+            }
+            generated_default = subprocess.run(
+                ["bash", "-c", generated_harness],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=generated_env,
+            )
+            self.assertEqual(
+                generated_default.returncode, 0, generated_default.stderr
+            )
+            generated_result = dict(
+                line.split("=", 1)
+                for line in generated_default.stdout.splitlines()
+                if "=" in line
+            )
+            temporary_keystore = Path(generated_result["temp"])
+            self.assertEqual(generated_result["mode"], "600")
+            self.assertEqual(generated_result["size"], "65")
+            self.assertIn(
+                f"--keystore {temporary_keystore}", generated_result["args"]
+            )
+            self.assertIn(
+                f"--password-file {temporary_keystore / 'password'}",
+                generated_result["args"],
+            )
+            self.assertFalse(temporary_keystore.exists())
+
+            external_harness = (
+                'set -e\nsource "$COMMON"\n'
+                + signer_config
+                + "\n"
+                + prepare
+                + "\nprepare_gateway_governor_forge_wallet_args\n"
+                + 'printf \'%s\\n\' "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[*]}"\n'
+            )
+            for signer, expected_flag in (
+                ("ledger", "--ledger"),
+                ("trezor", "--trezor"),
+                ("aws", "--aws"),
+                ("gcp", "--gcp"),
+                ("private-key", "--private-key"),
+            ):
+                with self.subTest(external_signer=signer):
+                    external = subprocess.run(
+                        ["bash", "-c", external_harness],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **{
+                                key: value
+                                for key, value in os.environ.items()
+                                if key
+                                not in {
+                                    "EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY",
+                                    "FUNDER_PRIVATE_KEY",
+                                }
+                            },
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            "HOME": str(root),
+                            "COMMON": str(GATEWAY_COMMON),
+                            "L1_NETWORK": (
+                                "localhost"
+                                if signer == "private-key"
+                                else "tanenbaum"
+                            ),
+                            "EDGE_GATEWAY_GOVERNOR_SIGNER": signer,
+                            "FUNDER_PASSWORD_FILE": str(root / "irrelevant-missing"),
+                        },
+                    )
+                    self.assertEqual(external.returncode, 0, external.stderr)
+                    self.assertIn(expected_flag, external.stdout)
+                    self.assertNotIn("--password-file", external.stdout)
+
             for signer, overrides in (
-                ("account", {"FUNDER_SIGNER": "account"}),
+                (
+                    "account",
+                    {
+                        "EDGE_GATEWAY_GOVERNOR_SIGNER": "account",
+                        "FUNDER_SIGNER": "account",
+                    },
+                ),
                 (
                     "keystore",
                     {
@@ -5336,6 +5501,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                         "L1_NETWORK": "tanenbaum",
                         "EXPECTED_GOVERNOR": expected,
                         "TEST_SIGNER_ADDRESS": wrong,
+                        "FUNDER_PASSWORD_FILE": str(password),
                         **overrides,
                     }
                     mismatch = subprocess.run(
@@ -5356,6 +5522,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                         env={**env, "TEST_SIGNER_ADDRESS": expected},
                     )
                     self.assertEqual(matched.returncode, 0, matched.stderr)
+                    self.assertIn(
+                        f"--password-file {password}", matched.stdout
+                    )
 
     def test_migration_preflight_validates_funder_separately_from_governor(
         self,
