@@ -1179,22 +1179,13 @@ run_ecosystem_init() {
 # This command loads the authenticated persisted graph and can reach only the
 # state-gated owner/admin handoff helpers.
 run_owner_reconciliation() {
-  local -a serialization_args=()
-  case "$(gl_to_lower "${L1_NETWORK:-}")" in
-  tanenbaum | mainnet)
-    # SYSCOIN: External-chain recovery must mine each state-gated authority
-    # transaction before Forge submits the next one.
-    serialization_args=(-a --slow)
-    ;;
-  esac
   gl_zkstack_pty zkstack ecosystem init-core-contracts \
     --zksync-os \
     --ownership-only \
     --update-submodules false \
     --skip-contract-compilation-override true \
     --l1-rpc-url "${L1_RPC_URL}" \
-    --deploy-erc20 false \
-    "${serialization_args[@]}"
+    --deploy-erc20 false
 }
 
 ecosystem_contracts_ready() {

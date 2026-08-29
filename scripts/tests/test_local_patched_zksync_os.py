@@ -4038,11 +4038,41 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("resume_args+=(--resume)", resumable)
         self.assertIn("zkstack ecosystem init-core-contracts", resumable)
         self.assertIn("--ownership-only", resumable)
-        self.assertIn("tanenbaum | mainnet", resumable)
-        self.assertIn("serialization_args=(-a --slow)", resumable)
-        self.assertLess(
-            resumable.index("--ownership-only"),
-            resumable.index('"${serialization_args[@]}"'),
+        owner_start = resumable.index("run_owner_reconciliation() {")
+        owner_end = resumable.index("\n}\n", owner_start) + len("\n}")
+        owner_function = resumable[owner_start:owner_end]
+        owner_command = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                "gl_zkstack_pty() { printf '%s\\n' \"$@\"; }\n"
+                + owner_function
+                + "\nrun_owner_reconciliation\n",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "L1_RPC_URL": "http://l1.invalid:8545"},
+        )
+        self.assertEqual(owner_command.returncode, 0, owner_command.stderr)
+        self.assertEqual(
+            owner_command.stdout.splitlines(),
+            [
+                "zkstack",
+                "ecosystem",
+                "init-core-contracts",
+                "--zksync-os",
+                "--ownership-only",
+                "--update-submodules",
+                "false",
+                "--skip-contract-compilation-override",
+                "true",
+                "--l1-rpc-url",
+                "http://l1.invalid:8545",
+                "--deploy-erc20",
+                "false",
+            ],
         )
         self.assertEqual(retry_loop.count('run_ecosystem_init "${resume_attempt}"'), 1)
         self.assertIn('GATEWAY_ECOSYSTEM_RESUME_FIRST:=false', deploy)
