@@ -43,7 +43,7 @@ fn verify_syscoin_source(manifest: &Path) -> anyhow::Result<()> {
     require_source_sha256(
         source_root,
         "basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs",
-        "99a0ae0dfc013ce7beacc60df0a487b35fd2af1fdcb04103ba438353cbd2a3bd",
+        "b2c21b485a3460598f3c26bcdc6f6dcd9fb7e7b7ffb6419b56a968b529aa0c3c",
     )?;
     require_source_sha256(
         source_root,

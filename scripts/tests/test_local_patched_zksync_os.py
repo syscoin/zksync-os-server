@@ -41,7 +41,7 @@ PUBLISHED_GAS_TANK_RUNTIME_HASH = (
     "0x041faf31b2f3576502f25fd5d106eaf411611e42dc996c28872abe487cb6e269"
 )
 PUBLISHED_EDGE_SOURCE_SHA256 = (
-    "99a0ae0dfc013ce7beacc60df0a487b35fd2af1fdcb04103ba438353cbd2a3bd"
+    "b2c21b485a3460598f3c26bcdc6f6dcd9fb7e7b7ffb6419b56a968b529aa0c3c"
 )
 PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
@@ -3655,6 +3655,19 @@ gl_checkpoint_assert_fingerprint_matches
             / "patches"
             / "zksync-os-syscoin-v0.4.0.patch"
         ).read_text(encoding="utf-8")
+        edge_diff = patch.split(
+            "diff --git a/basic_bootloader/src/bootloader/transaction_flow/zk/syscoin_edge_da.rs ",
+            1,
+        )[1].split("\ndiff --git ", 1)[0]
+        edge_source = "\n".join(
+            line[1:]
+            for line in edge_diff.splitlines()
+            if line.startswith("+") and not line.startswith("+++")
+        ) + "\n"
+        self.assertEqual(
+            hashlib.sha256(edge_source.encode()).hexdigest(),
+            PUBLISHED_EDGE_SOURCE_SHA256,
+        )
         self.assertNotIn("canonical_upgrade_tx_hash", patch)
         self.assertNotIn("canonical upgrade tx hash", patch)
         self.assertNotIn("blob_data_id_advice", patch)
