@@ -2110,9 +2110,106 @@ PY
 # run-gateway-launch uses `exec > >(tee log)`: stdout is a pipe, not a TTY. zkstack/cliclack then
 # panics (select.rs NotConnected). util-linux `script` runs the command with a real PTY slave.
 gl_zkstack_pty() {
+  [ "$#" -gt 0 ] || return 1
   if [[ "$(uname -s)" == "Linux" ]]; then
+    local command_line original_command guard guard_q bash_q group_q
+    local rc_dir rc_path hold_fd="" read_fd="" write_fd=""
+    local had_varredir=false published="" script_rc=0
+    original_command="$(printf '%q ' "$@")"
+    if [ "${GATEWAY_REPAIR_OWNED_GROUP_COMMAND:-false}" = true ]; then
+      # SYSCOIN: script(1)'s PTY child escapes the repair PGID via setsid(2).
+      # Keep its Bash as session leader and report only after its group is dead.
+      [[ "${GATEWAY_VALIDATOR_CHILD_PGID:-}" =~ ^[1-9][0-9]*$ ]] && \
+        [ "$(python3 -c 'import os; print(os.getpgrp())')" = \
+          "${GATEWAY_VALIDATOR_CHILD_PGID}" ] || return 1
+      ((BASH_VERSINFO[0] >= 4)) || return 1
+      rc_dir="$(mktemp -d "${TMPDIR:-/tmp}/gateway-pty-return.XXXXXX")" || return $?
+      chmod 700 "${rc_dir}" || { rmdir "${rc_dir}"; return 1; }
+      rc_path="${rc_dir}/record"
+      (umask 077 && mkfifo "${rc_path}") || { rmdir "${rc_dir}"; return 1; }
+      shopt -q varredir_close 2>/dev/null && had_varredir=true
+      shopt -u varredir_close 2>/dev/null || true
+      # Linux FIFO bootstrap: open O_RDWR first so distinct read/write opens cannot block.
+      exec {hold_fd}<>"${rc_path}" || {
+        [ "${had_varredir}" = false ] || shopt -s varredir_close
+        rm -f -- "${rc_path}"; rmdir "${rc_dir}"; return 1
+      }
+      exec {read_fd}<"${rc_path}" || {
+        exec {hold_fd}>&-
+        [ "${had_varredir}" = false ] || shopt -s varredir_close
+        rm -f -- "${rc_path}"; rmdir "${rc_dir}"; return 1
+      }
+      exec {write_fd}>"${rc_path}" || {
+        exec {read_fd}<&-; exec {hold_fd}>&-
+        [ "${had_varredir}" = false ] || shopt -s varredir_close
+        rm -f -- "${rc_path}"; rmdir "${rc_dir}"; return 1
+      }
+      [ "${had_varredir}" = false ] || shopt -s varredir_close
+      if ! python3 - "${rc_dir}" "${rc_path}" \
+        "${hold_fd}" "${read_fd}" "${write_fd}" <<'PY'
+import fcntl, os, stat, sys
+directory, path = sys.argv[1:3]
+fds = list(map(int, sys.argv[3:]))
+directory_info = os.lstat(directory)
+path_info, fd_infos = os.lstat(path), [os.fstat(fd) for fd in fds]
+identity = path_info.st_dev, path_info.st_ino
+def secure(info):
+    return (stat.S_ISFIFO(info.st_mode) and info.st_uid == os.geteuid()
+            and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600
+            and (info.st_dev, info.st_ino) == identity)
+directions = [os.O_RDWR, os.O_RDONLY, os.O_WRONLY]
+if not (stat.S_ISDIR(directory_info.st_mode)
+        and directory_info.st_uid == os.geteuid()
+        and stat.S_IMODE(directory_info.st_mode) == 0o700
+        and secure(path_info) and all(map(secure, fd_infos))
+        and all(fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE == direction
+                for fd, direction in zip(fds, directions))):
+    raise SystemExit(1)
+os.unlink(path)
+if any(os.fstat(fd).st_nlink for fd in fds): raise SystemExit(1)
+os.rmdir(directory)
+PY
+      then
+        exec {write_fd}>&-; exec {read_fd}<&-; exec {hold_fd}>&-
+        rm -f -- "${rc_path}"; rmdir "${rc_dir}" 2>/dev/null || true
+        return 1
+      fi
+      rc_dir=""; rc_path=""; exec {hold_fd}>&-
+      guard="set +e; set +m; gl_zkstack_pty_abort() { trap '' HUP INT QUIT TERM PIPE; kill -TERM -- \"-\$\$\" 2>/dev/null || true; sleep 1; kill -KILL -- \"-\$\$\" 2>/dev/null || exit 143; }; trap gl_zkstack_pty_abort HUP INT QUIT TERM PIPE; exec ${read_fd}<&-; gl_zkstack_pty_parent=\"\$1\"; gl_zkstack_pty_outer_pgid=\"\$2\"; gl_zkstack_pty_status_fd=\"\$3\"; shift 3; [[ \"\${gl_zkstack_pty_status_fd}\" =~ ^[1-9][0-9]*$ ]] || gl_zkstack_pty_abort; python3 -c 'import os,pathlib,sys; child,parent,outer=map(int,sys.argv[1:]); lines=pathlib.Path(f\"/proc/{child}/status\").read_text().splitlines(); actual_parent=int(next(line for line in lines if line.startswith(\"PPid:\")).split()[1]); ok=actual_parent==parent and os.getpgid(child)==child and os.getsid(child)==child and os.getpgid(parent)==outer; raise SystemExit(0 if ok else 1)' \"\$\$\" \"\${gl_zkstack_pty_parent}\" \"\${gl_zkstack_pty_outer_pgid}\" || gl_zkstack_pty_abort; ( exec ${write_fd}>&-; trap - INT QUIT; exec \"\$@\" ) <&0 & gl_zkstack_pty_pid=\$!; wait \"\${gl_zkstack_pty_pid}\"; gl_zkstack_pty_rc=\$?; printf 'return:%s\\n' \"\${gl_zkstack_pty_rc}\" >&\"\${gl_zkstack_pty_status_fd}\" || gl_zkstack_pty_abort; gl_zkstack_pty_abort"
+      printf -v guard_q '%q' "${guard}"
+      printf -v bash_q '%q' "${BASH}"
+      printf -v group_q '%q' "${GATEWAY_VALIDATOR_CHILD_PGID}"
+      command_line="exec setpriv --pdeathsig TERM ${bash_q} -c ${guard_q} bash \"\$PPID\" ${group_q} ${write_fd} ${original_command}"
+      SHELL="${BASH}" BASH_ENV=/dev/null \
+        script -e -q -c "${command_line}" /dev/null || script_rc=$?
+      exec {write_fd}>&-
+      published="$(python3 - "${read_fd}" <<'PY'
+import os, re, sys
+fd = int(sys.argv[1])
+data, oversize = bytearray(), False
+while True:
+    chunk = os.read(fd, 4096)
+    if not chunk: break
+    room = max(0, 33 - len(data))
+    data.extend(chunk[:room])
+    oversize |= len(chunk) > room
+match = None if oversize else re.fullmatch(
+    rb"return:([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\n", bytes(data)
+)
+if match is None: raise SystemExit(1)
+print(int(match.group(1)))
+PY
+      )" || published=""
+      exec {read_fd}<&-
+      if [ "${script_rc}" -eq 137 ] && [[ "${published}" =~ ^([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$ ]]; then
+        return "${published}"
+      fi
+      [ "${script_rc}" -ne 0 ] && return "${script_rc}"
+      return 1
+    fi
     # SYSCOIN: preserve the wrapped zkstack exit status; migration callers rely on set -e.
-    script -e -q -c "$(printf '%q ' "$@")" /dev/null
+    SHELL="${BASH}" BASH_ENV=/dev/null \
+      script -e -q -c "${original_command}" /dev/null
   else
     "$@"
   fi

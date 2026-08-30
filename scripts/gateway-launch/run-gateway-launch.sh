@@ -105,8 +105,9 @@ done
 if [[ -z "${GATEWAY_LAUNCH_IN_SCRIPT:-}" && ( ! -t 0 || ! -t 1 ) ]]; then
   export GATEWAY_LAUNCH_IN_SCRIPT=1
   _q=("$SCRIPT_DIR/run-gateway-launch.sh" "${ORIG_ARGS[@]}")
-  # SYSCOIN: preserve child failures when the launcher allocates a Linux PTY.
-  exec script -e -q -c "$(printf '%q ' "${_q[@]}")" /dev/null
+  # SYSCOIN: force Bash for Bash-escaped argv and reject ambient startup hooks.
+  exec env SHELL="${BASH}" BASH_ENV=/dev/null \
+    script -e -q -c "$(printf '%q ' "${_q[@]}")" /dev/null
 fi
 
 : "${GATEWAY_LAUNCH_LOG:=${HOME}/gateway-launch.log}"

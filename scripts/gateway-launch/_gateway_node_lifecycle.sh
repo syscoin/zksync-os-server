@@ -687,6 +687,10 @@ PY
       [ "${child_group_pgid}" = "${actual_child_pgid}" ] || \
       validator_publish_and_hold fatal 1
     readonly GATEWAY_VALIDATOR_CHILD_PGID="${child_group_pgid}"
+    export GATEWAY_VALIDATOR_CHILD_PGID
+    # SYSCOIN: util-linux script(1) creates a new PTY session. Tell the shared
+    # PTY runner to contain that nested session while this owned group runs.
+    export GATEWAY_REPAIR_OWNED_GROUP_COMMAND=true
     GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
     "$@" || child_rc=$?
     trap - EXIT
@@ -916,7 +920,7 @@ PY
 }
 
 stop_gateway_for_migration() {
-  local chain_name config_path cleanup_rc stop_timeout_s
+  local chain_name config_path cleanup_rc stop_timeout_s validator_stop_timeout_s
   cleanup_rc=0
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   config_path="${GATEWAY_DIR}/os-server-configs/${chain_name}/config.yaml"
@@ -935,9 +939,13 @@ stop_gateway_for_migration() {
     fi
   fi
   if [ -n "${GATEWAY_MIGRATION_VALIDATOR_PID}" ]; then
+    validator_stop_timeout_s="${stop_timeout_s}"
+    # SYSCOIN: let script(1) forward the signal and the nested PTY group finish
+    # its one-second bounded cleanup before the outer owned PGID is escalated.
+    [ "${validator_stop_timeout_s}" -ge 3 ] || validator_stop_timeout_s=3
     if gateway_terminate_launcher_group \
       "${GATEWAY_MIGRATION_VALIDATOR_PID}" \
-      "${GATEWAY_MIGRATION_CANCEL_SIGNAL:-TERM}" "${stop_timeout_s}" \
+      "${GATEWAY_MIGRATION_CANCEL_SIGNAL:-TERM}" "${validator_stop_timeout_s}" \
       "repair validator process group"; then
       GATEWAY_MIGRATION_VALIDATOR_PID=""
       gateway_clear_validator_control_dir

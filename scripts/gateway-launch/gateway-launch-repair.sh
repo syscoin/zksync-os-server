@@ -203,30 +203,36 @@ handle_direct_gateway_validation_exit() {
   local exit_rc=$?
   trap '' INT TERM
   trap - EXIT
-  # SYSCOIN: retire a fatally aborted repair validation only after its exact
-  # validator group and launcher-owned Gateway node have been cleaned up.
+  # SYSCOIN: retire a fatally aborted supervised repair only after its exact
+  # command group and launcher-owned Gateway node have been cleaned up.
   cleanup_gateway_for_migration_on_exit
   if [ "${exit_rc}" -ne 0 ]; then
     (
       gl_checkpoint_mark_blocked \
-        "${CHECKPOINT_ID}" "repair validation aborted with exit code ${exit_rc}"
+        "${CHECKPOINT_ID}" "supervised repair aborted with exit code ${exit_rc}"
     ) || true
   fi
   exit "${exit_rc}"
 }
 
+run_supervised_gateway_repair_operation() {
+  local operation_rc=0
+  # SYSCOIN: mutating recovery and read-only validation share one scoped,
+  # journal-aware owned-group lifecycle.
+  trap handle_direct_gateway_validation_exit EXIT
+  GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
+  "$@" || operation_rc=$?
+  GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
+  install_gateway_migration_cleanup_traps
+  return "${operation_rc}"
+}
+
 validate_checkpoint_for_repair() {
-  local validation_rc=0
   case "${1:?checkpoint id required}" in
   gl.edge_chain_inited | gl.migration)
     # SYSCOIN: keep Gateway state in this repair shell, but isolate the actual
     # validator and all of its descendants in an exact supervised process group.
-    trap handle_direct_gateway_validation_exit EXIT
-    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true
-    validate_checkpoint "$1" || validation_rc=$?
-    GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=false
-    install_gateway_migration_cleanup_traps
-    return "${validation_rc}"
+    run_supervised_gateway_repair_operation validate_checkpoint "$1"
     ;;
   *) (validate_checkpoint "$1") ;;
   esac
@@ -276,9 +282,12 @@ perform_repair_step() {
       echo "gateway-launch-repair: edge init can resume only an exact prior in_progress created-only state" >&2
       return 1
     }
-    run_with_gateway_for_migration env \
-      GATEWAY_EDGE_CREATED_ONLY_REPAIR=true \
-      "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only
+    # SYSCOIN: chain init may broadcast and is not replay-safe. Keep the exact
+    # resume command and all descendants in repair's bounded owned PGID.
+    run_supervised_gateway_repair_operation \
+      run_with_gateway_for_migration env \
+        GATEWAY_EDGE_CREATED_ONLY_REPAIR=true \
+        "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only
   ;;
   gl.migration)
     # SYSCOIN: migration pauses deposits and finalizes settlement changes.

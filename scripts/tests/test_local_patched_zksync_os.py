@@ -1225,6 +1225,14 @@ class CreatedOnlyEdgeRepairTests(unittest.TestCase):
             '"${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only', repair
         )
         self.assertIn("GATEWAY_EDGE_CREATED_ONLY_REPAIR=true", repair)
+        edge_repair = repair.split("gl.edge_chain_inited)", 2)[2].split(
+            "gl.migration)", 1
+        )[0]
+        self.assertIn("run_supervised_gateway_repair_operation", edge_repair)
+        self.assertLess(
+            edge_repair.index("run_supervised_gateway_repair_operation"),
+            edge_repair.index("run_with_gateway_for_migration"),
+        )
         self.assertGreaterEqual(
             edge.count("gl_assert_edge_created_only_resume_safe"), 2
         )
@@ -5602,11 +5610,20 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             "validate_checkpoint_for_repair() {", 1
         )[1].split("\n}", 1)[0]
         self.assertIn("gl.edge_chain_inited | gl.migration", repair_validation)
+        supervised_repair = repair.split(
+            "run_supervised_gateway_repair_operation() {", 1
+        )[1].split("\n}", 1)[0]
         self.assertIn(
             "GATEWAY_MIGRATION_REPAIR_GROUP_COMMAND=true",
+            supervised_repair,
+        )
+        self.assertIn(
+            "trap handle_direct_gateway_validation_exit EXIT", supervised_repair
+        )
+        self.assertIn(
+            "run_supervised_gateway_repair_operation validate_checkpoint",
             repair_validation,
         )
-        self.assertIn("trap handle_direct_gateway_validation_exit EXIT", repair_validation)
         self.assertIn('*) (validate_checkpoint "$1")', repair_validation)
         direct_exit = repair.split(
             "handle_direct_gateway_validation_exit() {", 1
@@ -6444,6 +6461,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
     ) -> None:
         launcher = REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
         launcher_text = launcher.read_text(encoding="utf-8")
+        self.assertIn(
+            'exec env SHELL="${BASH}" BASH_ENV=/dev/null', launcher_text
+        )
         guard = launcher_text.index(
             'gl_die "run-gateway-launch.sh requires canonical edge zksys/57057"'
         )
@@ -7238,9 +7258,298 @@ exit 99
                     order_file.read_text(encoding="utf-8").splitlines(),
                     [
                         f"cleanup:{cleanup_signal}",
-                        f"blocked:gl.migration:repair validation aborted with exit code {expected_rc}",
+                        f"blocked:gl.migration:supervised repair aborted with exit code {expected_rc}",
                     ],
                 )
+
+    def test_owned_pty_cleans_nested_session_and_preserves_status(self) -> None:
+        if not sys.platform.startswith("linux"):
+            self.skipTest("requires Linux process/session semantics")
+        script_path, setpriv_path = shutil.which("script"), shutil.which("setpriv")
+        if not script_path or not setpriv_path:
+            self.skipTest("util-linux script(1) and setpriv(1) are required")
+        version = subprocess.run(
+            [script_path, "--version"], capture_output=True, text=True
+        )
+        if version.returncode or "util-linux" not in version.stdout:
+            self.skipTest("util-linux script(1) is required")
+
+        def running(pid: int) -> bool:
+            try:
+                fields = (
+                    Path(f"/proc/{pid}/stat")
+                    .read_text(encoding="utf-8")
+                    .rsplit(")", 1)[1]
+                    .split()
+                )
+                return fields[0] != "Z"
+            except (FileNotFoundError, IndexError, ProcessLookupError):
+                return False
+
+        def parent_pid(pid: int) -> int:
+            lines = Path(f"/proc/{pid}/status").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            return int(next(line for line in lines if line.startswith("PPid:")).split()[1])
+
+        def wait_file(path: Path, process: subprocess.Popen[str]) -> None:
+            deadline = time.monotonic() + 5
+            while not path.exists() and time.monotonic() < deadline:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    self.fail(
+                        f"PTY harness exited before ready: {process.returncode}: "
+                        f"{stdout} {stderr}"
+                    )
+                time.sleep(0.01)
+            self.assertTrue(path.exists(), "PTY harness did not become ready")
+
+        helper_source = r'''#!/usr/bin/env python3
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+mode, info, ready, marker, heartbeat = sys.argv[1:]
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, signal.SIG_IGN)
+Path(marker).touch()
+child = os.fork()
+if child == 0:
+    time.sleep(30)
+    raise SystemExit(0)
+Path(info).write_text(
+    f"{os.getpid()}:{os.getpgrp()}:{os.getsid(0)}:{os.getppid()}:{child}",
+    encoding="utf-8",
+)
+Path(heartbeat).write_text(str(time.monotonic_ns()), encoding="utf-8")
+Path(ready).touch()
+if mode == "return":
+    raise SystemExit(37)
+while True:
+    Path(heartbeat).write_text(str(time.monotonic_ns()), encoding="utf-8")
+    time.sleep(0.05)
+'''
+        harness = r'''
+source "$COMMON"
+trap 'exit 130' INT
+trap 'exit 143' TERM
+outer_pgid="$(python3 -c 'import os; print(os.getpgrp())')" || exit
+export GATEWAY_REPAIR_OWNED_GROUP_COMMAND=true
+if [ "$MODE" = mismatch ]; then
+  export GATEWAY_VALIDATOR_CHILD_PGID=$((outer_pgid + 1))
+else
+  export GATEWAY_VALIDATOR_CHILD_PGID="$outer_pgid"
+fi
+export SHELL=/bin/false BASH_ENV="$HOSTILE_ENV"
+gl_zkstack_pty "$HELPER" "$MODE" "$INFO" "$READY" "$MARKER" "$HEARTBEAT"
+exit $?
+'''
+
+        sibling = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal,time; "
+                "[signal.signal(s,signal.SIG_IGN) for s in "
+                "(signal.SIGHUP,signal.SIGINT,signal.SIGTERM)]; time.sleep(30)",
+            ],
+            start_new_session=True,
+        )
+        try:
+            cases = (
+                ("return", None, 37),
+                ("hold", "TERM", 143),
+                ("hold", "INT", 130),
+                ("hold", "KILL_PROXY", 137),
+                ("mismatch", None, 1),
+            )
+            for mode, action, expected in cases:
+                with self.subTest(
+                    mode=mode, action=action
+                ), tempfile.TemporaryDirectory() as temporary_dir:
+                    root = Path(temporary_dir)
+                    helper, info, ready = root / "helper", root / "info", root / "ready"
+                    marker, hostile_marker = root / "marker", root / "hostile-ran"
+                    heartbeat = root / "heartbeat"
+                    hostile = root / "hostile-env"
+                    helper.write_text(helper_source, encoding="utf-8")
+                    helper.chmod(0o755)
+                    hostile.write_text(
+                        'printf x >"$HOSTILE_MARKER"; exit 88\n', encoding="utf-8"
+                    )
+                    env = {
+                        **os.environ,
+                        "BASH_ENV": "/dev/null",
+                        "COMMON": str(GATEWAY_COMMON),
+                        "HELPER": str(helper),
+                        "HEARTBEAT": str(heartbeat),
+                        "HOSTILE_ENV": str(hostile),
+                        "HOSTILE_MARKER": str(hostile_marker),
+                        "INFO": str(info),
+                        "MARKER": str(marker),
+                        "MODE": mode,
+                        "READY": str(ready),
+                        "TMPDIR": str(root),
+                    }
+                    process = subprocess.Popen(
+                        ["bash", "-c", harness],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=env,
+                        start_new_session=True,
+                    )
+                    details: tuple[int, ...] | None = None
+                    try:
+                        if action or mode == "return":
+                            wait_file(ready, process)
+                            details = tuple(map(int, info.read_text(encoding="utf-8").split(":")))
+                        if action in {"TERM", "INT"}:
+                            os.killpg(process.pid, getattr(signal, f"SIG{action}"))
+                        elif action == "KILL_PROXY":
+                            assert details is not None
+                            proxy = parent_pid(details[3])
+                            self.assertEqual(os.getpgid(proxy), process.pid)
+                            os.kill(proxy, signal.SIGKILL)
+                        stdout, stderr = process.communicate(timeout=8)
+                        self.assertEqual(process.returncode, expected, stderr)
+                        if mode == "mismatch":
+                            self.assertFalse(marker.exists())
+                        else:
+                            assert details is not None
+                            command, inner_pgid, inner_sid, guard, child = details
+                            self.assertEqual(inner_pgid, inner_sid)
+                            self.assertEqual(guard, inner_pgid)
+                            self.assertNotEqual(command, inner_pgid)
+                            self.assertFalse(
+                                [pid for pid in (command, guard, child) if running(pid)]
+                            )
+                        self.assertFalse(hostile_marker.exists())
+                        self.assertEqual(list(root.glob("gateway-pty-return.*")), [])
+                        self.assertIsNone(sibling.poll())
+                    finally:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait(timeout=2)
+                        if details is not None:
+                            command, pgid, sid, guard, child = details
+                            if pgid == sid == guard and any(
+                                running(pid) for pid in (command, guard, child)
+                            ):
+                                try:
+                                    os.killpg(pgid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+
+            repair = (
+                REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+            ).read_text(encoding="utf-8")
+            supervised = "handle_direct_gateway_validation_exit() {" + repair.split(
+                "handle_direct_gateway_validation_exit() {", 1
+            )[1].split("validate_checkpoint_for_repair() {", 1)[0]
+            repair_harness = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+__SUPERVISED__
+gl_checkpoint_mark_blocked() {
+  python3 - "$INFO" "$HEARTBEAT" "$BLOCKED" "$1" "$2" <<'PY'
+import sys, time
+from pathlib import Path
+
+info, heartbeat, blocked = map(Path, sys.argv[1:4])
+command, _, _, guard, child = map(int, info.read_text().split(":"))
+def running(pid):
+    try: return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError: return False
+before = heartbeat.read_bytes()
+if any(running(pid) for pid in (command, guard, child)): raise SystemExit(1)
+time.sleep(0.2)
+if heartbeat.read_bytes() != before: raise SystemExit(1)
+blocked.write_text(f"{sys.argv[4]}:{sys.argv[5]}\n", encoding="utf-8")
+PY
+}
+mutating_operation() {
+  gl_zkstack_private_pty "$HELPER" hold "$INFO" "$READY" "$MARKER" "$HEARTBEAT"
+}
+CHECKPOINT_ID=gl.edge_chain_inited
+GATEWAY_MIGRATION_GATEWAY_STOP_TIMEOUT=0
+install_gateway_migration_cleanup_traps
+( while [ ! -f "$READY" ]; do sleep 0.01; done; kill -TERM "$$" ) &
+run_supervised_gateway_repair_operation \
+  run_gateway_repair_validator_in_owned_group mutating_operation
+exit 99
+'''.replace("__SUPERVISED__", supervised)
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                root = Path(temporary_dir)
+                helper, info, ready = root / "helper", root / "info", root / "ready"
+                heartbeat, blocked = root / "heartbeat", root / "blocked"
+                helper.write_text(helper_source, encoding="utf-8")
+                helper.chmod(0o755)
+                process = subprocess.Popen(
+                    ["bash", "-c", repair_harness],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=gateway_harness_env(
+                        root,
+                        BLOCKED=str(blocked),
+                        GATEWAY_DIR=str(root / "gateway"),
+                        HEARTBEAT=str(heartbeat),
+                        HELPER=str(helper),
+                        INFO=str(info),
+                        MARKER=str(root / "marker"),
+                        READY=str(ready),
+                        TMPDIR=str(root),
+                        BASH_ENV="/dev/null",
+                    ),
+                    start_new_session=True,
+                )
+                started = time.monotonic()
+                try:
+                    stdout, stderr = process.communicate(timeout=12)
+                    self.assertEqual(process.returncode, 143, stderr)
+                    self.assertGreaterEqual(time.monotonic() - started, 2.8)
+                    details = tuple(map(int, info.read_text(encoding="utf-8").split(":")))
+                    self.assertFalse(
+                        [pid for pid in (details[0], details[3], details[4]) if running(pid)]
+                    )
+                    self.assertEqual(
+                        blocked.read_text(encoding="utf-8"),
+                        "gl.edge_chain_inited:supervised repair aborted with exit code 143\n",
+                    )
+                    self.assertEqual(list(root.glob("gateway-validator.*")), [])
+                    self.assertIsNone(sibling.poll())
+                finally:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=2)
+                    for go_file in root.glob("gateway-validator.*/go"):
+                        try:
+                            validator = int(go_file.read_text(encoding="utf-8"))
+                            if (
+                                os.getpgid(validator) == validator
+                                and os.getsid(validator) == process.pid
+                            ):
+                                os.killpg(validator, signal.SIGKILL)
+                        except (OSError, ValueError):
+                            pass
+                    if info.exists():
+                        command, pgid, sid, guard, child = map(
+                            int, info.read_text(encoding="utf-8").split(":")
+                        )
+                        if pgid == sid == guard and any(
+                            running(pid) for pid in (command, guard, child)
+                        ):
+                            try:
+                                os.killpg(pgid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+        finally:
+            if sibling.poll() is None:
+                os.killpg(sibling.pid, signal.SIGKILL)
+            sibling.wait(timeout=2)
 
     def test_gateway_cleanup_parses_portable_pid_output_and_fails_closed(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
