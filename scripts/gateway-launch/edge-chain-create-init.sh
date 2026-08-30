@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+RESUME_CREATED_ONLY=false
+case "$#:${1:-}" in
+0:) ;;
+1:--resume-created-only) RESUME_CREATED_ONLY=true ;;
+*) gl_die "usage: edge-chain-create-init.sh [--resume-created-only]" ;;
+esac
 gl_require ZKSYNC_ERA_PATH
 gl_require L1_RPC_URL
 gl_require L1_CHAIN_ID
@@ -52,13 +58,26 @@ fi
 gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_network_pair
-gl_bind_edge_launch_context
+if [ "${RESUME_CREATED_ONLY}" = true ]; then
+  # SYSCOIN: Repair must inherit an existing checkpoint identity; it may not
+  # manufacture a new launch context from the recovery invocation's inputs.
+  gl_acquire_gateway_launch_lock
+  gl_assert_edge_launch_context
+else
+  gl_bind_edge_launch_context
+fi
 gl_l1_broadcast_preflight
 
 # SYSCOIN: This helper is also used directly for additional edges and by the
 # repair command. Authenticate the configured and live Gateway before any edge
 # wallet is consumed or chain-creation transaction can be broadcast.
 gl_assert_gateway_runtime_identity
+
+if [ "${RESUME_CREATED_ONLY}" = true ]; then
+  [ "${GATEWAY_EDGE_CREATED_ONLY_REPAIR:-false}" = true ] || \
+    gl_die "--resume-created-only is internal to gateway-launch-repair.sh"
+  gl_assert_edge_created_only_resume_safe
+fi
 
 if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
   gl_require EDGE_WALLET_PATH
@@ -71,7 +90,10 @@ if [ "${EDGE_WALLET_CREATION}" = "in-file" ]; then
 fi
 
 edge_chain_created=false
-if [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
+if [ "${RESUME_CREATED_ONLY}" = true ]; then
+  edge_chain_created=true
+  echo "gateway-launch: resuming exact created-only edge ${EDGE_CHAIN_NAME}"
+elif [ -f "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/ZkStack.yaml" ]; then
   echo "gateway-launch: edge chain ${EDGE_CHAIN_NAME} already exists; skipping chain create"
 else
   gl_zkstack_private_pty zkstack chain create \
@@ -267,6 +289,12 @@ if [ "${SKIP_FUND}" != "true" ]; then
     "${SCRIPT_DIR}/fund-wallets.sh"
 else
   echo "gateway-launch: SKIP_FUND=true, skipping edge wallet funding"
+fi
+
+if [ "${RESUME_CREATED_ONLY}" = true ]; then
+  # SYSCOIN: Funding confirmation may take minutes. Re-attest the zero
+  # registration and synchronized governor nonce immediately before init.
+  gl_assert_edge_created_only_resume_safe
 fi
 
 init_output=""

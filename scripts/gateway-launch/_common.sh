@@ -934,6 +934,115 @@ gl_assert_edge_chain_config_matches_expected() {
     "rollup"
 }
 
+# SYSCOIN: `zkstack chain init` is not replay-safe after its first local or L1
+# mutation. Repair may continue only the exact post-`chain create` state, while
+# the launch lock and checkpoint fingerprint still bind this edge identity.
+gl_assert_edge_created_only_resume_safe() {
+  gl_require GATEWAY_DIR
+  gl_require L1_RPC_URL
+  local checkpoint_id status edge_chain_name resolved gateway_governor edge_governor
+  local edge_governor_matches gateway_chain_id edge_chain_id bridgehub
+  local gateway_diamond edge_diamond chain_admin ecosystem_governor latest_nonce pending_nonce
+
+  gl_acquire_gateway_launch_lock || return $?
+  gl_assert_edge_launch_context || return $?
+  for checkpoint_id in gl.os_configs_gateway gl.edge_chain_inited gl.migration gl.os_configs_final; do
+    status="$(gl_checkpoint_get_status "${checkpoint_id}")" || return $?
+    case "${checkpoint_id}:${status}" in
+    gl.os_configs_gateway:passed | gl.edge_chain_inited:in_progress | gl.migration:pending | gl.os_configs_final:pending) ;;
+    *) gl_die "created-only edge repair has unsafe checkpoint state ${checkpoint_id}=${status}" ;;
+    esac
+  done
+
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  python3 - \
+    "${GATEWAY_DIR}/chains" \
+    "${edge_chain_name}" \
+    "${GATEWAY_DIR}/os-server-configs" <<'PY' || return $?
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+chains_root = Path(sys.argv[1])
+chain_name = sys.argv[2]
+output_root = Path(sys.argv[3])
+if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", chain_name) is None:
+    raise SystemExit("invalid edge chain name for created-only repair")
+
+
+def require_safe_dir(path):
+    info = os.lstat(path)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise SystemExit(f"unsafe created-only edge directory: {path}")
+
+
+def require_safe_file(path, secret=False):
+    info = os.lstat(path)
+    forbidden_mode = 0o077 if secret else 0o022
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & forbidden_mode
+    ):
+        raise SystemExit(f"unsafe created-only edge file: {path}")
+
+
+chain_root = chains_root / chain_name
+configs = chain_root / "configs"
+for path in (chains_root, chain_root, configs, output_root):
+    require_safe_dir(path)
+require_safe_file(chain_root / "ZkStack.yaml")
+require_safe_file(configs / "wallets.yaml", secret=True)
+
+if {path.name for path in chain_root.iterdir()} != {"ZkStack.yaml", "configs"}:
+    raise SystemExit(f"edge directory is not the exact post-chain-create state: {chain_root}")
+if {path.name for path in configs.iterdir()} != {"wallets.yaml"}:
+    raise SystemExit(f"edge configs are not the exact post-chain-create state: {configs}")
+
+edge_output = output_root / chain_name
+try:
+    os.lstat(edge_output)
+except FileNotFoundError:
+    pass
+else:
+    raise SystemExit(f"edge OS-server config already exists: {edge_output}")
+PY
+
+  gl_assert_edge_chain_config_matches_expected || return $?
+  resolved="$(gl_edge_governor_reuse_context)" || return $?
+  IFS='|' read -r gateway_governor edge_governor edge_governor_matches \
+    gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond <<<"${resolved}"
+  [ -z "${edge_diamond}" ] || \
+    gl_die "created-only edge repair found a persisted edge diamond"
+  gl_assert_registered_chain_owned_by_governor \
+    "${bridgehub}" "${gateway_chain_id}" "${gateway_governor}" \
+    "Gateway" "${gateway_diamond}" || return $?
+  chain_admin="$(gl_registered_chain_admin \
+    "${bridgehub}" "${edge_chain_id}" "edge" "")" || return $?
+  [ -z "${chain_admin}" ] || \
+    gl_die "created-only edge repair found a live BridgeHub registration"
+
+  ecosystem_governor="$(gl_authenticate_chain_wallet_roles \
+    --print-addresses --ecosystem-only governor)" || return $?
+  latest_nonce="$(cast nonce "${ecosystem_governor}" --block latest --rpc-url "${L1_RPC_URL}")" || \
+    gl_die "failed to read the ecosystem governor latest nonce"
+  pending_nonce="$(cast nonce "${ecosystem_governor}" --block pending --rpc-url "${L1_RPC_URL}")" || \
+    gl_die "failed to read the ecosystem governor pending nonce"
+  [[ "${latest_nonce}" =~ ^[0-9]+$ ]] && [[ "${pending_nonce}" =~ ^[0-9]+$ ]] || \
+    gl_die "invalid ecosystem governor nonce response"
+  [ "${latest_nonce}" = "${pending_nonce}" ] || \
+    gl_die "ecosystem governor ${ecosystem_governor} has pending L1 transactions (latest nonce=${latest_nonce}, pending nonce=${pending_nonce})"
+}
+
 # SYSCOIN: The candidate code/address checks are deployment-agnostic. Pin the
 # first launcher-owned Gateway's immutable block 0 so direct additional-edge
 # helpers cannot attach to another V32 Gateway with the same chain ID and code.

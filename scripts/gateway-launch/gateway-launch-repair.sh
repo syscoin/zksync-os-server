@@ -272,8 +272,13 @@ perform_repair_step() {
     env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh"
     ;;
   gl.edge_chain_inited)
-    echo "gateway-launch-repair: edge init is multi-stage and is not safe to replay automatically" >&2
-    return 1
+    [ "${REPAIR_PRIOR_STATUS}" = in_progress ] || {
+      echo "gateway-launch-repair: edge init can resume only an exact prior in_progress created-only state" >&2
+      return 1
+    }
+    run_with_gateway_for_migration env \
+      GATEWAY_EDGE_CREATED_ONLY_REPAIR=true \
+      "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only
   ;;
   gl.migration)
     # SYSCOIN: migration pauses deposits and finalizes settlement changes.

@@ -1066,6 +1066,185 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
 
 
+class CreatedOnlyEdgeRepairTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_dir.cleanup)
+        self.root = Path(self.temporary_dir.name)
+        self.gateway_dir = self.root / "gateway"
+        self.chain_root = self.gateway_dir / "chains" / "zksys"
+        self.configs = self.chain_root / "configs"
+        self.output_root = self.gateway_dir / "os-server-configs"
+        self.configs.mkdir(parents=True)
+        self.output_root.mkdir(parents=True)
+        (self.chain_root / "ZkStack.yaml").write_text("{}\n", encoding="utf-8")
+        wallet = self.configs / "wallets.yaml"
+        wallet.write_text("{}\n", encoding="utf-8")
+        wallet.chmod(0o600)
+
+    def run_probe(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            **os.environ,
+            "COMMON": str(GATEWAY_COMMON),
+            "GATEWAY_DIR": str(self.gateway_dir),
+            "EDGE_CHAIN_NAME": "zksys",
+            "L1_RPC_URL": "http://l1.invalid",
+            "OS_CONFIG_STATUS": "passed",
+            "EDGE_STATUS": "in_progress",
+            "MIGRATION_STATUS": "pending",
+            "FINAL_CONFIG_STATUS": "pending",
+            "CONTEXT_OK": "true",
+            "CHAIN_IDENTITY_OK": "true",
+            "WALLET_IDENTITY_OK": "true",
+            "EDGE_REGISTERED": "false",
+            "LATEST_NONCE": "7",
+            "PENDING_NONCE": "7",
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    r'''
+                    source "$COMMON"
+                    gl_acquire_gateway_launch_lock() { :; }
+                    gl_assert_edge_launch_context() { [ "$CONTEXT_OK" = true ]; }
+                    gl_checkpoint_get_status() {
+                      case "$1" in
+                      gl.os_configs_gateway) printf '%s\n' "$OS_CONFIG_STATUS" ;;
+                      gl.edge_chain_inited) printf '%s\n' "$EDGE_STATUS" ;;
+                      gl.migration) printf '%s\n' "$MIGRATION_STATUS" ;;
+                      gl.os_configs_final) printf '%s\n' "$FINAL_CONFIG_STATUS" ;;
+                      *) return 91 ;;
+                      esac
+                    }
+                    gl_assert_edge_chain_config_matches_expected() {
+                      [ "$CHAIN_IDENTITY_OK" = true ]
+                    }
+                    gl_edge_governor_reuse_context() {
+                      [ "$WALLET_IDENTITY_OK" = true ] || return 92
+                      printf '%s\n' '0x1111111111111111111111111111111111111111|0x2222222222222222222222222222222222222222|false|57001|57057|0x3333333333333333333333333333333333333333|0x4444444444444444444444444444444444444444|'
+                    }
+                    gl_assert_registered_chain_owned_by_governor() { :; }
+                    gl_registered_chain_admin() {
+                      [ "$EDGE_REGISTERED" != true ] || printf '%s\n' 0x5555555555555555555555555555555555555555
+                    }
+                    gl_authenticate_chain_wallet_roles() {
+                      printf '%s\n' 0x6666666666666666666666666666666666666666
+                    }
+                    cast() {
+                      [ "$1" = nonce ] || return 93
+                      case "$4" in
+                      latest) printf '%s\n' "$LATEST_NONCE" ;;
+                      pending) printf '%s\n' "$PENDING_NONCE" ;;
+                      *) return 94 ;;
+                      esac
+                    }
+                    gl_assert_edge_created_only_resume_safe
+                    '''
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_exact_created_only_state_is_accepted(self) -> None:
+        result = self.run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_init_artifacts_and_edge_os_config_are_refused(self) -> None:
+        for relative in ("configs/general.yaml", "configs/secrets.yaml", "unknown"):
+            with self.subTest(relative=relative):
+                path = self.chain_root / relative
+                path.write_text("unexpected\n", encoding="utf-8")
+                result = self.run_probe()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("exact post-chain-create state", result.stderr)
+                path.unlink()
+
+        edge_output = self.output_root / "zksys"
+        edge_output.mkdir()
+        result = self.run_probe()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("edge OS-server config already exists", result.stderr)
+
+    def test_registration_pending_nonce_and_identity_drift_are_refused(self) -> None:
+        cases = (
+            ({"EDGE_REGISTERED": "true"}, "live BridgeHub registration"),
+            ({"PENDING_NONCE": "8"}, "has pending L1 transactions"),
+            ({"CHAIN_IDENTITY_OK": "false"}, ""),
+            ({"WALLET_IDENTITY_OK": "false"}, ""),
+        )
+        for override, expected in cases:
+            with self.subTest(override=override):
+                result = self.run_probe(**override)
+                self.assertNotEqual(result.returncode, 0)
+                if expected:
+                    self.assertIn(expected, result.stderr)
+
+        wallet = self.configs / "wallets.yaml"
+        wallet.chmod(0o644)
+        unsafe_wallet = self.run_probe()
+        self.assertNotEqual(unsafe_wallet.returncode, 0)
+        self.assertIn("unsafe created-only edge file", unsafe_wallet.stderr)
+
+    def test_checkpoint_order_is_exact_and_blocked_never_resumes(self) -> None:
+        cases = (
+            ({"CONTEXT_OK": "false"}, ""),
+            ({"OS_CONFIG_STATUS": "blocked"}, "unsafe checkpoint state"),
+            ({"EDGE_STATUS": "blocked"}, "unsafe checkpoint state"),
+            ({"EDGE_STATUS": "pending"}, "unsafe checkpoint state"),
+            ({"MIGRATION_STATUS": "in_progress"}, "unsafe checkpoint state"),
+            ({"FINAL_CONFIG_STATUS": "passed"}, "unsafe checkpoint state"),
+        )
+        for override, expected in cases:
+            with self.subTest(override=override):
+                result = self.run_probe(**override)
+                self.assertNotEqual(result.returncode, 0)
+                if expected:
+                    self.assertIn(expected, result.stderr)
+
+    def test_repair_uses_internal_mode_only_after_read_only_validation(self) -> None:
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        edge = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "edge-chain-create-init.sh"
+        ).read_text(encoding="utf-8")
+        repair_flow = repair.split(
+            'if [ "${COMMAND}" != "repair" ]', 1
+        )[1]
+        self.assertLess(
+            repair_flow.index('if validate_checkpoint_for_repair "${CHECKPOINT_ID}"'),
+            repair_flow.index('perform_repair_step "${CHECKPOINT_ID}"'),
+        )
+        self.assertIn(
+            '"${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only', repair
+        )
+        self.assertIn("GATEWAY_EDGE_CREATED_ONLY_REPAIR=true", repair)
+        self.assertGreaterEqual(
+            edge.count("gl_assert_edge_created_only_resume_safe"), 2
+        )
+        proof = edge.index("gl_assert_edge_created_only_resume_safe")
+        resume_branch = edge.index('if [ "${RESUME_CREATED_ONLY}" = true ]')
+        preflight = edge.index("gl_l1_broadcast_preflight")
+        resume_context_arm = edge[resume_branch:preflight].split("\nelse\n", 1)[0]
+        self.assertIn("gl_assert_edge_launch_context", resume_context_arm)
+        self.assertNotIn("gl_bind_edge_launch_context", resume_context_arm)
+        created_guard = edge.index("edge_chain_created=false")
+        init = edge.index("zkstack chain init")
+        self.assertLess(proof, created_guard)
+        self.assertGreater(edge.rindex("gl_assert_edge_created_only_resume_safe"), created_guard)
+        self.assertLess(edge.rindex("gl_assert_edge_created_only_resume_safe"), init)
+        self.assertIn(
+            'gl_checkpoint_mark_blocked "${CHECKPOINT_ID}" "repair command failed',
+            repair,
+        )
+
+
 class LauncherStaticTests(unittest.TestCase):
     def test_non_l1_cast_strips_l1_context_and_owns_non_l1_rpc_sites(self) -> None:
         context_names = (
