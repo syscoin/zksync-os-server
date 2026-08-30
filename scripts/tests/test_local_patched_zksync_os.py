@@ -5253,6 +5253,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
             owned_pid,
         )
+        replay_ready = lifecycle.index(
+            "gateway_wait_for_commit_target_runtime", first_listener_check
+        )
         first_listener_recheck = lifecycle.index(
             'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
             first_attestation,
@@ -5261,8 +5264,13 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertLess(post_build_port_check, background_start)
         self.assertLess(background_start, owned_pid)
         self.assertLess(owned_pid, first_attestation)
-        self.assertLess(first_listener_check, first_attestation)
+        self.assertLess(first_listener_check, replay_ready)
+        self.assertLess(replay_ready, first_attestation)
         self.assertLess(first_attestation, first_listener_recheck)
+        self.assertIn("gateway_commit_target_runtime_ready", lifecycle)
+        self.assertIn("gl_published_gateway_commit_target", lifecycle)
+        self.assertIn("--rpc-timeout 3", lifecycle)
+        self.assertIn("a non-empty wrong runtime", lifecycle)
         self.assertIn(
             'kill -0 "${GATEWAY_NODE_PID}"',
             lifecycle[start_function:first_attestation],

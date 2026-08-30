@@ -208,6 +208,37 @@ gateway_wait_for_rpc_start() {
   return 125
 }
 
+gateway_commit_target_runtime_ready() {
+  local gateway_rpc="${1:?Gateway RPC required}" target code
+  target="$(gl_published_gateway_commit_target)" || return $?
+  code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
+    cast code "${target}" --rpc-url "${gateway_rpc}" --rpc-timeout 3 2>/dev/null)" || return 1
+  code="$(printf '%s' "${code}" | tr -d '[:space:]')"
+  [ "${code#0x}" != "${code}" ] && [ "${code}" != "0x" ]
+}
+
+gateway_wait_for_commit_target_runtime() {
+  local gateway_pid="${1:?Gateway PID required}"
+  local gateway_rpc="${2:?Gateway RPC required}"
+  local timeout_s="${3:?replay timeout required}"
+  local poll_s="${4:?replay poll required}"
+  local deadline now remaining_ms sleep_ms
+
+  now="$(migration_monotonic_millis)" || return $?
+  deadline=$((now + timeout_s * 1000))
+  while gateway_launcher_job_is_active "${gateway_pid}"; do
+    gl_assert_gateway_listener_owned_by_pid "${gateway_pid}" "${gateway_rpc}" || return $?
+    gateway_commit_target_runtime_ready "${gateway_rpc}" && return 0
+    now="$(migration_monotonic_millis)" || return $?
+    remaining_ms=$((deadline - now))
+    [ "${remaining_ms}" -gt 0 ] || return 124
+    sleep_ms=$((poll_s * 1000))
+    [ "${sleep_ms}" -le "${remaining_ms}" ] || sleep_ms="${remaining_ms}"
+    migration_interruptible_sleep "$(migration_millis_as_seconds "${sleep_ms}")" || return $?
+  done
+  return 125
+}
+
 gateway_wait_for_job_exit() {
   local gateway_pid="${1:?Gateway PID required}"
   local timeout_s="${2:?shutdown timeout required}"
@@ -652,6 +683,22 @@ PY
   fi
 
   gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
+  # SYSCOIN: RPC binds before WAL replay reaches the durable repository tip.
+  # Wait only while the canonical target is absent; a non-empty wrong runtime
+  # proceeds immediately to the exact size/hash checks below and fails closed.
+  startup_rc=0
+  gateway_wait_for_commit_target_runtime \
+    "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" \
+    "${start_timeout_s}" "${poll_interval_s}" || startup_rc=$?
+  if [ "${startup_rc}" -ne 0 ]; then
+    print_gateway_migration_log_excerpt "${log_file}"
+    [ "${startup_rc}" -eq 125 ] || \
+      [ "${startup_rc}" -eq 124 ] || \
+      gl_die "migrate-edge: Gateway replay monitor failed with exit code ${startup_rc}"
+    [ "${startup_rc}" -eq 125 ] && \
+      gl_die "migrate-edge: Gateway node exited before replay exposed its ValidatorTimelock runtime; see ${log_file}"
+    gl_die "migrate-edge: Gateway replay did not expose its ValidatorTimelock runtime within ${start_timeout_s}s (see ${log_file})"
+  fi
   # The first launcher-owned start is the only path allowed to create the
   # immutable block-0 deployment stamp. Every reuse merely verifies it.
   gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}" || return $?
