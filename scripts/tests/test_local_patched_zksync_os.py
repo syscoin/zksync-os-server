@@ -4079,34 +4079,177 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn('if [ "${attempt}" -gt 1 ]', retry_loop)
         self.assertIn("gl_probe_l1_ecosystem_structurally_deployed_ready", deploy)
         self.assertIn("partial L1 ecosystem state cannot be replayed", deploy)
-        self.assertNotIn("wait_for_deployer_nonce_sync", retry_loop)
-        self.assertNotIn("run_ecosystem_init_resume", deploy)
-        self.assertNotIn("extract_l1_contracts_dir_from_log", deploy)
-        self.assertNotIn("LAST_L1_CONTRACTS_DIR", deploy)
-        self.assertNotIn(
-            "forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol",
-            deploy,
+
+        classification_start = deploy.index(
+            ': "${GATEWAY_ECOSYSTEM_RESUME_FIRST:=false}"'
         )
+        classification_end = deploy.index(
+            "\ngl_ensure_era_contracts_syscoin_postimage", classification_start
+        )
+        classification = deploy[classification_start:classification_end]
+        decision_start = deploy.index("ecosystem_already_ready=false")
+        decision_end = deploy.index("\nset_retry_gas_price()", decision_start)
+        decision = deploy[decision_start:decision_end]
+        for fragment in (
+            '[ -e "${ecosystem_contracts_file}" ] || '
+            '[ -L "${ecosystem_contracts_file}" ]',
+            "existing L1 ecosystem failed structural authentication",
+            "ownership-only recovery requires an authenticated existing L1 ecosystem",
+        ):
+            self.assertIn(fragment, classification)
+        for fragment in (
+            '[ "${ecosystem_structurally_ready}" = true ]',
+            '[ -e "${GATEWAY_DIR}/configs/contracts.yaml" ]',
+            '[ -L "${GATEWAY_DIR}/configs/contracts.yaml" ]',
+            '[ "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" = true ]',
+            "partial L1 ecosystem state cannot be replayed automatically",
+        ):
+            self.assertIn(fragment, decision)
+
+        state_harness = (
+            "set -euo pipefail\n"
+            "events=()\nownership_ready=false\nPHASE=early\n"
+            'GATEWAY_DIR="$1"\nGATEWAY_ECOSYSTEM_RESUME_FIRST="$2"\n'
+            'EARLY_PROBE_RESULT="$3"\nLATE_PROBE_RESULT="$4"\nTRANSITION="$5"\n'
+            'report_events() { printf "events=%s\\n" "${events[*]:-}"; }\ntrap report_events EXIT\n'
+            "gl_probe_l1_ecosystem_structurally_deployed_ready() {\n"
+            '  events+=("${PHASE}_probe")\n  if [ "${PHASE}" = early ]; then '
+            'return "${EARLY_PROBE_RESULT}"; fi\n'
+            '  return "${LATE_PROBE_RESULT}"\n}\n'
+            'ecosystem_contracts_ready() { [ "$ownership_ready" = true ]; }\n'
+            'run_owner_reconciliation() { events+=(reconcile); ownership_ready=true; }\n'
+            'run_ecosystem_init() { events+=(fresh); }\ngl_die() { echo "$*" >&2; exit 23; }\n'
+            + classification
+            + '\nPHASE=late\ncase "${TRANSITION}" in\n'
+            'drop) rm -f -- "${GATEWAY_DIR}/configs/contracts.yaml" ;;\ndangling) '
+            'mkdir -p "${GATEWAY_DIR}/configs"; '
+            'ln -s "${GATEWAY_DIR}/missing-contracts.yaml" '
+            '"${GATEWAY_DIR}/configs/contracts.yaml" ;;\n'
+            "none) ;;\n*) exit 99 ;;\nesac\n"
+            + decision
+            + '\nif [ "${ecosystem_already_ready}" != true ]; then '
+            'run_ecosystem_init false; fi\n'
+            "events+=(continued)\n"
+        )
+
+        def run_state(state: str, resume: str, early: int, late: int, transition: str):
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                gateway_dir = Path(temporary_dir) / "gateway"
+                gateway_dir.mkdir()
+                contracts_file = gateway_dir / "configs" / "contracts.yaml"
+                if state != "none":
+                    contracts_file.parent.mkdir()
+                    if state == "file":
+                        contracts_file.write_text("existing\n", encoding="utf-8")
+                    else:
+                        contracts_file.symlink_to(gateway_dir / "missing.yaml")
+                return subprocess.run(
+                    [
+                        "bash", "-c", state_harness, "bash", str(gateway_dir),
+                        resume, str(early), str(late), transition,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+        scenarios = (
+            ("fresh", "none", "false", 9, 7, "none", 0, "events=late_probe fresh continued", None),
+            ("missing-recovery", "none", "true", 9, 7, "none", 23, "events=", "ownership-only recovery requires"),
+            ("invalid-control", "none", "invalid", 9, 7, "none", 23, "events=", "must be true or false"),
+            ("existing-normal", "file", "false", 0, 0, "none", 0, "events=early_probe late_probe reconcile continued", None),
+            ("existing-recovery", "file", "true", 0, 0, "none", 0, "events=early_probe late_probe reconcile continued", None),
+            ("probe-fail-normal", "file", "false", 7, 0, "none", 23, "events=early_probe", "failed structural authentication (exit=7)"),
+            ("probe-fail-recovery", "file", "true", 7, 0, "none", 23, "events=early_probe", "failed structural authentication (exit=7)"),
+            ("dangling-early", "dangling", "false", 11, 0, "none", 23, "events=early_probe", "failed structural authentication (exit=11)"),
+            ("sticky-late", "file", "false", 0, 7, "drop", 23, "events=early_probe late_probe", "partial L1 ecosystem state"),
+            ("dangling-late", "none", "false", 9, 7, "dangling", 23, "events=late_probe", "partial L1 ecosystem state"),
+        )
+        for name, state, resume, early, late, transition, rc, events, error in scenarios:
+            with self.subTest(name=name):
+                result = run_state(state, resume, early, late, transition)
+                self.assertEqual(result.returncode, rc, result.stderr)
+                self.assertEqual(result.stdout.splitlines()[-1], events)
+                if error:
+                    self.assertIn(error, result.stderr)
+                if rc:
+                    self.assertNotIn("fresh", result.stdout)
+
+        fresh_guard = 'if [ "${ecosystem_structurally_ready}" != true ]'
+        guard_inventory = (
+            (
+                '\nfi\n\ncd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"\nexport PERMANENT_VALUES_INPUT',
+                ("forge build --skip test --force", "os.replace(generated_path, destination_path)", "gl_zkstack_pty env FOUNDRY_PROFILE=default zkstack dev contracts"),
+            ),
+            (
+                '\nfi\n\nrequire_code_at "${CREATE2_FACTORY_ADDR}"',
+                ('Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"', "path.write_text(yaml.safe_dump"),
+            ),
+            ("\nread_deployer_private_key() {", ("cat > script-config/permanent-values.toml", "cat > script-config/config-deploy-erc20.toml")),
+            ('\nfi\nfi\n\ncd "${GATEWAY_DIR}"', ("forge script deploy-scripts/tokens/DeployErc20.s.sol", "--broadcast")),
+        )
+        cursor = classification_end
+        guard_positions = []
+        guarded_regions = []
+        for end_anchor, writes in guard_inventory:
+            start = deploy.index(fresh_guard, cursor)
+            end = deploy.index(end_anchor, start)
+            region = deploy[start:end]
+            for write in writes:
+                self.assertIn(write, region)
+            guard_positions.append(start)
+            guarded_regions.append(region)
+            cursor = end
+        self.assertEqual(deploy.count(fresh_guard), len(guard_inventory))
+        self.assertIn(
+            "# SYSCOIN: Ownership-only recovery",
+            deploy[classification_end:guard_positions[0]],
+        )
+        artifact = guarded_regions[0]
+        artifact_order = guard_inventory[0][1]
+        self.assertEqual(
+            [artifact.index(marker) for marker in artifact_order],
+            sorted(artifact.index(marker) for marker in artifact_order),
+        )
+        launch_order = (
+            classification_start,
+            deploy.index("gl_ensure_era_contracts_syscoin_postimage", classification_end),
+            deploy.index("gl_ensure_zkstack_cli_release_current", classification_end),
+            guard_positions[0],
+        )
+        self.assertEqual(list(launch_order), sorted(launch_order))
+
+        salt_start = deploy.index('if [ -n "${GATEWAY_CREATE2_FACTORY_SALT:-}" ]; then')
+        salt_end = deploy.index('\nCREATE2_FACTORY_ADDR="$(python3', salt_start)
+        salt_guard = deploy[salt_start:salt_end]
+        recovery_branch, separator, fresh_branch = salt_guard.partition("\n  else\n")
+        self.assertTrue(separator)
+        self.assertIn('if [ "${ecosystem_structurally_ready}" = true ]; then', recovery_branch)
+        self.assertIn("cannot change during ownership-only recovery", recovery_branch)
+        self.assertNotIn("p.write_text(yaml.safe_dump", recovery_branch)
+        self.assertIn("p.write_text(yaml.safe_dump", fresh_branch)
+
+        self.assertNotIn("wait_for_deployer_nonce_sync", retry_loop)
+        for obsolete in (
+            "run_ecosystem_init_resume",
+            "extract_l1_contracts_dir_from_log",
+            "LAST_L1_CONTRACTS_DIR",
+            "forge script deploy-scripts/ecosystem/DeployL1CoreContracts.s.sol",
+        ):
+            self.assertNotIn(obsolete, deploy)
         final_gate = (
             'ecosystem_contracts_ready || \\\n'
             '  gl_die "ecosystem init completed without the strict L1 ownership postcondition"'
         )
-        self.assertIn(final_gate, deploy)
-        self.assertLess(
-            deploy.rindex(final_gate),
-            deploy.rindex("\ndeploy_zksys_l1_registry_bridge"),
-        )
+        self.assertLess(deploy.rindex(final_gate), deploy.rindex("\ndeploy_zksys_l1_registry_bridge"))
         gate_start = deploy.rindex("\necosystem_contracts_ready ||") + 1
         gate_end = deploy.index("\ndeploy_zksys_l1_registry_bridge", gate_start)
-        gate = deploy[gate_start:gate_end]
         failed_gate = subprocess.run(
             [
-                "bash",
-                "-c",
-                "set -euo pipefail\n"
-                "ecosystem_contracts_ready() { return 1; }\n"
-                "gl_die() { echo \"$*\" >&2; exit 23; }\n"
-                + gate
+                "bash", "-c",
+                "set -euo pipefail\necosystem_contracts_ready() { return 1; }\n"
+                'gl_die() { echo "$*" >&2; exit 23; }\n'
+                + deploy[gate_start:gate_end]
                 + "\nprintf 'unsafe continuation\\n'\n",
             ],
             check=False,
@@ -4116,41 +4259,7 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertEqual(failed_gate.returncode, 23)
         self.assertIn("strict L1 ownership postcondition", failed_gate.stderr)
         self.assertNotIn("unsafe continuation", failed_gate.stdout)
-        # The external-signer nonce drain remains scoped to its direct
-        # DeployErc20 retry path.
         self.assertEqual(deploy.count("      wait_for_deployer_nonce_sync\n"), 1)
-
-        decision_start = deploy.index("ecosystem_already_ready=false")
-        decision_end = deploy.index("\nset_retry_gas_price()", decision_start)
-        decision = deploy[decision_start:decision_end]
-        harness = textwrap.dedent(
-            f"""
-            set -euo pipefail
-            events=()
-            ownership_ready=false
-            GATEWAY_DIR="$1"
-            GATEWAY_ECOSYSTEM_RESUME_FIRST=false
-            gl_probe_l1_ecosystem_structurally_deployed_ready() {{ return 0; }}
-            ecosystem_contracts_ready() {{ [ "$ownership_ready" = true ]; }}
-            run_owner_reconciliation() {{ events+=(reconcile); ownership_ready=true; }}
-            run_ecosystem_init() {{ events+=(broad); }}
-            gl_die() {{ echo "$*" >&2; exit 1; }}
-            {decision}
-            if [ "$ecosystem_already_ready" != true ]; then
-              run_ecosystem_init false
-            fi
-            printf '%s\n' "${{events[@]}}"
-            """
-        )
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            result = subprocess.run(
-                ["bash", "-c", harness, "bash", temporary_dir],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[-1:], ["reconcile"])
 
         normal = (
             REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"
@@ -4163,6 +4272,42 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("blocked | in_progress | passed)", repair)
         self.assertIn("GATEWAY_ECOSYSTEM_RESUME_FIRST=true", repair)
         self.assertIn("pending)", repair)
+
+    def test_gateway_launch_disables_persistent_foundry_rpc_cache(self) -> None:
+        common_path = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        common = common_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "FOUNDRY_NO_STORAGE_CACHING=true\nexport FOUNDRY_NO_STORAGE_CACHING",
+            common,
+        )
+        cache_env = {**os.environ, "FOUNDRY_NO_STORAGE_CACHING": "false"}
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail\nsource "$1"\n'
+                'printf "parent=%s\\n" "$FOUNDRY_NO_STORAGE_CACHING"\n'
+                "bash -c 'set -euo pipefail\n"
+                'printf "child=%s\\n" "$FOUNDRY_NO_STORAGE_CACHING"\n'
+                'if command -v forge >/dev/null 2>&1; then printf "forge=yes\\n"; '
+                'forge config --json; else printf "forge=no\\n"; fi\'\n',
+                "bash",
+                str(common_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=cache_env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[:2], ["parent=true", "child=true"])
+        self.assertIn(lines[2], ("forge=yes", "forge=no"))
+        if lines[2] == "forge=yes":
+            foundry_config = json.loads("\n".join(lines[3:]))
+            self.assertIs(foundry_config.get("no_storage_caching"), True)
+        else:
+            self.assertEqual(lines[3:], [])
 
     def test_launcher_never_deletes_runtime_databases_implicitly(self) -> None:
         launch_dir = REPO_ROOT / "scripts" / "gateway-launch"

@@ -39,6 +39,10 @@ export PATH
 # CREATE2 identities across later zkstack/Forge invocations.
 FOUNDRY_PROFILE=default
 export FOUNDRY_PROFILE
+# SYSCOIN: Fork-state RPC caches are transient and must not pollute the sealed
+# launch-state volume or make recovery postimages depend on endpoint timing.
+FOUNDRY_NO_STORAGE_CACHING=true
+export FOUNDRY_NO_STORAGE_CACHING
 : "${PROVER_MODE:=gpu}"
 export PROVER_MODE
 

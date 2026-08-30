@@ -38,10 +38,37 @@ gl_assert_gateway_chain_config_matches_expected
 gl_l1_broadcast_preflight
 
 cd "${GATEWAY_DIR}"
+
+: "${GATEWAY_ECOSYSTEM_RESUME_FIRST:=false}"
+case "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" in
+true | false) ;;
+*) gl_die "GATEWAY_ECOSYSTEM_RESUME_FIRST must be true or false" ;;
+esac
+
+# SYSCOIN: Classify persisted state before any fresh-deployment artifact or
+# config writer. An existing entry must authenticate structurally; RPC, parser,
+# symlink, and partial-graph failures may never be reinterpreted as freshness.
+ecosystem_structurally_ready=false
+ecosystem_contracts_file="${GATEWAY_DIR}/configs/contracts.yaml"
+if [ -e "${ecosystem_contracts_file}" ] || [ -L "${ecosystem_contracts_file}" ]; then
+  if gl_probe_l1_ecosystem_structurally_deployed_ready; then
+    ecosystem_structurally_ready=true
+  else
+    structural_probe_rc=$?
+    gl_die "existing L1 ecosystem failed structural authentication (exit=${structural_probe_rc}); refusing fresh artifact generation"
+  fi
+elif [ "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" = true ]; then
+  gl_die "ownership-only recovery requires an authenticated existing L1 ecosystem"
+fi
+
 gl_ensure_era_contracts_syscoin_postimage
 
 gl_ensure_zkstack_cli_release_current
 
+# SYSCOIN: Ownership-only recovery consumes the authenticated live graph and
+# patched CLI; it must not regenerate fresh-deployment artifacts in the pinned
+# Era tree.
+if [ "${ecosystem_structurally_ready}" != true ]; then
 # SYSCOIN: Keep the real deployment artifacts on the configured Syscoin L1
 # target. Canonical L2 genesis reproduction uses an isolated Prague build below.
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
@@ -149,6 +176,7 @@ PY
 
 cd "${GATEWAY_DIR}"
 gl_zkstack_pty env FOUNDRY_PROFILE=default zkstack dev contracts
+fi
 
 cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
 export PERMANENT_VALUES_INPUT="/script-config/permanent-values.toml"
@@ -182,9 +210,15 @@ if v < 0 or v >= (1 << 256):
     raise SystemExit("GATEWAY_CREATE2_FACTORY_SALT must fit uint256")
 print("0x" + format(v, "064x"))
 PY
-)"
+  )"
   export CREATE2_FACTORY_SALT
-  python3 - <<'PY'
+  # SYSCOIN: An authenticated existing ecosystem consumes its persisted salt;
+  # only a fresh deployment may rewrite the generated deployment input.
+  if [ "${ecosystem_structurally_ready}" = true ]; then
+    [ "${CREATE2_FACTORY_SALT}" = "${CREATE2_FACTORY_SALT_FROM_CONFIG}" ] ||
+      gl_die "GATEWAY_CREATE2_FACTORY_SALT cannot change during ownership-only recovery"
+  else
+    python3 - <<'PY'
 import os, yaml
 from pathlib import Path
 p = Path(os.environ["GATEWAY_DIR"]) / "configs" / "initial_deployments.yaml"
@@ -192,7 +226,8 @@ d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 d["create2_factory_salt"] = os.environ["CREATE2_FACTORY_SALT"]
 p.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
 PY
-  echo "gateway-launch: using GATEWAY_CREATE2_FACTORY_SALT=${CREATE2_FACTORY_SALT}"
+    echo "gateway-launch: using GATEWAY_CREATE2_FACTORY_SALT=${CREATE2_FACTORY_SALT}"
+  fi
 fi
 
 CREATE2_FACTORY_ADDR="$(python3 - <<'PY'
@@ -891,7 +926,10 @@ deploy_zksys_l1_registry_bridge() {
   echo "gateway-launch: zkSYS L1 registry bridge params: chain=${zksys_chain_id}, l2Registry=${l2_registry}, nevmStartBlock=${nevm_start_block}, seniority=${seniority_height1}/${seniority_height2}, bps=${seniority_level1_bps}/${seniority_level2_bps}"
 }
 
-if [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
+# SYSCOIN: WETH is a fresh deployment input; ownership recovery must not rewrite
+# the authenticated ecosystem configuration before its narrow reconciliation.
+if [ "${ecosystem_structurally_ready}" != true ] &&
+  [ -n "${L1_WETH_TOKEN_ADDRESS}" ]; then
   require_code_at "${L1_WETH_TOKEN_ADDRESS}" "L1 wrapped native token"
   export L1_WETH_TOKEN_ADDRESS
   python3 - <<'PY'
@@ -914,6 +952,9 @@ PY
 fi
 
 require_code_at "${CREATE2_FACTORY_ADDR}" "create2 factory"
+# SYSCOIN: Token derivation and Forge script-config files are fresh-only inputs;
+# the authenticated recovery path consumes the persisted/live contract graph.
+if [ "${ecosystem_structurally_ready}" != true ]; then
 derive_and_export_zksys_zk_token_asset_id
 
 cat > script-config/permanent-values.toml <<EOF
@@ -938,6 +979,7 @@ decimals = 18
 implementation = "TestnetERC20Token.sol"
 mint = 1000000000000000000
 EOF
+fi
 fi
 
 read_deployer_private_key() {
@@ -1061,6 +1103,9 @@ print(m.group(1))
 PY
 }
 
+# SYSCOIN: DeployErc20 belongs only to fresh initialization. A structurally
+# authenticated ecosystem may proceed only through ownership reconciliation.
+if [ "${ecosystem_structurally_ready}" != true ]; then
 if [ "$(gl_to_lower "${L1_NETWORK:-}")" = "mainnet" ] || [ "$(gl_to_lower "${L1_NETWORK:-}")" = "tanenbaum" ]; then
   echo "gateway-launch: zkSYS is canonical on L2; skipping L1 DeployErc20"
 else
@@ -1155,6 +1200,7 @@ PY
     exit "${erc20_ec}"
   done
 fi
+fi
 
 cd "${GATEWAY_DIR}"
 
@@ -1221,11 +1267,6 @@ GATEWAY_ECOSYSTEM_INIT_MAX_ATTEMPTS="$(
 GATEWAY_RETRY_GAS_BUMP_PCT="$(
   normalize_uint GATEWAY_RETRY_GAS_BUMP_PCT "${GATEWAY_RETRY_GAS_BUMP_PCT}" 10000
 )"
-: "${GATEWAY_ECOSYSTEM_RESUME_FIRST:=false}"
-case "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" in
-true | false) ;;
-*) gl_die "GATEWAY_ECOSYSTEM_RESUME_FIRST must be true or false" ;;
-esac
 ecosystem_already_ready=false
 if gl_probe_l1_ecosystem_structurally_deployed_ready; then
   # SYSCOIN: checkpoint repair/reruns can reach this step after L1 ecosystem
@@ -1237,7 +1278,9 @@ if gl_probe_l1_ecosystem_structurally_deployed_ready; then
   ecosystem_contracts_ready || \
     gl_die "ownership-only reconciliation did not reach the complete L1 ecosystem postcondition"
   ecosystem_already_ready=true
-elif [ -e "${GATEWAY_DIR}/configs/contracts.yaml" ] || \
+elif [ "${ecosystem_structurally_ready}" = true ] || \
+  [ -e "${GATEWAY_DIR}/configs/contracts.yaml" ] || \
+  [ -L "${GATEWAY_DIR}/configs/contracts.yaml" ] || \
   [ "${GATEWAY_ECOSYSTEM_RESUME_FIRST}" = true ]; then
   # SYSCOIN: An incomplete prior run without a complete structural graph must
   # be audited explicitly. Cross-process broad resume is unsafe when journals
