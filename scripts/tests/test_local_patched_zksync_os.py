@@ -5175,6 +5175,55 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                 result = run_gate(candidate)
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_gateway_archive_rpc_rewrite_is_canonical_and_secret_safe(self) -> None:
+        generator = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "generate-os-server-configs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'f"  rpc_url: {json.dumps(runtime_l1_rpc_url)}"', generator
+        )
+        self.assertIn(
+            'f"  rpc_url: {json.dumps(archive_l1_rpc_url)}"', generator
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            gateway_dir = root / "gateway"
+            config = gateway_dir / "os-server-configs" / "gateway" / "config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text(
+                "l1_provider:\n"
+                f"  rpc_url: {json.dumps('https://runtime.example')}\n"
+                "l1_archive_provider:\n"
+                f"  rpc_url: {json.dumps('https://old.example')}\n",
+                encoding="utf-8",
+            )
+            archive_url = 'https://user:secret@example.test/"archive"'
+            env = gateway_harness_env(
+                root,
+                GATEWAY_DIR=str(gateway_dir),
+                GATEWAY_ARCHIVE_L1_RPC_URL=archive_url,
+            )
+            command = 'source "$COMMON"; source "$LIFECYCLE"; set_gateway_runtime_l1_rpc_url'
+            updated = run_bash_harness(command, env)
+            self.assertEqual(updated.returncode, 0, updated.stderr)
+            self.assertNotIn(archive_url, updated.stdout + updated.stderr)
+            expected = (
+                "l1_provider:\n"
+                f"  rpc_url: {json.dumps('https://runtime.example')}\n"
+                "l1_archive_provider:\n"
+                f"  rpc_url: {json.dumps(archive_url)}\n"
+            ).encode()
+            self.assertEqual(config.read_bytes(), expected)
+
+            before = config.read_bytes()
+            repeated = run_bash_harness(command, env)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(config.read_bytes(), before)
+
     def test_gateway_identity_is_authenticated_before_edge_creation(self) -> None:
         launcher = (
             REPO_ROOT / "scripts" / "gateway-launch" / "run-gateway-launch.sh"

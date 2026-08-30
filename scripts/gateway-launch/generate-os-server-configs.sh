@@ -1028,9 +1028,9 @@ def materialize_chain(
             else []
         ),
         "l1_provider:",
-        f"  rpc_url: '{runtime_l1_rpc_url}'",
+        f"  rpc_url: {json.dumps(runtime_l1_rpc_url)}",
         "l1_archive_provider:",
-        f"  rpc_url: '{archive_l1_rpc_url}'",
+        f"  rpc_url: {json.dumps(archive_l1_rpc_url)}",
     ]
     config_lines.extend(
         [

@@ -130,7 +130,7 @@ if not patched:
     patched = True
 
 config_path.write_text("".join(lines), encoding="utf-8")
-print(f"gateway-launch: set {config_path} l1_archive_provider.rpc_url -> {new_rpc_url}")
+print(f"gateway-launch: updated {config_path} l1_archive_provider.rpc_url")
 PY
 }
 
