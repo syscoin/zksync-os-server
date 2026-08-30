@@ -517,6 +517,8 @@ def assert_global_listener_index() -> None:
     require_safe_output_directory(output_root)
     if edge_only and not output_root.is_dir():
         raise SystemExit(f"canonical OS-server configs are missing: {output_root}")
+    if not edge_only and materialize_edge_config == "false":
+        require_safe_output_directory(protected_edge_output)
     identities = {}
     domains_by_chain = {}
     if output_root.is_dir():
@@ -573,6 +575,18 @@ def assert_global_listener_index() -> None:
 
     identities.update(proposals)
     domains_by_chain.update(proposed_domains)
+    if (
+        not edge_only
+        and materialize_edge_config == "false"
+        and selected_name in indexed_chain_names
+        and selected_name not in identities
+    ):
+        # A chain-create interruption may index the selected edge before its
+        # final config exists. Keep its planned listener reservation meanwhile.
+        identities[selected_name] = edge
+        domains_by_chain[selected_name] = (
+            {edge_domain} if prover_api_nginx_enabled else set()
+        )
     missing_materialized = sorted(indexed_chain_names - set(identities))
     if missing_materialized:
         raise SystemExit(

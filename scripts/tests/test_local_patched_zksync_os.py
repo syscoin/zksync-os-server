@@ -957,6 +957,87 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             for domain in ("gw.test", "zksys.test", "edge-b.test"):
                 self.assertIn(domain, gateway_only_aggregate)
 
+            # A crash after `zkstack chain create` durably indexes the selected
+            # edge before its final OS config exists. Gateway-only config mode
+            # reserves that selected edge, but tolerates no other index gap.
+            saved_pending_zksys = root / "saved-pending-zksys"
+            (output_root / "zksys").rename(saved_pending_zksys)
+            pending_env = {
+                **canonical_env,
+                "MATERIALIZE_EDGE_CONFIG": "false",
+            }
+            pending_repair = subprocess.run(
+                [str(generator)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=pending_env,
+            )
+            self.assertEqual(pending_repair.returncode, 0, pending_repair.stderr)
+            pending_check = subprocess.run(
+                [str(generator), "--check-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=pending_env,
+            )
+            self.assertEqual(pending_check.returncode, 0, pending_check.stderr)
+
+            for override, expected_error in (
+                ({"EDGE_OS_RPC_PORT": "4050"}, "listener collision"),
+                ({"EDGE_PROVER_API_DOMAIN": "edge-b.test"}, "domain collision"),
+            ):
+                with self.subTest(pending_override=override):
+                    collision = subprocess.run(
+                        [str(generator), "--check-only"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={**pending_env, **override},
+                    )
+                    self.assertNotEqual(collision.returncode, 0)
+                    self.assertIn(expected_error, collision.stderr)
+
+            (output_root / "zksys").write_text("not a directory\n", encoding="utf-8")
+            unsafe_pending_path = subprocess.run(
+                [str(generator), "--check-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=pending_env,
+            )
+            self.assertNotEqual(unsafe_pending_path.returncode, 0)
+            self.assertIn("config directory is unsafe", unsafe_pending_path.stderr)
+            (output_root / "zksys").unlink()
+            saved_pending_zksys.rename(output_root / "zksys")
+
+            saved_pending_other = root / "saved-pending-edge-b"
+            (output_root / "edge-b").rename(saved_pending_other)
+            missing_other = subprocess.run(
+                [str(generator), "--check-only"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=pending_env,
+            )
+            self.assertNotEqual(missing_other.returncode, 0)
+            self.assertIn(
+                "indexed chains are missing materialized OS-server configs: edge-b",
+                missing_other.stderr,
+            )
+            saved_pending_other.rename(output_root / "edge-b")
+
+            restored_gateway_only = subprocess.run(
+                [str(generator)],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={**canonical_env, "MATERIALIZE_EDGE_CONFIG": "false"},
+            )
+            self.assertEqual(
+                restored_gateway_only.returncode, 0, restored_gateway_only.stderr
+            )
+
             write_source_chain("edge-d", 57060)
             victim = root / "config-victim"
             victim.mkdir()
