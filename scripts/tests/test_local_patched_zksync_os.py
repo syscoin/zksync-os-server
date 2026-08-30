@@ -2205,7 +2205,7 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
                 ],
             )
 
-    def test_explicit_sealed_workspace_is_preserved(self) -> None:
+    def test_explicit_reviewed_source_workspace_is_preserved(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
 
         def run(resumable: bool) -> list[str]:
@@ -2216,7 +2216,7 @@ printf "%s\n" "$GATEWAY_ECOSYSTEM_NAME"
                     r'''
 source "$COMMON"
 gl_resolve_required_source_pins() { :; }
-gl_workspace_has_resumable_syscoin_release() {
+gl_workspace_has_resumable_syscoin_source() {
   printf '%s\n' resumable
   [ "$RESUMABLE" = true ]
 }
@@ -2253,6 +2253,34 @@ gl_ensure_zksync_era_workspace
                 "gl_ensure_zkstack_cli_release_current\n",
                 caller.read_text(),
             )
+
+    def test_resumable_source_does_not_require_current_release_stamp(self) -> None:
+        common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            stamp_probe = Path(temporary_dir) / "stamp-probed"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    r'''
+source "$COMMON"
+gl_workspace_matches_required_pins() { :; }
+gl_assert_era_contracts_syscoin_postimage() { :; }
+gl_zkstack_cli_release_stamp_matches() { : > "$STAMP_PROBE"; return 1; }
+gl_workspace_has_resumable_syscoin_source
+[ ! -e "$STAMP_PROBE" ]
+''',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "COMMON": str(common),
+                    "STAMP_PROBE": str(stamp_probe),
+                },
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_checkpoint_fingerprint_binds_deployment_identity(self) -> None:
         common = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"

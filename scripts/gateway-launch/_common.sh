@@ -1795,11 +1795,10 @@ gl_workspace_matches_required_pins() {
   [ "${top_head}" = "${REQUIRED_ZKSTACK_CLI_SHA}" ] && [ "${contracts_head}" = "${REQUIRED_CONTRACTS_SHA}" ]
 }
 
-gl_workspace_has_resumable_syscoin_release() {
+gl_workspace_has_resumable_syscoin_source() {
   gl_workspace_matches_required_pins || return 1
 
   gl_assert_era_contracts_syscoin_postimage >/dev/null 2>&1 || return 1
-  gl_zkstack_cli_release_stamp_matches
 }
 
 # Clone zksync-era if needed, pin top + contracts to versions.yaml, build zkstack if missing.
@@ -1812,9 +1811,10 @@ gl_ensure_zksync_era_workspace() {
   gl_require REQUIRED_CONTRACTS_SHA
 
   if [ -n "${ZKSYNC_ERA_PATH:-}" ]; then
-    # SYSCOIN: Preserve only an already sealed Syscoin release. The caller's
-    # immediately following postimage applicators perform the full attestation.
-    if gl_workspace_has_resumable_syscoin_release; then
+    # SYSCOIN: Preserve an exact reviewed source postimage even when its release
+    # stamp is stale. The immediately following postimage applicators reattest
+    # both source trees, then rebuild and reseal zkstack when required.
+    if gl_workspace_has_resumable_syscoin_source; then
       return 0
     fi
     gl_prepare_zksync_era_repo
