@@ -296,7 +296,11 @@ cast = shutil.which("cast")
 if cast is None:
     fail("cast is required for Gateway bootstrap authentication")
 cast_env = os.environ.copy()
-for name in ("FOUNDRY_CHAIN_ID", "ETH_CHAIN_ID", "CHAIN_ID", "DAPP_CHAIN_ID", "CAST_ASYNC"):
+for name in (
+    "FOUNDRY_CHAIN_ID", "ETH_CHAIN_ID", "CHAIN_ID", "DAPP_CHAIN_ID", "CAST_ASYNC",
+    "ETH_GAS_PRICE", "ETH_PRIORITY_GAS_PRICE", "ETH_MAX_FEE_PER_GAS",
+    "ETH_MAX_PRIORITY_FEE_PER_GAS", "ETH_GAS_LIMIT",
+):
     cast_env.pop(name, None)
 
 

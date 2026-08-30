@@ -6327,6 +6327,7 @@ printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
             "target": "0" * 24 + PUBLISHED_PATCH_TARGET[2:],
             "fee": format(expected_fee, "064x"),
         }
+        leaked_fee_fields: list[str] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
@@ -6337,6 +6338,16 @@ printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
                 else:
                     params = request.get("params")
                     call = params[0] if isinstance(params, list) and params else {}
+                    leaked_fee_fields.extend(
+                        key
+                        for key in (
+                            "gas",
+                            "gasPrice",
+                            "maxFeePerGas",
+                            "maxPriorityFeePerGas",
+                        )
+                        if key in call
+                    )
                     calldata = call.get("data", "") if isinstance(call, dict) else ""
                     if calldata.startswith("0x70fccb52"):
                         result = "0x" + asset_id
@@ -6384,9 +6395,15 @@ gateway_bootstrap_rpc_state \
                     EXPECTED_CTM=expected_ctm,
                     EXPECTED_TARGET=PUBLISHED_PATCH_TARGET,
                     EXPECTED_FEE=str(expected_fee),
+                    ETH_GAS_PRICE="21249",
+                    ETH_PRIORITY_GAS_PRICE="21242",
+                    ETH_MAX_FEE_PER_GAS="21249",
+                    ETH_MAX_PRIORITY_FEE_PER_GAS="21242",
+                    ETH_GAS_LIMIT="123456",
                 )
                 ready = run_bash_harness(command, env)
                 self.assertEqual(ready.returncode, 0, ready.stderr)
+                self.assertEqual(leaked_fee_fields, [])
 
                 responses["block"] = "0x6"
                 replay_pending = run_bash_harness(command, env)
