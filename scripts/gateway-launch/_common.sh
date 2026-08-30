@@ -55,6 +55,17 @@ gl_to_lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
+# SYSCOIN: Gateway and edge RPC operations must not inherit the L1 transaction
+# context. In particular, Foundry applies fee and sender env to eth_call, while
+# CAST_ASYNC would let an edge send race the verification that follows it.
+gl_non_l1_cast() {
+  env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID -u CHAIN \
+    -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS \
+    -u ETH_MAX_PRIORITY_FEE_PER_GAS -u ETH_GAS_LIMIT -u ETH_FROM \
+    -u ETH_KEYSTORE -u ETH_KEYSTORE_ACCOUNT -u ETH_PASSWORD -u CAST_ASYNC \
+    cast "$@"
+}
+
 # SYSCOIN: Bind generated deployment executables to their reviewed source stamp.
 gl_sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -746,8 +757,7 @@ gl_assert_rpc_chain_id_matches_config() {
   local rpc_url="${1:?RPC URL required}" chain_name="${2:?chain name required}"
   local label="${3:?chain label required}" expected actual
   expected="$(gl_chain_id_from_config "${chain_name}" "${label}")" || return $?
-  actual="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast chain-id --rpc-url "${rpc_url}")" ||
+  actual="$(gl_non_l1_cast chain-id --rpc-url "${rpc_url}")" ||
     gl_die "failed to read ${label} chain ID from ${rpc_url}"
   actual="$(printf '%s' "${actual}" | tr -d '[:space:]')"
   [[ "${actual}" =~ ^[0-9]+$ ]] ||
@@ -940,8 +950,7 @@ gl_assert_gateway_genesis_stamp() {
   if [ -n "${expected_owner_pid}" ]; then
     gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
   fi
-  block_zero_hash="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
+  block_zero_hash="$(gl_non_l1_cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
     gl_die "failed to read Gateway block-0 hash from ${gateway_rpc}"
   if [ -n "${expected_owner_pid}" ]; then
     # SYSCOIN: Do not persist an RPC result after its launcher-owned listener disappeared.
@@ -1044,8 +1053,7 @@ gl_assert_rpc_runtime_identity() {
   local label="${5:?label required}"
   local code code_hex actual_size actual_hash
 
-  code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${address}" --rpc-url "${rpc_url}")" || \
+  code="$(gl_non_l1_cast code "${address}" --rpc-url "${rpc_url}")" || \
     gl_die "failed to read ${label} runtime at ${address} from ${rpc_url}"
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
   [ "${code#0x}" != "${code}" ] && [ "${code}" != "0x" ] || \
@@ -1081,16 +1089,15 @@ gl_gateway_wrapped_base_token_from_rpc() {
   local vault_token tracker_token code
   vault_token="$(gl_normalize_gateway_address \
     "Gateway native-token vault WETH_TOKEN" \
-    "$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${native_token_vault}" "WETH_TOKEN()(address)" --rpc-url "${gateway_rpc}")")" || return $?
+    "$(gl_non_l1_cast call "${native_token_vault}" "WETH_TOKEN()(address)" \
+      --rpc-url "${gateway_rpc}")")" || return $?
   tracker_token="$(gl_normalize_gateway_address \
     "Gateway asset tracker wrappedZKToken" \
-    "$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      cast call "${asset_tracker}" "wrappedZKToken()(address)" --rpc-url "${gateway_rpc}")")" || return $?
+    "$(gl_non_l1_cast call "${asset_tracker}" "wrappedZKToken()(address)" \
+      --rpc-url "${gateway_rpc}")")" || return $?
   [ "${vault_token}" = "${tracker_token}" ] ||
     gl_die "Gateway wrapped base-token mismatch: native-token-vault=${vault_token} asset-tracker=${tracker_token}"
-  code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${tracker_token}" --rpc-url "${gateway_rpc}")" ||
+  code="$(gl_non_l1_cast code "${tracker_token}" --rpc-url "${gateway_rpc}")" ||
     gl_die "failed to read Gateway wrapped base-token runtime at ${tracker_token}"
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
   [ -n "${code}" ] && [ "${code}" != "0x" ] ||
@@ -1247,8 +1254,7 @@ gl_assert_gateway_runtime_identity() {
   fi
   gl_assert_gateway_config_identity || return $?
   expected_chain_id="$(gl_gateway_chain_id_from_config)" || return $?
-  actual_chain_id="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast chain-id --rpc-url "${gateway_rpc}")" || \
+  actual_chain_id="$(gl_non_l1_cast chain-id --rpc-url "${gateway_rpc}")" || \
     gl_die "failed to read Gateway chain ID from ${gateway_rpc}"
   [[ "${actual_chain_id}" =~ ^[0-9]+$ ]] || \
     gl_die "invalid Gateway RPC chain ID from ${gateway_rpc}: ${actual_chain_id}"

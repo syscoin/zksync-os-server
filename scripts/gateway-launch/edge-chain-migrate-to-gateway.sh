@@ -680,7 +680,7 @@ EXPECT
   fi
 
   expected_addr="$(get_chain_governor_from_wallets "${chain_name}" | tr '[:upper:]' '[:lower:]')"
-  imported_addr="$(cast wallet address --keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password" | tr '[:upper:]' '[:lower:]')"
+  imported_addr="$(gl_non_l1_cast wallet address --keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password" | tr '[:upper:]' '[:lower:]')"
   if [ "${expected_addr}" != "${imported_addr}" ]; then
     echo "gateway-launch: generated-governor keystore mismatch: expected ${expected_addr}, got ${imported_addr}" >&2
     return 1
@@ -771,7 +771,7 @@ assert_gateway_governor_signer_identity() {
   local expected_addr actual_addr
   prepare_gateway_governor_forge_wallet_args || return $?
   expected_addr="$(get_chain_governor_from_wallets "${EDGE_CHAIN_NAME}")" || return $?
-  actual_addr="$(cast wallet address "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}")" || {
+  actual_addr="$(gl_non_l1_cast wallet address "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}")" || {
     echo "gateway-launch: failed to resolve the configured Gateway governor signer address" >&2
     return 1
   }
@@ -836,17 +836,15 @@ gateway_cast_call_with_fallback() {
     # SYSCOIN: read-only Gateway calls must not inherit L1 broadcast fee env.
     # Gateway can have a different base fee, and cast applies ETH_GAS_PRICE to
     # eth_call transactions even though no transaction is broadcast.
-    if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
-      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
+    if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
+      --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
       printf '%s\n' "${out}"
       return 0
     fi
     last_error="${out}"
   fi
-  if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
-    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" 2>&1)"; then
+  if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
+    --rpc-url "${rpc_url}" 2>&1)"; then
     printf '%s\n' "${out}"
     return 0
   fi
@@ -860,8 +858,7 @@ gateway_address_has_code() {
   local addr="${2:?address required}"
 
   local code
-  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+  if ! code="$(gl_non_l1_cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
     return 1
   fi
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
@@ -875,8 +872,7 @@ gateway_address_has_exact_runtime() {
   local expected_hash="${3:?runtime hash required}"
   local code actual_hash
 
-  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+  if ! code="$(gl_non_l1_cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
     return 1
   fi
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
@@ -948,7 +944,7 @@ wait_for_gateway_committer_role() {
 gateway_commit_sender_balance_wei() {
   local committer_addr="${1:?committer address required}"
 
-  cast balance "${committer_addr}" --rpc-url "${GATEWAY_RPC_URL}"
+  gl_non_l1_cast balance "${committer_addr}" --rpc-url "${GATEWAY_RPC_URL}"
 }
 
 gateway_commit_sender_funded() {

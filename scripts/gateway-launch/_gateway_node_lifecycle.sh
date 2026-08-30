@@ -297,9 +297,10 @@ if cast is None:
     fail("cast is required for Gateway bootstrap authentication")
 cast_env = os.environ.copy()
 for name in (
-    "FOUNDRY_CHAIN_ID", "ETH_CHAIN_ID", "CHAIN_ID", "DAPP_CHAIN_ID", "CAST_ASYNC",
+    "FOUNDRY_CHAIN_ID", "ETH_CHAIN_ID", "CHAIN_ID", "DAPP_CHAIN_ID", "CHAIN",
     "ETH_GAS_PRICE", "ETH_PRIORITY_GAS_PRICE", "ETH_MAX_FEE_PER_GAS",
-    "ETH_MAX_PRIORITY_FEE_PER_GAS", "ETH_GAS_LIMIT",
+    "ETH_MAX_PRIORITY_FEE_PER_GAS", "ETH_GAS_LIMIT", "ETH_FROM", "ETH_KEYSTORE",
+    "ETH_KEYSTORE_ACCOUNT", "ETH_PASSWORD", "CAST_ASYNC",
 ):
     cast_env.pop(name, None)
 

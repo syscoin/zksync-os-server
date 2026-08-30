@@ -61,9 +61,7 @@ trap cleanup_fee_payer_state EXIT
 gateway_cast() {
   # SYSCOIN: Gateway is a distinct chain. Do not leak L1 chain/fee overrides into
   # read calls or signed Gateway transactions.
-  env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS \
-    -u ETH_MAX_PRIORITY_FEE_PER_GAS -u ETH_GAS_LIMIT -u CAST_ASYNC cast "$@"
+  gl_non_l1_cast "$@"
 }
 
 require_address() {
@@ -305,7 +303,7 @@ expect {
 EXPECT
 
   imported_address="$(
-    cast wallet address \
+    gateway_cast wallet address \
       --keystore "${FEE_PAYER_KEYSTORE_DIR}/${FEE_PAYER_KEYSTORE_ACCOUNT}" \
       --password-file "${password_file}"
   )"

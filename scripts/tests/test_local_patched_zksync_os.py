@@ -986,6 +986,84 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_non_l1_cast_strips_l1_context_and_owns_non_l1_rpc_sites(self) -> None:
+        context_names = (
+            "FOUNDRY_CHAIN_ID",
+            "ETH_CHAIN_ID",
+            "CHAIN_ID",
+            "DAPP_CHAIN_ID",
+            "CHAIN",
+            "ETH_GAS_PRICE",
+            "ETH_PRIORITY_GAS_PRICE",
+            "ETH_MAX_FEE_PER_GAS",
+            "ETH_MAX_PRIORITY_FEE_PER_GAS",
+            "ETH_GAS_LIMIT",
+            "ETH_FROM",
+            "ETH_KEYSTORE",
+            "ETH_KEYSTORE_ACCOUNT",
+            "ETH_PASSWORD",
+            "CAST_ASYNC",
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_cast = bin_dir / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f"for name in {' '.join(context_names)}; do\n"
+                "  [ \"${!name+x}\" != x ] || { echo \"leaked ${name}\" >&2; exit 91; }\n"
+                "done\n"
+                "printf '%s\\n' \"$*\"\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            env = gateway_harness_env(
+                root,
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                **{name: "5700" for name in context_names},
+            )
+            result = run_bash_harness(
+                'source "$COMMON"; gl_non_l1_cast call 0x1 "probe()(uint256)" '
+                '--rpc-url http://gateway.invalid',
+                env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        common = GATEWAY_COMMON.read_text(encoding="utf-8")
+        wrapped_start = common.index("gl_gateway_wrapped_base_token_from_rpc() {")
+        wrapped = common[wrapped_start : common.index("\n}", wrapped_start)]
+        self.assertEqual(wrapped.count("gl_non_l1_cast"), 3)
+
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(migration.count("gl_non_l1_cast"), 7)
+
+        fee_payer = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "provision-edge-settlement-fee-payer.sh"
+        ).read_text(encoding="utf-8")
+        gateway_cast_start = fee_payer.index("gateway_cast() {")
+        gateway_cast = fee_payer[
+            gateway_cast_start : fee_payer.index("\n}", gateway_cast_start)
+        ]
+        self.assertIn('gl_non_l1_cast "$@"', gateway_cast)
+        self.assertIn("gateway_cast wallet address \\", fee_payer)
+
+        bootstrap = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(bootstrap.count("gl_non_l1_cast"), 6)
+        for bare_rpc_cast in ("  cast code --rpc-url", "  cast send \\", "  cast call \\"):
+            self.assertNotIn(bare_rpc_cast, bootstrap)
+
     def test_forge_inspect_artifacts_never_write_to_reviewed_source(self) -> None:
         launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
         for script_name, function_name, cache_var in (
@@ -6321,13 +6399,14 @@ printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
         expected_ctm = "0x" + "22" * 20
         asset_id = "33" * 32
         expected_fee = 15_000_000_000_000_000_000
+        poisoned_sender = "0x" + "55" * 20
         responses = {
             "block": "0x7",
             "mapped_ctm": "0" * 24 + expected_ctm[2:],
             "target": "0" * 24 + PUBLISHED_PATCH_TARGET[2:],
             "fee": format(expected_fee, "064x"),
         }
-        leaked_fee_fields: list[str] = []
+        leaked_tx_fields: list[str] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self) -> None:  # noqa: N802
@@ -6338,7 +6417,7 @@ printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
                 else:
                     params = request.get("params")
                     call = params[0] if isinstance(params, list) and params else {}
-                    leaked_fee_fields.extend(
+                    leaked_tx_fields.extend(
                         key
                         for key in (
                             "gas",
@@ -6348,6 +6427,11 @@ printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
                         )
                         if key in call
                     )
+                    if (
+                        isinstance(call, dict)
+                        and str(call.get("from", "")).lower() == poisoned_sender
+                    ):
+                        leaked_tx_fields.append("from")
                     calldata = call.get("data", "") if isinstance(call, dict) else ""
                     if calldata.startswith("0x70fccb52"):
                         result = "0x" + asset_id
@@ -6395,15 +6479,25 @@ gateway_bootstrap_rpc_state \
                     EXPECTED_CTM=expected_ctm,
                     EXPECTED_TARGET=PUBLISHED_PATCH_TARGET,
                     EXPECTED_FEE=str(expected_fee),
+                    FOUNDRY_CHAIN_ID="5700",
+                    ETH_CHAIN_ID="5700",
+                    CHAIN_ID="5700",
+                    DAPP_CHAIN_ID="5700",
+                    CHAIN="5700",
                     ETH_GAS_PRICE="21249",
                     ETH_PRIORITY_GAS_PRICE="21242",
                     ETH_MAX_FEE_PER_GAS="21249",
                     ETH_MAX_PRIORITY_FEE_PER_GAS="21242",
                     ETH_GAS_LIMIT="123456",
+                    ETH_FROM=poisoned_sender,
+                    ETH_KEYSTORE="/l1/keystore",
+                    ETH_KEYSTORE_ACCOUNT="l1-funder",
+                    ETH_PASSWORD="l1-password",
+                    CAST_ASYNC="true",
                 )
                 ready = run_bash_harness(command, env)
                 self.assertEqual(ready.returncode, 0, ready.stderr)
-                self.assertEqual(leaked_fee_fields, [])
+                self.assertEqual(leaked_tx_fields, [])
 
                 responses["block"] = "0x6"
                 replay_pending = run_bash_harness(command, env)

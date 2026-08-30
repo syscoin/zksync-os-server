@@ -915,7 +915,10 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
         self.assertIn("--interactive", source)
         self.assertIn("--keystore", source)
         self.assertIn("--password-file", source)
-        self.assertIn("-u CAST_ASYNC", source)
+        self.assertIn('gl_non_l1_cast "$@"', source)
+        self.assertIn(
+            "-u CAST_ASYNC", HELPER.with_name("_common.sh").read_text(encoding="utf-8")
+        )
         self.assertNotIn("PRIVATE_KEY=", source)
 
 

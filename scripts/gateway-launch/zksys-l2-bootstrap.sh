@@ -113,7 +113,7 @@ PY
 }
 
 rpc_code() {
-  cast code --rpc-url "${ZKSYS_L2_RPC_URL}" "${1:?address required}"
+  gl_non_l1_cast code --rpc-url "${ZKSYS_L2_RPC_URL}" "${1:?address required}"
 }
 
 assert_exact_runtime() {
@@ -158,7 +158,7 @@ deploy_create2() {
   fi
 
   echo "zksys-l2-bootstrap: deploying ${label} to ${expected_address}"
-  cast send \
+  gl_non_l1_cast send \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
     "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
     "${ZKSYS_L2_CREATE2_DEPLOYER}" \
@@ -169,14 +169,14 @@ deploy_create2() {
 }
 
 send_l2() {
-  cast send \
+  gl_non_l1_cast send \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
     "${ZKSYS_L2_CAST_WALLET_ARGS[@]}" \
     "$@" >/dev/null
 }
 
 call_l2() {
-  cast call \
+  gl_non_l1_cast call \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
     "$@"
 }
@@ -359,7 +359,7 @@ if period_seconds * periods_per_year != 365 * 24 * 60 * 60:
 PY
 
 prepare_zksys_l2_wallet_args
-BOOTSTRAP_SIGNER_ADDRESS="$(cast wallet address "${ZKSYS_L2_CAST_WALLET_ARGS[@]}")"
+BOOTSTRAP_SIGNER_ADDRESS="$(gl_non_l1_cast wallet address "${ZKSYS_L2_CAST_WALLET_ARGS[@]}")"
 if [ "$(gl_to_lower "${BOOTSTRAP_SIGNER_ADDRESS}")" != "$(gl_to_lower "${ZKSYS_L2_TOKEN_ADMIN_ADDRESS}")" ]; then
   gl_die "ZKSYS_L2_DEPLOYER_SIGNER must control ZKSYS_L2_TOKEN_ADMIN_ADDRESS for role wiring"
 fi
@@ -712,7 +712,7 @@ deploy_create2 "zkSYS native staking vault proxy" "${ZKSYS_L2_STAKING_VAULT_ADDR
 # to obtain the immutable-specialized runtime. Reject a preexisting or newly
 # deployed impostor byte-for-byte and by hash before granting any burn power.
 expected_gas_tank_runtime="$(
-  cast call \
+  gl_non_l1_cast call \
     --rpc-url "${ZKSYS_L2_RPC_URL}" \
     --create "${gas_tank_creation_code}" \
     "constructor(address)" "${ZKSYS_L2_TOKEN_ADDRESS}"
