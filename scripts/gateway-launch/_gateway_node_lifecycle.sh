@@ -186,18 +186,248 @@ gateway_launcher_job_is_active() {
 gateway_wait_for_rpc_start() {
   local gateway_pid="${1:?Gateway PID required}"
   local gateway_rpc="${2:?Gateway RPC required}"
-  local timeout_s="${3:?startup timeout required}"
+  local deadline="${3:?startup deadline required}"
   local poll_s="${4:?startup poll required}"
-  local deadline now remaining_ms sleep_ms
+  local now remaining_ms sleep_ms
 
-  now="$(migration_monotonic_millis)" || return $?
-  deadline=$((now + timeout_s * 1000))
   while gateway_launcher_job_is_active "${gateway_pid}"; do
     now="$(migration_monotonic_millis)" || return $?
     remaining_ms=$((deadline - now))
     [ "${remaining_ms}" -gt 0 ] || return 124
     gateway_rpc_ready "${gateway_rpc}" "${deadline}" && return 0
     gateway_launcher_job_is_active "${gateway_pid}" || return 125
+    now="$(migration_monotonic_millis)" || return $?
+    remaining_ms=$((deadline - now))
+    [ "${remaining_ms}" -gt 0 ] || return 124
+    sleep_ms=$((poll_s * 1000))
+    [ "${sleep_ms}" -le "${remaining_ms}" ] || sleep_ms="${remaining_ms}"
+    migration_interruptible_sleep "$(migration_millis_as_seconds "${sleep_ms}")" || return $?
+  done
+  return 125
+}
+
+gateway_startup_replay_tip_from_log() {
+  local log_file="${1:?Gateway log required}"
+  python3 - "${log_file}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+text = path.read_text(encoding="utf-8", errors="replace")
+if not (
+    "Repo DB is ready to process blocks" in text
+    or "Repo DB is ready after canonical genesis replay" in text
+):
+    raise SystemExit(1)
+matches = re.findall(r"\bblock_replay_storage_last_block:\s*([0-9]+)\b", text)
+if not matches:
+    matches = re.findall(r"\bReplaying WAL blocks from [0-9]+ until ([0-9]+)\.", text)
+if not matches:
+    raise SystemExit(1)
+tip = int(matches[-1], 10)
+if tip >= 1 << 64:
+    raise SystemExit("Gateway replay tip is outside uint64")
+print(tip)
+PY
+}
+
+gateway_expected_ctm_from_config() {
+  local chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
+  local config_path="${GATEWAY_DIR}/chains/${chain_name}/configs/gateway.yaml"
+  python3 - "${config_path}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1])
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+value = data.get("state_transition_proxy_addr") if isinstance(data, dict) else None
+if isinstance(value, int) and not isinstance(value, bool):
+    value = "0x" + format(value, "040x")
+if not isinstance(value, str):
+    raise SystemExit(f"missing Gateway state_transition_proxy_addr in {path}")
+value = value.strip().lower()
+if not re.fullmatch(r"0x[0-9a-f]{40}", value) or value == "0x" + "0" * 40:
+    raise SystemExit(f"invalid Gateway state_transition_proxy_addr in {path}: {value}")
+print(value)
+PY
+}
+
+gateway_bootstrap_rpc_state() {
+  local gateway_rpc="${1:?Gateway RPC required}"
+  local request_deadline_ms="${2:?startup deadline required}"
+  local replay_tip="${3:?replay tip required}"
+  local expected_ctm="${4:?expected Gateway CTM required}"
+  local expected_target="${5:?expected ValidatorTimelock required}"
+  local expected_fee="${6:?expected settlement fee required}"
+  python3 - \
+    "${gateway_rpc}" "${request_deadline_ms}" "${replay_tip}" \
+    "${expected_ctm}" "${expected_target}" "${expected_fee}" <<'PY'
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+rpc_url, deadline_raw, replay_tip_raw, expected_ctm, expected_target, expected_fee_raw = sys.argv[1:]
+
+def fail(message):
+    print(f"migrate-edge: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+if not deadline_raw.isdecimal() or not replay_tip_raw.isdecimal() or not expected_fee_raw.isdecimal():
+    fail("invalid numeric Gateway bootstrap input")
+deadline_ms = int(deadline_raw, 10)
+replay_tip = int(replay_tip_raw, 10)
+expected_fee = int(expected_fee_raw, 10)
+if replay_tip >= 1 << 64 or expected_fee <= 0 or expected_fee >= 1 << 256:
+    fail("Gateway bootstrap numeric input is outside its canonical range")
+for label, value in (("CTM", expected_ctm), ("ValidatorTimelock", expected_target)):
+    if not re.fullmatch(r"0x[0-9a-f]{40}", value) or int(value[2:], 16) == 0:
+        fail(f"invalid expected Gateway {label}: {value}")
+
+cast = shutil.which("cast")
+if cast is None:
+    fail("cast is required for Gateway bootstrap authentication")
+cast_env = os.environ.copy()
+for name in ("FOUNDRY_CHAIN_ID", "ETH_CHAIN_ID", "CHAIN_ID", "DAPP_CHAIN_ID", "CAST_ASYNC"):
+    cast_env.pop(name, None)
+
+
+def run_cast(label, *args):
+    remaining_s = (deadline_ms - time.monotonic_ns() // 1_000_000) / 1000
+    if remaining_s <= 0:
+        raise SystemExit(1)
+    try:
+        result = subprocess.run(
+            [cast, *args, "--rpc-url", rpc_url],
+            env=cast_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=min(remaining_s, 3.0),
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(1) from None
+    if result.returncode != 0:
+        raise SystemExit(1)
+    if time.monotonic_ns() // 1_000_000 > deadline_ms:
+        raise SystemExit(1)
+    tokens = result.stdout.split()
+    if not tokens:
+        fail(f"Gateway {label} returned empty output")
+    value = tokens[0].lower()
+    if value == "0x":
+        raise SystemExit(1)
+    return value
+
+
+def uint(value, label, limit=1 << 256):
+    if not value.isdecimal():
+        fail(f"Gateway {label} returned a malformed integer")
+    number = int(value, 10)
+    if number >= limit:
+        fail(f"Gateway {label} is outside its canonical range")
+    return number
+
+
+def word(value, label):
+    if not re.fullmatch(r"0x[0-9a-f]{64}", value):
+        fail(f"Gateway {label} returned a malformed ABI word")
+    return value
+
+
+def word_address(value, label):
+    value = word(value, label)
+    if value[2:26] != "0" * 24:
+        fail(f"Gateway {label} returned a non-canonical ABI address")
+    value = "0x" + value[26:]
+    if int(value[2:], 16) == 0:
+        raise SystemExit(1)
+    return value
+
+
+block_no = uint(run_cast("block number", "block-number"), "block number", 1 << 64)
+if block_no < replay_tip:
+    raise SystemExit(1)
+
+bridgehub = "0x0000000000000000000000000000000000010002"
+asset_tracker = "0x0000000000000000000000000000000000010010"
+asset_id = word(
+    run_cast(
+        "Bridgehub.ctmAssetIdFromAddress",
+        "call", bridgehub, "ctmAssetIdFromAddress(address)", expected_ctm,
+    ),
+    "Bridgehub.ctmAssetIdFromAddress",
+)
+if int(asset_id[2:], 16) == 0:
+    raise SystemExit(1)
+mapped_ctm = word_address(
+    run_cast(
+        "Bridgehub.ctmAssetIdToAddress",
+        "call", bridgehub, "ctmAssetIdToAddress(bytes32)", asset_id,
+    ),
+    "Bridgehub.ctmAssetIdToAddress",
+)
+if mapped_ctm != expected_ctm:
+    fail(f"Gateway Bridgehub CTM mapping mismatch: expected={expected_ctm} actual={mapped_ctm}")
+live_target = word_address(
+    run_cast(
+        "CTM.validatorTimelockPostV29",
+        "call", expected_ctm, "validatorTimelockPostV29()",
+    ),
+    "CTM.validatorTimelockPostV29",
+)
+if live_target != expected_target:
+    fail(f"Gateway CTM ValidatorTimelock mismatch: expected={expected_target} actual={live_target}")
+live_fee = int(
+    word(run_cast(
+        "gatewaySettlementFee",
+        "call", asset_tracker, "gatewaySettlementFee()",
+    ), "gatewaySettlementFee"),
+    16,
+)
+if live_fee == 0:
+    raise SystemExit(1)
+if live_fee != expected_fee:
+    fail(f"Gateway settlement fee mismatch: expected={expected_fee} actual={live_fee}")
+PY
+}
+
+gateway_wait_for_bootstrap() {
+  local gateway_pid="${1:?Gateway PID required}"
+  local gateway_rpc="${2:?Gateway RPC required}"
+  local log_file="${3:?Gateway log required}"
+  local deadline="${4:?startup deadline required}"
+  local poll_s="${5:?startup poll required}"
+  local replay_tip="" expected_ctm expected_target expected_fee
+  local now remaining_ms sleep_ms probe_rc
+
+  expected_ctm="$(gateway_expected_ctm_from_config)" || return $?
+  expected_target="$(gl_published_gateway_commit_target)" || return $?
+  expected_fee="$(gl_effective_gateway_settlement_fee)" || return $?
+  while gateway_launcher_job_is_active "${gateway_pid}"; do
+    gl_assert_gateway_listener_owned_by_pid "${gateway_pid}" "${gateway_rpc}" || return $?
+    if [ -z "${replay_tip}" ]; then
+      replay_tip="$(gateway_startup_replay_tip_from_log "${log_file}" 2>/dev/null || true)"
+    fi
+    if [ -n "${replay_tip}" ]; then
+      probe_rc=0
+      gateway_bootstrap_rpc_state \
+        "${gateway_rpc}" "${deadline}" "${replay_tip}" \
+        "${expected_ctm}" "${expected_target}" "${expected_fee}" || probe_rc=$?
+      case "${probe_rc}" in
+      0) return 0 ;;
+      1) ;;
+      *) return "${probe_rc}" ;;
+      esac
+    fi
     now="$(migration_monotonic_millis)" || return $?
     remaining_ms=$((deadline - now))
     [ "${remaining_ms}" -gt 0 ] || return 124
@@ -540,7 +770,7 @@ PY
 }
 
 start_gateway_for_migration() {
-  local start_script runner log_file start_timeout_s poll_interval_s chain_name owned_gateway_rpc startup_rc
+  local start_script runner log_file start_timeout_s poll_interval_s chain_name owned_gateway_rpc startup_rc startup_deadline_ms
   chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   start_script="${GATEWAY_DIR}/os-server-configs/${chain_name}/start-node.sh"
   [ -x "${start_script}" ] || gl_die "missing executable Gateway start script: ${start_script}"
@@ -593,6 +823,8 @@ start_gateway_for_migration() {
   GATEWAY_NODE_PID=$!
   export GATEWAY_RUNTIME_OWNER_PID="${GATEWAY_NODE_PID}"
   GATEWAY_STARTED_FOR_MIGRATION=true
+  startup_deadline_ms="$(migration_monotonic_millis)" || return $?
+  startup_deadline_ms=$((startup_deadline_ms + start_timeout_s * 1000))
 
   print_gateway_migration_log_excerpt() {
     local file_path="${1:?log path required}"
@@ -637,7 +869,7 @@ PY
   startup_rc=0
   gateway_wait_for_rpc_start \
     "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" \
-    "${start_timeout_s}" "${poll_interval_s}" || startup_rc=$?
+    "${startup_deadline_ms}" "${poll_interval_s}" || startup_rc=$?
   if [ "${startup_rc}" -ne 0 ]; then
     print_gateway_migration_log_excerpt "${log_file}"
     if [ "${startup_rc}" -eq 125 ]; then
@@ -652,6 +884,22 @@ PY
   fi
 
   gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" || return $?
+  # SYSCOIN: RPC binds before its repository has necessarily replayed the WAL.
+  # Require the saved tip plus the exact final CTM/governance effects before
+  # authenticating runtime postimages or creating an edge against this Gateway.
+  startup_rc=0
+  gateway_wait_for_bootstrap \
+    "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}" "${log_file}" \
+    "${startup_deadline_ms}" "${poll_interval_s}" || startup_rc=$?
+  if [ "${startup_rc}" -ne 0 ]; then
+    print_gateway_migration_log_excerpt "${log_file}"
+    [ "${startup_rc}" -eq 125 ] || \
+      [ "${startup_rc}" -eq 124 ] || \
+      gl_die "migrate-edge: Gateway bootstrap monitor failed with exit code ${startup_rc}"
+    [ "${startup_rc}" -eq 125 ] && \
+      gl_die "migrate-edge: Gateway node exited before replay/bootstrap authentication completed; see ${log_file}"
+    gl_die "migrate-edge: Gateway replay/bootstrap authentication did not complete within ${start_timeout_s}s (see ${log_file})"
+  fi
   # The first launcher-owned start is the only path allowed to create the
   # immutable block-0 deployment stamp. Every reuse merely verifies it.
   gl_assert_gateway_runtime_identity "${GATEWAY_NODE_PID}" true "${owned_gateway_rpc}" || return $?

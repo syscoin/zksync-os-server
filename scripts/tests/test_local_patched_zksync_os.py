@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.server
 import importlib.util
 import json
 import os
@@ -5253,6 +5254,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
             owned_pid,
         )
+        replay_ready = lifecycle.index(
+            "gateway_wait_for_bootstrap", first_listener_check
+        )
         first_listener_recheck = lifecycle.index(
             'gl_assert_gateway_listener_owned_by_pid "${GATEWAY_NODE_PID}" "${owned_gateway_rpc}"',
             first_attestation,
@@ -5261,8 +5265,23 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertLess(post_build_port_check, background_start)
         self.assertLess(background_start, owned_pid)
         self.assertLess(owned_pid, first_attestation)
-        self.assertLess(first_listener_check, first_attestation)
+        self.assertLess(first_listener_check, replay_ready)
+        self.assertLess(replay_ready, first_attestation)
         self.assertLess(first_attestation, first_listener_recheck)
+        for bootstrap_guard in (
+            "block_replay_storage_last_block",
+            "Repo DB is ready to process blocks",
+            "ctmAssetIdFromAddress",
+            "ctmAssetIdToAddress",
+            "validatorTimelockPostV29",
+            "gatewaySettlementFee",
+            "Gateway settlement fee mismatch",
+        ):
+            self.assertIn(bootstrap_guard, lifecycle)
+        self.assertLess(
+            lifecycle.index("gateway_wait_for_rpc_start", owned_pid),
+            replay_ready,
+        )
         self.assertIn(
             'kill -0 "${GATEWAY_NODE_PID}"',
             lifecycle[start_function:first_attestation],
@@ -6177,9 +6196,10 @@ cleanup_test_gateway() {
 }
 trap cleanup_test_gateway EXIT
 start_ms="$(migration_monotonic_millis)"
+deadline_ms=$((start_ms + 1000))
 startup_rc=0
 gateway_wait_for_rpc_start \
-  "$gateway_pid" "http://127.0.0.1:1" 1 3600 || startup_rc=$?
+  "$gateway_pid" "http://127.0.0.1:1" "$deadline_ms" 3600 || startup_rc=$?
 end_ms="$(migration_monotonic_millis)"
 printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
 [ "$startup_rc" -eq 124 ] || {
@@ -6199,6 +6219,126 @@ printf '%s\n' "$((end_ms - start_ms))" > "$ELAPSED_FILE"
             elapsed_ms = int(elapsed_file.read_text(encoding="utf-8"))
             self.assertGreater(elapsed_ms, 700)
             self.assertLess(elapsed_ms, 2_000)
+
+    def test_gateway_replay_tip_waits_for_repository_reset_marker(self) -> None:
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+printf '%s\n' 'block_replay_storage_last_block: 7' > "$LOG_FILE"
+! gateway_startup_replay_tip_from_log "$LOG_FILE" >/dev/null 2>&1
+printf '%s\n' 'Repo DB is ready to process blocks' >> "$LOG_FILE"
+[ "$(gateway_startup_replay_tip_from_log "$LOG_FILE")" = 7 ]
+'''
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            result = run_bash_harness(
+                command,
+                gateway_harness_env(
+                    root,
+                    LOG_FILE=str(root / "gateway.log"),
+                ),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gateway_bootstrap_probe_requires_replay_ctm_and_final_fee(self) -> None:
+        expected_ctm = "0x" + "22" * 20
+        asset_id = "33" * 32
+        expected_fee = 15_000_000_000_000_000_000
+        responses = {
+            "block": "0x7",
+            "mapped_ctm": "0" * 24 + expected_ctm[2:],
+            "target": "0" * 24 + PUBLISHED_PATCH_TARGET[2:],
+            "fee": format(expected_fee, "064x"),
+        }
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                request = json.loads(self.rfile.read(length))
+                if request.get("method") == "eth_blockNumber":
+                    result = responses["block"]
+                else:
+                    params = request.get("params")
+                    call = params[0] if isinstance(params, list) and params else {}
+                    calldata = call.get("data", "") if isinstance(call, dict) else ""
+                    if calldata.startswith("0x70fccb52"):
+                        result = "0x" + asset_id
+                    elif calldata.startswith("0x07621f84"):
+                        result = "0x" + responses["mapped_ctm"]
+                    elif calldata == "0xef9955bc":
+                        result = "0x" + responses["target"]
+                    elif calldata == "0x48268a9f":
+                        result = "0x" + responses["fee"]
+                    else:
+                        result = "0x"
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        try:
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        except PermissionError as error:
+            if "Operation not permitted" in str(error):
+                self.skipTest("test sandbox forbids loopback listener creation")
+            raise
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        command = r'''
+source "$COMMON"
+source "$LIFECYCLE"
+deadline_ms="$(migration_monotonic_millis)"
+deadline_ms=$((deadline_ms + 3000))
+gateway_bootstrap_rpc_state \
+  "$RPC_URL" "$deadline_ms" 7 "$EXPECTED_CTM" "$EXPECTED_TARGET" "$EXPECTED_FEE"
+'''
+        try:
+            with tempfile.TemporaryDirectory() as temporary_dir:
+                env = gateway_harness_env(
+                    Path(temporary_dir),
+                    RPC_URL=f"http://127.0.0.1:{server.server_port}",
+                    EXPECTED_CTM=expected_ctm,
+                    EXPECTED_TARGET=PUBLISHED_PATCH_TARGET,
+                    EXPECTED_FEE=str(expected_fee),
+                )
+                ready = run_bash_harness(command, env)
+                self.assertEqual(ready.returncode, 0, ready.stderr)
+
+                responses["block"] = "0x6"
+                replay_pending = run_bash_harness(command, env)
+                self.assertEqual(replay_pending.returncode, 1, replay_pending.stderr)
+
+                responses["block"] = "0x7"
+                responses["target"] = ""
+                target_pending = run_bash_harness(command, env)
+                self.assertEqual(target_pending.returncode, 1, target_pending.stderr)
+
+                responses["target"] = "0" * 24 + PUBLISHED_PATCH_TARGET[2:]
+                responses["fee"] = format(expected_fee + 1, "064x")
+                wrong_fee = run_bash_harness(command, env)
+                self.assertEqual(wrong_fee.returncode, 2, wrong_fee.stderr)
+                self.assertIn("Gateway settlement fee mismatch", wrong_fee.stderr)
+
+                responses["fee"] = "0" * 64
+                fee_pending = run_bash_harness(command, env)
+                self.assertEqual(fee_pending.returncode, 1, fee_pending.stderr)
+
+                responses["fee"] = format(expected_fee, "064x")
+                responses["target"] = "0" * 24 + "44" * 20
+                wrong_target = run_bash_harness(command, env)
+                self.assertEqual(wrong_target.returncode, 2, wrong_target.stderr)
+                self.assertIn("Gateway CTM ValidatorTimelock mismatch", wrong_target.stderr)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_gateway_rpc_probe_has_a_total_wall_clock_deadline(self) -> None:
         command = r'''
