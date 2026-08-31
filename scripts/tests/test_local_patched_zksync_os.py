@@ -54,20 +54,23 @@ def rust_address_bytes(address: str) -> str:
 
 
 class LauncherStaticTests(unittest.TestCase):
-    def test_genesis_history_prefers_the_configured_archive_provider(self) -> None:
+    def test_genesis_history_authenticates_archive_discovery_against_live_l1(self) -> None:
         node = (REPO_ROOT / "node" / "bin" / "src" / "lib.rs").read_text(
             encoding="utf-8"
         )
-        selection = """let genesis_diamond_proxy_l1 = l1_archive_provider
-        .as_ref()
-        .map(|provider| ZkChain::new(*diamond_proxy_l1.address(), provider.clone()))
-        .unwrap_or_else(|| diamond_proxy_l1.clone());"""
+        selection = """let authenticated_archive_genesis_upgrade = if let Some(provider) = &l1_archive_provider {"""
         self.assertIn(selection, node)
         self.assertIn(
-            "Genesis::new(\n        genesis_input_source.clone(),\n        genesis_diamond_proxy_l1,",
+            "authenticate_l1_archive_genesis_upgrade(\n                &l1_provider,\n                provider,",
             node,
         )
-        self.assertLess(node.index(selection), node.index("let genesis = Genesis::new("))
+        self.assertIn("Genesis::new_with_authenticated_genesis_upgrade(", node)
+        self.assertIn("authenticated.tx.clone(),", node)
+        self.assertIn("validate_l1_archive_history_block(", node)
+        self.assertLess(
+            node.index(selection),
+            node.index("let genesis = if let Some(authenticated)"),
+        )
 
     def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
         launcher = (
