@@ -157,6 +157,23 @@ impl Genesis {
         }
     }
 
+    // SYSCOIN: An archive RPC may locate old history, but only a genesis upgrade read from the
+    // authenticated live L1 is allowed to become durable replay input.
+    pub fn new_with_authenticated_genesis_upgrade(
+        input_source: Arc<dyn GenesisInputSource>,
+        zk_chain: ZkChain<NodeProvider>,
+        chain_id: u64,
+        genesis_upgrade_tx: GenesisUpgradeTxInfo,
+    ) -> Self {
+        Self {
+            input_source,
+            zk_chain,
+            state: OnceCell::new(),
+            genesis_upgrade_tx: OnceCell::new_with(Some(genesis_upgrade_tx)),
+            chain_id,
+        }
+    }
+
     /// Cheap accessor: `chain_id` is known upfront and doesn't require building genesis state.
     pub fn chain_id(&self) -> u64 {
         self.chain_id
@@ -359,9 +376,32 @@ async fn load_genesis_upgrade_tx(
     } else {
         deployment_block
     };
+    load_genesis_upgrade_tx_from_blocks(
+        zk_chain_address,
+        provider,
+        deployment_block,
+        to_block,
+        None,
+    )
+    .await
+}
+
+// SYSCOIN: Expose the exact-block loader so an archive-discovered deployment block can be bound
+// to the canonical live L1 event before its payload is cached or persisted.
+pub async fn load_genesis_upgrade_tx_from_blocks(
+    zk_chain_address: Address,
+    provider: NodeProvider,
+    from_block: u64,
+    to_block: u64,
+    expected_block_hash: Option<B256>,
+) -> anyhow::Result<GenesisUpgradeTxInfo> {
+    anyhow::ensure!(
+        from_block <= to_block,
+        "Invalid genesis upgrade block range {from_block}..={to_block}"
+    );
     let event_sig = GenesisUpgrade::SIGNATURE_HASH;
     let filter = Filter::new()
-        .from_block(deployment_block)
+        .from_block(from_block)
         .to_block(to_block)
         .event_signature(event_sig)
         .address(zk_chain_address);
@@ -370,6 +410,21 @@ async fn load_genesis_upgrade_tx(
         logs.len() == 1,
         "Expected exactly one genesis upgrade tx log, found these {logs:?}"
     );
+    anyhow::ensure!(!logs[0].removed, "Genesis upgrade log is marked removed");
+    if let Some(expected_block_hash) = expected_block_hash {
+        anyhow::ensure!(
+            from_block == to_block,
+            "Canonical genesis upgrade authentication requires one exact block"
+        );
+        anyhow::ensure!(
+            logs[0].block_number == Some(from_block),
+            "Genesis upgrade log is not bound to requested block {from_block}"
+        );
+        anyhow::ensure!(
+            logs[0].block_hash == Some(expected_block_hash),
+            "Genesis upgrade log is not bound to canonical block hash {expected_block_hash}"
+        );
+    }
     let sol_event = GenesisUpgrade::decode_log(&logs[0].inner)?.data;
     let protocol_version = ProtocolSemanticVersion::try_from(sol_event._protocolVersion)
         .context("Failed to parse protocol version from genesis upgrade tx")?;
