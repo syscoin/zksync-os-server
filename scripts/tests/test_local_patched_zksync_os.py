@@ -66,11 +66,41 @@ class LauncherStaticTests(unittest.TestCase):
         )
         self.assertIn("Genesis::new_with_authenticated_genesis_upgrade(", node)
         self.assertIn("authenticated.tx.clone(),", node)
-        self.assertIn("validate_l1_archive_history_block(", node)
+        post_state_start = node.index(
+            "let l2_genesis_block_hash = genesis.state().await.header.hash();"
+        )
+        database_identity_start = node.index(
+            "let database_identity = DatabaseIdentity::new("
+        )
+        post_state = node[post_state_start:database_identity_start]
+        self.assertIn(
+            """validate_l1_archive_history_block(
+            &l1_provider,
+            provider,
+            authenticated.deployment_block,
+            Some(authenticated.deployment_block_hash),
+        )""",
+            post_state,
+        )
+        self.assertIn("validate_l1_archive_identity(", post_state)
         self.assertLess(
             node.index(selection),
             node.index("let genesis = if let Some(authenticated)"),
         )
+
+        genesis = (REPO_ROOT / "lib" / "genesis" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        )
+        loader_start = genesis.index("pub async fn load_genesis_upgrade_tx_from_blocks(")
+        decode_start = genesis.index("let sol_event = GenesisUpgrade::decode_log")
+        authenticated_checks = genesis[loader_start:decode_start]
+        for check in (
+            "!logs[0].removed",
+            "from_block == to_block",
+            "logs[0].block_number == Some(from_block)",
+            "logs[0].block_hash == Some(expected_block_hash)",
+        ):
+            self.assertIn(check, authenticated_checks)
 
     def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
         launcher = (
