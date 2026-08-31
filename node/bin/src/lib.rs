@@ -567,9 +567,15 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // `from_block_hash` guard can read the current local block hash.
     let diamond_proxy_l1 = initial_l1_state.diamond_proxy_l1.clone();
 
+    // SYSCOIN: Genesis discovers the diamond deployment block and upgrade event through
+    // historical state. Prefer the configured archive provider; the live provider may be pruned.
+    let genesis_diamond_proxy_l1 = l1_archive_provider
+        .as_ref()
+        .map(|provider| ZkChain::new(*diamond_proxy_l1.address(), provider.clone()))
+        .unwrap_or_else(|| diamond_proxy_l1.clone());
     let genesis = Genesis::new(
         genesis_input_source.clone(),
-        diamond_proxy_l1.clone(),
+        genesis_diamond_proxy_l1,
         chain_id,
     );
 
