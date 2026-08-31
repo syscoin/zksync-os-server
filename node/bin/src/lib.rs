@@ -414,6 +414,54 @@ fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificati
     })
 }
 
+// SYSCOIN: An archive RPC is authority only for historical reads, never for selecting L1.
+// Authenticate it against the already revalidated live-L1 identity before and after genesis
+// discovery so a wrong or changing endpoint cannot durably poison the local database identity.
+fn validate_l1_archive_identity_observation(
+    expected_chain_id: u64,
+    expected_genesis_hash: B256,
+    observed_chain_id: u64,
+    observed_genesis_number: u64,
+    observed_genesis_hash: B256,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        observed_chain_id == expected_chain_id,
+        "L1 archive chain ID {observed_chain_id} does not match authenticated L1 chain ID {expected_chain_id}"
+    );
+    anyhow::ensure!(
+        observed_genesis_number == 0,
+        "L1 archive returned block {observed_genesis_number} for the earliest block"
+    );
+    anyhow::ensure!(
+        observed_genesis_hash == expected_genesis_hash,
+        "L1 archive genesis hash {observed_genesis_hash} does not match authenticated L1 genesis hash {expected_genesis_hash}"
+    );
+    Ok(())
+}
+
+async fn validate_l1_archive_identity(
+    provider: &NodeProvider,
+    expected_chain_id: u64,
+    expected_genesis_hash: B256,
+) -> anyhow::Result<()> {
+    let observed_chain_id = provider
+        .get_chain_id()
+        .await
+        .context("failed to read L1 archive chain ID")?;
+    let genesis_block = provider
+        .get_block_by_number(BlockNumberOrTag::Earliest)
+        .await
+        .context("failed to read L1 archive genesis block")?
+        .context("L1 archive returned no genesis block")?;
+    validate_l1_archive_identity_observation(
+        expected_chain_id,
+        expected_genesis_hash,
+        observed_chain_id,
+        genesis_block.header.inner.number,
+        genesis_block.header.hash,
+    )
+}
+
 pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // SYSCOIN: Refuse to expose real proving while the canonical V8 verifier artifacts remain
     // regeneration sentinels, including for library callers that bypass the CLI entry point.
@@ -569,6 +617,15 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
 
     // SYSCOIN: Genesis discovers the diamond deployment block and upgrade event through
     // historical state. Prefer the configured archive provider; the live provider may be pruned.
+    if let Some(provider) = &l1_archive_provider {
+        validate_l1_archive_identity(
+            provider,
+            initial_l1_state.l1_chain_id,
+            initial_l1_state.l1_genesis_block_hash,
+        )
+        .await
+        .expect("L1 archive provider does not match the authenticated L1 identity");
+    }
     let genesis_diamond_proxy_l1 = l1_archive_provider
         .as_ref()
         .map(|provider| ZkChain::new(*diamond_proxy_l1.address(), provider.clone()))
@@ -583,6 +640,15 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // opened. This makes reuse of the retired V31 testnet directory fail closed even when its L2
     // chain ID was retained for the replacement deployment.
     let l2_genesis_block_hash = genesis.state().await.header.hash();
+    if let Some(provider) = &l1_archive_provider {
+        validate_l1_archive_identity(
+            provider,
+            initial_l1_state.l1_chain_id,
+            initial_l1_state.l1_genesis_block_hash,
+        )
+        .await
+        .expect("L1 archive identity changed during genesis discovery");
+    }
     let database_identity = DatabaseIdentity::new(
         PROTOCOL_VERSION,
         initial_l1_state.l1_chain_id,
@@ -4000,7 +4066,8 @@ mod tests {
         parse_syscoin_require_gas_tank, requires_genesis_replay_repository_completion,
         resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
         syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
-        validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        validate_deployed_verifier_prover_policy, validate_l1_archive_identity_observation,
+        validate_syscoin_edge_da_commit_target,
         validate_syscoin_edge_da_commit_target_observed_runtime,
         validate_syscoin_edge_da_observed_local_runtime,
         validate_syscoin_gas_tank_observed_runtime, wait_for_liveness_bound_startup_signal,
@@ -4030,6 +4097,33 @@ mod tests {
         SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_RUNTIME_HASH,
         SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
     };
+
+    // SYSCOIN: The historical provider cannot select or change the canonical L1 identity used
+    // for durable genesis state, even when the diamond address happens to exist on both chains.
+    #[test]
+    fn l1_archive_identity_observation_is_exact() {
+        let chain_id = 57;
+        let genesis_hash = B256::repeat_byte(0x57);
+        validate_l1_archive_identity_observation(chain_id, genesis_hash, chain_id, 0, genesis_hash)
+            .unwrap();
+
+        for (observed_chain_id, observed_number, observed_hash) in [
+            (chain_id + 1, 0, genesis_hash),
+            (chain_id, 1, genesis_hash),
+            (chain_id, 0, B256::repeat_byte(0x58)),
+        ] {
+            assert!(
+                validate_l1_archive_identity_observation(
+                    chain_id,
+                    genesis_hash,
+                    observed_chain_id,
+                    observed_number,
+                    observed_hash,
+                )
+                .is_err()
+            );
+        }
+    }
 
     // SYSCOIN: Production presence policy accepts only the launcher's documented 0/1 values.
     #[test]
