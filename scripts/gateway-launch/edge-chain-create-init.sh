@@ -5,10 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
 RESUME_CREATED_ONLY=false
+RESUME_POST_ADMIN=false
 case "$#:${1:-}" in
 0:) ;;
 1:--resume-created-only) RESUME_CREATED_ONLY=true ;;
-*) gl_die "usage: edge-chain-create-init.sh [--resume-created-only]" ;;
+1:--resume-post-admin) RESUME_POST_ADMIN=true ;;
+*) gl_die "usage: edge-chain-create-init.sh [--resume-created-only|--resume-post-admin]" ;;
 esac
 gl_require ZKSYNC_ERA_PATH
 gl_require L1_RPC_URL
@@ -43,6 +45,10 @@ esac
 if [ -z "${SKIP_FUND:-}" ]; then
   SKIP_FUND=false
 fi
+: "${MIGRATE_EDGE:=false}"
+MIGRATE_EDGE="$(gl_to_lower "${MIGRATE_EDGE}")"
+case "${MIGRATE_EDGE}" in true | false) ;; *) gl_die "MIGRATE_EDGE must be true or false" ;; esac
+export MIGRATE_EDGE
 
 if [ -z "${EDGE_WALLET_CREATION}" ]; then
   EDGE_WALLET_CREATION="$(gl_wallet_creation_for_path "${EDGE_WALLET_PATH}")"
@@ -58,7 +64,7 @@ fi
 gl_normalize_canonical_deployment_inputs
 gl_reject_no_proofs_on_mainnet
 gl_validate_l1_network_pair
-if [ "${RESUME_CREATED_ONLY}" = true ]; then
+if [ "${RESUME_CREATED_ONLY}" = true ] || [ "${RESUME_POST_ADMIN}" = true ]; then
   # SYSCOIN: Repair must inherit an existing checkpoint identity; it may not
   # manufacture a new launch context from the recovery invocation's inputs.
   gl_acquire_gateway_launch_lock
@@ -67,6 +73,21 @@ else
   gl_bind_edge_launch_context
 fi
 gl_l1_broadcast_preflight
+
+if [ "${RESUME_POST_ADMIN}" = true ]; then
+  [ "${GATEWAY_EDGE_POST_ADMIN_REPAIR:-false}" = true ] || \
+    gl_die "--resume-post-admin is internal to gateway-launch-repair.sh"
+  # SYSCOIN: This schema-only recovery needs persisted config and authenticated
+  # L1 state, never a live Gateway node or a broadcast-capable command.
+  gl_assert_edge_post_admin_resume_safe
+  gl_secure_generated_secret_file \
+    "${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/secrets.yaml" \
+    "generated edge secrets file"
+  gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
+  gl_probe_edge_chain_inited_ready
+  gl_assert_edge_post_admin_resume_safe
+  exit 0
+fi
 
 # SYSCOIN: This helper is also used directly for additional edges and by the
 # repair command. Authenticate the configured and live Gateway before any edge
@@ -297,13 +318,22 @@ if [ "${RESUME_CREATED_ONLY}" = true ]; then
   gl_assert_edge_created_only_resume_safe
 fi
 
+init_args=(
+  zkstack chain init
+  --chain "${EDGE_CHAIN_NAME}"
+  --no-genesis
+  --deploy-paymaster false
+  --skip-priority-txs
+)
+if [ "$(gl_to_lower "${MIGRATE_EDGE:-false}")" = true ]; then
+  # SYSCOIN: Immediate Gateway migration begins paused; avoid an unnecessary
+  # unpause/re-pause transaction pair between init and migration.
+  init_args+=(--pause-deposits)
+fi
+init_args+=(--l1-rpc-url "${L1_RPC_URL}")
+
 init_output=""
-if ! init_output="$(gl_zkstack_private_pty zkstack chain init \
-  --chain "${EDGE_CHAIN_NAME}" \
-  --no-genesis \
-  --deploy-paymaster false \
-  --skip-priority-txs \
-  --l1-rpc-url "${L1_RPC_URL}" 2>&1)"; then
+if ! init_output="$(gl_zkstack_private_pty "${init_args[@]}" 2>&1)"; then
   init_output_lc="$(gl_to_lower "${init_output}")"
   echo "${init_output}"
   case "${init_output_lc}" in
@@ -323,4 +353,4 @@ gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
 # SYSCOIN: Wallet replacement must survive a resume after `chain create`, and
 # every governor policy must bind its authenticated key and persisted diamond
 # to the live L1 BridgeHub registration.
-gl_assert_edge_chain_admin_owned_by_configured_governor
+gl_probe_edge_chain_inited_and_governor_ready

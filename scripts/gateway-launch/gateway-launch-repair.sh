@@ -10,11 +10,12 @@ source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
 L1_PROFILE=""
 COMMAND=""
 CHECKPOINT_ID=""
+MIGRATE_EDGE_REQUESTED=false
 
 usage() {
   cat <<'EOF'
-gateway-launch-repair.sh --l1 tanenbaum|mainnet status
-gateway-launch-repair.sh --l1 tanenbaum|mainnet repair <checkpoint-id>
+gateway-launch-repair.sh --l1 tanenbaum|mainnet [--migrate-edge] status
+gateway-launch-repair.sh --l1 tanenbaum|mainnet [--migrate-edge] repair <checkpoint-id>
 
 Checkpoints:
   gl.workspace
@@ -37,6 +38,10 @@ while [ "${1:-}" != "" ]; do
     L1_PROFILE="${2:?}"
     shift 2
     ;;
+  --migrate-edge)
+    MIGRATE_EDGE_REQUESTED=true
+    shift
+    ;;
   status)
     COMMAND="status"
     shift
@@ -57,6 +62,15 @@ while [ "${1:-}" != "" ]; do
 done
 
 [ -n "${COMMAND}" ] || usage 1
+
+if [ "${MIGRATE_EDGE_REQUESTED}" = true ]; then
+  MIGRATE_EDGE=true
+else
+  : "${MIGRATE_EDGE:=false}"
+fi
+MIGRATE_EDGE="$(gl_to_lower "${MIGRATE_EDGE}")"
+case "${MIGRATE_EDGE}" in true | false) ;; *) gl_die "MIGRATE_EDGE must be true or false" ;; esac
+export MIGRATE_EDGE
 
 [ -n "${L1_PROFILE}" ] || gl_die "required: --l1 tanenbaum|mainnet"
 
@@ -114,6 +128,10 @@ PY
   exit 0
 fi
 
+# SYSCOIN: Repair owns the single canonical checkpoint graph. Additional edges
+# have independent live state and must never validate or rewrite this journal.
+gl_is_canonical_edge_context ||
+  gl_die "gateway-launch-repair.sh supports only canonical zksys chain 57057"
 gl_validate_prover_mode
 install_gateway_migration_cleanup_traps
 if [ -z "${GATEWAY_PROVER_MODE:-}" ]; then
@@ -136,6 +154,7 @@ esac
 
 gl_export_foundry_evm_version
 export FOUNDRY_CHAIN_ID="${L1_CHAIN_ID}"
+gl_l1_broadcast_preflight
 # SYSCOIN: Keep explicit repairs on the launcher's deterministic Forge path.
 export FOUNDRY_OFFLINE="${FOUNDRY_OFFLINE:-true}"
 gl_acquire_gateway_launch_lock
@@ -184,11 +203,10 @@ validate_checkpoint() {
     gl_probe_os_configs_gateway_ready
     ;;
   gl.edge_chain_inited)
-    run_with_gateway_for_migration gl_probe_edge_chain_inited_and_governor_ready
+    gl_probe_edge_chain_inited_and_governor_ready
     ;;
   gl.migration)
-    run_with_gateway_for_migration \
-      "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --check-only >/dev/null 2>&1
+    "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --check-only >/dev/null 2>&1
     ;;
   gl.os_configs_final)
     gl_probe_os_configs_final_ready
@@ -229,13 +247,30 @@ run_supervised_gateway_repair_operation() {
 
 validate_checkpoint_for_repair() {
   case "${1:?checkpoint id required}" in
-  gl.edge_chain_inited | gl.migration)
+  gl.edge_chain_inited)
+    # SYSCOIN: Edge-init readiness is local/L1-only. Do not start the Gateway
+    # node for a validator that must remain incapable of broadcasting.
+    run_supervised_gateway_repair_operation \
+      run_gateway_repair_validator_in_owned_group validate_checkpoint "$1"
+    ;;
+  gl.migration)
     # SYSCOIN: keep Gateway state in this repair shell, but isolate the actual
     # validator and all of its descendants in an exact supervised process group.
-    run_supervised_gateway_repair_operation validate_checkpoint "$1"
+    run_supervised_gateway_repair_operation \
+      run_with_gateway_for_migration validate_checkpoint "$1"
     ;;
   *) (validate_checkpoint "$1") ;;
   esac
+}
+
+# SYSCOIN: gl_die exits its shell. Keep classifier failures as ordinary owned-
+# group return codes so repair can safely test the one alternate exact state.
+classify_edge_post_admin_resume_safe() {
+  (gl_assert_edge_post_admin_resume_safe)
+}
+
+classify_edge_created_only_resume_safe() {
+  (gl_assert_edge_created_only_resume_safe)
 }
 
 perform_repair_step() {
@@ -278,16 +313,36 @@ perform_repair_step() {
     env MATERIALIZE_EDGE_CONFIG=false "${SCRIPT_DIR}/generate-os-server-configs.sh"
     ;;
   gl.edge_chain_inited)
-    [ "${REPAIR_PRIOR_STATUS}" = in_progress ] || {
-      echo "gateway-launch-repair: edge init can resume only an exact prior in_progress created-only state" >&2
+    # SYSCOIN: chain init is not replay-safe. Keep either exact remainder and
+    # all descendants in repair's bounded owned PGID.
+    case "${REPAIR_PRIOR_STATUS}" in
+    in_progress | blocked)
+      # SYSCOIN: Classify and run every descendant in an exact owned PGID.
+      # A failed created-only retry may legitimately leave this checkpoint blocked.
+      if run_supervised_gateway_repair_operation \
+        run_gateway_repair_validator_in_owned_group \
+        classify_edge_post_admin_resume_safe >/dev/null 2>&1; then
+        run_supervised_gateway_repair_operation \
+          run_gateway_repair_validator_in_owned_group \
+          env GATEWAY_EDGE_POST_ADMIN_REPAIR=true \
+            "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-post-admin
+      elif run_supervised_gateway_repair_operation \
+        run_gateway_repair_validator_in_owned_group \
+        classify_edge_created_only_resume_safe >/dev/null 2>&1; then
+        run_supervised_gateway_repair_operation \
+          run_with_gateway_for_migration env \
+            GATEWAY_EDGE_CREATED_ONLY_REPAIR=true \
+            "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only
+      else
+        echo "gateway-launch-repair: edge init state is neither exact created-only nor exact post-admin" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "gateway-launch-repair: edge init can resume only an exact created-only or post-admin state" >&2
       return 1
-    }
-    # SYSCOIN: chain init may broadcast and is not replay-safe. Keep the exact
-    # resume command and all descendants in repair's bounded owned PGID.
-    run_supervised_gateway_repair_operation \
-      run_with_gateway_for_migration env \
-        GATEWAY_EDGE_CREATED_ONLY_REPAIR=true \
-        "${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only
+      ;;
+    esac
   ;;
   gl.migration)
     # SYSCOIN: migration pauses deposits and finalizes settlement changes.

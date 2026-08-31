@@ -331,30 +331,38 @@ gl_validate_foundry_account_keystore() {
   gl_validate_secret_file "${keystore_path}" "${label} keystore"
 }
 
-gl_secure_generated_wallet_file() {
-  local wallet_path="$1"
+gl_secure_generated_secret_file() {
+  local secret_path="${1:?generated secret path required}"
+  local secret_label="${2:-generated secret file}"
 
-  # SYSCOIN: zkstack creates generated wallets.yaml files using the process
-  # umask. Harden those generated private-key files before later validation.
-  python3 - "${wallet_path}" <<'PY' || gl_die "failed to secure generated wallet file: ${wallet_path}"
+  # SYSCOIN: zkstack may override the process umask for generated private-key
+  # YAML. Harden the owner-owned regular file before later validation or use.
+  python3 - "${secret_path}" "${secret_label}" <<'PY' || gl_die "failed to secure ${secret_label}: ${secret_path}"
 import os
 import stat
 import sys
 
 path = sys.argv[1]
+label = sys.argv[2]
 try:
     st = os.lstat(path)
 except FileNotFoundError:
-    raise SystemExit(f"generated wallet file does not exist: {path}")
+    raise SystemExit(f"{label} does not exist: {path}")
 
 if stat.S_ISLNK(st.st_mode):
-    raise SystemExit(f"generated wallet file must not be a symlink: {path}")
+    raise SystemExit(f"{label} must not be a symlink: {path}")
 if not stat.S_ISREG(st.st_mode):
-    raise SystemExit(f"generated wallet file must be a regular file: {path}")
+    raise SystemExit(f"{label} must be a regular file: {path}")
 if st.st_uid != os.geteuid():
-    raise SystemExit(f"generated wallet file must be owned by the launching user: {path}")
+    raise SystemExit(f"{label} must be owned by the launching user: {path}")
+if st.st_nlink != 1:
+    raise SystemExit(f"{label} must have exactly one hard link: {path}")
 os.chmod(path, 0o600)
 PY
+}
+
+gl_secure_generated_wallet_file() {
+  gl_secure_generated_secret_file "${1:?wallet path required}" "generated wallet file"
 }
 
 gl_wallet_creation_for_path() {
@@ -1041,6 +1049,293 @@ PY
     gl_die "invalid ecosystem governor nonce response"
   [ "${latest_nonce}" = "${pending_nonce}" ] || \
     gl_die "ecosystem governor ${ecosystem_governor} has pending L1 transactions (latest nonce=${latest_nonce}, pending nonce=${pending_nonce})"
+}
+
+# SYSCOIN: Pin the V32 GenesisInput fields consumed by zkSync OS independently
+# of per-chain IDs and prover-mode metadata.
+gl_expected_v32_genesis_input_sha256() {
+  printf '%s\n' '89ef4f0a98230faf8838453dd342e6e85e8ca42c2a524e3a6ba5fcacabf842da'
+}
+
+# SYSCOIN: A Forge receipt-polling failure can happen after registration and
+# admin acceptance. For an explicitly requested immediate Gateway migration,
+# reconcile only the exact paused V32/native-token/L1 state; never replay init.
+gl_assert_edge_chain_init_local_artifacts() {
+  gl_require GATEWAY_DIR
+  gl_require L1_CHAIN_ID
+  local inventory_mode="${1:-ready}" edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  local edge_chain_id expected_genesis_input_sha256
+  edge_chain_id="$(gl_effective_edge_chain_id)" || return $?
+  expected_genesis_input_sha256="$(gl_expected_v32_genesis_input_sha256)" || return $?
+  case "${inventory_mode}" in ready | exact-post-admin) ;; *) gl_die "invalid edge artifact inventory mode" ;; esac
+  python3 - \
+    "${GATEWAY_DIR}/chains" \
+    "${GATEWAY_DIR}/chains/${edge_chain_name}" \
+    "${GATEWAY_DIR}/chains/${edge_chain_name}/configs" \
+    "${GATEWAY_DIR}/os-server-configs/${edge_chain_name}" \
+    "${inventory_mode}" \
+    "${L1_CHAIN_ID}" \
+    "${edge_chain_id}" \
+    "${PROTOCOL_VERSION:-v32.0}" \
+    "${expected_genesis_input_sha256}" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+chains_root = Path(sys.argv[1])
+chain_root = Path(sys.argv[2])
+configs = Path(sys.argv[3])
+os_output = Path(sys.argv[4])
+inventory_mode = sys.argv[5]
+expected_l1_chain_id = sys.argv[6]
+expected_l2_chain_id = sys.argv[7]
+expected_protocol = sys.argv[8]
+expected_genesis_input_sha256 = sys.argv[9]
+required = {
+    "contracts.yaml",
+    "external_node.yaml",
+    "general.yaml",
+    "genesis.json",
+    "genesis.yaml",
+    "secrets.yaml",
+    "wallets.yaml",
+}
+recovery_temp_name = ".contracts.yaml.syscoin-normalize.tmp"
+for directory in (chains_root, chain_root, configs):
+    directory_info = os.lstat(directory)
+    directory_mode = stat.S_IMODE(directory_info.st_mode)
+    if (
+        stat.S_ISLNK(directory_info.st_mode)
+        or not stat.S_ISDIR(directory_info.st_mode)
+        or directory_info.st_uid != os.geteuid()
+        or directory_mode != 0o700
+    ):
+        raise SystemExit(f"unsafe post-admin directory: {directory}")
+
+chain_required = {"ZkStack.yaml", "configs"}
+chain_found = {path.name for path in chain_root.iterdir()}
+if not chain_required.issubset(chain_found) or (
+    inventory_mode == "exact-post-admin" and chain_found != chain_required
+):
+    raise SystemExit(
+        f"post-admin chain inventory mismatch: "
+        f"missing={sorted(chain_required - chain_found)} "
+        f"unexpected={sorted(chain_found - chain_required)}"
+    )
+
+zkstack = chain_root / "ZkStack.yaml"
+zkstack_info = os.lstat(zkstack)
+if (
+    stat.S_ISLNK(zkstack_info.st_mode)
+    or not stat.S_ISREG(zkstack_info.st_mode)
+    or zkstack_info.st_uid != os.geteuid()
+    or zkstack_info.st_nlink != 1
+    or zkstack_info.st_size == 0
+    or stat.S_IMODE(zkstack_info.st_mode) != 0o600
+):
+    raise SystemExit(f"unsafe post-admin chain config: {zkstack}")
+
+found = {path.name for path in configs.iterdir()}
+allowed = required | ({recovery_temp_name} if inventory_mode == "exact-post-admin" else set())
+if not required.issubset(found) or not found.issubset(allowed):
+    raise SystemExit(
+        f"post-admin config inventory mismatch: missing={sorted(required - found)} "
+        f"unexpected={sorted(found - required)}"
+    )
+if recovery_temp_name in found:
+    recovery_temp = configs / recovery_temp_name
+    recovery_temp_info = os.lstat(recovery_temp)
+    if (
+        stat.S_ISLNK(recovery_temp_info.st_mode)
+        or not stat.S_ISREG(recovery_temp_info.st_mode)
+        or recovery_temp_info.st_uid != os.geteuid()
+        or recovery_temp_info.st_nlink != 1
+        or stat.S_IMODE(recovery_temp_info.st_mode) != 0o600
+    ):
+        raise SystemExit(f"unsafe post-admin recovery temp artifact: {recovery_temp}")
+for name in sorted(required):
+    path = configs / name
+    info = os.lstat(path)
+    mode = stat.S_IMODE(info.st_mode)
+    expected_modes = None
+    if name == "wallets.yaml":
+        expected_modes = {0o600}
+    elif name == "secrets.yaml":
+        expected_modes = {0o600} if inventory_mode == "ready" else {0o600, 0o644}
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_size == 0
+        or not mode & stat.S_IRUSR
+        or mode & 0o022
+        or (expected_modes is not None and mode not in expected_modes)
+    ):
+        raise SystemExit(f"unsafe post-admin config artifact: {path}")
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+def reject_json_constant(value):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+try:
+    genesis = json.loads(
+        (configs / "genesis.json").read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_json_constant,
+    )
+except (OSError, UnicodeError, ValueError) as error:
+    raise SystemExit(f"invalid post-admin genesis.json: {error}") from error
+if not isinstance(genesis, dict):
+    raise SystemExit("invalid post-admin genesis.json: expected an object")
+if not expected_l1_chain_id.isdecimal() or not expected_l2_chain_id.isdecimal():
+    raise SystemExit("invalid configured chain ID for post-admin genesis validation")
+expected_l1 = int(expected_l1_chain_id)
+expected_l2 = int(expected_l2_chain_id)
+if type(genesis.get("l1_chain_id")) is not int or genesis["l1_chain_id"] != expected_l1:
+    raise SystemExit("post-admin genesis.json L1 chain ID mismatch")
+if type(genesis.get("l2_chain_id")) is not int or genesis["l2_chain_id"] != expected_l2:
+    raise SystemExit("post-admin genesis.json L2 chain ID mismatch")
+if genesis.get("l1_batch_commit_data_generator_mode") != "Rollup":
+    raise SystemExit("post-admin genesis.json is not configured for Rollup commitments")
+if expected_protocol != "v32.0":
+    raise SystemExit(f"unsupported post-admin protocol version: {expected_protocol}")
+if genesis.get("genesis_protocol_semantic_version") != "0.32.0":
+    raise SystemExit("post-admin genesis.json genesis protocol is not V32.0")
+if genesis.get("protocol_semantic_version") != {"major": 0, "minor": 32, "patch": 0}:
+    raise SystemExit("post-admin genesis.json protocol is not V32.0")
+if not (
+    len(expected_genesis_input_sha256) == 64
+    and all(character in "0123456789abcdef" for character in expected_genesis_input_sha256)
+):
+    raise SystemExit("invalid pinned V32 GenesisInput digest")
+genesis_input = {
+    key: genesis.get(key, [])
+    for key in (
+        "initial_contracts",
+        "additional_storage",
+        "additional_storage_raw",
+        "additional_preimages",
+        "genesis_root",
+    )
+}
+actual_genesis_input_sha256 = hashlib.sha256(
+    json.dumps(
+        genesis_input,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+).hexdigest()
+if actual_genesis_input_sha256 != expected_genesis_input_sha256:
+    raise SystemExit(
+        "post-admin genesis.json GenesisInput digest mismatch: "
+        f"expected {expected_genesis_input_sha256}, got {actual_genesis_input_sha256}"
+    )
+if inventory_mode == "exact-post-admin":
+    try:
+        os.lstat(os_output)
+    except FileNotFoundError:
+        pass
+    else:
+        raise SystemExit(f"post-admin edge OS output already exists: {os_output}")
+PY
+}
+
+gl_assert_edge_post_admin_resume_safe() {
+  gl_require GATEWAY_DIR
+  gl_require L1_RPC_URL
+  gl_require L1_CHAIN_ID
+  local checkpoint_id status edge_chain_name resolved gateway_governor edge_governor
+  local edge_governor_matches gateway_chain_id edge_chain_id bridgehub
+  local gateway_diamond edge_diamond chain_admin expected_governor reuse_governor
+  local settlement_layer raw_pair parsed actual scheme
+  local ecosystem_governor signer latest_nonce pending_nonce seen=""
+
+  [ "$(gl_to_lower "${MIGRATE_EDGE:-false}")" = true ] || \
+    gl_die "post-admin edge repair requires MIGRATE_EDGE=true"
+  gl_is_canonical_edge_context || \
+    gl_die "post-admin edge repair is limited to the canonical zksys checkpoint"
+  gl_acquire_gateway_launch_lock || return $?
+  gl_assert_edge_launch_context || return $?
+  for checkpoint_id in gl.gateway_chain_inited gl.gateway_settlement gl.os_configs_gateway gl.edge_chain_inited gl.migration gl.os_configs_final; do
+    status="$(gl_checkpoint_get_status "${checkpoint_id}")" || return $?
+    case "${checkpoint_id}:${status}" in
+    gl.gateway_chain_inited:passed | gl.gateway_settlement:passed | gl.os_configs_gateway:passed | gl.edge_chain_inited:in_progress | gl.migration:pending | gl.os_configs_final:pending) ;;
+    *) gl_die "post-admin edge repair has unsafe checkpoint state ${checkpoint_id}=${status}" ;;
+    esac
+  done
+
+  edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  gl_assert_edge_chain_init_local_artifacts exact-post-admin || return $?
+  gl_probe_gateway_settlement_ready || \
+    gl_die "post-admin edge repair found Gateway settlement/config drift"
+  gl_assert_edge_chain_config_matches_expected || return $?
+  gl_assert_chain_contracts_da_preinit_safe "${edge_chain_name}" || return $?
+  resolved="$(gl_edge_governor_reuse_context)" || return $?
+  IFS='|' read -r gateway_governor edge_governor edge_governor_matches \
+    gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond <<<"${resolved}"
+  [ -n "${edge_diamond}" ] || gl_die "post-admin edge repair is missing its persisted diamond"
+  gl_assert_registered_chain_owned_by_governor \
+    "${bridgehub}" "${gateway_chain_id}" "${gateway_governor}" \
+    "Gateway" "${gateway_diamond}" || return $?
+
+  reuse_governor="$(gl_to_lower "${EDGE_REUSE_GATEWAY_GOVERNOR:-true}")"
+  case "${reuse_governor}" in
+  true)
+    [ "${edge_governor_matches}" = true ] || \
+      gl_die "post-admin edge governor does not match the authenticated Gateway governor"
+    expected_governor="${gateway_governor}"
+    ;;
+  false) expected_governor="${edge_governor}" ;;
+  *) gl_die "EDGE_REUSE_GATEWAY_GOVERNOR must be true or false" ;;
+  esac
+
+  chain_admin="$(gl_registered_chain_admin \
+    "${bridgehub}" "${edge_chain_id}" "edge" "${edge_diamond}")" || return $?
+  [ -n "${chain_admin}" ] || gl_die "post-admin edge repair found no live BridgeHub registration"
+  gl_assert_chain_admin_owner "${chain_admin}" "${expected_governor}" "edge" || return $?
+  gl_assert_edge_chain_init_live_state true || return $?
+  raw_pair="$(cast call "${edge_diamond}" "getDAValidatorPair()(address,uint8)" \
+    --rpc-url "${L1_RPC_URL}")" || gl_die "failed to read the post-admin edge DA pair"
+  parsed="$(gl_parse_da_validator_pair "${raw_pair}")" || return $?
+  IFS='|' read -r actual scheme <<<"${parsed}"
+  [ "${actual}" = "0x0000000000000000000000000000000000000000" ] && [ "${scheme}" = 0 ] || \
+    gl_die "post-admin edge DA pair is already configured: ${actual}/${scheme}"
+
+  settlement_layer="$(cast call \
+    "${bridgehub}" "settlementLayer(uint256)(uint256)" "${edge_chain_id}" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read the edge settlement layer before post-admin repair"
+  [[ "${settlement_layer}" =~ ^[0-9]+$ ]] || \
+    gl_die "invalid edge settlement layer before post-admin repair: ${settlement_layer:-<empty>}"
+  [ "${settlement_layer}" = "${L1_CHAIN_ID}" ] || \
+    gl_die "post-admin edge repair requires L1 settlement ${L1_CHAIN_ID}, got ${settlement_layer}"
+
+  ecosystem_governor="$(gl_authenticate_chain_wallet_roles \
+    --print-addresses --ecosystem-only governor)" || return $?
+  for signer in "${ecosystem_governor}" "${expected_governor}"; do
+    case " ${seen} " in *" ${signer} "*) continue ;; esac
+    seen="${seen} ${signer}"
+    latest_nonce="$(cast nonce "${signer}" --block latest --rpc-url "${L1_RPC_URL}")" || \
+      gl_die "failed to read latest nonce for post-admin signer ${signer}"
+    pending_nonce="$(cast nonce "${signer}" --block pending --rpc-url "${L1_RPC_URL}")" || \
+      gl_die "failed to read pending nonce for post-admin signer ${signer}"
+    [[ "${latest_nonce}" =~ ^[0-9]+$ ]] && [[ "${pending_nonce}" =~ ^[0-9]+$ ]] || \
+      gl_die "invalid nonce response for post-admin signer ${signer}"
+    [ "${latest_nonce}" = "${pending_nonce}" ] || \
+      gl_die "post-admin signer ${signer} has pending L1 transactions (latest nonce=${latest_nonce}, pending nonce=${pending_nonce})"
+  done
 }
 
 # SYSCOIN: The candidate code/address checks are deployment-agnostic. Pin the
@@ -2336,6 +2631,7 @@ gl_ensure_chain_contracts_yaml_schema() {
   chain_name="${1:?chain name required}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   contracts_yaml="${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml"
+  [ ! -L "${contracts_yaml}" ] || gl_die "contracts config must not be a symlink: ${contracts_yaml}"
   if [ ! -f "${contracts_yaml}" ]; then
     local chain_id contracts_candidate
     chain_id="$(python3 - "${GATEWAY_DIR}/chains/${chain_name}/ZkStack.yaml" <<'PY'
@@ -2365,8 +2661,10 @@ PY
   gateway_contracts_yaml="${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/contracts.yaml"
 
   python3 - "${contracts_yaml}" "${chain_name}" "${gateway_chain_name}" "${gateway_contracts_yaml}" "${GATEWAY_DIR}/configs/initial_deployments.yaml" <<'PY'
+import os
 import sys
 import re
+import stat
 from pathlib import Path
 
 import yaml
@@ -2376,6 +2674,30 @@ chain_name = sys.argv[2]
 gateway_chain_name = sys.argv[3]
 gateway_contracts_path = Path(sys.argv[4])
 initial_deployments_path = Path(sys.argv[5])
+contracts_info = os.lstat(contracts_path)
+if (
+    stat.S_ISLNK(contracts_info.st_mode)
+    or not stat.S_ISREG(contracts_info.st_mode)
+    or contracts_info.st_uid != os.geteuid()
+    or contracts_info.st_nlink != 1
+    or stat.S_IMODE(contracts_info.st_mode) & 0o022
+):
+    raise SystemExit(f"unsafe contracts config: {contracts_path}")
+temporary = contracts_path.parent / ".contracts.yaml.syscoin-normalize.tmp"
+try:
+    temporary_info = os.lstat(temporary)
+except FileNotFoundError:
+    pass
+else:
+    if (
+        stat.S_ISLNK(temporary_info.st_mode)
+        or not stat.S_ISREG(temporary_info.st_mode)
+        or temporary_info.st_uid != os.geteuid()
+        or temporary_info.st_nlink != 1
+        or stat.S_IMODE(temporary_info.st_mode) != 0o600
+    ):
+        raise SystemExit(f"unsafe stale contracts normalization artifact: {temporary}")
+    os.unlink(temporary)
 contracts_text = contracts_path.read_text(encoding="utf-8")
 data = yaml.safe_load(contracts_text)
 if not isinstance(data, dict):
@@ -2839,10 +3161,30 @@ if normalized_data != data:
     updated = True
 
 if updated:
-    contracts_path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    open_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    open_flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, open_flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(rendered)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, contracts_path)
+        directory_fd = os.open(
+            contracts_path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 PY
 }
 
@@ -4788,13 +5130,15 @@ gl_probe_edge_chain_inited_ready() {
   gl_require GATEWAY_DIR
   local edge_chain_name
   edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
-  gl_probe_chain_contracts_schema_ready "${edge_chain_name}"
+  gl_assert_edge_chain_init_local_artifacts ready &&
+    gl_probe_chain_contracts_schema_ready "${edge_chain_name}"
 }
 
 gl_probe_edge_chain_inited_and_governor_ready() {
   gl_probe_edge_chain_inited_ready || return $?
   gl_assert_edge_chain_config_matches_expected || return $?
-  gl_assert_edge_chain_admin_owned_by_configured_governor
+  gl_assert_edge_chain_admin_owned_by_configured_governor || return $?
+  gl_assert_edge_chain_init_checkpoint_state
 }
 
 # SYSCOIN: Runtime configs sign with private keys from generated wallet YAML.
@@ -4940,6 +5284,24 @@ gl_assert_gateway_chain_admin_ready() {
     "${bridgehub}" "${chain_id}" "${governor}" "Gateway" "${diamond}"
 }
 
+gl_parse_da_validator_pair() {
+  python3 - "${1:-}" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+match = re.search(r"0x[0-9a-fA-F]{40}", raw)
+if match is None:
+    raise SystemExit("missing DA validator address")
+address = match.group(0).lower()
+remainder = raw[: match.start()] + raw[match.end() :]
+numbers = [int(value) for value in re.findall(r"(?<![0-9])[0-9]+(?![0-9])", remainder)]
+if len(numbers) != 1:
+    raise SystemExit("missing DA commitment scheme")
+print(f"{address}|{numbers[0]}")
+PY
+}
+
 gl_assert_gateway_da_pair_ready() {
   gl_require L1_RPC_URL
   local gateway_chain_name context diamond expected raw_pair parsed actual scheme
@@ -4971,22 +5333,7 @@ PY
     "${diamond}" \
     "getDAValidatorPair()(address,uint8)" \
     --rpc-url "${L1_RPC_URL}")" || return $?
-  parsed="$(python3 - "${raw_pair}" <<'PY'
-import re
-import sys
-
-raw = sys.argv[1]
-match = re.search(r"0x[0-9a-fA-F]{40}", raw)
-if match is None:
-    raise SystemExit("missing DA validator address")
-address = match.group(0).lower()
-remainder = raw[: match.start()] + raw[match.end() :]
-numbers = [int(value) for value in re.findall(r"(?<![0-9])[0-9]+(?![0-9])", remainder)]
-if len(numbers) != 1:
-    raise SystemExit("missing DA commitment scheme")
-print(f"{address}|{numbers[0]}")
-PY
-)" || return $?
+  parsed="$(gl_parse_da_validator_pair "${raw_pair}")" || return $?
   IFS='|' read -r actual scheme <<<"${parsed}"
   [ "${actual}" = "${expected}" ] && [ "${scheme}" = "4" ]
 }
@@ -5167,7 +5514,7 @@ gl_registered_chain_admin() {
   local bridgehub="${1:?BridgeHub required}" chain_id="${2:?chain ID required}"
   local label="${3:?chain label required}"
   local expected_diamond="${4:-}"
-  local raw_diamond diamond raw_chain_admin chain_admin
+  local raw_diamond diamond raw_pending_admin pending_admin raw_chain_admin chain_admin
   raw_diamond="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}")" || \
     gl_die "failed to query L1 BridgeHub registration for ${label} chain ${chain_id}"
   diamond="$(gl_normalize_cast_address "${label} diamond" "${raw_diamond}")" || return $?
@@ -5180,6 +5527,11 @@ gl_registered_chain_admin() {
     gl_die "registered ${label} chain ${chain_id} is missing a persisted diamond identity"
   [ "${diamond}" = "${expected_diamond}" ] ||
     gl_die "${label} diamond mismatch: persisted=${expected_diamond} registered=${diamond}"
+  raw_pending_admin="$(cast call "${diamond}" "getPendingAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
+    gl_die "failed to read pending admin for registered ${label} diamond ${diamond}"
+  pending_admin="$(gl_normalize_cast_address "${label} pending admin" "${raw_pending_admin}")" || return $?
+  [ "${pending_admin}" = "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "registered ${label} diamond ${diamond} retains pending admin ${pending_admin}"
   raw_chain_admin="$(cast call "${diamond}" "getAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
     gl_die "failed to read ChainAdmin for registered ${label} diamond ${diamond}"
   chain_admin="$(gl_normalize_cast_address "${label} ChainAdmin" "${raw_chain_admin}")" || return $?
@@ -5202,7 +5554,7 @@ gl_assert_chain_admin_owner() {
   local chain_admin="${1:?chain admin required}"
   local expected_governor="${2:?expected governor required}"
   local label="${3:-edge}"
-  local chain_admin_code actual_governor
+  local chain_admin_code actual_governor pending_owner
 
   chain_admin_code="$(cast code "${chain_admin}" --rpc-url "${L1_RPC_URL}")" || \
     gl_die "failed to read ${label} ChainAdmin runtime at ${chain_admin}"
@@ -5211,10 +5563,158 @@ gl_assert_chain_admin_owner() {
   fi
   actual_governor="$(cast call "${chain_admin}" "owner()(address)" --rpc-url "${L1_RPC_URL}")" || \
     gl_die "failed to read owner of ${label} ChainAdmin ${chain_admin}"
-  actual_governor="$(printf '%s\n' "${actual_governor}" | awk 'NF { print $1; exit }')"
-  if [ "$(gl_to_lower "${actual_governor}")" != "${expected_governor}" ]; then
+  actual_governor="$(gl_normalize_cast_address "${label} ChainAdmin owner" "${actual_governor}")" || return $?
+  if [ "${actual_governor}" != "${expected_governor}" ]; then
     gl_die "${label} ChainAdmin owner mismatch: expected ${expected_governor}, got ${actual_governor:-<empty>}"
   fi
+  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}")" || \
+    gl_die "failed to read pending owner of ${label} ChainAdmin ${chain_admin}"
+  pending_owner="$(gl_normalize_cast_address "${label} ChainAdmin pending owner" "${pending_owner}")" || return $?
+  [ "${pending_owner}" = "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "${label} ChainAdmin ${chain_admin} retains pending owner ${pending_owner}"
+}
+
+# SYSCOIN: Bind checkpoint readiness to the live V32/native-token chain and to
+# cleared ownership handoffs. An edge-init checkpoint accepts either deposit
+# state; migration's checkpoint separately requires deposits reopened.
+gl_assert_edge_chain_init_live_state() {
+  gl_require L1_RPC_URL
+  local expected_paused="${1:?expected deposit-pause state required}"
+  local resolved gateway_governor edge_governor edge_governor_matches
+  local gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond
+  local chain_admin pending_admin pending_owner multiplier_setter base_token
+  local multiplier_nominator multiplier_denominator pubdata_pricing_mode
+  local live_chain_id protocol_version deposits_paused
+  case "${expected_paused}" in true | false | either) ;; *) gl_die "invalid expected deposit-pause state" ;; esac
+
+  resolved="$(gl_edge_governor_reuse_context)" || return $?
+  IFS='|' read -r gateway_governor edge_governor edge_governor_matches \
+    gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond <<<"${resolved}"
+  [ -n "${edge_diamond}" ] || gl_die "missing persisted edge diamond"
+  chain_admin="$(gl_registered_chain_admin \
+    "${bridgehub}" "${edge_chain_id}" "edge" "${edge_diamond}")" || return $?
+  [ -n "${chain_admin}" ] || gl_die "edge chain ${edge_chain_id} is not registered on L1"
+
+  pending_admin="$(cast call "${edge_diamond}" "getPendingAdmin()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || gl_die "failed to read pending edge admin"
+  pending_admin="$(gl_normalize_cast_address "edge pending admin" "${pending_admin}")" || return $?
+  [ "${pending_admin}" = "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "edge diamond retains pending admin ${pending_admin}"
+
+  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || gl_die "failed to read pending edge ChainAdmin owner"
+  pending_owner="$(gl_normalize_cast_address "edge pending ChainAdmin owner" "${pending_owner}")" || return $?
+  [ "${pending_owner}" = "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "edge ChainAdmin retains pending owner ${pending_owner}"
+
+  multiplier_setter="$(cast call "${chain_admin}" "tokenMultiplierSetter()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || gl_die "failed to read edge token multiplier setter"
+  multiplier_setter="$(gl_normalize_cast_address "edge token multiplier setter" "${multiplier_setter}")" || return $?
+  [ "${multiplier_setter}" = "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "native-token edge unexpectedly has token multiplier setter ${multiplier_setter}"
+
+  live_chain_id="$(cast call "${edge_diamond}" "getChainId()(uint256)" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read live edge chain ID"
+  [[ "${live_chain_id}" =~ ^[0-9]+$ ]] && [ "${live_chain_id}" = "${edge_chain_id}" ] || \
+    gl_die "live edge chain ID mismatch: expected ${edge_chain_id}, got ${live_chain_id:-<empty>}"
+
+  protocol_version="$(cast call "${edge_diamond}" "getProtocolVersion()(uint256)" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read live edge protocol version"
+  [ "${PROTOCOL_VERSION:-v32.0}" = v32.0 ] && [ "${protocol_version}" = 137438953472 ] || \
+    gl_die "live edge protocol version is not the pinned V32.0 value: ${protocol_version:-<empty>}"
+
+  base_token="$(cast call "${edge_diamond}" "getBaseToken()(address)" \
+    --rpc-url "${L1_RPC_URL}")" || gl_die "failed to read live edge base token"
+  base_token="$(gl_normalize_cast_address "edge base token" "${base_token}")" || return $?
+  [ "${base_token}" = "0x0000000000000000000000000000000000000001" ] || \
+    gl_die "live edge base token is not the native-token sentinel: ${base_token}"
+
+  multiplier_nominator="$(cast call "${edge_diamond}" \
+    "baseTokenGasPriceMultiplierNominator()(uint128)" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read live edge base-token multiplier nominator"
+  multiplier_denominator="$(cast call "${edge_diamond}" \
+    "baseTokenGasPriceMultiplierDenominator()(uint128)" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read live edge base-token multiplier denominator"
+  [[ "${multiplier_nominator}" =~ ^[0-9]+$ ]] && [ "${multiplier_nominator}" = 1 ] &&
+    [[ "${multiplier_denominator}" =~ ^[0-9]+$ ]] && [ "${multiplier_denominator}" = 1 ] || \
+    gl_die "live edge base-token multiplier is not 1/1: ${multiplier_nominator:-<empty>}/${multiplier_denominator:-<empty>}"
+
+  pubdata_pricing_mode="$(cast call "${edge_diamond}" \
+    "getPubdataPricingMode()(uint8)" --rpc-url "${L1_RPC_URL}" |
+    awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read live edge pubdata pricing mode"
+  [[ "${pubdata_pricing_mode}" =~ ^[0-9]+$ ]] && [ "${pubdata_pricing_mode}" = 0 ] || \
+    gl_die "live edge pubdata pricing mode is not rollup: ${pubdata_pricing_mode:-<empty>}"
+
+  deposits_paused="$(cast call "${edge_diamond}" "depositsPaused()(bool)" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print tolower($1); exit }')" || \
+    gl_die "failed to read the edge deposit-pause state"
+  case "${deposits_paused}" in true | false) ;; *) gl_die "invalid edge depositsPaused response" ;; esac
+  [ "${expected_paused}" = either ] || [ "${deposits_paused}" = "${expected_paused}" ] || \
+    gl_die "edge depositsPaused mismatch: expected ${expected_paused}, got ${deposits_paused}"
+}
+
+# SYSCOIN: Deposit state belongs to the migration phase. A pending migration
+# may retain an explicitly requested fail-closed pause; a completed migration
+# must be Gateway-settled and reopened. Interrupted migration accepts either
+# pause state so its own stricter repair validator can finish reconciliation.
+gl_assert_edge_chain_init_checkpoint_state() {
+  gl_require L1_CHAIN_ID
+  local migration_status migrate_edge expected_paused resolved
+  local gateway_governor edge_governor edge_governor_matches gateway_chain_id
+  local edge_chain_id bridgehub gateway_diamond edge_diamond settlement_layer
+
+  migrate_edge="$(gl_to_lower "${MIGRATE_EDGE:-false}")"
+  case "${migrate_edge}" in true | false) ;; *) gl_die "MIGRATE_EDGE must be true or false" ;; esac
+  resolved="$(gl_edge_governor_reuse_context)" || return $?
+  IFS='|' read -r gateway_governor edge_governor edge_governor_matches \
+    gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond <<<"${resolved}"
+  settlement_layer="$(cast call \
+    "${bridgehub}" "settlementLayer(uint256)(uint256)" "${edge_chain_id}" \
+    --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || \
+    gl_die "failed to read edge settlement layer for init validation"
+  [[ "${settlement_layer}" =~ ^[0-9]+$ ]] || \
+    gl_die "invalid edge settlement layer: ${settlement_layer:-<empty>}"
+
+  if ! gl_is_canonical_edge_context; then
+    # SYSCOIN: Additional edges deliberately have no canonical checkpoint.
+    # Bind their init result to live settlement/deposit state instead.
+    case "${settlement_layer}" in
+    "${L1_CHAIN_ID}") expected_paused="${migrate_edge}" ;;
+    "${gateway_chain_id}") expected_paused=false ;;
+    *) gl_die "additional edge has unknown settlement layer ${settlement_layer}" ;;
+    esac
+    gl_assert_edge_chain_init_live_state "${expected_paused}"
+    return $?
+  fi
+
+  migration_status="$(gl_checkpoint_get_status gl.migration)" || return $?
+
+  case "${migration_status}" in
+  pending)
+    [ "${settlement_layer}" = "${L1_CHAIN_ID}" ] || \
+      gl_die "pending edge migration is no longer L1-settled"
+    if [ "${migrate_edge}" = true ]; then expected_paused=either; else expected_paused=false; fi
+    ;;
+  in_progress | blocked)
+    case "${settlement_layer}" in
+    "${L1_CHAIN_ID}" | "${gateway_chain_id}") ;;
+    *) gl_die "interrupted edge migration has unknown settlement layer ${settlement_layer}" ;;
+    esac
+    expected_paused=either
+    ;;
+  passed)
+    [ "${settlement_layer}" = "${gateway_chain_id}" ] || \
+      gl_die "passed edge migration is not Gateway-settled"
+    expected_paused=false
+    ;;
+  *) gl_die "invalid gl.migration checkpoint state: ${migration_status}" ;;
+  esac
+  gl_assert_edge_chain_init_live_state "${expected_paused}"
 }
 
 # Fail before replacing an existing edge governor key unless live L1 state or

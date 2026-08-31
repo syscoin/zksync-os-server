@@ -57,6 +57,9 @@ PUBLISHED_ERA_GENESIS_ROOT = (
 PUBLISHED_ERA_GENESIS_SHA256 = (
     "5adf0dd1b618911d51c335e983c0c71cc1c74fc7db37161bf76a4b51e5055a95"
 )
+PUBLISHED_V32_GENESIS_INPUT_SHA256 = (
+    "89ef4f0a98230faf8838453dd342e6e85e8ca42c2a524e3a6ba5fcacabf842da"
+)
 OFFICIAL_OS_URL = "https://github.com/matter-labs/zksync-os"
 FINAL_OS_TAG = "v0.4.0"
 OTHER_OS_TAG = "v0.2.10-interface-v0.1.3-2026-02-10"
@@ -1225,7 +1228,10 @@ class CreatedOnlyEdgeRepairTests(unittest.TestCase):
             '"${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-created-only', repair
         )
         self.assertIn("GATEWAY_EDGE_CREATED_ONLY_REPAIR=true", repair)
-        edge_repair = repair.split("gl.edge_chain_inited)", 2)[2].split(
+        perform = repair.split("perform_repair_step() {", 1)[1].split(
+            '\n}\n\nif [ "${COMMAND}" != "repair" ]', 1
+        )[0]
+        edge_repair = perform.split("gl.edge_chain_inited)", 1)[1].split(
             "gl.migration)", 1
         )[0]
         self.assertIn("run_supervised_gateway_repair_operation", edge_repair)
@@ -1251,6 +1257,660 @@ class CreatedOnlyEdgeRepairTests(unittest.TestCase):
             'gl_checkpoint_mark_blocked "${CHECKPOINT_ID}" "repair command failed',
             repair,
         )
+
+
+class PostAdminEdgeRepairTests(unittest.TestCase):
+    def run_live_probe(
+        self, expected_paused: str = "true", **overrides: str
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            **os.environ,
+            "BASE_TOKEN": "0x0000000000000000000000000000000000000001",
+            "CHAIN_ID": "57057",
+            "COMMON": str(GATEWAY_COMMON),
+            "DEPOSITS_PAUSED": "true",
+            "EXPECTED_PAUSED": expected_paused,
+            "L1_RPC_URL": "http://l1.invalid",
+            "MULTIPLIER_DENOMINATOR": "1",
+            "MULTIPLIER_NOMINATOR": "1",
+            "MULTIPLIER_SETTER": "0x0000000000000000000000000000000000000000",
+            "PENDING_ADMIN": "0x0000000000000000000000000000000000000000",
+            "PENDING_OWNER": "0x0000000000000000000000000000000000000000",
+            "PROTOCOL": "137438953472",
+            "PROTOCOL_VERSION": "v32.0",
+            "PUBDATA_PRICING_MODE": "0",
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    r'''
+                    source "$COMMON"
+                    gl_edge_governor_reuse_context() {
+                      printf '%s\n' '0x1111111111111111111111111111111111111111|0x2222222222222222222222222222222222222222|false|57001|57057|0x3333333333333333333333333333333333333333|0x4444444444444444444444444444444444444444|0x5555555555555555555555555555555555555555'
+                    }
+                    gl_registered_chain_admin() {
+                      printf '%s\n' 0x6666666666666666666666666666666666666666
+                    }
+                    cast() {
+                      [ "$1" = call ] || return 91
+                      case "$3" in
+                      'getPendingAdmin()(address)') printf '%s\n' "$PENDING_ADMIN" ;;
+                      'pendingOwner()(address)') printf '%s\n' "$PENDING_OWNER" ;;
+                      'tokenMultiplierSetter()(address)') printf '%s\n' "$MULTIPLIER_SETTER" ;;
+                      'getChainId()(uint256)') printf '%s\n' "$CHAIN_ID" ;;
+                      'getProtocolVersion()(uint256)') printf '%s\n' "$PROTOCOL" ;;
+                      'getBaseToken()(address)') printf '%s\n' "$BASE_TOKEN" ;;
+                      'baseTokenGasPriceMultiplierNominator()(uint128)') printf '%s\n' "$MULTIPLIER_NOMINATOR" ;;
+                      'baseTokenGasPriceMultiplierDenominator()(uint128)') printf '%s\n' "$MULTIPLIER_DENOMINATOR" ;;
+                      'getPubdataPricingMode()(uint8)') printf '%s\n' "$PUBDATA_PRICING_MODE" ;;
+                      'depositsPaused()(bool)') printf '%s\n' "$DEPOSITS_PAUSED" ;;
+                      *) return 92 ;;
+                      esac
+                    }
+                    gl_assert_edge_chain_init_live_state "$EXPECTED_PAUSED"
+                    '''
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_live_init_state_is_exact(self) -> None:
+        self.assertEqual(self.run_live_probe().returncode, 0)
+        self.assertEqual(self.run_live_probe("either").returncode, 0)
+        self.assertEqual(
+            self.run_live_probe("false", DEPOSITS_PAUSED="false").returncode, 0
+        )
+        cases = (
+            {"PENDING_ADMIN": "0x0000000000000000000000000000000000000007"},
+            {"PENDING_ADMIN": "invalid"},
+            {"PENDING_OWNER": "0x0000000000000000000000000000000000000007"},
+            {"PENDING_OWNER": "0x1"},
+            {"MULTIPLIER_SETTER": "0x0000000000000000000000000000000000000007"},
+            {"CHAIN_ID": "57058"},
+            {"CHAIN_ID": "invalid"},
+            {"PROTOCOL": "137438953473"},
+            {"PROTOCOL": "invalid"},
+            {"BASE_TOKEN": "0x0000000000000000000000000000000000000002"},
+            {"BASE_TOKEN": "invalid"},
+            {"MULTIPLIER_NOMINATOR": "2"},
+            {"MULTIPLIER_DENOMINATOR": "2"},
+            {"PUBDATA_PRICING_MODE": "1"},
+            {"DEPOSITS_PAUSED": "false"},
+            {"DEPOSITS_PAUSED": "invalid"},
+        )
+        for override in cases:
+            with self.subTest(override=override):
+                self.assertNotEqual(self.run_live_probe(**override).returncode, 0)
+        self.assertNotEqual(self.run_live_probe("invalid").returncode, 0)
+
+    def test_generic_registration_and_owner_checks_reject_pending_authority(self) -> None:
+        zero = "0x" + "0" * 40
+        diamond = "0x" + "44" * 20
+        admin = "0x" + "55" * 20
+        governor = "0x" + "66" * 20
+
+        def probe(function: str, **overrides: str) -> subprocess.CompletedProcess[str]:
+            env = {
+                **os.environ,
+                "ADMIN": admin,
+                "COMMON": str(GATEWAY_COMMON),
+                "DIAMOND": diamond,
+                "GOVERNOR": governor,
+                "L1_RPC_URL": "http://l1.invalid",
+                "OWNER": governor,
+                "PENDING_ADMIN": zero,
+                "PENDING_OWNER": zero,
+                "PROBE_FUNCTION": function,
+            }
+            env.update(overrides)
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        r'''
+                        source "$COMMON"
+                        cast() {
+                          case "$1:$3" in
+                          'call:getZKChain(uint256)(address)') printf '%s\n' "$DIAMOND" ;;
+                          'call:getPendingAdmin()(address)') printf '%s\n' "$PENDING_ADMIN" ;;
+                          'call:getAdmin()(address)') printf '%s\n' "$ADMIN" ;;
+                          'call:owner()(address)') printf '%s\n' "$OWNER" ;;
+                          'call:pendingOwner()(address)') printf '%s\n' "$PENDING_OWNER" ;;
+                          code:*) printf '%s\n' 0x6000 ;;
+                          *) return 91 ;;
+                          esac
+                        }
+                        case "$PROBE_FUNCTION" in
+                        registration)
+                          gl_registered_chain_admin \
+                            0x3333333333333333333333333333333333333333 \
+                            57057 edge "$DIAMOND"
+                          ;;
+                        owner) gl_assert_chain_admin_owner "$ADMIN" "$GOVERNOR" edge ;;
+                        *) exit 92 ;;
+                        esac
+                        '''
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertEqual(probe("registration").returncode, 0)
+        self.assertEqual(probe("owner").returncode, 0)
+        for function, override in (
+            ("registration", {"PENDING_ADMIN": "0x" + "7" * 40}),
+            ("registration", {"PENDING_ADMIN": "invalid"}),
+            ("owner", {"PENDING_OWNER": "0x" + "7" * 40}),
+            ("owner", {"PENDING_OWNER": "invalid"}),
+            ("owner", {"OWNER": "0x" + "7" * 40}),
+            ("owner", {"OWNER": "invalid"}),
+        ):
+            with self.subTest(function=function, override=override):
+                self.assertNotEqual(probe(function, **override).returncode, 0)
+
+    def run_resume_probe(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            **os.environ,
+            "ARTIFACTS_OK": "true",
+            "COMMON": str(GATEWAY_COMMON),
+            "EDGE_STATUS": "in_progress",
+            "FINAL_STATUS": "pending",
+            "GATEWAY_DIR": "/tmp/post-admin-probe",
+            "L1_CHAIN_ID": "5700",
+            "L1_RPC_URL": "http://l1.invalid",
+            "LATEST_NONCE": "8",
+            "LIVE_OK": "true",
+            "DA_PAIR": "0x0000000000000000000000000000000000000000 0",
+            "MIGRATION_STATUS": "pending",
+            "MIGRATE_EDGE": "true",
+            "OS_STATUS": "passed",
+            "PENDING_NONCE": "8",
+            "SETTLEMENT_LAYER": "5700",
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    r'''
+                    source "$COMMON"
+                    gl_acquire_gateway_launch_lock() { :; }
+                    gl_assert_edge_launch_context() { :; }
+                    gl_assert_edge_chain_init_local_artifacts() {
+                      [ "$ARTIFACTS_OK" = true ]
+                    }
+                    gl_checkpoint_get_status() {
+                      case "$1" in
+                      gl.gateway_chain_inited|gl.gateway_settlement) printf '%s\n' passed ;;
+                      gl.os_configs_gateway) printf '%s\n' "$OS_STATUS" ;;
+                      gl.edge_chain_inited) printf '%s\n' "$EDGE_STATUS" ;;
+                      gl.migration) printf '%s\n' "$MIGRATION_STATUS" ;;
+                      gl.os_configs_final) printf '%s\n' "$FINAL_STATUS" ;;
+                      *) return 91 ;;
+                      esac
+                    }
+                    gl_assert_edge_chain_config_matches_expected() { :; }
+                    gl_probe_gateway_settlement_ready() { :; }
+                    gl_assert_chain_contracts_da_preinit_safe() { :; }
+                    gl_edge_governor_reuse_context() {
+                      printf '%s\n' '0x1111111111111111111111111111111111111111|0x1111111111111111111111111111111111111111|true|57001|57057|0x3333333333333333333333333333333333333333|0x4444444444444444444444444444444444444444|0x5555555555555555555555555555555555555555'
+                    }
+                    gl_assert_registered_chain_owned_by_governor() { :; }
+                    gl_registered_chain_admin() {
+                      printf '%s\n' 0x6666666666666666666666666666666666666666
+                    }
+                    gl_assert_chain_admin_owner() { :; }
+                    gl_assert_edge_chain_init_live_state() {
+                      [ "$1" = true ] && [ "$LIVE_OK" = true ]
+                    }
+                    gl_authenticate_chain_wallet_roles() {
+                      printf '%s\n' 0x7777777777777777777777777777777777777777
+                    }
+                    cast() {
+                      case "$1:$3" in
+                      'call:getDAValidatorPair()(address,uint8)') printf '%s\n' "$DA_PAIR" ;;
+                      'call:settlementLayer(uint256)(uint256)') printf '%s\n' "$SETTLEMENT_LAYER" ;;
+                      nonce:*)
+                        case "$4" in
+                        latest) printf '%s\n' "$LATEST_NONCE" ;;
+                        pending) printf '%s\n' "$PENDING_NONCE" ;;
+                        *) return 92 ;;
+                        esac ;;
+                      *) return 93 ;;
+                      esac
+                    }
+                    gl_assert_edge_post_admin_resume_safe
+                    '''
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_post_admin_resume_rejects_ambiguous_state(self) -> None:
+        self.assertEqual(self.run_resume_probe().returncode, 0)
+        cases = (
+            {"ARTIFACTS_OK": "false"},
+            {"MIGRATE_EDGE": "false"},
+            {"EDGE_CHAIN_NAME": "edge-b", "EDGE_CHAIN_ID": "57058"},
+            {"EDGE_STATUS": "blocked"},
+            {"MIGRATION_STATUS": "in_progress"},
+            {"SETTLEMENT_LAYER": "57001"},
+            {"SETTLEMENT_LAYER": "invalid"},
+            {"PENDING_NONCE": "9"},
+            {"PENDING_NONCE": "invalid"},
+            {"LIVE_OK": "false"},
+            {"DA_PAIR": "0x0000000000000000000000000000000000000007 0"},
+            {"DA_PAIR": "0x0000000000000000000000000000000000000000 4"},
+            {"DA_PAIR": "invalid"},
+        )
+        for override in cases:
+            with self.subTest(override=override):
+                self.assertNotEqual(self.run_resume_probe(**override).returncode, 0)
+
+    def test_post_admin_artifact_inventory_is_exact_and_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            chain_root = root / "chains" / "zksys"
+            configs = chain_root / "configs"
+            configs.mkdir(parents=True)
+            for directory in (root / "chains", chain_root, configs):
+                directory.chmod(0o700)
+            (chain_root / "ZkStack.yaml").write_text("chain_id: 57057\n")
+            (chain_root / "ZkStack.yaml").chmod(0o600)
+            names = {
+                "contracts.yaml",
+                "external_node.yaml",
+                "general.yaml",
+                "genesis.json",
+                "genesis.yaml",
+                "secrets.yaml",
+                "wallets.yaml",
+            }
+            genesis_data = {
+                "additional_storage": {"0x01": {"0x02": "0x03"}},
+                "genesis_protocol_semantic_version": "0.32.0",
+                "genesis_root": "0x" + "12" * 32,
+                "initial_contracts": [["0x01", "0x02"]],
+                "l1_batch_commit_data_generator_mode": "Rollup",
+                "l1_chain_id": 5700,
+                "l2_chain_id": 57057,
+                "protocol_semantic_version": {"major": 0, "minor": 32, "patch": 0},
+            }
+            genesis_input = {
+                key: genesis_data.get(key, [])
+                for key in (
+                    "initial_contracts",
+                    "additional_storage",
+                    "additional_storage_raw",
+                    "additional_preimages",
+                    "genesis_root",
+                )
+            }
+            test_genesis_input_sha256 = hashlib.sha256(
+                json.dumps(
+                    genesis_input, sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+            for name in names:
+                path = configs / name
+                content = "artifact\n"
+                if name == "genesis.json":
+                    content = json.dumps(genesis_data)
+                path.write_text(content, encoding="utf-8")
+                path.chmod(0o600 if name == "wallets.yaml" else 0o644)
+
+            def probe(mode: str = "exact-post-admin") -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        'source "$COMMON"; '
+                        'gl_expected_v32_genesis_input_sha256() { '
+                        'printf \'%s\\n\' "$TEST_GENESIS_INPUT_SHA256"; }; '
+                        'gl_assert_edge_chain_init_local_artifacts "$MODE"',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "COMMON": str(GATEWAY_COMMON),
+                        "EDGE_CHAIN_NAME": "zksys",
+                        "GATEWAY_DIR": str(root),
+                        "L1_CHAIN_ID": "5700",
+                        "MODE": mode,
+                        "PROTOCOL_VERSION": "v32.0",
+                        "TEST_GENESIS_INPUT_SHA256": test_genesis_input_sha256,
+                    },
+                )
+
+            self.assertIn(
+                PUBLISHED_V32_GENESIS_INPUT_SHA256,
+                GATEWAY_COMMON.read_text(encoding="utf-8"),
+            )
+            exact = probe()
+            self.assertEqual(exact.returncode, 0, exact.stderr)
+            self.assertNotEqual(probe("ready").returncode, 0)
+            secrets = configs / "secrets.yaml"
+            secrets.chmod(0o600)
+            ready = probe("ready")
+            self.assertEqual(ready.returncode, 0, ready.stderr)
+            recovery_temp = configs / ".contracts.yaml.syscoin-normalize.tmp"
+            recovery_temp.write_text("interrupted\n", encoding="utf-8")
+            recovery_temp.chmod(0o600)
+            self.assertEqual(probe().returncode, 0)
+            self.assertNotEqual(probe("ready").returncode, 0)
+            recovery_temp.chmod(0o644)
+            self.assertNotEqual(probe().returncode, 0)
+            recovery_temp.unlink()
+            contracts = configs / "contracts.yaml"
+            candidate = configs / "contracts_57057.yaml"
+            contracts.rename(candidate)
+            numbered_only = probe()
+            self.assertNotEqual(numbered_only.returncode, 0)
+            candidate.rename(contracts)
+
+            unexpected = configs / "unexpected.yaml"
+            unexpected.write_text("unexpected\n", encoding="utf-8")
+            self.assertNotEqual(probe().returncode, 0)
+            unexpected.unlink()
+            chain_extra = chain_root / "unexpected"
+            chain_extra.write_text("unexpected\n", encoding="utf-8")
+            self.assertNotEqual(probe().returncode, 0)
+            chain_extra.unlink()
+            general = configs / "general.yaml"
+            general.unlink()
+            self.assertNotEqual(probe().returncode, 0)
+            general.write_text("artifact\n", encoding="utf-8")
+            general.chmod(0o644)
+            wallets = configs / "wallets.yaml"
+            wallets.chmod(0o644)
+            self.assertNotEqual(probe().returncode, 0)
+            wallets.chmod(0o600)
+            secrets.chmod(0o644)
+            self.assertEqual(probe().returncode, 0)
+            self.assertNotEqual(probe("ready").returncode, 0)
+            secrets.chmod(0o666)
+            self.assertNotEqual(probe().returncode, 0)
+            secrets.chmod(0o600)
+            genesis = configs / "genesis.json"
+            valid_genesis = genesis.read_text(encoding="utf-8")
+            for replacement in (
+                "not-json\n",
+                valid_genesis[:-1] + ', "invalid": NaN}',
+                valid_genesis.replace('"l1_chain_id": 5700', '"l1_chain_id": 5701'),
+                valid_genesis.replace('"l2_chain_id": 57057', '"l2_chain_id": 57058'),
+                valid_genesis.replace('"Rollup"', '"Validium"'),
+                valid_genesis.replace('"0.32.0"', '"0.31.0"', 1),
+                valid_genesis.replace('"0x02"', '"0x04"', 1),
+            ):
+                with self.subTest(genesis=replacement[:40]):
+                    genesis.write_text(replacement, encoding="utf-8")
+                    self.assertNotEqual(probe().returncode, 0)
+            genesis.write_text(valid_genesis, encoding="utf-8")
+            (root / "os-server-configs" / "zksys").mkdir(parents=True)
+            self.assertNotEqual(probe().returncode, 0)
+
+    def run_checkpoint_probe(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        env = {
+            **os.environ,
+            "COMMON": str(GATEWAY_COMMON),
+            "DEPOSITS_PAUSED": "false",
+            "EDGE_CHAIN_ID": "57057",
+            "EDGE_CHAIN_NAME": "zksys",
+            "L1_CHAIN_ID": "5700",
+            "L1_RPC_URL": "http://l1.invalid",
+            "MIGRATE_EDGE": "false",
+            "MIGRATION_STATUS": "pending",
+            "SETTLEMENT_LAYER": "5700",
+        }
+        env.update(overrides)
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    r'''
+                    source "$COMMON"
+                    gl_checkpoint_get_status() { printf '%s\n' "$MIGRATION_STATUS"; }
+                    gl_edge_governor_reuse_context() {
+                      printf '%s\n' "0x1111111111111111111111111111111111111111|0x1111111111111111111111111111111111111111|true|57001|$EDGE_CHAIN_ID|0x3333333333333333333333333333333333333333|0x4444444444444444444444444444444444444444|0x5555555555555555555555555555555555555555"
+                    }
+                    cast() {
+                      [ "$1:$3" = 'call:settlementLayer(uint256)(uint256)' ] || return 91
+                      printf '%s\n' "$SETTLEMENT_LAYER"
+                    }
+                    gl_assert_edge_chain_init_live_state() {
+                      case "$1" in
+                      either) return 0 ;;
+                      true|false) [ "$1" = "$DEPOSITS_PAUSED" ] ;;
+                      *) return 92 ;;
+                      esac
+                    }
+                    gl_assert_edge_chain_init_checkpoint_state
+                    '''
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+    def test_checkpoint_pause_policy_matrix(self) -> None:
+        accepted = (
+            {},
+            {"MIGRATE_EDGE": "true", "DEPOSITS_PAUSED": "true"},
+            {"MIGRATE_EDGE": "true", "DEPOSITS_PAUSED": "false"},
+            {"MIGRATION_STATUS": "in_progress", "DEPOSITS_PAUSED": "true"},
+            {
+                "MIGRATION_STATUS": "blocked",
+                "SETTLEMENT_LAYER": "57001",
+                "DEPOSITS_PAUSED": "false",
+            },
+            {
+                "MIGRATION_STATUS": "passed",
+                "SETTLEMENT_LAYER": "57001",
+                "DEPOSITS_PAUSED": "false",
+            },
+            {
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+                "MIGRATE_EDGE": "true",
+                "MIGRATION_STATUS": "passed",
+                "DEPOSITS_PAUSED": "true",
+            },
+            {
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+                "MIGRATION_STATUS": "passed",
+                "SETTLEMENT_LAYER": "57001",
+            },
+        )
+        rejected = (
+            {"DEPOSITS_PAUSED": "true"},
+            {"MIGRATION_STATUS": "pending", "SETTLEMENT_LAYER": "57001"},
+            {"MIGRATION_STATUS": "passed", "SETTLEMENT_LAYER": "5700"},
+            {
+                "MIGRATION_STATUS": "passed",
+                "SETTLEMENT_LAYER": "57001",
+                "DEPOSITS_PAUSED": "true",
+            },
+            {"MIGRATION_STATUS": "blocked", "SETTLEMENT_LAYER": "999"},
+            {"MIGRATION_STATUS": "unknown"},
+            {"MIGRATE_EDGE": "maybe"},
+            {
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+                "MIGRATE_EDGE": "true",
+                "DEPOSITS_PAUSED": "false",
+            },
+            {
+                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_ID": "57058",
+                "SETTLEMENT_LAYER": "999",
+            },
+        )
+        for override in accepted:
+            with self.subTest(accepted=override):
+                self.assertEqual(self.run_checkpoint_probe(**override).returncode, 0)
+        for override in rejected:
+            with self.subTest(rejected=override):
+                self.assertNotEqual(self.run_checkpoint_probe(**override).returncode, 0)
+
+    def test_repair_runs_only_schema_reconciliation(self) -> None:
+        edge = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "edge-chain-create-init.sh"
+        ).read_text(encoding="utf-8")
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        branch = edge.index('if [ "${RESUME_POST_ADMIN}" = true ]; then')
+        schema = edge.index(
+            'gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"', branch
+        )
+        schema_probe = edge.index(
+            "gl_probe_edge_chain_inited_ready", schema
+        )
+        postcondition = edge.index("gl_assert_edge_post_admin_resume_safe", schema)
+        init = edge.index('init_output=""')
+        self.assertLess(branch, schema)
+        self.assertLess(schema, schema_probe)
+        self.assertLess(schema_probe, postcondition)
+        self.assertLess(postcondition, init)
+        self.assertEqual(
+            edge[branch:init].count("gl_assert_edge_post_admin_resume_safe"),
+            2,
+        )
+        self.assertNotIn("unpause-deposits", edge[branch:init])
+        self.assertIn('init_args+=(--pause-deposits)', edge)
+        self.assertLess(
+            edge.index('case "${MIGRATE_EDGE}" in'),
+            edge.index("gl_l1_broadcast_preflight"),
+        )
+        self.assertIn("GATEWAY_EDGE_POST_ADMIN_REPAIR=true", repair)
+        self.assertIn("--migrate-edge", repair)
+        self.assertIn(
+            '"${SCRIPT_DIR}/edge-chain-create-init.sh" --resume-post-admin', repair
+        )
+        self.assertIn(
+            "gl_assert_edge_chain_init_checkpoint_state", GATEWAY_COMMON.read_text()
+        )
+
+        validate = repair.split("validate_checkpoint_for_repair() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        edge_validation = validate.split("gl.edge_chain_inited)", 1)[1].split(
+            "gl.migration)", 1
+        )[0]
+        self.assertNotIn("run_with_gateway_for_migration", edge_validation)
+        checkpoint_validation = repair.split("validate_checkpoint() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        checkpoint_edge = checkpoint_validation.split(
+            "gl.edge_chain_inited)", 1
+        )[1].split("gl.migration)", 1)[0]
+        self.assertNotIn("run_with_gateway_for_migration", checkpoint_edge)
+        post_admin_dispatch = repair.split(
+            "classify_edge_post_admin_resume_safe >/dev/null", 1
+        )[1].split("classify_edge_created_only_resume_safe >/dev/null", 1)[0]
+        self.assertNotIn("run_with_gateway_for_migration", post_admin_dispatch)
+        self.assertIn(
+            "run_gateway_repair_validator_in_owned_group", post_admin_dispatch
+        )
+        self.assertLess(
+            repair.index("gl_is_canonical_edge_context ||"),
+            repair.index("gl_validate_prover_mode"),
+        )
+
+    def test_repair_dispatch_survives_classifier_exit(self) -> None:
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        perform = "perform_repair_step() {" + repair.split(
+            "perform_repair_step() {", 1
+        )[1].split('\n}\n\nif [ "${COMMAND}" != "repair" ]', 1)[0] + "\n}\n"
+
+        def dispatch(
+            prior: str, post_admin: bool, created_only: bool = True
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        r'''
+                        set -euo pipefail
+                        gl_die() { exit 97; }
+                        gl_assert_edge_post_admin_resume_safe() {
+                          [ "$POST_ADMIN" = true ] || gl_die "not post-admin"
+                        }
+                        gl_assert_edge_created_only_resume_safe() {
+                          [ "$CREATED_ONLY" = true ] || gl_die "not created-only"
+                        }
+                        classify_edge_post_admin_resume_safe() {
+                          (gl_assert_edge_post_admin_resume_safe)
+                        }
+                        classify_edge_created_only_resume_safe() {
+                          (gl_assert_edge_created_only_resume_safe)
+                        }
+                        run_gateway_repair_validator_in_owned_group() {
+                          case "$1" in
+                          classify_*) "$@" ;;
+                          *) printf '%s\n' "$*" ;;
+                          esac
+                        }
+                        run_with_gateway_for_migration() {
+                          printf 'run_with_gateway_for_migration %s\n' "$*"
+                        }
+                        run_supervised_gateway_repair_operation() {
+                          "$@"
+                        }
+                        SCRIPT_DIR=/nonexistent
+                        '''
+                    )
+                    + perform
+                    + "perform_repair_step gl.edge_chain_inited\n",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "CREATED_ONLY": str(created_only).lower(),
+                    "POST_ADMIN": str(post_admin).lower(),
+                    "REPAIR_PRIOR_STATUS": prior,
+                },
+            )
+
+        for prior in ("in_progress", "blocked"):
+            with self.subTest(prior=prior):
+                created = dispatch(prior, False)
+                self.assertEqual(created.returncode, 0, created.stderr)
+                self.assertIn("--resume-created-only", created.stdout)
+                self.assertIn("run_with_gateway_for_migration", created.stdout)
+        post_admin = dispatch("blocked", True)
+        self.assertEqual(post_admin.returncode, 0, post_admin.stderr)
+        self.assertIn("--resume-post-admin", post_admin.stdout)
+        self.assertNotIn("run_with_gateway_for_migration", post_admin.stdout)
+        ambiguous = dispatch("blocked", False, False)
+        self.assertNotEqual(ambiguous.returncode, 0)
+        self.assertEqual(ambiguous.stdout, "")
+        self.assertIn("neither exact", ambiguous.stderr)
 
 
 class LauncherStaticTests(unittest.TestCase):
@@ -1528,6 +2188,9 @@ class LauncherStaticTests(unittest.TestCase):
             "pub async fn complete_ctm_owner_handoffs(",
             "pub ownership_only: bool",
             "if final_ecosystem_args.ownership_only",
+            "// SYSCOIN: Restrict the copied template before generated consensus secrets",
+            "chain_config.path_to_secrets_config()",
+            'context("failed securing generated secrets before key creation")?',
         ):
             self.assertIn(expected, added)
         self.assertEqual(
@@ -1557,18 +2220,31 @@ class LauncherStaticTests(unittest.TestCase):
         )
         self.assertLess(public_sender_binding, signer_creation)
 
+        secret_hardening = patch.split(
+            "diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs ",
+            1,
+        )[1]
+        for expected in (
+            "+use std::os::unix::fs::PermissionsExt;",
+            "+    // SYSCOIN: Restrict the copied template before generated consensus secrets",
+            "+        chain_config.path_to_secrets_config(),",
+            "+        std::fs::Permissions::from_mode(0o600),",
+            '+    .context("failed securing generated secrets before key creation")?;',
+        ):
+            self.assertIn(expected, secret_hardening)
+
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "c63f0244645e74f6f833fa383bbe2e8b334209533feb832a18460dc88060faa1",
+            "2e07c5abcdcdb7d68e82fe14ceaf4c50c75c9d65ba710fa219737f9de7848804",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="c63f0244645e74f6f833fa383bbe2e8b334209533feb832a18460dc88060faa1"',
-            'EXPECTED_PATCH_PATH_COUNT="24"',
-            'EXPECTED_PATCH_PATHS_SHA256="6a3b90058f9fe33691c7b337ce7d2717e98027ef8b3f42cb4a46427b879bc5e8"',
-            'EXPECTED_PATCHED_TREE="a51bb0b63bde9c037322bd515425569419812046"',
+            'EXPECTED_PATCH_SHA256="2e07c5abcdcdb7d68e82fe14ceaf4c50c75c9d65ba710fa219737f9de7848804"',
+            'EXPECTED_PATCH_PATH_COUNT="25"',
+            'EXPECTED_PATCH_PATHS_SHA256="90eb867d0d32dcec5f2482dc83dee8989b7a5ffd24fc751a32da2e6066245765"',
+            'EXPECTED_PATCHED_TREE="8291638dbdfd2a310d14150bca8fab2f7fe4f30b"',
         ):
             self.assertIn(expected, applicator)
 
@@ -1918,8 +2594,11 @@ class LauncherStaticTests(unittest.TestCase):
             self.assertIn("invalid ecosystem compact rollup", decimal_preflight.stderr)
             contracts.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
+            previous_inode = contracts.stat().st_ino
             normalized = run("gl_ensure_chain_contracts_yaml_schema")
             self.assertEqual(normalized.returncode, 0, normalized.stderr)
+            self.assertNotEqual(contracts.stat().st_ino, previous_inode)
+            self.assertEqual(contracts.stat().st_mode & 0o777, 0o600)
             first = contracts.read_bytes()
             data = yaml.safe_load(first)
             self.assertEqual(data["l1"]["rollup_l1_da_validator_addr"], rollup)
@@ -1974,6 +2653,12 @@ class LauncherStaticTests(unittest.TestCase):
             )
             contracts.write_bytes(first)
             self.assertEqual(run("gl_ensure_chain_contracts_yaml_schema").returncode, 0)
+            self.assertEqual(contracts.read_bytes(), first)
+            stale = contracts.parent / ".contracts.yaml.syscoin-normalize.tmp"
+            stale.write_text("interrupted\n", encoding="utf-8")
+            stale.chmod(0o600)
+            self.assertEqual(run("gl_ensure_chain_contracts_yaml_schema").returncode, 0)
+            self.assertFalse(stale.exists())
             self.assertEqual(contracts.read_bytes(), first)
 
             (root / "configs" / "contracts.yaml").write_text(
@@ -2489,7 +3174,7 @@ printf '%s|%s|%s\n' "$rc" "$before" "$after"
             REPO_ROOT / "scripts" / "gateway-launch" / "gateway-chain-init.sh"
         ).read_text(encoding="utf-8")
         self.assertIn("gl_zkstack_private_pty zkstack chain create", edge_create)
-        self.assertIn("gl_zkstack_private_pty zkstack chain init", edge_create)
+        self.assertIn('gl_zkstack_private_pty "${init_args[@]}"', edge_create)
         self.assertIn("gl_zkstack_private_pty zkstack chain init", gateway_init)
         self.assertNotIn("--update-submodules", edge_create)
         self.assertNotIn("--update-submodules", gateway_init)
@@ -3406,6 +4091,7 @@ gl_checkpoint_assert_fingerprint_matches
                 "        if [ \"${4:-}\" = 57001 ]; then [ \"${TEST_GATEWAY_QUERY_FAIL:-false}\" != true ] || exit 9; printf '%s\\n' \"${TEST_GATEWAY_DIAMOND:?}\"; elif [ \"${4:-}\" = 57057 ]; then printf '%s\\n' \"${TEST_EDGE_DIAMOND:?}\"; else exit 3; fi ;;\n"
                 "      'getAdmin()(address)')\n"
                 "        if [ \"${2:-}\" = \"${TEST_GATEWAY_DIAMOND:?}\" ]; then printf '%s\\n' \"${TEST_GATEWAY_CHAIN_ADMIN:?}\"; elif [ \"${2:-}\" = \"${TEST_EDGE_DIAMOND:?}\" ]; then printf '%s\\n' \"${TEST_CHAIN_ADMIN:?}\"; else exit 3; fi ;;\n"
+                "      'getPendingAdmin()(address)'|'pendingOwner()(address)') printf '%s\\n' 0x0000000000000000000000000000000000000000 ;;\n"
                 "      'owner()(address)')\n"
                 "        if [ \"${2:-}\" = \"${TEST_GATEWAY_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_GATEWAY_OWNER:?}\"; elif [ \"${2:-}\" = \"${TEST_CHAIN_ADMIN:?}\" ]; then printf '%s\\n' \"${TEST_CHAIN_ADMIN_OWNER:?}\"; else exit 3; fi ;;\n"
                 "      *) exit 3 ;;\n"
@@ -5609,7 +6295,16 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         repair_validation = repair.split(
             "validate_checkpoint_for_repair() {", 1
         )[1].split("\n}", 1)[0]
-        self.assertIn("gl.edge_chain_inited | gl.migration", repair_validation)
+        self.assertIn("gl.edge_chain_inited)", repair_validation)
+        self.assertIn("gl.migration)", repair_validation)
+        repair_edge_validation = repair_validation.split(
+            "gl.edge_chain_inited)", 1
+        )[1].split("gl.migration)", 1)[0]
+        repair_migration_validation = repair_validation.split(
+            "gl.migration)", 1
+        )[1].split("*)", 1)[0]
+        self.assertNotIn("run_with_gateway_for_migration", repair_edge_validation)
+        self.assertIn("run_with_gateway_for_migration", repair_migration_validation)
         supervised_repair = repair.split(
             "run_supervised_gateway_repair_operation() {", 1
         )[1].split("\n}", 1)[0]
@@ -5620,8 +6315,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertIn(
             "trap handle_direct_gateway_validation_exit EXIT", supervised_repair
         )
+        self.assertIn("run_supervised_gateway_repair_operation", repair_validation)
         self.assertIn(
-            "run_supervised_gateway_repair_operation validate_checkpoint",
+            "run_gateway_repair_validator_in_owned_group validate_checkpoint",
             repair_validation,
         )
         self.assertIn('*) (validate_checkpoint "$1")', repair_validation)
@@ -5777,7 +6473,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         rewrite_invocation_end = edge_create_helper.index("<<'PY'", wallet_rewrite)
         edge_init = edge_create_helper.index("zkstack chain init", wallet_rewrite)
         post_init_owner_check = edge_create_helper.index(
-            "gl_assert_edge_chain_admin_owned_by_configured_governor", edge_init
+            "gl_probe_edge_chain_inited_and_governor_ready", edge_init
         )
         self.assertLess(pre_rewrite_owner_check, wallet_rewrite)
         self.assertLess(wallet_rewrite, edge_init)
