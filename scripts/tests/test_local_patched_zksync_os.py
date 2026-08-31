@@ -2173,6 +2173,8 @@ class LauncherStaticTests(unittest.TestCase):
             "// SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.",
             "access_control_restriction: Address,",
             "access_control_restriction,",
+            "// SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.",
+            '"migrateChainToGatewayWithCutData",',
             "// SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.",
             ".access_control_restriction_addr",
             'context("no access_control_restriction_addr")?',
@@ -2235,16 +2237,16 @@ class LauncherStaticTests(unittest.TestCase):
 
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "2e07c5abcdcdb7d68e82fe14ceaf4c50c75c9d65ba710fa219737f9de7848804",
+            "2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="2e07c5abcdcdb7d68e82fe14ceaf4c50c75c9d65ba710fa219737f9de7848804"',
+            'EXPECTED_PATCH_SHA256="2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2"',
             'EXPECTED_PATCH_PATH_COUNT="25"',
             'EXPECTED_PATCH_PATHS_SHA256="90eb867d0d32dcec5f2482dc83dee8989b7a5ffd24fc751a32da2e6066245765"',
-            'EXPECTED_PATCHED_TREE="8291638dbdfd2a310d14150bca8fab2f7fe4f30b"',
+            'EXPECTED_PATCHED_TREE="3803128565f69549787f1bba6382e41cebc316b1"',
         ):
             self.assertIn(expected, applicator)
 

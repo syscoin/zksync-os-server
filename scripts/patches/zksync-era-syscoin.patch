@@ -922,7 +922,11 @@ index 0ffe0e96f..aab4fc375 100644
 +    access_control_restriction: Address,
 @@ -544,0 +914 @@ pub async fn set_da_validator_pair(
 +                access_control_restriction,
-@@ -998,0 +1369,103 @@ pub async fn start_migrate_chain_from_gateway(
+@@ -811 +1181,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
+-            "migrateChainToGateway",
++            // SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.
++            "migrateChainToGatewayWithCutData",
+@@ -998,0 +1370,103 @@ pub async fn start_migrate_chain_from_gateway(
 +
 +// SYSCOIN: lock the state-aware ownership retry invariants.
 +#[cfg(test)]
