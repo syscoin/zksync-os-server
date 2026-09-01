@@ -92,7 +92,7 @@ use zksync_os_contract_interface::{
 use zksync_os_gas_adjuster::GasAdjuster;
 use zksync_os_genesis::{
     FileGenesisInputSource, Genesis, GenesisInputSource, GenesisUpgradeTxInfo,
-    load_genesis_upgrade_tx_from_blocks,
+    load_genesis_upgrade_tx_from_blocks, locate_genesis_upgrade_log,
 };
 use zksync_os_internal_config::InternalConfigManager;
 use zksync_os_l1_sender::commands::commit::CommitCommand;
@@ -524,8 +524,8 @@ async fn validate_l1_archive_history_block(
 }
 
 struct AuthenticatedArchiveGenesisUpgrade {
-    deployment_block: u64,
-    deployment_block_hash: B256,
+    history_block: u64,
+    history_block_hash: B256,
     tx: GenesisUpgradeTxInfo,
 }
 
@@ -542,28 +542,45 @@ async fn authenticate_l1_archive_genesis_upgrade(
     let deployment_block_hash =
         validate_l1_archive_history_block(live_provider, archive_provider, deployment_block, None)
             .await?;
-    // A zero deployment block is the local/preloaded-state sentinel. Retain its historical scan,
-    // but take both its bound and its sole event from the authenticated live provider.
-    let to_block = if deployment_block == 0 {
-        live_provider
+    // A zero deployment block is only the local/preloaded-state sentinel. Discover the sole live
+    // event, authenticate its actual block against both providers, then reload it at that exact
+    // block. Real deployments use their already-authenticated nonzero deployment block directly.
+    let (history_block, history_block_hash) = if deployment_block == 0 {
+        let live_head = live_provider
             .get_block_number()
             .await
-            .context("failed to read live L1 head for genesis upgrade discovery")?
+            .context("failed to read live L1 head for genesis upgrade discovery")?;
+        let (event_block, event_block_hash) = locate_genesis_upgrade_log(
+            diamond_proxy_address,
+            live_provider.clone(),
+            deployment_block,
+            live_head,
+        )
+        .await
+        .context("failed to locate genesis upgrade on live canonical L1")?;
+        let canonical_event_hash = validate_l1_archive_history_block(
+            live_provider,
+            archive_provider,
+            event_block,
+            Some(event_block_hash),
+        )
+        .await?;
+        (event_block, canonical_event_hash)
     } else {
-        deployment_block
+        (deployment_block, deployment_block_hash)
     };
     let tx = load_genesis_upgrade_tx_from_blocks(
         diamond_proxy_address,
         live_provider.clone(),
-        deployment_block,
-        to_block,
-        (deployment_block != 0).then_some(deployment_block_hash),
+        history_block,
+        history_block,
+        Some(history_block_hash),
     )
     .await
     .context("failed to authenticate genesis upgrade on live canonical L1")?;
     Ok(AuthenticatedArchiveGenesisUpgrade {
-        deployment_block,
-        deployment_block_hash,
+        history_block,
+        history_block_hash,
         tx,
     })
 }
@@ -776,8 +793,8 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
         validate_l1_archive_history_block(
             &l1_provider,
             provider,
-            authenticated.deployment_block,
-            Some(authenticated.deployment_block_hash),
+            authenticated.history_block,
+            Some(authenticated.history_block_hash),
         )
         .await
         .expect("L1 archive deployment history changed during genesis discovery");

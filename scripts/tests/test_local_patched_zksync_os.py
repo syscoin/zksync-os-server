@@ -66,6 +66,9 @@ class LauncherStaticTests(unittest.TestCase):
         )
         self.assertIn("Genesis::new_with_authenticated_genesis_upgrade(", node)
         self.assertIn("authenticated.tx.clone(),", node)
+        self.assertIn("let (event_block, event_block_hash) = locate_genesis_upgrade_log(", node)
+        self.assertIn("Some(event_block_hash)", node)
+        self.assertIn("(event_block, canonical_event_hash)", node)
         post_state_start = node.index(
             "let l2_genesis_block_hash = genesis.state().await.header.hash();"
         )
@@ -77,8 +80,8 @@ class LauncherStaticTests(unittest.TestCase):
             """validate_l1_archive_history_block(
             &l1_provider,
             provider,
-            authenticated.deployment_block,
-            Some(authenticated.deployment_block_hash),
+            authenticated.history_block,
+            Some(authenticated.history_block_hash),
         )""",
             post_state,
         )
@@ -91,14 +94,17 @@ class LauncherStaticTests(unittest.TestCase):
         genesis = (REPO_ROOT / "lib" / "genesis" / "src" / "lib.rs").read_text(
             encoding="utf-8"
         )
+        unique_start = genesis.index("async fn unique_genesis_upgrade_log(")
         loader_start = genesis.index("pub async fn load_genesis_upgrade_tx_from_blocks(")
         decode_start = genesis.index("let sol_event = GenesisUpgrade::decode_log")
+        unique_checks = genesis[unique_start:loader_start]
+        self.assertIn("logs.len() == 1", unique_checks)
+        self.assertIn("!logs[0].removed", unique_checks)
         authenticated_checks = genesis[loader_start:decode_start]
         for check in (
-            "!logs[0].removed",
             "from_block == to_block",
-            "logs[0].block_number == Some(from_block)",
-            "logs[0].block_hash == Some(expected_block_hash)",
+            "log.block_number == Some(from_block)",
+            "log.block_hash == Some(expected_block_hash)",
         ):
             self.assertIn(check, authenticated_checks)
 

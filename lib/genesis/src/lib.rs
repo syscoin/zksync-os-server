@@ -386,15 +386,12 @@ async fn load_genesis_upgrade_tx(
     .await
 }
 
-// SYSCOIN: Expose the exact-block loader so an archive-discovered deployment block can be bound
-// to the canonical live L1 event before its payload is cached or persisted.
-pub async fn load_genesis_upgrade_tx_from_blocks(
+async fn unique_genesis_upgrade_log(
     zk_chain_address: Address,
     provider: NodeProvider,
     from_block: u64,
     to_block: u64,
-    expected_block_hash: Option<B256>,
-) -> anyhow::Result<GenesisUpgradeTxInfo> {
+) -> anyhow::Result<alloy::rpc::types::Log> {
     anyhow::ensure!(
         from_block <= to_block,
         "Invalid genesis upgrade block range {from_block}..={to_block}"
@@ -405,27 +402,40 @@ pub async fn load_genesis_upgrade_tx_from_blocks(
         .to_block(to_block)
         .event_signature(event_sig)
         .address(zk_chain_address);
-    let logs = provider.get_logs(&filter).await?;
+    let mut logs = provider.get_logs(&filter).await?;
     anyhow::ensure!(
         logs.len() == 1,
         "Expected exactly one genesis upgrade tx log, found these {logs:?}"
     );
     anyhow::ensure!(!logs[0].removed, "Genesis upgrade log is marked removed");
+    Ok(logs.pop().unwrap())
+}
+
+// SYSCOIN: Expose the exact-block loader so an archive-discovered deployment block can be bound
+// to the canonical live L1 event before its payload is cached or persisted.
+pub async fn load_genesis_upgrade_tx_from_blocks(
+    zk_chain_address: Address,
+    provider: NodeProvider,
+    from_block: u64,
+    to_block: u64,
+    expected_block_hash: Option<B256>,
+) -> anyhow::Result<GenesisUpgradeTxInfo> {
+    let log = unique_genesis_upgrade_log(zk_chain_address, provider, from_block, to_block).await?;
     if let Some(expected_block_hash) = expected_block_hash {
         anyhow::ensure!(
             from_block == to_block,
             "Canonical genesis upgrade authentication requires one exact block"
         );
         anyhow::ensure!(
-            logs[0].block_number == Some(from_block),
+            log.block_number == Some(from_block),
             "Genesis upgrade log is not bound to requested block {from_block}"
         );
         anyhow::ensure!(
-            logs[0].block_hash == Some(expected_block_hash),
+            log.block_hash == Some(expected_block_hash),
             "Genesis upgrade log is not bound to canonical block hash {expected_block_hash}"
         );
     }
-    let sol_event = GenesisUpgrade::decode_log(&logs[0].inner)?.data;
+    let sol_event = GenesisUpgrade::decode_log(&log.inner)?.data;
     let protocol_version = ProtocolSemanticVersion::try_from(sol_event._protocolVersion)
         .context("Failed to parse protocol version from genesis upgrade tx")?;
     let upgrade_tx = L1UpgradeEnvelope::try_from(sol_event._l2Transaction)?;
@@ -446,6 +456,25 @@ pub async fn load_genesis_upgrade_tx_from_blocks(
         tx: upgrade_tx,
         force_deploy_preimages: preimages,
     })
+}
+
+// SYSCOIN: A block-zero deployment is only a preloaded-state sentinel. Locate its one upgrade
+// event first; callers must authenticate the returned block against canonical L1 history before
+// loading the event again through the exact-block path above.
+pub async fn locate_genesis_upgrade_log(
+    zk_chain_address: Address,
+    provider: NodeProvider,
+    from_block: u64,
+    to_block: u64,
+) -> anyhow::Result<(u64, B256)> {
+    let log = unique_genesis_upgrade_log(zk_chain_address, provider, from_block, to_block).await?;
+    let block_number = log
+        .block_number
+        .context("Genesis upgrade log is missing its L1 block number")?;
+    let block_hash = log
+        .block_hash
+        .context("Genesis upgrade log is missing its L1 block hash")?;
+    Ok((block_number, block_hash))
 }
 
 #[async_trait::async_trait]
