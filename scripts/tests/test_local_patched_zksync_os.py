@@ -1531,6 +1531,21 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 directory.chmod(0o700)
             (chain_root / "ZkStack.yaml").write_text("chain_id: 57057\n")
             (chain_root / "ZkStack.yaml").chmod(0o600)
+            gateway_root = root / "chains" / "gateway"
+            gateway_configs = gateway_root / "configs"
+            gateway_configs.mkdir(parents=True)
+            for directory in (gateway_root, gateway_configs):
+                directory.chmod(0o700)
+            (gateway_root / "ZkStack.yaml").write_text('{"chain_id": 57001}\n')
+            (gateway_root / "ZkStack.yaml").chmod(0o600)
+            gateway_addresses = {
+                "state_transition_proxy_addr": "0x" + "11" * 20,
+                "validator_timelock_addr": "0x" + "22" * 20,
+                "multicall3_addr": "0x" + "33" * 20,
+            }
+            gateway_config = gateway_configs / "gateway.yaml"
+            gateway_config.write_text(json.dumps(gateway_addresses), encoding="utf-8")
+            gateway_config.chmod(0o600)
             names = {
                 "contracts.yaml",
                 "external_node.yaml",
@@ -1590,6 +1605,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         **os.environ,
                         "COMMON": str(GATEWAY_COMMON),
                         "EDGE_CHAIN_NAME": "zksys",
+                        "GATEWAY_CHAIN_ID": "57001",
                         "GATEWAY_DIR": str(root),
                         "L1_CHAIN_ID": "5700",
                         "MODE": mode,
@@ -1609,6 +1625,46 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             secrets.chmod(0o600)
             ready = probe("ready")
             self.assertEqual(ready.returncode, 0, ready.stderr)
+            if importlib.util.find_spec("yaml") is not None:
+                gateway_chain = configs / "gateway_chain.yaml"
+                valid_gateway_chain = (
+                    f"state_transition_proxy_addr: {gateway_addresses['state_transition_proxy_addr']}\n"
+                    f"validator_timelock_addr: {gateway_addresses['validator_timelock_addr']}\n"
+                    f"multicall3_addr: {gateway_addresses['multicall3_addr']}\n"
+                    f"diamond_proxy_addr: {'0x' + '44' * 20}\n"
+                    "gateway_chain_id: 57001\n"
+                )
+                gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
+                gateway_chain.chmod(0o600)
+                self.assertEqual(probe("ready").returncode, 0)
+                self.assertNotEqual(probe().returncode, 0)
+                invalid_gateway_chains = (
+                    valid_gateway_chain.replace("57001", "57002"),
+                    valid_gateway_chain.replace(
+                        "0x" + "11" * 20, "0x" + "55" * 20
+                    ),
+                    valid_gateway_chain.replace(
+                        "0x" + "44" * 20, "0x" + "00" * 20
+                    ),
+                    valid_gateway_chain + "unexpected: true\n",
+                    valid_gateway_chain.replace(
+                        "multicall3_addr:", "missing_multicall3_addr:"
+                    ),
+                    valid_gateway_chain + "gateway_chain_id: 57001\n",
+                )
+                for invalid_gateway_chain in invalid_gateway_chains:
+                    with self.subTest(gateway_chain=invalid_gateway_chain[-48:]):
+                        gateway_chain.write_text(
+                            invalid_gateway_chain, encoding="utf-8"
+                        )
+                        self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
+                gateway_chain.chmod(0o644)
+                self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.unlink()
+                gateway_chain.symlink_to(gateway_config)
+                self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.unlink()
             recovery_temp = configs / ".contracts.yaml.syscoin-normalize.tmp"
             recovery_temp.write_text("interrupted\n", encoding="utf-8")
             recovery_temp.chmod(0o600)
@@ -1665,13 +1721,23 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             (root / "os-server-configs" / "zksys").mkdir(parents=True)
             self.assertNotEqual(probe().returncode, 0)
 
-    def run_checkpoint_probe(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def run_checkpoint_probe(
+        self, gateway_chain_artifact: bool = False, **overrides: str
+    ) -> subprocess.CompletedProcess[str]:
+        temporary_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_dir.cleanup)
+        root = Path(temporary_dir.name)
+        if gateway_chain_artifact:
+            artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("validated by the preceding local-artifact probe\n")
         env = {
             **os.environ,
             "COMMON": str(GATEWAY_COMMON),
             "DEPOSITS_PAUSED": "false",
             "EDGE_CHAIN_ID": "57057",
             "EDGE_CHAIN_NAME": "zksys",
+            "GATEWAY_DIR": str(root),
             "L1_CHAIN_ID": "5700",
             "L1_RPC_URL": "http://l1.invalid",
             "MIGRATE_EDGE": "false",
@@ -1768,9 +1834,34 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
         for override in accepted:
             with self.subTest(accepted=override):
                 self.assertEqual(self.run_checkpoint_probe(**override).returncode, 0)
+        self.assertEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="true",
+                SETTLEMENT_LAYER="57001",
+                DEPOSITS_PAUSED="true",
+            ).returncode,
+            0,
+        )
         for override in rejected:
             with self.subTest(rejected=override):
                 self.assertNotEqual(self.run_checkpoint_probe(**override).returncode, 0)
+        self.assertNotEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="false",
+                SETTLEMENT_LAYER="57001",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="true",
+                SETTLEMENT_LAYER="5700",
+            ).returncode,
+            0,
+        )
 
     def test_repair_runs_only_schema_reconciliation(self) -> None:
         edge = (
@@ -2175,6 +2266,9 @@ class LauncherStaticTests(unittest.TestCase):
             "access_control_restriction,",
             "// SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.",
             '"migrateChainToGatewayWithCutData",',
+            "// SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI.",
+            "let l2_tx_number_in_batch = u16::try_from(params.l2_tx_number_in_block.as_u64())",
+            '"finishMigrateChainToGatewayWithCutData",',
             "// SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.",
             ".access_control_restriction_addr",
             'context("no access_control_restriction_addr")?',
@@ -2235,18 +2329,36 @@ class LauncherStaticTests(unittest.TestCase):
         ):
             self.assertIn(expected, secret_hardening)
 
+        finish_migration = patch.split(
+            "diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/"
+            "finalize_chain_migration_to_gateway.rs ",
+            1,
+        )[1]
+        for expected in (
+            "+            ((",
+            "+                l2_tx_number_in_batch,",
+            "+                tx_status as u8,",
+            "+                l2_tx_hash,",
+            "+                gateway_diamond_cut_data,",
+            "+            ),),",
+        ):
+            self.assertIn(expected, finish_migration)
+        self.assertNotIn('+            "finishMigrateChainToGateway",', finish_migration)
+
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2",
+            "27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2"',
-            'EXPECTED_PATCH_PATH_COUNT="25"',
-            'EXPECTED_PATCH_PATHS_SHA256="90eb867d0d32dcec5f2482dc83dee8989b7a5ffd24fc751a32da2e6066245765"',
-            'EXPECTED_PATCHED_TREE="3803128565f69549787f1bba6382e41cebc316b1"',
+            'EXPECTED_PATCH_SHA256="27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78"',
+            'EXPECTED_PATCH_PATH_COUNT="26"',
+            'EXPECTED_PATCH_PATHS_SHA256="c82dac75c980d1473750de262aae522d2f64a534b17b2aae11fd66e967d98779"',
+            'EXPECTED_PATCHED_TREE="60dfff2d8b29a0c7bd43e832ae63fde878c209dc"',
+            'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
+            'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
             self.assertIn(expected, applicator)
 
@@ -5075,6 +5187,11 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             self.assertIn("gl_checkpoint_assert_fingerprint_matches", script)
             self.assertIn("gl_bind_gateway_launch_context", script)
         self.assertIn("address_for_private_key", common)
+        fund_wallets = common[common.index("gl_fund_wallets_yaml() {") :]
+        self.assertIn(
+            'GATEWAY_LAUNCH_HELPER_DIR="${GATEWAY_LAUNCH_HELPER_DIR:-${GL_DIR}}" python3',
+            fund_wallets,
+        )
         self.assertIn("missing private key for required server signer", common)
         self.assertLess(
             common.index("server_signer_roles ="),
