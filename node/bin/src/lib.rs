@@ -90,7 +90,10 @@ use zksync_os_contract_interface::{
     IBridgehub::ctmAssetIdToAddressCall, IChainTypeManager::validatorTimelockPostV29Call, ZkChain,
 };
 use zksync_os_gas_adjuster::GasAdjuster;
-use zksync_os_genesis::{FileGenesisInputSource, Genesis, GenesisInputSource};
+use zksync_os_genesis::{
+    FileGenesisInputSource, Genesis, GenesisInputSource, GenesisUpgradeTxInfo,
+    load_genesis_upgrade_tx_from_blocks, locate_genesis_upgrade_log,
+};
 use zksync_os_internal_config::InternalConfigManager;
 use zksync_os_l1_sender::commands::commit::CommitCommand;
 use zksync_os_l1_sender::commands::execute::ExecuteCommand;
@@ -414,6 +417,174 @@ fn syscoin_da_verification_config(config: &Config) -> Option<SyscoinDaVerificati
     })
 }
 
+// SYSCOIN: An archive RPC is authority only for historical reads, never for selecting L1.
+// Authenticate it against the already revalidated live-L1 identity before and after genesis
+// discovery so a wrong or changing endpoint cannot durably poison the local database identity.
+fn validate_l1_archive_identity_observation(
+    expected_chain_id: u64,
+    expected_genesis_hash: B256,
+    observed_chain_id: u64,
+    observed_genesis_number: u64,
+    observed_genesis_hash: B256,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        observed_chain_id == expected_chain_id,
+        "L1 archive chain ID {observed_chain_id} does not match authenticated L1 chain ID {expected_chain_id}"
+    );
+    anyhow::ensure!(
+        observed_genesis_number == 0,
+        "L1 archive returned block {observed_genesis_number} for the earliest block"
+    );
+    anyhow::ensure!(
+        observed_genesis_hash == expected_genesis_hash,
+        "L1 archive genesis hash {observed_genesis_hash} does not match authenticated L1 genesis hash {expected_genesis_hash}"
+    );
+    Ok(())
+}
+
+async fn validate_l1_archive_identity(
+    provider: &NodeProvider,
+    expected_chain_id: u64,
+    expected_genesis_hash: B256,
+) -> anyhow::Result<()> {
+    let observed_chain_id = provider
+        .get_chain_id()
+        .await
+        .context("failed to read L1 archive chain ID")?;
+    let genesis_block = provider
+        .get_block_by_number(BlockNumberOrTag::Earliest)
+        .await
+        .context("failed to read L1 archive genesis block")?
+        .context("L1 archive returned no genesis block")?;
+    validate_l1_archive_identity_observation(
+        expected_chain_id,
+        expected_genesis_hash,
+        observed_chain_id,
+        genesis_block.header.inner.number,
+        genesis_block.header.hash,
+    )
+}
+
+// SYSCOIN: The archive may discover where the diamond first existed, but the live provider must
+// authenticate that exact canonical block and supply the GenesisUpgrade payload. Thus a stale or
+// Byzantine same-network archive cannot inject replay data by merely echoing chain ID and block 0.
+fn validate_l1_archive_history_observation(
+    expected_block_number: u64,
+    expected_block_hash: Option<B256>,
+    live_block_number: u64,
+    live_block_hash: B256,
+    archive_block_number: u64,
+    archive_block_hash: B256,
+) -> anyhow::Result<B256> {
+    anyhow::ensure!(
+        live_block_number == expected_block_number,
+        "live L1 returned block {live_block_number} for archive deployment block {expected_block_number}"
+    );
+    anyhow::ensure!(
+        archive_block_number == expected_block_number,
+        "L1 archive returned block {archive_block_number} for deployment block {expected_block_number}"
+    );
+    anyhow::ensure!(
+        archive_block_hash == live_block_hash,
+        "L1 archive deployment block hash {archive_block_hash} does not match live canonical hash {live_block_hash}"
+    );
+    if let Some(expected_block_hash) = expected_block_hash {
+        anyhow::ensure!(
+            live_block_hash == expected_block_hash,
+            "live L1 deployment block hash changed from {expected_block_hash} to {live_block_hash}"
+        );
+    }
+    Ok(live_block_hash)
+}
+
+async fn validate_l1_archive_history_block(
+    live_provider: &NodeProvider,
+    archive_provider: &NodeProvider,
+    deployment_block: u64,
+    expected_block_hash: Option<B256>,
+) -> anyhow::Result<B256> {
+    let live_block = live_provider
+        .get_block_by_number(deployment_block.into())
+        .await
+        .context("failed to read deployment block from live L1")?
+        .with_context(|| format!("live L1 returned no deployment block {deployment_block}"))?;
+    let archive_block = archive_provider
+        .get_block_by_number(deployment_block.into())
+        .await
+        .context("failed to read deployment block from L1 archive")?
+        .with_context(|| format!("L1 archive returned no deployment block {deployment_block}"))?;
+    validate_l1_archive_history_observation(
+        deployment_block,
+        expected_block_hash,
+        live_block.header.inner.number,
+        live_block.header.hash,
+        archive_block.header.inner.number,
+        archive_block.header.hash,
+    )
+}
+
+struct AuthenticatedArchiveGenesisUpgrade {
+    history_block: u64,
+    history_block_hash: B256,
+    tx: GenesisUpgradeTxInfo,
+}
+
+async fn authenticate_l1_archive_genesis_upgrade(
+    live_provider: &NodeProvider,
+    archive_provider: &NodeProvider,
+    diamond_proxy_address: Address,
+) -> anyhow::Result<AuthenticatedArchiveGenesisUpgrade> {
+    let archive_chain = ZkChain::new(diamond_proxy_address, archive_provider.clone());
+    let deployment_block = archive_chain
+        .deployment_block()
+        .await
+        .context("failed to discover diamond deployment block from L1 archive")?;
+    let deployment_block_hash =
+        validate_l1_archive_history_block(live_provider, archive_provider, deployment_block, None)
+            .await?;
+    // A zero deployment block is only the local/preloaded-state sentinel. Discover the sole live
+    // event, authenticate its actual block against both providers, then reload it at that exact
+    // block. Real deployments use their already-authenticated nonzero deployment block directly.
+    let (history_block, history_block_hash) = if deployment_block == 0 {
+        let live_head = live_provider
+            .get_block_number()
+            .await
+            .context("failed to read live L1 head for genesis upgrade discovery")?;
+        let (event_block, event_block_hash) = locate_genesis_upgrade_log(
+            diamond_proxy_address,
+            live_provider.clone(),
+            deployment_block,
+            live_head,
+        )
+        .await
+        .context("failed to locate genesis upgrade on live canonical L1")?;
+        let canonical_event_hash = validate_l1_archive_history_block(
+            live_provider,
+            archive_provider,
+            event_block,
+            Some(event_block_hash),
+        )
+        .await?;
+        (event_block, canonical_event_hash)
+    } else {
+        (deployment_block, deployment_block_hash)
+    };
+    let tx = load_genesis_upgrade_tx_from_blocks(
+        diamond_proxy_address,
+        live_provider.clone(),
+        history_block,
+        history_block,
+        Some(history_block_hash),
+    )
+    .await
+    .context("failed to authenticate genesis upgrade on live canonical L1")?;
+    Ok(AuthenticatedArchiveGenesisUpgrade {
+        history_block,
+        history_block_hash,
+        tx,
+    })
+}
+
 pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // SYSCOIN: Refuse to expose real proving while the canonical V8 verifier artifacts remain
     // regeneration sentinels, including for library callers that bypass the CLI entry point.
@@ -567,16 +738,67 @@ pub async fn run(runtime: &Runtime, mut config: Config) -> ServerPorts {
     // `from_block_hash` guard can read the current local block hash.
     let diamond_proxy_l1 = initial_l1_state.diamond_proxy_l1.clone();
 
-    let genesis = Genesis::new(
-        genesis_input_source.clone(),
-        diamond_proxy_l1.clone(),
-        chain_id,
-    );
+    // SYSCOIN: The archive may discover the diamond deployment block through historical state,
+    // but the upgrade event itself must come from the live canonical provider.
+    let authenticated_archive_genesis_upgrade = if let Some(provider) = &l1_archive_provider {
+        validate_l1_archive_identity(
+            provider,
+            initial_l1_state.l1_chain_id,
+            initial_l1_state.l1_genesis_block_hash,
+        )
+        .await
+        .expect("L1 archive provider does not match the authenticated L1 identity");
+        Some(
+            authenticate_l1_archive_genesis_upgrade(
+                &l1_provider,
+                provider,
+                *diamond_proxy_l1.address(),
+            )
+            .await
+            .expect("L1 archive genesis history is not canonical"),
+        )
+    } else {
+        None
+    };
+    let genesis = if let Some(authenticated) = &authenticated_archive_genesis_upgrade {
+        Genesis::new_with_authenticated_genesis_upgrade(
+            genesis_input_source.clone(),
+            diamond_proxy_l1.clone(),
+            chain_id,
+            authenticated.tx.clone(),
+        )
+    } else {
+        Genesis::new(
+            genesis_input_source.clone(),
+            diamond_proxy_l1.clone(),
+            chain_id,
+        )
+    };
 
     // SYSCOIN: Bind every child database to the exact fresh V32 deployment before any RocksDB is
     // opened. This makes reuse of the retired V31 testnet directory fail closed even when its L2
     // chain ID was retained for the replacement deployment.
     let l2_genesis_block_hash = genesis.state().await.header.hash();
+    if let Some(provider) = &l1_archive_provider {
+        validate_l1_archive_identity(
+            provider,
+            initial_l1_state.l1_chain_id,
+            initial_l1_state.l1_genesis_block_hash,
+        )
+        .await
+        .expect("L1 archive identity changed during genesis discovery");
+        let authenticated = authenticated_archive_genesis_upgrade
+            .as_ref()
+            .expect("authenticated archive genesis upgrade must be present");
+        validate_l1_archive_history_block(
+            &l1_provider,
+            provider,
+            authenticated.history_block,
+            Some(authenticated.history_block_hash),
+        )
+        .await
+        .expect("L1 archive deployment history changed during genesis discovery");
+    }
     let database_identity = DatabaseIdentity::new(
         PROTOCOL_VERSION,
         initial_l1_state.l1_chain_id,
@@ -3994,7 +4216,8 @@ mod tests {
         parse_syscoin_require_gas_tank, requires_genesis_replay_repository_completion,
         resolve_gateway_local_syscoin_edge_da_commit_target, rpc_edge_da_target_required,
         syscoin_edge_da_uses_gateway_local_target, validate_batch_verification_startup_policy,
-        validate_deployed_verifier_prover_policy, validate_syscoin_edge_da_commit_target,
+        validate_deployed_verifier_prover_policy, validate_l1_archive_history_observation,
+        validate_l1_archive_identity_observation, validate_syscoin_edge_da_commit_target,
         validate_syscoin_edge_da_commit_target_observed_runtime,
         validate_syscoin_edge_da_observed_local_runtime,
         validate_syscoin_gas_tank_observed_runtime, wait_for_liveness_bound_startup_signal,
@@ -4024,6 +4247,93 @@ mod tests {
         SYSCOIN_EDGE_DA_RELAY_FACTORY_RUNTIME_HASH, SYSCOIN_GAS_TANK_RUNTIME_HASH,
         SYSCOIN_GATEWAY_CHAIN_ID, TransactionAcceptanceState,
     };
+
+    // SYSCOIN: The historical provider cannot select or change the canonical L1 identity used
+    // for durable genesis state, even when the diamond address happens to exist on both chains.
+    #[test]
+    fn l1_archive_identity_observation_is_exact() {
+        let chain_id = 57;
+        let genesis_hash = B256::repeat_byte(0x57);
+        validate_l1_archive_identity_observation(chain_id, genesis_hash, chain_id, 0, genesis_hash)
+            .unwrap();
+
+        for (observed_chain_id, observed_number, observed_hash) in [
+            (chain_id + 1, 0, genesis_hash),
+            (chain_id, 1, genesis_hash),
+            (chain_id, 0, B256::repeat_byte(0x58)),
+        ] {
+            assert!(
+                validate_l1_archive_identity_observation(
+                    chain_id,
+                    genesis_hash,
+                    observed_chain_id,
+                    observed_number,
+                    observed_hash,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    // SYSCOIN: Same-network archive history must identify the exact live canonical block, and
+    // the second observation must remain bound to the hash authenticated by the first.
+    #[test]
+    fn l1_archive_history_observation_is_exact() {
+        let block_number = 962_277;
+        let block_hash = B256::repeat_byte(0x57);
+        assert_eq!(
+            validate_l1_archive_history_observation(
+                block_number,
+                None,
+                block_number,
+                block_hash,
+                block_number,
+                block_hash,
+            )
+            .unwrap(),
+            block_hash
+        );
+        validate_l1_archive_history_observation(
+            block_number,
+            Some(block_hash),
+            block_number,
+            block_hash,
+            block_number,
+            block_hash,
+        )
+        .unwrap();
+
+        for (expected_hash, live_number, live_hash, archive_number, archive_hash) in [
+            (None, block_number + 1, block_hash, block_number, block_hash),
+            (None, block_number, block_hash, block_number + 1, block_hash),
+            (
+                None,
+                block_number,
+                block_hash,
+                block_number,
+                B256::repeat_byte(0x58),
+            ),
+            (
+                Some(B256::repeat_byte(0x59)),
+                block_number,
+                block_hash,
+                block_number,
+                block_hash,
+            ),
+        ] {
+            assert!(
+                validate_l1_archive_history_observation(
+                    block_number,
+                    expected_hash,
+                    live_number,
+                    live_hash,
+                    archive_number,
+                    archive_hash,
+                )
+                .is_err()
+            );
+        }
+    }
 
     // SYSCOIN: Production presence policy accepts only the launcher's documented 0/1 values.
     #[test]

@@ -4490,6 +4490,60 @@ gl_checkpoint_assert_fingerprint_matches
             self.assertNotEqual(missing_runtime.returncode, 0)
             self.assertIn("missing edge ChainAdmin runtime", missing_runtime.stderr)
 
+    def test_genesis_history_authenticates_archive_discovery_against_live_l1(self) -> None:
+        node = (REPO_ROOT / "node" / "bin" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        )
+        selection = """let authenticated_archive_genesis_upgrade = if let Some(provider) = &l1_archive_provider {"""
+        self.assertIn(selection, node)
+        self.assertIn(
+            "authenticate_l1_archive_genesis_upgrade(\n                &l1_provider,\n                provider,",
+            node,
+        )
+        self.assertIn("Genesis::new_with_authenticated_genesis_upgrade(", node)
+        self.assertIn("authenticated.tx.clone(),", node)
+        self.assertIn("let (event_block, event_block_hash) = locate_genesis_upgrade_log(", node)
+        self.assertIn("Some(event_block_hash)", node)
+        self.assertIn("(event_block, canonical_event_hash)", node)
+        post_state_start = node.index(
+            "let l2_genesis_block_hash = genesis.state().await.header.hash();"
+        )
+        database_identity_start = node.index(
+            "let database_identity = DatabaseIdentity::new("
+        )
+        post_state = node[post_state_start:database_identity_start]
+        self.assertIn(
+            """validate_l1_archive_history_block(
+            &l1_provider,
+            provider,
+            authenticated.history_block,
+            Some(authenticated.history_block_hash),
+        )""",
+            post_state,
+        )
+        self.assertIn("validate_l1_archive_identity(", post_state)
+        self.assertLess(
+            node.index(selection),
+            node.index("let genesis = if let Some(authenticated)"),
+        )
+
+        genesis = (REPO_ROOT / "lib" / "genesis" / "src" / "lib.rs").read_text(
+            encoding="utf-8"
+        )
+        unique_start = genesis.index("async fn unique_genesis_upgrade_log(")
+        loader_start = genesis.index("pub async fn load_genesis_upgrade_tx_from_blocks(")
+        decode_start = genesis.index("let sol_event = GenesisUpgrade::decode_log")
+        unique_checks = genesis[unique_start:loader_start]
+        self.assertIn("logs.len() == 1", unique_checks)
+        self.assertIn("!logs[0].removed", unique_checks)
+        authenticated_checks = genesis[loader_start:decode_start]
+        for check in (
+            "from_block == to_block",
+            "log.block_number == Some(from_block)",
+            "log.block_hash == Some(expected_block_hash)",
+        ):
+            self.assertIn(check, authenticated_checks)
+
     def test_gateway_launch_requires_generated_genesis_byte_identity(self) -> None:
         launcher = (
             REPO_ROOT / "scripts" / "gateway-launch" / "gateway-deploy-l1.sh"
