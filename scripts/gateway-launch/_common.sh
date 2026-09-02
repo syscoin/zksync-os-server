@@ -4467,6 +4467,15 @@ print(value)
 PY
 }
 
+# SYSCOIN: zkstack slugifies `chain create --chain-name` before indexing it.
+# Require the caller's identity to already be that exact fixed-point spelling so
+# paths, locks, and the persisted edge fingerprint cannot diverge from zkstack.
+gl_validate_zkstack_chain_name() {
+  local chain_name="${1:-}" label="${2:-chain name}"
+  [[ "${chain_name}" =~ ^[a-z0-9]+(_[a-z0-9]+)*$ ]] ||
+    gl_die "${label} must be zkstack-canonical lower snake_case ([a-z0-9]+(_[a-z0-9]+)*)"
+}
+
 gl_is_canonical_edge_context() {
   [ "${EDGE_CHAIN_NAME:-zksys}" = "zksys" ] &&
     [ "$(gl_effective_edge_chain_id)" = "57057" ]

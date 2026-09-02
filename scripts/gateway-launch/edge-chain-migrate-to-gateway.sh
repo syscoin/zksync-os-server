@@ -21,6 +21,8 @@ if [ "${MIGRATION_CHECK_ONLY}" = true ] || [ "${MIGRATION_PREFLIGHT_ONLY}" = tru
   MIGRATION_READ_ONLY=true
 fi
 gl_require ZKSYNC_ERA_PATH
+: "${EDGE_CHAIN_NAME:=zksys}"
+gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
@@ -34,7 +36,6 @@ gl_require L1_CHAIN_ID
 gl_require L1_NETWORK
 cd "${GATEWAY_DIR}"
 
-: "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"

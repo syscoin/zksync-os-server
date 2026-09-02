@@ -27,12 +27,13 @@ gl_reject_no_proofs_on_mainnet
 
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH
+: "${GATEWAY_CHAIN_NAME:=gateway}"
+: "${EDGE_CHAIN_NAME:=zksys}"
+gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
 if [ "${CONFIG_CHECK_ONLY}" != true ]; then
   gl_acquire_gateway_launch_lock
 fi
 
-: "${GATEWAY_CHAIN_NAME:=gateway}"
-: "${EDGE_CHAIN_NAME:=zksys}"
 # SYSCOIN: Generate only canonical fresh V32 deployment configs.
 : "${PROTOCOL_VERSION:=v32.0}"
 : "${GATEWAY_CHAIN_ID:=57001}"
