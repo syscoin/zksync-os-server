@@ -8644,6 +8644,10 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         self.assertIn(
             'wrapped_token="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"', fee_helper
         )
+        self.assertIn("gateway_cast rpc eth_maxPriorityFeePerGas", fee_helper)
+        self.assertEqual(
+            fee_helper.count('--priority-gas-price "${priority_fee_per_gas}"'), 4
+        )
         generator = (
             REPO_ROOT
             / "scripts"

@@ -160,12 +160,13 @@ PY
 gateway_tx_gas_limit() {
   local operator_address="${1:?operator address required}"
   local max_fee_per_gas="${2:?max fee per gas required}"
-  local label="${3:?gas estimate label required}"
+  local priority_fee_per_gas="${3:?priority fee per gas required}"
+  local label="${4:?gas estimate label required}"
   local estimate
-  shift 3
+  shift 4
 
   estimate="$(parse_uint \
-    "$(gateway_cast estimate "$@" --from "${operator_address}" --gas-price "${max_fee_per_gas}" --rpc-url "${GATEWAY_RPC_URL}")" \
+    "$(gateway_cast estimate "$@" --from "${operator_address}" --gas-price "${max_fee_per_gas}" --priority-gas-price "${priority_fee_per_gas}" --rpc-url "${GATEWAY_RPC_URL}")" \
     "${label}")"
   scale_uint_ceil "${estimate}" "${GAS_LIMIT_HEADROOM_BPS}" "${BPS_DENOMINATOR}"
 }
@@ -385,7 +386,7 @@ provision_edge_fee_payer() {
   local wallet_path edge_config gateway_config edge_chain_id expected_gateway_chain_id
   local actual_gateway_chain_id operator_address edge_proxy wrapped_token live_fee target_wei
   local wrapped_balance deficit native_balance reserve required_native allowance agreement
-  local gas_price max_fee_per_gas requirement provisioning_gas_budget
+  local gas_price max_fee_per_gas priority_fee_per_gas requirement provisioning_gas_budget
   local deposit_gas_limit approval_gas_limit agreement_gas_limit
   local latest_nonce pending_nonce
   local planned_transactions=()
@@ -485,19 +486,22 @@ PY
       "Gateway gas price")"
     max_fee_per_gas="$(scale_uint_ceil \
       "${gas_price}" "${GAS_PRICE_HEADROOM_BPS}" "${BPS_DENOMINATOR}")"
+    priority_fee_per_gas="$(gateway_cast rpc eth_maxPriorityFeePerGas --rpc-url "${GATEWAY_RPC_URL}")"
+    priority_fee_per_gas="${priority_fee_per_gas#\"}"
+    priority_fee_per_gas="$(parse_uint "${priority_fee_per_gas%\"}" "Gateway max priority fee per gas")"
     if [ "${deficit}" != "0" ]; then
       deposit_gas_limit="$(gateway_tx_gas_limit \
-        "${operator_address}" "${max_fee_per_gas}" "wrapped-token deposit gas estimate" \
+        "${operator_address}" "${max_fee_per_gas}" "${priority_fee_per_gas}" "wrapped-token deposit gas estimate" \
         "${wrapped_token}" "deposit()" --value "${deficit}")"
     fi
     if [ "${allowance}" != "${UINT256_MAX}" ]; then
       approval_gas_limit="$(gateway_tx_gas_limit \
-        "${operator_address}" "${max_fee_per_gas}" "GWAssetTracker approval gas estimate" \
+        "${operator_address}" "${max_fee_per_gas}" "${priority_fee_per_gas}" "GWAssetTracker approval gas estimate" \
         "${wrapped_token}" "approve(address,uint256)" "${GW_ASSET_TRACKER_ADDRESS}" "${UINT256_MAX}")"
     fi
     if [ "${agreement}" != "true" ]; then
       agreement_gas_limit="$(gateway_tx_gas_limit \
-        "${operator_address}" "${max_fee_per_gas}" "settlement-fee agreement gas estimate" \
+        "${operator_address}" "${max_fee_per_gas}" "${priority_fee_per_gas}" "settlement-fee agreement gas estimate" \
         "${GW_ASSET_TRACKER_ADDRESS}" "setSettlementFeePayerAgreement(uint256,bool)" "${edge_chain_id}" true)"
     fi
 
@@ -526,6 +530,7 @@ PY
       --value "${deficit}" \
       --gas-limit "${deposit_gas_limit}" \
       --gas-price "${max_fee_per_gas}" \
+      --priority-gas-price "${priority_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
@@ -541,6 +546,7 @@ PY
       "${UINT256_MAX}" \
       --gas-limit "${approval_gas_limit}" \
       --gas-price "${max_fee_per_gas}" \
+      --priority-gas-price "${priority_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
@@ -556,6 +562,7 @@ PY
       true \
       --gas-limit "${agreement_gas_limit}" \
       --gas-price "${max_fee_per_gas}" \
+      --priority-gas-price "${priority_fee_per_gas}" \
       --rpc-url "${GATEWAY_RPC_URL}" \
       --confirmations 1 \
       --timeout "${GATEWAY_INTEROP_SETTLEMENT_TX_TIMEOUT}" \
