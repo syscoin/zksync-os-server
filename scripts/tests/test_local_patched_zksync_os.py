@@ -177,6 +177,40 @@ def rust_address_bytes(address: str) -> str:
     return ", ".join(f"0x{value[index:index + 2]}" for index in range(0, 40, 2))
 
 
+class ZkstackChainNameTests(unittest.TestCase):
+    def test_direct_edge_entrypoints_validate_before_mutation(self) -> None:
+        launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            env = canonical_gateway_fingerprint_env(
+                root,
+                HOME=str(root),
+                ZKSYNC_OS_SERVER_PATH=str(REPO_ROOT),
+                ZKSYNC_ERA_PATH=str(root / "era"),
+                EDGE_CHAIN_NAME="edge-b",
+                EDGE_CHAIN_ID="57058",
+            )
+            for script_name, args in (
+                ("edge-chain-create-init.sh", ()),
+                ("edge-chain-migrate-to-gateway.sh", ()),
+                ("generate-os-server-configs.sh", ("--edge-only",)),
+            ):
+                with self.subTest(script=script_name):
+                    result = subprocess.run(
+                        [str(launch_dir / script_name), *args],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "EDGE_CHAIN_NAME must be zkstack-canonical",
+                        result.stderr,
+                    )
+            self.assertEqual(list(root.iterdir()), [])
+
+
 class AdditionalEdgeIndexTests(unittest.TestCase):
     @staticmethod
     def run_common(
@@ -588,7 +622,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             for chain_name, chain_id in (
                 ("gateway", 57001),
                 ("zksys", 57057),
-                ("edge-b", 57058),
+                ("edge_b", 57058),
             ):
                 write_source_chain(chain_name, chain_id)
             ecosystem_configs = gateway_dir / "configs"
@@ -685,7 +719,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.initialize_canonical(canonical_env)
             edge_env = {
                 **canonical_env,
-                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_NAME": "edge_b",
                 "EDGE_CHAIN_ID": "57058",
                 "EDGE_OS_RPC_PORT": "4050",
                 "EDGE_PROVER_API_PORT": "4125",
@@ -706,7 +740,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.assertEqual(generated.returncode, 0, generated.stderr)
             self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
             self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
-            self.assertTrue((output_root / "edge-b" / "config.yaml").is_file())
+            self.assertTrue((output_root / "edge_b" / "config.yaml").is_file())
             combined = (output_root / "prover-api.nginx.conf").read_text(
                 encoding="utf-8"
             )
@@ -738,9 +772,9 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             saved_zksys.rename(output_root / "zksys")
 
-            write_source_chain("edge-c", 57059)
+            write_source_chain("edge_c", 57059)
             saved_edge_b = root / "saved-edge-b-materialized"
-            (output_root / "edge-b").rename(saved_edge_b)
+            (output_root / "edge_b").rename(saved_edge_b)
             missing_prior_edge = subprocess.run(
                 [str(generator), "--check-only", "--edge-only"],
                 check=False,
@@ -748,7 +782,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_NAME": "edge_c",
                     "EDGE_CHAIN_ID": "57059",
                     "EDGE_OS_RPC_PORT": "5050",
                     "EDGE_PROVER_API_PORT": "5125",
@@ -759,11 +793,11 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(missing_prior_edge.returncode, 0)
             self.assertIn(
-                "indexed chains are missing materialized OS-server configs: edge-b",
+                "indexed chains are missing materialized OS-server configs: edge_b",
                 missing_prior_edge.stderr,
             )
-            saved_edge_b.rename(output_root / "edge-b")
-            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+            saved_edge_b.rename(output_root / "edge_b")
+            shutil.rmtree(gateway_dir / "chains" / "edge_c")
 
             gateway_config_path = output_root / "gateway" / "config.yaml"
             gateway_config_bytes = gateway_config_path.read_bytes()
@@ -827,7 +861,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            write_source_chain("edge-multi-domain", 57062)
+            write_source_chain("edge_multi_domain", 57062)
             multi_name_collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -835,7 +869,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-multi-domain",
+                    "EDGE_CHAIN_NAME": "edge_multi_domain",
                     "EDGE_CHAIN_ID": "57062",
                     "EDGE_OS_RPC_PORT": "7050",
                     "EDGE_PROVER_API_PORT": "7125",
@@ -847,7 +881,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.assertNotEqual(multi_name_collision.returncode, 0)
             self.assertIn("domain collision", multi_name_collision.stderr)
             gateway_fragment.write_bytes(gateway_fragment_bytes)
-            shutil.rmtree(gateway_dir / "chains" / "edge-multi-domain")
+            shutil.rmtree(gateway_dir / "chains" / "edge_multi_domain")
 
             full_before = snapshot(output_root)
             canonical_port_collision = subprocess.run(
@@ -886,7 +920,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             gateway_config_path.write_bytes(gateway_config_bytes)
             gateway_config_path.chmod(0o600)
 
-            edge_config = output_root / "edge-b" / "config.yaml"
+            edge_config = output_root / "edge_b" / "config.yaml"
             expected_edge_config = edge_config.read_bytes()
             edge_config.write_bytes(expected_edge_config + b"# drift\n")
             drifted = subprocess.run(
@@ -903,7 +937,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             edge_config.write_bytes(expected_edge_config)
 
-            write_source_chain("edge-c", 57059)
+            write_source_chain("edge_c", 57059)
             collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -911,19 +945,19 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_NAME": "edge_c",
                     "EDGE_CHAIN_ID": "57059",
                     "EDGE_PROVER_API_DOMAIN": "edge-c.test",
                 },
             )
             self.assertNotEqual(collision.returncode, 0)
             self.assertIn("listener collision", collision.stderr)
-            self.assertFalse((output_root / "edge-c").exists())
+            self.assertFalse((output_root / "edge_c").exists())
             self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
             self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
-            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+            shutil.rmtree(gateway_dir / "chains" / "edge_c")
 
-            write_source_chain("edge-domain", 57061)
+            write_source_chain("edge_domain", 57061)
             domain_collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -931,7 +965,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-domain",
+                    "EDGE_CHAIN_NAME": "edge_domain",
                     "EDGE_CHAIN_ID": "57061",
                     "EDGE_OS_RPC_PORT": "6050",
                     "EDGE_PROVER_API_PORT": "6125",
@@ -942,8 +976,8 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(domain_collision.returncode, 0)
             self.assertIn("domain collision", domain_collision.stderr)
-            self.assertFalse((output_root / "edge-domain").exists())
-            shutil.rmtree(gateway_dir / "chains" / "edge-domain")
+            self.assertFalse((output_root / "edge_domain").exists())
+            shutil.rmtree(gateway_dir / "chains" / "edge_domain")
 
             aggregate_path = output_root / "prover-api.nginx.conf"
             aggregate_path.write_text("stale aggregate\n", encoding="utf-8")
@@ -1015,7 +1049,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             saved_pending_zksys.rename(output_root / "zksys")
 
             saved_pending_other = root / "saved-pending-edge-b"
-            (output_root / "edge-b").rename(saved_pending_other)
+            (output_root / "edge_b").rename(saved_pending_other)
             missing_other = subprocess.run(
                 [str(generator), "--check-only"],
                 check=False,
@@ -1025,10 +1059,10 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(missing_other.returncode, 0)
             self.assertIn(
-                "indexed chains are missing materialized OS-server configs: edge-b",
+                "indexed chains are missing materialized OS-server configs: edge_b",
                 missing_other.stderr,
             )
-            saved_pending_other.rename(output_root / "edge-b")
+            saved_pending_other.rename(output_root / "edge_b")
 
             restored_gateway_only = subprocess.run(
                 [str(generator)],
@@ -1041,11 +1075,11 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 restored_gateway_only.returncode, 0, restored_gateway_only.stderr
             )
 
-            write_source_chain("edge-d", 57060)
+            write_source_chain("edge_d", 57060)
             victim = root / "config-victim"
             victim.mkdir()
             (victim / "untouched").write_text("untouched\n", encoding="utf-8")
-            (output_root / "edge-d").symlink_to(victim, target_is_directory=True)
+            (output_root / "edge_d").symlink_to(victim, target_is_directory=True)
             unsafe = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -1053,7 +1087,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-d",
+                    "EDGE_CHAIN_NAME": "edge_d",
                     "EDGE_CHAIN_ID": "57060",
                     "EDGE_OS_RPC_PORT": "5050",
                     "EDGE_PROVER_API_PORT": "5125",

@@ -16,6 +16,8 @@ gl_require ZKSYNC_ERA_PATH
 gl_require L1_RPC_URL
 gl_require L1_CHAIN_ID
 gl_require L1_NETWORK
+: "${EDGE_CHAIN_NAME:=zksys}"
+gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
 # SYSCOIN: Initialize only the canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
@@ -27,7 +29,6 @@ gl_export_foundry_evm_version
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 cd "${GATEWAY_DIR}"
 
-: "${EDGE_CHAIN_NAME:=zksys}"
 if [ -z "${EDGE_CHAIN_ID:-}" ]; then
   [ "${EDGE_CHAIN_NAME}" = "zksys" ] ||
     gl_die "EDGE_CHAIN_ID is required for non-default edge ${EDGE_CHAIN_NAME}"
