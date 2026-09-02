@@ -5112,6 +5112,10 @@ gl_checkpoint_assert_fingerprint_matches
             REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
         ).read_text(encoding="utf-8")
 
+        self.assertIn(
+            'bash "${SCRIPT_DIR}/zksys-l1-registry-bridge-only.sh" --check-only',
+            bootstrap,
+        )
         # SYSCOIN: a nonempty-code check is insufficient on custom genesis.
         # Pin both Arachnid runtime bytes and their independently fixed hash.
         self.assertIn(

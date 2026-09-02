@@ -571,7 +571,7 @@ ZKSYS_L2_REGISTRY_ADDRESS="$(
 if [ "${L1_NETWORK}" = tanenbaum ] || [ "${L1_NETWORK}" = mainnet ]; then
   # SYSCOIN: setL1RegistryBridge is one-shot. Reuse the full deterministic L1
   # deployment attestor without its signer or mutation paths before any L2 send.
-  "${SCRIPT_DIR}/zksys-l1-registry-bridge-only.sh" --check-only
+  bash "${SCRIPT_DIR}/zksys-l1-registry-bridge-only.sh" --check-only
 fi
 
 weight_registry_impl_init_code="$(forge_inspect_bytecode ZkSysRewardWeightRegistry)"
