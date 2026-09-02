@@ -5239,6 +5239,14 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         )
         common = (launch_dir / "_common.sh").read_text(encoding="utf-8")
         deploy = (launch_dir / "gateway-deploy-l1.sh").read_text(encoding="utf-8")
+        bridge_only = (launch_dir / "zksys-l1-registry-bridge-only.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for boundary in ("BEGIN", "END"):
+            marker = f"# SYSCOIN: {boundary} reusable zkSYS L1 registry bridge helpers."
+            self.assertEqual(deploy.count(marker), 1)
+            self.assertIn(marker, bridge_only)
 
         for script in (funder, generator):
             self.assertIn("gl_resolve_required_source_pins", script)
