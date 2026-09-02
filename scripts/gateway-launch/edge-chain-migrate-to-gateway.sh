@@ -1467,6 +1467,8 @@ if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and validator roles set; ensuring sender balances and deposits are unpaused"
   ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
   provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
+  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.
+  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
@@ -1579,4 +1581,6 @@ gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
   gl_die "edge Gateway prove/execute validator roles are incomplete; refusing to mark migration ready"
 ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
 provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
+# SYSCOIN: restore the execute-operator native sender reserve after wrapping.
+ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"

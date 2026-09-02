@@ -8602,11 +8602,15 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             '  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            '  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.\n'
+            '  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             '  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
         final_sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            '# SYSCOIN: restore the execute-operator native sender reserve after wrapping.\n'
+            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
         self.assertIn(sequence, migration)
