@@ -117,8 +117,8 @@ import sys
 from pathlib import Path
 
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
-start = source.index("cast_code_or_die() {")
-end = source.index('\nif [ -n "${L1_WETH_TOKEN_ADDRESS}" ]')
+start = source.index("# SYSCOIN: BEGIN reusable zkSYS L1 registry bridge helpers.")
+end = source.index("# SYSCOIN: END reusable zkSYS L1 registry bridge helpers.", start)
 Path(sys.argv[2]).write_text(source[start:end], encoding="utf-8")
 PY
 
