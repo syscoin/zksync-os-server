@@ -7,6 +7,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_common.sh"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_gateway_node_lifecycle.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 L1_PROFILE=""
 COMMAND=""
 CHECKPOINT_ID=""
@@ -347,9 +349,13 @@ perform_repair_step() {
   gl.migration)
     # SYSCOIN: never replay pause/migrate/finalize. The child first proves the
     # complete L1 finalization postcondition, then resumes only idempotent
-    # post-migration reconciliation and its exact private Forge journals.
+    # post-migration reconciliation and its exact private Forge journals. Bind
+    # it to this checkpoint owner with the same inode-validated nonce-lock
+    # capability used by a normal migration launch.
     case "${REPAIR_PRIOR_STATUS}" in
     blocked | in_progress | passed)
+      gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}" || return $?
+      export GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"
       run_supervised_gateway_repair_operation \
         run_with_gateway_for_migration \
         "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --resume-post-finalize
