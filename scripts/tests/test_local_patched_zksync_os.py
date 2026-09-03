@@ -2039,6 +2039,178 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_finalize_replay_guard_requires_complete_coherent_l1_state(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("gateway_migration_finalized_on_l1() {")
+        helper = migration[
+            start : migration.index("\nget_gateway_validator_timelock_addr() {", start)
+        ]
+        self.assertEqual(helper.count('--block "${l1_block_number}"'), 3)
+        self.assertIn('"settlementLayer(uint256)(uint256)"', helper)
+        self.assertIn('"chainAssetHandler()(address)"', helper)
+        self.assertIn('"isMigrationInProgress(uint256)(bool)"', helper)
+
+        def probe(settlement: str, in_progress: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -euo pipefail
+                        gl_die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+                        gl_normalize_cast_address() {{
+                          printf '%s\\n' "$2" | awk 'NF {{ print tolower($1); exit }}'
+                        }}
+                        get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+                        get_l1_bridgehub_proxy_addr() {{ printf '%s\\n' 0x{'11' * 20}; }}
+                        cast() {{
+                          if [ "$1" = block-number ]; then
+                            printf '%s\\n' 123
+                            return 0
+                          fi
+                          case " $* " in
+                          *' --block 123 '*) ;;
+                          *) return 90 ;;
+                          esac
+                          case "$3" in
+                          'settlementLayer(uint256)(uint256)')
+                            [ "$SETTLEMENT_LAYER" != rpc-error ] || return 92
+                            printf '%s\\n' "$SETTLEMENT_LAYER" ;;
+                          'chainAssetHandler()(address)') printf '%s\\n' 0x{'22' * 20} ;;
+                          'isMigrationInProgress(uint256)(bool)')
+                            printf '%s\\n' "$MIGRATION_IN_PROGRESS" ;;
+                          *) return 91 ;;
+                          esac
+                        }}
+                        {helper}
+                        gateway_migration_finalized_on_l1 zksys 57001
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "L1_RPC_URL": "http://127.0.0.1:8545",
+                    "SETTLEMENT_LAYER": settlement,
+                    "MIGRATION_IN_PROGRESS": in_progress,
+                },
+            )
+
+        finalized = probe("57001", "false")
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        self.assertEqual(finalized.stdout.strip(), "true")
+        for settlement_layer, in_progress in (("1", "false"), ("57001", "true")):
+            with self.subTest(
+                settlement_layer=settlement_layer, in_progress=in_progress
+            ):
+                incomplete = probe(settlement_layer, in_progress)
+                self.assertEqual(incomplete.returncode, 0, incomplete.stderr)
+                self.assertEqual(incomplete.stdout.strip(), "false")
+        malformed = probe("57001", "not-a-bool")
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("invalid L1 migration state", malformed.stderr)
+        malformed = probe("not-a-chain-id", "false")
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("invalid L1 settlement layer", malformed.stderr)
+        rpc_error = probe("rpc-error", "false")
+        self.assertNotEqual(rpc_error.returncode, 0)
+        self.assertIn("failed to query L1 settlement layer", rpc_error.stderr)
+
+    def test_finalize_replay_skips_or_recovers_only_from_l1_postcondition(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("# SYSCOIN: Replay must trust the complete L1 postcondition")
+        finalize = migration[
+            start : migration.index(
+                '\n: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"', start
+            )
+        ]
+        self.assertNotIn("depositdoesnotexist", finalize.lower())
+        check_start = migration.rindex(
+            'if [ "${MIGRATION_CHECK_ONLY}" = true ]; then', 0, start
+        )
+        normal_path_start = migration.index("\nfi\n", check_start) + len("\nfi\n")
+        check_only = migration[check_start:normal_path_start]
+        self.assertIn("gateway_migration_finalized_on_l1", check_only)
+        self.assertNotIn("exit 0", migration[normal_path_start:start])
+
+        def run(
+            root: Path, precheck: str, finalize_rc: int, postcheck: str
+        ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+            events = root / "events"
+            marker = root / "probe-marker"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -euo pipefail
+                        record() {{ printf '%s\\n' "$1" >>"$EVENTS"; }}
+                        gateway_migration_finalized_on_l1() {{
+                          record probe
+                          if [ -e "$PROBE_MARKER" ]; then
+                            printf '%s\\n' "$POSTCHECK"
+                          else
+                            : >"$PROBE_MARKER"
+                            printf '%s\\n' "$PRECHECK"
+                          fi
+                        }}
+                        gl_l1_broadcast_preflight() {{ record preflight; }}
+                        refresh_l1_admin_wallet_funding() {{ record fund; }}
+                        gl_zkstack_pty() {{
+                          record finalize
+                          printf '%s\\n' DepositDoesNotExist
+                          return "$FINALIZE_RC"
+                        }}
+                        {finalize}
+                        record repair
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "EDGE_CHAIN_NAME": "zksys",
+                    "GATEWAY_CHAIN_NAME": "gateway",
+                    "GATEWAY_RPC_URL": "http://127.0.0.1:3052",
+                    "L1_RPC_URL": "http://127.0.0.1:8545",
+                    "gateway_chain_id": "57001",
+                    "EVENTS": str(events),
+                    "PROBE_MARKER": str(marker),
+                    "PRECHECK": precheck,
+                    "POSTCHECK": postcheck,
+                    "FINALIZE_RC": str(finalize_rc),
+                },
+            )
+            return result, events.read_text(encoding="utf-8").splitlines()
+
+        cases = (
+            ("true", 23, "false", 0, "probe repair"),
+            ("false", 0, "false", 0, "probe preflight fund finalize repair"),
+            ("false", 23, "true", 0, "probe preflight fund finalize probe repair"),
+            ("false", 23, "false", 1, "probe preflight fund finalize probe"),
+        )
+        for precheck, finalize_rc, postcheck, expected_rc, expected in cases:
+            with self.subTest(
+                precheck=precheck, finalize_rc=finalize_rc, postcheck=postcheck
+            ), tempfile.TemporaryDirectory() as temporary_dir:
+                result, events = run(
+                    Path(temporary_dir), precheck, finalize_rc, postcheck
+                )
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                self.assertEqual(events, expected.split())
+
     def test_gateway_admin_tx_keeps_edge_authority_and_routes_to_gateway(
         self,
     ) -> None:
@@ -8982,13 +9154,6 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
             / "edge-chain-migrate-to-gateway.sh"
         ).read_text(encoding="utf-8")
 
-        sequence = (
-            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
-            '  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
-            '  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.\n'
-            '  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
-            '  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
-        )
         final_sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
@@ -8996,13 +9161,12 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
-        self.assertIn(sequence, migration)
         self.assertIn(final_sequence, migration)
         self.assertEqual(
             migration.count(
                 'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"'
             ),
-            2,
+            1,
         )
         pin_assertion = migration.index(
             'gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"'

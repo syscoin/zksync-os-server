@@ -805,6 +805,56 @@ print(addr.strip())
 PY
 }
 
+# SYSCOIN: Read both migration postconditions from one L1 block so a concurrent
+# migration transition cannot synthesize an already-finalized state.
+gateway_migration_finalized_on_l1() {
+  local chain_name="${1:?chain name required}"
+  local gateway_chain_id="${2:?Gateway chain ID required}"
+  local edge_chain_id bridgehub l1_block_number settlement_layer
+  local chain_asset_handler_raw chain_asset_handler migration_in_progress
+
+  case "${gateway_chain_id}" in
+  "" | *[!0-9]*) gl_die "invalid Gateway chain ID: ${gateway_chain_id:-<empty>}" ;;
+  esac
+  edge_chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")" || \
+    gl_die "failed to resolve chain ID for ${chain_name}"
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || \
+    gl_die "failed to resolve L1 BridgeHub for ${chain_name}"
+  l1_block_number="$(cast block-number --rpc-url "${L1_RPC_URL}")" || \
+    gl_die "failed to resolve an L1 block for ${chain_name} migration state"
+  case "${l1_block_number}" in
+  "" | *[!0-9]*) gl_die "invalid L1 block number returned for ${chain_name}: ${l1_block_number:-<empty>}" ;;
+  esac
+  settlement_layer="$(cast call "${bridgehub}" "settlementLayer(uint256)(uint256)" \
+    "${edge_chain_id}" --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}" | \
+    awk 'NF { print $1; exit }')" || \
+    gl_die "failed to query L1 settlement layer for ${chain_name} at block ${l1_block_number}"
+  case "${settlement_layer}" in
+  "" | *[!0-9]*) gl_die "invalid L1 settlement layer returned for ${chain_name}: ${settlement_layer:-<empty>}" ;;
+  esac
+  if [ "${settlement_layer}" != "${gateway_chain_id}" ]; then
+    printf '%s\n' false
+    return 0
+  fi
+
+  chain_asset_handler_raw="$(cast call "${bridgehub}" "chainAssetHandler()(address)" \
+    --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}")" || \
+    gl_die "failed to query L1 ChainAssetHandler for ${chain_name} at block ${l1_block_number}"
+  chain_asset_handler="$(gl_normalize_cast_address "L1 ChainAssetHandler" "${chain_asset_handler_raw}")" || return $?
+  [ "${chain_asset_handler}" != "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "L1 BridgeHub returned a zero ChainAssetHandler for ${chain_name}"
+  migration_in_progress="$(cast call "${chain_asset_handler}" \
+    "isMigrationInProgress(uint256)(bool)" "${edge_chain_id}" \
+    --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}" | \
+    awk 'NF { print tolower($1); exit }')" || \
+    gl_die "failed to query L1 migration state for ${chain_name} at block ${l1_block_number}"
+  case "${migration_in_progress}" in
+  false) printf '%s\n' true ;;
+  true) printf '%s\n' false ;;
+  *) gl_die "invalid L1 migration state returned for ${chain_name}: ${migration_in_progress:-<empty>}" ;;
+  esac
+}
+
 get_gateway_validator_timelock_addr() {
   local gateway_chain_name="${1:?gateway chain name required}"
   python3 - "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" <<'PY'
@@ -1717,8 +1767,10 @@ if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
   exit 0
 fi
 if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
-  [ "${current_settlement_layer}" = "${gateway_chain_id}" ] ||
-    gl_die "edge settlement layer does not match Gateway"
+  migration_finalized="$(gateway_migration_finalized_on_l1 \
+    "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+  [ "${migration_finalized}" = true ] ||
+    gl_die "edge Gateway migration is not finalized on L1"
   is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" ||
     gl_die "edge Gateway DA pair is not ready"
   gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
@@ -1730,17 +1782,6 @@ if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
   l1_deposits_are_unpaused "${EDGE_CHAIN_NAME}" ||
     gl_die "edge L1 deposits remain paused"
   echo "gateway-launch: migration postconditions are ready for ${EDGE_CHAIN_NAME}"
-  exit 0
-fi
-if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
-  is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" &&
-  gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and validator roles set; ensuring sender balances and deposits are unpaused"
-  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
-  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
-  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.
-  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
-  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
 
@@ -1794,28 +1835,34 @@ else
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
-finalize_output=""
-finalize_output_lc=""
-gl_l1_broadcast_preflight
-refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
-  --chain "${EDGE_CHAIN_NAME}" \
-  --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
-  --l1-rpc-url "${L1_RPC_URL}" \
-  --gateway-rpc-url "${GATEWAY_RPC_URL}" \
-  --deploy-paymaster false 2>&1)"; then
-  echo "${finalize_output}"
-  finalize_output_lc="$(gl_to_lower "${finalize_output}")"
-  case "${finalize_output_lc}" in
-  *"depositdoesnotexist"*)
-    echo "gateway-launch: finalize reported DepositDoesNotExist; treating as already-finalized deposit leg and continuing with DA repair"
-    ;;
-  *)
-    exit 1
-    ;;
-  esac
+# SYSCOIN: Replay must trust the complete L1 postcondition, never zkstack error
+# text. Skip only the non-idempotent finalize call; post-migration repairs below
+# still run on every recovery.
+finalize_already_complete="$(gateway_migration_finalized_on_l1 \
+  "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+if [ "${finalize_already_complete}" = true ]; then
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} migration is already finalized on L1; skipping finalize CLI and continuing with post-migration repair"
 else
-  echo "${finalize_output}"
+  finalize_output=""
+  gl_l1_broadcast_preflight
+  refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
+  if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
+    --chain "${EDGE_CHAIN_NAME}" \
+    --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    --gateway-rpc-url "${GATEWAY_RPC_URL}" \
+    --deploy-paymaster false 2>&1)"; then
+    echo "${finalize_output}"
+    finalize_already_complete="$(gateway_migration_finalized_on_l1 \
+      "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+    if [ "${finalize_already_complete}" = true ]; then
+      echo "gateway-launch: finalize failed after L1 reached the complete migration postcondition; continuing with post-migration repair"
+    else
+      exit 1
+    fi
+  else
+    echo "${finalize_output}"
+  fi
 fi
 
 : "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"
