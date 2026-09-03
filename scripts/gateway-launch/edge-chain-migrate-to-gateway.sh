@@ -977,6 +977,221 @@ wait_for_gateway_commit_sender_balance() {
   return 1
 }
 
+# SYSCOIN: A via-Gateway repair can be accepted on L1 before Forge reports
+# success. Bind every repair to a private, immutable intent and resume that
+# exact Forge journal after interruption; never guess whether a fresh replay is
+# safe from the still-delayed Gateway postcondition.
+GATEWAY_ADMIN_REPAIR_DIR=""
+GATEWAY_ADMIN_REPAIR_RESUME=false
+
+begin_gateway_admin_repair() {
+  local operation_key="${1:?operation key required}"
+  shift
+  local state_dir state_file mode
+  # SYSCOIN: A rejected second intent must not leave a prior repair runnable.
+  GATEWAY_ADMIN_REPAIR_DIR=""
+  GATEWAY_ADMIN_REPAIR_RESUME=false
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  state_file="$(gl_checkpoint_state_file)" || return $?
+  mode="$(python3 - "${state_dir}" "${state_file}" "${operation_key}" "$@" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+state_file = Path(sys.argv[2])
+operation_key = sys.argv[3]
+arguments = sys.argv[4:]
+
+if not re.fullmatch(
+    r"(?:committer-role|sender-balance)-[1-9][0-9]*-0x[0-9a-f]{40}",
+    operation_key,
+):
+    raise SystemExit(f"invalid via-Gateway repair operation key: {operation_key}")
+
+def require_private_dir(path: Path) -> None:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise SystemExit(f"unsafe via-Gateway repair directory: {path}")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(f"unsafe via-Gateway repair directory ownership/mode: {path}")
+
+require_private_dir(state_dir)
+state_info = state_file.lstat()
+if (
+    stat.S_ISLNK(state_info.st_mode)
+    or not stat.S_ISREG(state_info.st_mode)
+    or state_info.st_nlink != 1
+    or state_info.st_uid != os.geteuid()
+    or stat.S_IMODE(state_info.st_mode) & 0o077
+):
+    raise SystemExit(f"unsafe checkpoint state file: {state_file}")
+state = json.loads(state_file.read_text(encoding="utf-8"))
+run_id = state.get("run_id")
+fingerprint = state.get("fingerprint")
+if not isinstance(run_id, str) or not run_id or not isinstance(fingerprint, dict) or not fingerprint:
+    raise SystemExit("checkpoint state is missing its authenticated run/fingerprint")
+
+root = state_dir / "via-gateway-repairs"
+if not root.exists():
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    parent_fd = os.open(state_dir, os.O_RDONLY)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+require_private_dir(root)
+
+operation_dir = root / operation_key
+created = False
+if not operation_dir.exists():
+    operation_dir.mkdir(mode=0o700)
+    os.chmod(operation_dir, 0o700)
+    created = True
+require_private_dir(operation_dir)
+
+broadcast_dir = operation_dir / "broadcast"
+intent_path = operation_dir / "intent.json"
+intent = {
+    "schema_version": 1,
+    "checkpoint_run_id": run_id,
+    "checkpoint_fingerprint": fingerprint,
+    "arguments": arguments,
+}
+encoded = (json.dumps(intent, indent=2, sort_keys=True) + "\n").encode()
+
+if created:
+    broadcast_dir.mkdir(mode=0o700)
+    os.chmod(broadcast_dir, 0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(intent_path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=False) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(fd)
+    operation_fd = os.open(operation_dir, os.O_RDONLY)
+    try:
+        os.fsync(operation_fd)
+    finally:
+        os.close(operation_fd)
+    root_fd = os.open(root, os.O_RDONLY)
+    try:
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+    print("fresh")
+else:
+    try:
+        intent_info = intent_path.lstat()
+        require_private_dir(broadcast_dir)
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"ambiguous via-Gateway repair state for {operation_key}; refusing a fresh replay"
+        ) from exc
+    if (
+        stat.S_ISLNK(intent_info.st_mode)
+        or not stat.S_ISREG(intent_info.st_mode)
+        or intent_info.st_nlink != 1
+        or intent_info.st_uid != os.geteuid()
+        or stat.S_IMODE(intent_info.st_mode) != 0o600
+    ):
+        raise SystemExit(f"unsafe via-Gateway repair intent: {intent_path}")
+    if json.loads(intent_path.read_text(encoding="utf-8")) != intent:
+        raise SystemExit(
+            f"via-Gateway repair intent changed for {operation_key}; refusing replay"
+        )
+    print("resume")
+PY
+)" || return $?
+
+  GATEWAY_ADMIN_REPAIR_DIR="${state_dir}/via-gateway-repairs/${operation_key}"
+  case "${mode}" in
+  fresh) GATEWAY_ADMIN_REPAIR_RESUME=false ;;
+  resume) GATEWAY_ADMIN_REPAIR_RESUME=true ;;
+  *)
+    echo "gateway-launch: invalid via-Gateway repair journal mode: ${mode}" >&2
+    return 1
+    ;;
+  esac
+}
+
+finish_gateway_admin_repair() {
+  local operation_key="${1:?operation key required}" state_dir
+  GATEWAY_ADMIN_REPAIR_DIR=""
+  GATEWAY_ADMIN_REPAIR_RESUME=false
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  python3 - "${state_dir}" "${operation_key}" <<'PY'
+import os
+import re
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+state_dir = Path(sys.argv[1])
+operation_key = sys.argv[2]
+if not re.fullmatch(
+    r"(?:committer-role|sender-balance)-[1-9][0-9]*-0x[0-9a-f]{40}",
+    operation_key,
+):
+    raise SystemExit(f"invalid via-Gateway repair operation key: {operation_key}")
+root = state_dir / "via-gateway-repairs"
+operation_dir = root / operation_key
+state_info = state_dir.lstat()
+if stat.S_ISLNK(state_info.st_mode) or not stat.S_ISDIR(state_info.st_mode):
+    raise SystemExit(f"unsafe via-Gateway repair cleanup path: {state_dir}")
+if state_info.st_uid != os.geteuid() or stat.S_IMODE(state_info.st_mode) & 0o077:
+    raise SystemExit(f"unsafe via-Gateway repair cleanup ownership/mode: {state_dir}")
+if not root.exists() and not root.is_symlink():
+    raise SystemExit(0)
+root_info = root.lstat()
+if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+    raise SystemExit(f"unsafe via-Gateway repair cleanup path: {root}")
+if root_info.st_uid != os.geteuid() or stat.S_IMODE(root_info.st_mode) & 0o077:
+    raise SystemExit(f"unsafe via-Gateway repair cleanup ownership/mode: {root}")
+if not operation_dir.exists() and not operation_dir.is_symlink():
+    raise SystemExit(0)
+operation_info = operation_dir.lstat()
+if stat.S_ISLNK(operation_info.st_mode) or not stat.S_ISDIR(operation_info.st_mode):
+    raise SystemExit(f"unsafe via-Gateway repair cleanup path: {operation_dir}")
+if operation_info.st_uid != os.geteuid() or stat.S_IMODE(operation_info.st_mode) & 0o077:
+    raise SystemExit(f"unsafe via-Gateway repair cleanup ownership/mode: {operation_dir}")
+shutil.rmtree(operation_dir)
+root_fd = os.open(root, os.O_RDONLY)
+try:
+    os.fsync(root_fd)
+finally:
+    os.close(root_fd)
+PY
+}
+
+run_gateway_admin_repair_forge() {
+  (
+    umask 077
+    export FOUNDRY_BROADCAST="${GATEWAY_ADMIN_REPAIR_DIR:?repair journal is not initialized}/broadcast"
+    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" || exit $?
+    if [ "${GATEWAY_ADMIN_REPAIR_RESUME}" = true ]; then
+      set -- "$@" --resume
+    fi
+    exec forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
+      "$@" \
+      --rpc-url "${L1_RPC_URL}" \
+      --broadcast \
+      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
+      --slow
+  )
+}
+
 fund_l1_governor_for_gateway_sender_deposits() {
   local chain_name="${1:?chain name required}"
   local min_balance_wei="${2:?minimum Gateway sender balance required}"
@@ -1022,15 +1237,19 @@ PY
 
 ensure_gateway_commit_sender_validator() {
   local chain_name="${1:?chain name required}"
-  local wallet_name committer_addr bridgehub validator_timelock refund_recipient gateway_chain_id chain_proxy committer_role grant_calldata
+  local wallet_name committer_addr bridgehub validator_timelock refund_recipient chain_id gateway_chain_id chain_proxy committer_role grant_calldata
+  local operation_key admin_script_sha forge_rc
 
   # zkstack migration currently enables only `operator`, while OS-server commits
   # Syscoin DA batches from `blob_operator`. Keep this in the launch layer until
   # upstream migration accepts the actual commit sender set.
   wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
   committer_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  operation_key="committer-role-${chain_id}-$(gl_to_lower "${committer_addr}")"
 
   if gateway_committer_role_set "${chain_name}" "${committer_addr}"; then
+    finish_gateway_admin_repair "${operation_key}"
     echo "gateway-launch: Gateway committer role already set for ${wallet_name} (${committer_addr})"
     return 0
   fi
@@ -1051,41 +1270,66 @@ ensure_gateway_commit_sender_validator() {
 
   gl_l1_broadcast_preflight
   prepare_gateway_governor_forge_wallet_args
-  (
-    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
-    forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
-      --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
-      "${bridgehub}" \
-      "${GATEWAY_MAX_L1_GAS_PRICE}" \
-      "${gateway_chain_id}" \
-      "${validator_timelock}" \
-      0 \
-      "${grant_calldata}" \
-      "${refund_recipient}" \
-      true \
-      --rpc-url "${L1_RPC_URL}" \
-      --broadcast \
-      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
-      --slow
-  )
+  admin_script_sha="$(gl_sha256_file "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/deploy-scripts/AdminFunctions.s.sol")"
+  begin_gateway_admin_repair \
+    "${operation_key}" \
+    "kind=committer-role" \
+    "contracts_sha=${REQUIRED_CONTRACTS_SHA}" \
+    "admin_script_sha256=${admin_script_sha}" \
+    "l1_chain_id=${L1_CHAIN_ID}" \
+    "admin_chain_id=${chain_id}" \
+    "destination_chain_id=${gateway_chain_id}" \
+    "signer=$(gl_to_lower "${refund_recipient}")" \
+    "bridgehub=$(gl_to_lower "${bridgehub}")" \
+    "max_l1_gas_price=${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "target=$(gl_to_lower "${validator_timelock}")" \
+    "value_wei=0" \
+    "calldata=$(gl_to_lower "${grant_calldata}")" \
+    "refund_recipient=$(gl_to_lower "${refund_recipient}")" \
+    "chain_proxy=$(gl_to_lower "${chain_proxy}")" \
+    "role=$(gl_to_lower "${committer_role}")" \
+    "committer=$(gl_to_lower "${committer_addr}")"
+
+  if run_gateway_admin_repair_forge \
+    --sig 'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)' \
+    "${bridgehub}" \
+    "${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "${chain_id}" \
+    "${gateway_chain_id}" \
+    "${validator_timelock}" \
+    0 \
+    "${grant_calldata}" \
+    "${refund_recipient}" \
+    true; then
+    forge_rc=0
+  else
+    forge_rc=$?
+  fi
 
   : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS:=120}"
   : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY:=5}"
   echo "gateway-launch: waiting for Gateway committer role repair (up to $((GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY))s)"
-  if ! wait_for_gateway_committer_role \
+  if wait_for_gateway_committer_role \
     "${chain_name}" \
     "${committer_addr}" \
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS}" \
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY}"; then
-    echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt" >&2
-    return 1
+    finish_gateway_admin_repair "${operation_key}"
+    if [ "${forge_rc}" -ne 0 ]; then
+      echo "gateway-launch: Forge exited ${forge_rc}, but the exact Gateway committer-role postcondition is confirmed"
+    fi
+    return 0
   fi
+  echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt; retaining the exact Forge repair journal" >&2
+  [ "${forge_rc}" -eq 0 ] || return "${forge_rc}"
+  return 1
 }
 
 ensure_gateway_commit_sender_balance() {
   local chain_name="${1:?chain name required}"
-  local bridgehub refund_recipient gateway_chain_id min_balance_wei
+  local bridgehub refund_recipient chain_id gateway_chain_id min_balance_wei
   local wallet_name sender_addr current_balance_wei top_up_wei
+  local operation_key admin_script_sha forge_rc
 
   # SYSCOIN: zksys settles on Gateway, so its Gateway L1-sender wallets need
   # Gateway base token for commit/prove/execute transactions. This is
@@ -1093,13 +1337,16 @@ ensure_gateway_commit_sender_balance() {
   min_balance_wei="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+  admin_script_sha="$(gl_sha256_file "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/deploy-scripts/AdminFunctions.s.sol")"
 
   fund_l1_governor_for_gateway_sender_deposits "${chain_name}" "${min_balance_wei}"
 
   for wallet_name in "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" prove_operator execute_operator; do
     sender_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
     current_balance_wei="$(gateway_commit_sender_balance_wei "${sender_addr}")"
+    operation_key="sender-balance-${chain_id}-$(gl_to_lower "${sender_addr}")"
 
     if python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
 import sys
@@ -1107,6 +1354,7 @@ import sys
 raise SystemExit(0 if int(sys.argv[1], 10) >= int(sys.argv[2], 10) else 1)
 PY
     then
+      finish_gateway_admin_repair "${operation_key}"
       echo "gateway-launch: Gateway sender balance already funded for ${wallet_name} (${sender_addr}): ${current_balance_wei} wei"
       continue
     fi
@@ -1122,35 +1370,57 @@ PY
 
     gl_l1_broadcast_preflight
     prepare_gateway_governor_forge_wallet_args
-    (
-      cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
-      forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
-        --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
-        "${bridgehub}" \
-        "${GATEWAY_MAX_L1_GAS_PRICE}" \
-        "${gateway_chain_id}" \
-        "${sender_addr}" \
-        "${top_up_wei}" \
-        "0x" \
-        "${refund_recipient}" \
-        true \
-        --rpc-url "${L1_RPC_URL}" \
-        --broadcast \
-        "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
-        --slow
-    )
+    begin_gateway_admin_repair \
+      "${operation_key}" \
+      "kind=sender-balance" \
+      "contracts_sha=${REQUIRED_CONTRACTS_SHA}" \
+      "admin_script_sha256=${admin_script_sha}" \
+      "l1_chain_id=${L1_CHAIN_ID}" \
+      "admin_chain_id=${chain_id}" \
+      "destination_chain_id=${gateway_chain_id}" \
+      "signer=$(gl_to_lower "${refund_recipient}")" \
+      "bridgehub=$(gl_to_lower "${bridgehub}")" \
+      "max_l1_gas_price=${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "target=$(gl_to_lower "${sender_addr}")" \
+      "value_wei=${top_up_wei}" \
+      "calldata=0x" \
+      "refund_recipient=$(gl_to_lower "${refund_recipient}")" \
+      "minimum_balance_wei=${min_balance_wei}" \
+      "observed_balance_wei=${current_balance_wei}"
+
+    if run_gateway_admin_repair_forge \
+      --sig 'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)' \
+      "${bridgehub}" \
+      "${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "${chain_id}" \
+      "${gateway_chain_id}" \
+      "${sender_addr}" \
+      "${top_up_wei}" \
+      "0x" \
+      "${refund_recipient}" \
+      true; then
+      forge_rc=0
+    else
+      forge_rc=$?
+    fi
 
     : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS:=120}"
     : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY:=5}"
     echo "gateway-launch: waiting for Gateway sender balance repair for ${wallet_name} (up to $((GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY))s)"
-    if ! wait_for_gateway_commit_sender_balance \
+    if wait_for_gateway_commit_sender_balance \
       "${sender_addr}" \
       "${min_balance_wei}" \
       "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS}" \
       "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY}"; then
-      echo "gateway-launch: Gateway sender balance still below ${min_balance_wei} wei for ${wallet_name} (${sender_addr}) after repair attempt" >&2
-      return 1
+      finish_gateway_admin_repair "${operation_key}"
+      if [ "${forge_rc}" -ne 0 ]; then
+        echo "gateway-launch: Forge exited ${forge_rc}, but the exact Gateway sender-balance postcondition is confirmed for ${wallet_name}"
+      fi
+      continue
     fi
+    echo "gateway-launch: Gateway sender balance still below ${min_balance_wei} wei for ${wallet_name} (${sender_addr}) after repair attempt; retaining the exact Forge repair journal" >&2
+    [ "${forge_rc}" -eq 0 ] || return "${forge_rc}"
+    return 1
   done
 }
 
