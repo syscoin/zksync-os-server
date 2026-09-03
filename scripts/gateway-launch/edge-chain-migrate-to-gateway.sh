@@ -1519,7 +1519,7 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   migrate_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-  if ! migrate_output="$(gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
+  if ! migrate_output="$(gl_zkstack_private_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \

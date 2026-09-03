@@ -1200,13 +1200,17 @@ if gateway_chain_name in found:
 
     gateway_chain = configs / gateway_chain_name
     info = os.lstat(gateway_chain)
+    gateway_chain_mode = stat.S_IMODE(info.st_mode)
     if (
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISREG(info.st_mode)
         or info.st_uid != os.geteuid()
         or info.st_nlink != 1
         or info.st_size == 0
-        or stat.S_IMODE(info.st_mode) != 0o600
+        # SYSCOIN: PR310's upstream writer created this public-address-only
+        # artifact as 0644. Its full ancestor chain is owner-only 0700 above,
+        # so retain read-only upgrade compatibility while new writes use 0600.
+        or gateway_chain_mode not in {0o600, 0o644}
     ):
         raise SystemExit(f"unsafe Gateway migration artifact: {gateway_chain}")
 
