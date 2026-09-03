@@ -116,6 +116,7 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                 "latest_nonce": 0,
                 "pending_nonce": 0,
                 "gas_price": 1000,
+                "priority_fee_per_gas": 100,
                 "gas_estimates": {
                     "deposit()": 100_000,
                     "approve(address,uint256)": 80_000,
@@ -178,6 +179,8 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
                     output = str(state[f"{{block}}_nonce"])
                 elif args[0] == "gas-price":
                     output = str(state["gas_price"])
+                elif args[0] == "rpc" and args[1] == "eth_maxPriorityFeePerGas":
+                    output = json.dumps(hex(state["priority_fee_per_gas"]))
                 elif args[0] == "estimate":
                     output = str(state["gas_estimates"][args[2]])
                 elif args[0] == "code":
@@ -427,6 +430,14 @@ class GatewaySettlementFeePayerTests(unittest.TestCase):
             self.assertEqual(
                 estimate[estimate.index("--gas-price") + 1],
                 send[send.index("--gas-price") + 1],
+            )
+            self.assertEqual(
+                estimate[estimate.index("--priority-gas-price") + 1],
+                send[send.index("--priority-gas-price") + 1],
+            )
+            self.assertEqual(
+                int(send[send.index("--priority-gas-price") + 1]),
+                first_state["priority_fee_per_gas"],
             )
             self.assertEqual(
                 estimate[estimate.index("--from") + 1].lower(), OPERATOR.lower()
