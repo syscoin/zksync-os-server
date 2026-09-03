@@ -1695,6 +1695,8 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         self.assertNotEqual(probe("ready").returncode, 0)
                 gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
                 gateway_chain.chmod(0o644)
+                self.assertEqual(probe("ready").returncode, 0)
+                gateway_chain.chmod(0o664)
                 self.assertNotEqual(probe("ready").returncode, 0)
                 gateway_chain.unlink()
                 gateway_chain.symlink_to(gateway_config)
@@ -4546,6 +4548,15 @@ printf '%s|%s|%s\n' "$rc" "$before" "$after"
             self.assertEqual(status, "73")
             self.assertEqual(after, before)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'migrate_output="$(gl_zkstack_private_pty zkstack chain gateway '
+            "migrate-to-gateway",
+            migration,
+        )
 
     def test_ecosystem_path_is_resolved_before_wallet_hardening(self) -> None:
         helper = (
