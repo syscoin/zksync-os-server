@@ -228,6 +228,19 @@ readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
 # existing deployment state here rather than initialize or rewrite it.
 if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
   gl_assert_edge_launch_context
+  # SYSCOIN: the canonical repair wrapper advances an eligible migration
+  # checkpoint to in_progress before invoking us. Direct canonical invocation
+  # must honor that lifecycle too; additional edges are indexed off-chain and
+  # intentionally have no dedicated checkpoint in the canonical state file.
+  if gl_is_canonical_edge_context; then
+    migration_repair_checkpoint_status="$(gl_checkpoint_get_status gl.migration)"
+    case "${migration_repair_checkpoint_status}" in
+    blocked | in_progress | passed) ;;
+    *)
+      gl_die "post-finalize migration repair requires gl.migration to be blocked, in_progress, or passed; got ${migration_repair_checkpoint_status}"
+      ;;
+    esac
+  fi
 elif [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then
   gl_assert_edge_launch_context
 else
@@ -1625,7 +1638,7 @@ finish_gateway_admin_repair() {
 }
 
 run_gateway_admin_repair_forge() {
-  local phase
+  local phase forge_rc
   if [ "${GATEWAY_ADMIN_REPAIR_RESUME}" = true ]; then
     phase=resume
   else
@@ -1650,7 +1663,13 @@ run_gateway_admin_repair_forge() {
         --rpc-url "${L1_RPC_URL}" \
         "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
         --slow
-    ) || return $?
+    ) >/dev/null 2>&1 || {
+      forge_rc=$?
+      # SYSCOIN: Forge can reproduce credential-bearing RPC path/query data in
+      # transport errors even when it strips URL userinfo. Never relay it.
+      echo "gateway-launch: audited Forge ${phase} failed for via-Gateway repair" >&2
+      return "${forge_rc}"
+    }
     [ "${phase}" = prepare ] || return 0
     seal_gateway_admin_repair || return $?
     GATEWAY_ADMIN_REPAIR_RESUME=true
@@ -1960,7 +1979,7 @@ l1_deposits_are_unpaused() {
 repair_da_pair_on_gateway() {
   local chain_name="${1:?chain name required}"
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
-  local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy
+  local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy forge_rc
 
   echo "gateway-launch: resolving Gateway DA pair repair inputs for ${chain_name}"
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || return 1
@@ -1992,7 +2011,14 @@ repair_da_pair_on_gateway() {
       --broadcast \
       "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
       --slow
-  )
+  ) >/dev/null 2>&1 || {
+    forge_rc=$?
+    # SYSCOIN: Forge transport errors may expose secrets embedded outside URL
+    # userinfo, so the launcher emits only its own bounded diagnostic.
+    echo "gateway-launch: failed to submit the Gateway DA pair repair" >&2
+    return "${forge_rc}"
+  }
+  echo "gateway-launch: submitted the Gateway DA pair repair for ${chain_name}"
 }
 
 is_da_pair_set_on_gateway() {
@@ -2145,19 +2171,19 @@ ensure_deposits_unpaused() {
     --chain "${chain_name}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${unpause_output}"
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
     case "${unpause_output_lc}" in
     *"depositsnotpaused"* | *"already unpaused"* | *"deposits are not paused"* | *"not paused"*)
       echo "gateway-launch: deposits are already unpaused for ${chain_name}; continuing"
       ;;
     *)
+      # SYSCOIN: zkstack may echo the credential-bearing L1 RPC on failure.
       echo "gateway-launch: failed to unpause deposits for ${chain_name}" >&2
       return 1
       ;;
     esac
   else
-    echo "${unpause_output}"
+    echo "gateway-launch: submitted deposit unpause for ${chain_name}"
   fi
 }
 
@@ -2240,18 +2266,19 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     --chain "${EDGE_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${pause_output}"
     pause_output_lc="$(gl_to_lower "${pause_output}")"
     case "${pause_output_lc}" in
     *"already paused"* | *"already been paused"* | *"alreadypaused"* | *"depositsalreadypaused"*)
       echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
       ;;
     *)
+      # SYSCOIN: do not relay child diagnostics that may contain the L1 RPC.
+      echo "gateway-launch: failed to pause deposits for ${EDGE_CHAIN_NAME}" >&2
       exit 1
       ;;
     esac
   else
-    echo "${pause_output}"
+    echo "gateway-launch: submitted deposit pause for ${EDGE_CHAIN_NAME}"
   fi
 
   migrate_output=""
@@ -2264,18 +2291,19 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     --l1-rpc-url "${L1_RPC_URL}" \
     --gateway-rpc-url "${GATEWAY_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${migrate_output}"
     migrate_output_lc="$(gl_to_lower "${migrate_output}")"
     case "${migrate_output_lc}" in
     *"already on top of gateway"*)
       echo "gateway-launch: ${EDGE_CHAIN_NAME} is already on Gateway settlement; continuing to finalize/post-migration steps"
       ;;
     *)
+      # SYSCOIN: do not relay child diagnostics that may contain either RPC.
+      echo "gateway-launch: failed to submit Gateway migration for ${EDGE_CHAIN_NAME}" >&2
       exit 1
       ;;
     esac
   else
-    echo "${migrate_output}"
+    echo "gateway-launch: submitted Gateway migration for ${EDGE_CHAIN_NAME}"
   fi
 else
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
@@ -2298,16 +2326,17 @@ else
     --l1-rpc-url "${L1_RPC_URL}" \
     --gateway-rpc-url "${GATEWAY_RPC_URL}" \
     --deploy-paymaster false 2>&1)"; then
-    echo "${finalize_output}"
     finalize_already_complete="$(gateway_migration_finalized_on_l1 \
       "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
     if [ "${finalize_already_complete}" = true ]; then
       echo "gateway-launch: finalize failed after L1 reached the complete migration postcondition; continuing with post-migration repair"
     else
+      # SYSCOIN: do not relay child diagnostics that may contain either RPC.
+      echo "gateway-launch: failed to finalize Gateway migration for ${EDGE_CHAIN_NAME}" >&2
       exit 1
     fi
   else
-    echo "${finalize_output}"
+    echo "gateway-launch: submitted Gateway migration finalization for ${EDGE_CHAIN_NAME}"
   fi
 fi
 fi

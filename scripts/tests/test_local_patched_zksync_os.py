@@ -2168,6 +2168,69 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertNotIn("CAST_STDERR_SECRET", ownership_output)
         self.assertIn("failed to query L1 BridgeHub registration", ownership_output)
 
+        journal_forge = extract(
+            "run_gateway_admin_repair_forge() {",
+            "\nfund_l1_governor_for_gateway_sender_deposits() {",
+        )
+        da_repair = extract(
+            "repair_da_pair_on_gateway() {",
+            "\nis_da_pair_set_on_gateway() {",
+        )
+        unpause = extract(
+            "ensure_deposits_unpaused() {",
+            "\nrefresh_l1_admin_wallet_funding() {",
+        )
+        self.assertIn(") >/dev/null 2>&1 || {", journal_forge)
+        self.assertIn(") >/dev/null 2>&1 || {", da_repair)
+        self.assertNotIn('echo "${unpause_output}"', unpause)
+        for child_output in (
+            "pause_output",
+            "migrate_output",
+            "finalize_output",
+        ):
+            self.assertNotIn(f'echo "${{{child_output}}}"', migration)
+
+        cast_helper_start = common.index("def cast_check_output(args):")
+        cast_helper = common[
+            cast_helper_start : common.index("\n\ndef wei_balance", cast_helper_start)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            fake_bin = Path(temporary_dir)
+            fake_cast = fake_bin / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "exit 42\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            funding_failure = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, subprocess\n"
+                    "cast_env = os.environ.copy()\n"
+                    + cast_helper
+                    + "\ncast_check_output([\"cast\", \"balance\", \"0x01\", "
+                    "\"--rpc-url\", os.environ[\"L1_RPC_URL\"]])\n",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "L1_RPC_URL": l1_rpc_url,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                },
+            )
+        self.assertNotEqual(funding_failure.returncode, 0)
+        funding_output = funding_failure.stdout + funding_failure.stderr
+        self.assertNotIn(l1_rpc_url, funding_output)
+        self.assertNotIn("l1-user:l1-password", funding_output)
+        self.assertNotIn("l1-token", funding_output)
+        self.assertNotIn("CAST_STDERR_SECRET", funding_output)
+        self.assertIn("cast balance failed", funding_output)
+
     def test_finalize_replay_guard_requires_complete_coherent_l1_state(self) -> None:
         migration = (
             REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
@@ -2519,6 +2582,9 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertIn("run_with_gateway_for_migration", migration_repair)
         self.assertIn("blocked | in_progress | passed", migration_repair)
         lock_index = migration.index("gl_acquire_gateway_launch_lock")
+        checkpoint_gate_index = migration.index(
+            "gl_checkpoint_get_status gl.migration", lock_index
+        )
         self.assertLess(
             lock_index, migration.index("gl_resolve_required_source_pins")
         )
@@ -2535,6 +2601,25 @@ class LauncherStaticTests(unittest.TestCase):
             lock_index,
             migration.index("gl_assert_edge_launch_context"),
         )
+        self.assertLess(
+            migration.index("gl_assert_edge_launch_context"), checkpoint_gate_index
+        )
+        self.assertLess(
+            checkpoint_gate_index,
+            migration.index("gl_assert_gateway_runtime_identity"),
+        )
+        checkpoint_gate = migration[
+            migration.rindex(
+                "if gl_is_canonical_edge_context; then",
+                migration.index("gl_assert_edge_launch_context"),
+                checkpoint_gate_index,
+            ) : migration.index(
+                '\nelif [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then',
+                checkpoint_gate_index,
+            )
+        ]
+        self.assertIn("blocked | in_progress | passed", checkpoint_gate)
+        self.assertIn("gl_is_canonical_edge_context", checkpoint_gate)
 
     def test_gateway_admin_tx_keeps_edge_authority_and_routes_to_gateway(
         self,
@@ -2668,8 +2753,8 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "  printf 'Commit SHA: %s\\n' \"${FAKE_FORGE_COMMIT:-4072e48705af9d93e3c0f6e29e93b5e9a40caed8}\"\n"
                 "  exit 0\n"
                 "fi\n"
-                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\"\n"
-                "printf 'cache=%s\\n' \"${FOUNDRY_CACHE_PATH:-}\"\n"
+                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\" >>\"${TEST_FORGE_EVENTS:?}\"\n"
+                "printf 'cache=%s\\n' \"${FOUNDRY_CACHE_PATH:-}\" >>\"${TEST_FORGE_EVENTS}\"\n"
                 "phase=prepare\n"
                 "saw_broadcast=false\n"
                 "for arg in \"$@\"; do\n"
@@ -2679,9 +2764,10 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "marker=${FOUNDRY_BROADCAST%/broadcast}/prepared.json\n"
                 "marker_before=false\n"
                 "[ ! -e \"${marker}\" ] || marker_before=true\n"
-                "printf 'forge_phase=%s marker_before=%s argv=' \"${phase}\" \"${marker_before}\"\n"
-                "printf '<%s>' \"$@\"\n"
-                "printf '\\n'\n"
+                "printf 'forge_phase=%s marker_before=%s argv=' \"${phase}\" \"${marker_before}\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '<%s>' \"$@\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '\\n' >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf 'FAKE_FORGE_STDERR_SECRET\\n' >&2\n"
                 "[ \"${saw_broadcast}\" = false ] || exit 72\n"
                 "if [ \"${phase}\" = resume ]; then\n"
                 "  [ \"${marker_before}\" = true ] || exit 71\n"
@@ -2720,6 +2806,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 encoding="utf-8",
             )
             fake_forge.chmod(0o755)
+            forge_events = root / "forge-events.log"
             repair_root = state_dir / "via-gateway-repairs"
             operation_key = "sender-balance-57058-0x" + "11" * 20
             operation_dir = repair_root / operation_key
@@ -2744,11 +2831,13 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "TEST_STATE_FILE": str(state_file),
                 "TEST_SIGNER": signer,
                 "TEST_L1_ADMIN": l1_admin,
+                "TEST_FORGE_EVENTS": str(forge_events),
             }
 
             def run(
                 command: str, **overrides: str
             ) -> subprocess.CompletedProcess[str]:
+                forge_events.write_text("", encoding="utf-8")
                 return subprocess.run(
                     ["bash", "-c", harness + "\n" + command],
                     check=False,
@@ -2767,18 +2856,22 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             fresh = run(begin_and_run)
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
             self.assertIn("resume=false value=7\n", fresh.stdout)
+            self.assertNotIn("FAKE_FORGE_STDERR_SECRET", fresh.stderr)
+            fresh_forge_output = forge_events.read_text(encoding="utf-8")
             self.assertIn(
-                f"broadcast={operation_dir / 'broadcast'}\n", fresh.stdout
+                f"broadcast={operation_dir / 'broadcast'}\n", fresh_forge_output
             )
-            self.assertIn(f"cache={operation_dir / 'cache'}\n", fresh.stdout)
-            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh.stdout)
-            self.assertNotIn(env["FOUNDRY_CACHE_PATH"], fresh.stdout)
+            self.assertIn(
+                f"cache={operation_dir / 'cache'}\n", fresh_forge_output
+            )
+            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh_forge_output)
+            self.assertNotIn(env["FOUNDRY_CACHE_PATH"], fresh_forge_output)
             forge_lines = [
                 line
-                for line in fresh.stdout.splitlines()
+                for line in fresh_forge_output.splitlines()
                 if line.startswith("forge_phase=")
             ]
-            self.assertEqual(len(forge_lines), 2, fresh.stdout)
+            self.assertEqual(len(forge_lines), 2, fresh_forge_output)
             self.assertIn("forge_phase=prepare marker_before=false", forge_lines[0])
             self.assertNotIn("<--resume>", forge_lines[0])
             self.assertIn("forge_phase=resume marker_before=true", forge_lines[1])
@@ -2863,12 +2956,13 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             resumed = run(begin_and_run)
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
             self.assertIn("resume=true value=7\n", resumed.stdout)
+            resumed_forge_output = forge_events.read_text(encoding="utf-8")
             resumed_forge_lines = [
                 line
-                for line in resumed.stdout.splitlines()
+                for line in resumed_forge_output.splitlines()
                 if line.startswith("forge_phase=")
             ]
-            self.assertEqual(len(resumed_forge_lines), 1, resumed.stdout)
+            self.assertEqual(len(resumed_forge_lines), 1, resumed_forge_output)
             self.assertIn(
                 "forge_phase=resume marker_before=true", resumed_forge_lines[0]
             )
@@ -2964,11 +3058,14 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
             self.assertEqual(partial_retry.returncode, 0, partial_retry.stderr)
             self.assertIn("resume=false value=8", partial_retry.stdout)
+            partial_retry_forge_output = forge_events.read_text(encoding="utf-8")
             self.assertIn(
-                "forge_phase=prepare marker_before=false", partial_retry.stdout
+                "forge_phase=prepare marker_before=false",
+                partial_retry_forge_output,
             )
             self.assertIn(
-                "forge_phase=resume marker_before=true", partial_retry.stdout
+                "forge_phase=resume marker_before=true",
+                partial_retry_forge_output,
             )
 
             partial_normal_key = "sender-balance-57058-0x" + "24" * 20
@@ -3149,6 +3246,10 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 f"for name in {' '.join(context_names)}; do\n"
                 "  [ \"${!name+x}\" != x ] || { echo \"leaked ${name}\" >&2; exit 91; }\n"
                 "done\n"
+                "if [ \"${FAIL_CAST:-false}\" = true ]; then\n"
+                "  printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "  exit 42\n"
+                "fi\n"
                 "printf '%s\\n' \"$*\"\n",
                 encoding="utf-8",
             )
@@ -3164,6 +3265,26 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            secret_gateway_rpc = (
+                "https://rpc-user:rpc-password@gateway.invalid/private/path"
+                "?token=super-secret#fragment"
+            )
+            failed = run_bash_harness(
+                'source "$COMMON"; gl_non_l1_cast chain-id --rpc-url '
+                '"$SECRET_GATEWAY_RPC"',
+                {
+                    **env,
+                    "FAIL_CAST": "true",
+                    "SECRET_GATEWAY_RPC": secret_gateway_rpc,
+                },
+            )
+            self.assertEqual(failed.returncode, 42)
+            failure_output = failed.stdout + failed.stderr
+            self.assertNotIn(secret_gateway_rpc, failure_output)
+            self.assertNotIn("rpc-user:rpc-password", failure_output)
+            self.assertNotIn("super-secret", failure_output)
+            self.assertNotIn("CAST_STDERR_SECRET", failure_output)
+            self.assertIn("non-L1 cast command failed", failure_output)
 
         common = GATEWAY_COMMON.read_text(encoding="utf-8")
         wrapped_start = common.index("gl_gateway_wrapped_base_token_from_rpc() {")

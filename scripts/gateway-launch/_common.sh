@@ -59,11 +59,18 @@ gl_to_lower() {
 # context. In particular, Foundry applies fee and sender env to eth_call, while
 # CAST_ASYNC would let an edge send race the verification that follows it.
 gl_non_l1_cast() {
+  local cast_rc
   env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID -u CHAIN \
     -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS \
     -u ETH_MAX_PRIORITY_FEE_PER_GAS -u ETH_GAS_LIMIT -u ETH_FROM \
     -u ETH_KEYSTORE -u ETH_KEYSTORE_ACCOUNT -u ETH_PASSWORD -u CAST_ASYNC \
-    cast "$@"
+    cast "$@" 2>/dev/null || {
+      cast_rc=$?
+      # SYSCOIN: Cast can reproduce credential-bearing path/query data from an
+      # RPC URL in transport errors. Preserve stdout/rc but bound diagnostics.
+      echo "gateway-launch: non-L1 cast command failed" >&2
+      return "${cast_rc}"
+    }
 }
 
 # SYSCOIN: Bind generated deployment executables to their reviewed source stamp.
@@ -767,10 +774,10 @@ gl_assert_rpc_chain_id_matches_config() {
   local label="${3:?chain label required}" expected actual
   expected="$(gl_chain_id_from_config "${chain_name}" "${label}")" || return $?
   actual="$(gl_non_l1_cast chain-id --rpc-url "${rpc_url}")" ||
-    gl_die "failed to read ${label} chain ID from ${rpc_url}"
+    gl_die "failed to read ${label} chain ID from the configured RPC"
   actual="$(printf '%s' "${actual}" | tr -d '[:space:]')"
   [[ "${actual}" =~ ^[0-9]+$ ]] ||
-    gl_die "invalid ${label} RPC chain ID from ${rpc_url}: ${actual:-<empty>}"
+    gl_die "invalid ${label} chain ID from the configured RPC: ${actual:-<empty>}"
   [ "${actual}" = "${expected}" ] ||
     gl_die "${label} RPC chain ID mismatch: config=${expected} rpc=${actual}"
 }
@@ -1486,14 +1493,14 @@ gl_assert_gateway_genesis_stamp() {
     gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
   fi
   block_zero_hash="$(gl_non_l1_cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
-    gl_die "failed to read Gateway block-0 hash from ${gateway_rpc}"
+    gl_die "failed to read Gateway block-0 hash from the configured RPC"
   if [ -n "${expected_owner_pid}" ]; then
     # SYSCOIN: Do not persist an RPC result after its launcher-owned listener disappeared.
     gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
   fi
   block_zero_hash="$(gl_to_lower "$(printf '%s' "${block_zero_hash}" | tr -d '[:space:]')")"
   [[ "${block_zero_hash}" =~ ^0x[0-9a-f]{64}$ ]] || \
-    gl_die "invalid Gateway block-0 hash from ${gateway_rpc}: ${block_zero_hash}"
+    gl_die "invalid Gateway block-0 hash from the configured RPC: ${block_zero_hash}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   stamp_path="${GATEWAY_DIR}/.gateway-launch/${gateway_chain_name}-runtime-genesis.v1"
   expected="${chain_id} ${block_zero_hash}"
@@ -1589,10 +1596,10 @@ gl_assert_rpc_runtime_identity() {
   local code code_hex actual_size actual_hash
 
   code="$(gl_non_l1_cast code "${address}" --rpc-url "${rpc_url}")" || \
-    gl_die "failed to read ${label} runtime at ${address} from ${rpc_url}"
+    gl_die "failed to read ${label} runtime at ${address} from the configured RPC"
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
   [ "${code#0x}" != "${code}" ] && [ "${code}" != "0x" ] || \
-    gl_die "missing ${label} runtime at ${address} on ${rpc_url}"
+    gl_die "missing ${label} runtime at ${address} on the configured RPC"
   code_hex="${code#0x}"
   [ $(( ${#code_hex} % 2 )) -eq 0 ] || gl_die "malformed ${label} runtime at ${address}"
   actual_size=$(( ${#code_hex} / 2 ))
@@ -1661,7 +1668,7 @@ gl_assert_gateway_listener_owned_by_pid() {
   [[ "${expected_pid}" =~ ^[1-9][0-9]*$ ]] ||
     gl_die "invalid launcher-owned Gateway PID: ${expected_pid}"
   [[ "${gateway_rpc}" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})$ ]] ||
-    gl_die "listener ownership requires a generated loopback Gateway RPC URL: ${gateway_rpc}"
+    gl_die "listener ownership requires the generated loopback Gateway RPC endpoint"
   port="${BASH_REMATCH[1]}"
   [ "${port}" -le 65535 ] || gl_die "invalid Gateway RPC port: ${port}"
 
@@ -1790,9 +1797,9 @@ gl_assert_gateway_runtime_identity() {
   gl_assert_gateway_config_identity || return $?
   expected_chain_id="$(gl_gateway_chain_id_from_config)" || return $?
   actual_chain_id="$(gl_non_l1_cast chain-id --rpc-url "${gateway_rpc}")" || \
-    gl_die "failed to read Gateway chain ID from ${gateway_rpc}"
+    gl_die "failed to read Gateway chain ID from the configured RPC"
   [[ "${actual_chain_id}" =~ ^[0-9]+$ ]] || \
-    gl_die "invalid Gateway RPC chain ID from ${gateway_rpc}: ${actual_chain_id}"
+    gl_die "invalid Gateway chain ID from the configured RPC: ${actual_chain_id}"
   [ "${actual_chain_id}" = "${expected_chain_id}" ] || \
     gl_die "Gateway RPC chain ID mismatch: config=${expected_chain_id} rpc=${actual_chain_id}"
   target="$(gl_published_gateway_commit_target)"
@@ -3454,7 +3461,15 @@ funder_wallet_args = [] if check_only else funder_wallet_args()
 
 
 def cast_check_output(args):
-    return subprocess.check_output(args, text=True, env=cast_env)
+    try:
+        # SYSCOIN: cast failures stringify argv and can echo credential-bearing
+        # RPC URLs on stderr. Keep both out of launcher diagnostics.
+        return subprocess.check_output(
+            args, text=True, env=cast_env, stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError:
+        subcommand = args[1] if len(args) > 1 else "command"
+        raise SystemExit(f"cast {subcommand} failed") from None
 
 
 def wei_balance(address):
