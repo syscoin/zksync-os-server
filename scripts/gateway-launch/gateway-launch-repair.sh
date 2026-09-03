@@ -345,11 +345,20 @@ perform_repair_step() {
     esac
   ;;
   gl.migration)
-    # SYSCOIN: migration pauses deposits and finalizes settlement changes.
-    # Never replay it from repair; this checkpoint can only re-attest an
-    # already-completed migration through the read-only validator above.
-    echo "gateway-launch-repair: gl.migration is not automatically repairable; reconcile the live settlement state before marking it repaired" >&2
-    return 1
+    # SYSCOIN: never replay pause/migrate/finalize. The child first proves the
+    # complete L1 finalization postcondition, then resumes only idempotent
+    # post-migration reconciliation and its exact private Forge journals.
+    case "${REPAIR_PRIOR_STATUS}" in
+    blocked | in_progress | passed)
+      run_supervised_gateway_repair_operation \
+        run_with_gateway_for_migration \
+        "${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" --resume-post-finalize
+      ;;
+    *)
+      echo "gateway-launch-repair: gl.migration post-finalize repair requires a blocked, in-progress, or previously passed checkpoint" >&2
+      return 1
+      ;;
+    esac
     ;;
   gl.os_configs_final)
     "${SCRIPT_DIR}/generate-os-server-configs.sh"

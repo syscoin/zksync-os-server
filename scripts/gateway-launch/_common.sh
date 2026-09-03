@@ -504,16 +504,17 @@ gl_assert_l1_chain_id_matches_rpc() {
   gl_require L1_CHAIN_ID
 
   local rpc_chain_id
+  # SYSCOIN: never persist a credential-bearing L1 URL in preflight failures.
   if ! rpc_chain_id="$(gl_l1_chain_id_from_rpc 2>/dev/null)"; then
-    gl_die "failed to read chain id from L1 RPC ${L1_RPC_URL}"
+    gl_die "failed to read chain id from the configured L1 RPC"
   fi
 
   if [ -z "${rpc_chain_id}" ]; then
-    gl_die "empty chain id from L1 RPC ${L1_RPC_URL}"
+    gl_die "empty chain id from the configured L1 RPC"
   fi
 
   if [ "${rpc_chain_id}" != "${L1_CHAIN_ID}" ]; then
-    gl_die "L1 chain-id mismatch: rpc(${L1_RPC_URL})=${rpc_chain_id}, expected L1_CHAIN_ID=${L1_CHAIN_ID}, FOUNDRY_CHAIN_ID=${FOUNDRY_CHAIN_ID:-<unset>}"
+    gl_die "L1 chain-id mismatch: configured RPC=${rpc_chain_id}, expected L1_CHAIN_ID=${L1_CHAIN_ID}, FOUNDRY_CHAIN_ID=${FOUNDRY_CHAIN_ID:-<unset>}"
   fi
 }
 
@@ -5654,7 +5655,8 @@ gl_registered_chain_admin() {
   local label="${3:?chain label required}"
   local expected_diamond="${4:-}"
   local raw_diamond diamond raw_pending_admin pending_admin raw_chain_admin chain_admin
-  raw_diamond="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}")" || \
+  # SYSCOIN: cast transport failures can echo credential-bearing L1 URLs.
+  raw_diamond="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to query L1 BridgeHub registration for ${label} chain ${chain_id}"
   diamond="$(gl_normalize_cast_address "${label} diamond" "${raw_diamond}")" || return $?
   if [ "${diamond}" = "0x0000000000000000000000000000000000000000" ]; then
@@ -5666,12 +5668,12 @@ gl_registered_chain_admin() {
     gl_die "registered ${label} chain ${chain_id} is missing a persisted diamond identity"
   [ "${diamond}" = "${expected_diamond}" ] ||
     gl_die "${label} diamond mismatch: persisted=${expected_diamond} registered=${diamond}"
-  raw_pending_admin="$(cast call "${diamond}" "getPendingAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  raw_pending_admin="$(cast call "${diamond}" "getPendingAdmin()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read pending admin for registered ${label} diamond ${diamond}"
   pending_admin="$(gl_normalize_cast_address "${label} pending admin" "${raw_pending_admin}")" || return $?
   [ "${pending_admin}" = "0x0000000000000000000000000000000000000000" ] || \
     gl_die "registered ${label} diamond ${diamond} retains pending admin ${pending_admin}"
-  raw_chain_admin="$(cast call "${diamond}" "getAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  raw_chain_admin="$(cast call "${diamond}" "getAdmin()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read ChainAdmin for registered ${label} diamond ${diamond}"
   chain_admin="$(gl_normalize_cast_address "${label} ChainAdmin" "${raw_chain_admin}")" || return $?
   [ "${chain_admin}" != "0x0000000000000000000000000000000000000000" ] || \
@@ -5695,18 +5697,19 @@ gl_assert_chain_admin_owner() {
   local label="${3:-edge}"
   local chain_admin_code actual_governor pending_owner
 
-  chain_admin_code="$(cast code "${chain_admin}" --rpc-url "${L1_RPC_URL}")" || \
+  # SYSCOIN: retain bounded ownership diagnostics without logging the L1 URL.
+  chain_admin_code="$(cast code "${chain_admin}" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read ${label} ChainAdmin runtime at ${chain_admin}"
   if [ "$(printf '%s' "${chain_admin_code}" | tr -d '[:space:]')" = "0x" ]; then
     gl_die "missing ${label} ChainAdmin runtime at ${chain_admin}"
   fi
-  actual_governor="$(cast call "${chain_admin}" "owner()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  actual_governor="$(cast call "${chain_admin}" "owner()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read owner of ${label} ChainAdmin ${chain_admin}"
   actual_governor="$(gl_normalize_cast_address "${label} ChainAdmin owner" "${actual_governor}")" || return $?
   if [ "${actual_governor}" != "${expected_governor}" ]; then
     gl_die "${label} ChainAdmin owner mismatch: expected ${expected_governor}, got ${actual_governor:-<empty>}"
   fi
-  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read pending owner of ${label} ChainAdmin ${chain_admin}"
   pending_owner="$(gl_normalize_cast_address "${label} ChainAdmin pending owner" "${pending_owner}")" || return $?
   [ "${pending_owner}" = "0x0000000000000000000000000000000000000000" ] || \
