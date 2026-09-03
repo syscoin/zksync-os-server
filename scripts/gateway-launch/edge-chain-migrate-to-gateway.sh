@@ -190,6 +190,24 @@ PY
   fi
 }
 
+assert_canonical_migration_mutation_authorized() {
+  local migration_status
+
+  gl_is_canonical_edge_context || return 0
+  migration_status="$(gl_checkpoint_get_status gl.migration)" || return $?
+  if [ "${migration_status}" != in_progress ]; then
+    gl_die "canonical migration mutation requires gl.migration=in_progress; got ${migration_status}; use run-gateway-launch.sh --migrate-edge"
+    return $?
+  fi
+  # SYSCOIN: The inherited, inode-validated execute-operator lock proves this
+  # child belongs to the launcher that performed preflight and advanced the
+  # checkpoint. A fresh process must not resume a stale non-replay-safe step.
+  if [ "${GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD:-}" != "${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}" ]; then
+    gl_die "canonical migration mutation requires the active checkpointed launcher"
+    return $?
+  fi
+}
+
 validate_migration_config_inputs
 
 # SYSCOIN: These identities are compiled into the current guest and native server. A production
@@ -226,6 +244,7 @@ gl_assert_edge_chain_config_matches_expected
 # execute-operator/Gateway nonce lock before any migration/admin work and retain
 # it through fee-payer provisioning and deposit unpause.
 if [ "${MIGRATION_READ_ONLY}" != true ]; then
+  assert_canonical_migration_mutation_authorized
   gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
 fi
 

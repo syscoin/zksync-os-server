@@ -6762,6 +6762,74 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             migration[fee_target_preflight - 500 : signer_identity],
         )
 
+        authorization_start = migration.index(
+            "assert_canonical_migration_mutation_authorized() {"
+        )
+        authorization_end = migration.index("\n}\n", authorization_start) + 2
+        authorization = migration[authorization_start:authorization_end]
+        authorization_call = migration.index(
+            "\n  assert_canonical_migration_mutation_authorized\n",
+            authorization_end,
+        )
+        execute_lock = migration.index(
+            'gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"',
+            authorization_call,
+        )
+        self.assertLess(authorization_call, execute_lock)
+        self.assertLess(execute_lock, migration.index("\ngl_l1_broadcast_preflight\n"))
+        self.assertIn("gl_checkpoint_get_status gl.migration", authorization)
+        self.assertIn('"${migration_status}" != in_progress', authorization)
+        self.assertIn("GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD", authorization)
+
+        def run_authorization(
+            status: str, *, canonical: bool = True, inherited_fd: str = "9"
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -u
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="$INHERITED_FD"
+                        gl_is_canonical_edge_context() {{ [ "$CANONICAL" = true ]; }}
+                        gl_checkpoint_get_status() {{
+                          [ "$CANONICAL" = true ] || return 91
+                          printf '%s\\n' "$MIGRATION_STATUS"
+                        }}
+                        gl_die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+                        {authorization}
+                        assert_canonical_migration_mutation_authorized
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "CANONICAL": str(canonical).lower(),
+                    "INHERITED_FD": inherited_fd,
+                    "MIGRATION_STATUS": status,
+                },
+            )
+
+        allowed = run_authorization("in_progress")
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        for status in ("pending", "blocked", "passed", "unknown"):
+            with self.subTest(canonical_status=status):
+                rejected = run_authorization(status)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("requires gl.migration=in_progress", rejected.stderr)
+        stale = run_authorization("in_progress", inherited_fd="")
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("active checkpointed launcher", stale.stderr)
+        additional_edge = run_authorization(
+            "passed", canonical=False, inherited_fd=""
+        )
+        self.assertEqual(additional_edge.returncode, 0, additional_edge.stderr)
+
         def run_begin(
             preflight_rc: int, acquire_rc: int = 0
         ) -> subprocess.CompletedProcess[str]:
