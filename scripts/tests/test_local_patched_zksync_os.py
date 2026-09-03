@@ -2039,6 +2039,74 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_gateway_migration_errors_redact_rpc_credentials(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        proxy_lookup = extract(
+            "get_chain_diamond_proxy_from_gateway() {",
+            "\nwait_for_chain_diamond_proxy_from_gateway() {",
+        )
+        cast_fallback = extract(
+            "gateway_cast_call_with_fallback() {",
+            "\ngateway_address_has_code() {",
+        )
+        gateway_rpc_url = (
+            "https://user:password@gateway.invalid/rpc?token=super-secret#fragment"
+        )
+        harness = textwrap.dedent(
+            f"""
+            set -euo pipefail
+            gl_non_l1_cast() {{
+              printf 'CAST_STDERR_SECRET transport error contacting %s\\n' "$GATEWAY_RPC_URL" >&2
+              if [ "$CAST_SUCCEEDS" = true ]; then
+                printf '%s\\n' 0x{'33' * 20}
+                return 0
+              fi
+              return 42
+            }}
+            get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+            get_chain_governor_from_wallets() {{ printf '%s\\n' 0x{'11' * 20}; }}
+            {cast_fallback}
+            {proxy_lookup}
+            L2_BRIDGEHUB_ADDRESS=0x{'22' * 20}
+            CAST_SUCCEEDS=true
+            result="$(gateway_cast_call_with_fallback \
+              "$L2_BRIDGEHUB_ADDRESS" "getZKChain(uint256)(address)" \
+              "$GATEWAY_RPC_URL" "" 57057)"
+            [ "$result" = 0x{'33' * 20} ] || exit 91
+            CAST_SUCCEEDS=false
+            if get_chain_diamond_proxy_from_gateway zksys; then
+              exit 90
+            fi
+            """
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GATEWAY_RPC_URL": gateway_rpc_url},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        output = result.stdout + result.stderr
+        self.assertNotIn(gateway_rpc_url, output)
+        self.assertNotIn("user:password", output)
+        self.assertNotIn("super-secret", output)
+        self.assertNotIn("CAST_STDERR_SECRET", output)
+        self.assertIn("cast call failed on the configured Gateway RPC", output)
+        self.assertIn(
+            "failed to query Gateway Bridgehub getZKChain(57057) for zksys "
+            "on the configured Gateway RPC",
+            output,
+        )
+
     def test_finalize_replay_guard_requires_complete_coherent_l1_state(self) -> None:
         migration = (
             REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
@@ -7429,7 +7497,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             secrets.parent.mkdir(parents=True)
             secrets.write_text(json.dumps({"l1": {}}) + "\n", encoding="utf-8")
             secrets.chmod(0o600)
-            expected_url = "http://127.0.0.1:3052"
+            expected_url = (
+                "https://rpc-user:rpc-password@gateway.invalid/rpc?api_key=api-token"
+            )
 
             def run(policy: str) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
@@ -7466,6 +7536,12 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             )
             written = run("write")
             self.assertEqual(written.returncode, 0, written.stderr)
+            written_output = written.stdout + written.stderr
+            self.assertNotIn(expected_url, written_output)
+            self.assertNotIn("rpc-user", written_output)
+            self.assertNotIn("rpc-password", written_output)
+            self.assertNotIn("api-token", written_output)
+            self.assertIn("<redacted>", written_output)
             self.assertEqual(stat.S_IMODE(secrets.stat().st_mode), 0o600)
             self.assertEqual(
                 json.loads(secrets.read_text(encoding="utf-8"))["l1"][
