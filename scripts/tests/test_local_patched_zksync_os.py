@@ -2816,18 +2816,49 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             self.assertIn(expected, finish_migration)
         self.assertNotIn('+            "finishMigrateChainToGateway",', finish_migration)
 
+        # SYSCOIN: The pinned upstream maps zkOS scheme 4 to calldata scheme 3
+        # in both migration paths. Our compact Bitcoin-DA encoding remains
+        # scheme 4 on Gateway, so both downgrades must stay removed.
+        preserve_marker = (
+            "+    // SYSCOIN: Scheme 4 is compact Bitcoin DA on both settlement "
+            "layers; preserve it on Gateway."
+        )
+        migrate_calldata = patch.split(
+            "diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/"
+            "migrate_to_gateway_calldata.rs ",
+            1,
+        )[1].split("\ndiff --git ", 1)[0]
+        for source_patch in (migrate_calldata, finish_migration):
+            self.assertIn(preserve_marker, source_patch)
+            self.assertIn(
+                "-    if l2_da_validator_commitment_scheme == "
+                "L2DACommitmentScheme::BlobsZksyncOS {",
+                source_patch,
+            )
+            self.assertIn(
+                "-        l2_da_validator_commitment_scheme = "
+                "L2DACommitmentScheme::BlobsAndPubdataKeccak256;",
+                source_patch,
+            )
+            self.assertNotIn(
+                "+        l2_da_validator_commitment_scheme = "
+                "L2DACommitmentScheme::BlobsAndPubdataKeccak256;",
+                source_patch,
+            )
+        self.assertEqual(patch.count(preserve_marker), 2)
+
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78",
+            "fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78"',
-            'EXPECTED_PATCH_PATH_COUNT="26"',
-            'EXPECTED_PATCH_PATHS_SHA256="c82dac75c980d1473750de262aae522d2f64a534b17b2aae11fd66e967d98779"',
-            'EXPECTED_PATCHED_TREE="60dfff2d8b29a0c7bd43e832ae63fde878c209dc"',
+            'EXPECTED_PATCH_SHA256="fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69"',
+            'EXPECTED_PATCH_PATH_COUNT="27"',
+            'EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"',
+            'EXPECTED_PATCHED_TREE="2e4eed988d0014be40a7fcbdc0d9920229bfb56e"',
             'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
             'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
