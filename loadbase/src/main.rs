@@ -117,7 +117,6 @@ async fn main() -> anyhow::Result<()> {
         mean_amt:    mean_transfer,
         token_addr:  token_nm.address(),
         dest_random: dest_rand,
-        rpc_url:     args.rpc_url.clone(),
         all_addrs:   wallets.iter().map(|w| w.address()).collect(),
         rng:         Arc::new(RwLock::new(StdRng::from_entropy())),
         receipt_timeout: *args.receipt_timeout,
