@@ -48,7 +48,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9e677f536230cc87c1bce8011f3a8074eb39e37a"
-PUBLISHED_ERA_PATCHED_TREE = "02cb2cda34f47c09df404c3bce54cb592f72579d"
+PUBLISHED_ERA_PATCHED_TREE = "2a28a08e439d35ff25643d3d108c05e846cdf0fe"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -2039,6 +2039,271 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_gateway_admin_tx_keeps_edge_authority_and_routes_to_gateway(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        def compact(source: str) -> str:
+            return " ".join(source.replace("\\\n", " ").split())
+
+        signer = extract(
+            "prepare_gateway_governor_forge_wallet_args() {",
+            "\nget_l1_bridgehub_proxy_addr() {",
+        )
+        validator = extract(
+            "ensure_gateway_commit_sender_validator() {",
+            "\nensure_gateway_commit_sender_balance() {",
+        )
+        balance = extract(
+            "ensure_gateway_commit_sender_balance() {",
+            "\nprovision_gateway_settlement_fee_payer() {",
+        )
+        signature = (
+            "--sig "
+            "'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,"
+            "uint256,bytes,address,bool)'"
+        )
+        self.assertEqual(migration.count(signature), 2)
+        for expected in (
+            'prepare_generated_gateway_governor_keystore "${EDGE_CHAIN_NAME}"',
+            'expected_addr="$(get_chain_governor_from_wallets "${EDGE_CHAIN_NAME}")"',
+        ):
+            self.assertIn(expected, signer)
+        for function in (validator, balance):
+            for expected in (
+                'refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"',
+                'chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"',
+                'gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"',
+                "prepare_gateway_governor_forge_wallet_args",
+            ):
+                self.assertIn(expected, function)
+
+        route = (
+            signature
+            + ' "${bridgehub}" "${GATEWAY_MAX_L1_GAS_PRICE}"'
+            + ' "${chain_id}" "${gateway_chain_id}"'
+        )
+        for expected in (
+            '"COMMITTER_ROLE()(bytes32)"',
+            'cast calldata "grantRole(address,bytes32,address)" "${chain_proxy}" '
+            '"${committer_role}" "${committer_addr}"',
+            route
+            + ' "${validator_timelock}" 0 "${grant_calldata}"'
+            + ' "${refund_recipient}" true',
+        ):
+            self.assertIn(expected, compact(validator))
+        self.assertNotIn("addValidator", validator)
+        self.assertIn(
+            route
+            + ' "${sender_addr}" "${top_up_wei}" "0x"'
+            + ' "${refund_recipient}" true',
+            compact(balance),
+        )
+
+    def test_gateway_admin_repair_journal_is_private_immutable_and_resumable(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index('GATEWAY_ADMIN_REPAIR_DIR=""')
+        end = migration.index(
+            "\nfund_l1_governor_for_gateway_sender_deposits() {", start
+        )
+        journal_functions = migration[start:end]
+
+        harness = (
+            "set -euo pipefail\n"
+            + journal_functions
+            + r'''
+gl_checkpoint_state_dir() { printf '%s\n' "$TEST_STATE_DIR"; }
+gl_checkpoint_state_file() { printf '%s\n' "$TEST_STATE_FILE"; }
+ZKSYNC_ERA_PATH="$TEST_ERA_PATH"
+L1_RPC_URL="http://l1.invalid"
+GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
+'''
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            state_file = state_dir / "checkpoint.json"
+            state_file.write_text(
+                json.dumps(
+                    {"run_id": "test-run", "fingerprint": {"edge": "zksys"}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            state_file.chmod(0o600)
+            era = root / "era"
+            (era / "contracts" / "l1-contracts").mkdir(parents=True)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_forge = bin_dir / "forge"
+            fake_forge.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'journal\\n' >\"${FOUNDRY_BROADCAST}/forge-created\"\n"
+                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\"\n"
+                "printf 'argv='\n"
+                "printf '<%s>' \"$@\"\n"
+                "printf '\\n'\n",
+                encoding="utf-8",
+            )
+            fake_forge.chmod(0o755)
+            repair_root = state_dir / "via-gateway-repairs"
+            operation_key = "sender-balance-57058-0x" + "11" * 20
+            operation_dir = repair_root / operation_key
+            arguments = "kind=sender-balance value_wei=7"
+            env = {
+                **os.environ,
+                "FOUNDRY_BROADCAST": str(root / "inherited-broadcast"),
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "TEST_ERA_PATH": str(era),
+                "TEST_OPERATION_KEY": operation_key,
+                "TEST_STATE_DIR": str(state_dir),
+                "TEST_STATE_FILE": str(state_file),
+            }
+
+            def run(command: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", "-c", harness + "\n" + command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+
+            begin_and_run = (
+                'umask 000\nbegin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + arguments
+                + '\nprintf \'resume=%s\\n\' "$GATEWAY_ADMIN_REPAIR_RESUME"'
+                + "\nrun_gateway_admin_repair_forge --sig probe"
+            )
+            fresh = run(begin_and_run)
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            self.assertIn("resume=false\n", fresh.stdout)
+            self.assertNotIn("<--resume>", fresh.stdout)
+            self.assertIn(
+                f"broadcast={operation_dir / 'broadcast'}\n", fresh.stdout
+            )
+            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh.stdout)
+            self.assertEqual(stat.S_IMODE(repair_root.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(operation_dir.stat().st_mode), 0o700)
+            self.assertEqual(
+                stat.S_IMODE((operation_dir / "broadcast").stat().st_mode), 0o700
+            )
+            forge_marker = operation_dir / "broadcast" / "forge-created"
+            self.assertEqual(
+                stat.S_IMODE(forge_marker.stat().st_mode),
+                0o600,
+            )
+            intent_path = operation_dir / "intent.json"
+            self.assertEqual(stat.S_IMODE(intent_path.stat().st_mode), 0o600)
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            self.assertEqual(intent["arguments"], arguments.split())
+            intent_snapshot = (
+                intent_path.read_bytes(),
+                intent_path.stat().st_ino,
+                intent_path.stat().st_mtime_ns,
+            )
+
+            resumed = run(begin_and_run)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn("resume=true\n", resumed.stdout)
+            self.assertIn("<--resume>", resumed.stdout)
+            self.assertEqual(
+                (
+                    intent_path.read_bytes(),
+                    intent_path.stat().st_ino,
+                    intent_path.stat().st_mtime_ns,
+                ),
+                intent_snapshot,
+            )
+
+            changed = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                "kind=sender-balance value_wei=8"
+            )
+            self.assertNotEqual(changed.returncode, 0)
+            self.assertIn("intent changed", changed.stderr)
+            self.assertEqual(intent_path.read_bytes(), intent_snapshot[0])
+
+            missing_key = "committer-role-57058-0x" + "22" * 20
+            (repair_root / missing_key).mkdir(mode=0o700)
+            (repair_root / missing_key / "broadcast").mkdir(mode=0o700)
+            missing = run(
+                f"begin_gateway_admin_repair {missing_key} kind=committer-role"
+            )
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("ambiguous via-Gateway repair state", missing.stderr)
+
+            forge_marker.unlink()
+            stale_reuse = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + arguments
+                + '\nif begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + "kind=sender-balance value_wei=8; then exit 90; fi"
+                + '\nprintf \'cleared=%s|%s\\n\' "${GATEWAY_ADMIN_REPAIR_DIR:-}" '
+                '"$GATEWAY_ADMIN_REPAIR_RESUME"'
+                + "\nrun_gateway_admin_repair_forge --sig stale"
+            )
+            self.assertNotEqual(stale_reuse.returncode, 0)
+            self.assertIn("cleared=|false\n", stale_reuse.stdout)
+            self.assertIn("repair journal is not initialized", stale_reuse.stderr)
+            self.assertNotIn("argv=", stale_reuse.stdout)
+            self.assertFalse(forge_marker.exists())
+
+            recreated = run(
+                'finish_gateway_admin_repair "$TEST_OPERATION_KEY"\n'
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + arguments
+                + '\nprintf \'resume=%s\\n\' "$GATEWAY_ADMIN_REPAIR_RESUME"'
+            )
+            self.assertEqual(recreated.returncode, 0, recreated.stderr)
+            self.assertIn("resume=false\n", recreated.stdout)
+
+            symlink_key = "sender-balance-57058-0x" + "33" * 20
+            symlink_dir = repair_root / symlink_key
+            symlink_dir.mkdir(mode=0o700)
+            (symlink_dir / "broadcast").mkdir(mode=0o700)
+            decoy = state_dir / "decoy-intent.json"
+            decoy.write_text("{}\n", encoding="utf-8")
+            decoy.chmod(0o600)
+            (symlink_dir / "intent.json").symlink_to(decoy)
+            symlinked = run(
+                f"begin_gateway_admin_repair {symlink_key} kind=sender-balance"
+            )
+            self.assertNotEqual(symlinked.returncode, 0)
+            self.assertIn("unsafe via-Gateway repair intent", symlinked.stderr)
+
+            unsafe_key = "sender-balance-57058-0x" + "44" * 20
+            seeded = run(
+                f"begin_gateway_admin_repair {unsafe_key} kind=sender-balance"
+            )
+            self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            unsafe_intent = repair_root / unsafe_key / "intent.json"
+            unsafe_intent.chmod(0o644)
+            unsafe = run(
+                f"begin_gateway_admin_repair {unsafe_key} kind=sender-balance"
+            )
+            self.assertNotEqual(unsafe.returncode, 0)
+            self.assertIn("unsafe via-Gateway repair intent", unsafe.stderr)
+
     def test_non_l1_cast_strips_l1_context_and_owns_non_l1_rpc_sites(self) -> None:
         context_names = (
             "FOUNDRY_CHAIN_ID",
@@ -5867,10 +6132,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1420519"',
-            'EXPECTED_PATCH_SHA256="d3ee492d2a7a759c9ad1405b5b450e464f0c412e27ca02e72cb8b17e2ecfe6c2"',
-            'EXPECTED_PATCH_PATH_COUNT="60"',
-            'EXPECTED_PATCH_PATHS_SHA256="daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821"',
+            'EXPECTED_PATCH_SIZE="1423817"',
+            'EXPECTED_PATCH_SHA256="506c3ac9cf46c1174f7aee3fc033b8d5aef661533e77d3fc324c17ae22962668"',
+            'EXPECTED_PATCH_PATH_COUNT="61"',
+            'EXPECTED_PATCH_PATHS_SHA256="18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -5921,22 +6186,46 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 60)
+        self.assertEqual(len(patch_paths), 61)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
+            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 60)
+        self.assertEqual(len(manifest_entries), 61)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
             self.assertEqual(len(digest), 64, path)
+        manifest = {
+            path: (int(size), digest) for size, digest, path in manifest_entries
+        }
+        self.assertEqual(
+            manifest["l1-contracts/contracts/script-interfaces/IAdminFunctions.sol"],
+            (
+                7470,
+                "f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a",
+            ),
+        )
+        self.assertEqual(
+            manifest["l1-contracts/deploy-scripts/AdminFunctions.s.sol"],
+            (
+                60893,
+                "225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0",
+            ),
+        )
+        self.assertEqual(
+            manifest["l1-contracts/selectors"],
+            (
+                2307892,
+                "38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb",
+            ),
+        )
 
         for forbidden_envelope in (
             "deleted file mode ",
@@ -6011,8 +6300,16 @@ class EraAttestationStaticTests(unittest.TestCase):
                 "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3",
             ),
             (
+                "l1-contracts/contracts/script-interfaces/IAdminFunctions.sol",
+                "f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a",
+            ),
+            (
                 "l1-contracts/deploy-scripts/AdminFunctions.s.sol",
-                "e9a81f7e93a396ad203a5e050b7d9b857966d45954405ec849e1a05f0cc47759",
+                "225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0",
+            ),
+            (
+                "l1-contracts/selectors",
+                "38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",
@@ -6131,6 +6428,46 @@ class EraAttestationStaticTests(unittest.TestCase):
             "diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol",
             patch,
         )
+
+        def patch_section(path: str) -> str:
+            start = patch.index(f"diff --git a/{path} b/{path}")
+            end = patch.find("\ndiff --git a/", start + 1)
+            return patch[start : len(patch) if end == -1 else end]
+
+        admin_interface = patch_section(
+            "l1-contracts/contracts/script-interfaces/IAdminFunctions.sol"
+        )
+        admin_function = patch_section(
+            "l1-contracts/deploy-scripts/AdminFunctions.s.sol"
+        )
+        selectors = patch_section("l1-contracts/selectors")
+        self.assertIn("+    function adminL1L2TxViaGateway(", admin_interface)
+        self.assertIn("+    function adminL1L2TxViaGateway(", admin_function)
+        self.assertIn(
+            "adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,"
+            "uint256,bytes,address,bool)                  | 0x36cec6db",
+            selectors,
+        )
+        self.assertIn(
+            '+        require(_adminChainId != 0 && _gatewayChainId != 0, "chain id is zero");',
+            admin_function,
+        )
+        self.assertIn(
+            "+            L1Bridgehub(_bridgehub).settlementLayer(_adminChainId) == _gatewayChainId,",
+            admin_function,
+        )
+        for expected in (
+            "+        ChainInfoFromBridgehub memory adminChainInfo = Utils.chainInfoFromBridgehubAndChainId(",
+            "+            params.adminChainId",
+            "+            params.destinationChainId,",
+            "+            adminChainInfo.l1AssetRouterProxy,",
+            "+        saveAndSendAdminTx(adminChainInfo.admin, calls, params._shouldSend);",
+            "+                adminChainId: _chainId,",
+            "+                destinationChainId: _chainId,",
+            "+                adminChainId: _adminChainId,",
+            "+                destinationChainId: _gatewayChainId,",
+        ):
+            self.assertIn(expected, admin_function)
         self.assertIn("governance.getOperationState(operationId)", patch)
         self.assertIn("ownership operation is not ready", patch)
         self.assertNotIn(
@@ -6283,9 +6620,9 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "60"',
+            'ERA_PATCH_PATH_COUNT: "61"',
             "ERA_PATCH_PATHS_SHA256: "
-            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
+            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',
