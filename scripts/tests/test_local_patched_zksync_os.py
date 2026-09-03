@@ -2009,6 +2009,11 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         run_supervised_gateway_repair_operation() {
                           "$@"
                         }
+                        gateway_acquire_execute_operator_lock() {
+                          printf 'gateway_acquire_execute_operator_lock %s\n' "$*"
+                        }
+                        EDGE_CHAIN_NAME=zksys
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
                         SCRIPT_DIR=/nonexistent
                         '''
                     )
@@ -2049,6 +2054,10 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 self.assertIn(
                     "edge-chain-migrate-to-gateway.sh --resume-post-finalize",
                     migration.stdout,
+                )
+                self.assertLess(
+                    migration.stdout.index("gateway_acquire_execute_operator_lock"),
+                    migration.stdout.index("edge-chain-migrate-to-gateway.sh"),
                 )
         pending_migration = dispatch(
             "pending", False, checkpoint="gl.migration"
@@ -2581,9 +2590,26 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertIn("--resume-post-finalize", migration_repair)
         self.assertIn("run_with_gateway_for_migration", migration_repair)
         self.assertIn("blocked | in_progress | passed", migration_repair)
+        self.assertIn(
+            'source "${SCRIPT_DIR}/_execute_operator_lock.sh"', repair
+        )
+        repair_execute_lock = migration_repair.index(
+            'gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"'
+        )
+        repair_inherit = migration_repair.index(
+            'export GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD='
+            '"${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"'
+        )
+        repair_child = migration_repair.index(
+            '"${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" '
+            "--resume-post-finalize"
+        )
+        self.assertLess(repair_execute_lock, repair_inherit)
+        self.assertLess(repair_inherit, repair_child)
         lock_index = migration.index("gl_acquire_gateway_launch_lock")
+        context_start = migration.index("# SYSCOIN: Post-finalize repair owns")
         checkpoint_gate_index = migration.index(
-            "gl_checkpoint_get_status gl.migration", lock_index
+            "gl_checkpoint_get_status gl.migration", context_start
         )
         self.assertLess(
             lock_index, migration.index("gl_resolve_required_source_pins")
@@ -2592,7 +2618,7 @@ class LauncherStaticTests(unittest.TestCase):
             lock_index, migration.index("gl_ensure_zkstack_cli_release_current")
         )
         context_gate = migration[
-            migration.index("# SYSCOIN: Post-finalize repair owns") : migration.index(
+            context_start : migration.index(
                 "\ngl_assert_gateway_runtime_identity"
             )
         ]
@@ -8112,6 +8138,74 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'if [ "${MIGRATION_CHECK_ONLY}" != true ]; then',
             migration[fee_target_preflight - 500 : signer_identity],
         )
+
+        authorization_start = migration.index(
+            "assert_canonical_migration_mutation_authorized() {"
+        )
+        authorization_end = migration.index("\n}\n", authorization_start) + 2
+        authorization = migration[authorization_start:authorization_end]
+        authorization_call = migration.index(
+            "\n  assert_canonical_migration_mutation_authorized\n",
+            authorization_end,
+        )
+        execute_lock = migration.index(
+            'gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"',
+            authorization_call,
+        )
+        self.assertLess(authorization_call, execute_lock)
+        self.assertLess(execute_lock, migration.index("\ngl_l1_broadcast_preflight\n"))
+        self.assertIn("gl_checkpoint_get_status gl.migration", authorization)
+        self.assertIn('"${migration_status}" != in_progress', authorization)
+        self.assertIn("GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD", authorization)
+
+        def run_authorization(
+            status: str, *, canonical: bool = True, inherited_fd: str = "9"
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -u
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="$INHERITED_FD"
+                        gl_is_canonical_edge_context() {{ [ "$CANONICAL" = true ]; }}
+                        gl_checkpoint_get_status() {{
+                          [ "$CANONICAL" = true ] || return 91
+                          printf '%s\\n' "$MIGRATION_STATUS"
+                        }}
+                        gl_die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+                        {authorization}
+                        assert_canonical_migration_mutation_authorized
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "CANONICAL": str(canonical).lower(),
+                    "INHERITED_FD": inherited_fd,
+                    "MIGRATION_STATUS": status,
+                },
+            )
+
+        allowed = run_authorization("in_progress")
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        for status in ("pending", "blocked", "passed", "unknown"):
+            with self.subTest(canonical_status=status):
+                rejected = run_authorization(status)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("requires gl.migration=in_progress", rejected.stderr)
+        stale = run_authorization("in_progress", inherited_fd="")
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("active checkpoint owner", stale.stderr)
+        additional_edge = run_authorization(
+            "passed", canonical=False, inherited_fd=""
+        )
+        self.assertEqual(additional_edge.returncode, 0, additional_edge.stderr)
 
         def run_begin(
             preflight_rc: int, acquire_rc: int = 0
