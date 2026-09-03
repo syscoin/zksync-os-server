@@ -456,7 +456,7 @@ get_chain_diamond_proxy_from_gateway() {
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   call_from="$(get_chain_governor_from_wallets "${chain_name}")"
   if ! raw_proxy="$(gateway_cast_call_with_fallback "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${GATEWAY_RPC_URL}" "${call_from}" "${chain_id}")"; then
-    echo "gateway-launch: failed to query Gateway Bridgehub getZKChain(${chain_id}) for ${chain_name}; target=${L2_BRIDGEHUB_ADDRESS}, rpc=${GATEWAY_RPC_URL}, from=${call_from:-unset}, cast=$(command -v cast || true)" >&2
+    echo "gateway-launch: failed to query Gateway Bridgehub getZKChain(${chain_id}) for ${chain_name} on the configured Gateway RPC; target=${L2_BRIDGEHUB_ADDRESS}, from=${call_from:-unset}, cast=$(command -v cast || true)" >&2
     return 1
   fi
   chain_proxy="$(printf '%s\n' "${raw_proxy}" | awk '{print $1}')"
@@ -882,25 +882,25 @@ gateway_cast_call_with_fallback() {
   local call_from="${4:-}"
   shift 4
 
-  local out last_error=""
+  local out
   if [ -n "${call_from}" ]; then
     # SYSCOIN: read-only Gateway calls must not inherit L1 broadcast fee env.
     # Gateway can have a different base fee, and cast applies ETH_GAS_PRICE to
     # eth_call transactions even though no transaction is broadcast.
     if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
-      --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
+      --rpc-url "${rpc_url}" --from "${call_from}" 2>/dev/null)"; then
       printf '%s\n' "${out}"
       return 0
     fi
-    last_error="${out}"
   fi
   if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
-    --rpc-url "${rpc_url}" 2>&1)"; then
+    --rpc-url "${rpc_url}" 2>/dev/null)"; then
     printf '%s\n' "${out}"
     return 0
   fi
-  last_error="${out}"
-  echo "gateway-launch: cast call failed: target=${target}, sig=${sig}, rpc=${rpc_url}, from=${call_from:-unset}, args=$*, last_error=${last_error}" >&2
+  # SYSCOIN: cast transport errors can echo credential-bearing RPC URLs. Keep
+  # that stderr out of the persistent launcher log and emit bounded context.
+  echo "gateway-launch: cast call failed on the configured Gateway RPC: target=${target}, sig=${sig}, from=${call_from:-unset}, args=$*" >&2
   return 1
 }
 
