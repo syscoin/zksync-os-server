@@ -5,6 +5,7 @@ import http.server
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -1971,7 +1972,10 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
         )[1].split('\n}\n\nif [ "${COMMAND}" != "repair" ]', 1)[0] + "\n}\n"
 
         def dispatch(
-            prior: str, post_admin: bool, created_only: bool = True
+            prior: str,
+            post_admin: bool,
+            created_only: bool = True,
+            checkpoint: str = "gl.edge_chain_inited",
         ) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
@@ -2009,7 +2013,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         '''
                     )
                     + perform
-                    + "perform_repair_step gl.edge_chain_inited\n",
+                    + f"perform_repair_step {checkpoint}\n",
                 ],
                 check=False,
                 capture_output=True,
@@ -2036,6 +2040,21 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
         self.assertNotEqual(ambiguous.returncode, 0)
         self.assertEqual(ambiguous.stdout, "")
         self.assertIn("neither exact", ambiguous.stderr)
+        for prior in ("in_progress", "blocked", "passed"):
+            with self.subTest(migration_prior=prior):
+                migration = dispatch(
+                    prior, False, checkpoint="gl.migration"
+                )
+                self.assertEqual(migration.returncode, 0, migration.stderr)
+                self.assertIn(
+                    "edge-chain-migrate-to-gateway.sh --resume-post-finalize",
+                    migration.stdout,
+                )
+        pending_migration = dispatch(
+            "pending", False, checkpoint="gl.migration"
+        )
+        self.assertNotEqual(pending_migration.returncode, 0)
+        self.assertIn("requires a blocked", pending_migration.stderr)
 
 
 class LauncherStaticTests(unittest.TestCase):
@@ -2043,6 +2062,8 @@ class LauncherStaticTests(unittest.TestCase):
         migration = (
             REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
         ).read_text(encoding="utf-8")
+        common_path = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        common = common_path.read_text(encoding="utf-8")
 
         def extract(start_marker: str, end_marker: str) -> str:
             start = migration.index(start_marker)
@@ -2107,6 +2128,109 @@ class LauncherStaticTests(unittest.TestCase):
             output,
         )
 
+        ownership = common[
+            common.index("gl_registered_chain_admin() {") : common.index(
+                "\ngl_assert_edge_chain_init_live_state() {"
+            )
+        ]
+        self.assertEqual(ownership.count('2>/dev/null)'), 6)
+        l1_rpc_url = (
+            "https://l1-user:l1-password@l1.invalid/private/rpc"
+            "?api_key=l1-token#fragment"
+        )
+        ownership_failure = subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    set -euo pipefail
+                    source {shlex.quote(str(common_path))}
+                    cast() {{
+                      printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
+                      return 42
+                    }}
+                    gl_registered_chain_admin \
+                      0x{'11' * 20} 57001 Gateway 0x{'22' * 20}
+                    """
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "L1_RPC_URL": l1_rpc_url},
+        )
+        self.assertNotEqual(ownership_failure.returncode, 0)
+        ownership_output = ownership_failure.stdout + ownership_failure.stderr
+        self.assertNotIn(l1_rpc_url, ownership_output)
+        self.assertNotIn("l1-user:l1-password", ownership_output)
+        self.assertNotIn("l1-token", ownership_output)
+        self.assertNotIn("CAST_STDERR_SECRET", ownership_output)
+        self.assertIn("failed to query L1 BridgeHub registration", ownership_output)
+
+        journal_forge = extract(
+            "run_gateway_admin_repair_forge() {",
+            "\nfund_l1_governor_for_gateway_sender_deposits() {",
+        )
+        da_repair = extract(
+            "repair_da_pair_on_gateway() {",
+            "\nis_da_pair_set_on_gateway() {",
+        )
+        unpause = extract(
+            "ensure_deposits_unpaused() {",
+            "\nrefresh_l1_admin_wallet_funding() {",
+        )
+        self.assertIn(") >/dev/null 2>&1 || {", journal_forge)
+        self.assertIn(") >/dev/null 2>&1 || {", da_repair)
+        self.assertNotIn('echo "${unpause_output}"', unpause)
+        for child_output in (
+            "pause_output",
+            "migrate_output",
+            "finalize_output",
+        ):
+            self.assertNotIn(f'echo "${{{child_output}}}"', migration)
+
+        cast_helper_start = common.index("def cast_check_output(args):")
+        cast_helper = common[
+            cast_helper_start : common.index("\n\ndef wei_balance", cast_helper_start)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            fake_bin = Path(temporary_dir)
+            fake_cast = fake_bin / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "exit 42\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            funding_failure = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, subprocess\n"
+                    "cast_env = os.environ.copy()\n"
+                    + cast_helper
+                    + "\ncast_check_output([\"cast\", \"balance\", \"0x01\", "
+                    "\"--rpc-url\", os.environ[\"L1_RPC_URL\"]])\n",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "L1_RPC_URL": l1_rpc_url,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                },
+            )
+        self.assertNotEqual(funding_failure.returncode, 0)
+        funding_output = funding_failure.stdout + funding_failure.stderr
+        self.assertNotIn(l1_rpc_url, funding_output)
+        self.assertNotIn("l1-user:l1-password", funding_output)
+        self.assertNotIn("l1-token", funding_output)
+        self.assertNotIn("CAST_STDERR_SECRET", funding_output)
+        self.assertIn("cast balance failed", funding_output)
+
     def test_finalize_replay_guard_requires_complete_coherent_l1_state(self) -> None:
         migration = (
             REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
@@ -2120,7 +2244,11 @@ class LauncherStaticTests(unittest.TestCase):
         self.assertIn('"chainAssetHandler()(address)"', helper)
         self.assertIn('"isMigrationInProgress(uint256)(bool)"', helper)
 
-        def probe(settlement: str, in_progress: str) -> subprocess.CompletedProcess[str]:
+        def probe(
+            settlement: str,
+            in_progress: str,
+            fail_stage: str = "",
+        ) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
                     "bash",
@@ -2135,7 +2263,9 @@ class LauncherStaticTests(unittest.TestCase):
                         get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
                         get_l1_bridgehub_proxy_addr() {{ printf '%s\\n' 0x{'11' * 20}; }}
                         cast() {{
+                          printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
                           if [ "$1" = block-number ]; then
+                            [ "$CAST_FAIL_STAGE" != block-number ] || return 93
                             printf '%s\\n' 123
                             return 0
                           fi
@@ -2145,10 +2275,14 @@ class LauncherStaticTests(unittest.TestCase):
                           esac
                           case "$3" in
                           'settlementLayer(uint256)(uint256)')
+                            [ "$CAST_FAIL_STAGE" != settlement-layer ] || return 94
                             [ "$SETTLEMENT_LAYER" != rpc-error ] || return 92
                             printf '%s\\n' "$SETTLEMENT_LAYER" ;;
-                          'chainAssetHandler()(address)') printf '%s\\n' 0x{'22' * 20} ;;
+                          'chainAssetHandler()(address)')
+                            [ "$CAST_FAIL_STAGE" != chain-asset-handler ] || return 95
+                            printf '%s\\n' 0x{'22' * 20} ;;
                           'isMigrationInProgress(uint256)(bool)')
+                            [ "$CAST_FAIL_STAGE" != migration-in-progress ] || return 96
                             printf '%s\\n' "$MIGRATION_IN_PROGRESS" ;;
                           *) return 91 ;;
                           esac
@@ -2163,7 +2297,11 @@ class LauncherStaticTests(unittest.TestCase):
                 text=True,
                 env={
                     **os.environ,
-                    "L1_RPC_URL": "http://127.0.0.1:8545",
+                    "L1_RPC_URL": (
+                        "https://l1-user:l1-password@l1.invalid/private/rpc"
+                        "?api_key=l1-token#fragment"
+                    ),
+                    "CAST_FAIL_STAGE": fail_stage,
                     "SETTLEMENT_LAYER": settlement,
                     "MIGRATION_IN_PROGRESS": in_progress,
                 },
@@ -2188,6 +2326,135 @@ class LauncherStaticTests(unittest.TestCase):
         rpc_error = probe("rpc-error", "false")
         self.assertNotEqual(rpc_error.returncode, 0)
         self.assertIn("failed to query L1 settlement layer", rpc_error.stderr)
+        failure_messages = {
+            "block-number": "failed to resolve an L1 block",
+            "settlement-layer": "failed to query L1 settlement layer",
+            "chain-asset-handler": "failed to query L1 ChainAssetHandler",
+            "migration-in-progress": "failed to query L1 migration state",
+        }
+        for stage, expected_message in failure_messages.items():
+            with self.subTest(failed_stage=stage):
+                failed = probe("57001", "false", stage)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn(expected_message, failed.stderr)
+                combined = failed.stdout + failed.stderr
+                for secret in (
+                    "CAST_STDERR_SECRET",
+                    "l1-user:l1-password",
+                    "/private/rpc",
+                    "l1-token",
+                ):
+                    self.assertNotIn(secret, combined)
+
+    def test_remaining_l1_lookup_errors_redact_rpc_credentials(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        settlement = extract(
+            "get_settlement_layer_chain_id() {",
+            "\nget_chain_diamond_proxy_from_gateway() {",
+        )
+        deposits = extract(
+            "l1_deposits_are_unpaused() {",
+            "\nrepair_da_pair_on_gateway() {",
+        )
+        common = (REPO_ROOT / "scripts/gateway-launch/_common.sh").read_text(
+            encoding="utf-8"
+        )
+        chain_guard = common[
+            common.index("gl_assert_l1_chain_id_matches_rpc() {") : common.index(
+                "\n}\n", common.index("gl_assert_l1_chain_id_matches_rpc() {")
+            )
+        ]
+        self.assertNotIn("${L1_RPC_URL}", chain_guard)
+
+        secret_url = "https://l1-user:l1-password@l1.invalid/rpc?token=secret"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_python = bin_dir / "python3"
+            fake_python.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' 0x{'11' * 20}\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            contracts = root / "chains/zksys/configs/contracts.yaml"
+            contracts.parent.mkdir(parents=True)
+            contracts.write_text(
+                "ecosystem_contracts:\n"
+                f"  bridgehub_proxy_addr: 0x{'11' * 20}\n",
+                encoding="utf-8",
+            )
+            base = textwrap.dedent(
+                f"""
+                set -euo pipefail
+                get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+                get_l1_bridgehub_proxy_addr() {{ printf '%s\\n' 0x{'11' * 20}; }}
+                gl_to_lower() {{ printf '%s\\n' "$1" | tr '[:upper:]' '[:lower:]'; }}
+                cast() {{
+                  printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
+                  if [ "${{CAST_FIRST_SUCCEEDS:-false}}" = true ] && [ "$3" = 'getZKChain(uint256)(address)' ]; then
+                    printf '%s\\n' 0x{'22' * 20}
+                    return 0
+                  fi
+                  return 42
+                }}
+                GATEWAY_DIR={shlex.quote(str(root))}
+                """
+            )
+
+            for label, helper, command, first_succeeds, expected in (
+                (
+                    "settlement",
+                    settlement,
+                    "get_settlement_layer_chain_id zksys",
+                    "false",
+                    "failed to query the settlement layer",
+                ),
+                (
+                    "deposit-proxy",
+                    deposits,
+                    "l1_deposits_are_unpaused zksys",
+                    "false",
+                    "failed to read the edge chain proxy",
+                ),
+                (
+                    "deposit-state",
+                    deposits,
+                    "l1_deposits_are_unpaused zksys",
+                    "true",
+                    "failed to read the edge deposit state",
+                ),
+            ):
+                with self.subTest(label=label):
+                    result = subprocess.run(
+                        ["bash", "-c", base + helper + "\n" + command],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            "L1_RPC_URL": secret_url,
+                            "CAST_FIRST_SUCCEEDS": first_succeeds,
+                        },
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    output = result.stdout + result.stderr
+                    self.assertIn(expected, output)
+                    for secret in (
+                        secret_url,
+                        "CAST_STDERR_SECRET",
+                        "l1-user:l1-password",
+                        "token=secret",
+                    ):
+                        self.assertNotIn(secret, output)
 
     def test_finalize_replay_skips_or_recovers_only_from_l1_postcondition(
         self,
@@ -2201,6 +2468,9 @@ class LauncherStaticTests(unittest.TestCase):
                 '\n: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"', start
             )
         ]
+        # The final `fi` closes the surrounding post-finalize-repair guard;
+        # this harness exercises only the normal finalize/recovery block.
+        finalize = finalize.rsplit("\nfi", 1)[0]
         self.assertNotIn("depositdoesnotexist", finalize.lower())
         check_start = migration.rindex(
             'if [ "${MIGRATION_CHECK_ONLY}" = true ]; then', 0, start
@@ -2279,6 +2549,78 @@ class LauncherStaticTests(unittest.TestCase):
                 self.assertEqual(result.returncode, expected_rc, result.stderr)
                 self.assertEqual(events, expected.split())
 
+    def test_migration_repair_is_gated_to_post_finalize_reconciliation(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.rindex(
+            'if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then'
+        )
+        guarded = migration[
+            start : migration.index(
+                '\n: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"', start
+            )
+        ]
+        resume_arm, normal_arm = guarded.split("\nelse\n", 1)
+        self.assertIn("gateway_migration_finalized_on_l1", resume_arm)
+        self.assertIn("refusing post-finalize repair", resume_arm)
+        for mutator in (
+            "pause-deposits",
+            "migrate-to-gateway",
+            "finalize-chain-migration-to-gateway",
+        ):
+            self.assertNotIn(mutator, resume_arm)
+            self.assertIn(mutator, normal_arm)
+        perform = repair.split("perform_repair_step() {", 1)[1].split("\n}", 1)[0]
+        migration_repair = perform.split("gl.migration)", 1)[1].split(
+            "gl.os_configs_final)", 1
+        )[0]
+        self.assertIn("--resume-post-finalize", migration_repair)
+        self.assertIn("run_with_gateway_for_migration", migration_repair)
+        self.assertIn("blocked | in_progress | passed", migration_repair)
+        lock_index = migration.index("gl_acquire_gateway_launch_lock")
+        checkpoint_gate_index = migration.index(
+            "gl_checkpoint_get_status gl.migration", lock_index
+        )
+        self.assertLess(
+            lock_index, migration.index("gl_resolve_required_source_pins")
+        )
+        self.assertLess(
+            lock_index, migration.index("gl_ensure_zkstack_cli_release_current")
+        )
+        context_gate = migration[
+            migration.index("# SYSCOIN: Post-finalize repair owns") : migration.index(
+                "\ngl_assert_gateway_runtime_identity"
+            )
+        ]
+        self.assertNotIn("gl_acquire_gateway_launch_lock", context_gate)
+        self.assertLess(
+            lock_index,
+            migration.index("gl_assert_edge_launch_context"),
+        )
+        self.assertLess(
+            migration.index("gl_assert_edge_launch_context"), checkpoint_gate_index
+        )
+        self.assertLess(
+            checkpoint_gate_index,
+            migration.index("gl_assert_gateway_runtime_identity"),
+        )
+        checkpoint_gate = migration[
+            migration.rindex(
+                "if gl_is_canonical_edge_context; then",
+                migration.index("gl_assert_edge_launch_context"),
+                checkpoint_gate_index,
+            ) : migration.index(
+                '\nelif [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then',
+                checkpoint_gate_index,
+            )
+        ]
+        self.assertIn("blocked | in_progress | passed", checkpoint_gate)
+        self.assertIn("gl_is_canonical_edge_context", checkpoint_gate)
+
     def test_gateway_admin_tx_keeps_edge_authority_and_routes_to_gateway(
         self,
     ) -> None:
@@ -2349,6 +2691,13 @@ class LauncherStaticTests(unittest.TestCase):
             + ' "${refund_recipient}" true',
             compact(balance),
         )
+        self.assertIn(
+            'top_up_wei="${GATEWAY_ADMIN_REPAIR_VALUE_WEI}"', balance
+        )
+        self.assertLess(
+            balance.index("begin_gateway_admin_repair"),
+            balance.index('top_up_wei="${GATEWAY_ADMIN_REPAIR_VALUE_WEI}"'),
+        )
 
     def test_gateway_admin_repair_journal_is_private_immutable_and_resumable(
         self,
@@ -2371,8 +2720,10 @@ class LauncherStaticTests(unittest.TestCase):
             + r'''
 gl_checkpoint_state_dir() { printf '%s\n' "$TEST_STATE_DIR"; }
 gl_checkpoint_state_file() { printf '%s\n' "$TEST_STATE_FILE"; }
+gl_sha256_file() { shasum -a 256 "$1" | awk '{ print $1; }'; }
 ZKSYNC_ERA_PATH="$TEST_ERA_PATH"
 L1_RPC_URL="http://l1.invalid"
+export L1_CHAIN_ID=5700
 GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 '''
         )
@@ -2396,66 +2747,206 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             bin_dir.mkdir()
             fake_forge = bin_dir / "forge"
             fake_forge.write_text(
-                "#!/usr/bin/env bash\n"
-                "printf 'journal\\n' >\"${FOUNDRY_BROADCAST}/forge-created\"\n"
-                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\"\n"
-                "printf 'argv='\n"
-                "printf '<%s>' \"$@\"\n"
-                "printf '\\n'\n",
+                "#!/usr/bin/env bash\nset -euo pipefail\n"
+                'if [ "${1:-}" = --version ]; then\n'
+                "  printf 'forge Version: %s\\n' \"${FAKE_FORGE_VERSION:-1.7.1}\"\n"
+                "  printf 'Commit SHA: %s\\n' \"${FAKE_FORGE_COMMIT:-4072e48705af9d93e3c0f6e29e93b5e9a40caed8}\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\" >>\"${TEST_FORGE_EVENTS:?}\"\n"
+                "printf 'cache=%s\\n' \"${FOUNDRY_CACHE_PATH:-}\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "phase=prepare\n"
+                "saw_broadcast=false\n"
+                "for arg in \"$@\"; do\n"
+                "  [ \"${arg}\" != --resume ] || phase=resume\n"
+                "  [ \"${arg}\" != --broadcast ] || saw_broadcast=true\n"
+                "done\n"
+                "marker=${FOUNDRY_BROADCAST%/broadcast}/prepared.json\n"
+                "marker_before=false\n"
+                "[ ! -e \"${marker}\" ] || marker_before=true\n"
+                "printf 'forge_phase=%s marker_before=%s argv=' \"${phase}\" \"${marker_before}\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '<%s>' \"$@\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '\\n' >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf 'FAKE_FORGE_STDERR_SECRET\\n' >&2\n"
+                "[ \"${saw_broadcast}\" = false ] || exit 72\n"
+                "if [ \"${phase}\" = resume ]; then\n"
+                "  [ \"${marker_before}\" = true ] || exit 71\n"
+                "  mode=${FAKE_FORGE_RESUME_MODE:-complete}\n"
+                "  sequence_dir=AdminFunctions.s.sol/${L1_CHAIN_ID}\n"
+                "  tx_hash=',\"hash\":\"0x1234\"'\n"
+                "  receipts='[{\"status\":\"0x1\"}]'\n"
+                "else\n"
+                "  [ \"${marker_before}\" = false ] || exit 73\n"
+                "  mode=${FAKE_FORGE_MODE:-complete}\n"
+                "  sequence_dir=AdminFunctions.s.sol/${L1_CHAIN_ID}/dry-run\n"
+                "  tx_hash=\n"
+                "  receipts='[]'\n"
+                "fi\n"
+                "[ \"${mode}\" != none ] || exit 17\n"
+                "public_dir=${FOUNDRY_BROADCAST}/${sequence_dir}\n"
+                "sensitive_dir=${FOUNDRY_CACHE_PATH}/${sequence_dir}\n"
+                "mkdir -p \"${public_dir}\" \"${sensitive_dir}\"\n"
+                "public_latest=${public_dir}/adminL1L2TxViaGateway-latest.json\n"
+                "public_run=${public_dir}/run-1700000000.json\n"
+                "sensitive_latest=${sensitive_dir}/adminL1L2TxViaGateway-latest.json\n"
+                "sensitive_run=${sensitive_dir}/run-1700000000.json\n"
+                "printf '{\"transactions\":[{\"transactionType\":\"CALL\"%s,\"transaction\":{\"from\":\"%s\",\"to\":\"%s\",\"nonce\":7,\"%s\":\"0x12345678\"}}],\"receipts\":%s,\"pending\":[],\"libraries\":[],\"returns\":{},\"timestamp\":1700000000,\"chain\":%s,\"commit\":null}\\n' "
+                "\"${tx_hash}\" \"${TEST_SIGNER}\" \"${TEST_L1_ADMIN}\" "
+                "\"${FAKE_FORGE_CALLDATA_KEY:-input}\" "
+                "\"${receipts}\" \"${L1_CHAIN_ID}\" "
+                ">\"${public_latest}\"\n"
+                "cp \"${public_latest}\" \"${public_run}\"\n"
+                "if [ \"${mode}\" = partial ]; then\n"
+                "  [ \"${phase}\" != resume ] || exit 19\n"
+                "  exit 18\n"
+                "fi\n"
+                "printf '%s\\n' '{\"transactions\":[{\"rpc\":\"http://l1.invalid\"}]}' "
+                ">\"${sensitive_latest}\"\n"
+                "cp \"${sensitive_latest}\" \"${sensitive_run}\"\n",
                 encoding="utf-8",
             )
             fake_forge.chmod(0o755)
+            forge_events = root / "forge-events.log"
             repair_root = state_dir / "via-gateway-repairs"
             operation_key = "sender-balance-57058-0x" + "11" * 20
             operation_dir = repair_root / operation_key
-            arguments = "kind=sender-balance value_wei=7"
+            target = "0x" + "11" * 20
+            signer = "0x" + "aa" * 20
+            bridgehub = "0x" + "bb" * 20
+            l1_admin = "0x" + "cc" * 20
+            arguments = (
+                f"kind=sender-balance target={target} minimum_balance_wei=10 "
+                "observed_balance_wei=3 value_wei=7 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
+            )
             env = {
                 **os.environ,
                 "FOUNDRY_BROADCAST": str(root / "inherited-broadcast"),
+                "FOUNDRY_CACHE_PATH": str(root / "inherited-cache"),
                 "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                 "TEST_ERA_PATH": str(era),
                 "TEST_OPERATION_KEY": operation_key,
                 "TEST_STATE_DIR": str(state_dir),
                 "TEST_STATE_FILE": str(state_file),
+                "TEST_SIGNER": signer,
+                "TEST_L1_ADMIN": l1_admin,
+                "TEST_FORGE_EVENTS": str(forge_events),
             }
 
-            def run(command: str) -> subprocess.CompletedProcess[str]:
+            def run(
+                command: str, **overrides: str
+            ) -> subprocess.CompletedProcess[str]:
+                forge_events.write_text("", encoding="utf-8")
                 return subprocess.run(
                     ["bash", "-c", harness + "\n" + command],
                     check=False,
                     capture_output=True,
                     text=True,
-                    env=env,
+                    env={**env, **overrides},
                 )
 
             begin_and_run = (
                 'umask 000\nbegin_gateway_admin_repair "$TEST_OPERATION_KEY" '
                 + arguments
-                + '\nprintf \'resume=%s\\n\' "$GATEWAY_ADMIN_REPAIR_RESUME"'
+                + '\nprintf \'resume=%s value=%s\\n\' '
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
                 + "\nrun_gateway_admin_repair_forge --sig probe"
             )
             fresh = run(begin_and_run)
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
-            self.assertIn("resume=false\n", fresh.stdout)
-            self.assertNotIn("<--resume>", fresh.stdout)
+            self.assertIn("resume=false value=7\n", fresh.stdout)
+            self.assertNotIn("FAKE_FORGE_STDERR_SECRET", fresh.stderr)
+            fresh_forge_output = forge_events.read_text(encoding="utf-8")
             self.assertIn(
-                f"broadcast={operation_dir / 'broadcast'}\n", fresh.stdout
+                f"broadcast={operation_dir / 'broadcast'}\n", fresh_forge_output
             )
-            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh.stdout)
+            self.assertIn(
+                f"cache={operation_dir / 'cache'}\n", fresh_forge_output
+            )
+            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh_forge_output)
+            self.assertNotIn(env["FOUNDRY_CACHE_PATH"], fresh_forge_output)
+            forge_lines = [
+                line
+                for line in fresh_forge_output.splitlines()
+                if line.startswith("forge_phase=")
+            ]
+            self.assertEqual(len(forge_lines), 2, fresh_forge_output)
+            self.assertIn("forge_phase=prepare marker_before=false", forge_lines[0])
+            self.assertNotIn("<--resume>", forge_lines[0])
+            self.assertIn("forge_phase=resume marker_before=true", forge_lines[1])
+            self.assertIn("<--resume>", forge_lines[1])
+            self.assertTrue(
+                all("<--broadcast>" not in line for line in forge_lines),
+                forge_lines,
+            )
             self.assertEqual(stat.S_IMODE(repair_root.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(operation_dir.stat().st_mode), 0o700)
             self.assertEqual(
                 stat.S_IMODE((operation_dir / "broadcast").stat().st_mode), 0o700
             )
-            forge_marker = operation_dir / "broadcast" / "forge-created"
             self.assertEqual(
-                stat.S_IMODE(forge_marker.stat().st_mode),
-                0o600,
+                stat.S_IMODE((operation_dir / "cache").stat().st_mode), 0o700
             )
             intent_path = operation_dir / "intent.json"
             self.assertEqual(stat.S_IMODE(intent_path.stat().st_mode), 0o600)
             intent = json.loads(intent_path.read_text(encoding="utf-8"))
-            self.assertEqual(intent["arguments"], arguments.split())
+            forge_sha = hashlib.sha256(fake_forge.read_bytes()).hexdigest()
+            self.assertEqual(
+                intent["arguments"],
+                arguments.split()
+                + [
+                    "foundry_version=1.7.1",
+                    "foundry_commit=4072e48705af9d93e3c0f6e29e93b5e9a40caed8",
+                    f"foundry_sha256={forge_sha}",
+                ],
+            )
+            prepared_path = operation_dir / "prepared.json"
+            self.assertEqual(stat.S_IMODE(prepared_path.stat().st_mode), 0o600)
+            dry_public = (
+                operation_dir
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            dry_sensitive = (
+                operation_dir
+                / "cache"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            normal_public = (
+                operation_dir
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            normal_sensitive = (
+                operation_dir
+                / "cache"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            for path in (dry_public, dry_sensitive, normal_public, normal_sensitive):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(
+                json.loads(prepared_path.read_text(encoding="utf-8")),
+                {
+                    "schema_version": 1,
+                    "public_sha256": hashlib.sha256(
+                        dry_public.read_bytes()
+                    ).hexdigest(),
+                    "sensitive_sha256": hashlib.sha256(
+                        dry_sensitive.read_bytes()
+                    ).hexdigest(),
+                },
+            )
             intent_snapshot = (
                 intent_path.read_bytes(),
                 intent_path.stat().st_ino,
@@ -2464,8 +2955,19 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
             resumed = run(begin_and_run)
             self.assertEqual(resumed.returncode, 0, resumed.stderr)
-            self.assertIn("resume=true\n", resumed.stdout)
-            self.assertIn("<--resume>", resumed.stdout)
+            self.assertIn("resume=true value=7\n", resumed.stdout)
+            resumed_forge_output = forge_events.read_text(encoding="utf-8")
+            resumed_forge_lines = [
+                line
+                for line in resumed_forge_output.splitlines()
+                if line.startswith("forge_phase=")
+            ]
+            self.assertEqual(len(resumed_forge_lines), 1, resumed_forge_output)
+            self.assertIn(
+                "forge_phase=resume marker_before=true", resumed_forge_lines[0]
+            )
+            self.assertIn("<--resume>", resumed_forge_lines[0])
+            self.assertNotIn("<--broadcast>", resumed_forge_lines[0])
             self.assertEqual(
                 (
                     intent_path.read_bytes(),
@@ -2475,74 +2977,245 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 intent_snapshot,
             )
 
+            balance_drift = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + f"kind=sender-balance target={target} minimum_balance_wei=10 "
+                "observed_balance_wei=4 value_wei=6 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
+                + '\nprintf \'resume=%s value=%s\\n\' '
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
+            )
+            self.assertEqual(balance_drift.returncode, 0, balance_drift.stderr)
+            self.assertIn("resume=true value=7", balance_drift.stdout)
+
             changed = run(
                 'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                "kind=sender-balance value_wei=8"
+                + f"kind=sender-balance target=0x{'99' * 20} "
+                "minimum_balance_wei=10 observed_balance_wei=4 value_wei=6 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
             )
             self.assertNotEqual(changed.returncode, 0)
             self.assertIn("intent changed", changed.stderr)
             self.assertEqual(intent_path.read_bytes(), intent_snapshot[0])
 
-            missing_key = "committer-role-57058-0x" + "22" * 20
-            (repair_root / missing_key).mkdir(mode=0o700)
-            (repair_root / missing_key / "broadcast").mkdir(mode=0o700)
-            missing = run(
-                f"begin_gateway_admin_repair {missing_key} kind=committer-role"
-            )
-            self.assertNotEqual(missing.returncode, 0)
-            self.assertIn("ambiguous via-Gateway repair state", missing.stderr)
-
-            forge_marker.unlink()
-            stale_reuse = run(
+            decreased = run(
                 'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + arguments
-                + '\nif begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + "kind=sender-balance value_wei=8; then exit 90; fi"
-                + '\nprintf \'cleared=%s|%s\\n\' "${GATEWAY_ADMIN_REPAIR_DIR:-}" '
-                '"$GATEWAY_ADMIN_REPAIR_RESUME"'
-                + "\nrun_gateway_admin_repair_forge --sig stale"
+                + f"kind=sender-balance target={target} minimum_balance_wei=10 "
+                "observed_balance_wei=2 value_wei=8 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
             )
-            self.assertNotEqual(stale_reuse.returncode, 0)
-            self.assertIn("cleared=|false\n", stale_reuse.stdout)
-            self.assertIn("repair journal is not initialized", stale_reuse.stderr)
-            self.assertNotIn("argv=", stale_reuse.stdout)
-            self.assertFalse(forge_marker.exists())
-
-            recreated = run(
-                'finish_gateway_admin_repair "$TEST_OPERATION_KEY"\n'
-                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + arguments
-                + '\nprintf \'resume=%s\\n\' "$GATEWAY_ADMIN_REPAIR_RESUME"'
+            self.assertNotEqual(decreased.returncode, 0)
+            self.assertIn(
+                "balance decreased outside the repair lock", decreased.stderr
             )
-            self.assertEqual(recreated.returncode, 0, recreated.stderr)
-            self.assertIn("resume=false\n", recreated.stdout)
 
-            symlink_key = "sender-balance-57058-0x" + "33" * 20
-            symlink_dir = repair_root / symlink_key
-            symlink_dir.mkdir(mode=0o700)
-            (symlink_dir / "broadcast").mkdir(mode=0o700)
-            decoy = state_dir / "decoy-intent.json"
-            decoy.write_text("{}\n", encoding="utf-8")
-            decoy.chmod(0o600)
-            (symlink_dir / "intent.json").symlink_to(decoy)
-            symlinked = run(
-                f"begin_gateway_admin_repair {symlink_key} kind=sender-balance"
+            early_key = "sender-balance-57058-0x" + "22" * 20
+            early_args = (
+                f"kind=sender-balance target=0x{'22' * 20} "
+                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
             )
-            self.assertNotEqual(symlinked.returncode, 0)
-            self.assertIn("unsafe via-Gateway repair intent", symlinked.stderr)
+            early = run(
+                f"begin_gateway_admin_repair {early_key} {early_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_MODE="none",
+            )
+            self.assertEqual(early.returncode, 17, early.stderr)
+            early_retry = run(
+                f"begin_gateway_admin_repair {early_key} "
+                + f"kind=sender-balance target=0x{'22' * 20} "
+                + "minimum_balance_wei=10 observed_balance_wei=3 value_wei=7 "
+                + f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                + "l1_chain_id=5700\n"
+                "printf 'resume=%s value=%s\\n' "
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
+            )
+            self.assertEqual(early_retry.returncode, 0, early_retry.stderr)
+            self.assertIn("resume=false value=8", early_retry.stdout)
 
-            unsafe_key = "sender-balance-57058-0x" + "44" * 20
+            partial_key = "sender-balance-57058-0x" + "23" * 20
+            partial_args = (
+                f"kind=sender-balance target=0x{'23' * 20} "
+                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
+            )
+            partial = run(
+                f"begin_gateway_admin_repair {partial_key} {partial_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_MODE="partial",
+            )
+            self.assertEqual(partial.returncode, 18, partial.stderr)
+            partial_retry = run(
+                f"begin_gateway_admin_repair {partial_key} {partial_args}\n"
+                "printf 'resume=%s value=%s\\n' "
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"\n'
+                "run_gateway_admin_repair_forge --sig probe"
+            )
+            self.assertEqual(partial_retry.returncode, 0, partial_retry.stderr)
+            self.assertIn("resume=false value=8", partial_retry.stdout)
+            partial_retry_forge_output = forge_events.read_text(encoding="utf-8")
+            self.assertIn(
+                "forge_phase=prepare marker_before=false",
+                partial_retry_forge_output,
+            )
+            self.assertIn(
+                "forge_phase=resume marker_before=true",
+                partial_retry_forge_output,
+            )
+
+            partial_normal_key = "sender-balance-57058-0x" + "24" * 20
+            partial_normal_args = (
+                f"kind=sender-balance target=0x{'24' * 20} "
+                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
+            )
+            partial_normal = run(
+                f"begin_gateway_admin_repair {partial_normal_key} "
+                f"{partial_normal_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_RESUME_MODE="partial",
+            )
+            self.assertEqual(partial_normal.returncode, 19, partial_normal.stderr)
+            partial_normal_retry = run(
+                f"begin_gateway_admin_repair {partial_normal_key} "
+                f"{partial_normal_args}"
+            )
+            self.assertNotEqual(partial_normal_retry.returncode, 0)
+            self.assertIn(
+                "partial broadcast via-Gateway repair sequence",
+                partial_normal_retry.stderr,
+            )
+
+            common_args = (
+                "kind=committer-role value_wei=0 "
+                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                "l1_chain_id=5700"
+            )
+            tamper_key = "committer-role-57058-0x" + "25" * 20
+            sealed = run(
+                f"begin_gateway_admin_repair {tamper_key} {common_args}\n"
+                "run_gateway_admin_repair_forge --sig probe"
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            tampered_public = (
+                repair_root
+                / tamper_key
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            tampered_public.write_bytes(tampered_public.read_bytes() + b"\n")
+            tampered = run(
+                f"begin_gateway_admin_repair {tamper_key} {common_args}"
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn(
+                "sealed via-Gateway repair sequence changed", tampered.stderr
+            )
+
+            unknown_key = "committer-role-57058-0x" + "33" * 20
             seeded = run(
-                f"begin_gateway_admin_repair {unsafe_key} kind=sender-balance"
+                f"begin_gateway_admin_repair {unknown_key} {common_args}"
             )
             self.assertEqual(seeded.returncode, 0, seeded.stderr)
-            unsafe_intent = repair_root / unsafe_key / "intent.json"
-            unsafe_intent.chmod(0o644)
-            unsafe = run(
-                f"begin_gateway_admin_repair {unsafe_key} kind=sender-balance"
+            unknown_dir = (
+                repair_root
+                / unknown_key
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
             )
-            self.assertNotEqual(unsafe.returncode, 0)
-            self.assertIn("unsafe via-Gateway repair intent", unsafe.stderr)
+            unknown_dir.mkdir(parents=True)
+            for directory in (
+                unknown_dir,
+                unknown_dir.parent,
+                unknown_dir.parent.parent,
+            ):
+                directory.chmod(0o700)
+            rogue = unknown_dir / "rogue.json"
+            rogue.write_text("{}\n", encoding="utf-8")
+            rogue.chmod(0o600)
+            unknown = run(
+                f"begin_gateway_admin_repair {unknown_key} {common_args}"
+            )
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertIn(
+                "unexpected via-Gateway repair sequence entry", unknown.stderr
+            )
+
+            symlink_key = "committer-role-57058-0x" + "44" * 20
+            seeded = run(
+                f"begin_gateway_admin_repair {symlink_key} {common_args}"
+            )
+            self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            symlink_dir = repair_root / symlink_key / "broadcast"
+            decoy = state_dir / "decoy-sequences"
+            decoy.mkdir(mode=0o700)
+            (symlink_dir / "AdminFunctions.s.sol").symlink_to(
+                decoy, target_is_directory=True
+            )
+            symlinked = run(
+                f"begin_gateway_admin_repair {symlink_key} {common_args}"
+            )
+            self.assertNotEqual(symlinked.returncode, 0)
+            self.assertIn("unsafe via-Gateway repair directory", symlinked.stderr)
+
+            accepted_key = "committer-role-57058-0x" + "55" * 20
+            accepted = run(
+                f"begin_gateway_admin_repair {accepted_key} {common_args}",
+                FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
+                FAKE_FORGE_COMMIT="807f47ace7cdd90eed7190dc4481952cfaa25938",
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            accepted_intent = json.loads(
+                (repair_root / accepted_key / "intent.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIn(
+                "foundry_version=1.3.5-foundry-zksync-v0.1.5",
+                accepted_intent["arguments"],
+            )
+
+            data_schema_key = "committer-role-57058-0x" + "56" * 20
+            data_schema = run(
+                f"begin_gateway_admin_repair {data_schema_key} {common_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_CALLDATA_KEY="data",
+                FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
+                FAKE_FORGE_COMMIT="807f47ace7cdd90eed7190dc4481952cfaa25938",
+            )
+            self.assertEqual(data_schema.returncode, 0, data_schema.stderr)
+
+            for suffix, overrides in (
+                ("66", {"FAKE_FORGE_VERSION": "1.8.0"}),
+                ("77", {"FAKE_FORGE_COMMIT": "0" * 40}),
+                (
+                    "88",
+                    {
+                        "FAKE_FORGE_VERSION": "1.3.5-foundry-zksync-v0.1.5",
+                        "FAKE_FORGE_COMMIT": "VERGEN_IDEMPOTENT_OUTPUT",
+                    },
+                ),
+            ):
+                with self.subTest(unaudited_foundry=suffix):
+                    rejected_key = "committer-role-57058-0x" + suffix * 20
+                    rejected = run(
+                        f"begin_gateway_admin_repair {rejected_key} {common_args}",
+                        **overrides,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("via-Gateway repair", rejected.stderr)
+                    self.assertFalse((repair_root / rejected_key).exists())
 
     def test_non_l1_cast_strips_l1_context_and_owns_non_l1_rpc_sites(self) -> None:
         context_names = (
@@ -2573,6 +3246,10 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 f"for name in {' '.join(context_names)}; do\n"
                 "  [ \"${!name+x}\" != x ] || { echo \"leaked ${name}\" >&2; exit 91; }\n"
                 "done\n"
+                "if [ \"${FAIL_CAST:-false}\" = true ]; then\n"
+                "  printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "  exit 42\n"
+                "fi\n"
                 "printf '%s\\n' \"$*\"\n",
                 encoding="utf-8",
             )
@@ -2588,6 +3265,26 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            secret_gateway_rpc = (
+                "https://rpc-user:rpc-password@gateway.invalid/private/path"
+                "?token=super-secret#fragment"
+            )
+            failed = run_bash_harness(
+                'source "$COMMON"; gl_non_l1_cast chain-id --rpc-url '
+                '"$SECRET_GATEWAY_RPC"',
+                {
+                    **env,
+                    "FAIL_CAST": "true",
+                    "SECRET_GATEWAY_RPC": secret_gateway_rpc,
+                },
+            )
+            self.assertEqual(failed.returncode, 42)
+            failure_output = failed.stdout + failed.stderr
+            self.assertNotIn(secret_gateway_rpc, failure_output)
+            self.assertNotIn("rpc-user:rpc-password", failure_output)
+            self.assertNotIn("super-secret", failure_output)
+            self.assertNotIn("CAST_STDERR_SECRET", failure_output)
+            self.assertIn("non-L1 cast command failed", failure_output)
 
         common = GATEWAY_COMMON.read_text(encoding="utf-8")
         wrapped_start = common.index("gl_gateway_wrapped_base_token_from_rpc() {")
