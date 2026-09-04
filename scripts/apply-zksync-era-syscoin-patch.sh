@@ -10,7 +10,8 @@ ERA_PATH="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCH_FILE="${SCRIPT_DIR}/patches/zksync-era-syscoin.patch"
 
-if [[ ! -d "${ERA_PATH}/.git" ]]; then
+if ! ERA_ROOT="$(git -C "${ERA_PATH}" rev-parse --show-toplevel 2>/dev/null)" ||
+  [[ "$(cd "${ERA_PATH}" && pwd -P)" != "$(cd "${ERA_ROOT}" && pwd -P)" ]]; then
   echo "error: ${ERA_PATH} is not a git repository root" >&2
   exit 1
 fi
@@ -20,67 +21,172 @@ if [[ ! -f "${PATCH_FILE}" ]]; then
   exit 1
 fi
 
-# Idempotency guard: if all marker changes are already present, skip apply.
-# Prefer rg when available (faster), otherwise fallback to grep.
-has_text() {
-  local needle="$1"
-  local file="$2"
-  if command -v rg >/dev/null 2>&1; then
-    rg -q --fixed-strings "$needle" "$file"
+# SYSCOIN: The zkstack CLI is deployment-critical. Bind this patch to one exact
+# upstream tree and one exact complete postimage; marker-only / per-file
+# idempotency could accept a partial or locally modified deployment tool.
+EXPECTED_BASE_COMMIT="d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
+EXPECTED_BASE_TREE="6d8ac3b2867f9aeb561ba9a2174cd459d6362585"
+EXPECTED_PATCH_SHA256="fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69"
+EXPECTED_PATCH_PATH_COUNT="27"
+EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"
+EXPECTED_PATCHED_TREE="2e4eed988d0014be40a7fcbdc0d9920229bfb56e"
+FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"
+FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI."
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
   else
-    grep -q --fixed-strings "$needle" "$file"
+    shasum -a 256 "$1" | awk '{print $1}'
   fi
 }
 
-missing_patch_paths=()
-add_missing_patch_path() {
-  local path="$1"
-  local existing
-  for existing in "${missing_patch_paths[@]}"; do
-    if [[ "${existing}" == "${path}" ]]; then
-      return 0
-    fi
-  done
-  missing_patch_paths+=("${path}")
-}
-
-require_marker() {
-  local needle="$1"
-  local path="$2"
-  if ! has_text "${needle}" "${ERA_PATH}/${path}"; then
-    add_missing_patch_path "${path}"
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
   fi
 }
 
-require_marker "Tanenbaum" "core/lib/basic_types/src/network.rs"
-require_marker "Self::Mainnet => SLChainId(57)" "core/lib/basic_types/src/network.rs"
-require_marker "Self::Tanenbaum => SLChainId(5700)" "core/lib/basic_types/src/network.rs"
-require_marker "Tanenbaum" "zkstack_cli/crates/types/src/l1_network.rs"
-require_marker "L1Network::Mainnet => 57" "zkstack_cli/crates/types/src/l1_network.rs"
-require_marker "L1Network::Tanenbaum => None" "zkstack_cli/crates/types/src/l1_network.rs"
-require_marker "ZKSYS_ZK_TOKEN_ASSET_ID" "zkstack_cli/crates/types/src/l1_network.rs"
-require_marker "L1Network::Tanenbaum | L1Network::Holesky => H256::zero()" "zkstack_cli/crates/types/src/l1_network.rs"
-require_marker "L1Network::Tanenbaum" "zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs"
-require_marker "if config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs"
-require_marker "forge = forge.with_slow();" "zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs"
-require_marker "if config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs"
-require_marker "if chain_config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs"
-require_marker "if chain_config.l1_network == L1Network::Localhost" "zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs"
-require_marker "min_validator_balance: U256::from(10).pow(18.into())," "zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs"
+actual_head="$(git -C "${ERA_PATH}" rev-parse HEAD)"
+[[ "${actual_head}" == "${EXPECTED_BASE_COMMIT}" ]] || {
+  echo "error: zksync-era HEAD mismatch: expected=${EXPECTED_BASE_COMMIT} actual=${actual_head}" >&2
+  exit 1
+}
+actual_base_tree="$(git -C "${ERA_PATH}" rev-parse 'HEAD^{tree}')"
+[[ "${actual_base_tree}" == "${EXPECTED_BASE_TREE}" ]] || {
+  echo "error: zksync-era base tree mismatch: expected=${EXPECTED_BASE_TREE} actual=${actual_base_tree}" >&2
+  exit 1
+}
+actual_patch_sha256="$(sha256_file "${PATCH_FILE}")"
+[[ "${actual_patch_sha256}" == "${EXPECTED_PATCH_SHA256}" ]] || {
+  echo "error: zksync-era patch digest mismatch: expected=${EXPECTED_PATCH_SHA256} actual=${actual_patch_sha256}" >&2
+  exit 1
+}
 
-if [[ "${#missing_patch_paths[@]}" -eq 0 ]]; then
-  echo "zksync-era Syscoin patch appears already applied; skipping."
-  exit 0
+PATCH_PATHS="$(
+  sed -nE 's|^diff --git a/([^ ]+) b/.*|\1|p' "${PATCH_FILE}" |
+    LC_ALL=C sort
+)"
+actual_path_count="$(printf '%s\n' "${PATCH_PATHS}" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+actual_paths_sha256="$(printf '%s\n' "${PATCH_PATHS}" | sha256_stdin)"
+[[ "${actual_path_count}" == "${EXPECTED_PATCH_PATH_COUNT}" ]] || {
+  echo "error: zksync-era patch path count mismatch: expected=${EXPECTED_PATCH_PATH_COUNT} actual=${actual_path_count}" >&2
+  exit 1
+}
+[[ "${actual_paths_sha256}" == "${EXPECTED_PATCH_PATHS_SHA256}" ]] || {
+  echo "error: zksync-era patch path set mismatch" >&2
+  exit 1
+}
+
+path_is_patch_input() {
+  local candidate="$1" expected
+  while IFS= read -r expected; do
+    [[ "${candidate}" == "${expected}" ]] && return 0
+  done <<<"${PATCH_PATHS}"
+  return 1
+}
+
+path_is_patch_input "${FINISH_MIGRATION_PATH}" || {
+  echo "error: finish-migration ABI backport is absent from the exact patch inventory" >&2
+  exit 1
+}
+grep -Fqx -- "+    ${FINISH_MIGRATION_MARKER}" "${PATCH_FILE}" || {
+  echo "error: finish-migration ABI backport marker is absent from the exact patch" >&2
+  exit 1
+}
+
+verify_finish_migration_backport() {
+  local source="${ERA_PATH}/${FINISH_MIGRATION_PATH}"
+  [[ -f "${source}" && ! -L "${source}" ]] || {
+    echo "error: unsafe finish-migration ABI backport source" >&2
+    exit 1
+  }
+  grep -Fqx -- "    ${FINISH_MIGRATION_MARKER}" "${source}" || {
+    echo "error: finish-migration ABI backport marker missing from postimage" >&2
+    exit 1
+  }
+}
+
+verify_worktree_scope() {
+  local line path
+  git -C "${ERA_PATH}" diff --cached --quiet || {
+    echo "error: staged zksync-era changes are not allowed" >&2
+    exit 1
+  }
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    path="${line:3}"
+    case "${path}" in
+    contracts | etc/env/file_based/genesis.json) continue ;;
+    esac
+    path_is_patch_input "${path}" || {
+      echo "error: unrelated zksync-era worktree change: ${path}" >&2
+      exit 1
+    }
+  done < <(git -C "${ERA_PATH}" status --porcelain --untracked-files=all)
+}
+
+patch_forward_applicable() {
+  # SYSCOIN: The compact zero-context envelope is safe because both the exact
+  # upstream tree and complete postimage tree are independently attested.
+  git -C "${ERA_PATH}" apply --unidiff-zero --check --whitespace=error-all "${PATCH_FILE}" >/dev/null 2>&1
+}
+
+patch_reverse_applicable() {
+  git -C "${ERA_PATH}" apply --unidiff-zero --reverse --check "${PATCH_FILE}" >/dev/null 2>&1
+}
+
+verify_patched_tree() {
+  local temporary_dir temporary_index actual_tree relative_path
+  temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/syscoin-zkstack-patch-index.XXXXXX")"
+  temporary_index="${temporary_dir}/index"
+  if ! actual_tree="$({
+    export GIT_INDEX_FILE="${temporary_index}"
+    git -C "${ERA_PATH}" read-tree HEAD || exit 1
+    while IFS= read -r relative_path; do
+      [[ -n "${relative_path}" ]] || continue
+      git -C "${ERA_PATH}" add -A -- "${relative_path}" || exit 1
+    done <<<"${PATCH_PATHS}"
+    git -C "${ERA_PATH}" write-tree || exit 1
+  })"; then
+    rm -f "${temporary_index}" "${temporary_index}.lock"
+    rmdir "${temporary_dir}"
+    echo "error: failed to calculate patched zksync-era tree" >&2
+    exit 1
+  fi
+  rm -f "${temporary_index}" "${temporary_index}.lock"
+  rmdir "${temporary_dir}"
+  [[ "${actual_tree}" == "${EXPECTED_PATCHED_TREE}" ]] || {
+    echo "error: patched zksync-era tree mismatch: expected=${EXPECTED_PATCHED_TREE} actual=${actual_tree}" >&2
+    exit 1
+  }
+}
+
+verify_worktree_scope
+forward=false
+reverse=false
+patch_forward_applicable && forward=true
+patch_reverse_applicable && reverse=true
+[[ "${forward}" != "${reverse}" ]] || {
+  echo "error: zksync-era patch state is partial, diverged, or ambiguous" >&2
+  exit 1
+}
+
+if [[ "${forward}" == true ]]; then
+  echo "Applying exact Syscoin/Tanenbaum zkstack compatibility patch..."
+  git -C "${ERA_PATH}" apply --unidiff-zero --whitespace=error-all "${PATCH_FILE}"
+else
+  echo "Exact Syscoin/Tanenbaum zkstack patch is already applied."
 fi
 
-echo "Checking patch applicability..."
-for path in "${missing_patch_paths[@]}"; do
-  git -C "${ERA_PATH}" apply --check --recount --include="${path}" "${PATCH_FILE}"
-done
-
-echo "Applying Syscoin/Tanenbaum compatibility patch..."
-for path in "${missing_patch_paths[@]}"; do
-  git -C "${ERA_PATH}" apply --recount --include="${path}" "${PATCH_FILE}"
-done
-
-echo "Patch applied successfully."
+patch_reverse_applicable || {
+  echo "error: zksync-era patch postimage failed reverse applicability" >&2
+  exit 1
+}
+verify_finish_migration_backport
+verify_worktree_scope
+git -C "${ERA_PATH}" diff --check
+verify_patched_tree
+echo "Exact Syscoin/Tanenbaum zkstack source patch is attested: ${EXPECTED_PATCHED_TREE}."

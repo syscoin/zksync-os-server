@@ -110,12 +110,6 @@ sol! {
     }
 
     #[sol(rpc)]
-    interface IGWAssetTrackerSettlement {
-        function wrappedZKToken() external view returns (address);
-        function agreeToPaySettlementFees(uint256 chainId) external;
-    }
-
-    #[sol(rpc)]
     interface IWrappedBaseToken {
         function deposit() external payable;
         function approve(address spender, uint256 amount) external returns (bool);

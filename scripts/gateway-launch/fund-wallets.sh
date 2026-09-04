@@ -10,12 +10,57 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+FUND_CHECK_ONLY=false
+if [ "${1:-}" = "--check-only" ]; then
+  FUND_CHECK_ONLY=true
+  shift
+fi
+[ "$#" -eq 0 ] || gl_die "usage: fund-wallets.sh [--check-only]"
 gl_require GATEWAY_DIR
 gl_require L1_RPC_URL
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
+gl_validate_l1_network_pair
+: "${PROTOCOL_VERSION:=v32.0}"
+export PROTOCOL_VERSION
+gl_resolve_required_source_pins
 : "${GATEWAY_CHAIN_NAME:=gateway}"
+: "${GATEWAY_FUND_TARGET_CHAIN_NAME:=${GATEWAY_CHAIN_NAME}}"
+: "${GATEWAY_FUND_EDGE_CONTEXT:=false}"
+GATEWAY_FUND_EDGE_CONTEXT="$(gl_to_lower "${GATEWAY_FUND_EDGE_CONTEXT}")"
+case "${GATEWAY_FUND_EDGE_CONTEXT}" in
+true | false) ;;
+*) gl_die "GATEWAY_FUND_EDGE_CONTEXT must be true or false" ;;
+esac
+if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ] &&
+  [ "${GATEWAY_FUND_TARGET_CHAIN_NAME}" != "${EDGE_CHAIN_NAME:-zksys}" ]; then
+  gl_die "edge funding target must match EDGE_CHAIN_NAME"
+fi
+if [ "${FUND_CHECK_ONLY}" != true ]; then
+  gl_validate_l1_signer_policy
+  gl_acquire_gateway_launch_lock
+fi
+# SYSCOIN: Authenticate the exact chain immediately before direct funding
+# sends; this helper is also a standalone operator entry point.
+gl_l1_broadcast_preflight
+if [ "${FUND_CHECK_ONLY}" = true ]; then
+  # SYSCOIN: Validation remains read-only while rejecting a different launch
+  # identity from the one durably bound to this workspace.
+  if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ]; then
+    gl_assert_edge_launch_context
+  else
+    gl_checkpoint_assert_fingerprint_matches
+  fi
+else
+  if [ "${GATEWAY_FUND_EDGE_CONTEXT}" = true ]; then
+    gl_bind_edge_launch_context
+  else
+    gl_bind_gateway_launch_context
+  fi
+fi
 
 ROOT_W="${GATEWAY_DIR}/configs/wallets.yaml"
-CHAIN_W="${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME}/configs/wallets.yaml"
+CHAIN_W="${GATEWAY_DIR}/chains/${GATEWAY_FUND_TARGET_CHAIN_NAME}/configs/wallets.yaml"
 
 normalize_path() {
   python3 - "$1" <<'PY'
@@ -48,7 +93,11 @@ add_wallet_file() {
   local p="$1" norm existing
   [ -f "${p}" ] || return 0
   validate_wallet_path_in_gateway_dir "${p}"
-  gl_prepare_wallet_file_for_in_file "${p}"
+  if [ "${FUND_CHECK_ONLY}" = true ]; then
+    gl_validate_secret_file "${p}" "wallet file"
+  else
+    gl_prepare_wallet_file_for_in_file "${p}"
+  fi
   norm="$(normalize_path "${p}")"
   if [ "${#wallet_files_norm[@]}" -gt 0 ]; then
     for existing in "${wallet_files_norm[@]}"; do
@@ -80,7 +129,11 @@ fi
 
 wallet_files_joined=""
 for wf in "${wallet_files[@]}"; do
-  echo "gateway-launch: funding wallets from ${wf}"
+  if [ "${FUND_CHECK_ONLY}" = true ]; then
+    echo "gateway-launch: checking wallet funding from ${wf}"
+  else
+    echo "gateway-launch: funding wallets from ${wf}"
+  fi
   if [ -z "${wallet_files_joined}" ]; then
     wallet_files_joined="${wf}"
   else
@@ -88,4 +141,7 @@ for wf in "${wallet_files[@]}"; do
   fi
 done
 
-WALLETS_YAML_PATHS="${wallet_files_joined}" gl_fund_wallets_yaml
+WALLETS_YAML_PATHS="${wallet_files_joined}" \
+  GATEWAY_FUND_CHECK_ONLY="${FUND_CHECK_ONLY}" \
+  GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" \
+  gl_fund_wallets_yaml

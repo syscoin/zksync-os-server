@@ -22,7 +22,7 @@ esac
 # SYSCOIN: These constants are consensus inputs baked into the hash-pinned canonical
 # guest. Native execution must use these exact values; a per-deployment rewrite
 # would create different execution semantics under the published VK.
-PUBLISHED_EDGE_DA_COMMIT_TARGET=0xd0ec30807902886b61a86d9bd209fe353c1d912b
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0xca38dbb6ea5f740cc8252f1450def4dcede94478
 PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 
 require_published_value() {

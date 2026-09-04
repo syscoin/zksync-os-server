@@ -53,11 +53,15 @@ If you are changing source code of any of the `initial_contracts` you should als
 
 ## Usage
 
-Local launch instructions are intentionally disabled while
+Canonical fixture and GPU launch instructions are intentionally disabled while
 [`CANONICAL_V8_REGENERATION_REQUIRED`](./v32.0/CANONICAL_V8_REGENERATION_REQUIRED)
-exists. Do not bypass the marker or reuse an old Anvil snapshot. Runnable
-single-chain and Gateway examples must be restored only with the freshly
-regenerated and attested V8 fixture.
+exists. Do not bypass the marker or reuse an old Anvil snapshot. The sole
+pre-keygen exception is a fresh `no-proofs` Gateway launch with the explicit
+testnet verifier on localhost or Tanenbaum. It materializes the reviewed source
+pair and may proceed past conversion only when the live Gateway target, compact
+DA relay, and CREATE2 factory exactly match the app-bound candidate identities.
+Any mismatch stops before edge creation for repinning and review. Runnable
+canonical examples must still wait for the regenerated and attested V8 fixture.
 
 ## Adding a new protocol version
 

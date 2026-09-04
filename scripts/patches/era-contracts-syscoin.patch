@@ -1,12 +1,12 @@
 diff --git a/.gitignore b/.gitignore
-index 7e1d9037d1af2b602eea82ae24fa9be43257d8b7..71702e655fcca420358e6bc76b63af47cf2363e4 100644
+index 7e1d9037d..71702e655 100644
 --- a/.gitignore
 +++ b/.gitignore
 @@ -31,0 +32,2 @@ l1-contracts/script-config/*
 +# SYSCOIN: track the exact V32 compact Edge-DA relay deployment manifest.
 +!l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 diff --git a/AllContractsHashes.json b/AllContractsHashes.json
-index a0200fd182658c7022ea47a09af2e1771a077e3a..7ddffe91fdbc509aec2bbe96c002b289b32ff5ef 100644
+index a0200fd18..7ddffe91f 100644
 --- a/AllContractsHashes.json
 +++ b/AllContractsHashes.json
 @@ -744 +744 @@
@@ -945,7 +945,7 @@ index a0200fd182658c7022ea47a09af2e1771a077e3a..7ddffe91fdbc509aec2bbe96c002b289
 +    "zkBytecodeHash": null,
 +    "zkBytecodePath": null
 diff --git a/configs/genesis/zksync-os/latest.json b/configs/genesis/zksync-os/latest.json
-index 204f079721879f4e2e0547af75b83333550a384b..447090751079d1a52f8dff50b017a8c235bb4a50 100644
+index 204f07972..447090751 100644
 --- a/configs/genesis/zksync-os/latest.json
 +++ b/configs/genesis/zksync-os/latest.json
 @@ -5 +5 @@
@@ -1168,7 +1168,7 @@ index 204f079721879f4e2e0547af75b83333550a384b..447090751079d1a52f8dff50b017a8c2
 +}
 \ No newline at end of file
 diff --git a/da-contracts/contracts/DAContractsErrors.sol b/da-contracts/contracts/DAContractsErrors.sol
-index 6768d02e23a6c8793e6545b0c9329fd715c7887a..3978dbbb60ce5d45e4bae258eed5a4fd3a7a8473 100644
+index 6768d02e2..3978dbbb6 100644
 --- a/da-contracts/contracts/DAContractsErrors.sol
 +++ b/da-contracts/contracts/DAContractsErrors.sol
 @@ -53,0 +54,6 @@ error InvalidBlobsPublished(bytes32 publishedHash, bytes32 expectedHash);
@@ -1180,7 +1180,7 @@ index 6768d02e23a6c8793e6545b0c9329fd715c7887a..3978dbbb60ce5d45e4bae258eed5a4fd
 +error BitcoinDAVerificationFailed();
 diff --git a/da-contracts/contracts/SyscoinDAUtils.sol b/da-contracts/contracts/SyscoinDAUtils.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f975fac1f193530411217e55d4a3f26a95e37dd
+index 000000000..9f975fac1
 --- /dev/null
 +++ b/da-contracts/contracts/SyscoinDAUtils.sol
 @@ -0,0 +1,15 @@
@@ -1201,7 +1201,7 @@ index 0000000000000000000000000000000000000000..9f975fac1f193530411217e55d4a3f26
 +uint256 constant SYSCOIN_DA_MAX_BLOBS_PER_BATCH = 32;
 diff --git a/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol b/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c7c7ff65d731035068735d97a0178ccdf0ba4e2
+index 000000000..5c7c7ff65
 --- /dev/null
 +++ b/da-contracts/contracts/SyscoinL1DAValidatorZKsyncOS.sol
 @@ -0,0 +1,71 @@
@@ -1278,7 +1278,7 @@ index 0000000000000000000000000000000000000000..5c7c7ff65d731035068735d97a0178cc
 +}
 diff --git a/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol b/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..e05ea53bcc5b8b66318dbaecf3ca650e53493787
+index 000000000..e05ea53bc
 --- /dev/null
 +++ b/da-contracts/test/foundry/SyscoinL1DAValidatorZKsyncOS.t.sol
 @@ -0,0 +1,115 @@
@@ -1398,7 +1398,7 @@ index 0000000000000000000000000000000000000000..e05ea53bcc5b8b66318dbaecf3ca650e
 +    }
 +}
 diff --git a/l1-contracts/contracts/bridge/BridgeHelper.sol b/l1-contracts/contracts/bridge/BridgeHelper.sol
-index 2fc7fee092bf4c79a1598639021a60a1375b5ee7..3b02410e4b06f1f6c548aae772e57347760297ff 100644
+index 2fc7fee09..3b02410e4 100644
 --- a/l1-contracts/contracts/bridge/BridgeHelper.sol
 +++ b/l1-contracts/contracts/bridge/BridgeHelper.sol
 @@ -25,3 +25,3 @@ library BridgeHelper {
@@ -1409,7 +1409,7 @@ index 2fc7fee092bf4c79a1598639021a60a1375b5ee7..3b02410e4b06f1f6c548aae772e57347
 +            name = abi.encode("Syscoin");
 +            symbol = abi.encode("SYS");
 diff --git a/l1-contracts/contracts/common/StateTransitionTypes.sol b/l1-contracts/contracts/common/StateTransitionTypes.sol
-index 1be4adfd806633e8074b275e65295be6e336fbc0..6ba3321134efcc4221e7636621a9e5fe01bc1754 100644
+index 1be4adfd8..6ba332113 100644
 --- a/l1-contracts/contracts/common/StateTransitionTypes.sol
 +++ b/l1-contracts/contracts/common/StateTransitionTypes.sol
 @@ -30,0 +31 @@ struct Verifiers {
@@ -1425,7 +1425,7 @@ index 1be4adfd806633e8074b275e65295be6e336fbc0..6ba3321134efcc4221e7636621a9e5fe
 +    /// @notice SYSCOIN: Legacy ABI slot; canonical deployments leave it zero.
 diff --git a/l1-contracts/contracts/common/SyscoinConfig.sol b/l1-contracts/contracts/common/SyscoinConfig.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..80cb767ce100bf3b49c3af35a2df246be01b3819
+index 000000000..80cb767ce
 --- /dev/null
 +++ b/l1-contracts/contracts/common/SyscoinConfig.sol
 @@ -0,0 +1,18 @@
@@ -1449,7 +1449,7 @@ index 0000000000000000000000000000000000000000..80cb767ce100bf3b49c3af35a2df246b
 +uint256 constant SYSCOIN_DA_MAX_REFS_PER_BATCH = 32;
 diff --git a/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol b/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..528308d0c93ffcab624ff5d730aa087bb3f8a570
+index 000000000..528308d0c
 --- /dev/null
 +++ b/l1-contracts/contracts/common/SyscoinEdgeDARelayDeployment.sol
 @@ -0,0 +1,18 @@
@@ -1471,8 +1471,27 @@ index 0000000000000000000000000000000000000000..528308d0c93ffcab624ff5d730aa087b
 +error SyscoinEdgeDARelayCodeHashMismatch(address relay, bytes32 expected, bytes32 actual);
 +error SyscoinEdgeDARelayArtifactHashMismatch(bytes32 expected, bytes32 actual);
 +error SyscoinEdgeDARelayAddressMismatch(address expected, address actual);
+diff --git a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
+index 177a12c88..71ea1fa1e 100644
+--- a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
++++ b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
+@@ -213,0 +214,14 @@ interface IAdminFunctions {
++
++    /// @notice SYSCOIN: Route a transaction to Gateway while retaining the
++    ///         migrated edge chain's L1 administrator as the caller.
++    function adminL1L2TxViaGateway(
++        address bridgehub,
++        uint256 l1GasPrice,
++        uint256 adminChainId,
++        uint256 gatewayChainId,
++        address to,
++        uint256 value,
++        bytes calldata data,
++        address refundRecipient,
++        bool shouldSend
++    ) external;
 diff --git a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol b/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
-index 86bac78cd2230e994b56b6ecf5e80aaa6eef3106..6b4f9fa106ce5d097478aad5188a3460632b23fd 100644
+index 86bac78cd..6b4f9fa10 100644
 --- a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 +++ b/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 @@ -12 +12 @@ interface IDeployL2Contracts {
@@ -1494,7 +1513,7 @@ index 86bac78cd2230e994b56b6ecf5e80aaa6eef3106..6b4f9fa106ce5d097478aad5188a3460
 -    /// @param _daValidatorType The DA validator type (0=Rollup, 1=NoDA, 2=Avail)
 +    /// @param _daValidatorType SYSCOIN: Reserved for ABI compatibility; must be zero.
 diff --git a/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol b/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
-index d4ce4bdaec988f89cc59799adaab7e185a7dd1c9..b1bb7af373e0c8b353aa0324d84b70ec23a24ef4 100644
+index d4ce4bdae..b1bb7af37 100644
 --- a/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 +++ b/l1-contracts/contracts/state-transition/L1StateTransitionErrors.sol
 @@ -106,0 +107,11 @@ error PubdataLengthTooBig(uint256 pubdataLength, uint256 totalBlobSizeBytes);
@@ -1510,7 +1529,7 @@ index d4ce4bdaec988f89cc59799adaab7e185a7dd1c9..b1bb7af373e0c8b353aa0324d84b70ec
 +// 0x05dc7af9
 +error SyscoinEdgeDARefsRootMismatch(bytes32 expectedRoot, bytes32 actualRoot);
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
-index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..c2e82f3ce8167026d48a82977b735ae4f9219448 100644
+index 8cae1a630..c2e82f3ce 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Admin.sol
 @@ -17,2 +17,2 @@ import {
@@ -1529,7 +1548,7 @@ index 8cae1a6306556e85ba60c590f83dc7afdfe22acf..c2e82f3ce8167026d48a82977b735ae4
 -        if (_newMaxTxGasLimit > ZKSYNC_OS_MAX_BLOCK_GAS_LIMIT) {
 +        if (_newMaxTxGasLimit > ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT) {
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
-index b8d073a5bd4a969c850a26a53e0004f2733faf0b..a73e7f3bb2f4c72a7e1a7dc7987c5b41cc5b696e 100644
+index b8d073a5b..a73e7f3bb 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/facets/Committer.sol
 @@ -18,0 +19,10 @@ import {
@@ -1760,7 +1779,7 @@ index b8d073a5bd4a969c850a26a53e0004f2733faf0b..a73e7f3bb2f4c72a7e1a7dc7987c5b41
 +                // SYSCOIN: Bind the proven batch output to the ordered compact edge-DA root.
 +                _newBatch.edgeDARefsRoot
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
-index 55ce6a6cceedb5e56681d3295954cc50ba0e003f..be486cebf95ffcc888029ef354cca3a12af3b7bf 100644
+index 55ce6a6cc..be486cebf 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerDA.sol
 @@ -5,3 +5,2 @@ pragma solidity 0.8.28;
@@ -1813,7 +1832,7 @@ index 55ce6a6cceedb5e56681d3295954cc50ba0e003f..be486cebf95ffcc888029ef354cca3a1
 +        SyscoinRollupDAManager rollupDAManager = new SyscoinRollupDAManager{salt: _config.salt}(relay);
 +        rollupDAManager.updateDAPair(result.rollupSLDAValidator, SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME, true);
 diff --git a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
-index 563262451cc93724f877653d7cdd408ae0e3f89d..b1d63eaec5e88b1405ce8a5a1d58ca4606c92889 100644
+index 563262451..b1d63eaec 100644
 --- a/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 +++ b/l1-contracts/contracts/state-transition/chain-deps/gateway-ctm-deployer/GatewayCTMDeployerVerifiersZKsyncOS.sol
 @@ -22 +22,2 @@ import {GatewayVerifiersDeployerConfig} from "./GatewayCTMDeployer.sol";
@@ -1849,7 +1868,7 @@ index 563262451cc93724f877653d7cdd408ae0e3f89d..b1d63eaec5e88b1405ce8a5a1d58ca46
 @@ -63 +66,0 @@ contract GatewayCTMDeployerVerifiersZKsyncOS {
 -        }
 diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol b/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
-index d282201b88b360bebe78c1e80691f7209145f344..14b4d4ab7d071e5b785075669e4c7750573873dd 100644
+index d282201b8..14b4d4ab7 100644
 --- a/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
 +++ b/l1-contracts/contracts/state-transition/chain-interfaces/ICommitter.sol
 @@ -50,0 +51,2 @@ struct CommitBatchInfo {
@@ -1860,7 +1879,7 @@ index d282201b88b360bebe78c1e80691f7209145f344..14b4d4ab7d071e5b785075669e4c7750
 +    bytes edgeDARefsInput;
 +    bytes32 edgeDARefsRoot;
 diff --git a/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
-index bfcfaed2c927500db3e4c640f1aa89610665817c..a2697948cc44c61033fba975b9767ed45c9d4b9b 100644
+index bfcfaed2c..a2697948c 100644
 --- a/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/chain-interfaces/IZKsyncOSDualVerifier.sol
 @@ -8 +8 @@ import {IVerifier} from "./IVerifier.sol";
@@ -1875,7 +1894,7 @@ index bfcfaed2c927500db3e4c640f1aa89610665817c..a2697948cc44c61033fba975b9767ed4
 +    /// @notice Explicitly binds server fake/real prover mode to the deployed wrapper.
 +    function IS_TESTNET_VERIFIER() external view returns (bool);
 diff --git a/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol b/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
-index eceda676a453cf9bc69b16a9ef6c3845c982c185..da456c7fbc20d79bf4c1d835261c5a6d6443eccd 100644
+index eceda676a..da456c7fb 100644
 --- a/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 +++ b/l1-contracts/contracts/state-transition/data-availability/RollupDAManager.sol
 @@ -56,0 +57 @@ contract RollupDAManager is Ownable2Step {
@@ -1885,7 +1904,7 @@ index eceda676a453cf9bc69b16a9ef6c3845c982c185..da456c7fbc20d79bf4c1d835261c5a6d
 +    ) external virtual onlyOwner validDAConfiguration(_l1DAValidator, _l2DACommitmentScheme) {
 diff --git a/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol b/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..8503aab0d1da042ce798c65779e2832a10f22982
+index 000000000..8503aab0d
 --- /dev/null
 +++ b/l1-contracts/contracts/state-transition/data-availability/SyscoinRelayedSLDAValidator.sol
 @@ -0,0 +1,68 @@
@@ -1959,7 +1978,7 @@ index 0000000000000000000000000000000000000000..8503aab0d1da042ce798c65779e2832a
 +}
 diff --git a/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol b/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c320e5f0e9ba53c7da5f1dbe290b642b82e7605
+index 000000000..6c320e5f0
 --- /dev/null
 +++ b/l1-contracts/contracts/state-transition/data-availability/SyscoinRollupDAManager.sol
 @@ -0,0 +1,44 @@
@@ -2008,7 +2027,7 @@ index 0000000000000000000000000000000000000000..6c320e5f0e9ba53c7da5f1dbe290b642
 +    }
 +}
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
-index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574ace8a982 100644
+index 6cda4e543..18422e3cf 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 @@ -8,0 +9,2 @@ import {
@@ -2134,7 +2153,7 @@ index 6cda4e54381ed08166e2f8d24596547a8e6f7d38..18422e3cfda406d495e813fbcd967574
 +    }
 +
 diff --git a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
-index 5813db4c4d0cd494ccad3cc757b2b1a5765556a5..83f11bd02e5fc2ab3395f0b38d710b4e809f3d9c 100644
+index 5813db4c4..83f11bd02 100644
 --- a/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 +++ b/l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 @@ -8,0 +9,2 @@ import {InvalidMockProofLength, InvalidProof} from "../../common/L1ContractError
@@ -2173,15 +2192,161 @@ index 5813db4c4d0cd494ccad3cc757b2b1a5765556a5..83f11bd02e5fc2ab3395f0b38d710b4e
 -    /// @dev Verifies the correctness of public input, doesn't check the validity of proof itself.
 +    /// @dev Verifies the fake proof's public-input binding without checking a cryptographic proof.
 diff --git a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
-index 5e083b2a126bae7ecde4a67cfe2347553915ade2..6a860a1e880f97212561d9e0343ec3bfddf0205b 100644
+index 5e083b2a1..6a860a1e8 100644
 --- a/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
 +++ b/l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
 @@ -49 +49,2 @@ abstract contract L1FixedForceDeploymentsHelper {
 -            tokenData = TokenMetadata({name: string("Ether"), symbol: string("ETH"), decimals: 18});
 +            // SYSCOIN: the native-token sentinel represents SYS on this deployment.
 +            tokenData = TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18});
+diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
+index 45471632f..67700bccc 100644
+--- a/l1-contracts/deploy-scripts/AdminFunctions.s.sol
++++ b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
+@@ -19,0 +20 @@ import {ChainAdmin} from "contracts/governance/ChainAdmin.sol";
++import {IGovernance} from "contracts/governance/IGovernance.sol";
+@@ -95,8 +96,18 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        Ownable2Step adminContract = Ownable2Step(_target);
+-        Utils.executeUpgrade({
+-            _governor: _governor,
+-            _salt: Utils.currentLegacyGovSalt(),
+-            _target: _target,
+-            _data: abi.encodeCall(adminContract.acceptOwnership, ()),
+-            _value: 0,
+-            _delay: 0
++        // SYSCOIN: Scope lost-journal recovery to this exact, state-proven
++        // ownership transition. Generic governance operations must retain
++        // upstream's duplicate-operation failure semantics.
++        Ownable2Step target = Ownable2Step(_target);
++        address currentOwner = target.owner();
++        address pendingOwner = target.pendingOwner();
++        if (currentOwner == _governor) {
++            require(pendingOwner == address(0), "expected owner still has a pending successor");
++            return;
++        }
++        require(pendingOwner == _governor, "governor is not pending owner");
++
++        Call[] memory calls = new Call[](1);
++        calls[0] = Call({target: _target, value: 0, data: abi.encodeCall(target.acceptOwnership, ())});
++        IGovernance.Operation memory operation = IGovernance.Operation({
++            calls: calls,
++            predecessor: bytes32(0),
++            salt: Utils.currentLegacyGovSalt()
+@@ -103,0 +115,15 @@ contract AdminFunctions is Script, IAdminFunctions {
++        IGovernance governance = IGovernance(_governor);
++        bytes32 operationId = governance.hashOperation(operation);
++
++        if (governance.getOperationState(operationId) == IGovernance.OperationState.Unset) {
++            vm.startBroadcast(IOwnableSingleStep(_governor).owner());
++            governance.scheduleTransparent(operation, 0);
++            vm.stopBroadcast();
++        }
++        require(governance.isOperationReady(operationId), "ownership operation is not ready");
++        vm.startBroadcast(IOwnableSingleStep(_governor).owner());
++        governance.execute(operation);
++        vm.stopBroadcast();
++
++        require(target.owner() == _governor, "ownership acceptance did not update owner");
++        require(target.pendingOwner() == address(0), "ownership acceptance did not clear pending owner");
+@@ -458,4 +484,25 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        IZKChain adminContract = IZKChain(_target);
+-
+-        Call[] memory calls = new Call[](1);
+-        calls[0] = Call({target: _target, value: 0, data: abi.encodeCall(adminContract.acceptAdmin, ())});
++        IAdmin adminContract = IAdmin(_target);
++        address expectedAdmin = address(_chainAdmin);
++
++        // SYSCOIN: BridgeHub and CTM hide pendingAdmin. If ChainAdmin is
++        // already current, atomically overwrite any latent successor with
++        // itself and accept, leaving the same admin with a cleared pending slot.
++        bool alreadyCurrent;
++        try IGetters(_target).getAdmin() returns (address currentAdmin) {
++            alreadyCurrent = currentAdmin == expectedAdmin;
++        } catch {
++            alreadyCurrent = IBridgehubBase(_target).admin() == expectedAdmin;
++        }
++        Call[] memory calls = new Call[](alreadyCurrent ? 2 : 1);
++        if (alreadyCurrent) {
++            calls[0] = Call({
++                target: _target,
++                value: 0,
++                data: abi.encodeCall(adminContract.setPendingAdmin, (expectedAdmin))
++            });
++        }
++        calls[calls.length - 1] = Call({
++            target: _target,
++            value: 0,
++            data: abi.encodeCall(adminContract.acceptAdmin, ())
++        });
+@@ -465,0 +513,6 @@ contract AdminFunctions is Script, IAdminFunctions {
++
++        try IGetters(_target).getAdmin() returns (address currentAdmin) {
++            require(currentAdmin == expectedAdmin, "admin acceptance did not update admin");
++        } catch {
++            require(IBridgehubBase(_target).admin() == expectedAdmin, "admin acceptance did not update admin");
++        }
+@@ -1271 +1324,4 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        uint256 chainId;
++        // SYSCOIN: Migrated edges authorize through their own L1 admin while
++        // Gateway is the priority transaction's independent destination.
++        uint256 adminChainId;
++        uint256 destinationChainId;
+@@ -1282 +1338 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        ChainInfoFromBridgehub memory l2ChainInfo = Utils.chainInfoFromBridgehubAndChainId(
++        ChainInfoFromBridgehub memory adminChainInfo = Utils.chainInfoFromBridgehubAndChainId(
+@@ -1284 +1340 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            params.chainId
++            params.adminChainId
+@@ -1293 +1349 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            params.chainId,
++            params.destinationChainId,
+@@ -1295 +1351 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            l2ChainInfo.l1AssetRouterProxy,
++            adminChainInfo.l1AssetRouterProxy,
+@@ -1299 +1355 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        saveAndSendAdminTx(l2ChainInfo.admin, calls, params._shouldSend);
++        saveAndSendAdminTx(adminChainInfo.admin, calls, params._shouldSend);
+@@ -1316 +1372,37 @@ contract AdminFunctions is Script, IAdminFunctions {
+-                chainId: _chainId,
++                adminChainId: _chainId,
++                destinationChainId: _chainId,
++                to: _to,
++                value: _value,
++                data: _data,
++                refundRecipient: _refundRecipient,
++                _shouldSend: _shouldSend
++            })
++        );
++    }
++
++    /// @notice SYSCOIN: Send a Gateway-bound priority transaction through the
++    ///         edge chain's L1 ChainAdmin after that edge has migrated.
++    function adminL1L2TxViaGateway(
++        address _bridgehub,
++        uint256 _l1GasPrice,
++        uint256 _adminChainId,
++        uint256 _gatewayChainId,
++        address _to,
++        uint256 _value,
++        bytes memory _data,
++        address _refundRecipient,
++        bool _shouldSend
++    ) public {
++        // SYSCOIN: Fail before broadcast if the caller accidentally combines
++        // an edge administrator with a Gateway that does not settle its chain.
++        require(_adminChainId != 0 && _gatewayChainId != 0, "chain id is zero");
++        require(
++            L1Bridgehub(_bridgehub).settlementLayer(_adminChainId) == _gatewayChainId,
++            "admin chain does not settle on gateway"
++        );
++        _adminL1L2TxInner(
++            AdminL1L2TxParams({
++                bridgehub: _bridgehub,
++                l1GasPrice: _l1GasPrice,
++                adminChainId: _adminChainId,
++                destinationChainId: _gatewayChainId,
 diff --git a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol b/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
-index 4404794692bd9f4fdea51b51b9ce6f47ecee6286..c71e07ef6ea99f2311b9d63455b85d62926757d4 100644
+index 440479469..c71e07ef6 100644
 --- a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 +++ b/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 @@ -27,6 +27 @@ contract DeployL2Script is Script, IDeployL2Contracts {
@@ -2203,7 +2368,7 @@ index 4404794692bd9f4fdea51b51b9ce6f47ecee6286..c71e07ef6ea99f2311b9d63455b85d62
 -        config.validatorType = DAValidatorType(daValidatorType);
 -
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
-index e00f6b595e88b8f5126b9620c426a2f5caa3d318..c9769041f57e43ecb18cd958153a7cae5201ffbc 100644
+index e00f6b595..c9769041f 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 @@ -17,0 +18,2 @@ import {RollupDAManager} from "contracts/state-transition/data-availability/Roll
@@ -2294,7 +2459,7 @@ index e00f6b595e88b8f5126b9620c426a2f5caa3d318..c9769041f57e43ecb18cd958153a7cae
 +        vm.serializeAddress("deployed_addresses", "avail_l1_da_validator_addr", address(0));
 +        // SYSCOIN: Preserve the upstream output schema without advertising unsupported DA deployments.
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol b/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
-index 4ff16fd260b4d63ee08242a6395a21d594c932b9..a97820fdee0d3356e5f78638bea7c7906b0547f8 100644
+index 4ff16fd26..a97820fde 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 @@ -49,3 +49,2 @@ enum CTMContract {
@@ -2436,7 +2601,7 @@ index 4ff16fd260b4d63ee08242a6395a21d594c932b9..a97820fdee0d3356e5f78638bea7c790
 -
 +        // SYSCOIN: removed legacy DA identifiers fail closed instead of resolving old bytecode.
 diff --git a/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol b/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
-index 4028b5f8545f0c3e7b86cc914b97317b62370c71..387632fc4bdd1f2be91e044d25b2965c5c27636d 100644
+index 4028b5f85..387632fc4 100644
 --- a/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 @@ -17,2 +17 @@ import {Utils} from "../utils/Utils.sol";
@@ -2493,7 +2658,7 @@ index 4028b5f8545f0c3e7b86cc914b97317b62370c71..387632fc4bdd1f2be91e044d25b2965c
 +                // would otherwise leave governance only as pending owner with no accept call.
 +                verifierOwner: ctmAddresses.admin.governance,
 diff --git a/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol b/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-index f5bf734e7deeb01a47c0754280b2803fe8abf1a3..ca850778095dfcab65e23a14e0bb2ea3f5cf1f9c 100644
+index f5bf734e7..ca8507780 100644
 --- a/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
 +++ b/l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
 @@ -214,0 +215,2 @@ contract RegisterZKChainScript is Create2FactoryUtils, IRegisterZKChain {
@@ -2506,7 +2671,7 @@ index f5bf734e7deeb01a47c0754280b2803fe8abf1a3..ca850778095dfcab65e23a14e0bb2ea3
 -
 +        // SYSCOIN: Leave pubdata pricing in Rollup mode; the removed Validium branch is unsupported.
 diff --git a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
-index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f47eb668e 100644
+index 8e983d6dd..29da2611a 100644
 --- a/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 +++ b/l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 @@ -30,0 +31,10 @@ import {BytecodeUtils} from "../utils/bytecode/BytecodeUtils.s.sol";
@@ -2532,25 +2697,24 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +        // SYSCOIN: Genesis already installs the constructorless relay. Reproduce its exact
 +        // artifact and frozen CREATE2 identity offline before calculating any dependent address.
 +        _validateSyscoinEdgeDARelayArtifact();
-@@ -197,0 +212,30 @@ library GatewayCTMDeployerHelper {
+@@ -197,0 +212,29 @@ library GatewayCTMDeployerHelper {
 +    /// @dev SYSCOIN: Reproduce the frozen genesis relay artifact/address before calculating
 +    /// Gateway deployments. Any compiler, source, import, optimizer, or metadata drift fails.
 +    function _validateSyscoinEdgeDARelayArtifact() private {
-+        bytes memory initCode = BytecodeUtils.readBytecodeL1(
-+            true,
-+            "SyscoinRelayedSLDAValidator.sol",
-+            "SyscoinRelayedSLDAValidator"
++        // SYSCOIN: The relay is Prague-genesis; ordinary artifacts retain the deployment EVM target.
++        string memory defaultArtifact = string.concat(
++            Utils.vm.projectRoot(),
++            "/../l1-contracts/out/SyscoinRelayedSLDAValidator.sol/SyscoinRelayedSLDAValidator.json"
 +        );
++        string memory artifactPath = Utils.vm.envOr("SYSCOIN_EDGE_DA_RELAY_ARTIFACT", defaultArtifact);
++        string memory artifact = Utils.vm.readFile(artifactPath);
++        bytes memory initCode = Utils.vm.parseJsonBytes(artifact, ".bytecode.object");
 +        bytes32 actualInitCodeHash = keccak256(initCode);
 +        if (actualInitCodeHash != SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH) {
 +            revert SyscoinEdgeDARelayArtifactHashMismatch(SYSCOIN_EDGE_DA_RELAY_INIT_CODE_HASH, actualInitCodeHash);
 +        }
 +
-+        bytes memory runtimeCode = BytecodeUtils.readDeployedBytecodeL1(
-+            true,
-+            "SyscoinRelayedSLDAValidator.sol",
-+            "SyscoinRelayedSLDAValidator"
-+        );
++        bytes memory runtimeCode = Utils.vm.parseJsonBytes(artifact, ".deployedBytecode.object");
 +        bytes32 actualRuntimeHash = keccak256(runtimeCode);
 +        if (actualRuntimeHash != SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH) {
 +            revert SyscoinEdgeDARelayArtifactHashMismatch(SYSCOIN_EDGE_DA_RELAY_RUNTIME_HASH, actualRuntimeHash);
@@ -2563,25 +2727,25 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +        _logGatewayVerifyContract(SYSCOIN_EDGE_DA_RELAY_ADDRESS, "SyscoinRelayedSLDAValidator", hex"");
 +    }
 +
-@@ -201,0 +246,3 @@ library GatewayCTMDeployerHelper {
+@@ -201,0 +245,3 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: compact Gateway DA has no generic Era deployment branch.
 +        require(config.isZKsyncOS, "Syscoin compact Gateway DA requires ZKsync OS");
 +
-@@ -306 +353,5 @@ library GatewayCTMDeployerHelper {
+@@ -306 +352,5 @@ library GatewayCTMDeployerHelper {
 -        bytes memory constructorArgs = abi.encode(verifiersConfig);
 +        // SYSCOIN: the zkOS testnet wrapper must receive the ultimate L1 identity even though
 +        // its constructor executes on Gateway. Keep generic Era constructor encoding unchanged.
 +        bytes memory constructorArgs = config.isZKsyncOS
 +            ? abi.encode(verifiersConfig, config.l1ChainId)
 +            : abi.encode(verifiersConfig);
-@@ -317 +368,2 @@ library GatewayCTMDeployerHelper {
+@@ -317 +367,2 @@ library GatewayCTMDeployerHelper {
 -        result = _calculateVerifiersDeployerAddresses(deployer, verifiersConfig, config.isZKsyncOS);
 +        // SYSCOIN: predicted verifier addresses use the same ultimate-L1-aware constructor encoding.
 +        result = _calculateVerifiersDeployerAddresses(deployer, verifiersConfig, config.l1ChainId, config.isZKsyncOS);
-@@ -519 +571 @@ library GatewayCTMDeployerHelper {
+@@ -519 +570 @@ library GatewayCTMDeployerHelper {
 -        bool _isZKsyncOS
 +        bool _isEVMBytecode
-@@ -523,3 +575,7 @@ library GatewayCTMDeployerHelper {
+@@ -523,3 +574,7 @@ library GatewayCTMDeployerHelper {
 -        result.rollupDAManager = _deployInternalEmptyParams(
 -            "RollupDAManager",
 -            "RollupDAManager.sol",
@@ -2592,7 +2756,7 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +            "SyscoinRollupDAManager",
 +            "SyscoinRollupDAManager.sol",
 +            abi.encode(result.rollupSLDAValidator),
-@@ -527,13 +583 @@ library GatewayCTMDeployerHelper {
+@@ -527,13 +582 @@ library GatewayCTMDeployerHelper {
 -            _isZKsyncOS
 -        );
 -        result.validiumDAValidator = _deployInternalEmptyParams(
@@ -2607,24 +2771,24 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 -            innerConfig,
 -            _isZKsyncOS
 +            _isEVMBytecode
-@@ -587,0 +632 @@ library GatewayCTMDeployerHelper {
+@@ -587,0 +631 @@ library GatewayCTMDeployerHelper {
 +        uint256 _l1ChainId,
-@@ -591,0 +637,2 @@ library GatewayCTMDeployerHelper {
+@@ -591,0 +636,2 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: retain the pinned-upstream zkOS FFLONK artifact and deployment surface.
 +        // The V8 verifier wrapper keeps it introspectable but never routes proofs to it.
-@@ -610,0 +658 @@ library GatewayCTMDeployerHelper {
+@@ -610,0 +657 @@ library GatewayCTMDeployerHelper {
 +            // SYSCOIN: deploy the dormant FFLONK/active PLONK pair into canonical slot 8.
-@@ -612,0 +661 @@ library GatewayCTMDeployerHelper {
+@@ -612,0 +660 @@ library GatewayCTMDeployerHelper {
 +                config.testnetVerifier,
-@@ -615 +664,2 @@ library GatewayCTMDeployerHelper {
+@@ -615 +663,2 @@ library GatewayCTMDeployerHelper {
 -                config.aliasedGovernanceAddress
 +                config.aliasedGovernanceAddress,
 +                _l1ChainId
-@@ -779,0 +830 @@ library GatewayCTMDeployerHelper {
+@@ -779,0 +829 @@ library GatewayCTMDeployerHelper {
 +        // SYSCOIN: copy only the compact DA pair; the legacy validium result remains zero.
-@@ -782 +832,0 @@ library GatewayCTMDeployerHelper {
+@@ -782 +831,0 @@ library GatewayCTMDeployerHelper {
 -        contracts.daContracts.validiumDAValidator = daResult.validiumDAValidator;
-@@ -877,59 +927,4 @@ library GatewayCTMDeployerHelper {
+@@ -877,59 +926,4 @@ library GatewayCTMDeployerHelper {
 -    function getListOfFactoryDeps(
 -        GatewayCTMDeployerConfig memory config
 -    ) external returns (bytes[] memory dependencies) {
@@ -2689,7 +2853,7 @@ index 8e983d6ddec83cf1118ef6b8f3cb3a87743f4e50..0a73efc9f032f05249f8c5e4905c0a1f
 +        require(config.isZKsyncOS, "Only the canonical Syscoin ZKsync OS Gateway deployment is supported");
 +        return new bytes[](0);
 diff --git a/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol b/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
-index 22e61fdcd205914eed42629fed8dc0b205aa1cee..14e29b2c943904386c13eb25a0c6420eb0cefc37 100644
+index 22e61fdcd..14e29b2c9 100644
 --- a/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 +++ b/l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 @@ -24 +24 @@ import {ServerNotifier} from "contracts/governance/ServerNotifier.sol";
@@ -2712,7 +2876,7 @@ index 22e61fdcd205914eed42629fed8dc0b205aa1cee..14e29b2c943904386c13eb25a0c6420e
 @@ -436,0 +442 @@ contract GatewayVotePreparation is DeployCTMUtils, GatewayGovernanceUtils {
 +        // SYSCOIN: Preserve the upstream output key without enabling the unsupported Validium mode.
 diff --git a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
-index 42142bfed1d775724e67a1947c2236eff73e7785..933137de47169e686b502b776036e73ffaa6fc68 100644
+index 42142bfed..933137de4 100644
 --- a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 +++ b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 @@ -32,0 +33,2 @@ import {CTMDeployedAddresses} from "../../ctm/DeployCTMUtils.s.sol";
@@ -2735,7 +2899,7 @@ index 42142bfed1d775724e67a1947c2236eff73e7785..933137de47169e686b502b776036e73f
 +            vm.envOr("SYSCOIN_ZKSYNC_OS_MOCK_VERIFIER", false)
 +        );
 diff --git a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
-index d5bcd6f9673ee32ea429454f8ce0114765890acd..6cb0b9c47a80bfd2579491400b8678a26b0530b8 100644
+index d5bcd6f96..6cb0b9c47 100644
 --- a/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 +++ b/l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
 @@ -42,0 +43,2 @@ import {RollupDAManager} from "contracts/state-transition/data-availability/Roll
@@ -2760,7 +2924,7 @@ index d5bcd6f9673ee32ea429454f8ce0114765890acd..6cb0b9c47a80bfd2579491400b8678a2
 -            (gatewayConfig.gatewayDA.rollupSLDAValidator, getRollupL2DACommitmentScheme(), true)
 +            (gatewayConfig.gatewayDA.rollupSLDAValidator, SYSCOIN_ROLLUP_L2_DA_COMMITMENT_SCHEME, true)
 diff --git a/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol b/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
-index 2d6dba706c31af457ead82fc253d0a5423a1a160..139f0dc6bc34eefc8abca70047da3bd33c60809f 100644
+index 2d6dba706..139f0dc6b 100644
 --- a/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 +++ b/l1-contracts/deploy-scripts/utils/AddressIntrospector.sol
 @@ -245 +245,2 @@ library AddressIntrospector {
@@ -2774,7 +2938,7 @@ index 2d6dba706c31af457ead82fc253d0a5423a1a160..139f0dc6bc34eefc8abca70047da3bd3
 -    /// @param _isZKsyncOS If true, uses ZKsyncOSDualVerifier interface; otherwise EraDualVerifier
 +    /// @param _isZKsyncOS If true, returns the canonical zkOS V8 pair; otherwise returns Era's pair.
 diff --git a/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol b/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
-index 212ecb26eb5c53bc2add3408f1de20c6ab09c89b..c540f0869d2456a9c0e63067c1d1e0f0ddd99ccc 100644
+index 212ecb26e..c540f0869 100644
 --- a/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 +++ b/l1-contracts/deploy-scripts/utils/bytecode/ContractsBytecodesLib.sol
 @@ -45 +45,3 @@ library ContractsBytecodesLib {
@@ -2798,7 +2962,7 @@ index 212ecb26eb5c53bc2add3408f1de20c6ab09c89b..c540f0869d2456a9c0e63067c1d1e0f0
 +            // SYSCOIN: pinned-upstream dormant artifact; the V8 wrapper does not route proofs here.
 diff --git a/l1-contracts/script-config/syscoin-edge-da-relay-v1.json b/l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 new file mode 100644
-index 0000000000000000000000000000000000000000..7918b2a110fb7473b3090c5416427257ebcf7996
+index 000000000..7918b2a11
 --- /dev/null
 +++ b/l1-contracts/script-config/syscoin-edge-da-relay-v1.json
 @@ -0,0 +1,19 @@
@@ -2822,7 +2986,7 @@ index 0000000000000000000000000000000000000000..7918b2a110fb7473b3090c5416427257
 +  "expectedAddress": "0x758b06cDA80BDD016F79AFd0df1A984039067A21"
 +}
 diff --git a/l1-contracts/selectors b/l1-contracts/selectors
-index 35a0780488837d99489ba9d69295cc2e8d675568..f843f00fb14dc8e9e7ada751c772a1f53092c167 100644
+index 35a078048..0b1b2bdda 100644
 --- a/l1-contracts/selectors
 +++ b/l1-contracts/selectors
 @@ -1650,2 +1649,0 @@ CommitterFacet
@@ -2868,7 +3032,10 @@ index 35a0780488837d99489ba9d69295cc2e8d675568..f843f00fb14dc8e9e7ada751c772a1f5
 +|----------+-------------------------------------------------------------+------------|
 +| Error    | SyscoinEdgeDARelayMissing(address)                          | 0xcc2c2e20 |
 +╰----------+-------------------------------------------------------------+------------╯
-@@ -7930,7 +7950,11 @@ IZKsyncOSDualVerifier
+@@ -4916,0 +4937,2 @@ IAdminFunctions
++| Function | adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)                  | 0x36cec6db |
++|----------+------------------------------------------------------------------------------------------------------------+------------|
+@@ -7930,7 +7952,11 @@ IZKsyncOSDualVerifier
 -╭----------+-------------------------+------------╮
 -| Type     | Signature               | Selector   |
 -+=================================================+
@@ -2887,7 +3054,7 @@ index 35a0780488837d99489ba9d69295cc2e8d675568..f843f00fb14dc8e9e7ada751c772a1f5
 +|----------+---------------------------------+------------|
 +| Function | replaceVerifier(uint32,address) | 0x39c0a35a |
 +╰----------+---------------------------------+------------╯
-@@ -13194,0 +13219,52 @@ StoredBatchHashing
+@@ -13192,0 +13219,52 @@ StoredBatchHashing
 +SyscoinRelayedSLDAValidator
 +
 +╭----------+--------------------------------------------------+------------╮
@@ -2940,10 +3107,10 @@ index 35a0780488837d99489ba9d69295cc2e8d675568..f843f00fb14dc8e9e7ada751c772a1f5
 +| Error    | ZeroAddress()                                    | 0xd92e233d                                                         |
 +╰----------+--------------------------------------------------+--------------------------------------------------------------------╯
 +
-@@ -13349,2 +13424,0 @@ TestCommitter
+@@ -13349,2 +13426,0 @@ TestCommitter
 -| Error    | NonZeroBlobToVerifyZKsyncOS(uint256,bytes32,bytes32)     | 0x0e0ff4d9                                                         |
 -|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -13362,0 +13437,10 @@ TestCommitter
+@@ -13360,0 +13437,10 @@ TestCommitter
 +| Error    | SyscoinEdgeDACommitmentMismatch(bytes32,bytes32)         | 0xe4e9188e                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDANotAvailable(bytes32)                       | 0x076d05e9                                                         |
@@ -2954,39 +3121,33 @@ index 35a0780488837d99489ba9d69295cc2e8d675568..f843f00fb14dc8e9e7ada751c772a1f5
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDARefsRootMismatch(bytes32,bytes32)           | 0x05dc7af9                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -14027 +14111 @@ ZKsyncOSDualVerifier
+@@ -14027 +14113 @@ ZKsyncOSDualVerifier
 -| Function | acceptOwnership()                         | 0x79ba5097                                                         |
 +| Function | IS_TESTNET_VERIFIER()                     | 0x272d0f1a                                                         |
-@@ -14029 +14113 @@ ZKsyncOSDualVerifier
+@@ -14029 +14115 @@ ZKsyncOSDualVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 +| Function | acceptOwnership()                         | 0x79ba5097                                                         |
-@@ -14043,2 +14126,0 @@ ZKsyncOSDualVerifier
+@@ -14043 +14129 @@ ZKsyncOSDualVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
--|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14046,0 +14129,2 @@ ZKsyncOSDualVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-+|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14059 +14143,3 @@ ZKsyncOSDualVerifier
+@@ -14059 +14145,3 @@ ZKsyncOSDualVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
-@@ -14159,2 +14244,0 @@ ZKsyncOSTestnetVerifier
+@@ -14159,2 +14246,0 @@ ZKsyncOSTestnetVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 -|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14173,2 +14256,0 @@ ZKsyncOSTestnetVerifier
+@@ -14173 +14259 @@ ZKsyncOSTestnetVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
--|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14176,0 +14259,2 @@ ZKsyncOSTestnetVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-+|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14189 +14273,3 @@ ZKsyncOSTestnetVerifier
+@@ -14189 +14275,3 @@ ZKsyncOSTestnetVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
 diff --git a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol b/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
-index 768ae92ec8d019f7a6333bb3c9aa8a74c5fdc1b2..f7441a6165e9105f239cfea0b7b838c2ac43067b 100644
+index 768ae92ec..f7441a616 100644
 --- a/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/GatewayVotePreparationTests.t.sol
 @@ -20,0 +21,2 @@ import {IChainTypeManager} from "contracts/state-transition/IChainTypeManager.so
@@ -3039,7 +3200,7 @@ index 768ae92ec8d019f7a6333bb3c9aa8a74c5fdc1b2..f7441a6165e9105f239cfea0b7b838c2
 +            "Unexpected CTM stored batch zero"
 +        );
 diff --git a/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol b/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
-index a7ff69cc1b6d8c8d36a4e4b4799bc5c781d2b75b..3e204149bd41e97c5c1873b3de9e6ff92e663912 100644
+index a7ff69cc1..3e204149b 100644
 --- a/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/UpgradeTestShared.t.sol
 @@ -347,3 +347,2 @@ contract UpgradeIntegrationTestBase is Test {
@@ -3049,7 +3210,7 @@ index a7ff69cc1b6d8c8d36a4e4b4799bc5c781d2b75b..3e204149bd41e97c5c1873b3de9e6ff9
 +        // SYSCOIN: zkOS CTM output binds the canonical manager rather than a legacy blob-validator alias.
 +        address rollupDAManager = outputDeployCTMToml.readAddress("$.deployed_addresses.l1_rollup_da_manager");
 diff --git a/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol b/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
-index d8860cf3554618faa93e0123f1913eb859ad55c4..0465b36b37046d438d41f92b9890c4483c140728 100644
+index d8860cf35..0465b36b3 100644
 --- a/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/UpgradeTestv31_Local.t.sol
 @@ -15 +15 @@ import {PublishFactoryDepsResult} from "../../../../deploy-scripts/utils/bytecod
@@ -3125,7 +3286,7 @@ index d8860cf3554618faa93e0123f1913eb859ad55c4..0465b36b37046d438d41f92b9890c448
 +        stdstore.target(eraChainDiamond).sig(IGetters.getProtocolVersion.selector).checked_write(oldProtocolVersion);
 +
 diff --git a/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol b/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
-index 13884feda03aa3bf327ef7ceaec2a97f7075c69d..11133719b74928af01ab3a1e613beaec954a2bf3 100644
+index 13884feda..11133719b 100644
 --- a/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/_SharedL1ContractDeployer.t.sol
 @@ -21,0 +22 @@ import {IOwnable} from "contracts/common/interfaces/IOwnable.sol";
@@ -3138,7 +3299,7 @@ index 13884feda03aa3bf327ef7ceaec2a97f7075c69d..11133719b74928af01ab3a1e613beaec
 +        assertEq(verifier.pendingOwner(), address(0), "verifier ownership handoff is incomplete");
 +
 diff --git a/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol b/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
-index d85c74f2a6537cd584f390042dc153b34e7d4f01..322451c922039201c4d4bbe5fa6589f47e3ca834 100644
+index d85c74f2a..322451c92 100644
 --- a/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l1/integration/_SharedZKChainDeployer.t.sol
 @@ -9 +9,3 @@ import {RegisterZKChainConfig as ChainConfig} from "contracts/script-interfaces/
@@ -3167,7 +3328,7 @@ index d85c74f2a6537cd584f390042dc153b34e7d4f01..322451c922039201c4d4bbe5fa6589f4
 +        // SYSCOIN: Keep generated fixture input explicitly fail-closed to validium mode.
 +        vm.serializeUint("chain", "validium_mode", 0);
 diff --git a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml b/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
-index 4448fe81faeadab92a6664896791ed368ec271ce..9330a54af287d2f247443fa81e906644dbd356fd 100644
+index 4448fe81f..9330a54af 100644
 --- a/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 +++ b/l1-contracts/test/foundry/l1/integration/deploy-scripts/script-config/config-deploy-ctm.toml
 @@ -5 +5,2 @@ support_l2_legacy_shared_bridge_test = false
@@ -3175,7 +3336,7 @@ index 4448fe81faeadab92a6664896791ed368ec271ce..9330a54af287d2f247443fa81e906644
 +# SYSCOIN: Exercise the zkOS-only CTM path used by the V32 deployment fixture.
 +is_zk_sync_os = true
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
-index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da497eec87 100644
+index c621e20e7..20fc395c6 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/CommittingZKsyncOS.t.sol
 @@ -4 +4 @@ pragma solidity 0.8.28;
@@ -4042,7 +4203,7 @@ index c621e20e759f413df914499e0ca9f8c6c0f0363d..20fc395c6a98cfeff2c8156fc8bc05da
 +        (bytes memory input, bytes32 root, ) = _syscoinEdgeDARefsInput(l2ChainId, 7, abi.encodePacked(dataHash));
 +        _commitSyscoinWithEdgeRefs(input, root, abi.encodeWithSelector(SyscoinEdgeDANotAvailable.selector, dataHash));
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
-index 631f8f7dc93808c794c1603737f972be4812a4be..3d2ca8dd17110d00283ae6e0817e675123811ab7 100644
+index 631f8f7dc..3d2ca8dd1 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/ZKsyncOSPublicInput.t.sol
 @@ -8 +7,0 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
@@ -4058,7 +4219,7 @@ index 631f8f7dc93808c794c1603737f972be4812a4be..3d2ca8dd17110d00283ae6e0817e6751
 +            address(this)
 +        );
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
-index 57e1a62a013a96071324deae1897bc264df53ebc..8c04303daa2869ce28af7a136eb1a34626dea2e7 100644
+index 57e1a62a0..8c04303da 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/BatchProcessing/_Executor_Shared.t.sol
 @@ -16,0 +17,2 @@ import {ETH_TOKEN_ADDRESS, TESTNET_COMMIT_TIMESTAMP_NOT_OLDER} from "contracts/c
@@ -4082,7 +4243,7 @@ index 57e1a62a013a96071324deae1897bc264df53ebc..8c04303daa2869ce28af7a136eb1a346
 +            edgeDARefsInput: "",
 +            edgeDARefsRoot: bytes32(0),
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
-index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca54d27ee3 100644
+index f6532b05c..e3863c35d 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/GatewayCTMDeployer/GatewayCTMDeployerZKsyncOS.t.sol
 @@ -7,0 +8,11 @@ import {Verifiers} from "contracts/common/StateTransitionTypes.sol";
@@ -4216,7 +4377,7 @@ index f6532b05c6d0999f82ff1c45a37af538057d7b8a..e3863c35d9997c2bbfa719c227d238ca
 +        assertTrue(results.verifiersResult.verifierPlonk != address(0), "zkOS PLONK must be deployed");
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..73743384d3f90e1efdd7df720f109e4e7f563b0e
+index 000000000..73743384d
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/Utils/DeployCTML1OrGateway.t.sol
 @@ -0,0 +1,131 @@
@@ -4352,7 +4513,7 @@ index 0000000000000000000000000000000000000000..73743384d3f90e1efdd7df720f109e4e
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol b/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
-index 13b32d96bb1afa9a14032bff18221f3884f3d060..50ef27deb1b648aa796c0f35452b6d57ca28978e 100644
+index 13b32d96b..50ef27deb 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/Utils/Utils.sol
 @@ -765,2 +765,3 @@ library Utils {
@@ -4367,7 +4528,7 @@ index 13b32d96bb1afa9a14032bff18221f3884f3d060..50ef27deb1b648aa796c0f35452b6d57
 +    function deployEIP7702Checker() internal returns (address) {
 +        bytes memory bytecode = ContractsBytecodesLib.getCreationCodeEVM("EIP7702Checker");
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
-index 0ced729f96c63ef23ec23ec41aad6c0063314c26..6f00621a4c27cc8589fcd2415b956798a5ea9d0e 100644
+index 0ced729f9..6f00621a4 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/MakePermanentRollup.t.sol
 @@ -164,0 +165,18 @@ contract MakePermanentRollupTest is AdminTest {
@@ -4390,7 +4551,7 @@ index 0ced729f96c63ef23ec23ec41aad6c0063314c26..6f00621a4c27cc8589fcd2415b956798
 +        adminFacet.setDAValidatorPair(l1DAValidator, L2DACommitmentScheme.BLOBS_AND_PUBDATA_KECCAK256);
 +    }
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
-index 10d0ddc1a9f852030fb7f7b95f0766073ea0b6bf..25d33e9eeacb4d05b820a63b3c4adc12fdce4016 100644
+index 10d0ddc1a..25d33e9ee 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/chain-deps/facets/Admin/SetZKsyncOSChainConfig.t.sol
 @@ -6 +6 @@ import {AdminTest} from "./_Admin_Shared.t.sol";
@@ -4453,7 +4614,7 @@ index 10d0ddc1a9f852030fb7f7b95f0766073ea0b6bf..25d33e9eeacb4d05b820a63b3c4adc12
 +        adminFacet.setZKsyncOSMaxTxGasLimit(ZKSYNC_OS_DEFAULT_MAX_TX_GAS_LIMIT);
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..02cbef307f52ec31b035a5f689c826512ce5014f
+index 000000000..02cbef307
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRelayedSLDAValidator.t.sol
 @@ -0,0 +1,93 @@
@@ -4552,7 +4713,7 @@ index 0000000000000000000000000000000000000000..02cbef307f52ec31b035a5f689c82651
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7568ea02e
+index 000000000..e29f75645
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/data-availability/SyscoinRollupDAManager.t.sol
 @@ -0,0 +1,79 @@
@@ -4636,7 +4797,7 @@ index 0000000000000000000000000000000000000000..e29f756454421fc073a29f9bccc327e7
 +    }
 +}
 diff --git a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
-index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a9580543716257b 100644
+index 23d9ea906..347003f8c 100644
 --- a/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 +++ b/l1-contracts/test/foundry/l1/unit/concrete/state-transition/verifiers/ZKsyncOSDualVerifier.t.sol
 @@ -6,0 +7 @@ import {ZKsyncOSDualVerifier} from "contracts/state-transition/verifiers/ZKsyncO
@@ -4964,7 +5125,7 @@ index 23d9ea906769199415fdba37714e5f43b22ee1f2..347003f8cd3c24bc0906b3fb4a958054
 -        proof[0] = verifierType; // type in lower 8 bits, version 0
 +        proof[0] = verifierType | (8 << 8); // type in lower 8 bits, canonical version 8
 diff --git a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
-index 4a3d0d54d5802b9005e5d84f5d3147b4cef1a48f..f4778d2710e095fd86da551022451549c4adce10 100644
+index 4a3d0d54d..f4778d271 100644
 --- a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 +++ b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/GatewayCTMDeployer.t.sol
 @@ -7,0 +8,4 @@ import {Verifiers} from "contracts/common/StateTransitionTypes.sol";
@@ -5129,7 +5290,7 @@ index 4a3d0d54d5802b9005e5d84f5d3147b4cef1a48f..f4778d2710e095fd86da551022451549
 +        new GatewayCTMDeployerCTMZKsyncOS(ctmConfig);
 diff --git a/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 new file mode 100644
-index 0000000000000000000000000000000000000000..1af7f7cbb376554e79d0a5457341bd7767a62c00
+index 000000000..1af7f7cbb
 --- /dev/null
 +++ b/l1-contracts/test/foundry/l2/unit/GatewayCTMDeployer/SyscoinGatewayCTMDeployerDA.t.sol
 @@ -0,0 +1,107 @@
@@ -5241,7 +5402,7 @@ index 0000000000000000000000000000000000000000..1af7f7cbb376554e79d0a5457341bd77
 +    }
 +}
 diff --git a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
-index db8384ac8af81a81859c0604ba90fed0a9ed8edd..19848634ee081ff943d1402106e96aff57be667f 100644
+index db8384ac8..19848634e 100644
 --- a/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
 +++ b/l1-contracts/zkstack-out/IDeployCTM.sol/IDeployCTM.json
 @@ -360,5 +359,0 @@
@@ -5251,7 +5412,7 @@ index db8384ac8af81a81859c0604ba90fed0a9ed8edd..19848634ee081ff943d1402106e96aff
 -                "internalType": "address"
 -              },
 diff --git a/tools/zksync-os-genesis-gen/src/consts.rs b/tools/zksync-os-genesis-gen/src/consts.rs
-index 3d6e12e1ec56803b412afc0581e742f6dc8812c3..c25a57e4ef096e65865fed3b7ac7016942bd0508 100644
+index 3d6e12e1e..c25a57e4e 100644
 --- a/tools/zksync-os-genesis-gen/src/consts.rs
 +++ b/tools/zksync-os-genesis-gen/src/consts.rs
 @@ -91,0 +92,6 @@ pub const CREATE2_FACTORY_RUNTIME_BYTECODE: &[u8] = &hex_literal::hex!(

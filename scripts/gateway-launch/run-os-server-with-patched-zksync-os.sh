@@ -37,7 +37,7 @@ gl_require ZKSYNC_OS_SERVER_PATH
 # SYSCOIN: Exact consensus inputs used to build the hash-pinned canonical application.
 # A workspace-specific source rewrite would make native execution disagree
 # with the proving guest while still advertising the same VK.
-PUBLISHED_EDGE_DA_COMMIT_TARGET=0xd0ec30807902886b61a86d9bd209fe353c1d912b
+PUBLISHED_EDGE_DA_COMMIT_TARGET=0xca38dbb6ea5f740cc8252f1450def4dcede94478
 PUBLISHED_GAS_TANK_ADDRESS=0xb49943ea232624dd4aa63e18186076c6c99a68ef
 
 protocol_uses_dev_patch() {
@@ -55,6 +55,22 @@ uses_patched_workspace() {
 
 prebuilt_binary_path() {
   printf '%s\n' "${GATEWAY_DIR}/.gateway-launch/target/${WORKSPACE_NAME}/release/zksync-os-server"
+}
+
+runner_sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+runner_sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
 }
 
 configure_build_context() {
@@ -103,14 +119,14 @@ configure_build_context() {
 
 prebuilt_digest() {
   local binary="$1" binary_sha256
-  binary_sha256="$(sha256sum "${binary}" | awk '{print $1}')"
+  binary_sha256="$(runner_sha256_file "${binary}")"
   printf '%s\0%s\0%s\0%s\0%s\0' \
     "${binary_sha256}" \
     "${WORKSPACE_NAME}" \
     "${PROTOCOL_VERSION}" \
     "${SYSCOIN_EDGE_DA_COMMIT_TARGET:-}" \
     "${SYSCOIN_GAS_TANK_ADDRESS:-}" |
-    sha256sum | awk '{print $1}'
+    runner_sha256_stdin
 }
 
 refresh_os_server_config_credentials() {
