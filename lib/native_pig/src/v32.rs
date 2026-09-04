@@ -227,16 +227,15 @@ fn native_output_matches(
     canonical: &zksync_os_types::BlockOutput,
     replay_hash: B256,
 ) -> bool {
+    // SYSCOIN: Staged output omits gas and writes, but preserves header identity
+    // used by final-state reconstruction. Only the full native output can be
+    // authenticated against the persisted replay hash.
     block_output_hash(
         native.header.hash(),
         &native.tx_results,
         &native.storage_writes,
     ) == replay_hash
-        && block_output_hash(
-            canonical.header.hash(),
-            &canonical.tx_results,
-            &canonical.storage_writes,
-        ) == replay_hash
+        && native.header.hash() == canonical.header.hash()
 }
 
 // SYSCOIN: Use only the persisted final tree and replay/header metadata, never the guest's root.
@@ -506,8 +505,18 @@ mod tests {
         native.storage_writes[0].value = B256::ZERO;
         assert!(!native_output_matches(&native, &canonical, replay_hash));
         native.storage_writes = canonical.storage_writes.clone();
-        let mut wrong_canonical = canonical.clone();
-        wrong_canonical.storage_writes[0].key = B256::ZERO;
+        // SYSCOIN: Persisted batch-work output is intentionally lossy; the replay
+        // hash authenticates the full native output, not zero-filled staging fields.
+        let mut compact = canonical.clone();
+        compact.storage_writes.clear();
+        compact.tx_results[0].as_mut().unwrap().gas_used = 0;
+        assert!(native_output_matches(&native, &compact, replay_hash));
+        let mut wrong_canonical = compact.clone();
+        wrong_canonical.header = Header {
+            number: 1,
+            ..Default::default()
+        }
+        .seal_slow();
         assert!(!native_output_matches(
             &native,
             &wrong_canonical,

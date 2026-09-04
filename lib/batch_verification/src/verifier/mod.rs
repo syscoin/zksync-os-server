@@ -1354,6 +1354,29 @@ mod tests {
         };
         let native_batch_run = run(&tree_block.output, &tree).unwrap();
 
+        // SYSCOIN: Batch-work staging keeps header identity but drops gas/writes.
+        // The witness must still be checked against the persisted full replay hash.
+        let mut compact_output = tree_block.output.clone();
+        compact_output.storage_writes.clear();
+        for tx in compact_output.tx_results.iter_mut().flatten() {
+            tx.gas_used = 0;
+        }
+        assert_ne!(
+            block_output_hash(
+                compact_output.header.hash(),
+                &compact_output.tx_results,
+                &compact_output.storage_writes,
+            ),
+            tree_block.record.block_output_hash,
+            "fixture must exercise fields omitted by compact staging"
+        );
+        let compact_run = run(&compact_output, &tree).unwrap();
+        assert_eq!(compact_run.prover_input, native_batch_run.prover_input);
+        assert_eq!(
+            compact_run.batch_public_input_hash,
+            native_batch_run.batch_public_input_hash
+        );
+
         let batch_info = PendingBatchInfo::build_from_canonical_output(
             BATCH_NUMBER,
             PubdataMode::Blobs,
@@ -1380,7 +1403,10 @@ mod tests {
         );
         // SYSCOIN: Exercise fail-closed checks through real witness generation, not only hashes.
         let mut wrong_output = tree_block.output.clone();
-        wrong_output.tx_results[0].as_mut().unwrap().gas_used += 1;
+        wrong_output.header = alloy::consensus::Sealed::new_unchecked(
+            alloy::consensus::Header::default(),
+            B256::ZERO,
+        );
         assert!(
             run(&wrong_output, &tree)
                 .err()
