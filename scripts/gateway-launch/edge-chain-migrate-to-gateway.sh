@@ -543,6 +543,19 @@ wait_for_chain_diamond_proxy_from_gateway() {
   return 1
 }
 
+# SYSCOIN: Bind zkstack's persisted edge proxy to the authenticated Gateway
+# system BridgeHub before treating the artifact as resume evidence or
+# continuing finalization.
+assert_gateway_chain_artifact_matches_live() {
+  local artifact live_diamond
+  artifact="${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/gateway_chain.yaml"
+  if [ ! -e "${artifact}" ] && [ ! -L "${artifact}" ]; then
+    return 0
+  fi
+  live_diamond="$(get_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}")" || return $?
+  gl_assert_edge_chain_init_local_artifacts ready "$(gl_to_lower "${live_diamond}")"
+}
+
 get_chain_governor_from_wallets() {
   local chain_name="${1:?chain name required}"
   python3 - \
@@ -2237,6 +2250,7 @@ edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${e
 # launcher changes gl.migration from pending. Normal migration reuses this
 # attested address for later DA-pair repair.
 l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
+assert_gateway_chain_artifact_matches_live
 if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
   # SYSCOIN: Reject a zero, overflowing, or cap-incompatible live settlement
   # fee before gl.migration can advance or a direct migration can broadcast;
@@ -2328,6 +2342,7 @@ else
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
+assert_gateway_chain_artifact_matches_live
 # SYSCOIN: Replay must trust the complete L1 postcondition, never zkstack error
 # text. Skip only the non-idempotent finalize call; post-migration repairs below
 # still run on every recovery.
