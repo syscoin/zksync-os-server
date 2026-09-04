@@ -1626,6 +1626,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             def probe(
                 mode: str = "exact-post-admin",
                 expected_gateway_edge_diamond: str = "",
+                gateway_chain_id: str = "57001",
             ) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [
@@ -1644,7 +1645,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         **os.environ,
                         "COMMON": str(GATEWAY_COMMON),
                         "EDGE_CHAIN_NAME": "zksys",
-                        "GATEWAY_CHAIN_ID": "57001",
+                        "GATEWAY_CHAIN_ID": gateway_chain_id,
                         "GATEWAY_DIR": str(root),
                         "L1_CHAIN_ID": "5700",
                         "MODE": mode,
@@ -1678,6 +1679,12 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
                 gateway_chain.chmod(0o600)
                 self.assertEqual(probe("ready").returncode, 0)
+                self.assertEqual(
+                    probe("ready", gateway_chain_id=" 057001 ").returncode, 0
+                )
+                self.assertNotEqual(
+                    probe("ready", gateway_chain_id="57002").returncode, 0
+                )
                 self.assertEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
                 self.assertNotEqual(
                     probe("ready", "0x" + "55" * 20).returncode, 0
@@ -6567,9 +6574,10 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("address_for_private_key", common)
         fund_wallets = common[common.index("gl_fund_wallets_yaml() {") :]
         self.assertIn(
-            'GATEWAY_LAUNCH_HELPER_DIR="${GATEWAY_LAUNCH_HELPER_DIR:-${GL_DIR}}" python3',
+            'GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3',
             fund_wallets,
         )
+        self.assertNotIn("GATEWAY_LAUNCH_HELPER_DIR:-", fund_wallets)
         self.assertIn("missing private key for required server signer", common)
         self.assertLess(
             common.index("server_signer_roles ="),
