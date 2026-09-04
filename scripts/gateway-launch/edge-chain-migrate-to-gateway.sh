@@ -552,7 +552,7 @@ assert_gateway_chain_artifact_matches_live() {
   if [ ! -e "${artifact}" ] && [ ! -L "${artifact}" ]; then
     return 0
   fi
-  live_diamond="$(get_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}")" || return $?
+  live_diamond="$(wait_for_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}" 60 2)" || return $?
   gl_assert_edge_chain_init_local_artifacts ready "$(gl_to_lower "${live_diamond}")"
 }
 

@@ -1790,14 +1790,22 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             root = Path(temporary_dir)
             artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
 
-            def probe(live_diamond: str, expected_diamond: str) -> int:
+            def probe(
+                live_diamond: str,
+                expected_diamond: str,
+                wait_succeeds: bool = True,
+            ) -> int:
                 result = subprocess.run(
                     [
                         "bash",
                         "-c",
                         function
                         + r'''
-get_chain_diamond_proxy_from_gateway() { printf '%s\n' "$LIVE_DIAMOND"; }
+wait_for_chain_diamond_proxy_from_gateway() {
+  [ "$1" = zksys ] && [ "$2" = 60 ] && [ "$3" = 2 ] || return 78
+  [ "$WAIT_SUCCEEDS" = true ] || return 79
+  printf '%s\n' "$LIVE_DIAMOND"
+}
 gl_assert_edge_chain_init_local_artifacts() {
   [ "$1" = ready ] && [ "$2" = "$EXPECTED_DIAMOND" ]
 }
@@ -1814,17 +1822,19 @@ assert_gateway_chain_artifact_matches_live
                         "EXPECTED_DIAMOND": expected_diamond,
                         "GATEWAY_DIR": str(root),
                         "LIVE_DIAMOND": live_diamond,
+                        "WAIT_SUCCEEDS": str(wait_succeeds).lower(),
                     },
                 )
                 return result.returncode
 
-            self.assertEqual(probe("unexpected", "must-not-call"), 0)
+            self.assertEqual(probe("unexpected", "must-not-call", False), 0)
             artifact.parent.mkdir(parents=True)
             artifact.write_text("immutable fixture\n", encoding="utf-8")
             before = (artifact.read_bytes(), artifact.stat().st_mtime_ns)
             diamond = "0x" + "44" * 20
             self.assertEqual(probe(diamond.upper(), diamond), 0)
             self.assertEqual((artifact.read_bytes(), artifact.stat().st_mtime_ns), before)
+            self.assertEqual(probe(diamond, diamond, False), 79)
             self.assertNotEqual(probe("0x" + "55" * 20, diamond), 0)
 
     def run_checkpoint_probe(
