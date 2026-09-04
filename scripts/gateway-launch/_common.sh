@@ -1072,6 +1072,7 @@ gl_assert_edge_chain_init_local_artifacts() {
   gl_require GATEWAY_DIR
   gl_require L1_CHAIN_ID
   local inventory_mode="${1:-ready}" edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
+  local expected_gateway_edge_diamond="${2:-}"
   local edge_chain_id gateway_chain_id="" gateway_chain_artifact
   local expected_genesis_input_sha256
   edge_chain_id="$(gl_effective_edge_chain_id)" || return $?
@@ -1094,7 +1095,8 @@ gl_assert_edge_chain_init_local_artifacts() {
     "${expected_genesis_input_sha256}" \
     "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME:-gateway}/configs/gateway.yaml" \
     "${gateway_chain_id}" \
-    "${GATEWAY_CHAIN_ID:-}" <<'PY'
+    "${GATEWAY_CHAIN_ID:-}" \
+    "${expected_gateway_edge_diamond}" <<'PY'
 import hashlib
 import json
 import os
@@ -1115,6 +1117,7 @@ expected_genesis_input_sha256 = sys.argv[9]
 gateway_config = Path(sys.argv[10])
 expected_gateway_chain_id = sys.argv[11]
 configured_gateway_chain_id = sys.argv[12]
+expected_gateway_edge_diamond = sys.argv[13]
 required = {
     "contracts.yaml",
     "external_node.yaml",
@@ -1171,6 +1174,8 @@ if not required.issubset(found) or not found.issubset(allowed):
         f"post-admin config inventory mismatch: missing={sorted(required - found)} "
         f"unexpected={sorted(found - required)}"
     )
+if expected_gateway_edge_diamond and gateway_chain_name not in found:
+    raise SystemExit("missing Gateway migration artifact for live diamond binding")
 if recovery_temp_name in found:
     recovery_temp = configs / recovery_temp_name
     recovery_temp_info = os.lstat(recovery_temp)
@@ -1315,9 +1320,15 @@ if gateway_chain_name in found:
         expected = normalize_address(gateway.get(key), f"gateway.yaml {key}")
         if actual != expected:
             raise SystemExit(f"Gateway migration artifact {key} mismatch")
-    normalize_address(
+    artifact_gateway_edge_diamond = normalize_address(
         migration["diamond_proxy_addr"], "gateway_chain.yaml diamond_proxy_addr"
     )
+    if expected_gateway_edge_diamond:
+        expected_gateway_edge_diamond = normalize_address(
+            expected_gateway_edge_diamond, "live Gateway edge diamond"
+        )
+        if artifact_gateway_edge_diamond != expected_gateway_edge_diamond:
+            raise SystemExit("Gateway migration artifact diamond_proxy_addr mismatch")
 
 def reject_duplicate_keys(pairs):
     result = {}

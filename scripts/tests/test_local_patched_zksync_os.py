@@ -1623,7 +1623,10 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 path.write_text(content, encoding="utf-8")
                 path.chmod(0o600 if name == "wallets.yaml" else 0o644)
 
-            def probe(mode: str = "exact-post-admin") -> subprocess.CompletedProcess[str]:
+            def probe(
+                mode: str = "exact-post-admin",
+                expected_gateway_edge_diamond: str = "",
+            ) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [
                         "bash",
@@ -1631,7 +1634,8 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         'source "$COMMON"; '
                         'gl_expected_v32_genesis_input_sha256() { '
                         'printf \'%s\\n\' "$TEST_GENESIS_INPUT_SHA256"; }; '
-                        'gl_assert_edge_chain_init_local_artifacts "$MODE"',
+                        'gl_assert_edge_chain_init_local_artifacts '
+                        '"$MODE" "$EXPECTED_GATEWAY_EDGE_DIAMOND"',
                     ],
                     check=False,
                     capture_output=True,
@@ -1645,6 +1649,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         "L1_CHAIN_ID": "5700",
                         "MODE": mode,
                         "PROTOCOL_VERSION": "v32.0",
+                        "EXPECTED_GATEWAY_EDGE_DIAMOND": expected_gateway_edge_diamond,
                         "TEST_GENESIS_INPUT_SHA256": test_genesis_input_sha256,
                     },
                 )
@@ -1660,6 +1665,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             secrets.chmod(0o600)
             ready = probe("ready")
             self.assertEqual(ready.returncode, 0, ready.stderr)
+            self.assertNotEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
             if importlib.util.find_spec("yaml") is not None:
                 gateway_chain = configs / "gateway_chain.yaml"
                 valid_gateway_chain = (
@@ -1672,6 +1678,10 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
                 gateway_chain.chmod(0o600)
                 self.assertEqual(probe("ready").returncode, 0)
+                self.assertEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
+                self.assertNotEqual(
+                    probe("ready", "0x" + "55" * 20).returncode, 0
+                )
                 self.assertNotEqual(probe().returncode, 0)
                 invalid_gateway_chains = (
                     valid_gateway_chain.replace("57001", "57002"),
@@ -1757,6 +1767,58 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             genesis.write_text(valid_genesis, encoding="utf-8")
             (root / "os-server-configs" / "zksys").mkdir(parents=True)
             self.assertNotEqual(probe().returncode, 0)
+
+    def test_migration_artifact_live_binding_is_read_only(self) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("assert_gateway_chain_artifact_matches_live() {")
+        end = migration.index("\n}\n\nget_chain_governor_from_wallets()", start) + 2
+        function = migration[start:end]
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
+
+            def probe(live_diamond: str, expected_diamond: str) -> int:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        function
+                        + r'''
+get_chain_diamond_proxy_from_gateway() { printf '%s\n' "$LIVE_DIAMOND"; }
+gl_assert_edge_chain_init_local_artifacts() {
+  [ "$1" = ready ] && [ "$2" = "$EXPECTED_DIAMOND" ]
+}
+gl_to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+assert_gateway_chain_artifact_matches_live
+''',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "EDGE_CHAIN_NAME": "zksys",
+                        "EXPECTED_DIAMOND": expected_diamond,
+                        "GATEWAY_DIR": str(root),
+                        "LIVE_DIAMOND": live_diamond,
+                    },
+                )
+                return result.returncode
+
+            self.assertEqual(probe("unexpected", "must-not-call"), 0)
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("immutable fixture\n", encoding="utf-8")
+            before = (artifact.read_bytes(), artifact.stat().st_mtime_ns)
+            diamond = "0x" + "44" * 20
+            self.assertEqual(probe(diamond.upper(), diamond), 0)
+            self.assertEqual((artifact.read_bytes(), artifact.stat().st_mtime_ns), before)
+            self.assertNotEqual(probe("0x" + "55" * 20, diamond), 0)
 
     def run_checkpoint_probe(
         self, gateway_chain_artifact: bool = False, **overrides: str
@@ -8136,6 +8198,18 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertIn("gl_validate_funder_signer_config", migration[:preflight_exit])
         signer_identity = migration.index("\n  assert_gateway_governor_signer_identity\n")
         self.assertLess(signer_identity, preflight_exit)
+        artifact_binding_before_preflight = migration.index(
+            "\nassert_gateway_chain_artifact_matches_live\n"
+        )
+        self.assertLess(artifact_binding_before_preflight, preflight_exit)
+        migrate = migration.index("zkstack chain gateway migrate-to-gateway")
+        artifact_binding_before_finalize = migration.index(
+            "\nassert_gateway_chain_artifact_matches_live\n", migrate
+        )
+        self.assertLess(
+            artifact_binding_before_finalize,
+            migration.index("finalize-chain-migration-to-gateway", migrate),
+        )
         fee_target_preflight = migration.index(
             '"${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" '
             "--preflight-fee-target"
