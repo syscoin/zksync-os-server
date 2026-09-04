@@ -1,4 +1,4 @@
-use alloy::primitives::{B256, keccak256};
+use alloy::primitives::B256;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -177,18 +177,12 @@ mod tests {
 // It's incomplete, in a sense that it does not include all the data from the block output.
 // Hash includes the most important pieces of data that are likely to change in case of a divergence.
 pub(crate) fn hash_block_output(block_output: &BlockOutput) -> B256 {
-    let mut preimage = Vec::new();
-    preimage.extend_from_slice(block_output.header.hash().as_slice());
-    for tx in block_output.tx_results.iter().flatten() {
-        preimage.extend_from_slice(&[tx.is_success() as u8]);
-        preimage.extend_from_slice(&tx.gas_used.to_be_bytes());
-    }
-    for storage_log in &block_output.storage_writes {
-        preimage.extend_from_slice(storage_log.key.as_slice());
-        preimage.extend_from_slice(storage_log.value.as_slice());
-    }
-
-    keccak256(preimage)
+    // SYSCOIN: Native batch runs must use this exact persisted replay hash as well.
+    zksync_os_types::block_output_hash(
+        block_output.header.hash(),
+        &block_output.tx_results,
+        &block_output.storage_writes,
+    )
 }
 
 #[serde_as]

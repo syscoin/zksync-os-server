@@ -47,5 +47,6 @@ tempfile.workspace = true
 # SYSCOIN: Deterministically exercise the collector's one absolute deadline under queue backlog.
 tokio = { workspace = true, features = ["test-util"] }
 zksync_os_genesis.workspace = true
+zksync_os_multivm.workspace = true
 zksync_os_merkle_tree_api.workspace = true
 zksync_os_provider.workspace = true

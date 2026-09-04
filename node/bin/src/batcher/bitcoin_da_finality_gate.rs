@@ -6,8 +6,10 @@ use alloy::hex;
 use anyhow::Context;
 use async_trait::async_trait;
 use bitcoin_da_client::{
-    BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, BlobFinalityState, SyscoinClient,
+    BitcoinDaFinalityMode as ClientBitcoinDaFinalityMode, BlobFinalityState, MAX_BLOB_SIZE,
+    SyscoinClient,
 };
+use blake2::{Blake2s256, Digest};
 use secrecy::ExposeSecret;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -287,6 +289,19 @@ impl BitcoinDaFinalityGate {
                     "failed to fetch Bitcoin DA blob for Gateway edge ref {version_hash}: {err}"
                 ),
             })?;
+        // SYSCOIN: RPC/archive availability is not authentication. Reject corrupt recovery bytes
+        // before force_create_blob can spend wallet funds on a different publication.
+        anyhow::ensure!(
+            !blob.is_empty() && blob.len() <= MAX_BLOB_SIZE,
+            "recovered Bitcoin DA blob {version_hash} has invalid size {}, expected 1..={MAX_BLOB_SIZE}",
+            blob.len()
+        );
+        let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
+        let recovered_hash = hex::encode(Blake2s256::digest(&blob));
+        anyhow::ensure!(
+            recovered_hash.eq_ignore_ascii_case(normalized_expected),
+            "recovered Bitcoin DA hash mismatch: expected {normalized_expected}, got {recovered_hash}"
+        );
         let republished_hash = client.force_create_blob(&blob).await.map_err(|err| {
             match context {
                 BlobFinalityWaitContext::OwnBatch { batch_number } => anyhow::anyhow!(
@@ -300,7 +315,6 @@ impl BitcoinDaFinalityGate {
         let normalized_republished = republished_hash
             .strip_prefix("0x")
             .unwrap_or(&republished_hash);
-        let normalized_expected = version_hash.strip_prefix("0x").unwrap_or(version_hash);
         anyhow::ensure!(
             normalized_republished.eq_ignore_ascii_case(normalized_expected),
             "{}",
@@ -413,5 +427,122 @@ impl PipelineComponent for BitcoinDaFinalityGate {
         }
         tracing::info!("inbound channel closed");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Json, Router, routing::get};
+    use serde_json::{Value, json};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    // SYSCOIN: Exercise the wallet boundary through the real client, including its archive
+    // fallback, so a check moved after publication cannot silently regress this protection.
+    #[tokio::test]
+    async fn recovery_authenticates_blob_before_wallet_publication() {
+        const ABC_HASH: &str = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
+        let cases = [
+            (b"abc".to_vec(), ABC_HASH.to_owned(), ABC_HASH, None, 1),
+            (
+                b"abc".to_vec(),
+                format!("0x{}", ABC_HASH.to_uppercase()),
+                ABC_HASH,
+                None,
+                1,
+            ),
+            (
+                b"corrupt".to_vec(),
+                ABC_HASH.to_owned(),
+                ABC_HASH,
+                Some("recovered Bitcoin DA hash mismatch"),
+                0,
+            ),
+            (
+                Vec::new(),
+                hex::encode(Blake2s256::digest([])),
+                ABC_HASH,
+                Some("invalid size"),
+                0,
+            ),
+            (
+                vec![0; MAX_BLOB_SIZE + 1],
+                ABC_HASH.to_owned(),
+                ABC_HASH,
+                Some("invalid size"),
+                0,
+            ),
+            (
+                b"abc".to_vec(),
+                "1234".to_owned(),
+                ABC_HASH,
+                Some("recovered Bitcoin DA hash mismatch"),
+                0,
+            ),
+            (
+                b"abc".to_vec(),
+                ABC_HASH.to_owned(),
+                "wrong-wallet-result",
+                Some("republished Bitcoin DA hash mismatch"),
+                1,
+            ),
+        ];
+        for (blob, expected_hash, wallet_hash, expected_error, expected_calls) in cases {
+            let wallet_calls = Arc::new(AtomicUsize::new(0));
+            let calls = wallet_calls.clone();
+            let app = Router::new().fallback(
+                get(move || {
+                    let blob = blob.clone();
+                    async move { blob }
+                })
+                .post(move |Json(request): Json<Value>| {
+                    let calls = calls.clone();
+                    async move {
+                        if request["method"] == "syscoincreatenevmblob" {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(request["params"], json!(["616263", true, "blake2s"]));
+                            Json(json!({"id": 1, "result": {"versionhash": wallet_hash}}))
+                        } else {
+                            assert_eq!(request["method"], "getnevmblobdata");
+                            Json(json!({"id": 1, "error": {"code": -32602, "message": "missing blob"}}))
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = SyscoinClient::new(
+                &url,
+                "user",
+                "password",
+                &url,
+                Some(std::time::Duration::from_secs(2)),
+                "test",
+            )
+            .unwrap();
+            let storage_dir = tempfile::tempdir().unwrap();
+            let gate = BitcoinDaFinalityGate::new(
+                BatcherConfig::default(),
+                BitcoinDaStatusStorage::new(storage_dir.path()).unwrap(),
+                false,
+            );
+            let result = gate
+                .republish_blob_after_timeout(
+                    &client,
+                    &expected_hash,
+                    BlobFinalityWaitContext::OwnBatch { batch_number: 1 },
+                )
+                .await;
+            server.abort();
+            match expected_error {
+                Some(message) => assert!(result.unwrap_err().to_string().contains(message)),
+                None => result.unwrap(),
+            }
+            assert_eq!(wallet_calls.load(Ordering::SeqCst), expected_calls);
+        }
     }
 }

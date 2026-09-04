@@ -1,5 +1,5 @@
 use alloy::consensus::{Header, Sealed};
-use alloy::primitives::B256;
+use alloy::primitives::{B256, keccak256};
 use zksync_os_interface::error::InvalidTransaction;
 use zksync_os_interface::types::{AccountDiff, StorageWrite, TxOutput};
 
@@ -32,6 +32,27 @@ impl BlockOutput {
     pub fn pubdata_used(&self) -> u64 {
         self.pubdata.used()
     }
+}
+
+/// SYSCOIN: The existing replay-output hash, shared with native batch validation without changing
+/// its persisted encoding. This diagnostic binds the header, accepted tx status/gas, and writes;
+/// it deliberately does not hash every output field or native-mode resource counter.
+pub fn block_output_hash(
+    header_hash: B256,
+    tx_results: &[Result<TxOutput, InvalidTransaction>],
+    storage_writes: &[StorageWrite],
+) -> B256 {
+    let mut preimage = Vec::new();
+    preimage.extend_from_slice(header_hash.as_slice());
+    for tx in tx_results.iter().flatten() {
+        preimage.extend_from_slice(&[tx.is_success() as u8]);
+        preimage.extend_from_slice(&tx.gas_used.to_be_bytes());
+    }
+    for storage_log in storage_writes {
+        preimage.extend_from_slice(storage_log.key.as_slice());
+        preimage.extend_from_slice(storage_log.value.as_slice());
+    }
+    keccak256(preimage)
 }
 
 #[cfg(test)]

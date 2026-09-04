@@ -306,6 +306,20 @@ operations. Test recovery before relying on the archive: download the archive
 objects, rebuild `db/block_replay_wal` with `replay_archive_recovery`, and
 start a node from the recovered replay WAL using a known canonical anchor.
 
+<!-- SYSCOIN: Explicit release policy; the current non-Ethereum root-chain allowance is retained. -->
+Syscoin currently retains the pinned contracts' **30-day maximum commit age**, including on
+mainnet. This is an outage/catch-up allowance for the first block timestamp when a batch is
+committed, not a target settlement delay, proof-expiry deadline, or DA-retention guarantee.
+Monitor settlement lag well below that limit. It does not change the separate priority-mode timer.
+
+Before production, explicitly attest the chosen rollup permanence and recovery policy for each
+chain. The launcher leaves `isPermanentRollup` false; until made permanent, the chain admin can
+change the DA pair without the restrictive Syscoin rollup DA manager's allowlist. Making a chain
+permanent is irreversible under the reviewed contracts and has migration/priority-mode
+prerequisites, so this guide does not enable it automatically. Complete real-proof validation
+before making that governance decision. Also provision the [ordinary idle-tail heartbeat](../design/prover_api.md#ordinary-idle-tails)
+if settlement must progress without application traffic; it is opt-in and needs a dedicated wallet.
+
 ## Start nodes after successful launch
 
 ```bash

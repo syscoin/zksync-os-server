@@ -23,5 +23,6 @@ zk_ee.workspace = true
 
 alloy.workspace = true
 anyhow.workspace = true
+blake2.workspace = true
 tracing.workspace = true
 vise.workspace = true
