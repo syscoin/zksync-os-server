@@ -109,6 +109,10 @@ class Heartbeat:
         # Recheck queues after wallet/RPC work; ordinary traffic may have supplied the companion.
         if singleton_batch(self.status("SNARK"), self.status("FRI"), args.min_age) != batch:
             return "queue progressed; no transaction needed"
+        # SYSCOIN: A new block can precede its FRI job; queues alone cannot establish idleness.
+        latest = self.rpc("eth_getBlockByNumber", ["latest", False])
+        if latest["hash"] != head["hash"] or time.time() - int(latest["timestamp"], 16) < args.min_age:
+            return "block traffic progressed; waiting for the pipeline"
         # SYSCOIN: One explicit-nonce attempt per tail, including ambiguous send failures. Do not
         # keep spending after a stuck pipeline; inspect the nonce/transaction before restarting.
         self.last_attempted_batch = batch

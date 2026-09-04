@@ -30,7 +30,7 @@ class ProverHeartbeatTests(unittest.TestCase):
         self.heartbeat.status = Mock(side_effect=lambda stage: [copy.deepcopy(JOB)] if stage == "SNARK" else [])
         self.responses = {
             "eth_chainId": hex(57001),
-            "eth_getBlockByNumber": {"timestamp": "0x1", "baseFeePerGas": "0x64"},
+            "eth_getBlockByNumber": {"hash": "0x" + "33" * 32, "timestamp": "0x1", "baseFeePerGas": "0x64"},
             "eth_getCode": "0x", "eth_getTransactionCount": "0x5",
             "eth_getBalance": hex(100_000 * 1000),
         }
@@ -110,6 +110,24 @@ class ProverHeartbeatTests(unittest.TestCase):
         self.assertEqual(self.heartbeat.last_attempted_batch, 7)
         self.heartbeat.tick()
         self.assertEqual(self.run.call_count, 2)
+
+    def test_new_head_with_unchanged_queues_suppresses_broadcast(self):
+        # SYSCOIN: Sequencing can advance before its companion FRI job is enqueued.
+        for timestamp in [1, 999]:
+            with self.subTest(timestamp=timestamp):
+                self.heartbeat.last_attempted_batch = None
+                self.run.reset_mock()
+                heads = iter([
+                    self.responses["eth_getBlockByNumber"],
+                    {"hash": "0x" + "44" * 32, "timestamp": hex(timestamp), "baseFeePerGas": "0x64"},
+                ])
+                self.heartbeat.rpc.side_effect = lambda method, params: (
+                    next(heads) if method == "eth_getBlockByNumber" else self.responses[method]
+                )
+                with patch.object(HEARTBEAT.time, "time", return_value=1000):
+                    self.assertIn("block traffic", self.heartbeat.tick())
+                self.assertIsNone(self.heartbeat.last_attempted_batch)
+                self.assertFalse(any(call.args[0][1] == "send" for call in self.run.call_args_list))
 
     def test_remote_http_and_url_credentials_are_rejected_before_network(self):
         for url in ["http://prover.example/status", "https://user:secret@prover.example/status"]:
