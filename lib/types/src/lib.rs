@@ -109,7 +109,10 @@ mod token_price;
 pub use token_price::{TokenApiRatio, TokenPricesForFees};
 
 mod block_output;
-pub use block_output::{BlockOutput, BlockPubdata};
+pub use block_output::{BlockOutput, BlockPubdata, block_output_hash};
+
+mod state_commitment;
+pub use state_commitment::state_commitment_hash;
 
 mod fee_params;
 pub use fee_params::FeeParams;

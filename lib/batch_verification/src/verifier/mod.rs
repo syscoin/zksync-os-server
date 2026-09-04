@@ -658,7 +658,6 @@ mod tests {
     use super::*;
     use crate::tests::{DummyFinality, dummy_batch_metadata, dummy_commit_batch_info};
     use crate::verify_batch_wire::encode_verify_batch_request;
-    use alloy::consensus::{Header, Sealable};
     use alloy::eips::eip1559::INITIAL_BASE_FEE;
     use alloy::network::EthereumWallet;
     use alloy::primitives::{Address, B256, Bytes, U256, address, keccak256};
@@ -669,7 +668,7 @@ mod tests {
     use httpmock::Method::POST;
     use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
     use serde_json::{Value, json};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::HashMap;
     use std::ops::RangeInclusive;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -683,16 +682,16 @@ mod tests {
     use zksync_os_contract_interface::settlement_layer_intervals::SettlementLayerIntervals;
     use zksync_os_contract_interface::{Bridgehub, IExecutor, ZkChain};
     use zksync_os_genesis::{FileGenesisInputSource, GenesisState, build_genesis};
-    use zksync_os_interface::traits::{PreimageSource, ReadStorage};
+    use zksync_os_interface::tracing::{NopTracer, NopValidator};
+    use zksync_os_interface::traits::{NoopTxCallback, PreimageSource, ReadStorage, TxListSource};
     use zksync_os_merkle_tree::{MerkleTree, RocksDBWrapper, TreeBatchOutput, TreeEntry};
-    use zksync_os_merkle_tree_api::BatchTreeProof;
     use zksync_os_provider::NodeProvider;
     use zksync_os_storage_api::{
         BlockContext, BlockHashes, ReplayRecord, StateError, read_multichain_root,
     };
     use zksync_os_types::{
-        BlockOutput, BlockPubdata, BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion,
-        PubdataMode, SystemTxEnvelope, ZkTransaction,
+        BlockStartCursors, ExecutionVersion, ProtocolSemanticVersion, PubdataMode,
+        SystemTxEnvelope, ZkTransaction, ZksyncOsEncode, block_output_hash, state_commitment_hash,
     };
 
     const CHAIN_ID: u64 = 270;
@@ -1148,16 +1147,16 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires the regenerated canonical v32.0/V8 genesis state"]
     async fn v8_verifier_approves_batch_built_from_native_run() {
         let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
-        let genesis_state = build_genesis_state_for_test(&protocol_version).await;
+        let genesis_state = synthetic_genesis_state_for_test();
         let read_state = MemoryStateHistory::from_genesis_state(&genesis_state);
 
         let temp_dir = tempfile::tempdir().unwrap();
         let tree = genesis_tree(&genesis_state, temp_dir.path());
         let prev_batch_info = genesis_stored_batch_info(&genesis_state, &tree);
-        let tree_block = empty_tree_block(&tree, protocol_version.clone());
+        let tree_block =
+            executed_tree_block(&tree, &read_state, &genesis_state, protocol_version.clone());
 
         let batch_envelope = v8_batch_for_signing(
             &tree_block,
@@ -1243,7 +1242,7 @@ mod tests {
         assert!(matches!(
             non_contiguous_result.result,
             VerifyBatchOutcome::Refused(reason)
-                if reason.contains("Previous batch is not contiguous")
+                if reason == "invalid verification request"
         ));
 
         let mut wrong_previous_state_request = request.clone();
@@ -1330,28 +1329,30 @@ mod tests {
     /// 0.4.0 batch program computes natively:
     /// `keccak(state_before || state_after || chain_config_hash || batch_output)`.
     #[tokio::test]
-    #[ignore = "requires the regenerated canonical v32.0/V8 genesis state"]
     async fn v8_public_input_reconstruction_matches_native_run() {
         let protocol_version = ProtocolSemanticVersion::new(0, 32, 0);
-        let genesis_state = build_genesis_state_for_test(&protocol_version).await;
+        let genesis_state = synthetic_genesis_state_for_test();
         let read_state = MemoryStateHistory::from_genesis_state(&genesis_state);
 
         let temp_dir = tempfile::tempdir().unwrap();
         let tree = genesis_tree(&genesis_state, temp_dir.path());
-        let tree_block = empty_tree_block(&tree, protocol_version.clone());
+        let tree_block =
+            executed_tree_block(&tree, &read_state, &genesis_state, protocol_version.clone());
 
-        let native_batch_run = generate_batch_run(
-            &[NativeBatchBlock {
-                replay_record: &tree_block.record,
-                tree_data: &tree_block.tree,
-                block_output: &tree_block.output,
-            }],
-            &read_state,
-            tree.clone(),
-            PubdataMode::Blobs,
-            Address::ZERO,
-        )
-        .unwrap();
+        let run = |block_output, tree: &MerkleTree<RocksDBWrapper>| {
+            generate_batch_run(
+                &[NativeBatchBlock {
+                    replay_record: &tree_block.record,
+                    tree_data: &tree_block.tree,
+                    block_output,
+                }],
+                &read_state,
+                tree.clone(),
+                PubdataMode::Blobs,
+                Address::ZERO,
+            )
+        };
+        let native_batch_run = run(&tree_block.output, &tree).unwrap();
 
         let batch_info = PendingBatchInfo::build_from_canonical_output(
             BATCH_NUMBER,
@@ -1377,6 +1378,38 @@ mod tests {
             reconstructed, native_batch_run.batch_public_input_hash,
             "server-side V8 public input reconstruction diverges from the batch program"
         );
+        // SYSCOIN: Exercise fail-closed checks through real witness generation, not only hashes.
+        let mut wrong_output = tree_block.output.clone();
+        wrong_output.tx_results[0].as_mut().unwrap().gas_used += 1;
+        assert!(
+            run(&wrong_output, &tree)
+                .err()
+                .expect("canonical output drift must fail")
+                .to_string()
+                .contains("output mismatch")
+        );
+        let missing_dir = tempfile::tempdir().unwrap();
+        let mut missing_tree = genesis_tree(&genesis_state, missing_dir.path());
+        assert!(
+            run(&tree_block.output, &missing_tree)
+                .err()
+                .expect("missing final tree must fail")
+                .to_string()
+                .contains("missing canonical Merkle tree")
+        );
+        missing_tree
+            .extend(&[TreeEntry {
+                key: B256::repeat_byte(0x44),
+                value: B256::repeat_byte(0x55),
+            }])
+            .unwrap();
+        assert!(
+            run(&tree_block.output, &missing_tree)
+                .err()
+                .expect("wrong final tree must fail")
+                .to_string()
+                .contains("final state commitment mismatch")
+        );
     }
 
     /// Utility (not a real test): runs the V8 native batch PIG for the simplest possible batch
@@ -1397,7 +1430,8 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().unwrap();
         let tree = genesis_tree(&genesis_state, temp_dir.path());
-        let tree_block = empty_tree_block(&tree, protocol_version.clone());
+        let tree_block =
+            executed_tree_block(&tree, &read_state, &genesis_state, protocol_version.clone());
 
         let native_batch_run = generate_batch_run(
             &[NativeBatchBlock {
@@ -1494,8 +1528,12 @@ mod tests {
         )
     }
 
-    fn empty_tree_block(
+    // SYSCOIN: Native verification checks real replay output and persisted post-state, not
+    // placeholder hashes/tree roots. Execute the same SetSLChainId transaction as the witness.
+    fn executed_tree_block(
         tree: &MerkleTree<RocksDBWrapper>,
+        read_state: &MemoryStateHistory,
+        genesis_state: &GenesisState,
         protocol_version: ProtocolSemanticVersion,
     ) -> TreeBlock {
         let (root_hash, leaf_count) = tree.root_info(0).unwrap().unwrap();
@@ -1504,43 +1542,52 @@ mod tests {
             leaf_count,
         };
 
+        let mut record = empty_replay_record(protocol_version);
+        record.block_context.block_hashes =
+            BlockHashes::default().push(genesis_state.header.hash());
+        let output = zksync_os_multivm::run_block(
+            record.block_context,
+            read_state.view.clone(),
+            read_state.view.clone(),
+            TxListSource {
+                transactions: record
+                    .transactions
+                    .iter()
+                    .cloned()
+                    .map(|tx| tx.encode())
+                    .collect(),
+            },
+            NoopTxCallback,
+            &mut NopTracer,
+            &mut NopValidator,
+        )
+        .unwrap();
+        assert!(output.tx_results.iter().all(Result::is_ok));
+        record.block_output_hash = block_output_hash(
+            output.header.hash(),
+            &output.tx_results,
+            &output.storage_writes,
+        );
+        let entries: Vec<_> = output
+            .storage_writes
+            .iter()
+            .map(|write| TreeEntry {
+                key: write.key,
+                value: write.value,
+            })
+            .collect();
+        let written_keys = entries.iter().map(|entry| entry.key).collect();
+        let (final_tree, proof) = tree.clone().extend_with_proof(&entries, &[]).unwrap();
         TreeBlock {
-            output: empty_block_output(),
-            record: empty_replay_record(protocol_version),
+            output,
+            record,
             tree: BlockMerkleTreeData {
                 input: tree_output,
-                output: TreeBatchOutput {
-                    root_hash,
-                    leaf_count,
-                },
-                written_keys: vec![],
+                output: final_tree,
+                written_keys,
                 read_keys: vec![],
-                proof: BatchTreeProof {
-                    operations: vec![],
-                    read_operations: vec![],
-                    sorted_leaves: BTreeMap::new(),
-                    hashes: vec![],
-                },
+                proof,
             },
-        }
-    }
-
-    fn empty_block_output() -> BlockOutput {
-        let header = Header {
-            number: 1,
-            timestamp: 1,
-            ..Default::default()
-        }
-        .seal_slow();
-
-        BlockOutput {
-            header,
-            tx_results: vec![],
-            storage_writes: vec![],
-            account_diffs: vec![],
-            published_preimages: vec![],
-            pubdata: BlockPubdata::new(0),
-            computational_native_used: 0,
         }
     }
 
@@ -1626,6 +1673,36 @@ mod tests {
         build_genesis(&source, CHAIN_ID, protocol_version)
             .await
             .unwrap()
+    }
+
+    // SYSCOIN: Test-only minimal genesis for CPU forward/witness consistency. It is never written
+    // to local-chains or treated as a canonical deployment/prover artifact.
+    fn synthetic_genesis_state_for_test() -> GenesisState {
+        // SystemContext slot zero holds the established SL ID; this test does not deploy its code.
+        let mut sl_key = [0u8; 64];
+        sl_key[30..32].copy_from_slice(&0x800bu16.to_be_bytes());
+        let mut state = GenesisState {
+            storage_logs: vec![(
+                B256::from_slice(&Blake2s256::digest(sl_key)),
+                B256::from(U256::from(SL_CHAIN_ID)),
+            )],
+            preimages: vec![],
+            header: zksync_os_genesis::genesis_header(),
+            context: BlockContext {
+                chain_id: CHAIN_ID,
+                ..Default::default()
+            },
+            expected_genesis_root: B256::ZERO,
+        };
+        let temp_dir = tempfile::tempdir().unwrap();
+        let tree = genesis_tree(&state, temp_dir.path());
+        let (root, leaves) = tree.root_info(0).unwrap().unwrap();
+        let mut hashes = Blake2s256::new();
+        hashes.update([0; 255 * 32]);
+        hashes.update(state.header.hash());
+        state.expected_genesis_root =
+            state_commitment_hash(root, leaves, 0, B256::from_slice(&hashes.finalize()), 0);
+        state
     }
 
     fn genesis_tree(

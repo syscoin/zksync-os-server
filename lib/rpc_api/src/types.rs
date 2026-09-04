@@ -255,13 +255,14 @@ impl StateCommitmentPreimage {
     /// Hashes this preimage together with the provided Merkle tree root hash, resulting the state commitment hash
     /// recorded on L1 (accessible e.g. via `BlockCommit` event emitted by the diamond proxy).
     pub fn hash(&self, tree_root_hash: B256) -> B256 {
-        let mut hasher = Blake2s256::new();
-        hasher.update(tree_root_hash.as_slice());
-        hasher.update(self.next_free_slot.to_be_bytes::<8>());
-        hasher.update(self.block_number.to_be_bytes::<8>());
-        hasher.update(self.last_256_block_hashes_blake);
-        hasher.update(self.last_block_timestamp.to_be_bytes::<8>());
-        B256::from_slice(&hasher.finalize())
+        // SYSCOIN: Share the unchanged commitment encoding with native batch validation.
+        zksync_os_types::state_commitment_hash(
+            tree_root_hash,
+            self.next_free_slot.to(),
+            self.block_number.to(),
+            self.last_256_block_hashes_blake,
+            self.last_block_timestamp.to(),
+        )
     }
 }
 
