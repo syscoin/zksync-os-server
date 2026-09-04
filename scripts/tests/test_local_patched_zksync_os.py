@@ -2146,6 +2146,77 @@ assert_gateway_chain_artifact_matches_live
         self.assertNotEqual(pending_migration.returncode, 0)
         self.assertIn("requires a blocked", pending_migration.stderr)
 
+    def test_valid_started_migration_reconciles_late_success_journals(self) -> None:
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        flow = repair[repair.index('if [ "${COMMAND}" != "repair" ]') :]
+        harness = textwrap.dedent(
+            r'''
+            set -euo pipefail
+            record() { printf '%s\n' "$*" >> "$EVENTS"; }
+            usage() { return 99; }
+            checkpoint_is_known() { return 0; }
+            gl_checkpoint_get_status() { printf '%s\n' "$PRIOR"; }
+            gateway_acquire_execute_operator_lock() { record lock "$1"; }
+            validate_checkpoint_for_repair() {
+              record validate "${GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD:-unset}"
+              return 0
+            }
+            gl_checkpoint_mark_in_progress() { record in_progress "$1"; }
+            perform_repair_step() { record perform "$1"; }
+            gl_checkpoint_mark_blocked() { record blocked "$1"; }
+            gl_checkpoint_mark_repaired() { record repaired "$1"; }
+            gl_die() { record die "$*"; return 98; }
+            COMMAND=repair
+            CHECKPOINT_ID="$CHECKPOINT"
+            EDGE_CHAIN_NAME=zksys
+            GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+            '''
+        ) + flow
+
+        reconcile = [
+            "lock zksys",
+            "validate 9",
+            "in_progress gl.migration",
+            "perform gl.migration",
+            "validate 9",
+            "repaired gl.migration",
+        ]
+        cases = (
+            ("gl.migration", "blocked", reconcile),
+            ("gl.migration", "in_progress", reconcile),
+            ("gl.migration", "passed", reconcile),
+            ("gl.migration", "pending", ["validate unset", "repaired gl.migration"]),
+            (
+                "gl.wallets_funded",
+                "blocked",
+                ["validate unset", "repaired gl.wallets_funded"],
+            ),
+        )
+        for checkpoint, prior, expected in cases:
+            with self.subTest(
+                checkpoint=checkpoint, prior=prior
+            ), tempfile.TemporaryDirectory() as temporary_dir:
+                events = Path(temporary_dir) / "events"
+                result = subprocess.run(
+                    ["bash", "-c", harness],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "CHECKPOINT": checkpoint,
+                        "EVENTS": str(events),
+                        "GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD": "",
+                        "PRIOR": prior,
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    events.read_text(encoding="utf-8").splitlines(), expected
+                )
+
 
 class LauncherStaticTests(unittest.TestCase):
     def test_gateway_migration_errors_redact_rpc_credentials(self) -> None:

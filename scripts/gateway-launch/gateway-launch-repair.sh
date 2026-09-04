@@ -382,10 +382,30 @@ fi
 checkpoint_is_known "${CHECKPOINT_ID}" || gl_die "unknown checkpoint id: ${CHECKPOINT_ID}"
 REPAIR_PRIOR_STATUS="$(gl_checkpoint_get_status "${CHECKPOINT_ID}")"
 
+# SYSCOIN: Retiring a late-success sender journal must be atomic with the live
+# reserve check relative to supported edge-node spending. Keep this lock
+# through initial validation, post-finalize reconciliation, and revalidation.
+case "${CHECKPOINT_ID}:${REPAIR_PRIOR_STATUS}" in
+gl.migration:blocked | gl.migration:in_progress | gl.migration:passed)
+  gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
+  export GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"
+  ;;
+esac
+
 if validate_checkpoint_for_repair "${CHECKPOINT_ID}"; then
-  gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"
-  echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; marked repaired"
-  exit 0
+  case "${CHECKPOINT_ID}:${REPAIR_PRIOR_STATUS}" in
+  gl.migration:blocked | gl.migration:in_progress | gl.migration:passed)
+    # SYSCOIN: A via-Gateway admin transaction may satisfy its postcondition
+    # after a wait timed out. Reuse the locked, post-finalize-only path below
+    # so it retires the completed Forge journal before this checkpoint passes.
+    echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; reconciling completed repair journals"
+    ;;
+  *)
+    gl_checkpoint_mark_repaired "${CHECKPOINT_ID}" "already valid; no repair command needed"
+    echo "gateway-launch-repair: ${CHECKPOINT_ID} already valid; marked repaired"
+    exit 0
+    ;;
+  esac
 fi
 
 echo "gateway-launch-repair: repairing ${CHECKPOINT_ID}"
