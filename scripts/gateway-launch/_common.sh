@@ -3394,7 +3394,7 @@ gl_fund_wallets_yaml() {
   fi
   export GATEWAY_FUND_CHECK_ONLY="${check_only}"
   export WALLETS_YAML_PATHS
-  GATEWAY_LAUNCH_HELPER_DIR="${GATEWAY_LAUNCH_HELPER_DIR:-${GL_DIR}}" python3 - <<'PY'
+  GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3 - <<'PY'
 import os
 import shutil
 import subprocess

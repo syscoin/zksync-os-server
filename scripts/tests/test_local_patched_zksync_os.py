@@ -5262,9 +5262,10 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("address_for_private_key", common)
         fund_wallets = common[common.index("gl_fund_wallets_yaml() {") :]
         self.assertIn(
-            'GATEWAY_LAUNCH_HELPER_DIR="${GATEWAY_LAUNCH_HELPER_DIR:-${GL_DIR}}" python3',
+            'GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3',
             fund_wallets,
         )
+        self.assertNotIn("GATEWAY_LAUNCH_HELPER_DIR:-", fund_wallets)
         self.assertIn("missing private key for required server signer", common)
         self.assertLess(
             common.index("server_signer_roles ="),
