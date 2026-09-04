@@ -1,7 +1,5 @@
 //! ERC‑20 worker; keeps bounded windows of signed transactions in flight.
 //! Adds gas‑price (legacy) so nodes don’t reject with “feeCap 0 below chain minimum”.
-//! SYSCOIN: Serializes each wallet's nonce admission and reserves cumulative gas
-//! while preserving concurrency across wallets and asynchronous receipt tracking.
 
 use crate::{erc20::SimpleERC20, metrics::Metrics};
 use ethers::{prelude::*, types::U256};
@@ -285,8 +283,10 @@ async fn run_wallet(
         let gas_price = match provider.get_gas_price().await {
             Ok(p)  => p,
             Err(e) => {
-                eprintln!("❗ gas‑price fetch error {e} – using 3 gwei");
-                U256::from(3_000_000_000u64) // 3 gwei fallback
+                // SYSCOIN: An arbitrary fallback can falsely exhaust low-balance wallets.
+                eprintln!("❗ gas‑price fetch error {e} – retrying");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
         };
 
