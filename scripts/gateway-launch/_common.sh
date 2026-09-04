@@ -1295,8 +1295,14 @@ if gateway_chain_name in found:
         )
     if not expected_gateway_chain_id.isdecimal():
         raise SystemExit("invalid configured Gateway chain ID")
-    if configured_gateway_chain_id and configured_gateway_chain_id != expected_gateway_chain_id:
-        raise SystemExit("Gateway chain ID config disagrees with its chain inventory")
+    if configured_gateway_chain_id:
+        configured_gateway_chain_id = configured_gateway_chain_id.strip()
+        if (
+            not configured_gateway_chain_id.isdecimal()
+            or not 0 < int(configured_gateway_chain_id, 10) < 2**32
+            or int(configured_gateway_chain_id, 10) != int(expected_gateway_chain_id)
+        ):
+            raise SystemExit("Gateway chain ID config disagrees with its chain inventory")
     if normalize_chain_id(migration["gateway_chain_id"], "gateway_chain_id") != int(
         expected_gateway_chain_id
     ):
