@@ -1626,6 +1626,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             def probe(
                 mode: str = "exact-post-admin",
                 expected_gateway_edge_diamond: str = "",
+                gateway_chain_id: str = "57001",
             ) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [
@@ -1644,7 +1645,7 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         **os.environ,
                         "COMMON": str(GATEWAY_COMMON),
                         "EDGE_CHAIN_NAME": "zksys",
-                        "GATEWAY_CHAIN_ID": "57001",
+                        "GATEWAY_CHAIN_ID": gateway_chain_id,
                         "GATEWAY_DIR": str(root),
                         "L1_CHAIN_ID": "5700",
                         "MODE": mode,
@@ -1678,6 +1679,12 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
                 gateway_chain.chmod(0o600)
                 self.assertEqual(probe("ready").returncode, 0)
+                self.assertEqual(
+                    probe("ready", gateway_chain_id=" 057001 ").returncode, 0
+                )
+                self.assertNotEqual(
+                    probe("ready", gateway_chain_id="57002").returncode, 0
+                )
                 self.assertEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
                 self.assertNotEqual(
                     probe("ready", "0x" + "55" * 20).returncode, 0
@@ -1783,14 +1790,22 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             root = Path(temporary_dir)
             artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
 
-            def probe(live_diamond: str, expected_diamond: str) -> int:
+            def probe(
+                live_diamond: str,
+                expected_diamond: str,
+                wait_succeeds: bool = True,
+            ) -> int:
                 result = subprocess.run(
                     [
                         "bash",
                         "-c",
                         function
                         + r'''
-get_chain_diamond_proxy_from_gateway() { printf '%s\n' "$LIVE_DIAMOND"; }
+wait_for_chain_diamond_proxy_from_gateway() {
+  [ "$1" = zksys ] && [ "$2" = 60 ] && [ "$3" = 2 ] || return 78
+  [ "$WAIT_SUCCEEDS" = true ] || return 79
+  printf '%s\n' "$LIVE_DIAMOND"
+}
 gl_assert_edge_chain_init_local_artifacts() {
   [ "$1" = ready ] && [ "$2" = "$EXPECTED_DIAMOND" ]
 }
@@ -1807,17 +1822,19 @@ assert_gateway_chain_artifact_matches_live
                         "EXPECTED_DIAMOND": expected_diamond,
                         "GATEWAY_DIR": str(root),
                         "LIVE_DIAMOND": live_diamond,
+                        "WAIT_SUCCEEDS": str(wait_succeeds).lower(),
                     },
                 )
                 return result.returncode
 
-            self.assertEqual(probe("unexpected", "must-not-call"), 0)
+            self.assertEqual(probe("unexpected", "must-not-call", False), 0)
             artifact.parent.mkdir(parents=True)
             artifact.write_text("immutable fixture\n", encoding="utf-8")
             before = (artifact.read_bytes(), artifact.stat().st_mtime_ns)
             diamond = "0x" + "44" * 20
             self.assertEqual(probe(diamond.upper(), diamond), 0)
             self.assertEqual((artifact.read_bytes(), artifact.stat().st_mtime_ns), before)
+            self.assertEqual(probe(diamond, diamond, False), 79)
             self.assertNotEqual(probe("0x" + "55" * 20, diamond), 0)
 
     def run_checkpoint_probe(
@@ -2812,7 +2829,7 @@ gl_checkpoint_state_dir() { printf '%s\n' "$TEST_STATE_DIR"; }
 gl_checkpoint_state_file() { printf '%s\n' "$TEST_STATE_FILE"; }
 gl_sha256_file() { shasum -a 256 "$1" | awk '{ print $1; }'; }
 ZKSYNC_ERA_PATH="$TEST_ERA_PATH"
-L1_RPC_URL="http://l1.invalid"
+L1_RPC_URL="$TEST_L1_RPC_URL"
 export L1_CHAIN_ID=5700
 GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 '''
@@ -2835,6 +2852,61 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             (era / "contracts" / "l1-contracts").mkdir(parents=True)
             bin_dir = root / "bin"
             bin_dir.mkdir()
+            sequence_encoder = bin_dir / "encode-repair-sequence.py"
+            sequence_encoder.write_text(
+                textwrap.dedent(
+                    """\
+                    import json
+                    import os
+                    import sys
+
+                    def word(value):
+                        return int(value).to_bytes(32, "big")
+
+                    def address(value):
+                        return bytes(12) + bytes.fromhex(value[2:])
+
+                    def dynamic(value):
+                        return word(len(value)) + value + bytes((-len(value)) % 32)
+
+                    with open(sys.argv[1], encoding="utf-8") as source:
+                        intent = json.load(source)
+                    args = dict(item.split("=", 1) for item in intent["arguments"])
+                    outer = 100 + int(args["value_wei"])
+                    mutation = os.environ.get("FAKE_SEQUENCE_MUTATION", "")
+                    target = (
+                        "0x" + "97" * 20 if mutation == "target" else args["target"]
+                    )
+                    l2_data = bytes.fromhex(args["calldata"][2:])
+                    encoded_l2_data = dynamic(l2_data)
+                    request = bytes.fromhex("d52471c1") + word(32) + b"".join((
+                        word(args["destination_chain_id"]),
+                        word(outer),
+                        address(target),
+                        word(args["value_wei"]),
+                        word(9 * 32),
+                        word(72_000_000),
+                        word(800),
+                        word(9 * 32 + len(encoded_l2_data)),
+                        address(args["refund_recipient"]),
+                        encoded_l2_data,
+                        word(0),
+                    ))
+                    call = b"".join((
+                        address(args["bridgehub"]),
+                        word(outer),
+                        word(3 * 32),
+                        dynamic(request),
+                    ))
+                    payload = b"".join((
+                        word(2 * 32), word(1), word(1), word(32), call,
+                    ))
+                    if mutation == "trailing": payload += word(0)
+                    print(f"{outer}|0x69340beb{payload.hex()}")
+                    """
+                ),
+                encoding="utf-8",
+            )
             fake_forge = bin_dir / "forge"
             fake_forge.write_text(
                 "#!/usr/bin/env bash\nset -euo pipefail\n"
@@ -2880,9 +2952,15 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "public_run=${public_dir}/run-1700000000.json\n"
                 "sensitive_latest=${sensitive_dir}/adminL1L2TxViaGateway-latest.json\n"
                 "sensitive_run=${sensitive_dir}/run-1700000000.json\n"
-                "printf '{\"transactions\":[{\"transactionType\":\"CALL\"%s,\"transaction\":{\"from\":\"%s\",\"to\":\"%s\",\"nonce\":7,\"%s\":\"0x12345678\"}}],\"receipts\":%s,\"pending\":[],\"libraries\":[],\"returns\":{},\"timestamp\":1700000000,\"chain\":%s,\"commit\":null}\\n' "
+                "IFS='|' read -r outer_value tx_data extra < <(python3 \"${TEST_SEQUENCE_ENCODER}\" \"${FOUNDRY_BROADCAST%/broadcast}/intent.json\")\n"
+                "[ -z \"${extra:-}\" ] || exit 74\n"
+                "outer_value=${FAKE_FORGE_OUTER_VALUE:-${outer_value}}\n"
+                "tx_data=${FAKE_FORGE_TX_DATA:-${tx_data}}\n"
+                "printf '{\"transactions\":[{\"transactionType\":\"CALL\"%s,\"transaction\":{\"from\":\"%s\",\"to\":\"%s\",\"nonce\":7,\"value\":\"%s\",\"%s\":\"%s\"}}],\"receipts\":%s,\"pending\":[],\"libraries\":[],\"returns\":{},\"timestamp\":1700000000,\"chain\":%s,\"commit\":null}\\n' "
                 "\"${tx_hash}\" \"${TEST_SIGNER}\" \"${TEST_L1_ADMIN}\" "
+                "\"${outer_value}\" "
                 "\"${FAKE_FORGE_CALLDATA_KEY:-input}\" "
+                "\"${tx_data}\" "
                 "\"${receipts}\" \"${L1_CHAIN_ID}\" "
                 ">\"${public_latest}\"\n"
                 "cp \"${public_latest}\" \"${public_run}\"\n"
@@ -2890,7 +2968,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "  [ \"${phase}\" != resume ] || exit 19\n"
                 "  exit 18\n"
                 "fi\n"
-                "printf '%s\\n' '{\"transactions\":[{\"rpc\":\"http://l1.invalid\"}]}' "
+                "printf '{\"transactions\":[{\"rpc\":\"%s\"}]}\\n' \"${TEST_L1_RPC_URL}\" "
                 ">\"${sensitive_latest}\"\n"
                 "cp \"${sensitive_latest}\" \"${sensitive_run}\"\n",
                 encoding="utf-8",
@@ -2904,12 +2982,80 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             signer = "0x" + "aa" * 20
             bridgehub = "0x" + "bb" * 20
             l1_admin = "0x" + "cc" * 20
-            arguments = (
-                f"kind=sender-balance target={target} minimum_balance_wei=10 "
-                "observed_balance_wei=3 value_wei=7 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
+            contracts_sha = "1" * 40
+            admin_script_sha = "2" * 64
+            rpc_calls: list[dict] = []
+
+            class QuoteRpc(http.server.BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    request = json.loads(
+                        self.rfile.read(int(self.headers["Content-Length"]))
+                    )
+                    rpc_calls.append(request)
+                    if request["method"] == "eth_getBlockByNumber":
+                        result = {"number": "0x4d", "baseFeePerGas": "0x7"}
+                    elif request["method"] == "eth_call":
+                        result = "0xa"
+                    else:
+                        self.send_error(400)
+                        return
+                    body = json.dumps(
+                        {"jsonrpc": "2.0", "id": request["id"], "result": result}
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *_args: object) -> None:
+                    pass
+
+            quote_server = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), QuoteRpc
             )
+            quote_thread = threading.Thread(
+                target=quote_server.serve_forever, daemon=True
+            )
+            quote_thread.start()
+            self.addCleanup(quote_server.server_close)
+            self.addCleanup(quote_server.shutdown)
+            quote_rpc_url = f"http://127.0.0.1:{quote_server.server_port}"
+
+            def sender_arguments(address: str, observed: int, value: int) -> str:
+                return (
+                    "kind=sender-balance "
+                    f"contracts_sha={contracts_sha} admin_script_sha256={admin_script_sha} "
+                    "l1_chain_id=5700 admin_chain_id=57058 destination_chain_id=57001 "
+                    f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                    f"max_l1_gas_price=1000000000 target={address} value_wei={value} "
+                    f"calldata=0x refund_recipient={signer} "
+                    f"minimum_balance_wei=10 observed_balance_wei={observed}"
+                )
+
+            def committer_arguments(committer: str) -> str:
+                chain_proxy = "0x" + "dd" * 20
+                role = "0x" + "ee" * 32
+                grant = (
+                    "0x3290f93a"
+                    + "0" * 24
+                    + chain_proxy[2:]
+                    + role[2:]
+                    + "0" * 24
+                    + committer[2:]
+                )
+                return (
+                    "kind=committer-role "
+                    f"contracts_sha={contracts_sha} admin_script_sha256={admin_script_sha} "
+                    "l1_chain_id=5700 admin_chain_id=57058 destination_chain_id=57001 "
+                    f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                    "max_l1_gas_price=1000000000 "
+                    f"target=0x{'ff' * 20} value_wei=0 calldata={grant} "
+                    f"refund_recipient={signer} chain_proxy={chain_proxy} "
+                    f"role={role} committer={committer}"
+                )
+
+            arguments = sender_arguments(target, 3, 7)
             env = {
                 **os.environ,
                 "FOUNDRY_BROADCAST": str(root / "inherited-broadcast"),
@@ -2922,6 +3068,8 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 "TEST_SIGNER": signer,
                 "TEST_L1_ADMIN": l1_admin,
                 "TEST_FORGE_EVENTS": str(forge_events),
+                "TEST_L1_RPC_URL": quote_rpc_url,
+                "TEST_SEQUENCE_ENCODER": str(sequence_encoder),
             }
 
             def run(
@@ -2947,6 +3095,18 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             self.assertEqual(fresh.returncode, 0, fresh.stderr)
             self.assertIn("resume=false value=7\n", fresh.stdout)
             self.assertNotIn("FAKE_FORGE_STDERR_SECRET", fresh.stderr)
+            self.assertEqual(
+                [request["method"] for request in rpc_calls],
+                ["eth_getBlockByNumber", "eth_call"],
+            )
+            self.assertEqual(rpc_calls[0]["params"], ["latest", False])
+            expected_quote_data = "0x71623274" + "".join(
+                f"{value:064x}" for value in (57001, 1_000_000_000, 72_000_000, 800)
+            )
+            self.assertEqual(
+                rpc_calls[1]["params"],
+                [{"to": bridgehub, "data": expected_quote_data}, "0x4d"],
+            )
             fresh_forge_output = forge_events.read_text(encoding="utf-8")
             self.assertIn(
                 f"broadcast={operation_dir / 'broadcast'}\n", fresh_forge_output
@@ -3025,10 +3185,19 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
             for path in (dry_public, dry_sensitive, normal_public, normal_sensitive):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            dry_transaction = json.loads(
+                dry_public.read_text(encoding="utf-8")
+            )["transactions"][0]["transaction"]
+            self.assertEqual(
+                hashlib.sha256(dry_transaction["input"].encode()).hexdigest(),
+                "0c7d8e03b52b97f7b1e521f21f8f21a0a4d5dd280589f6cc7613f47747dc59a6",
+            )
             self.assertEqual(
                 json.loads(prepared_path.read_text(encoding="utf-8")),
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "quote_l1_block": "77",
+                    "expected_outer_value_wei": "107",
                     "public_sha256": hashlib.sha256(
                         dry_public.read_bytes()
                     ).hexdigest(),
@@ -3053,6 +3222,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 if line.startswith("forge_phase=")
             ]
             self.assertEqual(len(resumed_forge_lines), 1, resumed_forge_output)
+            self.assertEqual(len(rpc_calls), 2)
             self.assertIn(
                 "forge_phase=resume marker_before=true", resumed_forge_lines[0]
             )
@@ -3069,10 +3239,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
             balance_drift = run(
                 'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + f"kind=sender-balance target={target} minimum_balance_wei=10 "
-                "observed_balance_wei=4 value_wei=6 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
+                + sender_arguments(target, 4, 6)
                 + '\nprintf \'resume=%s value=%s\\n\' '
                 '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
             )
@@ -3081,21 +3248,15 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
 
             changed = run(
                 'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + f"kind=sender-balance target=0x{'99' * 20} "
-                "minimum_balance_wei=10 observed_balance_wei=4 value_wei=6 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
+                + sender_arguments("0x" + "99" * 20, 4, 6)
             )
             self.assertNotEqual(changed.returncode, 0)
-            self.assertIn("intent changed", changed.stderr)
+            self.assertIn("payload does not match its operation key", changed.stderr)
             self.assertEqual(intent_path.read_bytes(), intent_snapshot[0])
 
             decreased = run(
                 'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
-                + f"kind=sender-balance target={target} minimum_balance_wei=10 "
-                "observed_balance_wei=2 value_wei=8 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
+                + sender_arguments(target, 2, 8)
             )
             self.assertNotEqual(decreased.returncode, 0)
             self.assertIn(
@@ -3103,12 +3264,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
 
             early_key = "sender-balance-57058-0x" + "22" * 20
-            early_args = (
-                f"kind=sender-balance target=0x{'22' * 20} "
-                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
-            )
+            early_args = sender_arguments("0x" + "22" * 20, 2, 8)
             early = run(
                 f"begin_gateway_admin_repair {early_key} {early_args}\n"
                 "run_gateway_admin_repair_forge --sig probe",
@@ -3117,10 +3273,8 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             self.assertEqual(early.returncode, 17, early.stderr)
             early_retry = run(
                 f"begin_gateway_admin_repair {early_key} "
-                + f"kind=sender-balance target=0x{'22' * 20} "
-                + "minimum_balance_wei=10 observed_balance_wei=3 value_wei=7 "
-                + f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                + "l1_chain_id=5700\n"
+                + sender_arguments("0x" + "22" * 20, 3, 7)
+                + "\n"
                 "printf 'resume=%s value=%s\\n' "
                 '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
             )
@@ -3128,12 +3282,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             self.assertIn("resume=false value=8", early_retry.stdout)
 
             partial_key = "sender-balance-57058-0x" + "23" * 20
-            partial_args = (
-                f"kind=sender-balance target=0x{'23' * 20} "
-                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
-            )
+            partial_args = sender_arguments("0x" + "23" * 20, 2, 8)
             partial = run(
                 f"begin_gateway_admin_repair {partial_key} {partial_args}\n"
                 "run_gateway_admin_repair_forge --sig probe",
@@ -3159,12 +3308,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
 
             partial_normal_key = "sender-balance-57058-0x" + "24" * 20
-            partial_normal_args = (
-                f"kind=sender-balance target=0x{'24' * 20} "
-                "minimum_balance_wei=10 observed_balance_wei=2 value_wei=8 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
-            )
+            partial_normal_args = sender_arguments("0x" + "24" * 20, 2, 8)
             partial_normal = run(
                 f"begin_gateway_admin_repair {partial_normal_key} "
                 f"{partial_normal_args}\n"
@@ -3182,12 +3326,28 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 partial_normal_retry.stderr,
             )
 
-            common_args = (
-                "kind=committer-role value_wei=0 "
-                f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
-                "l1_chain_id=5700"
+            sequence_mutations = (
+                ("60", {"FAKE_FORGE_OUTER_VALUE": "109"}),
+                ("63", {"FAKE_SEQUENCE_MUTATION": "target"}),
+                ("71", {"FAKE_SEQUENCE_MUTATION": "trailing"}),
             )
+            for suffix, mutation in sequence_mutations:
+                with self.subTest(sequence_mutation=mutation):
+                    mutation_target = "0x" + suffix * 20
+                    mutation_key = f"sender-balance-57058-{mutation_target}"
+                    rejected = run(
+                        f"begin_gateway_admin_repair {mutation_key} "
+                        f"{sender_arguments(mutation_target, 2, 8)}\n"
+                        "run_gateway_admin_repair_forge --sig probe",
+                        **mutation,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertFalse(
+                        (repair_root / mutation_key / "prepared.json").exists()
+                    )
+
             tamper_key = "committer-role-57058-0x" + "25" * 20
+            common_args = committer_arguments("0x" + "25" * 20)
             sealed = run(
                 f"begin_gateway_admin_repair {tamper_key} {common_args}\n"
                 "run_gateway_admin_repair_forge --sig probe"
@@ -3202,6 +3362,13 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 / "dry-run"
                 / "adminL1L2TxViaGateway-latest.json"
             )
+            committer_tx = json.loads(tampered_public.read_text(encoding="utf-8"))[
+                "transactions"
+            ][0]["transaction"]["input"]
+            self.assertEqual(
+                hashlib.sha256(committer_tx.encode()).hexdigest(),
+                "b878bf7c7ba813ef4c746ca3853aad312c42907d66eaebe0651f072dd4bcfe91",
+            )
             tampered_public.write_bytes(tampered_public.read_bytes() + b"\n")
             tampered = run(
                 f"begin_gateway_admin_repair {tamper_key} {common_args}"
@@ -3212,8 +3379,9 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
 
             unknown_key = "committer-role-57058-0x" + "33" * 20
+            unknown_args = committer_arguments("0x" + "33" * 20)
             seeded = run(
-                f"begin_gateway_admin_repair {unknown_key} {common_args}"
+                f"begin_gateway_admin_repair {unknown_key} {unknown_args}"
             )
             self.assertEqual(seeded.returncode, 0, seeded.stderr)
             unknown_dir = (
@@ -3235,7 +3403,7 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             rogue.write_text("{}\n", encoding="utf-8")
             rogue.chmod(0o600)
             unknown = run(
-                f"begin_gateway_admin_repair {unknown_key} {common_args}"
+                f"begin_gateway_admin_repair {unknown_key} {unknown_args}"
             )
             self.assertNotEqual(unknown.returncode, 0)
             self.assertIn(
@@ -3243,8 +3411,9 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
 
             symlink_key = "committer-role-57058-0x" + "44" * 20
+            symlink_args = committer_arguments("0x" + "44" * 20)
             seeded = run(
-                f"begin_gateway_admin_repair {symlink_key} {common_args}"
+                f"begin_gateway_admin_repair {symlink_key} {symlink_args}"
             )
             self.assertEqual(seeded.returncode, 0, seeded.stderr)
             symlink_dir = repair_root / symlink_key / "broadcast"
@@ -3254,14 +3423,15 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
                 decoy, target_is_directory=True
             )
             symlinked = run(
-                f"begin_gateway_admin_repair {symlink_key} {common_args}"
+                f"begin_gateway_admin_repair {symlink_key} {symlink_args}"
             )
             self.assertNotEqual(symlinked.returncode, 0)
             self.assertIn("unsafe via-Gateway repair directory", symlinked.stderr)
 
             accepted_key = "committer-role-57058-0x" + "55" * 20
+            accepted_args = committer_arguments("0x" + "55" * 20)
             accepted = run(
-                f"begin_gateway_admin_repair {accepted_key} {common_args}",
+                f"begin_gateway_admin_repair {accepted_key} {accepted_args}",
                 FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
                 FAKE_FORGE_COMMIT="807f47ace7cdd90eed7190dc4481952cfaa25938",
             )
@@ -3277,8 +3447,9 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             )
 
             data_schema_key = "committer-role-57058-0x" + "56" * 20
+            data_schema_args = committer_arguments("0x" + "56" * 20)
             data_schema = run(
-                f"begin_gateway_admin_repair {data_schema_key} {common_args}\n"
+                f"begin_gateway_admin_repair {data_schema_key} {data_schema_args}\n"
                 "run_gateway_admin_repair_forge --sig probe",
                 FAKE_FORGE_CALLDATA_KEY="data",
                 FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
@@ -3299,8 +3470,9 @@ GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
             ):
                 with self.subTest(unaudited_foundry=suffix):
                     rejected_key = "committer-role-57058-0x" + suffix * 20
+                    rejected_args = committer_arguments("0x" + suffix * 20)
                     rejected = run(
-                        f"begin_gateway_admin_repair {rejected_key} {common_args}",
+                        f"begin_gateway_admin_repair {rejected_key} {rejected_args}",
                         **overrides,
                     )
                     self.assertNotEqual(rejected.returncode, 0)
@@ -6567,9 +6739,10 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         self.assertIn("address_for_private_key", common)
         fund_wallets = common[common.index("gl_fund_wallets_yaml() {") :]
         self.assertIn(
-            'GATEWAY_LAUNCH_HELPER_DIR="${GATEWAY_LAUNCH_HELPER_DIR:-${GL_DIR}}" python3',
+            'GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3',
             fund_wallets,
         )
+        self.assertNotIn("GATEWAY_LAUNCH_HELPER_DIR:-", fund_wallets)
         self.assertIn("missing private key for required server signer", common)
         self.assertLess(
             common.index("server_signer_roles ="),

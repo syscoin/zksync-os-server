@@ -552,7 +552,7 @@ assert_gateway_chain_artifact_matches_live() {
   if [ ! -e "${artifact}" ] && [ ! -L "${artifact}" ]; then
     return 0
   fi
-  live_diamond="$(get_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}")" || return $?
+  live_diamond="$(wait_for_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}" 60 2)" || return $?
   gl_assert_edge_chain_init_local_artifacts ready "$(gl_to_lower "${live_diamond}")"
 }
 
@@ -1174,6 +1174,7 @@ import re
 import shutil
 import stat
 import sys
+import urllib.request
 from pathlib import Path
 
 action = sys.argv[1]
@@ -1183,10 +1184,11 @@ l1_chain_id = sys.argv[4]
 arguments = sys.argv[5:]
 rpc_url = os.environ.get("GATEWAY_ADMIN_REPAIR_RPC_URL", "")
 
-if not re.fullmatch(
-    r"(?:committer-role|sender-balance)-[1-9][0-9]*-0x[0-9a-f]{40}",
+operation_match = re.fullmatch(
+    r"(?P<kind>committer-role|sender-balance)-(?P<chain>[1-9][0-9]*)-(?P<address>0x[0-9a-f]{40})",
     operation_key,
-):
+)
+if operation_match is None:
     raise SystemExit(f"invalid via-Gateway repair operation key: {operation_key}")
 if not re.fullmatch(r"[1-9][0-9]*", l1_chain_id):
     raise SystemExit(f"invalid L1 chain ID for via-Gateway repair: {l1_chain_id}")
@@ -1293,21 +1295,45 @@ def safe_rmtree(path: Path) -> None:
 def validate_intent_arguments(items: list[str]) -> tuple[dict[str, str], int]:
     parsed = parse_arguments(items)
     kind = parsed.get("kind")
-    expected = "committer-role" if operation_key.startswith("committer-role-") else "sender-balance"
+    expected = operation_match.group("kind")
     if kind != expected:
         raise SystemExit(f"invalid via-Gateway repair kind for {operation_key}")
-    required = (
-        "value_wei", "signer", "bridgehub", "l1_admin", "l1_chain_id",
-        "foundry_version", "foundry_commit", "foundry_sha256",
+    common = {
+        "kind", "contracts_sha", "admin_script_sha256", "l1_chain_id",
+        "admin_chain_id", "destination_chain_id", "signer", "bridgehub",
+        "l1_admin", "max_l1_gas_price", "target", "value_wei", "calldata",
+        "refund_recipient", "foundry_version", "foundry_commit", "foundry_sha256",
+    }
+    specific = (
+        {"chain_proxy", "role", "committer"}
+        if kind == "committer-role"
+        else {"minimum_balance_wei", "observed_balance_wei"}
     )
-    if any(not parsed.get(key) for key in required) or parsed["l1_chain_id"] != l1_chain_id:
+    if set(parsed) != common | specific or parsed["l1_chain_id"] != l1_chain_id:
         raise SystemExit(f"incomplete via-Gateway repair intent for {operation_key}")
-    for key in ("signer", "bridgehub", "l1_admin"):
-        if not re.fullmatch(r"0x[0-9a-f]{40}", parsed[key]):
+    for key in ("signer", "bridgehub", "l1_admin", "target", "refund_recipient"):
+        if not re.fullmatch(r"0x[0-9a-f]{40}", parsed[key]) or parsed[key] == "0x" + "0" * 40:
             raise SystemExit(f"invalid {key} in via-Gateway repair intent")
-    if not re.fullmatch(r"[0-9a-f]{64}", parsed["foundry_sha256"]):
-        raise SystemExit("invalid foundry_sha256 in via-Gateway repair intent")
+    for key in ("admin_script_sha256", "foundry_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", parsed[key]):
+            raise SystemExit(f"invalid {key} in via-Gateway repair intent")
+    if not re.fullmatch(r"[0-9a-f]{40}", parsed["contracts_sha"]):
+        raise SystemExit("invalid contracts_sha in via-Gateway repair intent")
+    if not re.fullmatch(r"0x(?:[0-9a-f]{2})*", parsed["calldata"]):
+        raise SystemExit("invalid calldata in via-Gateway repair intent")
+    admin_chain_id = uint(parsed["admin_chain_id"], "admin_chain_id")
+    destination_chain_id = uint(parsed["destination_chain_id"], "destination_chain_id")
+    max_l1_gas_price = uint(parsed["max_l1_gas_price"], "max_l1_gas_price")
+    if (
+        admin_chain_id == 0
+        or destination_chain_id == 0
+        or max_l1_gas_price == 0
+        or str(admin_chain_id) != operation_match.group("chain")
+    ):
+        raise SystemExit(f"invalid chain or gas identity in via-Gateway repair intent for {operation_key}")
     value = uint(parsed["value_wei"], "value_wei")
+    if parsed["refund_recipient"] != parsed["signer"]:
+        raise SystemExit("via-Gateway repair refund recipient must be the signer")
     if kind == "committer-role" and value != 0:
         raise SystemExit("committer-role via-Gateway repair must not transfer value")
     if kind == "sender-balance":
@@ -1315,7 +1341,122 @@ def validate_intent_arguments(items: list[str]) -> tuple[dict[str, str], int]:
         minimum = uint(parsed.get("minimum_balance_wei"), "minimum_balance_wei")
         if observed + value != minimum:
             raise SystemExit("sender-balance repair value does not match its observed deficit")
+        if parsed["calldata"] != "0x" or parsed["target"] != operation_match.group("address"):
+            raise SystemExit("sender-balance repair payload does not match its operation key")
+    else:
+        for key in ("chain_proxy", "committer"):
+            if not re.fullmatch(r"0x[0-9a-f]{40}", parsed[key]) or parsed[key] == "0x" + "0" * 40:
+                raise SystemExit(f"invalid {key} in via-Gateway repair intent")
+        if not re.fullmatch(r"0x[0-9a-f]{64}", parsed["role"]):
+            raise SystemExit("invalid role in via-Gateway repair intent")
+        expected_grant = (
+            "0x3290f93a"
+            + "0" * 24 + parsed["chain_proxy"][2:]
+            + parsed["role"][2:]
+            + "0" * 24 + parsed["committer"][2:]
+        )
+        if (
+            parsed["committer"] != operation_match.group("address")
+            or parsed["calldata"] != expected_grant
+        ):
+            raise SystemExit("committer-role repair calldata does not match its intent")
     return parsed, value
+
+def abi_word(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+def abi_address(value: str) -> bytes:
+    return bytes(12) + bytes.fromhex(value[2:])
+
+def abi_bytes(value: bytes) -> bytes:
+    return abi_word(len(value)) + value + bytes((-len(value)) % 32)
+
+# SYSCOIN: Quote the pinned priority-tx envelope at one L1 block, then rebuild
+# the sole native-SYS ChainAdmin call so no unbound Forge sequence can be sealed.
+def rpc(method: str, params: list[object]) -> object:
+    request = urllib.request.Request(
+        rpc_url,
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+        {
+            "Content-Type": "application/json",
+            "User-Agent": "zksync-os-server-gateway-launch/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversized response")
+        payload = json.loads(raw)
+    except Exception:
+        raise SystemExit("failed to quote via-Gateway repair on L1") from None
+    if not isinstance(payload, dict) or payload.get("id") != 1 or "error" in payload or "result" not in payload:
+        raise SystemExit("invalid L1 RPC response while quoting via-Gateway repair")
+    return payload["result"]
+
+def quote_outer_value(intent: dict[str, str], value: int) -> tuple[int, int]:
+    block = rpc("eth_getBlockByNumber", ["latest", False])
+    if not isinstance(block, dict):
+        raise SystemExit("invalid L1 block while quoting via-Gateway repair")
+    block_number = uint(block.get("number"), "quote_l1_block")
+    effective_gas_price = max(
+        uint(block.get("baseFeePerGas"), "L1 base fee"),
+        uint(intent["max_l1_gas_price"], "max_l1_gas_price"),
+    )
+    quote_data = "0x71623274" + b"".join(
+        (
+            abi_word(uint(intent["destination_chain_id"], "destination_chain_id")),
+            abi_word(effective_gas_price),
+            abi_word(72_000_000),
+            abi_word(800),
+        )
+    ).hex()
+    base_cost = uint(
+        rpc("eth_call", [{"to": intent["bridgehub"], "data": quote_data}, hex(block_number)]),
+        "L2 transaction base cost",
+    )
+    if base_cost == 0:
+        raise SystemExit("invalid zero L2 transaction base cost")
+    outer_value = base_cost * 10 + value
+    if outer_value >= 1 << 256:
+        raise SystemExit("via-Gateway repair quote exceeds uint256")
+    return block_number, outer_value
+
+def expected_sequence_calldata(intent: dict[str, str], outer_value: int) -> str:
+    l2_calldata = bytes.fromhex(intent["calldata"][2:])
+    request_tail = abi_bytes(l2_calldata) + abi_word(0)
+    request = bytes.fromhex("d52471c1") + abi_word(32) + b"".join(
+        (
+            abi_word(uint(intent["destination_chain_id"], "destination_chain_id")),
+            abi_word(outer_value),
+            abi_address(intent["target"]),
+            abi_word(uint(intent["value_wei"], "value_wei")),
+            abi_word(9 * 32),
+            abi_word(72_000_000),
+            abi_word(800),
+            abi_word(9 * 32 + len(abi_bytes(l2_calldata))),
+            abi_address(intent["refund_recipient"]),
+            request_tail,
+        )
+    )
+    call = b"".join(
+        (
+            abi_address(intent["bridgehub"]),
+            abi_word(outer_value),
+            abi_word(3 * 32),
+            abi_bytes(request),
+        )
+    )
+    payload = b"".join(
+        (
+            abi_word(2 * 32),
+            abi_word(1),
+            abi_word(1),
+            abi_word(32),
+            call,
+        )
+    )
+    return "0x69340beb" + payload.hex()
 
 root = state_dir / "via-gateway-repairs"
 operation_dir = root / operation_key
@@ -1376,7 +1517,11 @@ def projection(data: dict[str, object]) -> dict[str, object]:
     projected["transactions"] = txs
     return projected
 
-def load_sequence_pair(dry_run: bool, intent_arguments: dict[str, str]) -> tuple[bytes, bytes, dict[str, object]]:
+def load_sequence_pair(
+    dry_run: bool,
+    intent_arguments: dict[str, str],
+    expected_outer_value: int,
+) -> tuple[bytes, bytes, dict[str, object]]:
     public_path = sequence_path(broadcast_dir, dry_run)
     sensitive_path = sequence_path(cache_dir, dry_run)
     if present(public_path) != present(sensitive_path):
@@ -1403,11 +1548,17 @@ def load_sequence_pair(dry_run: bool, intent_arguments: dict[str, str]) -> tuple
         raise SystemExit(f"wrong target in via-Gateway repair sequence: {public_path}")
     if request.get("nonce") is None or uint(request["nonce"], "transaction nonce") >= 1 << 64:
         raise SystemExit(f"invalid nonce in via-Gateway repair sequence: {public_path}")
+    if request.get("value") is None or uint(request["value"], "transaction value") != expected_outer_value:
+        raise SystemExit(f"wrong value in via-Gateway repair sequence: {public_path}")
     calldata_keys = [key for key in ("input", "data") if key in request]
     if len(calldata_keys) != 1:
         raise SystemExit(f"ambiguous calldata in via-Gateway repair sequence: {public_path}")
     tx_data = request[calldata_keys[0]]
-    if not isinstance(tx_data, str) or not re.fullmatch(r"0x[0-9a-fA-F]{8,}", tx_data):
+    if (
+        not isinstance(tx_data, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{8,}", tx_data)
+        or tx_data.lower() != expected_sequence_calldata(intent_arguments, expected_outer_value)
+    ):
         raise SystemExit(f"invalid calldata in via-Gateway repair sequence: {public_path}")
     if dry_run and (entry.get("hash") is not None or public.get("receipts") != [] or public.get("pending") != []):
         raise SystemExit(f"non-pristine dry-run via-Gateway repair sequence: {public_path}")
@@ -1432,14 +1583,20 @@ def load_saved_intent() -> tuple[dict[str, object], dict[str, str], int]:
     parsed, value = validate_intent_arguments(saved["arguments"])
     return saved, parsed, value
 
-def load_marker() -> dict[str, str]:
+def load_marker() -> tuple[dict[str, object], int]:
     _, marker = load_json(prepared_path, exact_mode=0o600)
-    if not isinstance(marker, dict) or set(marker) != {"schema_version", "public_sha256", "sensitive_sha256"} or marker.get("schema_version") != 1:
+    expected_keys = {
+        "schema_version", "quote_l1_block", "expected_outer_value_wei",
+        "public_sha256", "sensitive_sha256",
+    }
+    if not isinstance(marker, dict) or set(marker) != expected_keys or marker.get("schema_version") != 2:
         raise SystemExit(f"invalid via-Gateway repair marker: {prepared_path}")
     for key in ("public_sha256", "sensitive_sha256"):
         if not isinstance(marker.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", marker[key]):
             raise SystemExit(f"invalid via-Gateway repair marker: {prepared_path}")
-    return marker
+    quote_block = uint(marker["quote_l1_block"], "quote_l1_block")
+    expected_outer_value = uint(marker["expected_outer_value_wei"], "expected_outer_value_wei")
+    return marker, expected_outer_value
 
 if action == "begin":
     if not arguments:
@@ -1520,8 +1677,12 @@ if action == "begin":
             raise SystemExit(f"unsealed broadcast sequence for {operation_key}; refusing replay")
         print(f"prepare|{saved_value}")
     else:
-        marker = load_marker()
-        dry_public, dry_sensitive, dry_projection = load_sequence_pair(True, saved_arguments)
+        marker, expected_outer_value = load_marker()
+        if expected_outer_value < saved_value or (expected_outer_value - saved_value) % 10:
+            raise SystemExit(f"invalid via-Gateway repair quote for {operation_key}")
+        dry_public, dry_sensitive, dry_projection = load_sequence_pair(
+            True, saved_arguments, expected_outer_value
+        )
         if hashlib.sha256(dry_public).hexdigest() != marker["public_sha256"] or hashlib.sha256(dry_sensitive).hexdigest() != marker["sensitive_sha256"]:
             raise SystemExit(f"sealed via-Gateway repair sequence changed for {operation_key}")
         normal_public = sequence_path(broadcast_dir, False)
@@ -1529,24 +1690,33 @@ if action == "begin":
         if present(normal_public) != present(normal_cache):
             raise SystemExit(f"partial broadcast via-Gateway repair sequence for {operation_key}")
         if present(normal_public):
-            _, _, normal_projection = load_sequence_pair(False, saved_arguments)
+            _, _, normal_projection = load_sequence_pair(
+                False, saved_arguments, expected_outer_value
+            )
             if normal_projection != dry_projection:
                 raise SystemExit(f"broadcast via-Gateway repair sequence changed for {operation_key}")
         print(f"resume|{saved_value}")
 elif action == "seal":
+    if arguments:
+        raise SystemExit(f"unexpected via-Gateway repair seal arguments for {operation_key}")
     require_private_dir(state_dir)
     require_private_dir(root)
     require_private_dir(operation_dir)
     require_private_dir(broadcast_dir)
     require_private_dir(cache_dir)
-    _, saved_arguments, _ = load_saved_intent()
+    _, saved_arguments, saved_value = load_saved_intent()
     normal_files, dry_files = inspect_sequence_tree(broadcast_dir)
     normal_sensitive, dry_sensitive_files = inspect_sequence_tree(cache_dir)
     if normal_files or normal_sensitive:
         raise SystemExit(f"broadcast sequence exists before sealing {operation_key}")
-    public_raw, sensitive_raw, _ = load_sequence_pair(True, saved_arguments)
     if present(prepared_path):
-        marker = load_marker()
+        marker, expected_outer_value = load_marker()
+    else:
+        quote_l1_block, expected_outer_value = quote_outer_value(saved_arguments, saved_value)
+    public_raw, sensitive_raw, _ = load_sequence_pair(
+        True, saved_arguments, expected_outer_value
+    )
+    if present(prepared_path):
         if marker["public_sha256"] != hashlib.sha256(public_raw).hexdigest() or marker["sensitive_sha256"] != hashlib.sha256(sensitive_raw).hexdigest():
             raise SystemExit(f"sealed via-Gateway repair sequence changed for {operation_key}")
         raise SystemExit(0)
@@ -1569,7 +1739,9 @@ elif action == "seal":
     for path in sorted(dirs, key=lambda item: len(item.parts), reverse=True):
         fsync_dir(path)
     marker = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "quote_l1_block": str(quote_l1_block),
+        "expected_outer_value_wei": str(expected_outer_value),
         "public_sha256": hashlib.sha256(public_raw).hexdigest(),
         "sensitive_sha256": hashlib.sha256(sensitive_raw).hexdigest(),
     }
