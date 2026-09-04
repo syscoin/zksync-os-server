@@ -1471,6 +1471,25 @@ index 000000000..528308d0c
 +error SyscoinEdgeDARelayCodeHashMismatch(address relay, bytes32 expected, bytes32 actual);
 +error SyscoinEdgeDARelayArtifactHashMismatch(bytes32 expected, bytes32 actual);
 +error SyscoinEdgeDARelayAddressMismatch(address expected, address actual);
+diff --git a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
+index 177a12c88..71ea1fa1e 100644
+--- a/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
++++ b/l1-contracts/contracts/script-interfaces/IAdminFunctions.sol
+@@ -213,0 +214,14 @@ interface IAdminFunctions {
++
++    /// @notice SYSCOIN: Route a transaction to Gateway while retaining the
++    ///         migrated edge chain's L1 administrator as the caller.
++    function adminL1L2TxViaGateway(
++        address bridgehub,
++        uint256 l1GasPrice,
++        uint256 adminChainId,
++        uint256 gatewayChainId,
++        address to,
++        uint256 value,
++        bytes calldata data,
++        address refundRecipient,
++        bool shouldSend
++    ) external;
 diff --git a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol b/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
 index 86bac78cd..6b4f9fa10 100644
 --- a/l1-contracts/contracts/script-interfaces/IDeployL2Contracts.sol
@@ -2181,7 +2200,7 @@ index 5e083b2a1..6a860a1e8 100644
 +            // SYSCOIN: the native-token sentinel represents SYS on this deployment.
 +            tokenData = TokenMetadata({name: string("Syscoin"), symbol: string("SYS"), decimals: 18});
 diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
-index 45471632f..9321c3116 100644
+index 45471632f..67700bccc 100644
 --- a/l1-contracts/deploy-scripts/AdminFunctions.s.sol
 +++ b/l1-contracts/deploy-scripts/AdminFunctions.s.sol
 @@ -19,0 +20 @@ import {ChainAdmin} from "contracts/governance/ChainAdmin.sol";
@@ -2266,6 +2285,66 @@ index 45471632f..9321c3116 100644
 +        } catch {
 +            require(IBridgehubBase(_target).admin() == expectedAdmin, "admin acceptance did not update admin");
 +        }
+@@ -1271 +1324,4 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        uint256 chainId;
++        // SYSCOIN: Migrated edges authorize through their own L1 admin while
++        // Gateway is the priority transaction's independent destination.
++        uint256 adminChainId;
++        uint256 destinationChainId;
+@@ -1282 +1338 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        ChainInfoFromBridgehub memory l2ChainInfo = Utils.chainInfoFromBridgehubAndChainId(
++        ChainInfoFromBridgehub memory adminChainInfo = Utils.chainInfoFromBridgehubAndChainId(
+@@ -1284 +1340 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            params.chainId
++            params.adminChainId
+@@ -1293 +1349 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            params.chainId,
++            params.destinationChainId,
+@@ -1295 +1351 @@ contract AdminFunctions is Script, IAdminFunctions {
+-            l2ChainInfo.l1AssetRouterProxy,
++            adminChainInfo.l1AssetRouterProxy,
+@@ -1299 +1355 @@ contract AdminFunctions is Script, IAdminFunctions {
+-        saveAndSendAdminTx(l2ChainInfo.admin, calls, params._shouldSend);
++        saveAndSendAdminTx(adminChainInfo.admin, calls, params._shouldSend);
+@@ -1316 +1372,37 @@ contract AdminFunctions is Script, IAdminFunctions {
+-                chainId: _chainId,
++                adminChainId: _chainId,
++                destinationChainId: _chainId,
++                to: _to,
++                value: _value,
++                data: _data,
++                refundRecipient: _refundRecipient,
++                _shouldSend: _shouldSend
++            })
++        );
++    }
++
++    /// @notice SYSCOIN: Send a Gateway-bound priority transaction through the
++    ///         edge chain's L1 ChainAdmin after that edge has migrated.
++    function adminL1L2TxViaGateway(
++        address _bridgehub,
++        uint256 _l1GasPrice,
++        uint256 _adminChainId,
++        uint256 _gatewayChainId,
++        address _to,
++        uint256 _value,
++        bytes memory _data,
++        address _refundRecipient,
++        bool _shouldSend
++    ) public {
++        // SYSCOIN: Fail before broadcast if the caller accidentally combines
++        // an edge administrator with a Gateway that does not settle its chain.
++        require(_adminChainId != 0 && _gatewayChainId != 0, "chain id is zero");
++        require(
++            L1Bridgehub(_bridgehub).settlementLayer(_adminChainId) == _gatewayChainId,
++            "admin chain does not settle on gateway"
++        );
++        _adminL1L2TxInner(
++            AdminL1L2TxParams({
++                bridgehub: _bridgehub,
++                l1GasPrice: _l1GasPrice,
++                adminChainId: _adminChainId,
++                destinationChainId: _gatewayChainId,
 diff --git a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol b/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 index 440479469..c71e07ef6 100644
 --- a/l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
@@ -2907,7 +2986,7 @@ index 000000000..7918b2a11
 +  "expectedAddress": "0x758b06cDA80BDD016F79AFd0df1A984039067A21"
 +}
 diff --git a/l1-contracts/selectors b/l1-contracts/selectors
-index 35a078048..f843f00fb 100644
+index 35a078048..0b1b2bdda 100644
 --- a/l1-contracts/selectors
 +++ b/l1-contracts/selectors
 @@ -1650,2 +1649,0 @@ CommitterFacet
@@ -2953,7 +3032,10 @@ index 35a078048..f843f00fb 100644
 +|----------+-------------------------------------------------------------+------------|
 +| Error    | SyscoinEdgeDARelayMissing(address)                          | 0xcc2c2e20 |
 +╰----------+-------------------------------------------------------------+------------╯
-@@ -7930,7 +7950,11 @@ IZKsyncOSDualVerifier
+@@ -4916,0 +4937,2 @@ IAdminFunctions
++| Function | adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)                  | 0x36cec6db |
++|----------+------------------------------------------------------------------------------------------------------------+------------|
+@@ -7930,7 +7952,11 @@ IZKsyncOSDualVerifier
 -╭----------+-------------------------+------------╮
 -| Type     | Signature               | Selector   |
 -+=================================================+
@@ -2972,7 +3054,7 @@ index 35a078048..f843f00fb 100644
 +|----------+---------------------------------+------------|
 +| Function | replaceVerifier(uint32,address) | 0x39c0a35a |
 +╰----------+---------------------------------+------------╯
-@@ -13194,0 +13219,52 @@ StoredBatchHashing
+@@ -13192,0 +13219,52 @@ StoredBatchHashing
 +SyscoinRelayedSLDAValidator
 +
 +╭----------+--------------------------------------------------+------------╮
@@ -3025,10 +3107,10 @@ index 35a078048..f843f00fb 100644
 +| Error    | ZeroAddress()                                    | 0xd92e233d                                                         |
 +╰----------+--------------------------------------------------+--------------------------------------------------------------------╯
 +
-@@ -13349,2 +13424,0 @@ TestCommitter
+@@ -13349,2 +13426,0 @@ TestCommitter
 -| Error    | NonZeroBlobToVerifyZKsyncOS(uint256,bytes32,bytes32)     | 0x0e0ff4d9                                                         |
 -|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -13362,0 +13437,10 @@ TestCommitter
+@@ -13360,0 +13437,10 @@ TestCommitter
 +| Error    | SyscoinEdgeDACommitmentMismatch(bytes32,bytes32)         | 0xe4e9188e                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDANotAvailable(bytes32)                       | 0x076d05e9                                                         |
@@ -3039,33 +3121,27 @@ index 35a078048..f843f00fb 100644
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
 +| Error    | SyscoinEdgeDARefsRootMismatch(bytes32,bytes32)           | 0x05dc7af9                                                         |
 +|----------+----------------------------------------------------------+--------------------------------------------------------------------|
-@@ -14027 +14111 @@ ZKsyncOSDualVerifier
+@@ -14027 +14113 @@ ZKsyncOSDualVerifier
 -| Function | acceptOwnership()                         | 0x79ba5097                                                         |
 +| Function | IS_TESTNET_VERIFIER()                     | 0x272d0f1a                                                         |
-@@ -14029 +14113 @@ ZKsyncOSDualVerifier
+@@ -14029 +14115 @@ ZKsyncOSDualVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 +| Function | acceptOwnership()                         | 0x79ba5097                                                         |
-@@ -14043,2 +14126,0 @@ ZKsyncOSDualVerifier
+@@ -14043 +14129 @@ ZKsyncOSDualVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
--|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14046,0 +14129,2 @@ ZKsyncOSDualVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-+|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14059 +14143,3 @@ ZKsyncOSDualVerifier
+@@ -14059 +14145,3 @@ ZKsyncOSDualVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|
 +| Error    | AddressHasNoCode(address)                 | 0x86bb51b8                                                         |
-@@ -14159,2 +14244,0 @@ ZKsyncOSTestnetVerifier
+@@ -14159,2 +14246,0 @@ ZKsyncOSTestnetVerifier
 -| Function | addVerifier(uint32,address,address)       | 0x80c6c967                                                         |
 -|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14173,2 +14256,0 @@ ZKsyncOSTestnetVerifier
+@@ -14173 +14259 @@ ZKsyncOSTestnetVerifier
 -| Function | removeVerifier(uint32)                    | 0x58406bf9                                                         |
--|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14176,0 +14259,2 @@ ZKsyncOSTestnetVerifier
 +| Function | replaceVerifier(uint32,address)           | 0x39c0a35a                                                         |
-+|----------+-------------------------------------------+--------------------------------------------------------------------|
-@@ -14189 +14273,3 @@ ZKsyncOSTestnetVerifier
+@@ -14189 +14275,3 @@ ZKsyncOSTestnetVerifier
 -| Error    | AddressAlreadySet(address)                | 0x0dfb42bf                                                         |
 +| Event    | VerifierReplaced(uint32,address,address)  | 0x27f4ce63d5b92b8977e8c20c406dac39f470c4e57e7bd15e38f408723b55103f |
 +|----------+-------------------------------------------+--------------------------------------------------------------------|

@@ -69,8 +69,12 @@ installation does not satisfy this prerequisite.
 ```bash
 curl -L https://raw.githubusercontent.com/matter-labs/foundry-zksync/main/install-foundry-zksync | bash
 export PATH="$HOME/.foundry/bin:$PATH"
-foundryup-zksync
+foundryup-zksync -i v0.1.5
 ```
+
+The migration repair journal accepts this pinned build (and the audited
+vanilla Foundry 1.7.1 fallback) only; changing Forge requires re-auditing its
+sequence persistence and resume behavior.
 
 Cache the Solidity and ZKsync Solidity compilers used by the v32 contracts
 before the first offline

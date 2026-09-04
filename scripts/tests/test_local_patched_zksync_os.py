@@ -5,6 +5,7 @@ import http.server
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -48,7 +49,7 @@ PUBLISHED_GAS_TANK_SOURCE_SHA256 = (
     "7ba8d21c59b244c090be3cda6e01581d652a79c930ff0a488172e1212b74f188"
 )
 PUBLISHED_ZKSYNC_OS_PATCHED_TREE = "9e677f536230cc87c1bce8011f3a8074eb39e37a"
-PUBLISHED_ERA_PATCHED_TREE = "02cb2cda34f47c09df404c3bce54cb592f72579d"
+PUBLISHED_ERA_PATCHED_TREE = "2a28a08e439d35ff25643d3d108c05e846cdf0fe"
 PENDING_V8_MOCK_ZKSTACK_SHA = "d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 PENDING_V8_MOCK_CONTRACTS_SHA = "8fb7c29a4e3174335c6480b23f57822e054f9d5f"
 PUBLISHED_ERA_GENESIS_ROOT = (
@@ -175,6 +176,40 @@ def gateway_checkpoint_state_file(env: dict[str, str]) -> Path:
 def rust_address_bytes(address: str) -> str:
     value = address.removeprefix("0x")
     return ", ".join(f"0x{value[index:index + 2]}" for index in range(0, 40, 2))
+
+
+class ZkstackChainNameTests(unittest.TestCase):
+    def test_direct_edge_entrypoints_validate_before_mutation(self) -> None:
+        launch_dir = REPO_ROOT / "scripts" / "gateway-launch"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            env = canonical_gateway_fingerprint_env(
+                root,
+                HOME=str(root),
+                ZKSYNC_OS_SERVER_PATH=str(REPO_ROOT),
+                ZKSYNC_ERA_PATH=str(root / "era"),
+                EDGE_CHAIN_NAME="edge-b",
+                EDGE_CHAIN_ID="57058",
+            )
+            for script_name, args in (
+                ("edge-chain-create-init.sh", ()),
+                ("edge-chain-migrate-to-gateway.sh", ()),
+                ("generate-os-server-configs.sh", ("--edge-only",)),
+            ):
+                with self.subTest(script=script_name):
+                    result = subprocess.run(
+                        [str(launch_dir / script_name), *args],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "EDGE_CHAIN_NAME must be zkstack-canonical",
+                        result.stderr,
+                    )
+            self.assertEqual(list(root.iterdir()), [])
 
 
 class AdditionalEdgeIndexTests(unittest.TestCase):
@@ -588,7 +623,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             for chain_name, chain_id in (
                 ("gateway", 57001),
                 ("zksys", 57057),
-                ("edge-b", 57058),
+                ("edge_b", 57058),
             ):
                 write_source_chain(chain_name, chain_id)
             ecosystem_configs = gateway_dir / "configs"
@@ -685,7 +720,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.initialize_canonical(canonical_env)
             edge_env = {
                 **canonical_env,
-                "EDGE_CHAIN_NAME": "edge-b",
+                "EDGE_CHAIN_NAME": "edge_b",
                 "EDGE_CHAIN_ID": "57058",
                 "EDGE_OS_RPC_PORT": "4050",
                 "EDGE_PROVER_API_PORT": "4125",
@@ -706,7 +741,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.assertEqual(generated.returncode, 0, generated.stderr)
             self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
             self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
-            self.assertTrue((output_root / "edge-b" / "config.yaml").is_file())
+            self.assertTrue((output_root / "edge_b" / "config.yaml").is_file())
             combined = (output_root / "prover-api.nginx.conf").read_text(
                 encoding="utf-8"
             )
@@ -738,9 +773,9 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             saved_zksys.rename(output_root / "zksys")
 
-            write_source_chain("edge-c", 57059)
+            write_source_chain("edge_c", 57059)
             saved_edge_b = root / "saved-edge-b-materialized"
-            (output_root / "edge-b").rename(saved_edge_b)
+            (output_root / "edge_b").rename(saved_edge_b)
             missing_prior_edge = subprocess.run(
                 [str(generator), "--check-only", "--edge-only"],
                 check=False,
@@ -748,7 +783,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_NAME": "edge_c",
                     "EDGE_CHAIN_ID": "57059",
                     "EDGE_OS_RPC_PORT": "5050",
                     "EDGE_PROVER_API_PORT": "5125",
@@ -759,11 +794,11 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(missing_prior_edge.returncode, 0)
             self.assertIn(
-                "indexed chains are missing materialized OS-server configs: edge-b",
+                "indexed chains are missing materialized OS-server configs: edge_b",
                 missing_prior_edge.stderr,
             )
-            saved_edge_b.rename(output_root / "edge-b")
-            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+            saved_edge_b.rename(output_root / "edge_b")
+            shutil.rmtree(gateway_dir / "chains" / "edge_c")
 
             gateway_config_path = output_root / "gateway" / "config.yaml"
             gateway_config_bytes = gateway_config_path.read_bytes()
@@ -827,7 +862,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            write_source_chain("edge-multi-domain", 57062)
+            write_source_chain("edge_multi_domain", 57062)
             multi_name_collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -835,7 +870,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-multi-domain",
+                    "EDGE_CHAIN_NAME": "edge_multi_domain",
                     "EDGE_CHAIN_ID": "57062",
                     "EDGE_OS_RPC_PORT": "7050",
                     "EDGE_PROVER_API_PORT": "7125",
@@ -847,7 +882,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             self.assertNotEqual(multi_name_collision.returncode, 0)
             self.assertIn("domain collision", multi_name_collision.stderr)
             gateway_fragment.write_bytes(gateway_fragment_bytes)
-            shutil.rmtree(gateway_dir / "chains" / "edge-multi-domain")
+            shutil.rmtree(gateway_dir / "chains" / "edge_multi_domain")
 
             full_before = snapshot(output_root)
             canonical_port_collision = subprocess.run(
@@ -886,7 +921,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             gateway_config_path.write_bytes(gateway_config_bytes)
             gateway_config_path.chmod(0o600)
 
-            edge_config = output_root / "edge-b" / "config.yaml"
+            edge_config = output_root / "edge_b" / "config.yaml"
             expected_edge_config = edge_config.read_bytes()
             edge_config.write_bytes(expected_edge_config + b"# drift\n")
             drifted = subprocess.run(
@@ -903,7 +938,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             edge_config.write_bytes(expected_edge_config)
 
-            write_source_chain("edge-c", 57059)
+            write_source_chain("edge_c", 57059)
             collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -911,19 +946,19 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-c",
+                    "EDGE_CHAIN_NAME": "edge_c",
                     "EDGE_CHAIN_ID": "57059",
                     "EDGE_PROVER_API_DOMAIN": "edge-c.test",
                 },
             )
             self.assertNotEqual(collision.returncode, 0)
             self.assertIn("listener collision", collision.stderr)
-            self.assertFalse((output_root / "edge-c").exists())
+            self.assertFalse((output_root / "edge_c").exists())
             self.assertEqual(snapshot(output_root / "gateway"), gateway_before)
             self.assertEqual(snapshot(output_root / "zksys"), zksys_before)
-            shutil.rmtree(gateway_dir / "chains" / "edge-c")
+            shutil.rmtree(gateway_dir / "chains" / "edge_c")
 
-            write_source_chain("edge-domain", 57061)
+            write_source_chain("edge_domain", 57061)
             domain_collision = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -931,7 +966,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-domain",
+                    "EDGE_CHAIN_NAME": "edge_domain",
                     "EDGE_CHAIN_ID": "57061",
                     "EDGE_OS_RPC_PORT": "6050",
                     "EDGE_PROVER_API_PORT": "6125",
@@ -942,8 +977,8 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(domain_collision.returncode, 0)
             self.assertIn("domain collision", domain_collision.stderr)
-            self.assertFalse((output_root / "edge-domain").exists())
-            shutil.rmtree(gateway_dir / "chains" / "edge-domain")
+            self.assertFalse((output_root / "edge_domain").exists())
+            shutil.rmtree(gateway_dir / "chains" / "edge_domain")
 
             aggregate_path = output_root / "prover-api.nginx.conf"
             aggregate_path.write_text("stale aggregate\n", encoding="utf-8")
@@ -1015,7 +1050,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             saved_pending_zksys.rename(output_root / "zksys")
 
             saved_pending_other = root / "saved-pending-edge-b"
-            (output_root / "edge-b").rename(saved_pending_other)
+            (output_root / "edge_b").rename(saved_pending_other)
             missing_other = subprocess.run(
                 [str(generator), "--check-only"],
                 check=False,
@@ -1025,10 +1060,10 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
             )
             self.assertNotEqual(missing_other.returncode, 0)
             self.assertIn(
-                "indexed chains are missing materialized OS-server configs: edge-b",
+                "indexed chains are missing materialized OS-server configs: edge_b",
                 missing_other.stderr,
             )
-            saved_pending_other.rename(output_root / "edge-b")
+            saved_pending_other.rename(output_root / "edge_b")
 
             restored_gateway_only = subprocess.run(
                 [str(generator)],
@@ -1041,11 +1076,11 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 restored_gateway_only.returncode, 0, restored_gateway_only.stderr
             )
 
-            write_source_chain("edge-d", 57060)
+            write_source_chain("edge_d", 57060)
             victim = root / "config-victim"
             victim.mkdir()
             (victim / "untouched").write_text("untouched\n", encoding="utf-8")
-            (output_root / "edge-d").symlink_to(victim, target_is_directory=True)
+            (output_root / "edge_d").symlink_to(victim, target_is_directory=True)
             unsafe = subprocess.run(
                 [str(generator), "--edge-only"],
                 check=False,
@@ -1053,7 +1088,7 @@ class AdditionalEdgeIndexTests(unittest.TestCase):
                 text=True,
                 env={
                     **edge_env,
-                    "EDGE_CHAIN_NAME": "edge-d",
+                    "EDGE_CHAIN_NAME": "edge_d",
                     "EDGE_CHAIN_ID": "57060",
                     "EDGE_OS_RPC_PORT": "5050",
                     "EDGE_PROVER_API_PORT": "5125",
@@ -2018,7 +2053,10 @@ assert_gateway_chain_artifact_matches_live
         )[1].split('\n}\n\nif [ "${COMMAND}" != "repair" ]', 1)[0] + "\n}\n"
 
         def dispatch(
-            prior: str, post_admin: bool, created_only: bool = True
+            prior: str,
+            post_admin: bool,
+            created_only: bool = True,
+            checkpoint: str = "gl.edge_chain_inited",
         ) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
@@ -2052,11 +2090,16 @@ assert_gateway_chain_artifact_matches_live
                         run_supervised_gateway_repair_operation() {
                           "$@"
                         }
+                        gateway_acquire_execute_operator_lock() {
+                          printf 'gateway_acquire_execute_operator_lock %s\n' "$*"
+                        }
+                        EDGE_CHAIN_NAME=zksys
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
                         SCRIPT_DIR=/nonexistent
                         '''
                     )
                     + perform
-                    + "perform_repair_step gl.edge_chain_inited\n",
+                    + f"perform_repair_step {checkpoint}\n",
                 ],
                 check=False,
                 capture_output=True,
@@ -2083,9 +2126,1430 @@ assert_gateway_chain_artifact_matches_live
         self.assertNotEqual(ambiguous.returncode, 0)
         self.assertEqual(ambiguous.stdout, "")
         self.assertIn("neither exact", ambiguous.stderr)
+        for prior in ("in_progress", "blocked", "passed"):
+            with self.subTest(migration_prior=prior):
+                migration = dispatch(
+                    prior, False, checkpoint="gl.migration"
+                )
+                self.assertEqual(migration.returncode, 0, migration.stderr)
+                self.assertIn(
+                    "edge-chain-migrate-to-gateway.sh --resume-post-finalize",
+                    migration.stdout,
+                )
+                self.assertLess(
+                    migration.stdout.index("gateway_acquire_execute_operator_lock"),
+                    migration.stdout.index("edge-chain-migrate-to-gateway.sh"),
+                )
+        pending_migration = dispatch(
+            "pending", False, checkpoint="gl.migration"
+        )
+        self.assertNotEqual(pending_migration.returncode, 0)
+        self.assertIn("requires a blocked", pending_migration.stderr)
+
+    def test_valid_started_migration_reconciles_late_success_journals(self) -> None:
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        flow = repair[repair.index('if [ "${COMMAND}" != "repair" ]') :]
+        harness = textwrap.dedent(
+            r'''
+            set -euo pipefail
+            record() { printf '%s\n' "$*" >> "$EVENTS"; }
+            usage() { return 99; }
+            checkpoint_is_known() { return 0; }
+            gl_checkpoint_get_status() { printf '%s\n' "$PRIOR"; }
+            gateway_acquire_execute_operator_lock() { record lock "$1"; }
+            validate_checkpoint_for_repair() {
+              record validate "${GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD:-unset}"
+              return 0
+            }
+            gl_checkpoint_mark_in_progress() { record in_progress "$1"; }
+            perform_repair_step() { record perform "$1"; }
+            gl_checkpoint_mark_blocked() { record blocked "$1"; }
+            gl_checkpoint_mark_repaired() { record repaired "$1"; }
+            gl_die() { record die "$*"; return 98; }
+            COMMAND=repair
+            CHECKPOINT_ID="$CHECKPOINT"
+            EDGE_CHAIN_NAME=zksys
+            GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+            '''
+        ) + flow
+
+        reconcile = [
+            "lock zksys",
+            "validate 9",
+            "in_progress gl.migration",
+            "perform gl.migration",
+            "validate 9",
+            "repaired gl.migration",
+        ]
+        cases = (
+            ("gl.migration", "blocked", reconcile),
+            ("gl.migration", "in_progress", reconcile),
+            ("gl.migration", "passed", reconcile),
+            ("gl.migration", "pending", ["validate unset", "repaired gl.migration"]),
+            (
+                "gl.wallets_funded",
+                "blocked",
+                ["validate unset", "repaired gl.wallets_funded"],
+            ),
+        )
+        for checkpoint, prior, expected in cases:
+            with self.subTest(
+                checkpoint=checkpoint, prior=prior
+            ), tempfile.TemporaryDirectory() as temporary_dir:
+                events = Path(temporary_dir) / "events"
+                result = subprocess.run(
+                    ["bash", "-c", harness],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "CHECKPOINT": checkpoint,
+                        "EVENTS": str(events),
+                        "GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD": "",
+                        "PRIOR": prior,
+                    },
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    events.read_text(encoding="utf-8").splitlines(), expected
+                )
 
 
 class LauncherStaticTests(unittest.TestCase):
+    def test_gateway_migration_errors_redact_rpc_credentials(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        common_path = REPO_ROOT / "scripts" / "gateway-launch" / "_common.sh"
+        common = common_path.read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        proxy_lookup = extract(
+            "get_chain_diamond_proxy_from_gateway() {",
+            "\nwait_for_chain_diamond_proxy_from_gateway() {",
+        )
+        cast_fallback = extract(
+            "gateway_cast_call_with_fallback() {",
+            "\ngateway_address_has_code() {",
+        )
+        gateway_rpc_url = (
+            "https://user:password@gateway.invalid/rpc?token=super-secret#fragment"
+        )
+        harness = textwrap.dedent(
+            f"""
+            set -euo pipefail
+            gl_non_l1_cast() {{
+              printf 'CAST_STDERR_SECRET transport error contacting %s\\n' "$GATEWAY_RPC_URL" >&2
+              if [ "$CAST_SUCCEEDS" = true ]; then
+                printf '%s\\n' 0x{'33' * 20}
+                return 0
+              fi
+              return 42
+            }}
+            get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+            get_chain_governor_from_wallets() {{ printf '%s\\n' 0x{'11' * 20}; }}
+            {cast_fallback}
+            {proxy_lookup}
+            L2_BRIDGEHUB_ADDRESS=0x{'22' * 20}
+            CAST_SUCCEEDS=true
+            result="$(gateway_cast_call_with_fallback \
+              "$L2_BRIDGEHUB_ADDRESS" "getZKChain(uint256)(address)" \
+              "$GATEWAY_RPC_URL" "" 57057)"
+            [ "$result" = 0x{'33' * 20} ] || exit 91
+            CAST_SUCCEEDS=false
+            if get_chain_diamond_proxy_from_gateway zksys; then
+              exit 90
+            fi
+            """
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "GATEWAY_RPC_URL": gateway_rpc_url},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        output = result.stdout + result.stderr
+        self.assertNotIn(gateway_rpc_url, output)
+        self.assertNotIn("user:password", output)
+        self.assertNotIn("super-secret", output)
+        self.assertNotIn("CAST_STDERR_SECRET", output)
+        self.assertIn("cast call failed on the configured Gateway RPC", output)
+        self.assertIn(
+            "failed to query Gateway Bridgehub getZKChain(57057) for zksys "
+            "on the configured Gateway RPC",
+            output,
+        )
+
+        ownership = common[
+            common.index("gl_registered_chain_admin() {") : common.index(
+                "\ngl_assert_edge_chain_init_live_state() {"
+            )
+        ]
+        self.assertEqual(ownership.count('2>/dev/null)'), 6)
+        l1_rpc_url = (
+            "https://l1-user:l1-password@l1.invalid/private/rpc"
+            "?api_key=l1-token#fragment"
+        )
+        ownership_failure = subprocess.run(
+            [
+                "bash",
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    set -euo pipefail
+                    source {shlex.quote(str(common_path))}
+                    cast() {{
+                      printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
+                      return 42
+                    }}
+                    gl_registered_chain_admin \
+                      0x{'11' * 20} 57001 Gateway 0x{'22' * 20}
+                    """
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "L1_RPC_URL": l1_rpc_url},
+        )
+        self.assertNotEqual(ownership_failure.returncode, 0)
+        ownership_output = ownership_failure.stdout + ownership_failure.stderr
+        self.assertNotIn(l1_rpc_url, ownership_output)
+        self.assertNotIn("l1-user:l1-password", ownership_output)
+        self.assertNotIn("l1-token", ownership_output)
+        self.assertNotIn("CAST_STDERR_SECRET", ownership_output)
+        self.assertIn("failed to query L1 BridgeHub registration", ownership_output)
+
+        journal_forge = extract(
+            "run_gateway_admin_repair_forge() {",
+            "\nfund_l1_governor_for_gateway_sender_deposits() {",
+        )
+        da_repair = extract(
+            "repair_da_pair_on_gateway() {",
+            "\nis_da_pair_set_on_gateway() {",
+        )
+        unpause = extract(
+            "ensure_deposits_unpaused() {",
+            "\nrefresh_l1_admin_wallet_funding() {",
+        )
+        self.assertIn(") >/dev/null 2>&1 || {", journal_forge)
+        self.assertIn(") >/dev/null 2>&1 || {", da_repair)
+        self.assertNotIn('echo "${unpause_output}"', unpause)
+        for child_output in (
+            "pause_output",
+            "migrate_output",
+            "finalize_output",
+        ):
+            self.assertNotIn(f'echo "${{{child_output}}}"', migration)
+
+        cast_helper_start = common.index("def cast_check_output(args):")
+        cast_helper = common[
+            cast_helper_start : common.index("\n\ndef wei_balance", cast_helper_start)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            fake_bin = Path(temporary_dir)
+            fake_cast = fake_bin / "cast"
+            fake_cast.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "exit 42\n",
+                encoding="utf-8",
+            )
+            fake_cast.chmod(0o755)
+            funding_failure = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os, subprocess\n"
+                    "cast_env = os.environ.copy()\n"
+                    + cast_helper
+                    + "\ncast_check_output([\"cast\", \"balance\", \"0x01\", "
+                    "\"--rpc-url\", os.environ[\"L1_RPC_URL\"]])\n",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "L1_RPC_URL": l1_rpc_url,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                },
+            )
+        self.assertNotEqual(funding_failure.returncode, 0)
+        funding_output = funding_failure.stdout + funding_failure.stderr
+        self.assertNotIn(l1_rpc_url, funding_output)
+        self.assertNotIn("l1-user:l1-password", funding_output)
+        self.assertNotIn("l1-token", funding_output)
+        self.assertNotIn("CAST_STDERR_SECRET", funding_output)
+        self.assertIn("cast balance failed", funding_output)
+
+    def test_finalize_replay_guard_requires_complete_coherent_l1_state(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("gateway_migration_finalized_on_l1() {")
+        helper = migration[
+            start : migration.index("\nget_gateway_validator_timelock_addr() {", start)
+        ]
+        self.assertEqual(helper.count('--block "${l1_block_number}"'), 3)
+        self.assertIn('"settlementLayer(uint256)(uint256)"', helper)
+        self.assertIn('"chainAssetHandler()(address)"', helper)
+        self.assertIn('"isMigrationInProgress(uint256)(bool)"', helper)
+
+        def probe(
+            settlement: str,
+            in_progress: str,
+            fail_stage: str = "",
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -euo pipefail
+                        gl_die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
+                        gl_normalize_cast_address() {{
+                          printf '%s\\n' "$2" | awk 'NF {{ print tolower($1); exit }}'
+                        }}
+                        get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+                        get_l1_bridgehub_proxy_addr() {{ printf '%s\\n' 0x{'11' * 20}; }}
+                        cast() {{
+                          printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
+                          if [ "$1" = block-number ]; then
+                            [ "$CAST_FAIL_STAGE" != block-number ] || return 93
+                            printf '%s\\n' 123
+                            return 0
+                          fi
+                          case " $* " in
+                          *' --block 123 '*) ;;
+                          *) return 90 ;;
+                          esac
+                          case "$3" in
+                          'settlementLayer(uint256)(uint256)')
+                            [ "$CAST_FAIL_STAGE" != settlement-layer ] || return 94
+                            [ "$SETTLEMENT_LAYER" != rpc-error ] || return 92
+                            printf '%s\\n' "$SETTLEMENT_LAYER" ;;
+                          'chainAssetHandler()(address)')
+                            [ "$CAST_FAIL_STAGE" != chain-asset-handler ] || return 95
+                            printf '%s\\n' 0x{'22' * 20} ;;
+                          'isMigrationInProgress(uint256)(bool)')
+                            [ "$CAST_FAIL_STAGE" != migration-in-progress ] || return 96
+                            printf '%s\\n' "$MIGRATION_IN_PROGRESS" ;;
+                          *) return 91 ;;
+                          esac
+                        }}
+                        {helper}
+                        gateway_migration_finalized_on_l1 zksys 57001
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "L1_RPC_URL": (
+                        "https://l1-user:l1-password@l1.invalid/private/rpc"
+                        "?api_key=l1-token#fragment"
+                    ),
+                    "CAST_FAIL_STAGE": fail_stage,
+                    "SETTLEMENT_LAYER": settlement,
+                    "MIGRATION_IN_PROGRESS": in_progress,
+                },
+            )
+
+        finalized = probe("57001", "false")
+        self.assertEqual(finalized.returncode, 0, finalized.stderr)
+        self.assertEqual(finalized.stdout.strip(), "true")
+        for settlement_layer, in_progress in (("1", "false"), ("57001", "true")):
+            with self.subTest(
+                settlement_layer=settlement_layer, in_progress=in_progress
+            ):
+                incomplete = probe(settlement_layer, in_progress)
+                self.assertEqual(incomplete.returncode, 0, incomplete.stderr)
+                self.assertEqual(incomplete.stdout.strip(), "false")
+        malformed = probe("57001", "not-a-bool")
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("invalid L1 migration state", malformed.stderr)
+        malformed = probe("not-a-chain-id", "false")
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("invalid L1 settlement layer", malformed.stderr)
+        rpc_error = probe("rpc-error", "false")
+        self.assertNotEqual(rpc_error.returncode, 0)
+        self.assertIn("failed to query L1 settlement layer", rpc_error.stderr)
+        failure_messages = {
+            "block-number": "failed to resolve an L1 block",
+            "settlement-layer": "failed to query L1 settlement layer",
+            "chain-asset-handler": "failed to query L1 ChainAssetHandler",
+            "migration-in-progress": "failed to query L1 migration state",
+        }
+        for stage, expected_message in failure_messages.items():
+            with self.subTest(failed_stage=stage):
+                failed = probe("57001", "false", stage)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn(expected_message, failed.stderr)
+                combined = failed.stdout + failed.stderr
+                for secret in (
+                    "CAST_STDERR_SECRET",
+                    "l1-user:l1-password",
+                    "/private/rpc",
+                    "l1-token",
+                ):
+                    self.assertNotIn(secret, combined)
+
+    def test_remaining_l1_lookup_errors_redact_rpc_credentials(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        settlement = extract(
+            "get_settlement_layer_chain_id() {",
+            "\nget_chain_diamond_proxy_from_gateway() {",
+        )
+        deposits = extract(
+            "l1_deposits_are_unpaused() {",
+            "\nrepair_da_pair_on_gateway() {",
+        )
+        common = (REPO_ROOT / "scripts/gateway-launch/_common.sh").read_text(
+            encoding="utf-8"
+        )
+        chain_guard = common[
+            common.index("gl_assert_l1_chain_id_matches_rpc() {") : common.index(
+                "\n}\n", common.index("gl_assert_l1_chain_id_matches_rpc() {")
+            )
+        ]
+        self.assertNotIn("${L1_RPC_URL}", chain_guard)
+
+        secret_url = "https://l1-user:l1-password@l1.invalid/rpc?token=secret"
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_python = bin_dir / "python3"
+            fake_python.write_text(
+                f"#!/usr/bin/env bash\nprintf '%s\\n' 0x{'11' * 20}\n",
+                encoding="utf-8",
+            )
+            fake_python.chmod(0o755)
+            contracts = root / "chains/zksys/configs/contracts.yaml"
+            contracts.parent.mkdir(parents=True)
+            contracts.write_text(
+                "ecosystem_contracts:\n"
+                f"  bridgehub_proxy_addr: 0x{'11' * 20}\n",
+                encoding="utf-8",
+            )
+            base = textwrap.dedent(
+                f"""
+                set -euo pipefail
+                get_chain_id_from_zkstack_yaml() {{ printf '%s\\n' 57057; }}
+                get_l1_bridgehub_proxy_addr() {{ printf '%s\\n' 0x{'11' * 20}; }}
+                gl_to_lower() {{ printf '%s\\n' "$1" | tr '[:upper:]' '[:lower:]'; }}
+                cast() {{
+                  printf 'CAST_STDERR_SECRET contacting %s\\n' "$L1_RPC_URL" >&2
+                  if [ "${{CAST_FIRST_SUCCEEDS:-false}}" = true ] && [ "$3" = 'getZKChain(uint256)(address)' ]; then
+                    printf '%s\\n' 0x{'22' * 20}
+                    return 0
+                  fi
+                  return 42
+                }}
+                GATEWAY_DIR={shlex.quote(str(root))}
+                """
+            )
+
+            for label, helper, command, first_succeeds, expected in (
+                (
+                    "settlement",
+                    settlement,
+                    "get_settlement_layer_chain_id zksys",
+                    "false",
+                    "failed to query the settlement layer",
+                ),
+                (
+                    "deposit-proxy",
+                    deposits,
+                    "l1_deposits_are_unpaused zksys",
+                    "false",
+                    "failed to read the edge chain proxy",
+                ),
+                (
+                    "deposit-state",
+                    deposits,
+                    "l1_deposits_are_unpaused zksys",
+                    "true",
+                    "failed to read the edge deposit state",
+                ),
+            ):
+                with self.subTest(label=label):
+                    result = subprocess.run(
+                        ["bash", "-c", base + helper + "\n" + command],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env={
+                            **os.environ,
+                            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                            "L1_RPC_URL": secret_url,
+                            "CAST_FIRST_SUCCEEDS": first_succeeds,
+                        },
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    output = result.stdout + result.stderr
+                    self.assertIn(expected, output)
+                    for secret in (
+                        secret_url,
+                        "CAST_STDERR_SECRET",
+                        "l1-user:l1-password",
+                        "token=secret",
+                    ):
+                        self.assertNotIn(secret, output)
+
+    def test_finalize_replay_skips_or_recovers_only_from_l1_postcondition(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("# SYSCOIN: Replay must trust the complete L1 postcondition")
+        finalize = migration[
+            start : migration.index(
+                '\n: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"', start
+            )
+        ]
+        # The final `fi` closes the surrounding post-finalize-repair guard;
+        # this harness exercises only the normal finalize/recovery block.
+        finalize = finalize.rsplit("\nfi", 1)[0]
+        self.assertNotIn("depositdoesnotexist", finalize.lower())
+        check_start = migration.rindex(
+            'if [ "${MIGRATION_CHECK_ONLY}" = true ]; then', 0, start
+        )
+        normal_path_start = migration.index("\nfi\n", check_start) + len("\nfi\n")
+        check_only = migration[check_start:normal_path_start]
+        self.assertIn("gateway_migration_finalized_on_l1", check_only)
+        self.assertNotIn("exit 0", migration[normal_path_start:start])
+
+        def run(
+            root: Path, precheck: str, finalize_rc: int, postcheck: str
+        ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+            events = root / "events"
+            marker = root / "probe-marker"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -euo pipefail
+                        record() {{ printf '%s\\n' "$1" >>"$EVENTS"; }}
+                        gateway_migration_finalized_on_l1() {{
+                          record probe
+                          if [ -e "$PROBE_MARKER" ]; then
+                            printf '%s\\n' "$POSTCHECK"
+                          else
+                            : >"$PROBE_MARKER"
+                            printf '%s\\n' "$PRECHECK"
+                          fi
+                        }}
+                        gl_l1_broadcast_preflight() {{ record preflight; }}
+                        refresh_l1_admin_wallet_funding() {{ record fund; }}
+                        gl_zkstack_pty() {{
+                          record finalize
+                          printf '%s\\n' DepositDoesNotExist
+                          return "$FINALIZE_RC"
+                        }}
+                        {finalize}
+                        record repair
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "EDGE_CHAIN_NAME": "zksys",
+                    "GATEWAY_CHAIN_NAME": "gateway",
+                    "GATEWAY_RPC_URL": "http://127.0.0.1:3052",
+                    "L1_RPC_URL": "http://127.0.0.1:8545",
+                    "gateway_chain_id": "57001",
+                    "EVENTS": str(events),
+                    "PROBE_MARKER": str(marker),
+                    "PRECHECK": precheck,
+                    "POSTCHECK": postcheck,
+                    "FINALIZE_RC": str(finalize_rc),
+                },
+            )
+            return result, events.read_text(encoding="utf-8").splitlines()
+
+        cases = (
+            ("true", 23, "false", 0, "probe repair"),
+            ("false", 0, "false", 0, "probe preflight fund finalize repair"),
+            ("false", 23, "true", 0, "probe preflight fund finalize probe repair"),
+            ("false", 23, "false", 1, "probe preflight fund finalize probe"),
+        )
+        for precheck, finalize_rc, postcheck, expected_rc, expected in cases:
+            with self.subTest(
+                precheck=precheck, finalize_rc=finalize_rc, postcheck=postcheck
+            ), tempfile.TemporaryDirectory() as temporary_dir:
+                result, events = run(
+                    Path(temporary_dir), precheck, finalize_rc, postcheck
+                )
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                self.assertEqual(events, expected.split())
+
+    def test_migration_repair_is_gated_to_post_finalize_reconciliation(self) -> None:
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        repair = (
+            REPO_ROOT / "scripts" / "gateway-launch" / "gateway-launch-repair.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.rindex(
+            'if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then'
+        )
+        guarded = migration[
+            start : migration.index(
+                '\n: "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"', start
+            )
+        ]
+        resume_arm, normal_arm = guarded.split("\nelse\n", 1)
+        self.assertIn("gateway_migration_finalized_on_l1", resume_arm)
+        self.assertIn("refusing post-finalize repair", resume_arm)
+        for mutator in (
+            "pause-deposits",
+            "migrate-to-gateway",
+            "finalize-chain-migration-to-gateway",
+        ):
+            self.assertNotIn(mutator, resume_arm)
+            self.assertIn(mutator, normal_arm)
+        perform = repair.split("perform_repair_step() {", 1)[1].split("\n}", 1)[0]
+        migration_repair = perform.split("gl.migration)", 1)[1].split(
+            "gl.os_configs_final)", 1
+        )[0]
+        self.assertIn("--resume-post-finalize", migration_repair)
+        self.assertIn("run_with_gateway_for_migration", migration_repair)
+        self.assertIn("blocked | in_progress | passed", migration_repair)
+        self.assertIn(
+            'source "${SCRIPT_DIR}/_execute_operator_lock.sh"', repair
+        )
+        repair_execute_lock = migration_repair.index(
+            'gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"'
+        )
+        repair_inherit = migration_repair.index(
+            'export GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD='
+            '"${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}"'
+        )
+        repair_child = migration_repair.index(
+            '"${SCRIPT_DIR}/edge-chain-migrate-to-gateway.sh" '
+            "--resume-post-finalize"
+        )
+        self.assertLess(repair_execute_lock, repair_inherit)
+        self.assertLess(repair_inherit, repair_child)
+        lock_index = migration.index("gl_acquire_gateway_launch_lock")
+        context_start = migration.index("# SYSCOIN: Post-finalize repair owns")
+        checkpoint_gate_index = migration.index(
+            "gl_checkpoint_get_status gl.migration", context_start
+        )
+        self.assertLess(
+            lock_index, migration.index("gl_resolve_required_source_pins")
+        )
+        self.assertLess(
+            lock_index, migration.index("gl_ensure_zkstack_cli_release_current")
+        )
+        context_gate = migration[
+            context_start : migration.index(
+                "\ngl_assert_gateway_runtime_identity"
+            )
+        ]
+        self.assertNotIn("gl_acquire_gateway_launch_lock", context_gate)
+        self.assertLess(
+            lock_index,
+            migration.index("gl_assert_edge_launch_context"),
+        )
+        self.assertLess(
+            migration.index("gl_assert_edge_launch_context"), checkpoint_gate_index
+        )
+        self.assertLess(
+            checkpoint_gate_index,
+            migration.index("gl_assert_gateway_runtime_identity"),
+        )
+        checkpoint_gate = migration[
+            migration.rindex(
+                "if gl_is_canonical_edge_context; then",
+                migration.index("gl_assert_edge_launch_context"),
+                checkpoint_gate_index,
+            ) : migration.index(
+                '\nelif [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then',
+                checkpoint_gate_index,
+            )
+        ]
+        self.assertIn("blocked | in_progress | passed", checkpoint_gate)
+        self.assertIn("gl_is_canonical_edge_context", checkpoint_gate)
+
+    def test_gateway_admin_tx_keeps_edge_authority_and_routes_to_gateway(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+
+        def extract(start_marker: str, end_marker: str) -> str:
+            start = migration.index(start_marker)
+            return migration[start : migration.index(end_marker, start)]
+
+        def compact(source: str) -> str:
+            return " ".join(source.replace("\\\n", " ").split())
+
+        signer = extract(
+            "prepare_gateway_governor_forge_wallet_args() {",
+            "\nget_l1_bridgehub_proxy_addr() {",
+        )
+        validator = extract(
+            "ensure_gateway_commit_sender_validator() {",
+            "\nensure_gateway_commit_sender_balance() {",
+        )
+        balance = extract(
+            "ensure_gateway_commit_sender_balance() {",
+            "\nprovision_gateway_settlement_fee_payer() {",
+        )
+        signature = (
+            "--sig "
+            "'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,"
+            "uint256,bytes,address,bool)'"
+        )
+        self.assertEqual(migration.count(signature), 2)
+        for expected in (
+            'prepare_generated_gateway_governor_keystore "${EDGE_CHAIN_NAME}"',
+            'expected_addr="$(get_chain_governor_from_wallets "${EDGE_CHAIN_NAME}")"',
+        ):
+            self.assertIn(expected, signer)
+        for function in (validator, balance):
+            for expected in (
+                'refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"',
+                'chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"',
+                'gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"',
+                "prepare_gateway_governor_forge_wallet_args",
+            ):
+                self.assertIn(expected, function)
+
+        route = (
+            signature
+            + ' "${bridgehub}" "${GATEWAY_MAX_L1_GAS_PRICE}"'
+            + ' "${chain_id}" "${gateway_chain_id}"'
+        )
+        for expected in (
+            '"COMMITTER_ROLE()(bytes32)"',
+            'cast calldata "grantRole(address,bytes32,address)" "${chain_proxy}" '
+            '"${committer_role}" "${committer_addr}"',
+            route
+            + ' "${validator_timelock}" 0 "${grant_calldata}"'
+            + ' "${refund_recipient}" true',
+        ):
+            self.assertIn(expected, compact(validator))
+        self.assertNotIn("addValidator", validator)
+        self.assertIn(
+            route
+            + ' "${sender_addr}" "${top_up_wei}" "0x"'
+            + ' "${refund_recipient}" true',
+            compact(balance),
+        )
+        self.assertIn(
+            'top_up_wei="${GATEWAY_ADMIN_REPAIR_VALUE_WEI}"', balance
+        )
+        self.assertLess(
+            balance.index("begin_gateway_admin_repair"),
+            balance.index('top_up_wei="${GATEWAY_ADMIN_REPAIR_VALUE_WEI}"'),
+        )
+
+    def test_gateway_admin_repair_journal_is_private_immutable_and_resumable(
+        self,
+    ) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index('GATEWAY_ADMIN_REPAIR_DIR=""')
+        end = migration.index(
+            "\nfund_l1_governor_for_gateway_sender_deposits() {", start
+        )
+        journal_functions = migration[start:end]
+
+        harness = (
+            "set -euo pipefail\n"
+            + journal_functions
+            + r'''
+gl_checkpoint_state_dir() { printf '%s\n' "$TEST_STATE_DIR"; }
+gl_checkpoint_state_file() { printf '%s\n' "$TEST_STATE_FILE"; }
+gl_sha256_file() { shasum -a 256 "$1" | awk '{ print $1; }'; }
+ZKSYNC_ERA_PATH="$TEST_ERA_PATH"
+L1_RPC_URL="$TEST_L1_RPC_URL"
+export L1_CHAIN_ID=5700
+GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=(--account test-governor)
+'''
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            state_dir = root / "state"
+            state_dir.mkdir(mode=0o700)
+            state_file = state_dir / "checkpoint.json"
+            state_file.write_text(
+                json.dumps(
+                    {"run_id": "test-run", "fingerprint": {"edge": "zksys"}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            state_file.chmod(0o600)
+            era = root / "era"
+            (era / "contracts" / "l1-contracts").mkdir(parents=True)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            sequence_encoder = bin_dir / "encode-repair-sequence.py"
+            sequence_encoder.write_text(
+                textwrap.dedent(
+                    """\
+                    import json
+                    import os
+                    import sys
+
+                    def word(value):
+                        return int(value).to_bytes(32, "big")
+
+                    def address(value):
+                        return bytes(12) + bytes.fromhex(value[2:])
+
+                    def dynamic(value):
+                        return word(len(value)) + value + bytes((-len(value)) % 32)
+
+                    with open(sys.argv[1], encoding="utf-8") as source:
+                        intent = json.load(source)
+                    args = dict(item.split("=", 1) for item in intent["arguments"])
+                    outer = 100 + int(args["value_wei"])
+                    mutation = os.environ.get("FAKE_SEQUENCE_MUTATION", "")
+                    target = (
+                        "0x" + "97" * 20 if mutation == "target" else args["target"]
+                    )
+                    l2_data = bytes.fromhex(args["calldata"][2:])
+                    encoded_l2_data = dynamic(l2_data)
+                    request = bytes.fromhex("d52471c1") + word(32) + b"".join((
+                        word(args["destination_chain_id"]),
+                        word(outer),
+                        address(target),
+                        word(args["value_wei"]),
+                        word(9 * 32),
+                        word(72_000_000),
+                        word(800),
+                        word(9 * 32 + len(encoded_l2_data)),
+                        address(args["refund_recipient"]),
+                        encoded_l2_data,
+                        word(0),
+                    ))
+                    call = b"".join((
+                        address(args["bridgehub"]),
+                        word(outer),
+                        word(3 * 32),
+                        dynamic(request),
+                    ))
+                    payload = b"".join((
+                        word(2 * 32), word(1), word(1), word(32), call,
+                    ))
+                    if mutation == "trailing": payload += word(0)
+                    print(f"{outer}|0x69340beb{payload.hex()}")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_forge = bin_dir / "forge"
+            fake_forge.write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n"
+                'if [ "${1:-}" = --version ]; then\n'
+                "  printf 'forge Version: %s\\n' \"${FAKE_FORGE_VERSION:-1.7.1}\"\n"
+                "  printf 'Commit SHA: %s\\n' \"${FAKE_FORGE_COMMIT:-4072e48705af9d93e3c0f6e29e93b5e9a40caed8}\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "printf 'broadcast=%s\\n' \"${FOUNDRY_BROADCAST:-}\" >>\"${TEST_FORGE_EVENTS:?}\"\n"
+                "printf 'cache=%s\\n' \"${FOUNDRY_CACHE_PATH:-}\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "phase=prepare\n"
+                "saw_broadcast=false\n"
+                "for arg in \"$@\"; do\n"
+                "  [ \"${arg}\" != --resume ] || phase=resume\n"
+                "  [ \"${arg}\" != --broadcast ] || saw_broadcast=true\n"
+                "done\n"
+                "marker=${FOUNDRY_BROADCAST%/broadcast}/prepared.json\n"
+                "marker_before=false\n"
+                "[ ! -e \"${marker}\" ] || marker_before=true\n"
+                "printf 'forge_phase=%s marker_before=%s argv=' \"${phase}\" \"${marker_before}\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '<%s>' \"$@\" >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf '\\n' >>\"${TEST_FORGE_EVENTS}\"\n"
+                "printf 'FAKE_FORGE_STDERR_SECRET\\n' >&2\n"
+                "[ \"${saw_broadcast}\" = false ] || exit 72\n"
+                "if [ \"${phase}\" = resume ]; then\n"
+                "  [ \"${marker_before}\" = true ] || exit 71\n"
+                "  mode=${FAKE_FORGE_RESUME_MODE:-complete}\n"
+                "  sequence_dir=AdminFunctions.s.sol/${L1_CHAIN_ID}\n"
+                "  tx_hash=',\"hash\":\"0x1234\"'\n"
+                "  receipts='[{\"status\":\"0x1\"}]'\n"
+                "else\n"
+                "  [ \"${marker_before}\" = false ] || exit 73\n"
+                "  mode=${FAKE_FORGE_MODE:-complete}\n"
+                "  sequence_dir=AdminFunctions.s.sol/${L1_CHAIN_ID}/dry-run\n"
+                "  tx_hash=\n"
+                "  receipts='[]'\n"
+                "fi\n"
+                "[ \"${mode}\" != none ] || exit 17\n"
+                "public_dir=${FOUNDRY_BROADCAST}/${sequence_dir}\n"
+                "sensitive_dir=${FOUNDRY_CACHE_PATH}/${sequence_dir}\n"
+                "mkdir -p \"${public_dir}\" \"${sensitive_dir}\"\n"
+                "public_latest=${public_dir}/adminL1L2TxViaGateway-latest.json\n"
+                "public_run=${public_dir}/run-1700000000.json\n"
+                "sensitive_latest=${sensitive_dir}/adminL1L2TxViaGateway-latest.json\n"
+                "sensitive_run=${sensitive_dir}/run-1700000000.json\n"
+                "IFS='|' read -r outer_value tx_data extra < <(python3 \"${TEST_SEQUENCE_ENCODER}\" \"${FOUNDRY_BROADCAST%/broadcast}/intent.json\")\n"
+                "[ -z \"${extra:-}\" ] || exit 74\n"
+                "outer_value=${FAKE_FORGE_OUTER_VALUE:-${outer_value}}\n"
+                "tx_data=${FAKE_FORGE_TX_DATA:-${tx_data}}\n"
+                "printf '{\"transactions\":[{\"transactionType\":\"CALL\"%s,\"transaction\":{\"from\":\"%s\",\"to\":\"%s\",\"nonce\":7,\"value\":\"%s\",\"%s\":\"%s\"}}],\"receipts\":%s,\"pending\":[],\"libraries\":[],\"returns\":{},\"timestamp\":1700000000,\"chain\":%s,\"commit\":null}\\n' "
+                "\"${tx_hash}\" \"${TEST_SIGNER}\" \"${TEST_L1_ADMIN}\" "
+                "\"${outer_value}\" "
+                "\"${FAKE_FORGE_CALLDATA_KEY:-input}\" "
+                "\"${tx_data}\" "
+                "\"${receipts}\" \"${L1_CHAIN_ID}\" "
+                ">\"${public_latest}\"\n"
+                "cp \"${public_latest}\" \"${public_run}\"\n"
+                "if [ \"${mode}\" = partial ]; then\n"
+                "  [ \"${phase}\" != resume ] || exit 19\n"
+                "  exit 18\n"
+                "fi\n"
+                "printf '{\"transactions\":[{\"rpc\":\"%s\"}]}\\n' \"${TEST_L1_RPC_URL}\" "
+                ">\"${sensitive_latest}\"\n"
+                "cp \"${sensitive_latest}\" \"${sensitive_run}\"\n",
+                encoding="utf-8",
+            )
+            fake_forge.chmod(0o755)
+            forge_events = root / "forge-events.log"
+            repair_root = state_dir / "via-gateway-repairs"
+            operation_key = "sender-balance-57058-0x" + "11" * 20
+            operation_dir = repair_root / operation_key
+            target = "0x" + "11" * 20
+            signer = "0x" + "aa" * 20
+            bridgehub = "0x" + "bb" * 20
+            l1_admin = "0x" + "cc" * 20
+            contracts_sha = "1" * 40
+            admin_script_sha = "2" * 64
+            rpc_calls: list[dict] = []
+
+            class QuoteRpc(http.server.BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    request = json.loads(
+                        self.rfile.read(int(self.headers["Content-Length"]))
+                    )
+                    rpc_calls.append(request)
+                    if request["method"] == "eth_getBlockByNumber":
+                        result = {"number": "0x4d", "baseFeePerGas": "0x7"}
+                    elif request["method"] == "eth_call":
+                        result = "0xa"
+                    else:
+                        self.send_error(400)
+                        return
+                    body = json.dumps(
+                        {"jsonrpc": "2.0", "id": request["id"], "result": result}
+                    ).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *_args: object) -> None:
+                    pass
+
+            quote_server = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), QuoteRpc
+            )
+            quote_thread = threading.Thread(
+                target=quote_server.serve_forever, daemon=True
+            )
+            quote_thread.start()
+            self.addCleanup(quote_server.server_close)
+            self.addCleanup(quote_server.shutdown)
+            quote_rpc_url = f"http://127.0.0.1:{quote_server.server_port}"
+
+            def sender_arguments(address: str, observed: int, value: int) -> str:
+                return (
+                    "kind=sender-balance "
+                    f"contracts_sha={contracts_sha} admin_script_sha256={admin_script_sha} "
+                    "l1_chain_id=5700 admin_chain_id=57058 destination_chain_id=57001 "
+                    f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                    f"max_l1_gas_price=1000000000 target={address} value_wei={value} "
+                    f"calldata=0x refund_recipient={signer} "
+                    f"minimum_balance_wei=10 observed_balance_wei={observed}"
+                )
+
+            def committer_arguments(committer: str) -> str:
+                chain_proxy = "0x" + "dd" * 20
+                role = "0x" + "ee" * 32
+                grant = (
+                    "0x3290f93a"
+                    + "0" * 24
+                    + chain_proxy[2:]
+                    + role[2:]
+                    + "0" * 24
+                    + committer[2:]
+                )
+                return (
+                    "kind=committer-role "
+                    f"contracts_sha={contracts_sha} admin_script_sha256={admin_script_sha} "
+                    "l1_chain_id=5700 admin_chain_id=57058 destination_chain_id=57001 "
+                    f"signer={signer} bridgehub={bridgehub} l1_admin={l1_admin} "
+                    "max_l1_gas_price=1000000000 "
+                    f"target=0x{'ff' * 20} value_wei=0 calldata={grant} "
+                    f"refund_recipient={signer} chain_proxy={chain_proxy} "
+                    f"role={role} committer={committer}"
+                )
+
+            arguments = sender_arguments(target, 3, 7)
+            env = {
+                **os.environ,
+                "FOUNDRY_BROADCAST": str(root / "inherited-broadcast"),
+                "FOUNDRY_CACHE_PATH": str(root / "inherited-cache"),
+                "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                "TEST_ERA_PATH": str(era),
+                "TEST_OPERATION_KEY": operation_key,
+                "TEST_STATE_DIR": str(state_dir),
+                "TEST_STATE_FILE": str(state_file),
+                "TEST_SIGNER": signer,
+                "TEST_L1_ADMIN": l1_admin,
+                "TEST_FORGE_EVENTS": str(forge_events),
+                "TEST_L1_RPC_URL": quote_rpc_url,
+                "TEST_SEQUENCE_ENCODER": str(sequence_encoder),
+            }
+
+            def run(
+                command: str, **overrides: str
+            ) -> subprocess.CompletedProcess[str]:
+                forge_events.write_text("", encoding="utf-8")
+                return subprocess.run(
+                    ["bash", "-c", harness + "\n" + command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={**env, **overrides},
+                )
+
+            begin_and_run = (
+                'umask 000\nbegin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + arguments
+                + '\nprintf \'resume=%s value=%s\\n\' '
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
+                + "\nrun_gateway_admin_repair_forge --sig probe"
+            )
+            fresh = run(begin_and_run)
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            self.assertIn("resume=false value=7\n", fresh.stdout)
+            self.assertNotIn("FAKE_FORGE_STDERR_SECRET", fresh.stderr)
+            self.assertEqual(
+                [request["method"] for request in rpc_calls],
+                ["eth_getBlockByNumber", "eth_call"],
+            )
+            self.assertEqual(rpc_calls[0]["params"], ["latest", False])
+            expected_quote_data = "0x71623274" + "".join(
+                f"{value:064x}" for value in (57001, 1_000_000_000, 72_000_000, 800)
+            )
+            self.assertEqual(
+                rpc_calls[1]["params"],
+                [{"to": bridgehub, "data": expected_quote_data}, "0x4d"],
+            )
+            fresh_forge_output = forge_events.read_text(encoding="utf-8")
+            self.assertIn(
+                f"broadcast={operation_dir / 'broadcast'}\n", fresh_forge_output
+            )
+            self.assertIn(
+                f"cache={operation_dir / 'cache'}\n", fresh_forge_output
+            )
+            self.assertNotIn(env["FOUNDRY_BROADCAST"], fresh_forge_output)
+            self.assertNotIn(env["FOUNDRY_CACHE_PATH"], fresh_forge_output)
+            forge_lines = [
+                line
+                for line in fresh_forge_output.splitlines()
+                if line.startswith("forge_phase=")
+            ]
+            self.assertEqual(len(forge_lines), 2, fresh_forge_output)
+            self.assertIn("forge_phase=prepare marker_before=false", forge_lines[0])
+            self.assertNotIn("<--resume>", forge_lines[0])
+            self.assertIn("forge_phase=resume marker_before=true", forge_lines[1])
+            self.assertIn("<--resume>", forge_lines[1])
+            self.assertTrue(
+                all("<--broadcast>" not in line for line in forge_lines),
+                forge_lines,
+            )
+            self.assertEqual(stat.S_IMODE(repair_root.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(operation_dir.stat().st_mode), 0o700)
+            self.assertEqual(
+                stat.S_IMODE((operation_dir / "broadcast").stat().st_mode), 0o700
+            )
+            self.assertEqual(
+                stat.S_IMODE((operation_dir / "cache").stat().st_mode), 0o700
+            )
+            intent_path = operation_dir / "intent.json"
+            self.assertEqual(stat.S_IMODE(intent_path.stat().st_mode), 0o600)
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            forge_sha = hashlib.sha256(fake_forge.read_bytes()).hexdigest()
+            self.assertEqual(
+                intent["arguments"],
+                arguments.split()
+                + [
+                    "foundry_version=1.7.1",
+                    "foundry_commit=4072e48705af9d93e3c0f6e29e93b5e9a40caed8",
+                    f"foundry_sha256={forge_sha}",
+                ],
+            )
+            prepared_path = operation_dir / "prepared.json"
+            self.assertEqual(stat.S_IMODE(prepared_path.stat().st_mode), 0o600)
+            dry_public = (
+                operation_dir
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            dry_sensitive = (
+                operation_dir
+                / "cache"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            normal_public = (
+                operation_dir
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            normal_sensitive = (
+                operation_dir
+                / "cache"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            for path in (dry_public, dry_sensitive, normal_public, normal_sensitive):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            dry_transaction = json.loads(
+                dry_public.read_text(encoding="utf-8")
+            )["transactions"][0]["transaction"]
+            self.assertEqual(
+                hashlib.sha256(dry_transaction["input"].encode()).hexdigest(),
+                "0c7d8e03b52b97f7b1e521f21f8f21a0a4d5dd280589f6cc7613f47747dc59a6",
+            )
+            self.assertEqual(
+                json.loads(prepared_path.read_text(encoding="utf-8")),
+                {
+                    "schema_version": 2,
+                    "quote_l1_block": "77",
+                    "expected_outer_value_wei": "107",
+                    "public_sha256": hashlib.sha256(
+                        dry_public.read_bytes()
+                    ).hexdigest(),
+                    "sensitive_sha256": hashlib.sha256(
+                        dry_sensitive.read_bytes()
+                    ).hexdigest(),
+                },
+            )
+            intent_snapshot = (
+                intent_path.read_bytes(),
+                intent_path.stat().st_ino,
+                intent_path.stat().st_mtime_ns,
+            )
+
+            resumed = run(begin_and_run)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertIn("resume=true value=7\n", resumed.stdout)
+            resumed_forge_output = forge_events.read_text(encoding="utf-8")
+            resumed_forge_lines = [
+                line
+                for line in resumed_forge_output.splitlines()
+                if line.startswith("forge_phase=")
+            ]
+            self.assertEqual(len(resumed_forge_lines), 1, resumed_forge_output)
+            self.assertEqual(len(rpc_calls), 2)
+            self.assertIn(
+                "forge_phase=resume marker_before=true", resumed_forge_lines[0]
+            )
+            self.assertIn("<--resume>", resumed_forge_lines[0])
+            self.assertNotIn("<--broadcast>", resumed_forge_lines[0])
+            self.assertEqual(
+                (
+                    intent_path.read_bytes(),
+                    intent_path.stat().st_ino,
+                    intent_path.stat().st_mtime_ns,
+                ),
+                intent_snapshot,
+            )
+
+            balance_drift = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + sender_arguments(target, 4, 6)
+                + '\nprintf \'resume=%s value=%s\\n\' '
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
+            )
+            self.assertEqual(balance_drift.returncode, 0, balance_drift.stderr)
+            self.assertIn("resume=true value=7", balance_drift.stdout)
+
+            changed = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + sender_arguments("0x" + "99" * 20, 4, 6)
+            )
+            self.assertNotEqual(changed.returncode, 0)
+            self.assertIn("payload does not match its operation key", changed.stderr)
+            self.assertEqual(intent_path.read_bytes(), intent_snapshot[0])
+
+            decreased = run(
+                'begin_gateway_admin_repair "$TEST_OPERATION_KEY" '
+                + sender_arguments(target, 2, 8)
+            )
+            self.assertNotEqual(decreased.returncode, 0)
+            self.assertIn(
+                "balance decreased outside the repair lock", decreased.stderr
+            )
+
+            early_key = "sender-balance-57058-0x" + "22" * 20
+            early_args = sender_arguments("0x" + "22" * 20, 2, 8)
+            early = run(
+                f"begin_gateway_admin_repair {early_key} {early_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_MODE="none",
+            )
+            self.assertEqual(early.returncode, 17, early.stderr)
+            early_retry = run(
+                f"begin_gateway_admin_repair {early_key} "
+                + sender_arguments("0x" + "22" * 20, 3, 7)
+                + "\n"
+                "printf 'resume=%s value=%s\\n' "
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"'
+            )
+            self.assertEqual(early_retry.returncode, 0, early_retry.stderr)
+            self.assertIn("resume=false value=8", early_retry.stdout)
+
+            partial_key = "sender-balance-57058-0x" + "23" * 20
+            partial_args = sender_arguments("0x" + "23" * 20, 2, 8)
+            partial = run(
+                f"begin_gateway_admin_repair {partial_key} {partial_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_MODE="partial",
+            )
+            self.assertEqual(partial.returncode, 18, partial.stderr)
+            partial_retry = run(
+                f"begin_gateway_admin_repair {partial_key} {partial_args}\n"
+                "printf 'resume=%s value=%s\\n' "
+                '"$GATEWAY_ADMIN_REPAIR_RESUME" "$GATEWAY_ADMIN_REPAIR_VALUE_WEI"\n'
+                "run_gateway_admin_repair_forge --sig probe"
+            )
+            self.assertEqual(partial_retry.returncode, 0, partial_retry.stderr)
+            self.assertIn("resume=false value=8", partial_retry.stdout)
+            partial_retry_forge_output = forge_events.read_text(encoding="utf-8")
+            self.assertIn(
+                "forge_phase=prepare marker_before=false",
+                partial_retry_forge_output,
+            )
+            self.assertIn(
+                "forge_phase=resume marker_before=true",
+                partial_retry_forge_output,
+            )
+
+            partial_normal_key = "sender-balance-57058-0x" + "24" * 20
+            partial_normal_args = sender_arguments("0x" + "24" * 20, 2, 8)
+            partial_normal = run(
+                f"begin_gateway_admin_repair {partial_normal_key} "
+                f"{partial_normal_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_RESUME_MODE="partial",
+            )
+            self.assertEqual(partial_normal.returncode, 19, partial_normal.stderr)
+            partial_normal_retry = run(
+                f"begin_gateway_admin_repair {partial_normal_key} "
+                f"{partial_normal_args}"
+            )
+            self.assertNotEqual(partial_normal_retry.returncode, 0)
+            self.assertIn(
+                "partial broadcast via-Gateway repair sequence",
+                partial_normal_retry.stderr,
+            )
+
+            sequence_mutations = (
+                ("60", {"FAKE_FORGE_OUTER_VALUE": "109"}),
+                ("63", {"FAKE_SEQUENCE_MUTATION": "target"}),
+                ("71", {"FAKE_SEQUENCE_MUTATION": "trailing"}),
+            )
+            for suffix, mutation in sequence_mutations:
+                with self.subTest(sequence_mutation=mutation):
+                    mutation_target = "0x" + suffix * 20
+                    mutation_key = f"sender-balance-57058-{mutation_target}"
+                    rejected = run(
+                        f"begin_gateway_admin_repair {mutation_key} "
+                        f"{sender_arguments(mutation_target, 2, 8)}\n"
+                        "run_gateway_admin_repair_forge --sig probe",
+                        **mutation,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertFalse(
+                        (repair_root / mutation_key / "prepared.json").exists()
+                    )
+
+            tamper_key = "committer-role-57058-0x" + "25" * 20
+            common_args = committer_arguments("0x" + "25" * 20)
+            sealed = run(
+                f"begin_gateway_admin_repair {tamper_key} {common_args}\n"
+                "run_gateway_admin_repair_forge --sig probe"
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            tampered_public = (
+                repair_root
+                / tamper_key
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+                / "adminL1L2TxViaGateway-latest.json"
+            )
+            committer_tx = json.loads(tampered_public.read_text(encoding="utf-8"))[
+                "transactions"
+            ][0]["transaction"]["input"]
+            self.assertEqual(
+                hashlib.sha256(committer_tx.encode()).hexdigest(),
+                "b878bf7c7ba813ef4c746ca3853aad312c42907d66eaebe0651f072dd4bcfe91",
+            )
+            tampered_public.write_bytes(tampered_public.read_bytes() + b"\n")
+            tampered = run(
+                f"begin_gateway_admin_repair {tamper_key} {common_args}"
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn(
+                "sealed via-Gateway repair sequence changed", tampered.stderr
+            )
+
+            unknown_key = "committer-role-57058-0x" + "33" * 20
+            unknown_args = committer_arguments("0x" + "33" * 20)
+            seeded = run(
+                f"begin_gateway_admin_repair {unknown_key} {unknown_args}"
+            )
+            self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            unknown_dir = (
+                repair_root
+                / unknown_key
+                / "broadcast"
+                / "AdminFunctions.s.sol"
+                / "5700"
+                / "dry-run"
+            )
+            unknown_dir.mkdir(parents=True)
+            for directory in (
+                unknown_dir,
+                unknown_dir.parent,
+                unknown_dir.parent.parent,
+            ):
+                directory.chmod(0o700)
+            rogue = unknown_dir / "rogue.json"
+            rogue.write_text("{}\n", encoding="utf-8")
+            rogue.chmod(0o600)
+            unknown = run(
+                f"begin_gateway_admin_repair {unknown_key} {unknown_args}"
+            )
+            self.assertNotEqual(unknown.returncode, 0)
+            self.assertIn(
+                "unexpected via-Gateway repair sequence entry", unknown.stderr
+            )
+
+            symlink_key = "committer-role-57058-0x" + "44" * 20
+            symlink_args = committer_arguments("0x" + "44" * 20)
+            seeded = run(
+                f"begin_gateway_admin_repair {symlink_key} {symlink_args}"
+            )
+            self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            symlink_dir = repair_root / symlink_key / "broadcast"
+            decoy = state_dir / "decoy-sequences"
+            decoy.mkdir(mode=0o700)
+            (symlink_dir / "AdminFunctions.s.sol").symlink_to(
+                decoy, target_is_directory=True
+            )
+            symlinked = run(
+                f"begin_gateway_admin_repair {symlink_key} {symlink_args}"
+            )
+            self.assertNotEqual(symlinked.returncode, 0)
+            self.assertIn("unsafe via-Gateway repair directory", symlinked.stderr)
+
+            accepted_key = "committer-role-57058-0x" + "55" * 20
+            accepted_args = committer_arguments("0x" + "55" * 20)
+            accepted = run(
+                f"begin_gateway_admin_repair {accepted_key} {accepted_args}",
+                FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
+                FAKE_FORGE_COMMIT="807f47ace7cdd90eed7190dc4481952cfaa25938",
+            )
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            accepted_intent = json.loads(
+                (repair_root / accepted_key / "intent.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertIn(
+                "foundry_version=1.3.5-foundry-zksync-v0.1.5",
+                accepted_intent["arguments"],
+            )
+
+            data_schema_key = "committer-role-57058-0x" + "56" * 20
+            data_schema_args = committer_arguments("0x" + "56" * 20)
+            data_schema = run(
+                f"begin_gateway_admin_repair {data_schema_key} {data_schema_args}\n"
+                "run_gateway_admin_repair_forge --sig probe",
+                FAKE_FORGE_CALLDATA_KEY="data",
+                FAKE_FORGE_VERSION="1.3.5-foundry-zksync-v0.1.5",
+                FAKE_FORGE_COMMIT="807f47ace7cdd90eed7190dc4481952cfaa25938",
+            )
+            self.assertEqual(data_schema.returncode, 0, data_schema.stderr)
+
+            for suffix, overrides in (
+                ("66", {"FAKE_FORGE_VERSION": "1.8.0"}),
+                ("77", {"FAKE_FORGE_COMMIT": "0" * 40}),
+                (
+                    "88",
+                    {
+                        "FAKE_FORGE_VERSION": "1.3.5-foundry-zksync-v0.1.5",
+                        "FAKE_FORGE_COMMIT": "VERGEN_IDEMPOTENT_OUTPUT",
+                    },
+                ),
+            ):
+                with self.subTest(unaudited_foundry=suffix):
+                    rejected_key = "committer-role-57058-0x" + suffix * 20
+                    rejected_args = committer_arguments("0x" + suffix * 20)
+                    rejected = run(
+                        f"begin_gateway_admin_repair {rejected_key} {rejected_args}",
+                        **overrides,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("via-Gateway repair", rejected.stderr)
+                    self.assertFalse((repair_root / rejected_key).exists())
+
     def test_non_l1_cast_strips_l1_context_and_owns_non_l1_rpc_sites(self) -> None:
         context_names = (
             "FOUNDRY_CHAIN_ID",
@@ -2115,6 +3579,10 @@ class LauncherStaticTests(unittest.TestCase):
                 f"for name in {' '.join(context_names)}; do\n"
                 "  [ \"${!name+x}\" != x ] || { echo \"leaked ${name}\" >&2; exit 91; }\n"
                 "done\n"
+                "if [ \"${FAIL_CAST:-false}\" = true ]; then\n"
+                "  printf 'CAST_STDERR_SECRET %s\\n' \"$*\" >&2\n"
+                "  exit 42\n"
+                "fi\n"
                 "printf '%s\\n' \"$*\"\n",
                 encoding="utf-8",
             )
@@ -2130,6 +3598,26 @@ class LauncherStaticTests(unittest.TestCase):
                 env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            secret_gateway_rpc = (
+                "https://rpc-user:rpc-password@gateway.invalid/private/path"
+                "?token=super-secret#fragment"
+            )
+            failed = run_bash_harness(
+                'source "$COMMON"; gl_non_l1_cast chain-id --rpc-url '
+                '"$SECRET_GATEWAY_RPC"',
+                {
+                    **env,
+                    "FAIL_CAST": "true",
+                    "SECRET_GATEWAY_RPC": secret_gateway_rpc,
+                },
+            )
+            self.assertEqual(failed.returncode, 42)
+            failure_output = failed.stdout + failed.stderr
+            self.assertNotIn(secret_gateway_rpc, failure_output)
+            self.assertNotIn("rpc-user:rpc-password", failure_output)
+            self.assertNotIn("super-secret", failure_output)
+            self.assertNotIn("CAST_STDERR_SECRET", failure_output)
+            self.assertIn("non-L1 cast command failed", failure_output)
 
         common = GATEWAY_COMMON.read_text(encoding="utf-8")
         wrapped_start = common.index("gl_gateway_wrapped_base_token_from_rpc() {")
@@ -2426,18 +3914,49 @@ class LauncherStaticTests(unittest.TestCase):
             self.assertIn(expected, finish_migration)
         self.assertNotIn('+            "finishMigrateChainToGateway",', finish_migration)
 
+        # SYSCOIN: The pinned upstream maps zkOS scheme 4 to calldata scheme 3
+        # in both migration paths. Our compact Bitcoin-DA encoding remains
+        # scheme 4 on Gateway, so both downgrades must stay removed.
+        preserve_marker = (
+            "+    // SYSCOIN: Scheme 4 is compact Bitcoin DA on both settlement "
+            "layers; preserve it on Gateway."
+        )
+        migrate_calldata = patch.split(
+            "diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/"
+            "migrate_to_gateway_calldata.rs ",
+            1,
+        )[1].split("\ndiff --git ", 1)[0]
+        for source_patch in (migrate_calldata, finish_migration):
+            self.assertIn(preserve_marker, source_patch)
+            self.assertIn(
+                "-    if l2_da_validator_commitment_scheme == "
+                "L2DACommitmentScheme::BlobsZksyncOS {",
+                source_patch,
+            )
+            self.assertIn(
+                "-        l2_da_validator_commitment_scheme = "
+                "L2DACommitmentScheme::BlobsAndPubdataKeccak256;",
+                source_patch,
+            )
+            self.assertNotIn(
+                "+        l2_da_validator_commitment_scheme = "
+                "L2DACommitmentScheme::BlobsAndPubdataKeccak256;",
+                source_patch,
+            )
+        self.assertEqual(patch.count(preserve_marker), 2)
+
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78",
+            "fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78"',
-            'EXPECTED_PATCH_PATH_COUNT="26"',
-            'EXPECTED_PATCH_PATHS_SHA256="c82dac75c980d1473750de262aae522d2f64a534b17b2aae11fd66e967d98779"',
-            'EXPECTED_PATCHED_TREE="60dfff2d8b29a0c7bd43e832ae63fde878c209dc"',
+            'EXPECTED_PATCH_SHA256="fead7ce6e0c88002fe6fa5d41c2780434f24be23c262fe8aa222765f8a920a69"',
+            'EXPECTED_PATCH_PATH_COUNT="27"',
+            'EXPECTED_PATCH_PATHS_SHA256="a6b6a8b3d2205b10e602f5a1463925ff9cd4f077b1b441c92a464a2f1cbdc985"',
+            'EXPECTED_PATCHED_TREE="2e4eed988d0014be40a7fcbdc0d9920229bfb56e"',
             'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
             'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
@@ -5148,6 +6667,10 @@ gl_checkpoint_assert_fingerprint_matches
             REPO_ROOT / "scripts" / "gateway-launch" / "zksys-l2-bootstrap.sh"
         ).read_text(encoding="utf-8")
 
+        self.assertIn(
+            'bash "${SCRIPT_DIR}/zksys-l1-registry-bridge-only.sh" --check-only',
+            bootstrap,
+        )
         # SYSCOIN: a nonempty-code check is insufficient on custom genesis.
         # Pin both Arachnid runtime bytes and their independently fixed hash.
         self.assertIn(
@@ -5271,6 +6794,14 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
         )
         common = (launch_dir / "_common.sh").read_text(encoding="utf-8")
         deploy = (launch_dir / "gateway-deploy-l1.sh").read_text(encoding="utf-8")
+        bridge_only = (launch_dir / "zksys-l1-registry-bridge-only.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for boundary in ("BEGIN", "END"):
+            marker = f"# SYSCOIN: {boundary} reusable zkSYS L1 registry bridge helpers."
+            self.assertEqual(deploy.count(marker), 1)
+            self.assertIn(marker, bridge_only)
 
         for script in (funder, generator):
             self.assertIn("gl_resolve_required_source_pins", script)
@@ -5858,10 +7389,10 @@ class EraAttestationStaticTests(unittest.TestCase):
             'EXPECTED_BASE_COMMIT="8fb7c29a4e3174335c6480b23f57822e054f9d5f"',
             'EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"',
             'EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"',
-            'EXPECTED_PATCH_SIZE="1420519"',
-            'EXPECTED_PATCH_SHA256="d3ee492d2a7a759c9ad1405b5b450e464f0c412e27ca02e72cb8b17e2ecfe6c2"',
-            'EXPECTED_PATCH_PATH_COUNT="60"',
-            'EXPECTED_PATCH_PATHS_SHA256="daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821"',
+            'EXPECTED_PATCH_SIZE="1423817"',
+            'EXPECTED_PATCH_SHA256="506c3ac9cf46c1174f7aee3fc033b8d5aef661533e77d3fc324c17ae22962668"',
+            'EXPECTED_PATCH_PATH_COUNT="61"',
+            'EXPECTED_PATCH_PATHS_SHA256="18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0"',
             f'EXPECTED_PATCHED_TREE="{PUBLISHED_ERA_PATCHED_TREE}"',
             'STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"',
             "uint32 internal constant CANONICAL_ZKSYNC_OS_VERIFIER_VERSION = 8;",
@@ -5912,22 +7443,46 @@ class EraAttestationStaticTests(unittest.TestCase):
             for line in patch.splitlines()
             if line.startswith("diff --git a/")
         )
-        self.assertEqual(len(patch_paths), 60)
+        self.assertEqual(len(patch_paths), 61)
         self.assertEqual(
             hashlib.sha256(
                 "".join(f"{path}\n" for path in patch_paths).encode("utf-8")
             ).hexdigest(),
-            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
+            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
         )
         manifest_body = helper.split(
             "done <<'SYSCOIN_POSTIMAGE_MANIFEST'\n", 1
         )[1].split("\nSYSCOIN_POSTIMAGE_MANIFEST\n", 1)[0]
         manifest_entries = [line.split(maxsplit=2) for line in manifest_body.splitlines()]
-        self.assertEqual(len(manifest_entries), 60)
+        self.assertEqual(len(manifest_entries), 61)
         self.assertEqual([entry[2] for entry in manifest_entries], patch_paths)
         for size, digest, path in manifest_entries:
             self.assertGreater(int(size), 0, path)
             self.assertEqual(len(digest), 64, path)
+        manifest = {
+            path: (int(size), digest) for size, digest, path in manifest_entries
+        }
+        self.assertEqual(
+            manifest["l1-contracts/contracts/script-interfaces/IAdminFunctions.sol"],
+            (
+                7470,
+                "f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a",
+            ),
+        )
+        self.assertEqual(
+            manifest["l1-contracts/deploy-scripts/AdminFunctions.s.sol"],
+            (
+                60893,
+                "225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0",
+            ),
+        )
+        self.assertEqual(
+            manifest["l1-contracts/selectors"],
+            (
+                2307892,
+                "38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb",
+            ),
+        )
 
         for forbidden_envelope in (
             "deleted file mode ",
@@ -6002,8 +7557,16 @@ class EraAttestationStaticTests(unittest.TestCase):
                 "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3",
             ),
             (
+                "l1-contracts/contracts/script-interfaces/IAdminFunctions.sol",
+                "f01a15779e7bae75756ee0fe12b29e72648dca609adffad6745d8e55ca82345a",
+            ),
+            (
                 "l1-contracts/deploy-scripts/AdminFunctions.s.sol",
-                "e9a81f7e93a396ad203a5e050b7d9b857966d45954405ec849e1a05f0cc47759",
+                "225721828b3d6b66598253093e4139612accbfadbbbd8d3e3f6d662fa342bbc0",
+            ),
+            (
+                "l1-contracts/selectors",
+                "38835a67728d55ef2f15abd46cbf0fd4f050486a59d6e859427f236d905100cb",
             ),
             (
                 "tools/zksync-os-genesis-gen/src/consts.rs",
@@ -6122,6 +7685,46 @@ class EraAttestationStaticTests(unittest.TestCase):
             "diff --git a/l1-contracts/deploy-scripts/AdminFunctions.s.sol",
             patch,
         )
+
+        def patch_section(path: str) -> str:
+            start = patch.index(f"diff --git a/{path} b/{path}")
+            end = patch.find("\ndiff --git a/", start + 1)
+            return patch[start : len(patch) if end == -1 else end]
+
+        admin_interface = patch_section(
+            "l1-contracts/contracts/script-interfaces/IAdminFunctions.sol"
+        )
+        admin_function = patch_section(
+            "l1-contracts/deploy-scripts/AdminFunctions.s.sol"
+        )
+        selectors = patch_section("l1-contracts/selectors")
+        self.assertIn("+    function adminL1L2TxViaGateway(", admin_interface)
+        self.assertIn("+    function adminL1L2TxViaGateway(", admin_function)
+        self.assertIn(
+            "adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,"
+            "uint256,bytes,address,bool)                  | 0x36cec6db",
+            selectors,
+        )
+        self.assertIn(
+            '+        require(_adminChainId != 0 && _gatewayChainId != 0, "chain id is zero");',
+            admin_function,
+        )
+        self.assertIn(
+            "+            L1Bridgehub(_bridgehub).settlementLayer(_adminChainId) == _gatewayChainId,",
+            admin_function,
+        )
+        for expected in (
+            "+        ChainInfoFromBridgehub memory adminChainInfo = Utils.chainInfoFromBridgehubAndChainId(",
+            "+            params.adminChainId",
+            "+            params.destinationChainId,",
+            "+            adminChainInfo.l1AssetRouterProxy,",
+            "+        saveAndSendAdminTx(adminChainInfo.admin, calls, params._shouldSend);",
+            "+                adminChainId: _chainId,",
+            "+                destinationChainId: _chainId,",
+            "+                adminChainId: _adminChainId,",
+            "+                destinationChainId: _gatewayChainId,",
+        ):
+            self.assertIn(expected, admin_function)
         self.assertIn("governance.getOperationState(operationId)", patch)
         self.assertIn("ownership operation is not ready", patch)
         self.assertNotIn(
@@ -6274,9 +7877,9 @@ class EraAttestationStaticTests(unittest.TestCase):
         for expected in (
             f'ERA_PATCH_SIZE: "{len(patch)}"',
             f"ERA_PATCH_SHA256: {hashlib.sha256(patch).hexdigest()}",
-            'ERA_PATCH_PATH_COUNT: "60"',
+            'ERA_PATCH_PATH_COUNT: "61"',
             "ERA_PATCH_PATHS_SHA256: "
-            "daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821",
+            "18498a8309539ca0677997344270edee8603a42a4146c29175e91f4b37dda5f0",
             f"ERA_SOURCE_PATCHED_TREE: {PUBLISHED_ERA_PATCHED_TREE}",
             "ERA_GENESIS_TOOLCHAIN: nightly-2026-01-22",
             'ERA_GENESIS_SIZE: "557518"',
@@ -6927,7 +8530,7 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
                 self.assertIn("requires gl.migration=in_progress", rejected.stderr)
         stale = run_authorization("in_progress", inherited_fd="")
         self.assertNotEqual(stale.returncode, 0)
-        self.assertIn("active checkpointed launcher", stale.stderr)
+        self.assertIn("active checkpoint owner", stale.stderr)
         additional_edge = run_authorization(
             "passed", canonical=False, inherited_fd=""
         )
@@ -7014,7 +8617,9 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             secrets.parent.mkdir(parents=True)
             secrets.write_text(json.dumps({"l1": {}}) + "\n", encoding="utf-8")
             secrets.chmod(0o600)
-            expected_url = "http://127.0.0.1:3052"
+            expected_url = (
+                "https://rpc-user:rpc-password@gateway.invalid/rpc?api_key=api-token"
+            )
 
             def run(policy: str) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
@@ -7051,6 +8656,12 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             )
             written = run("write")
             self.assertEqual(written.returncode, 0, written.stderr)
+            written_output = written.stdout + written.stderr
+            self.assertNotIn(expected_url, written_output)
+            self.assertNotIn("rpc-user", written_output)
+            self.assertNotIn("rpc-password", written_output)
+            self.assertNotIn("api-token", written_output)
+            self.assertIn("<redacted>", written_output)
             self.assertEqual(stat.S_IMODE(secrets.stat().st_mode), 0o600)
             self.assertEqual(
                 json.loads(secrets.read_text(encoding="utf-8"))["l1"][
@@ -8770,13 +10381,6 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
             / "edge-chain-migrate-to-gateway.sh"
         ).read_text(encoding="utf-8")
 
-        sequence = (
-            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
-            '  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
-            '  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.\n'
-            '  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
-            '  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
-        )
         final_sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
@@ -8784,13 +10388,12 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
-        self.assertIn(sequence, migration)
         self.assertIn(final_sequence, migration)
         self.assertEqual(
             migration.count(
                 'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"'
             ),
-            2,
+            1,
         )
         pin_assertion = migration.index(
             'gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"'

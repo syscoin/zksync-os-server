@@ -59,11 +59,18 @@ gl_to_lower() {
 # context. In particular, Foundry applies fee and sender env to eth_call, while
 # CAST_ASYNC would let an edge send race the verification that follows it.
 gl_non_l1_cast() {
+  local cast_rc
   env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID -u CHAIN \
     -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS \
     -u ETH_MAX_PRIORITY_FEE_PER_GAS -u ETH_GAS_LIMIT -u ETH_FROM \
     -u ETH_KEYSTORE -u ETH_KEYSTORE_ACCOUNT -u ETH_PASSWORD -u CAST_ASYNC \
-    cast "$@"
+    cast "$@" 2>/dev/null || {
+      cast_rc=$?
+      # SYSCOIN: Cast can reproduce credential-bearing path/query data from an
+      # RPC URL in transport errors. Preserve stdout/rc but bound diagnostics.
+      echo "gateway-launch: non-L1 cast command failed" >&2
+      return "${cast_rc}"
+    }
 }
 
 # SYSCOIN: Bind generated deployment executables to their reviewed source stamp.
@@ -504,16 +511,17 @@ gl_assert_l1_chain_id_matches_rpc() {
   gl_require L1_CHAIN_ID
 
   local rpc_chain_id
+  # SYSCOIN: never persist a credential-bearing L1 URL in preflight failures.
   if ! rpc_chain_id="$(gl_l1_chain_id_from_rpc 2>/dev/null)"; then
-    gl_die "failed to read chain id from L1 RPC ${L1_RPC_URL}"
+    gl_die "failed to read chain id from the configured L1 RPC"
   fi
 
   if [ -z "${rpc_chain_id}" ]; then
-    gl_die "empty chain id from L1 RPC ${L1_RPC_URL}"
+    gl_die "empty chain id from the configured L1 RPC"
   fi
 
   if [ "${rpc_chain_id}" != "${L1_CHAIN_ID}" ]; then
-    gl_die "L1 chain-id mismatch: rpc(${L1_RPC_URL})=${rpc_chain_id}, expected L1_CHAIN_ID=${L1_CHAIN_ID}, FOUNDRY_CHAIN_ID=${FOUNDRY_CHAIN_ID:-<unset>}"
+    gl_die "L1 chain-id mismatch: configured RPC=${rpc_chain_id}, expected L1_CHAIN_ID=${L1_CHAIN_ID}, FOUNDRY_CHAIN_ID=${FOUNDRY_CHAIN_ID:-<unset>}"
   fi
 }
 
@@ -766,10 +774,10 @@ gl_assert_rpc_chain_id_matches_config() {
   local label="${3:?chain label required}" expected actual
   expected="$(gl_chain_id_from_config "${chain_name}" "${label}")" || return $?
   actual="$(gl_non_l1_cast chain-id --rpc-url "${rpc_url}")" ||
-    gl_die "failed to read ${label} chain ID from ${rpc_url}"
+    gl_die "failed to read ${label} chain ID from the configured RPC"
   actual="$(printf '%s' "${actual}" | tr -d '[:space:]')"
   [[ "${actual}" =~ ^[0-9]+$ ]] ||
-    gl_die "invalid ${label} RPC chain ID from ${rpc_url}: ${actual:-<empty>}"
+    gl_die "invalid ${label} chain ID from the configured RPC: ${actual:-<empty>}"
   [ "${actual}" = "${expected}" ] ||
     gl_die "${label} RPC chain ID mismatch: config=${expected} rpc=${actual}"
 }
@@ -1506,14 +1514,14 @@ gl_assert_gateway_genesis_stamp() {
     gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
   fi
   block_zero_hash="$(gl_non_l1_cast block 0 --field hash --rpc-url "${gateway_rpc}")" || \
-    gl_die "failed to read Gateway block-0 hash from ${gateway_rpc}"
+    gl_die "failed to read Gateway block-0 hash from the configured RPC"
   if [ -n "${expected_owner_pid}" ]; then
     # SYSCOIN: Do not persist an RPC result after its launcher-owned listener disappeared.
     gl_assert_gateway_listener_owned_by_pid "${expected_owner_pid}" "${gateway_rpc}" || return $?
   fi
   block_zero_hash="$(gl_to_lower "$(printf '%s' "${block_zero_hash}" | tr -d '[:space:]')")"
   [[ "${block_zero_hash}" =~ ^0x[0-9a-f]{64}$ ]] || \
-    gl_die "invalid Gateway block-0 hash from ${gateway_rpc}: ${block_zero_hash}"
+    gl_die "invalid Gateway block-0 hash from the configured RPC: ${block_zero_hash}"
   gateway_chain_name="${GATEWAY_CHAIN_NAME:-gateway}"
   stamp_path="${GATEWAY_DIR}/.gateway-launch/${gateway_chain_name}-runtime-genesis.v1"
   expected="${chain_id} ${block_zero_hash}"
@@ -1609,10 +1617,10 @@ gl_assert_rpc_runtime_identity() {
   local code code_hex actual_size actual_hash
 
   code="$(gl_non_l1_cast code "${address}" --rpc-url "${rpc_url}")" || \
-    gl_die "failed to read ${label} runtime at ${address} from ${rpc_url}"
+    gl_die "failed to read ${label} runtime at ${address} from the configured RPC"
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
   [ "${code#0x}" != "${code}" ] && [ "${code}" != "0x" ] || \
-    gl_die "missing ${label} runtime at ${address} on ${rpc_url}"
+    gl_die "missing ${label} runtime at ${address} on the configured RPC"
   code_hex="${code#0x}"
   [ $(( ${#code_hex} % 2 )) -eq 0 ] || gl_die "malformed ${label} runtime at ${address}"
   actual_size=$(( ${#code_hex} / 2 ))
@@ -1681,7 +1689,7 @@ gl_assert_gateway_listener_owned_by_pid() {
   [[ "${expected_pid}" =~ ^[1-9][0-9]*$ ]] ||
     gl_die "invalid launcher-owned Gateway PID: ${expected_pid}"
   [[ "${gateway_rpc}" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})$ ]] ||
-    gl_die "listener ownership requires a generated loopback Gateway RPC URL: ${gateway_rpc}"
+    gl_die "listener ownership requires the generated loopback Gateway RPC endpoint"
   port="${BASH_REMATCH[1]}"
   [ "${port}" -le 65535 ] || gl_die "invalid Gateway RPC port: ${port}"
 
@@ -1810,9 +1818,9 @@ gl_assert_gateway_runtime_identity() {
   gl_assert_gateway_config_identity || return $?
   expected_chain_id="$(gl_gateway_chain_id_from_config)" || return $?
   actual_chain_id="$(gl_non_l1_cast chain-id --rpc-url "${gateway_rpc}")" || \
-    gl_die "failed to read Gateway chain ID from ${gateway_rpc}"
+    gl_die "failed to read Gateway chain ID from the configured RPC"
   [[ "${actual_chain_id}" =~ ^[0-9]+$ ]] || \
-    gl_die "invalid Gateway RPC chain ID from ${gateway_rpc}: ${actual_chain_id}"
+    gl_die "invalid Gateway chain ID from the configured RPC: ${actual_chain_id}"
   [ "${actual_chain_id}" = "${expected_chain_id}" ] || \
     gl_die "Gateway RPC chain ID mismatch: config=${expected_chain_id} rpc=${actual_chain_id}"
   target="$(gl_published_gateway_commit_target)"
@@ -3474,7 +3482,15 @@ funder_wallet_args = [] if check_only else funder_wallet_args()
 
 
 def cast_check_output(args):
-    return subprocess.check_output(args, text=True, env=cast_env)
+    try:
+        # SYSCOIN: cast failures stringify argv and can echo credential-bearing
+        # RPC URLs on stderr. Keep both out of launcher diagnostics.
+        return subprocess.check_output(
+            args, text=True, env=cast_env, stderr=subprocess.DEVNULL
+        )
+    except subprocess.CalledProcessError:
+        subcommand = args[1] if len(args) > 1 else "command"
+        raise SystemExit(f"cast {subcommand} failed") from None
 
 
 def wei_balance(address):
@@ -4486,6 +4502,15 @@ if value == 0 or value >= 2**32:
     raise SystemExit("EDGE_CHAIN_ID must be between 1 and 4294967295")
 print(value)
 PY
+}
+
+# SYSCOIN: zkstack slugifies `chain create --chain-name` before indexing it.
+# Require the caller's identity to already be that exact fixed-point spelling so
+# paths, locks, and the persisted edge fingerprint cannot diverge from zkstack.
+gl_validate_zkstack_chain_name() {
+  local chain_name="${1:-}" label="${2:-chain name}"
+  [[ "${chain_name}" =~ ^[a-z0-9]+(_[a-z0-9]+)*$ ]] ||
+    gl_die "${label} must be zkstack-canonical lower snake_case ([a-z0-9]+(_[a-z0-9]+)*)"
 }
 
 gl_is_canonical_edge_context() {
@@ -5666,7 +5691,8 @@ gl_registered_chain_admin() {
   local label="${3:?chain label required}"
   local expected_diamond="${4:-}"
   local raw_diamond diamond raw_pending_admin pending_admin raw_chain_admin chain_admin
-  raw_diamond="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}")" || \
+  # SYSCOIN: cast transport failures can echo credential-bearing L1 URLs.
+  raw_diamond="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to query L1 BridgeHub registration for ${label} chain ${chain_id}"
   diamond="$(gl_normalize_cast_address "${label} diamond" "${raw_diamond}")" || return $?
   if [ "${diamond}" = "0x0000000000000000000000000000000000000000" ]; then
@@ -5678,12 +5704,12 @@ gl_registered_chain_admin() {
     gl_die "registered ${label} chain ${chain_id} is missing a persisted diamond identity"
   [ "${diamond}" = "${expected_diamond}" ] ||
     gl_die "${label} diamond mismatch: persisted=${expected_diamond} registered=${diamond}"
-  raw_pending_admin="$(cast call "${diamond}" "getPendingAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  raw_pending_admin="$(cast call "${diamond}" "getPendingAdmin()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read pending admin for registered ${label} diamond ${diamond}"
   pending_admin="$(gl_normalize_cast_address "${label} pending admin" "${raw_pending_admin}")" || return $?
   [ "${pending_admin}" = "0x0000000000000000000000000000000000000000" ] || \
     gl_die "registered ${label} diamond ${diamond} retains pending admin ${pending_admin}"
-  raw_chain_admin="$(cast call "${diamond}" "getAdmin()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  raw_chain_admin="$(cast call "${diamond}" "getAdmin()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read ChainAdmin for registered ${label} diamond ${diamond}"
   chain_admin="$(gl_normalize_cast_address "${label} ChainAdmin" "${raw_chain_admin}")" || return $?
   [ "${chain_admin}" != "0x0000000000000000000000000000000000000000" ] || \
@@ -5707,18 +5733,19 @@ gl_assert_chain_admin_owner() {
   local label="${3:-edge}"
   local chain_admin_code actual_governor pending_owner
 
-  chain_admin_code="$(cast code "${chain_admin}" --rpc-url "${L1_RPC_URL}")" || \
+  # SYSCOIN: retain bounded ownership diagnostics without logging the L1 URL.
+  chain_admin_code="$(cast code "${chain_admin}" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read ${label} ChainAdmin runtime at ${chain_admin}"
   if [ "$(printf '%s' "${chain_admin_code}" | tr -d '[:space:]')" = "0x" ]; then
     gl_die "missing ${label} ChainAdmin runtime at ${chain_admin}"
   fi
-  actual_governor="$(cast call "${chain_admin}" "owner()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  actual_governor="$(cast call "${chain_admin}" "owner()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read owner of ${label} ChainAdmin ${chain_admin}"
   actual_governor="$(gl_normalize_cast_address "${label} ChainAdmin owner" "${actual_governor}")" || return $?
   if [ "${actual_governor}" != "${expected_governor}" ]; then
     gl_die "${label} ChainAdmin owner mismatch: expected ${expected_governor}, got ${actual_governor:-<empty>}"
   fi
-  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}")" || \
+  pending_owner="$(cast call "${chain_admin}" "pendingOwner()(address)" --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
     gl_die "failed to read pending owner of ${label} ChainAdmin ${chain_admin}"
   pending_owner="$(gl_normalize_cast_address "${label} ChainAdmin pending owner" "${pending_owner}")" || return $?
   [ "${pending_owner}" = "0x0000000000000000000000000000000000000000" ] || \

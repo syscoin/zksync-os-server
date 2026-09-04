@@ -268,6 +268,7 @@ case "${L1_CHAIN_ID}" in
   ;;
 esac
 
+# SYSCOIN: BEGIN reusable zkSYS L1 registry bridge helpers.
 cast_code_or_die() {
   local addr="${1:?address required}"
   local code
@@ -925,6 +926,7 @@ deploy_zksys_l1_registry_bridge() {
   echo "gateway-launch: zkSYS L1 registry bridge ready at ${ZKSYS_L1_REGISTRY_BRIDGE_ADDRESS}"
   echo "gateway-launch: zkSYS L1 registry bridge params: chain=${zksys_chain_id}, l2Registry=${l2_registry}, nevmStartBlock=${nevm_start_block}, seniority=${seniority_height1}/${seniority_height2}, bps=${seniority_level1_bps}/${seniority_level2_bps}"
 }
+# SYSCOIN: END reusable zkSYS L1 registry bridge helpers.
 
 # SYSCOIN: WETH is a fresh deployment input; ownership recovery must not rewrite
 # the authenticated ecosystem configuration before its narrow reconciliation.

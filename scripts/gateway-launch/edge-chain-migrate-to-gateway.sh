@@ -8,19 +8,35 @@ source "${SCRIPT_DIR}/_common.sh"
 source "${SCRIPT_DIR}/_execute_operator_lock.sh"
 MIGRATION_CHECK_ONLY=false
 MIGRATION_PREFLIGHT_ONLY=false
+MIGRATION_POST_FINALIZE_REPAIR=false
 if [ "${1:-}" = "--check-only" ]; then
   MIGRATION_CHECK_ONLY=true
   shift
 elif [ "${1:-}" = "--preflight" ]; then
   MIGRATION_PREFLIGHT_ONLY=true
   shift
+elif [ "${1:-}" = "--resume-post-finalize" ]; then
+  MIGRATION_POST_FINALIZE_REPAIR=true
+  shift
 fi
-[ "$#" -eq 0 ] || gl_die "usage: edge-chain-migrate-to-gateway.sh [--check-only|--preflight]"
+[ "$#" -eq 0 ] || gl_die "usage: edge-chain-migrate-to-gateway.sh [--check-only|--preflight|--resume-post-finalize]"
 MIGRATION_READ_ONLY=false
 if [ "${MIGRATION_CHECK_ONLY}" = true ] || [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
   MIGRATION_READ_ONLY=true
 fi
+MIGRATION_EXISTING_STATE_ONLY=false
+if [ "${MIGRATION_READ_ONLY}" = true ] || [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
+  MIGRATION_EXISTING_STATE_ONLY=true
+fi
 gl_require ZKSYNC_ERA_PATH
+: "${EDGE_CHAIN_NAME:=zksys}"
+gl_validate_zkstack_chain_name "${EDGE_CHAIN_NAME}" EDGE_CHAIN_NAME
+: "${GATEWAY_DIR:=${HOME}/gateway}"
+# SYSCOIN: A direct post-finalize repair must own the launch lock before any
+# shared source patching, tool build, checkpoint read, or journal recovery.
+if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
+  gl_acquire_gateway_launch_lock
+fi
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
 export PROTOCOL_VERSION
@@ -28,13 +44,11 @@ gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
 gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
-: "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${L1_RPC_URL:?L1_RPC_URL is required}"
 gl_require L1_CHAIN_ID
 gl_require L1_NETWORK
 cd "${GATEWAY_DIR}"
 
-: "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${GATEWAY_RPC_URL:=http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
@@ -200,10 +214,10 @@ assert_canonical_migration_mutation_authorized() {
     return $?
   fi
   # SYSCOIN: The inherited, inode-validated execute-operator lock proves this
-  # child belongs to the launcher that performed preflight and advanced the
+  # child belongs to the launcher/repair owner that validated and advanced the
   # checkpoint. A fresh process must not resume a stale non-replay-safe step.
   if [ "${GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD:-}" != "${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}" ]; then
-    gl_die "canonical migration mutation requires the active checkpointed launcher"
+    gl_die "canonical migration mutation requires the active checkpoint owner"
     return $?
   fi
 }
@@ -228,10 +242,24 @@ if [ -n "${L2_BRIDGEHUB_ADDRESS:-}" ]; then
 fi
 readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
 
-# SYSCOIN: Direct migration entry points bind the exact edge context before
-# acquiring its shared nonce lock or mutating state. Read-only validation only
-# asserts the existing canonical fingerprint and zkstack edge index.
-if [ "${MIGRATION_READ_ONLY}" = true ]; then
+# SYSCOIN: Post-finalize repair owns the launch lock above, but must only assert
+# existing deployment state here rather than initialize or rewrite it.
+if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
+  gl_assert_edge_launch_context
+  # SYSCOIN: the canonical repair wrapper advances an eligible migration
+  # checkpoint to in_progress before invoking us. Direct canonical invocation
+  # must honor that lifecycle too; additional edges are indexed off-chain and
+  # intentionally have no dedicated checkpoint in the canonical state file.
+  if gl_is_canonical_edge_context; then
+    migration_repair_checkpoint_status="$(gl_checkpoint_get_status gl.migration)"
+    case "${migration_repair_checkpoint_status}" in
+    blocked | in_progress | passed) ;;
+    *)
+      gl_die "post-finalize migration repair requires gl.migration to be blocked, in_progress, or passed; got ${migration_repair_checkpoint_status}"
+      ;;
+    esac
+  fi
+elif [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then
   gl_assert_edge_launch_context
 else
   gl_bind_edge_launch_context
@@ -250,11 +278,11 @@ fi
 
 gl_l1_broadcast_preflight
 
-if [ "${MIGRATION_READ_ONLY}" = true ]; then
+if [ "${MIGRATION_EXISTING_STATE_ONLY}" = true ]; then
   gl_probe_chain_contracts_schema_ready "${EDGE_CHAIN_NAME}" ||
-    gl_die "edge contracts config is not ready for read-only migration validation"
+    gl_die "edge contracts config is not ready for existing-state migration validation"
   gl_probe_chain_contracts_schema_ready "${GATEWAY_CHAIN_NAME}" ||
-    gl_die "Gateway contracts config is not ready for read-only migration validation"
+    gl_die "Gateway contracts config is not ready for existing-state migration validation"
 else
   gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
   gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
@@ -415,7 +443,7 @@ if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
   # SYSCOIN: Parse and authenticate existing secret inputs without patching
   # files while gl.migration is still pending.
   configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" preflight
-elif [ "${MIGRATION_CHECK_ONLY}" = true ]; then
+elif [ "${MIGRATION_CHECK_ONLY}" = true ] || [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
   configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" exact
 else
   configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" write
@@ -440,7 +468,7 @@ PY
 
 get_settlement_layer_chain_id() {
   local chain_name="${1:?chain name required}"
-  local chain_id bridgehub
+  local chain_id bridgehub settlement_layer
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   bridgehub="$(python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/contracts.yaml" <<'PY'
 import sys
@@ -465,7 +493,18 @@ print(str(bridgehub))
 PY
 )"
 
-  cast call "${bridgehub}" "settlementLayer(uint256)(uint256)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk '{print $1}'
+  # SYSCOIN: cast transport failures may echo credential-bearing L1 URLs.
+  if ! settlement_layer="$(cast call "${bridgehub}" \
+    "settlementLayer(uint256)(uint256)" "${chain_id}" \
+    --rpc-url "${L1_RPC_URL}" 2>/dev/null | awk 'NF { print $1; exit }')"; then
+    echo "gateway-launch: failed to query the settlement layer for ${chain_name} on the configured L1 RPC" >&2
+    return 1
+  fi
+  [ -n "${settlement_layer}" ] || {
+    echo "gateway-launch: empty settlement layer for ${chain_name} from the configured L1 RPC" >&2
+    return 1
+  }
+  printf '%s\n' "${settlement_layer}"
 }
 
 get_chain_diamond_proxy_from_gateway() {
@@ -474,7 +513,7 @@ get_chain_diamond_proxy_from_gateway() {
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   call_from="$(get_chain_governor_from_wallets "${chain_name}")"
   if ! raw_proxy="$(gateway_cast_call_with_fallback "${L2_BRIDGEHUB_ADDRESS}" "getZKChain(uint256)(address)" "${GATEWAY_RPC_URL}" "${call_from}" "${chain_id}")"; then
-    echo "gateway-launch: failed to query Gateway Bridgehub getZKChain(${chain_id}) for ${chain_name}; target=${L2_BRIDGEHUB_ADDRESS}, rpc=${GATEWAY_RPC_URL}, from=${call_from:-unset}, cast=$(command -v cast || true)" >&2
+    echo "gateway-launch: failed to query Gateway Bridgehub getZKChain(${chain_id}) for ${chain_name} on the configured Gateway RPC; target=${L2_BRIDGEHUB_ADDRESS}, from=${call_from:-unset}, cast=$(command -v cast || true)" >&2
     return 1
   fi
   chain_proxy="$(printf '%s\n' "${raw_proxy}" | awk '{print $1}')"
@@ -836,6 +875,74 @@ print(addr.strip())
 PY
 }
 
+get_l1_edge_chain_admin_addr() {
+  local resolved gateway_governor edge_governor edge_governor_matches
+  local gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond raw_admin
+  resolved="$(gl_edge_governor_reuse_context)" || return $?
+  IFS='|' read -r gateway_governor edge_governor edge_governor_matches \
+    gateway_chain_id edge_chain_id bridgehub gateway_diamond edge_diamond <<<"${resolved}"
+  # SYSCOIN: bind the persisted replay sequence to the actual outer L1 target;
+  # AdminFunctions routes the inner BridgeHub call through the edge ChainAdmin.
+  raw_admin="$(cast call "${edge_diamond}" "getAdmin()(address)" \
+    --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || {
+    echo "gateway-launch: failed to resolve the edge ChainAdmin on the configured L1 RPC" >&2
+    return 1
+  }
+  gl_normalize_cast_address "edge ChainAdmin" "${raw_admin}"
+}
+
+# SYSCOIN: Read both migration postconditions from one L1 block so a concurrent
+# migration transition cannot synthesize an already-finalized state.
+gateway_migration_finalized_on_l1() {
+  local chain_name="${1:?chain name required}"
+  local gateway_chain_id="${2:?Gateway chain ID required}"
+  local edge_chain_id bridgehub l1_block_number settlement_layer
+  local chain_asset_handler_raw chain_asset_handler migration_in_progress
+
+  case "${gateway_chain_id}" in
+  "" | *[!0-9]*) gl_die "invalid Gateway chain ID: ${gateway_chain_id:-<empty>}" ;;
+  esac
+  edge_chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")" || \
+    gl_die "failed to resolve chain ID for ${chain_name}"
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || \
+    gl_die "failed to resolve L1 BridgeHub for ${chain_name}"
+  # SYSCOIN: cast transport failures may echo credential-bearing L1 URLs.
+  # Discard raw stderr and retain only the bounded stage diagnostics below.
+  l1_block_number="$(cast block-number --rpc-url "${L1_RPC_URL}" 2>/dev/null)" || \
+    gl_die "failed to resolve an L1 block for ${chain_name} migration state"
+  case "${l1_block_number}" in
+  "" | *[!0-9]*) gl_die "invalid L1 block number returned for ${chain_name}: ${l1_block_number:-<empty>}" ;;
+  esac
+  settlement_layer="$(cast call "${bridgehub}" "settlementLayer(uint256)(uint256)" \
+    "${edge_chain_id}" --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}" 2>/dev/null | \
+    awk 'NF { print $1; exit }')" || \
+    gl_die "failed to query L1 settlement layer for ${chain_name} at block ${l1_block_number}"
+  case "${settlement_layer}" in
+  "" | *[!0-9]*) gl_die "invalid L1 settlement layer returned for ${chain_name}: ${settlement_layer:-<empty>}" ;;
+  esac
+  if [ "${settlement_layer}" != "${gateway_chain_id}" ]; then
+    printf '%s\n' false
+    return 0
+  fi
+
+  chain_asset_handler_raw="$(cast call "${bridgehub}" "chainAssetHandler()(address)" \
+    --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}" 2>/dev/null)" || \
+    gl_die "failed to query L1 ChainAssetHandler for ${chain_name} at block ${l1_block_number}"
+  chain_asset_handler="$(gl_normalize_cast_address "L1 ChainAssetHandler" "${chain_asset_handler_raw}")" || return $?
+  [ "${chain_asset_handler}" != "0x0000000000000000000000000000000000000000" ] || \
+    gl_die "L1 BridgeHub returned a zero ChainAssetHandler for ${chain_name}"
+  migration_in_progress="$(cast call "${chain_asset_handler}" \
+    "isMigrationInProgress(uint256)(bool)" "${edge_chain_id}" \
+    --rpc-url "${L1_RPC_URL}" --block "${l1_block_number}" 2>/dev/null | \
+    awk 'NF { print tolower($1); exit }')" || \
+    gl_die "failed to query L1 migration state for ${chain_name} at block ${l1_block_number}"
+  case "${migration_in_progress}" in
+  false) printf '%s\n' true ;;
+  true) printf '%s\n' false ;;
+  *) gl_die "invalid L1 migration state returned for ${chain_name}: ${migration_in_progress:-<empty>}" ;;
+  esac
+}
+
 get_gateway_validator_timelock_addr() {
   local gateway_chain_name="${1:?gateway chain name required}"
   python3 - "${GATEWAY_DIR}/chains/${gateway_chain_name}/configs/gateway.yaml" <<'PY'
@@ -863,25 +970,25 @@ gateway_cast_call_with_fallback() {
   local call_from="${4:-}"
   shift 4
 
-  local out last_error=""
+  local out
   if [ -n "${call_from}" ]; then
     # SYSCOIN: read-only Gateway calls must not inherit L1 broadcast fee env.
     # Gateway can have a different base fee, and cast applies ETH_GAS_PRICE to
     # eth_call transactions even though no transaction is broadcast.
     if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
-      --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
+      --rpc-url "${rpc_url}" --from "${call_from}" 2>/dev/null)"; then
       printf '%s\n' "${out}"
       return 0
     fi
-    last_error="${out}"
   fi
   if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
-    --rpc-url "${rpc_url}" 2>&1)"; then
+    --rpc-url "${rpc_url}" 2>/dev/null)"; then
     printf '%s\n' "${out}"
     return 0
   fi
-  last_error="${out}"
-  echo "gateway-launch: cast call failed: target=${target}, sig=${sig}, rpc=${rpc_url}, from=${call_from:-unset}, args=$*, last_error=${last_error}" >&2
+  # SYSCOIN: cast transport errors can echo credential-bearing RPC URLs. Keep
+  # that stderr out of the persistent launcher log and emit bounded context.
+  echo "gateway-launch: cast call failed on the configured Gateway RPC: target=${target}, sig=${sig}, from=${call_from:-unset}, args=$*" >&2
   return 1
 }
 
@@ -1008,6 +1115,772 @@ wait_for_gateway_commit_sender_balance() {
   return 1
 }
 
+# SYSCOIN: A via-Gateway repair can be accepted on L1 before Forge reports
+# success. Persist the exact dry-run nonce sequence before any send-capable
+# Forge process starts, then use only --resume until the postcondition lands.
+GATEWAY_ADMIN_REPAIR_DIR=""
+GATEWAY_ADMIN_REPAIR_KEY=""
+GATEWAY_ADMIN_REPAIR_FORGE_PATH=""
+GATEWAY_ADMIN_REPAIR_FORGE_SHA256=""
+GATEWAY_ADMIN_REPAIR_RESUME=false
+GATEWAY_ADMIN_REPAIR_VALUE_WEI=""
+
+gateway_admin_repair_foundry_identity() {
+  local forge_path output version commit binary_sha
+  forge_path="$(command -v forge)" || {
+    echo "gateway-launch: Forge is required for via-Gateway repair" >&2
+    return 1
+  }
+  if [[ "${forge_path}" != /* ]] || [ ! -f "${forge_path}" ] || [ -L "${forge_path}" ]; then
+    echo "gateway-launch: via-Gateway repair requires an absolute regular Forge executable" >&2
+    return 1
+  fi
+  if ! output="$("${forge_path}" --version 2>/dev/null)"; then
+    echo "gateway-launch: failed to identify Forge for via-Gateway repair" >&2
+    return 1
+  fi
+  version="$(printf '%s\n' "${output}" | awk '$1 == "forge" && $2 == "Version:" { print $3; exit }')"
+  commit="$(printf '%s\n' "${output}" | awk '$1 == "Commit" && $2 == "SHA:" { print $3; exit }')"
+  binary_sha="$(gl_sha256_file "${forge_path}")" || return $?
+  # SYSCOIN: This journal relies on the audited sequence save/load order shared
+  # by vanilla 1.7.1 and the contracts toolchain pinned by this repository.
+  case "${version}|${commit}" in
+  "1.7.1|4072e48705af9d93e3c0f6e29e93b5e9a40caed8" | \
+  "1.3.5-foundry-zksync-v0.1.5|807f47ace7cdd90eed7190dc4481952cfaa25938") ;;
+  "1.3.5-foundry-zksync-v0.1.5|VERGEN_IDEMPOTENT_OUTPUT")
+    [ "${binary_sha}" = "789c539cc69ccbfbeee308b6305321edab651a327cca2c438961e3150448e987" ] || {
+      echo "gateway-launch: unrecognized foundry-zksync v0.1.5 release binary for via-Gateway repair" >&2
+      return 1
+    }
+    ;;
+  *)
+    echo "gateway-launch: via-Gateway repair requires audited Forge 1.7.1 or foundry-zksync v0.1.5" >&2
+    return 1
+    ;;
+  esac
+  [[ "${forge_path}" != *'|'* ]] || {
+    echo "gateway-launch: unsupported Forge path for via-Gateway repair" >&2
+    return 1
+  }
+  printf '%s|%s|%s|%s\n' "${version}" "${commit}" "${binary_sha}" "${forge_path}"
+}
+
+gateway_admin_repair_journal() {
+  GATEWAY_ADMIN_REPAIR_RPC_URL="${L1_RPC_URL}" python3 - "$@" <<'PY'
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import sys
+import urllib.request
+from pathlib import Path
+
+action = sys.argv[1]
+state_dir = Path(sys.argv[2])
+operation_key = sys.argv[3]
+l1_chain_id = sys.argv[4]
+arguments = sys.argv[5:]
+rpc_url = os.environ.get("GATEWAY_ADMIN_REPAIR_RPC_URL", "")
+
+operation_match = re.fullmatch(
+    r"(?P<kind>committer-role|sender-balance)-(?P<chain>[1-9][0-9]*)-(?P<address>0x[0-9a-f]{40})",
+    operation_key,
+)
+if operation_match is None:
+    raise SystemExit(f"invalid via-Gateway repair operation key: {operation_key}")
+if not re.fullmatch(r"[1-9][0-9]*", l1_chain_id):
+    raise SystemExit(f"invalid L1 chain ID for via-Gateway repair: {l1_chain_id}")
+if not rpc_url:
+    raise SystemExit("missing L1 RPC URL for via-Gateway repair")
+
+def present(path: Path) -> bool:
+    return os.path.lexists(path)
+
+def parse_arguments(items: list[str]) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in items:
+        if "=" not in item:
+            raise SystemExit(f"invalid via-Gateway repair argument: {item}")
+        key, value = item.split("=", 1)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or not value or key in parsed:
+            raise SystemExit(f"invalid via-Gateway repair argument: {item}")
+        parsed[key] = value
+    return parsed
+
+def uint(value: object, label: str) -> int:
+    if isinstance(value, bool):
+        raise SystemExit(f"invalid {label} in via-Gateway repair intent")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"(?:0x[0-9a-fA-F]+|[0-9]+)", value):
+        number = int(value, 16 if value.lower().startswith("0x") else 10)
+    else:
+        raise SystemExit(f"invalid {label} in via-Gateway repair intent")
+    if number < 0 or number >= 1 << 256:
+        raise SystemExit(f"invalid {label} in via-Gateway repair intent")
+    return number
+
+def require_private_dir(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"missing via-Gateway repair directory: {path}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise SystemExit(f"unsafe via-Gateway repair directory: {path}")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(f"unsafe via-Gateway repair directory ownership/mode: {path}")
+
+def read_private_file(path: Path, *, exact_mode: int | None = None) -> bytes:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise SystemExit(f"missing via-Gateway repair file: {path}") from exc
+    mode = stat.S_IMODE(info.st_mode)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.geteuid()
+        or mode & 0o077
+        or (exact_mode is not None and mode != exact_mode)
+    ):
+        raise SystemExit(f"unsafe via-Gateway repair file: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            raise SystemExit(f"via-Gateway repair file identity changed: {path}")
+        if opened.st_size > 16 * 1024 * 1024:
+            raise SystemExit(f"oversized via-Gateway repair file: {path}")
+        with os.fdopen(fd, "rb", closefd=True) as stream:
+            return stream.read()
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+def load_json(path: Path, *, exact_mode: int | None = None) -> tuple[bytes, object]:
+    raw = read_private_file(path, exact_mode=exact_mode)
+    try:
+        return raw, json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid via-Gateway repair JSON: {path}") from exc
+
+def fsync_dir(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+def safe_rmtree(path: Path) -> None:
+    if not present(path):
+        return
+    require_private_dir(path)
+    for child in path.rglob("*"):
+        info = child.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise SystemExit(f"unsafe via-Gateway repair cleanup entry: {child}")
+        if not stat.S_ISDIR(info.st_mode) and (
+            not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+        ):
+            raise SystemExit(f"unsafe via-Gateway repair cleanup entry: {child}")
+    shutil.rmtree(path)
+
+def validate_intent_arguments(items: list[str]) -> tuple[dict[str, str], int]:
+    parsed = parse_arguments(items)
+    kind = parsed.get("kind")
+    expected = operation_match.group("kind")
+    if kind != expected:
+        raise SystemExit(f"invalid via-Gateway repair kind for {operation_key}")
+    common = {
+        "kind", "contracts_sha", "admin_script_sha256", "l1_chain_id",
+        "admin_chain_id", "destination_chain_id", "signer", "bridgehub",
+        "l1_admin", "max_l1_gas_price", "target", "value_wei", "calldata",
+        "refund_recipient", "foundry_version", "foundry_commit", "foundry_sha256",
+    }
+    specific = (
+        {"chain_proxy", "role", "committer"}
+        if kind == "committer-role"
+        else {"minimum_balance_wei", "observed_balance_wei"}
+    )
+    if set(parsed) != common | specific or parsed["l1_chain_id"] != l1_chain_id:
+        raise SystemExit(f"incomplete via-Gateway repair intent for {operation_key}")
+    for key in ("signer", "bridgehub", "l1_admin", "target", "refund_recipient"):
+        if not re.fullmatch(r"0x[0-9a-f]{40}", parsed[key]) or parsed[key] == "0x" + "0" * 40:
+            raise SystemExit(f"invalid {key} in via-Gateway repair intent")
+    for key in ("admin_script_sha256", "foundry_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", parsed[key]):
+            raise SystemExit(f"invalid {key} in via-Gateway repair intent")
+    if not re.fullmatch(r"[0-9a-f]{40}", parsed["contracts_sha"]):
+        raise SystemExit("invalid contracts_sha in via-Gateway repair intent")
+    if not re.fullmatch(r"0x(?:[0-9a-f]{2})*", parsed["calldata"]):
+        raise SystemExit("invalid calldata in via-Gateway repair intent")
+    admin_chain_id = uint(parsed["admin_chain_id"], "admin_chain_id")
+    destination_chain_id = uint(parsed["destination_chain_id"], "destination_chain_id")
+    max_l1_gas_price = uint(parsed["max_l1_gas_price"], "max_l1_gas_price")
+    if (
+        admin_chain_id == 0
+        or destination_chain_id == 0
+        or max_l1_gas_price == 0
+        or str(admin_chain_id) != operation_match.group("chain")
+    ):
+        raise SystemExit(f"invalid chain or gas identity in via-Gateway repair intent for {operation_key}")
+    value = uint(parsed["value_wei"], "value_wei")
+    if parsed["refund_recipient"] != parsed["signer"]:
+        raise SystemExit("via-Gateway repair refund recipient must be the signer")
+    if kind == "committer-role" and value != 0:
+        raise SystemExit("committer-role via-Gateway repair must not transfer value")
+    if kind == "sender-balance":
+        observed = uint(parsed.get("observed_balance_wei"), "observed_balance_wei")
+        minimum = uint(parsed.get("minimum_balance_wei"), "minimum_balance_wei")
+        if observed + value != minimum:
+            raise SystemExit("sender-balance repair value does not match its observed deficit")
+        if parsed["calldata"] != "0x" or parsed["target"] != operation_match.group("address"):
+            raise SystemExit("sender-balance repair payload does not match its operation key")
+    else:
+        for key in ("chain_proxy", "committer"):
+            if not re.fullmatch(r"0x[0-9a-f]{40}", parsed[key]) or parsed[key] == "0x" + "0" * 40:
+                raise SystemExit(f"invalid {key} in via-Gateway repair intent")
+        if not re.fullmatch(r"0x[0-9a-f]{64}", parsed["role"]):
+            raise SystemExit("invalid role in via-Gateway repair intent")
+        expected_grant = (
+            "0x3290f93a"
+            + "0" * 24 + parsed["chain_proxy"][2:]
+            + parsed["role"][2:]
+            + "0" * 24 + parsed["committer"][2:]
+        )
+        if (
+            parsed["committer"] != operation_match.group("address")
+            or parsed["calldata"] != expected_grant
+        ):
+            raise SystemExit("committer-role repair calldata does not match its intent")
+    return parsed, value
+
+def abi_word(value: int) -> bytes:
+    return value.to_bytes(32, "big")
+
+def abi_address(value: str) -> bytes:
+    return bytes(12) + bytes.fromhex(value[2:])
+
+def abi_bytes(value: bytes) -> bytes:
+    return abi_word(len(value)) + value + bytes((-len(value)) % 32)
+
+# SYSCOIN: Quote the pinned priority-tx envelope at one L1 block, then rebuild
+# the sole native-SYS ChainAdmin call so no unbound Forge sequence can be sealed.
+def rpc(method: str, params: list[object]) -> object:
+    request = urllib.request.Request(
+        rpc_url,
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
+        {
+            "Content-Type": "application/json",
+            "User-Agent": "zksync-os-server-gateway-launch/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversized response")
+        payload = json.loads(raw)
+    except Exception:
+        raise SystemExit("failed to quote via-Gateway repair on L1") from None
+    if not isinstance(payload, dict) or payload.get("id") != 1 or "error" in payload or "result" not in payload:
+        raise SystemExit("invalid L1 RPC response while quoting via-Gateway repair")
+    return payload["result"]
+
+def quote_outer_value(intent: dict[str, str], value: int) -> tuple[int, int]:
+    block = rpc("eth_getBlockByNumber", ["latest", False])
+    if not isinstance(block, dict):
+        raise SystemExit("invalid L1 block while quoting via-Gateway repair")
+    block_number = uint(block.get("number"), "quote_l1_block")
+    effective_gas_price = max(
+        uint(block.get("baseFeePerGas"), "L1 base fee"),
+        uint(intent["max_l1_gas_price"], "max_l1_gas_price"),
+    )
+    quote_data = "0x71623274" + b"".join(
+        (
+            abi_word(uint(intent["destination_chain_id"], "destination_chain_id")),
+            abi_word(effective_gas_price),
+            abi_word(72_000_000),
+            abi_word(800),
+        )
+    ).hex()
+    base_cost = uint(
+        rpc("eth_call", [{"to": intent["bridgehub"], "data": quote_data}, hex(block_number)]),
+        "L2 transaction base cost",
+    )
+    if base_cost == 0:
+        raise SystemExit("invalid zero L2 transaction base cost")
+    outer_value = base_cost * 10 + value
+    if outer_value >= 1 << 256:
+        raise SystemExit("via-Gateway repair quote exceeds uint256")
+    return block_number, outer_value
+
+def expected_sequence_calldata(intent: dict[str, str], outer_value: int) -> str:
+    l2_calldata = bytes.fromhex(intent["calldata"][2:])
+    request_tail = abi_bytes(l2_calldata) + abi_word(0)
+    request = bytes.fromhex("d52471c1") + abi_word(32) + b"".join(
+        (
+            abi_word(uint(intent["destination_chain_id"], "destination_chain_id")),
+            abi_word(outer_value),
+            abi_address(intent["target"]),
+            abi_word(uint(intent["value_wei"], "value_wei")),
+            abi_word(9 * 32),
+            abi_word(72_000_000),
+            abi_word(800),
+            abi_word(9 * 32 + len(abi_bytes(l2_calldata))),
+            abi_address(intent["refund_recipient"]),
+            request_tail,
+        )
+    )
+    call = b"".join(
+        (
+            abi_address(intent["bridgehub"]),
+            abi_word(outer_value),
+            abi_word(3 * 32),
+            abi_bytes(request),
+        )
+    )
+    payload = b"".join(
+        (
+            abi_word(2 * 32),
+            abi_word(1),
+            abi_word(1),
+            abi_word(32),
+            call,
+        )
+    )
+    return "0x69340beb" + payload.hex()
+
+root = state_dir / "via-gateway-repairs"
+operation_dir = root / operation_key
+broadcast_dir = operation_dir / "broadcast"
+cache_dir = operation_dir / "cache"
+intent_path = operation_dir / "intent.json"
+prepared_path = operation_dir / "prepared.json"
+preparing_path = operation_dir / ".preparing.json"
+sequence_name = "adminL1L2TxViaGateway-latest.json"
+sequence_base = Path("AdminFunctions.s.sol") / l1_chain_id
+
+def sequence_path(base: Path, dry_run: bool) -> Path:
+    path = base / sequence_base
+    if dry_run:
+        path /= "dry-run"
+    return path / sequence_name
+
+def inspect_sequence_tree(base: Path) -> tuple[list[Path], list[Path]]:
+    require_private_dir(base)
+    script_dir = base / "AdminFunctions.s.sol"
+    if not present(script_dir):
+        return [], []
+    require_private_dir(script_dir)
+    for child in script_dir.iterdir():
+        if child.name != l1_chain_id:
+            raise SystemExit(f"unexpected via-Gateway repair sequence entry: {child}")
+    chain_dir = script_dir / l1_chain_id
+    if not present(chain_dir):
+        return [], []
+    require_private_dir(chain_dir)
+    normal: list[Path] = []
+    dry: list[Path] = []
+    for child in chain_dir.iterdir():
+        if child.name == "dry-run":
+            require_private_dir(child)
+            for item in child.iterdir():
+                if not (item.name == sequence_name or re.fullmatch(r"run-[0-9]+\.json", item.name)):
+                    raise SystemExit(f"unexpected via-Gateway repair sequence entry: {item}")
+                read_private_file(item)
+                dry.append(item)
+        else:
+            if not (child.name == sequence_name or re.fullmatch(r"run-[0-9]+\.json", child.name)):
+                raise SystemExit(f"unexpected via-Gateway repair sequence entry: {child}")
+            read_private_file(child)
+            normal.append(child)
+    return normal, dry
+
+def projection(data: dict[str, object]) -> dict[str, object]:
+    projected = dict(data)
+    projected.pop("timestamp", None)
+    projected.pop("receipts", None)
+    projected.pop("pending", None)
+    txs = []
+    for item in projected.get("transactions", []):
+        tx = dict(item)
+        tx.pop("hash", None)
+        txs.append(tx)
+    projected["transactions"] = txs
+    return projected
+
+def load_sequence_pair(
+    dry_run: bool,
+    intent_arguments: dict[str, str],
+    expected_outer_value: int,
+) -> tuple[bytes, bytes, dict[str, object]]:
+    public_path = sequence_path(broadcast_dir, dry_run)
+    sensitive_path = sequence_path(cache_dir, dry_run)
+    if present(public_path) != present(sensitive_path):
+        raise SystemExit(f"partial via-Gateway repair sequence for {operation_key}")
+    public_raw, public = load_json(public_path)
+    sensitive_raw, sensitive = load_json(sensitive_path)
+    required_top = {"transactions", "receipts", "pending", "libraries", "returns", "timestamp", "chain", "commit"}
+    if not isinstance(public, dict) or not required_top.issubset(public):
+        raise SystemExit(f"invalid public via-Gateway repair sequence: {public_path}")
+    txs = public.get("transactions")
+    if not isinstance(txs, list) or len(txs) != 1 or not isinstance(txs[0], dict):
+        raise SystemExit(f"invalid transaction count in via-Gateway repair sequence: {public_path}")
+    entry = txs[0]
+    request = entry.get("transaction")
+    if entry.get("transactionType") != "CALL" or not isinstance(request, dict):
+        raise SystemExit(f"invalid transaction in via-Gateway repair sequence: {public_path}")
+    if uint(public.get("chain"), "sequence chain") != int(l1_chain_id):
+        raise SystemExit(f"wrong chain in via-Gateway repair sequence: {public_path}")
+    if request.get("chainId") is not None and uint(request["chainId"], "transaction chainId") != int(l1_chain_id):
+        raise SystemExit(f"wrong transaction chain in via-Gateway repair sequence: {public_path}")
+    if str(request.get("from", "")).lower() != intent_arguments["signer"]:
+        raise SystemExit(f"wrong signer in via-Gateway repair sequence: {public_path}")
+    if str(request.get("to", "")).lower() != intent_arguments["l1_admin"]:
+        raise SystemExit(f"wrong target in via-Gateway repair sequence: {public_path}")
+    if request.get("nonce") is None or uint(request["nonce"], "transaction nonce") >= 1 << 64:
+        raise SystemExit(f"invalid nonce in via-Gateway repair sequence: {public_path}")
+    if request.get("value") is None or uint(request["value"], "transaction value") != expected_outer_value:
+        raise SystemExit(f"wrong value in via-Gateway repair sequence: {public_path}")
+    calldata_keys = [key for key in ("input", "data") if key in request]
+    if len(calldata_keys) != 1:
+        raise SystemExit(f"ambiguous calldata in via-Gateway repair sequence: {public_path}")
+    tx_data = request[calldata_keys[0]]
+    if (
+        not isinstance(tx_data, str)
+        or not re.fullmatch(r"0x[0-9a-fA-F]{8,}", tx_data)
+        or tx_data.lower() != expected_sequence_calldata(intent_arguments, expected_outer_value)
+    ):
+        raise SystemExit(f"invalid calldata in via-Gateway repair sequence: {public_path}")
+    if dry_run and (entry.get("hash") is not None or public.get("receipts") != [] or public.get("pending") != []):
+        raise SystemExit(f"non-pristine dry-run via-Gateway repair sequence: {public_path}")
+    expected_sensitive = {"transactions": [{"rpc": rpc_url}]}
+    if sensitive != expected_sensitive:
+        raise SystemExit(f"invalid sensitive via-Gateway repair sequence: {sensitive_path}")
+    return public_raw, sensitive_raw, projection(public)
+
+def load_saved_intent() -> tuple[dict[str, object], dict[str, str], int]:
+    _, saved = load_json(intent_path, exact_mode=0o600)
+    if (
+        not isinstance(saved, dict)
+        or saved.get("schema_version") != 2
+        or not isinstance(saved.get("checkpoint_run_id"), str)
+        or not saved.get("checkpoint_run_id")
+        or not isinstance(saved.get("checkpoint_fingerprint"), dict)
+        or not saved.get("checkpoint_fingerprint")
+        or not isinstance(saved.get("arguments"), list)
+        or not all(isinstance(item, str) for item in saved["arguments"])
+    ):
+        raise SystemExit(f"invalid via-Gateway repair intent: {intent_path}")
+    parsed, value = validate_intent_arguments(saved["arguments"])
+    return saved, parsed, value
+
+def load_marker() -> tuple[dict[str, object], int]:
+    _, marker = load_json(prepared_path, exact_mode=0o600)
+    expected_keys = {
+        "schema_version", "quote_l1_block", "expected_outer_value_wei",
+        "public_sha256", "sensitive_sha256",
+    }
+    if not isinstance(marker, dict) or set(marker) != expected_keys or marker.get("schema_version") != 2:
+        raise SystemExit(f"invalid via-Gateway repair marker: {prepared_path}")
+    for key in ("public_sha256", "sensitive_sha256"):
+        if not isinstance(marker.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", marker[key]):
+            raise SystemExit(f"invalid via-Gateway repair marker: {prepared_path}")
+    quote_block = uint(marker["quote_l1_block"], "quote_l1_block")
+    expected_outer_value = uint(marker["expected_outer_value_wei"], "expected_outer_value_wei")
+    return marker, expected_outer_value
+
+if action == "begin":
+    if not arguments:
+        raise SystemExit("missing checkpoint state file for via-Gateway repair")
+    state_file = Path(arguments[0])
+    current_items = arguments[1:]
+    current_arguments, current_value = validate_intent_arguments(current_items)
+    require_private_dir(state_dir)
+    _, state = load_json(state_file)
+    run_id = state.get("run_id") if isinstance(state, dict) else None
+    fingerprint = state.get("fingerprint") if isinstance(state, dict) else None
+    if not isinstance(run_id, str) or not run_id or not isinstance(fingerprint, dict) or not fingerprint:
+        raise SystemExit("checkpoint state is missing its authenticated run/fingerprint")
+    if not present(root):
+        root.mkdir(mode=0o700)
+        os.chmod(root, 0o700)
+        fsync_dir(state_dir)
+    require_private_dir(root)
+    staging = root / f".creating-{operation_key}"
+    completed = root / f".completed-{operation_key}"
+    for stale in (staging, completed):
+        if present(stale):
+            safe_rmtree(stale)
+            fsync_dir(root)
+    expected_intent = {
+        "schema_version": 2,
+        "checkpoint_run_id": run_id,
+        "checkpoint_fingerprint": fingerprint,
+        "arguments": current_items,
+    }
+    if not present(operation_dir):
+        staging.mkdir(mode=0o700)
+        os.chmod(staging, 0o700)
+        for name in ("broadcast", "cache"):
+            child = staging / name
+            child.mkdir(mode=0o700)
+            os.chmod(child, 0o700)
+            fsync_dir(child)
+        encoded = (json.dumps(expected_intent, indent=2, sort_keys=True) + "\n").encode()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(staging / "intent.json", flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb", closefd=True) as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            fd = -1
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        fsync_dir(staging)
+        os.rename(staging, operation_dir)
+        fsync_dir(root)
+    require_private_dir(operation_dir)
+    require_private_dir(broadcast_dir)
+    require_private_dir(cache_dir)
+    saved_intent, saved_arguments, saved_value = load_saved_intent()
+    if saved_intent["checkpoint_run_id"] != run_id or saved_intent["checkpoint_fingerprint"] != fingerprint:
+        raise SystemExit(f"via-Gateway repair checkpoint changed for {operation_key}; refusing replay")
+    mutable = {"value_wei", "observed_balance_wei"} if current_arguments["kind"] == "sender-balance" else set()
+    saved_identity = {key: value for key, value in saved_arguments.items() if key not in mutable}
+    current_identity = {key: value for key, value in current_arguments.items() if key not in mutable}
+    if saved_identity != current_identity:
+        raise SystemExit(f"via-Gateway repair intent changed for {operation_key}; refusing replay")
+    if current_arguments["kind"] == "sender-balance":
+        saved_observed = uint(saved_arguments["observed_balance_wei"], "saved observed_balance_wei")
+        current_observed = uint(current_arguments["observed_balance_wei"], "current observed_balance_wei")
+        if current_observed < saved_observed:
+            raise SystemExit(f"Gateway sender balance decreased outside the repair lock for {operation_key}")
+    normal_files, _ = inspect_sequence_tree(broadcast_dir)
+    normal_sensitive, _ = inspect_sequence_tree(cache_dir)
+    if present(preparing_path):
+        read_private_file(preparing_path, exact_mode=0o600)
+        preparing_path.unlink()
+        fsync_dir(operation_dir)
+    if not present(prepared_path):
+        if normal_files or normal_sensitive:
+            raise SystemExit(f"unsealed broadcast sequence for {operation_key}; refusing replay")
+        print(f"prepare|{saved_value}")
+    else:
+        marker, expected_outer_value = load_marker()
+        if expected_outer_value < saved_value or (expected_outer_value - saved_value) % 10:
+            raise SystemExit(f"invalid via-Gateway repair quote for {operation_key}")
+        dry_public, dry_sensitive, dry_projection = load_sequence_pair(
+            True, saved_arguments, expected_outer_value
+        )
+        if hashlib.sha256(dry_public).hexdigest() != marker["public_sha256"] or hashlib.sha256(dry_sensitive).hexdigest() != marker["sensitive_sha256"]:
+            raise SystemExit(f"sealed via-Gateway repair sequence changed for {operation_key}")
+        normal_public = sequence_path(broadcast_dir, False)
+        normal_cache = sequence_path(cache_dir, False)
+        if present(normal_public) != present(normal_cache):
+            raise SystemExit(f"partial broadcast via-Gateway repair sequence for {operation_key}")
+        if present(normal_public):
+            _, _, normal_projection = load_sequence_pair(
+                False, saved_arguments, expected_outer_value
+            )
+            if normal_projection != dry_projection:
+                raise SystemExit(f"broadcast via-Gateway repair sequence changed for {operation_key}")
+        print(f"resume|{saved_value}")
+elif action == "seal":
+    if arguments:
+        raise SystemExit(f"unexpected via-Gateway repair seal arguments for {operation_key}")
+    require_private_dir(state_dir)
+    require_private_dir(root)
+    require_private_dir(operation_dir)
+    require_private_dir(broadcast_dir)
+    require_private_dir(cache_dir)
+    _, saved_arguments, saved_value = load_saved_intent()
+    normal_files, dry_files = inspect_sequence_tree(broadcast_dir)
+    normal_sensitive, dry_sensitive_files = inspect_sequence_tree(cache_dir)
+    if normal_files or normal_sensitive:
+        raise SystemExit(f"broadcast sequence exists before sealing {operation_key}")
+    if present(prepared_path):
+        marker, expected_outer_value = load_marker()
+    else:
+        quote_l1_block, expected_outer_value = quote_outer_value(saved_arguments, saved_value)
+    public_raw, sensitive_raw, _ = load_sequence_pair(
+        True, saved_arguments, expected_outer_value
+    )
+    if present(prepared_path):
+        if marker["public_sha256"] != hashlib.sha256(public_raw).hexdigest() or marker["sensitive_sha256"] != hashlib.sha256(sensitive_raw).hexdigest():
+            raise SystemExit(f"sealed via-Gateway repair sequence changed for {operation_key}")
+        raise SystemExit(0)
+    if present(preparing_path):
+        read_private_file(preparing_path, exact_mode=0o600)
+        preparing_path.unlink()
+    for path in sorted(set(dry_files + dry_sensitive_files), key=lambda item: len(item.parts), reverse=True):
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    dirs = {
+        broadcast_dir, cache_dir,
+        broadcast_dir / sequence_base, cache_dir / sequence_base,
+        broadcast_dir / sequence_base / "dry-run", cache_dir / sequence_base / "dry-run",
+        broadcast_dir / "AdminFunctions.s.sol", cache_dir / "AdminFunctions.s.sol",
+        operation_dir,
+    }
+    for path in sorted(dirs, key=lambda item: len(item.parts), reverse=True):
+        fsync_dir(path)
+    marker = {
+        "schema_version": 2,
+        "quote_l1_block": str(quote_l1_block),
+        "expected_outer_value_wei": str(expected_outer_value),
+        "public_sha256": hashlib.sha256(public_raw).hexdigest(),
+        "sensitive_sha256": hashlib.sha256(sensitive_raw).hexdigest(),
+    }
+    encoded = (json.dumps(marker, indent=2, sort_keys=True) + "\n").encode()
+    fd = os.open(preparing_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        fd = -1
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    os.replace(preparing_path, prepared_path)
+    fsync_dir(operation_dir)
+elif action == "finish":
+    require_private_dir(state_dir)
+    if not present(root):
+        raise SystemExit(0)
+    require_private_dir(root)
+    completed = root / f".completed-{operation_key}"
+    if present(operation_dir) and present(completed):
+        raise SystemExit(f"ambiguous completed via-Gateway repair state for {operation_key}")
+    if present(operation_dir):
+        require_private_dir(operation_dir)
+        os.rename(operation_dir, completed)
+        fsync_dir(root)
+    if present(completed):
+        safe_rmtree(completed)
+        fsync_dir(root)
+else:
+    raise SystemExit(f"invalid via-Gateway repair journal action: {action}")
+PY
+}
+
+begin_gateway_admin_repair() {
+  local operation_key="${1:?operation key required}"
+  shift
+  local state_dir state_file result mode saved_value extra
+  local foundry_identity foundry_version foundry_commit foundry_sha foundry_path foundry_extra
+  GATEWAY_ADMIN_REPAIR_DIR=""
+  GATEWAY_ADMIN_REPAIR_KEY=""
+  GATEWAY_ADMIN_REPAIR_FORGE_PATH=""
+  GATEWAY_ADMIN_REPAIR_FORGE_SHA256=""
+  GATEWAY_ADMIN_REPAIR_RESUME=false
+  GATEWAY_ADMIN_REPAIR_VALUE_WEI=""
+  foundry_identity="$(gateway_admin_repair_foundry_identity)" || return $?
+  IFS='|' read -r foundry_version foundry_commit foundry_sha foundry_path foundry_extra <<<"${foundry_identity}"
+  if [ -n "${foundry_extra:-}" ] || [ -z "${foundry_version}" ] || [ -z "${foundry_commit}" ] || [ -z "${foundry_sha}" ] || [ -z "${foundry_path}" ]; then
+    echo "gateway-launch: malformed audited Forge identity" >&2
+    return 1
+  fi
+  set -- "$@" "foundry_version=${foundry_version}" "foundry_commit=${foundry_commit}" "foundry_sha256=${foundry_sha}"
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  state_file="$(gl_checkpoint_state_file)" || return $?
+  result="$(gateway_admin_repair_journal begin "${state_dir}" "${operation_key}" "${L1_CHAIN_ID}" "${state_file}" "$@")" || return $?
+  IFS='|' read -r mode saved_value extra <<<"${result}"
+  if [ -n "${extra:-}" ] || [[ ! "${saved_value}" =~ ^[0-9]+$ ]]; then
+    echo "gateway-launch: malformed via-Gateway repair journal result" >&2
+    return 1
+  fi
+  GATEWAY_ADMIN_REPAIR_DIR="${state_dir}/via-gateway-repairs/${operation_key}"
+  GATEWAY_ADMIN_REPAIR_KEY="${operation_key}"
+  GATEWAY_ADMIN_REPAIR_FORGE_PATH="${foundry_path}"
+  GATEWAY_ADMIN_REPAIR_FORGE_SHA256="${foundry_sha}"
+  GATEWAY_ADMIN_REPAIR_VALUE_WEI="${saved_value}"
+  case "${mode}" in
+  prepare) GATEWAY_ADMIN_REPAIR_RESUME=false ;;
+  resume) GATEWAY_ADMIN_REPAIR_RESUME=true ;;
+  *)
+    echo "gateway-launch: invalid via-Gateway repair journal mode: ${mode}" >&2
+    return 1
+    ;;
+  esac
+}
+
+seal_gateway_admin_repair() {
+  local state_dir
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  gateway_admin_repair_journal seal \
+    "${state_dir}" \
+    "${GATEWAY_ADMIN_REPAIR_KEY:?repair journal is not initialized}" \
+    "${L1_CHAIN_ID}"
+}
+
+finish_gateway_admin_repair() {
+  local operation_key="${1:?operation key required}" state_dir
+  GATEWAY_ADMIN_REPAIR_DIR=""
+  GATEWAY_ADMIN_REPAIR_KEY=""
+  GATEWAY_ADMIN_REPAIR_FORGE_PATH=""
+  GATEWAY_ADMIN_REPAIR_FORGE_SHA256=""
+  GATEWAY_ADMIN_REPAIR_RESUME=false
+  GATEWAY_ADMIN_REPAIR_VALUE_WEI=""
+  state_dir="$(gl_checkpoint_state_dir)" || return $?
+  gateway_admin_repair_journal finish \
+    "${state_dir}" "${operation_key}" "${L1_CHAIN_ID}"
+}
+
+run_gateway_admin_repair_forge() {
+  local phase forge_rc
+  if [ "${GATEWAY_ADMIN_REPAIR_RESUME}" = true ]; then
+    phase=resume
+  else
+    phase=prepare
+  fi
+  while :; do
+    [ "$(gl_sha256_file "${GATEWAY_ADMIN_REPAIR_FORGE_PATH:?repair Forge is not initialized}")" = \
+      "${GATEWAY_ADMIN_REPAIR_FORGE_SHA256:?repair Forge hash is not initialized}" ] || {
+      echo "gateway-launch: Forge changed after the via-Gateway repair intent was bound" >&2
+      return 1
+    }
+    (
+      umask 077
+      export FOUNDRY_BROADCAST="${GATEWAY_ADMIN_REPAIR_DIR:?repair journal is not initialized}/broadcast"
+      export FOUNDRY_CACHE_PATH="${GATEWAY_ADMIN_REPAIR_DIR}/cache"
+      cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts" || exit $?
+      if [ "${phase}" = resume ]; then
+        set -- "$@" --resume
+      fi
+      exec "${GATEWAY_ADMIN_REPAIR_FORGE_PATH}" script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
+        "$@" \
+        --rpc-url "${L1_RPC_URL}" \
+        "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
+        --slow
+    ) >/dev/null 2>&1 || {
+      forge_rc=$?
+      # SYSCOIN: Forge can reproduce credential-bearing RPC path/query data in
+      # transport errors even when it strips URL userinfo. Never relay it.
+      echo "gateway-launch: audited Forge ${phase} failed for via-Gateway repair" >&2
+      return "${forge_rc}"
+    }
+    [ "${phase}" = prepare ] || return 0
+    seal_gateway_admin_repair || return $?
+    GATEWAY_ADMIN_REPAIR_RESUME=true
+    phase=resume
+  done
+}
+
 fund_l1_governor_for_gateway_sender_deposits() {
   local chain_name="${1:?chain name required}"
   local min_balance_wei="${2:?minimum Gateway sender balance required}"
@@ -1053,15 +1926,19 @@ PY
 
 ensure_gateway_commit_sender_validator() {
   local chain_name="${1:?chain name required}"
-  local wallet_name committer_addr bridgehub validator_timelock refund_recipient gateway_chain_id chain_proxy committer_role grant_calldata
+  local wallet_name committer_addr bridgehub validator_timelock refund_recipient chain_id gateway_chain_id chain_proxy committer_role grant_calldata
+  local operation_key admin_script_sha forge_rc
 
   # zkstack migration currently enables only `operator`, while OS-server commits
   # Syscoin DA batches from `blob_operator`. Keep this in the launch layer until
   # upstream migration accepts the actual commit sender set.
   wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
   committer_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
+  operation_key="committer-role-${chain_id}-$(gl_to_lower "${committer_addr}")"
 
   if gateway_committer_role_set "${chain_name}" "${committer_addr}"; then
+    finish_gateway_admin_repair "${operation_key}"
     echo "gateway-launch: Gateway committer role already set for ${wallet_name} (${committer_addr})"
     return 0
   fi
@@ -1082,41 +1959,67 @@ ensure_gateway_commit_sender_validator() {
 
   gl_l1_broadcast_preflight
   prepare_gateway_governor_forge_wallet_args
-  (
-    cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
-    forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
-      --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
-      "${bridgehub}" \
-      "${GATEWAY_MAX_L1_GAS_PRICE}" \
-      "${gateway_chain_id}" \
-      "${validator_timelock}" \
-      0 \
-      "${grant_calldata}" \
-      "${refund_recipient}" \
-      true \
-      --rpc-url "${L1_RPC_URL}" \
-      --broadcast \
-      "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
-      --slow
-  )
+  admin_script_sha="$(gl_sha256_file "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/deploy-scripts/AdminFunctions.s.sol")"
+  begin_gateway_admin_repair \
+    "${operation_key}" \
+    "kind=committer-role" \
+    "contracts_sha=${REQUIRED_CONTRACTS_SHA}" \
+    "admin_script_sha256=${admin_script_sha}" \
+    "l1_chain_id=${L1_CHAIN_ID}" \
+    "admin_chain_id=${chain_id}" \
+    "destination_chain_id=${gateway_chain_id}" \
+    "signer=$(gl_to_lower "${refund_recipient}")" \
+    "bridgehub=$(gl_to_lower "${bridgehub}")" \
+    "l1_admin=${edge_l1_chain_admin_addr}" \
+    "max_l1_gas_price=${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "target=$(gl_to_lower "${validator_timelock}")" \
+    "value_wei=0" \
+    "calldata=$(gl_to_lower "${grant_calldata}")" \
+    "refund_recipient=$(gl_to_lower "${refund_recipient}")" \
+    "chain_proxy=$(gl_to_lower "${chain_proxy}")" \
+    "role=$(gl_to_lower "${committer_role}")" \
+    "committer=$(gl_to_lower "${committer_addr}")"
+
+  if run_gateway_admin_repair_forge \
+    --sig 'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)' \
+    "${bridgehub}" \
+    "${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "${chain_id}" \
+    "${gateway_chain_id}" \
+    "${validator_timelock}" \
+    0 \
+    "${grant_calldata}" \
+    "${refund_recipient}" \
+    true; then
+    forge_rc=0
+  else
+    forge_rc=$?
+  fi
 
   : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS:=120}"
   : "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY:=5}"
   echo "gateway-launch: waiting for Gateway committer role repair (up to $((GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY))s)"
-  if ! wait_for_gateway_committer_role \
+  if wait_for_gateway_committer_role \
     "${chain_name}" \
     "${committer_addr}" \
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS}" \
     "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY}"; then
-    echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt" >&2
-    return 1
+    finish_gateway_admin_repair "${operation_key}"
+    if [ "${forge_rc}" -ne 0 ]; then
+      echo "gateway-launch: Forge exited ${forge_rc}, but the exact Gateway committer-role postcondition is confirmed"
+    fi
+    return 0
   fi
+  echo "gateway-launch: Gateway committer role still missing for ${wallet_name} (${committer_addr}) after repair attempt; retaining the exact Forge repair journal" >&2
+  [ "${forge_rc}" -eq 0 ] || return "${forge_rc}"
+  return 1
 }
 
 ensure_gateway_commit_sender_balance() {
   local chain_name="${1:?chain name required}"
-  local bridgehub refund_recipient gateway_chain_id min_balance_wei
-  local wallet_name sender_addr current_balance_wei top_up_wei
+  local bridgehub refund_recipient chain_id gateway_chain_id min_balance_wei
+  local wallet_name sender_addr current_balance_wei candidate_top_up_wei top_up_wei
+  local operation_key admin_script_sha forge_rc
 
   # SYSCOIN: zksys settles on Gateway, so its Gateway L1-sender wallets need
   # Gateway base token for commit/prove/execute transactions. This is
@@ -1124,13 +2027,18 @@ ensure_gateway_commit_sender_balance() {
   min_balance_wei="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")"
   refund_recipient="$(get_chain_governor_from_wallets "${chain_name}")"
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
+  admin_script_sha="$(gl_sha256_file "${ZKSYNC_ERA_PATH}/contracts/l1-contracts/deploy-scripts/AdminFunctions.s.sol")"
 
+  # SYSCOIN: the launcher and OS server share the execute-operator lock, so
+  # these sender balances cannot drift from supported node spending here.
   fund_l1_governor_for_gateway_sender_deposits "${chain_name}" "${min_balance_wei}"
 
   for wallet_name in "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" prove_operator execute_operator; do
     sender_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")"
     current_balance_wei="$(gateway_commit_sender_balance_wei "${sender_addr}")"
+    operation_key="sender-balance-${chain_id}-$(gl_to_lower "${sender_addr}")"
 
     if python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
 import sys
@@ -1138,50 +2046,75 @@ import sys
 raise SystemExit(0 if int(sys.argv[1], 10) >= int(sys.argv[2], 10) else 1)
 PY
     then
+      finish_gateway_admin_repair "${operation_key}"
       echo "gateway-launch: Gateway sender balance already funded for ${wallet_name} (${sender_addr}): ${current_balance_wei} wei"
       continue
     fi
 
-    top_up_wei="$(python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
+    candidate_top_up_wei="$(python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY'
 import sys
 
 print(int(sys.argv[2], 10) - int(sys.argv[1], 10))
 PY
 )"
 
-    echo "gateway-launch: Gateway sender balance below minimum for ${wallet_name} (${sender_addr}): current=${current_balance_wei} wei, minimum=${min_balance_wei} wei; funding ${top_up_wei} wei via L1->Gateway admin tx"
-
     gl_l1_broadcast_preflight
     prepare_gateway_governor_forge_wallet_args
-    (
-      cd "${ZKSYNC_ERA_PATH}/contracts/l1-contracts"
-      forge script deploy-scripts/AdminFunctions.s.sol:AdminFunctions \
-        --sig 'adminL1L2Tx(address,uint256,uint256,address,uint256,bytes,address,bool)' \
-        "${bridgehub}" \
-        "${GATEWAY_MAX_L1_GAS_PRICE}" \
-        "${gateway_chain_id}" \
-        "${sender_addr}" \
-        "${top_up_wei}" \
-        "0x" \
-        "${refund_recipient}" \
-        true \
-        --rpc-url "${L1_RPC_URL}" \
-        --broadcast \
-        "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
-        --slow
-    )
+    begin_gateway_admin_repair \
+      "${operation_key}" \
+      "kind=sender-balance" \
+      "contracts_sha=${REQUIRED_CONTRACTS_SHA}" \
+      "admin_script_sha256=${admin_script_sha}" \
+      "l1_chain_id=${L1_CHAIN_ID}" \
+      "admin_chain_id=${chain_id}" \
+      "destination_chain_id=${gateway_chain_id}" \
+      "signer=$(gl_to_lower "${refund_recipient}")" \
+      "bridgehub=$(gl_to_lower "${bridgehub}")" \
+      "l1_admin=${edge_l1_chain_admin_addr}" \
+      "max_l1_gas_price=${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "target=$(gl_to_lower "${sender_addr}")" \
+      "value_wei=${candidate_top_up_wei}" \
+      "calldata=0x" \
+      "refund_recipient=$(gl_to_lower "${refund_recipient}")" \
+      "minimum_balance_wei=${min_balance_wei}" \
+      "observed_balance_wei=${current_balance_wei}"
+    top_up_wei="${GATEWAY_ADMIN_REPAIR_VALUE_WEI}"
+
+    echo "gateway-launch: Gateway sender balance below minimum for ${wallet_name} (${sender_addr}): current=${current_balance_wei} wei, minimum=${min_balance_wei} wei; funding exact journal value ${top_up_wei} wei via L1->Gateway admin tx"
+
+    if run_gateway_admin_repair_forge \
+      --sig 'adminL1L2TxViaGateway(address,uint256,uint256,uint256,address,uint256,bytes,address,bool)' \
+      "${bridgehub}" \
+      "${GATEWAY_MAX_L1_GAS_PRICE}" \
+      "${chain_id}" \
+      "${gateway_chain_id}" \
+      "${sender_addr}" \
+      "${top_up_wei}" \
+      "0x" \
+      "${refund_recipient}" \
+      true; then
+      forge_rc=0
+    else
+      forge_rc=$?
+    fi
 
     : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS:=120}"
     : "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY:=5}"
     echo "gateway-launch: waiting for Gateway sender balance repair for ${wallet_name} (up to $((GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS * GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY))s)"
-    if ! wait_for_gateway_commit_sender_balance \
+    if wait_for_gateway_commit_sender_balance \
       "${sender_addr}" \
       "${min_balance_wei}" \
       "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS}" \
       "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY}"; then
-      echo "gateway-launch: Gateway sender balance still below ${min_balance_wei} wei for ${wallet_name} (${sender_addr}) after repair attempt" >&2
-      return 1
+      finish_gateway_admin_repair "${operation_key}"
+      if [ "${forge_rc}" -ne 0 ]; then
+        echo "gateway-launch: Forge exited ${forge_rc}, but the exact Gateway sender-balance postcondition is confirmed for ${wallet_name}"
+      fi
+      continue
     fi
+    echo "gateway-launch: Gateway sender balance still below ${min_balance_wei} wei for ${wallet_name} (${sender_addr}) after repair attempt; retaining the exact Forge repair journal" >&2
+    [ "${forge_rc}" -eq 0 ] || return "${forge_rc}"
+    return 1
   done
 }
 
@@ -1230,17 +2163,27 @@ l1_deposits_are_unpaused() {
   local chain_name="${1:?chain name required}" bridgehub chain_id chain_proxy paused
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || return $?
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")" || return $?
-  chain_proxy="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || return $?
+  # SYSCOIN: keep credential-bearing L1 transport errors out of launcher logs.
+  chain_proxy="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" \
+    "${chain_id}" --rpc-url "${L1_RPC_URL}" 2>/dev/null | \
+    awk 'NF { print $1; exit }')" || {
+    echo "gateway-launch: failed to read the edge chain proxy from the configured L1 RPC" >&2
+    return 1
+  }
   [[ "${chain_proxy}" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
   [ "$(gl_to_lower "${chain_proxy}")" != "0x0000000000000000000000000000000000000000" ] || return 1
-  paused="$(cast call "${chain_proxy}" "depositsPaused()(bool)" --rpc-url "${L1_RPC_URL}" | awk 'NF { print tolower($1); exit }')" || return $?
+  paused="$(cast call "${chain_proxy}" "depositsPaused()(bool)" \
+    --rpc-url "${L1_RPC_URL}" 2>/dev/null | awk 'NF { print tolower($1); exit }')" || {
+    echo "gateway-launch: failed to read the edge deposit state from the configured L1 RPC" >&2
+    return 1
+  }
   [ "${paused}" = "false" ]
 }
 
 repair_da_pair_on_gateway() {
   local chain_name="${1:?chain name required}"
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
-  local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy
+  local bridgehub refund_recipient chain_id gateway_chain_id chain_proxy forge_rc
 
   echo "gateway-launch: resolving Gateway DA pair repair inputs for ${chain_name}"
   bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || return 1
@@ -1272,7 +2215,14 @@ repair_da_pair_on_gateway() {
       --broadcast \
       "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}" \
       --slow
-  )
+  ) >/dev/null 2>&1 || {
+    forge_rc=$?
+    # SYSCOIN: Forge transport errors may expose secrets embedded outside URL
+    # userinfo, so the launcher emits only its own bounded diagnostic.
+    echo "gateway-launch: failed to submit the Gateway DA pair repair" >&2
+    return "${forge_rc}"
+  }
+  echo "gateway-launch: submitted the Gateway DA pair repair for ${chain_name}"
 }
 
 is_da_pair_set_on_gateway() {
@@ -1425,19 +2375,19 @@ ensure_deposits_unpaused() {
     --chain "${chain_name}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${unpause_output}"
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
     case "${unpause_output_lc}" in
     *"depositsnotpaused"* | *"already unpaused"* | *"deposits are not paused"* | *"not paused"*)
       echo "gateway-launch: deposits are already unpaused for ${chain_name}; continuing"
       ;;
     *)
+      # SYSCOIN: zkstack may echo the credential-bearing L1 RPC on failure.
       echo "gateway-launch: failed to unpause deposits for ${chain_name}" >&2
       return 1
       ;;
     esac
   else
-    echo "${unpause_output}"
+    echo "gateway-launch: submitted deposit unpause for ${chain_name}"
   fi
 }
 
@@ -1454,7 +2404,17 @@ refresh_l1_admin_wallet_funding() {
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
-current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
+if [ "${MIGRATION_POST_FINALIZE_REPAIR}" = true ]; then
+  # SYSCOIN: prove the complete L1 postcondition before any post-finalize
+  # repair broadcast or temporary signer material is prepared.
+  migration_finalized="$(gateway_migration_finalized_on_l1 \
+    "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+  [ "${migration_finalized}" = true ] || \
+    gl_die "refusing post-finalize repair before the edge Gateway migration is finalized on L1"
+  echo "gateway-launch: L1 migration is finalized; resuming only post-migration reconciliation for ${EDGE_CHAIN_NAME}"
+else
+  current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
+fi
 edge_committer_wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
 edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${edge_committer_wallet_name}")"
 
@@ -1479,8 +2439,10 @@ if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
   exit 0
 fi
 if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
-  [ "${current_settlement_layer}" = "${gateway_chain_id}" ] ||
-    gl_die "edge settlement layer does not match Gateway"
+  migration_finalized="$(gateway_migration_finalized_on_l1 \
+    "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+  [ "${migration_finalized}" = true ] ||
+    gl_die "edge Gateway migration is not finalized on L1"
   is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" ||
     gl_die "edge Gateway DA pair is not ready"
   gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
@@ -1494,18 +2456,12 @@ if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
   echo "gateway-launch: migration postconditions are ready for ${EDGE_CHAIN_NAME}"
   exit 0
 fi
-if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
-  is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" &&
-  gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and validator roles set; ensuring sender balances and deposits are unpaused"
-  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
-  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
-  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.
-  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
-  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
-  exit 0
-fi
 
+edge_l1_chain_admin_addr="$(get_l1_edge_chain_admin_addr)"
+edge_l1_chain_admin_addr="$(gl_to_lower "${edge_l1_chain_admin_addr}")"
+readonly edge_l1_chain_admin_addr
+
+if [ "${MIGRATION_POST_FINALIZE_REPAIR}" != true ]; then
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""
   pause_output_lc=""
@@ -1515,18 +2471,19 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     --chain "${EDGE_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${pause_output}"
     pause_output_lc="$(gl_to_lower "${pause_output}")"
     case "${pause_output_lc}" in
     *"already paused"* | *"already been paused"* | *"alreadypaused"* | *"depositsalreadypaused"*)
       echo "gateway-launch: deposits are already paused for ${EDGE_CHAIN_NAME}; continuing migration"
       ;;
     *)
+      # SYSCOIN: do not relay child diagnostics that may contain the L1 RPC.
+      echo "gateway-launch: failed to pause deposits for ${EDGE_CHAIN_NAME}" >&2
       exit 1
       ;;
     esac
   else
-    echo "${pause_output}"
+    echo "gateway-launch: submitted deposit pause for ${EDGE_CHAIN_NAME}"
   fi
 
   migrate_output=""
@@ -1539,46 +2496,55 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
     --l1-rpc-url "${L1_RPC_URL}" \
     --gateway-rpc-url "${GATEWAY_RPC_URL}" \
     -v 2>&1)"; then
-    echo "${migrate_output}"
     migrate_output_lc="$(gl_to_lower "${migrate_output}")"
     case "${migrate_output_lc}" in
     *"already on top of gateway"*)
       echo "gateway-launch: ${EDGE_CHAIN_NAME} is already on Gateway settlement; continuing to finalize/post-migration steps"
       ;;
     *)
+      # SYSCOIN: do not relay child diagnostics that may contain either RPC.
+      echo "gateway-launch: failed to submit Gateway migration for ${EDGE_CHAIN_NAME}" >&2
       exit 1
       ;;
     esac
   else
-    echo "${migrate_output}"
+    echo "gateway-launch: submitted Gateway migration for ${EDGE_CHAIN_NAME}"
   fi
 else
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
 assert_gateway_chain_artifact_matches_live
-finalize_output=""
-finalize_output_lc=""
-gl_l1_broadcast_preflight
-refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
-  --chain "${EDGE_CHAIN_NAME}" \
-  --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
-  --l1-rpc-url "${L1_RPC_URL}" \
-  --gateway-rpc-url "${GATEWAY_RPC_URL}" \
-  --deploy-paymaster false 2>&1)"; then
-  echo "${finalize_output}"
-  finalize_output_lc="$(gl_to_lower "${finalize_output}")"
-  case "${finalize_output_lc}" in
-  *"depositdoesnotexist"*)
-    echo "gateway-launch: finalize reported DepositDoesNotExist; treating as already-finalized deposit leg and continuing with DA repair"
-    ;;
-  *)
-    exit 1
-    ;;
-  esac
+# SYSCOIN: Replay must trust the complete L1 postcondition, never zkstack error
+# text. Skip only the non-idempotent finalize call; post-migration repairs below
+# still run on every recovery.
+finalize_already_complete="$(gateway_migration_finalized_on_l1 \
+  "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+if [ "${finalize_already_complete}" = true ]; then
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} migration is already finalized on L1; skipping finalize CLI and continuing with post-migration repair"
 else
-  echo "${finalize_output}"
+  finalize_output=""
+  gl_l1_broadcast_preflight
+  refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
+  if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
+    --chain "${EDGE_CHAIN_NAME}" \
+    --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    --gateway-rpc-url "${GATEWAY_RPC_URL}" \
+    --deploy-paymaster false 2>&1)"; then
+    finalize_already_complete="$(gateway_migration_finalized_on_l1 \
+      "${EDGE_CHAIN_NAME}" "${gateway_chain_id}")"
+    if [ "${finalize_already_complete}" = true ]; then
+      echo "gateway-launch: finalize failed after L1 reached the complete migration postcondition; continuing with post-migration repair"
+    else
+      # SYSCOIN: do not relay child diagnostics that may contain either RPC.
+      echo "gateway-launch: failed to finalize Gateway migration for ${EDGE_CHAIN_NAME}" >&2
+      exit 1
+    fi
+  else
+    echo "gateway-launch: submitted Gateway migration finalization for ${EDGE_CHAIN_NAME}"
+  fi
+fi
 fi
 
 : "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:=4}"
