@@ -2096,3 +2096,31 @@ index 906491168..261790e70 100644
 +    )
 +    .context("failed securing generated secrets before key creation")?;
 +
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs
+index b7b4dcdb2..f3b0a7961 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs
+@@ -337,0 +338,4 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
++    // SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI.
++    let l2_tx_number_in_batch = u16::try_from(params.l2_tx_number_in_block.as_u64())
++        .context("L2 transaction number in batch does not fit into uint16")?;
++
+@@ -340,2 +344,2 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
+-            "finishMigrateChainToGateway",
+-            (
++            "finishMigrateChainToGatewayWithCutData",
++            ((
+@@ -343 +347,3 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
+-                gateway_diamond_cut_data,
++                l2_tx_number_in_batch,
++                tx_status as u8,
++                l2_tx_hash,
+@@ -346 +351,0 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
+-                l2_tx_hash,
+@@ -349 +354 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
+-                U256::from(params.l2_tx_number_in_block.0[0]),
++                gateway_diamond_cut_data,
+@@ -351,2 +356 @@ pub(crate) async fn finish_migrate_chain_to_gateway(
+-                tx_status as u8,
+-            ),
++            ),),

@@ -190,6 +190,24 @@ PY
   fi
 }
 
+assert_canonical_migration_mutation_authorized() {
+  local migration_status
+
+  gl_is_canonical_edge_context || return 0
+  migration_status="$(gl_checkpoint_get_status gl.migration)" || return $?
+  if [ "${migration_status}" != in_progress ]; then
+    gl_die "canonical migration mutation requires gl.migration=in_progress; got ${migration_status}; use run-gateway-launch.sh --migrate-edge"
+    return $?
+  fi
+  # SYSCOIN: The inherited, inode-validated execute-operator lock proves this
+  # child belongs to the launcher that performed preflight and advanced the
+  # checkpoint. A fresh process must not resume a stale non-replay-safe step.
+  if [ "${GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD:-}" != "${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}" ]; then
+    gl_die "canonical migration mutation requires the active checkpointed launcher"
+    return $?
+  fi
+}
+
 validate_migration_config_inputs
 
 # SYSCOIN: These identities are compiled into the current guest and native server. A production
@@ -226,6 +244,7 @@ gl_assert_edge_chain_config_matches_expected
 # execute-operator/Gateway nonce lock before any migration/admin work and retain
 # it through fee-payer provisioning and deposit unpause.
 if [ "${MIGRATION_READ_ONLY}" != true ]; then
+  assert_canonical_migration_mutation_authorized
   gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
 fi
 
@@ -483,6 +502,19 @@ wait_for_chain_diamond_proxy_from_gateway() {
 
   echo "gateway-launch: Gateway chain proxy for ${chain_name} did not become queryable after ${attempts} attempts" >&2
   return 1
+}
+
+# SYSCOIN: Bind zkstack's persisted edge proxy to the authenticated Gateway
+# system BridgeHub before treating the artifact as resume evidence or
+# continuing finalization.
+assert_gateway_chain_artifact_matches_live() {
+  local artifact live_diamond
+  artifact="${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME}/configs/gateway_chain.yaml"
+  if [ ! -e "${artifact}" ] && [ ! -L "${artifact}" ]; then
+    return 0
+  fi
+  live_diamond="$(wait_for_chain_diamond_proxy_from_gateway "${EDGE_CHAIN_NAME}" 60 2)" || return $?
+  gl_assert_edge_chain_init_local_artifacts ready "$(gl_to_lower "${live_diamond}")"
 }
 
 get_chain_governor_from_wallets() {
@@ -1430,6 +1462,7 @@ edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${e
 # launcher changes gl.migration from pending. Normal migration reuses this
 # attested address for later DA-pair repair.
 l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
+assert_gateway_chain_artifact_matches_live
 if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
   # SYSCOIN: Reject a zero, overflowing, or cap-incompatible live settlement
   # fee before gl.migration can advance or a direct migration can broadcast;
@@ -1467,6 +1500,8 @@ if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and validator roles set; ensuring sender balances and deposits are unpaused"
   ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
   provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
+  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.
+  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
@@ -1498,7 +1533,7 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   migrate_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-  if ! migrate_output="$(gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
+  if ! migrate_output="$(gl_zkstack_private_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
     --l1-rpc-url "${L1_RPC_URL}" \
@@ -1521,6 +1556,7 @@ else
   echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway; running finalize/post-migration steps to restore missing state"
 fi
 
+assert_gateway_chain_artifact_matches_live
 finalize_output=""
 finalize_output_lc=""
 gl_l1_broadcast_preflight
@@ -1579,4 +1615,6 @@ gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
   gl_die "edge Gateway prove/execute validator roles are incomplete; refusing to mark migration ready"
 ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
 provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
+# SYSCOIN: restore the execute-operator native sender reserve after wrapping.
+ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"

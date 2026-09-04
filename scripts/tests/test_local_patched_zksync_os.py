@@ -1531,6 +1531,21 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 directory.chmod(0o700)
             (chain_root / "ZkStack.yaml").write_text("chain_id: 57057\n")
             (chain_root / "ZkStack.yaml").chmod(0o600)
+            gateway_root = root / "chains" / "gateway"
+            gateway_configs = gateway_root / "configs"
+            gateway_configs.mkdir(parents=True)
+            for directory in (gateway_root, gateway_configs):
+                directory.chmod(0o700)
+            (gateway_root / "ZkStack.yaml").write_text('{"chain_id": 57001}\n')
+            (gateway_root / "ZkStack.yaml").chmod(0o600)
+            gateway_addresses = {
+                "state_transition_proxy_addr": "0x" + "11" * 20,
+                "validator_timelock_addr": "0x" + "22" * 20,
+                "multicall3_addr": "0x" + "33" * 20,
+            }
+            gateway_config = gateway_configs / "gateway.yaml"
+            gateway_config.write_text(json.dumps(gateway_addresses), encoding="utf-8")
+            gateway_config.chmod(0o600)
             names = {
                 "contracts.yaml",
                 "external_node.yaml",
@@ -1573,7 +1588,11 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                 path.write_text(content, encoding="utf-8")
                 path.chmod(0o600 if name == "wallets.yaml" else 0o644)
 
-            def probe(mode: str = "exact-post-admin") -> subprocess.CompletedProcess[str]:
+            def probe(
+                mode: str = "exact-post-admin",
+                expected_gateway_edge_diamond: str = "",
+                gateway_chain_id: str = "57001",
+            ) -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
                     [
                         "bash",
@@ -1581,7 +1600,8 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         'source "$COMMON"; '
                         'gl_expected_v32_genesis_input_sha256() { '
                         'printf \'%s\\n\' "$TEST_GENESIS_INPUT_SHA256"; }; '
-                        'gl_assert_edge_chain_init_local_artifacts "$MODE"',
+                        'gl_assert_edge_chain_init_local_artifacts '
+                        '"$MODE" "$EXPECTED_GATEWAY_EDGE_DIAMOND"',
                     ],
                     check=False,
                     capture_output=True,
@@ -1590,10 +1610,12 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
                         **os.environ,
                         "COMMON": str(GATEWAY_COMMON),
                         "EDGE_CHAIN_NAME": "zksys",
+                        "GATEWAY_CHAIN_ID": gateway_chain_id,
                         "GATEWAY_DIR": str(root),
                         "L1_CHAIN_ID": "5700",
                         "MODE": mode,
                         "PROTOCOL_VERSION": "v32.0",
+                        "EXPECTED_GATEWAY_EDGE_DIAMOND": expected_gateway_edge_diamond,
                         "TEST_GENESIS_INPUT_SHA256": test_genesis_input_sha256,
                     },
                 )
@@ -1609,6 +1631,59 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             secrets.chmod(0o600)
             ready = probe("ready")
             self.assertEqual(ready.returncode, 0, ready.stderr)
+            self.assertNotEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
+            if importlib.util.find_spec("yaml") is not None:
+                gateway_chain = configs / "gateway_chain.yaml"
+                valid_gateway_chain = (
+                    f"state_transition_proxy_addr: {gateway_addresses['state_transition_proxy_addr']}\n"
+                    f"validator_timelock_addr: {gateway_addresses['validator_timelock_addr']}\n"
+                    f"multicall3_addr: {gateway_addresses['multicall3_addr']}\n"
+                    f"diamond_proxy_addr: {'0x' + '44' * 20}\n"
+                    "gateway_chain_id: 57001\n"
+                )
+                gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
+                gateway_chain.chmod(0o600)
+                self.assertEqual(probe("ready").returncode, 0)
+                self.assertEqual(
+                    probe("ready", gateway_chain_id=" 057001 ").returncode, 0
+                )
+                self.assertNotEqual(
+                    probe("ready", gateway_chain_id="57002").returncode, 0
+                )
+                self.assertEqual(probe("ready", "0x" + "44" * 20).returncode, 0)
+                self.assertNotEqual(
+                    probe("ready", "0x" + "55" * 20).returncode, 0
+                )
+                self.assertNotEqual(probe().returncode, 0)
+                invalid_gateway_chains = (
+                    valid_gateway_chain.replace("57001", "57002"),
+                    valid_gateway_chain.replace(
+                        "0x" + "11" * 20, "0x" + "55" * 20
+                    ),
+                    valid_gateway_chain.replace(
+                        "0x" + "44" * 20, "0x" + "00" * 20
+                    ),
+                    valid_gateway_chain + "unexpected: true\n",
+                    valid_gateway_chain.replace(
+                        "multicall3_addr:", "missing_multicall3_addr:"
+                    ),
+                    valid_gateway_chain + "gateway_chain_id: 57001\n",
+                )
+                for invalid_gateway_chain in invalid_gateway_chains:
+                    with self.subTest(gateway_chain=invalid_gateway_chain[-48:]):
+                        gateway_chain.write_text(
+                            invalid_gateway_chain, encoding="utf-8"
+                        )
+                        self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.write_text(valid_gateway_chain, encoding="utf-8")
+                gateway_chain.chmod(0o644)
+                self.assertEqual(probe("ready").returncode, 0)
+                gateway_chain.chmod(0o664)
+                self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.unlink()
+                gateway_chain.symlink_to(gateway_config)
+                self.assertNotEqual(probe("ready").returncode, 0)
+                gateway_chain.unlink()
             recovery_temp = configs / ".contracts.yaml.syscoin-normalize.tmp"
             recovery_temp.write_text("interrupted\n", encoding="utf-8")
             recovery_temp.chmod(0o600)
@@ -1665,13 +1740,85 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
             (root / "os-server-configs" / "zksys").mkdir(parents=True)
             self.assertNotEqual(probe().returncode, 0)
 
-    def run_checkpoint_probe(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def test_migration_artifact_live_binding_is_read_only(self) -> None:
+        migration = (
+            REPO_ROOT
+            / "scripts"
+            / "gateway-launch"
+            / "edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        start = migration.index("assert_gateway_chain_artifact_matches_live() {")
+        end = migration.index("\n}\n\nget_chain_governor_from_wallets()", start) + 2
+        function = migration[start:end]
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
+
+            def probe(
+                live_diamond: str,
+                expected_diamond: str,
+                wait_succeeds: bool = True,
+            ) -> int:
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        function
+                        + r'''
+wait_for_chain_diamond_proxy_from_gateway() {
+  [ "$1" = zksys ] && [ "$2" = 60 ] && [ "$3" = 2 ] || return 78
+  [ "$WAIT_SUCCEEDS" = true ] || return 79
+  printf '%s\n' "$LIVE_DIAMOND"
+}
+gl_assert_edge_chain_init_local_artifacts() {
+  [ "$1" = ready ] && [ "$2" = "$EXPECTED_DIAMOND" ]
+}
+gl_to_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+assert_gateway_chain_artifact_matches_live
+''',
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "EDGE_CHAIN_NAME": "zksys",
+                        "EXPECTED_DIAMOND": expected_diamond,
+                        "GATEWAY_DIR": str(root),
+                        "LIVE_DIAMOND": live_diamond,
+                        "WAIT_SUCCEEDS": str(wait_succeeds).lower(),
+                    },
+                )
+                return result.returncode
+
+            self.assertEqual(probe("unexpected", "must-not-call", False), 0)
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("immutable fixture\n", encoding="utf-8")
+            before = (artifact.read_bytes(), artifact.stat().st_mtime_ns)
+            diamond = "0x" + "44" * 20
+            self.assertEqual(probe(diamond.upper(), diamond), 0)
+            self.assertEqual((artifact.read_bytes(), artifact.stat().st_mtime_ns), before)
+            self.assertEqual(probe(diamond, diamond, False), 79)
+            self.assertNotEqual(probe("0x" + "55" * 20, diamond), 0)
+
+    def run_checkpoint_probe(
+        self, gateway_chain_artifact: bool = False, **overrides: str
+    ) -> subprocess.CompletedProcess[str]:
+        temporary_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary_dir.cleanup)
+        root = Path(temporary_dir.name)
+        if gateway_chain_artifact:
+            artifact = root / "chains" / "zksys" / "configs" / "gateway_chain.yaml"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("validated by the preceding local-artifact probe\n")
         env = {
             **os.environ,
             "COMMON": str(GATEWAY_COMMON),
             "DEPOSITS_PAUSED": "false",
             "EDGE_CHAIN_ID": "57057",
             "EDGE_CHAIN_NAME": "zksys",
+            "GATEWAY_DIR": str(root),
             "L1_CHAIN_ID": "5700",
             "L1_RPC_URL": "http://l1.invalid",
             "MIGRATE_EDGE": "false",
@@ -1768,9 +1915,34 @@ class PostAdminEdgeRepairTests(unittest.TestCase):
         for override in accepted:
             with self.subTest(accepted=override):
                 self.assertEqual(self.run_checkpoint_probe(**override).returncode, 0)
+        self.assertEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="true",
+                SETTLEMENT_LAYER="57001",
+                DEPOSITS_PAUSED="true",
+            ).returncode,
+            0,
+        )
         for override in rejected:
             with self.subTest(rejected=override):
                 self.assertNotEqual(self.run_checkpoint_probe(**override).returncode, 0)
+        self.assertNotEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="false",
+                SETTLEMENT_LAYER="57001",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.run_checkpoint_probe(
+                gateway_chain_artifact=True,
+                MIGRATE_EDGE="true",
+                SETTLEMENT_LAYER="5700",
+            ).returncode,
+            0,
+        )
 
     def test_repair_runs_only_schema_reconciliation(self) -> None:
         edge = (
@@ -2175,6 +2347,9 @@ class LauncherStaticTests(unittest.TestCase):
             "access_control_restriction,",
             "// SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.",
             '"migrateChainToGatewayWithCutData",',
+            "// SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI.",
+            "let l2_tx_number_in_batch = u16::try_from(params.l2_tx_number_in_block.as_u64())",
+            '"finishMigrateChainToGatewayWithCutData",',
             "// SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.",
             ".access_control_restriction_addr",
             'context("no access_control_restriction_addr")?',
@@ -2235,18 +2410,36 @@ class LauncherStaticTests(unittest.TestCase):
         ):
             self.assertIn(expected, secret_hardening)
 
+        finish_migration = patch.split(
+            "diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/"
+            "finalize_chain_migration_to_gateway.rs ",
+            1,
+        )[1]
+        for expected in (
+            "+            ((",
+            "+                l2_tx_number_in_batch,",
+            "+                tx_status as u8,",
+            "+                l2_tx_hash,",
+            "+                gateway_diamond_cut_data,",
+            "+            ),),",
+        ):
+            self.assertIn(expected, finish_migration)
+        self.assertNotIn('+            "finishMigrateChainToGateway",', finish_migration)
+
         self.assertEqual(
             hashlib.sha256(patch_path.read_bytes()).hexdigest(),
-            "2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2",
+            "27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78",
         )
         self.assertNotIn("--recount", applicator)
         self.assertIn("--unidiff-zero", applicator)
         self.assertIn("index 7426ba1b6..8cc3ad676 100644", patch)
         for expected in (
-            'EXPECTED_PATCH_SHA256="2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2"',
-            'EXPECTED_PATCH_PATH_COUNT="25"',
-            'EXPECTED_PATCH_PATHS_SHA256="90eb867d0d32dcec5f2482dc83dee8989b7a5ffd24fc751a32da2e6066245765"',
-            'EXPECTED_PATCHED_TREE="3803128565f69549787f1bba6382e41cebc316b1"',
+            'EXPECTED_PATCH_SHA256="27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78"',
+            'EXPECTED_PATCH_PATH_COUNT="26"',
+            'EXPECTED_PATCH_PATHS_SHA256="c82dac75c980d1473750de262aae522d2f64a534b17b2aae11fd66e967d98779"',
+            'EXPECTED_PATCHED_TREE="60dfff2d8b29a0c7bd43e832ae63fde878c209dc"',
+            'FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"',
+            'FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8\'s V32 finish-migration tuple ABI."',
         ):
             self.assertIn(expected, applicator)
 
@@ -3141,6 +3334,15 @@ printf '%s|%s|%s\n' "$rc" "$before" "$after"
             self.assertEqual(status, "73")
             self.assertEqual(after, before)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+        migration = (
+            REPO_ROOT / "scripts/gateway-launch/edge-chain-migrate-to-gateway.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'migrate_output="$(gl_zkstack_private_pty zkstack chain gateway '
+            "migrate-to-gateway",
+            migration,
+        )
 
     def test_ecosystem_path_is_resolved_before_wallet_hardening(self) -> None:
         helper = (
@@ -5075,6 +5277,12 @@ assert_exact_runtime "test tank" 0x1234 0xaaaa 0xhash
             self.assertIn("gl_checkpoint_assert_fingerprint_matches", script)
             self.assertIn("gl_bind_gateway_launch_context", script)
         self.assertIn("address_for_private_key", common)
+        fund_wallets = common[common.index("gl_fund_wallets_yaml() {") :]
+        self.assertIn(
+            'GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3',
+            fund_wallets,
+        )
+        self.assertNotIn("GATEWAY_LAUNCH_HELPER_DIR:-", fund_wallets)
         self.assertIn("missing private key for required server signer", common)
         self.assertLess(
             common.index("server_signer_roles ="),
@@ -6631,6 +6839,18 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
         self.assertIn("gl_validate_funder_signer_config", migration[:preflight_exit])
         signer_identity = migration.index("\n  assert_gateway_governor_signer_identity\n")
         self.assertLess(signer_identity, preflight_exit)
+        artifact_binding_before_preflight = migration.index(
+            "\nassert_gateway_chain_artifact_matches_live\n"
+        )
+        self.assertLess(artifact_binding_before_preflight, preflight_exit)
+        migrate = migration.index("zkstack chain gateway migrate-to-gateway")
+        artifact_binding_before_finalize = migration.index(
+            "\nassert_gateway_chain_artifact_matches_live\n", migrate
+        )
+        self.assertLess(
+            artifact_binding_before_finalize,
+            migration.index("finalize-chain-migration-to-gateway", migrate),
+        )
         fee_target_preflight = migration.index(
             '"${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" '
             "--preflight-fee-target"
@@ -6644,6 +6864,74 @@ printf '%s|%s\n' "$REQUIRED_ZKSTACK_CLI_SHA" "$REQUIRED_CONTRACTS_SHA"
             'if [ "${MIGRATION_CHECK_ONLY}" != true ]; then',
             migration[fee_target_preflight - 500 : signer_identity],
         )
+
+        authorization_start = migration.index(
+            "assert_canonical_migration_mutation_authorized() {"
+        )
+        authorization_end = migration.index("\n}\n", authorization_start) + 2
+        authorization = migration[authorization_start:authorization_end]
+        authorization_call = migration.index(
+            "\n  assert_canonical_migration_mutation_authorized\n",
+            authorization_end,
+        )
+        execute_lock = migration.index(
+            'gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"',
+            authorization_call,
+        )
+        self.assertLess(authorization_call, execute_lock)
+        self.assertLess(execute_lock, migration.index("\ngl_l1_broadcast_preflight\n"))
+        self.assertIn("gl_checkpoint_get_status gl.migration", authorization)
+        self.assertIn('"${migration_status}" != in_progress', authorization)
+        self.assertIn("GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD", authorization)
+
+        def run_authorization(
+            status: str, *, canonical: bool = True, inherited_fd: str = "9"
+        ) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    textwrap.dedent(
+                        f"""
+                        set -u
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_FD=9
+                        GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="$INHERITED_FD"
+                        gl_is_canonical_edge_context() {{ [ "$CANONICAL" = true ]; }}
+                        gl_checkpoint_get_status() {{
+                          [ "$CANONICAL" = true ] || return 91
+                          printf '%s\\n' "$MIGRATION_STATUS"
+                        }}
+                        gl_die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+                        {authorization}
+                        assert_canonical_migration_mutation_authorized
+                        """
+                    ),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env={
+                    **os.environ,
+                    "CANONICAL": str(canonical).lower(),
+                    "INHERITED_FD": inherited_fd,
+                    "MIGRATION_STATUS": status,
+                },
+            )
+
+        allowed = run_authorization("in_progress")
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        for status in ("pending", "blocked", "passed", "unknown"):
+            with self.subTest(canonical_status=status):
+                rejected = run_authorization(status)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn("requires gl.migration=in_progress", rejected.stderr)
+        stale = run_authorization("in_progress", inherited_fd="")
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("active checkpointed launcher", stale.stderr)
+        additional_edge = run_authorization(
+            "passed", canonical=False, inherited_fd=""
+        )
+        self.assertEqual(additional_edge.returncode, 0, additional_edge.stderr)
 
         def run_begin(
             preflight_rc: int, acquire_rc: int = 0
@@ -8485,11 +8773,15 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             '  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            '  # SYSCOIN: wrapping settlement fees consumes execute-operator native balance.\n'
+            '  ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             '  ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
         final_sequence = (
             'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"\n'
+            '# SYSCOIN: restore the execute-operator native sender reserve after wrapping.\n'
+            'ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"\n'
             'ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"'
         )
         self.assertIn(sequence, migration)
@@ -8526,6 +8818,10 @@ gl_assert_gateway_genesis_stamp "$GATEWAY_RPC_URL" 57057 "$ALLOW_CREATE"
         )
         self.assertIn(
             'wrapped_token="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}"', fee_helper
+        )
+        self.assertIn("gateway_cast rpc eth_maxPriorityFeePerGas", fee_helper)
+        self.assertEqual(
+            fee_helper.count('--priority-gas-price "${priority_fee_per_gas}"'), 4
         )
         generator = (
             REPO_ROOT

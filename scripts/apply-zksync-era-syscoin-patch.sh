@@ -26,10 +26,12 @@ fi
 # idempotency could accept a partial or locally modified deployment tool.
 EXPECTED_BASE_COMMIT="d1f681c395a5b40fd4cfa591dea8ac3d3f80ebdc"
 EXPECTED_BASE_TREE="6d8ac3b2867f9aeb561ba9a2174cd459d6362585"
-EXPECTED_PATCH_SHA256="2a1d4b7f9a4c82be2b3c7ca5c09821f203db28b0f6faba8732a9021b37b930e2"
-EXPECTED_PATCH_PATH_COUNT="25"
-EXPECTED_PATCH_PATHS_SHA256="90eb867d0d32dcec5f2482dc83dee8989b7a5ffd24fc751a32da2e6066245765"
-EXPECTED_PATCHED_TREE="3803128565f69549787f1bba6382e41cebc316b1"
+EXPECTED_PATCH_SHA256="27b59c7141bfa3774a009d314552e9ccce343648e026af3d0146059cf139ee78"
+EXPECTED_PATCH_PATH_COUNT="26"
+EXPECTED_PATCH_PATHS_SHA256="c82dac75c980d1473750de262aae522d2f64a534b17b2aae11fd66e967d98779"
+EXPECTED_PATCHED_TREE="60dfff2d8b29a0c7bd43e832ae63fde878c209dc"
+FINISH_MIGRATION_PATH="zkstack_cli/crates/zkstack/src/commands/chain/gateway/finalize_chain_migration_to_gateway.rs"
+FINISH_MIGRATION_MARKER="// SYSCOIN: backport upstream b8e4dbdc8's V32 finish-migration tuple ABI."
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -84,6 +86,27 @@ path_is_patch_input() {
     [[ "${candidate}" == "${expected}" ]] && return 0
   done <<<"${PATCH_PATHS}"
   return 1
+}
+
+path_is_patch_input "${FINISH_MIGRATION_PATH}" || {
+  echo "error: finish-migration ABI backport is absent from the exact patch inventory" >&2
+  exit 1
+}
+grep -Fqx -- "+    ${FINISH_MIGRATION_MARKER}" "${PATCH_FILE}" || {
+  echo "error: finish-migration ABI backport marker is absent from the exact patch" >&2
+  exit 1
+}
+
+verify_finish_migration_backport() {
+  local source="${ERA_PATH}/${FINISH_MIGRATION_PATH}"
+  [[ -f "${source}" && ! -L "${source}" ]] || {
+    echo "error: unsafe finish-migration ABI backport source" >&2
+    exit 1
+  }
+  grep -Fqx -- "    ${FINISH_MIGRATION_MARKER}" "${source}" || {
+    echo "error: finish-migration ABI backport marker missing from postimage" >&2
+    exit 1
+  }
 }
 
 verify_worktree_scope() {
@@ -162,6 +185,7 @@ patch_reverse_applicable || {
   echo "error: zksync-era patch postimage failed reverse applicability" >&2
   exit 1
 }
+verify_finish_migration_backport
 verify_worktree_scope
 git -C "${ERA_PATH}" diff --check
 verify_patched_tree

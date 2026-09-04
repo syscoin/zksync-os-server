@@ -1064,10 +1064,17 @@ gl_assert_edge_chain_init_local_artifacts() {
   gl_require GATEWAY_DIR
   gl_require L1_CHAIN_ID
   local inventory_mode="${1:-ready}" edge_chain_name="${EDGE_CHAIN_NAME:-zksys}"
-  local edge_chain_id expected_genesis_input_sha256
+  local expected_gateway_edge_diamond="${2:-}"
+  local edge_chain_id gateway_chain_id="" gateway_chain_artifact
+  local expected_genesis_input_sha256
   edge_chain_id="$(gl_effective_edge_chain_id)" || return $?
   expected_genesis_input_sha256="$(gl_expected_v32_genesis_input_sha256)" || return $?
   case "${inventory_mode}" in ready | exact-post-admin) ;; *) gl_die "invalid edge artifact inventory mode" ;; esac
+  gateway_chain_artifact="${GATEWAY_DIR}/chains/${edge_chain_name}/configs/gateway_chain.yaml"
+  if [ "${inventory_mode}" = "ready" ] && \
+    { [ -e "${gateway_chain_artifact}" ] || [ -L "${gateway_chain_artifact}" ]; }; then
+    gateway_chain_id="$(gl_gateway_chain_id_from_config)" || return $?
+  fi
   python3 - \
     "${GATEWAY_DIR}/chains" \
     "${GATEWAY_DIR}/chains/${edge_chain_name}" \
@@ -1077,10 +1084,15 @@ gl_assert_edge_chain_init_local_artifacts() {
     "${L1_CHAIN_ID}" \
     "${edge_chain_id}" \
     "${PROTOCOL_VERSION:-v32.0}" \
-    "${expected_genesis_input_sha256}" <<'PY'
+    "${expected_genesis_input_sha256}" \
+    "${GATEWAY_DIR}/chains/${GATEWAY_CHAIN_NAME:-gateway}/configs/gateway.yaml" \
+    "${gateway_chain_id}" \
+    "${GATEWAY_CHAIN_ID:-}" \
+    "${expected_gateway_edge_diamond}" <<'PY'
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -1094,6 +1106,10 @@ expected_l1_chain_id = sys.argv[6]
 expected_l2_chain_id = sys.argv[7]
 expected_protocol = sys.argv[8]
 expected_genesis_input_sha256 = sys.argv[9]
+gateway_config = Path(sys.argv[10])
+expected_gateway_chain_id = sys.argv[11]
+configured_gateway_chain_id = sys.argv[12]
+expected_gateway_edge_diamond = sys.argv[13]
 required = {
     "contracts.yaml",
     "external_node.yaml",
@@ -1103,6 +1119,7 @@ required = {
     "secrets.yaml",
     "wallets.yaml",
 }
+gateway_chain_name = "gateway_chain.yaml"
 recovery_temp_name = ".contracts.yaml.syscoin-normalize.tmp"
 for directory in (chains_root, chain_root, configs):
     directory_info = os.lstat(directory)
@@ -1139,12 +1156,18 @@ if (
     raise SystemExit(f"unsafe post-admin chain config: {zkstack}")
 
 found = {path.name for path in configs.iterdir()}
-allowed = required | ({recovery_temp_name} if inventory_mode == "exact-post-admin" else set())
+allowed = required | (
+    {recovery_temp_name}
+    if inventory_mode == "exact-post-admin"
+    else {gateway_chain_name}
+)
 if not required.issubset(found) or not found.issubset(allowed):
     raise SystemExit(
         f"post-admin config inventory mismatch: missing={sorted(required - found)} "
         f"unexpected={sorted(found - required)}"
     )
+if expected_gateway_edge_diamond and gateway_chain_name not in found:
+    raise SystemExit("missing Gateway migration artifact for live diamond binding")
 if recovery_temp_name in found:
     recovery_temp = configs / recovery_temp_name
     recovery_temp_info = os.lstat(recovery_temp)
@@ -1176,6 +1199,134 @@ for name in sorted(required):
         or (expected_modes is not None and mode not in expected_modes)
     ):
         raise SystemExit(f"unsafe post-admin config artifact: {path}")
+
+if gateway_chain_name in found:
+    import yaml
+
+    gateway_chain = configs / gateway_chain_name
+    info = os.lstat(gateway_chain)
+    gateway_chain_mode = stat.S_IMODE(info.st_mode)
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_nlink != 1
+        or info.st_size == 0
+        # SYSCOIN: PR310's upstream writer created this public-address-only
+        # artifact as 0644. Its full ancestor chain is owner-only 0700 above,
+        # so retain read-only upgrade compatibility while new writes use 0600.
+        or gateway_chain_mode not in {0o600, 0o644}
+    ):
+        raise SystemExit(f"unsafe Gateway migration artifact: {gateway_chain}")
+
+    class UniqueKeyLoader(yaml.BaseLoader):
+        pass
+
+    def construct_unique_mapping(loader, node, deep=False):
+        result = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in result:
+                raise ValueError(f"duplicate YAML key: {key}")
+            result[key] = loader.construct_object(value_node, deep=deep)
+        return result
+
+    UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_unique_mapping,
+    )
+
+    def load_yaml(path):
+        try:
+            source_info = os.lstat(path)
+        except FileNotFoundError:
+            raise SystemExit(f"missing YAML artifact: {path}") from None
+        source_mode = stat.S_IMODE(source_info.st_mode)
+        if (
+            stat.S_ISLNK(source_info.st_mode)
+            or not stat.S_ISREG(source_info.st_mode)
+            or source_info.st_uid != os.geteuid()
+            or source_info.st_nlink != 1
+            or source_info.st_size == 0
+            or not source_mode & stat.S_IRUSR
+            or source_mode & 0o022
+        ):
+            raise SystemExit(f"unsafe YAML artifact: {path}")
+        try:
+            value = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
+        except (OSError, TypeError, UnicodeError, ValueError, yaml.YAMLError) as error:
+            raise SystemExit(f"invalid YAML in {path}: {error}") from error
+        if not isinstance(value, dict):
+            raise SystemExit(f"invalid YAML object in {path}")
+        return value
+
+    def normalize_address(value, label):
+        if (
+            not isinstance(value, str)
+            or not re.fullmatch(r"0x[0-9a-f]{40}", value)
+            or value == "0x" + "0" * 40
+        ):
+            raise SystemExit(f"invalid {label}: {value}")
+        return value
+
+    def normalize_chain_id(value, label):
+        if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value):
+            raise SystemExit(f"invalid {label}: {value}")
+        parsed = int(value)
+        if parsed >= 2**256:
+            raise SystemExit(f"invalid {label}: {value}")
+        return parsed
+
+    migration = load_yaml(gateway_chain)
+    expected_keys = {
+        "state_transition_proxy_addr",
+        "validator_timelock_addr",
+        "multicall3_addr",
+        "diamond_proxy_addr",
+        "gateway_chain_id",
+    }
+    if not all(isinstance(key, str) for key in migration):
+        raise SystemExit("Gateway migration artifact contains a non-string key")
+    if set(migration) != expected_keys:
+        raise SystemExit(
+            f"Gateway migration artifact schema mismatch: "
+            f"missing={sorted(expected_keys - set(migration))} "
+            f"unexpected={sorted(set(migration) - expected_keys)}"
+        )
+    if not expected_gateway_chain_id.isdecimal():
+        raise SystemExit("invalid configured Gateway chain ID")
+    if configured_gateway_chain_id:
+        configured_gateway_chain_id = configured_gateway_chain_id.strip()
+        if (
+            not configured_gateway_chain_id.isdecimal()
+            or not 0 < int(configured_gateway_chain_id, 10) < 2**32
+            or int(configured_gateway_chain_id, 10) != int(expected_gateway_chain_id)
+        ):
+            raise SystemExit("Gateway chain ID config disagrees with its chain inventory")
+    if normalize_chain_id(migration["gateway_chain_id"], "gateway_chain_id") != int(
+        expected_gateway_chain_id
+    ):
+        raise SystemExit("Gateway migration artifact chain ID mismatch")
+
+    gateway = load_yaml(gateway_config)
+    for key in (
+        "state_transition_proxy_addr",
+        "validator_timelock_addr",
+        "multicall3_addr",
+    ):
+        actual = normalize_address(migration[key], f"gateway_chain.yaml {key}")
+        expected = normalize_address(gateway.get(key), f"gateway.yaml {key}")
+        if actual != expected:
+            raise SystemExit(f"Gateway migration artifact {key} mismatch")
+    artifact_gateway_edge_diamond = normalize_address(
+        migration["diamond_proxy_addr"], "gateway_chain.yaml diamond_proxy_addr"
+    )
+    if expected_gateway_edge_diamond:
+        expected_gateway_edge_diamond = normalize_address(
+            expected_gateway_edge_diamond, "live Gateway edge diamond"
+        )
+        if artifact_gateway_edge_diamond != expected_gateway_edge_diamond:
+            raise SystemExit("Gateway migration artifact diamond_proxy_addr mismatch")
 
 def reject_duplicate_keys(pairs):
     result = {}
@@ -3249,7 +3400,7 @@ gl_fund_wallets_yaml() {
   fi
   export GATEWAY_FUND_CHECK_ONLY="${check_only}"
   export WALLETS_YAML_PATHS
-  python3 - <<'PY'
+  GATEWAY_LAUNCH_HELPER_DIR="${GL_DIR}" python3 - <<'PY'
 import os
 import shutil
 import subprocess
@@ -5667,6 +5818,7 @@ gl_assert_edge_chain_init_checkpoint_state() {
   local migration_status migrate_edge expected_paused resolved
   local gateway_governor edge_governor edge_governor_matches gateway_chain_id
   local edge_chain_id bridgehub gateway_diamond edge_diamond settlement_layer
+  local gateway_chain_artifact
 
   migrate_edge="$(gl_to_lower "${MIGRATE_EDGE:-false}")"
   case "${migrate_edge}" in true | false) ;; *) gl_die "MIGRATE_EDGE must be true or false" ;; esac
@@ -5693,12 +5845,24 @@ gl_assert_edge_chain_init_checkpoint_state() {
   fi
 
   migration_status="$(gl_checkpoint_get_status gl.migration)" || return $?
+  gateway_chain_artifact="${GATEWAY_DIR}/chains/${EDGE_CHAIN_NAME:-zksys}/configs/gateway_chain.yaml"
 
   case "${migration_status}" in
   pending)
-    [ "${settlement_layer}" = "${L1_CHAIN_ID}" ] || \
-      gl_die "pending edge migration is no longer L1-settled"
-    if [ "${migrate_edge}" = true ]; then expected_paused=either; else expected_paused=false; fi
+    # SYSCOIN: a manually reconciled interrupted migration is reset to pending
+    # before its idempotent remainder runs. The strictly validated zkstack
+    # artifact proves the settlement transaction already completed.
+    if [ -e "${gateway_chain_artifact}" ] || [ -L "${gateway_chain_artifact}" ]; then
+      [ "${migrate_edge}" = true ] || \
+        gl_die "pending migrated edge requires MIGRATE_EDGE=true"
+      [ "${settlement_layer}" = "${gateway_chain_id}" ] || \
+        gl_die "pending migrated edge is not Gateway-settled"
+      expected_paused=either
+    else
+      [ "${settlement_layer}" = "${L1_CHAIN_ID}" ] || \
+        gl_die "pending edge migration is no longer L1-settled"
+      if [ "${migrate_edge}" = true ]; then expected_paused=either; else expected_paused=false; fi
+    fi
     ;;
   in_progress | blocked)
     case "${settlement_layer}" in
