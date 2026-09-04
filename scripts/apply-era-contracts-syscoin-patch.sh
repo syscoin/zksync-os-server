@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ASSERT_APPLIED=false
+if [[ "${1:-}" == "--assert-applied" ]]; then
+  ASSERT_APPLIED=true
+  shift
+fi
+
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 /absolute/path/to/era-contracts" >&2
+  echo "Usage: $0 [--assert-applied] /absolute/path/to/era-contracts" >&2
   exit 1
 fi
 
@@ -28,13 +34,13 @@ EXPECTED_BASE_TREE="acdd11e5bb7787d9df2306f6a1dc96bf92e67f53"
 EXPECTED_NESTED_SHA="e554ae64ec150c47d6f17786e7f4aacebc7bf945"
 NESTED_PATH="lib/@matterlabs/zksync-contracts"
 
-EXPECTED_PATCH_SIZE="1419459"
-EXPECTED_PATCH_SHA256="b1a2d9705d0ba03f3a91ddf48d0160a1d7258dfa9ac6d6e5c1ab8854426b88b9"
-EXPECTED_PATCH_PATH_COUNT="59"
-EXPECTED_PATCH_PATHS_SHA256="d520d73b6b6b1001f4e8a845e2aa6e1fa04256c38d16cdb223b0643868fee5ff"
+EXPECTED_PATCH_SIZE="1420519"
+EXPECTED_PATCH_SHA256="d3ee492d2a7a759c9ad1405b5b450e464f0c412e27ca02e72cb8b17e2ecfe6c2"
+EXPECTED_PATCH_PATH_COUNT="60"
+EXPECTED_PATCH_PATHS_SHA256="daac4df067789e902160d31408973fc1ea50fda19526e61ec9dc6dea807a9821"
 # SYSCOIN: Exact Git tree produced by applying the reviewed source-only patch to
 # EXPECTED_BASE_TREE. Pending-VK mock launches must attest this postimage too.
-EXPECTED_PATCHED_TREE="ea1c0600ebbcafbada4e0080aa0178311084f86a"
+EXPECTED_PATCHED_TREE="02cb2cda34f47c09df404c3bce54cb592f72579d"
 
 STOCK_APP_VK_HASH="0x9f7576b911e7d3f528d49f894208682c81800814db9e3beac7fc3b1c4d626e7a"
 
@@ -184,12 +190,13 @@ verify_postimage_manifest() {
 10526 c9b04c90afedd8503fa3a27944b8b3446cd445213d0beac37410e857d8b63d77 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSDualVerifier.sol
 2210 99b2f630ccb303dc130e6010ae91ab2c462218a4cc813602ed307b9f05b95fe3 l1-contracts/contracts/state-transition/verifiers/ZKsyncOSTestnetVerifier.sol
 6707 2428a3ae1112ab7014cc332f0f087027d474055790e80d2c6d8957d8ce13ec05 l1-contracts/contracts/upgrades/L1FixedForceDeploymentsHelper.sol
+59314 e9a81f7e93a396ad203a5e050b7d9b857966d45954405ec849e1a05f0cc47759 l1-contracts/deploy-scripts/AdminFunctions.s.sol
 10730 73b5cd2659d89e12ecdbefe2ed0e9753b1967eadaa4bf7ddfe5877ffe56c72dd l1-contracts/deploy-scripts/chain/DeployL2Contracts.sol
 31861 6af6435436f478f5723d0fe138771938b0f503ce9fdb7148cc98ae2742c8afc0 l1-contracts/deploy-scripts/ctm/DeployCTM.s.sol
 14452 db6f5326495f0e9926a15632ae8001d64887d9cb83fb64a1a8ffc3a0dbe35588 l1-contracts/deploy-scripts/ctm/DeployCTML1OrGateway.sol
 21890 285f15bd41c33ac64f19e20fb3853e867bd8491625b4d6968666166bb3a02260 l1-contracts/deploy-scripts/ctm/DeployCTMUtils.s.sol
 26354 9fdb904b1613e219fa29f9e4dbaea017ba2311bec6e2ca358c41beb341bb2f36 l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol
-41377 22d5c9ed58e078d7984757c6c4d023bc0afb64f4f8aff240a576783f92b96fb1 l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
+41665 9bf5790131827c8671a648587e2f68794ff7bdc7b54b6a5539c6ee95aed91cca l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol
 21027 6ebceffb5d2a5f6c083c8d78e79e0b97110e2653e5bd64c164f53d3cdc63f6de l1-contracts/deploy-scripts/gateway/GatewayVotePreparation.s.sol
 45338 212349849a53a7712cd68cb1065e00cc5a1abc451c2e4481df4c200c804ef3ed l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultCTMUpgrade.s.sol
 31333 13eb6e18cd1806cf5154083c82299e4f1da1107d16812e125ee5040fd8832e5c l1-contracts/deploy-scripts/upgrade/default-upgrade/DefaultGatewayUpgrade.s.sol
@@ -229,6 +236,14 @@ SYSCOIN_POSTIMAGE_MANIFEST
     die "postimage manifest path digest mismatch"
   [[ "${manifest_paths}" == "${PATCH_PATHS}" ]] ||
     die "postimage manifest does not exactly match the canonical patch path set"
+
+  # SYSCOIN: Ownership retry intentionally restores generic Utils.executeCalls
+  # byte-for-byte to upstream. Attest that security boundary even though the
+  # canonical patch envelope no longer modifies Utils.sol.
+  verify_exact_file \
+    "l1-contracts/deploy-scripts/utils/Utils.sol" \
+    "60917" \
+    "403b4a65b437bf1e0d2dcd7eb567d86bb9418a3b128dc11147249bd3f266d8f3"
 }
 
 require_text() {
@@ -270,6 +285,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/ctm/RegisterZKChain.s.sol" \
     "SYSCOIN: Retain the upstream config tuple shape, but reject its unsupported Validium branch."
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    "SYSCOIN: Scope lost-journal recovery to this exact, state-proven"
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    'require(governance.isOperationReady(operationId), "ownership operation is not ready");'
+  require_text \
+    "l1-contracts/deploy-scripts/AdminFunctions.s.sol" \
+    "already current, atomically overwrite any latent successor"
 
   # A fresh production deployment retains the pinned-upstream verifier pair at slot 8, but has
   # exactly one cryptographic route: final v0.4/V8 PLONK/type 2. FFLONK is deployment-compatible
@@ -592,6 +616,15 @@ verify_semantics() {
   require_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
     "_validateSyscoinEdgeDARelayArtifact();"
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.envOr("SYSCOIN_EDGE_DA_RELAY_ARTIFACT", defaultArtifact)'
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.parseJsonBytes(artifact, ".bytecode.object")'
+  require_text \
+    "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
+    'Utils.vm.parseJsonBytes(artifact, ".deployedBytecode.object")'
   forbid_text \
     "l1-contracts/deploy-scripts/gateway/GatewayCTMDeployerHelper.sol" \
     "syscoinEdgeDARelayCalldata"
@@ -790,25 +823,42 @@ verify_worktree_postimage_tree() {
   # SYSCOIN: Reproduce the reviewed patched tree with an isolated index. This
   # binds the mock-only exception to every postimage byte without touching the
   # operator's real index or accepting an equivalent-but-unreviewed patch.
-  local temporary_dir temporary_index actual_patched_tree relative_path
+  local temporary_dir temporary_index temporary_objects canonical_objects
+  local existing_alternates
+  local actual_patched_tree relative_path
   temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/syscoin-era-patch-index.XXXXXX")"
   temporary_index="${temporary_dir}/index"
+  temporary_objects="${temporary_dir}/objects"
+  mkdir "${temporary_objects}"
+  canonical_objects="$(git -C "${CONTRACTS_PATH}" rev-parse --git-path objects)"
+  if [[ "${canonical_objects}" != /* ]]; then
+    canonical_objects="${CONTRACTS_PATH}/${canonical_objects}"
+  fi
+  canonical_objects="$(cd "${canonical_objects}" && pwd -P)"
+  existing_alternates="${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}"
 
-  if ! actual_patched_tree="$({
+  if ! (
     export GIT_INDEX_FILE="${temporary_index}"
+    # SYSCOIN: Assertion-only attestation must not insert blobs or trees into
+    # the reviewed checkout's object database. Read canonical objects through
+    # an alternate and direct every write into the disposable directory.
+    export GIT_OBJECT_DIRECTORY="${temporary_objects}"
+    export GIT_ALTERNATE_OBJECT_DIRECTORIES="${canonical_objects}"
+    if [[ -n "${existing_alternates}" ]]; then
+      export GIT_ALTERNATE_OBJECT_DIRECTORIES="${canonical_objects}:${existing_alternates}"
+    fi
     git -C "${CONTRACTS_PATH}" read-tree HEAD || exit 1
     while IFS= read -r relative_path; do
       [[ -n "${relative_path}" ]] || continue
       git -C "${CONTRACTS_PATH}" add -A -- "${relative_path}" || exit 1
     done <<< "${PATCH_PATHS}"
-    git -C "${CONTRACTS_PATH}" write-tree || exit 1
-  })"; then
-    rm -f "${temporary_index}" "${temporary_index}.lock"
-    rmdir "${temporary_dir}"
+    git -C "${CONTRACTS_PATH}" write-tree >"${temporary_dir}/tree"
+  ); then
+    rm -rf "${temporary_dir}"
     die "failed to calculate canonical patched Era-contracts tree"
   fi
-  rm -f "${temporary_index}" "${temporary_index}.lock"
-  rmdir "${temporary_dir}"
+  actual_patched_tree="$(tr -d '\r\n' <"${temporary_dir}/tree")"
+  rm -rf "${temporary_dir}"
 
   [[ "${actual_patched_tree}" == "${EXPECTED_PATCHED_TREE}" ]] ||
     die "patched Era-contracts tree mismatch: expected=${EXPECTED_PATCHED_TREE} actual=${actual_patched_tree}"
@@ -827,6 +877,8 @@ if [[ "${BASE_FORWARD}" != true && "${BASE_REVERSE}" != true ]]; then
 fi
 
 if [[ "${BASE_FORWARD}" == true ]]; then
+  [[ "${ASSERT_APPLIED}" != true ]] ||
+    die "assert-applied mode refuses to materialize the canonical Era-contracts patch"
   if [[ -n "$(git -C "${CONTRACTS_PATH}" status --porcelain --untracked-files=all)" ]]; then
     git -C "${CONTRACTS_PATH}" status --porcelain --untracked-files=all >&2
     die "Era-contracts worktree must be clean before canonical patch application"
@@ -846,10 +898,12 @@ else
 fi
 
 # SYSCOIN: Forge auto-discovers remappings from nested dependencies and commits them to IPFS
-# metadata. Populate the exact recursive graph so standalone application reproduces the baked
-# validator bytecode hashes used by the canonical launch path.
-git -C "${CONTRACTS_PATH}" submodule sync --recursive
-git -C "${CONTRACTS_PATH}" submodule update --init --recursive
+# metadata. Materialization mode populates the exact graph; assertion-only mode
+# must never repair source after a build and instead requires it to be present.
+if [[ "${ASSERT_APPLIED}" != true ]]; then
+  git -C "${CONTRACTS_PATH}" submodule sync --recursive
+  git -C "${CONTRACTS_PATH}" submodule update --init --recursive
+fi
 
 EXPECTED_GITLINK="$(git -C "${CONTRACTS_PATH}" ls-tree HEAD "${NESTED_PATH}" | awk '{print $3}')"
 [[ "${EXPECTED_GITLINK}" == "${EXPECTED_NESTED_SHA}" ]] ||

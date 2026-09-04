@@ -4,11 +4,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
+CONFIG_CHECK_ONLY=false
+EDGE_ONLY_CONFIG=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+  --check-only)
+    [ "${CONFIG_CHECK_ONLY}" = false ] || gl_die "--check-only specified more than once"
+    CONFIG_CHECK_ONLY=true
+    ;;
+  --edge-only)
+    [ "${EDGE_ONLY_CONFIG}" = false ] || gl_die "--edge-only specified more than once"
+    EDGE_ONLY_CONFIG=true
+    ;;
+  *) gl_die "usage: generate-os-server-configs.sh [--check-only] [--edge-only]" ;;
+  esac
+  shift
+done
 gl_validate_prover_mode
 gl_reject_no_proofs_on_mainnet
 
 gl_require GATEWAY_DIR
 gl_require ZKSYNC_OS_SERVER_PATH
+if [ "${CONFIG_CHECK_ONLY}" != true ]; then
+  gl_acquire_gateway_launch_lock
+fi
 
 : "${GATEWAY_CHAIN_NAME:=gateway}"
 : "${EDGE_CHAIN_NAME:=zksys}"
@@ -220,6 +241,43 @@ export BITCOIN_DA_ADDRESS_LABEL
 export BITCOIN_DA_FINALITY_MODE
 export BITCOIN_DA_FINALITY_CONFIRMATIONS
 export PROVER_MODE
+export CONFIG_CHECK_ONLY
+export EDGE_ONLY_CONFIG
+
+# SYSCOIN: A standalone config materialization must remain bound to the exact
+# deployment identity already checkpointed for this workspace. Check-only is
+# deliberately read-only; mutating generation reuses the lock acquired above.
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
+gl_require L1_RPC_URL
+gl_validate_l1_network_pair
+gl_resolve_required_source_pins
+if gl_is_canonical_edge_context; then
+  [ "${EDGE_ONLY_CONFIG}" = false ] ||
+    gl_die "--edge-only requires a noncanonical EDGE_CHAIN_NAME/EDGE_CHAIN_ID"
+  if [ "${CONFIG_CHECK_ONLY}" = true ]; then
+    gl_checkpoint_assert_fingerprint_matches
+  else
+    gl_bind_gateway_launch_context
+  fi
+else
+  [ "${EDGE_ONLY_CONFIG}" = true ] ||
+    gl_die "noncanonical edge config generation requires explicit --edge-only"
+  [ "$(gl_to_lower "${MATERIALIZE_EDGE_CONFIG}")" = true ] ||
+    gl_die "--edge-only requires MATERIALIZE_EDGE_CONFIG=true"
+  if [ "${CONFIG_CHECK_ONLY}" = true ]; then
+    gl_assert_edge_launch_context
+  else
+    gl_bind_edge_launch_context
+  fi
+fi
+
+# SYSCOIN: Refuse to materialize an edge signer whose declared address does not
+# match its private key. The generated start script repeats this check against
+# the exact config it will execute before acquiring the shared nonce lock.
+if [ "${MATERIALIZE_EDGE_CONFIG}" = "true" ]; then
+  gateway_execute_operator_lock_key "${EDGE_CHAIN_NAME}" >/dev/null
+fi
 
 python3 - <<'PY'
 from pathlib import Path
@@ -227,8 +285,67 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import yaml
+
+check_only = os.environ.get("CONFIG_CHECK_ONLY", "false") == "true"
+edge_only = os.environ.get("EDGE_ONLY_CONFIG", "false") == "true"
+protected_edge_output = (
+    Path(os.environ["GATEWAY_DIR"])
+    / "os-server-configs"
+    / os.environ["EDGE_CHAIN_NAME"]
+)
+created_materialized_paths = set()
+
+
+def preserve_existing_edge_path(path: Path) -> bool:
+    return edge_only and (
+        path == protected_edge_output or protected_edge_output in path.parents
+    )
+
+
+def require_regular_file(path: Path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        raise SystemExit(f"materialized config is missing: {path}") from None
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise SystemExit(f"materialized config is not a regular file: {path}")
+    if info.st_uid != os.geteuid():
+        raise SystemExit(f"materialized config has wrong owner: {path}")
+    return info
+
+
+def require_safe_output_directory(path: Path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise SystemExit(f"materialized config directory is unsafe: {path}")
+    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise SystemExit(f"materialized config directory has unsafe ownership/mode: {path}")
+
+
+def require_replaceable_file(path: Path):
+    if not path.exists() and not path.is_symlink():
+        return
+    info = path.lstat()
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or info.st_nlink != 1
+        or stat.S_IMODE(info.st_mode) & 0o022
+    ):
+        raise SystemExit(f"materialized config target is unsafe: {path}")
+    if info.st_uid != os.geteuid():
+        raise SystemExit(f"materialized config target has wrong owner: {path}")
 
 
 def load_yaml_base(path: Path):
@@ -237,6 +354,275 @@ def load_yaml_base(path: Path):
 
 def load_yaml(path: Path):
     return yaml.safe_load(path.read_text())
+
+
+def normalize_port(value, label: str) -> int:
+    raw = str(value).strip()
+    if not raw.isdecimal():
+        raise SystemExit(f"{label} must be an unsigned decimal port")
+    port = int(raw, 10)
+    if not 0 < port <= 65535:
+        raise SystemExit(f"{label} must be between 1 and 65535")
+    return port
+
+
+def port_from_address(value, label: str) -> int:
+    if not isinstance(value, str) or ":" not in value:
+        raise SystemExit(f"invalid {label} address in materialized config")
+    return normalize_port(value.rsplit(":", 1)[1], label)
+
+
+def normalize_dns_name(value: str, label: str) -> str:
+    domain = value.strip().lower() if isinstance(value, str) else ""
+    if len(domain) > 253:
+        raise SystemExit(f"{label} exceeds 253 characters")
+    labels = domain.split(".")
+    if not labels or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", item)
+        for item in labels
+    ):
+        raise SystemExit(f"{label} must be a valid DNS name")
+    return domain
+
+
+def materialized_listener_identity(config_path: Path) -> dict[str, int]:
+    info = require_regular_file(config_path)
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise SystemExit(
+            f"materialized secret config has unsafe ownership/mode: {config_path}"
+        )
+    config = load_yaml(config_path)
+    if not isinstance(config, dict):
+        raise SystemExit(f"invalid materialized config: {config_path}")
+    try:
+        return {
+            "rpc": port_from_address(config["rpc"]["address"], "RPC"),
+            "prover_api": port_from_address(
+                config["prover_api"]["address"], "prover API"
+            ),
+            "status": port_from_address(
+                config["status_server"]["address"], "status server"
+            ),
+            "prometheus": normalize_port(
+                config["observability"]["prometheus"]["port"], "Prometheus"
+            ),
+        }
+    except (KeyError, TypeError) as exc:
+        raise SystemExit(f"missing listener identity in {config_path}") from exc
+
+
+def authenticated_chain_index_names() -> set[str]:
+    # SYSCOIN: zkstack's owner-controlled chain directories are the durable
+    # membership index; every member must retain a listener reservation.
+    chains_root = gateway_dir / "chains"
+    try:
+        root_info = chains_root.lstat()
+    except FileNotFoundError:
+        raise SystemExit(f"Gateway chains directory is missing: {chains_root}") from None
+    if (
+        stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+        or stat.S_IMODE(root_info.st_mode) & 0o022
+    ):
+        raise SystemExit(
+            f"Gateway chains directory has unsafe ownership/mode: {chains_root}"
+        )
+
+    names = set()
+    for chain_dir in sorted(chains_root.iterdir()):
+        try:
+            chain_info = chain_dir.lstat()
+        except FileNotFoundError:
+            raise SystemExit(f"Gateway chain index entry disappeared: {chain_dir}") from None
+        if (
+            stat.S_ISLNK(chain_info.st_mode)
+            or not stat.S_ISDIR(chain_info.st_mode)
+            or chain_info.st_uid != os.geteuid()
+            or stat.S_IMODE(chain_info.st_mode) & 0o022
+        ):
+            raise SystemExit(f"Gateway chain index entry is unsafe: {chain_dir}")
+        require_regular_file(chain_dir / "ZkStack.yaml")
+        names.add(chain_dir.name)
+    return names
+
+
+def nginx_fragment_domains(fragment: Path) -> set[str]:
+    require_regular_file(fragment)
+    domains = set()
+    for match in re.finditer(
+        r"^\s*server_name\s+([^;]+)\s*;",
+        fragment.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    ):
+        domains.update(
+            normalize_dns_name(raw, f"server_name in {fragment}")
+            for raw in match.group(1).split()
+        )
+    if not domains:
+        raise SystemExit(f"nginx fragment has no server_name: {fragment}")
+    return domains
+
+
+def assert_global_listener_index() -> None:
+    # SYSCOIN: Existing materialized configs are the off-chain listener index.
+    # Validate the complete proposed+preserved set under the launch lock so a
+    # canonical regeneration cannot trample a previously added edge either.
+    indexed_chain_names = authenticated_chain_index_names()
+    selected_name = os.environ["EDGE_CHAIN_NAME"]
+    gateway_name = os.environ["GATEWAY_CHAIN_NAME"]
+    if selected_name == gateway_name:
+        raise SystemExit("Gateway and edge config names must be distinct")
+    gateway = {
+        "rpc": normalize_port(os.environ["GATEWAY_OS_RPC_PORT"], "Gateway RPC"),
+        "prover_api": normalize_port(
+            os.environ["GATEWAY_PROVER_API_PORT"], "Gateway prover API"
+        ),
+        "status": normalize_port(
+            os.environ["GATEWAY_STATUS_PORT"], "Gateway status"
+        ),
+        "prometheus": normalize_port(
+            os.environ["GATEWAY_PROMETHEUS_PORT"], "Gateway Prometheus"
+        ),
+    }
+    edge = {
+        "rpc": normalize_port(os.environ["EDGE_OS_RPC_PORT"], "edge RPC"),
+        "prover_api": normalize_port(
+            os.environ["EDGE_PROVER_API_PORT"], "edge prover API"
+        ),
+        "status": normalize_port(os.environ["EDGE_STATUS_PORT"], "edge status"),
+        "prometheus": normalize_port(
+            os.environ["EDGE_PROMETHEUS_PORT"], "edge Prometheus"
+        ),
+    }
+    gateway_domain = normalize_dns_name(
+        os.environ["GATEWAY_PROVER_API_DOMAIN"], "Gateway prover API domain"
+    )
+    edge_domain = normalize_dns_name(
+        os.environ["EDGE_PROVER_API_DOMAIN"], "edge prover API domain"
+    )
+    proposals = {selected_name: edge}
+    proposed_domains = {
+        selected_name: {edge_domain} if prover_api_nginx_enabled else set()
+    }
+    if not edge_only:
+        proposals[gateway_name] = gateway
+        proposed_domains[gateway_name] = (
+            {gateway_domain} if prover_api_nginx_enabled else set()
+        )
+        if materialize_edge_config != "true":
+            proposals.pop(selected_name)
+            proposed_domains.pop(selected_name)
+
+    require_safe_output_directory(output_root)
+    if edge_only and not output_root.is_dir():
+        raise SystemExit(f"canonical OS-server configs are missing: {output_root}")
+    if not edge_only and materialize_edge_config == "false":
+        require_safe_output_directory(protected_edge_output)
+    identities = {}
+    domains_by_chain = {}
+    if output_root.is_dir():
+        for chain_dir in sorted(output_root.iterdir()):
+            if not chain_dir.is_dir() or chain_dir.is_symlink():
+                if chain_dir.is_symlink():
+                    raise SystemExit(
+                        f"materialized chain config directory is unsafe: {chain_dir}"
+                    )
+                continue
+            require_safe_output_directory(chain_dir)
+            config_path = chain_dir / "config.yaml"
+            if chain_dir.name in proposals and not edge_only:
+                continue
+            if not config_path.exists() and not config_path.is_symlink():
+                raise SystemExit(f"materialized chain config is missing: {config_path}")
+            existing = materialized_listener_identity(config_path)
+            config = load_yaml(config_path)
+            prover_api = config.get("prover_api") if isinstance(config, dict) else None
+            has_auth = (
+                isinstance(prover_api, dict)
+                and bool(prover_api.get("auth_user"))
+                and bool(prover_api.get("auth_password"))
+            )
+            fragment = chain_dir / "prover-api.nginx.conf"
+            fragment_present = fragment.exists() or fragment.is_symlink()
+            if has_auth != fragment_present:
+                raise SystemExit(
+                    f"prover API auth/nginx fragment mismatch: {fragment}"
+                )
+            existing_domains = (
+                nginx_fragment_domains(fragment) if fragment_present else set()
+            )
+            if chain_dir.name in proposals:
+                if existing != proposals[chain_dir.name]:
+                    raise SystemExit(
+                        f"existing {chain_dir.name} listener identity differs from effective inputs"
+                    )
+                if existing_domains != proposed_domains[chain_dir.name]:
+                    raise SystemExit(
+                        f"existing {chain_dir.name} prover API domain differs from effective inputs"
+                    )
+                continue
+            identities[chain_dir.name] = existing
+            domains_by_chain[chain_dir.name] = existing_domains
+
+    if edge_only:
+        if gateway_name not in identities:
+            raise SystemExit(f"materialized Gateway config is missing: {gateway_name}")
+        if identities[gateway_name]["rpc"] != gateway["rpc"]:
+            raise SystemExit(
+                "additional-edge Gateway RPC port differs from materialized Gateway config"
+            )
+
+    identities.update(proposals)
+    domains_by_chain.update(proposed_domains)
+    if (
+        not edge_only
+        and materialize_edge_config == "false"
+        and selected_name in indexed_chain_names
+        and selected_name not in identities
+    ):
+        # A chain-create interruption may index the selected edge before its
+        # final config exists. Keep its planned listener reservation meanwhile.
+        identities[selected_name] = edge
+        domains_by_chain[selected_name] = (
+            {edge_domain} if prover_api_nginx_enabled else set()
+        )
+    missing_materialized = sorted(indexed_chain_names - set(identities))
+    if missing_materialized:
+        raise SystemExit(
+            "indexed chains are missing materialized OS-server configs: "
+            + ", ".join(missing_materialized)
+        )
+    for chain_name, domains in sorted(domains_by_chain.items()):
+        if bool(domains) != prover_api_nginx_enabled:
+            raise SystemExit(
+                "mixed prover API authentication profiles are unsafe: "
+                f"{chain_name} differs from the effective launch profile"
+            )
+    seen_ports = {}
+    for chain_name, identity in sorted(identities.items()):
+        if len(set(identity.values())) != len(identity):
+            raise SystemExit(f"{chain_name} listener ports must be distinct")
+        for listener_name, port in identity.items():
+            previous = seen_ports.get(port)
+            if previous is not None:
+                raise SystemExit(
+                    "listener collision on port "
+                    f"{port}: {previous[0]}.{previous[1]} and "
+                    f"{chain_name}.{listener_name}"
+                )
+            seen_ports[port] = (chain_name, listener_name)
+
+    seen_domains = {}
+    for chain_name, domains in sorted(domains_by_chain.items()):
+        for domain in sorted(domains):
+            previous = seen_domains.get(domain)
+            if previous is not None and previous != chain_name:
+                raise SystemExit(
+                    f"prover API domain collision on {domain}: "
+                    f"{previous} and {chain_name}"
+                )
+            seen_domains[domain] = chain_name
 
 
 def normalize_nonzero_address(value: str, label: str) -> str:
@@ -260,18 +646,45 @@ def normalize_address(value: str, label: str) -> str:
 
 
 def write_text(path: Path, text: str):
+    if check_only or (preserve_existing_edge_path(path) and path.exists()):
+        require_regular_file(path)
+        if path.read_text(encoding="utf-8") != text:
+            raise SystemExit(f"materialized config differs from effective inputs: {path}")
+        return
+    require_safe_output_directory(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
+    require_safe_output_directory(path.parent)
+    require_replaceable_file(path)
     path.write_text(text, encoding="utf-8")
+    path.chmod(0o644)
+    created_materialized_paths.add(path)
 
 
 def remove_if_exists(path: Path):
+    if check_only and (path.exists() or path.is_symlink()):
+        raise SystemExit(f"stale materialized config must be absent: {path}")
+    if check_only:
+        return
+    if preserve_existing_edge_path(path) and (path.exists() or path.is_symlink()):
+        raise SystemExit(f"stale materialized edge config must be removed manually: {path}")
+    require_replaceable_file(path)
     path.unlink(missing_ok=True)
 
 
 def write_secret_text(path: Path, text: str, mode: int = 0o600):
     # SYSCOIN: generated OS server configs contain operator private keys; create
     # them independent of the caller's umask so staging artifacts are not world-readable.
+    if check_only or (preserve_existing_edge_path(path) and path.exists()):
+        info = require_regular_file(path)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise SystemExit(f"materialized secret file has unsafe ownership/mode: {path}")
+        if path.read_text(encoding="utf-8") != text:
+            raise SystemExit(f"materialized secret config differs from effective inputs: {path}")
+        return
+    require_safe_output_directory(path.parent)
     path.parent.mkdir(parents=True, exist_ok=True)
+    require_safe_output_directory(path.parent)
+    require_replaceable_file(path)
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -286,10 +699,41 @@ def write_secret_text(path: Path, text: str, mode: int = 0o600):
         tmp_path.chmod(mode)
         os.replace(tmp_path, path)
         path.chmod(mode)
+        created_materialized_paths.add(path)
     except BaseException:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
         raise
+
+
+def copy_materialized(source: Path, destination: Path, mode: int = 0o644):
+    if check_only or (
+        preserve_existing_edge_path(destination) and destination.exists()
+    ):
+        info = require_regular_file(destination)
+        if destination.read_bytes() != source.read_bytes():
+            raise SystemExit(f"materialized copy differs from source: {destination}")
+        if stat.S_IMODE(info.st_mode) != mode:
+            raise SystemExit(f"materialized copy has wrong mode: {destination}")
+        return
+    require_safe_output_directory(destination.parent)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    require_safe_output_directory(destination.parent)
+    require_replaceable_file(destination)
+    shutil.copy2(source, destination)
+    destination.chmod(mode)
+    created_materialized_paths.add(destination)
+
+
+def ensure_mode(path: Path, mode: int):
+    if check_only or (
+        preserve_existing_edge_path(path) and path not in created_materialized_paths
+    ):
+        info = require_regular_file(path)
+        if info.st_mode & 0o777 != mode:
+            raise SystemExit(f"materialized config has wrong mode: {path}")
+        return
+    path.chmod(mode)
 
 
 def yaml_scalar(value: str) -> str:
@@ -342,24 +786,30 @@ def patch_zkstack_gateway_chain_rpc_files(
     if gen.exists():
         data = yaml.safe_load(gen.read_text(encoding="utf-8"))
         if data is not None:
+            original = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
             sync_zkstack_gateway_l2_rpc_in_yaml(data, port)
-            gen.write_text(
-                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
+            updated = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+            if check_only:
+                if original != updated:
+                    raise SystemExit(f"zkstack Gateway RPC config differs from effective port: {gen}")
+            else:
+                gen.write_text(updated, encoding="utf-8")
     ext = cfg_dir / "external_node.yaml"
     if ext.exists():
         data = yaml.safe_load(ext.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("main_node_url"), str):
+            original = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
             port_s = str(port)
             mu = data["main_node_url"]
             mu = re.sub(r"127\.0\.0\.1:\d+", f"127.0.0.1:{port_s}", mu)
             mu = re.sub(r"localhost:\d+", f"localhost:{port_s}", mu)
             data["main_node_url"] = mu
-            ext.write_text(
-                yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                encoding="utf-8",
-            )
+            updated = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+            if check_only:
+                if original != updated:
+                    raise SystemExit(f"zkstack Gateway external-node config differs from effective port: {ext}")
+            else:
+                ext.write_text(updated, encoding="utf-8")
 
 
 gateway_dir = Path(os.environ["GATEWAY_DIR"])
@@ -428,15 +878,15 @@ if prover_api_auth_user and prover_api_auth_password:
     ]
 prover_api_nginx_enabled = bool(prover_api_auth_config_lines)
 
+assert_global_listener_index()
+
 eco_contracts = load_yaml_base(gateway_dir / "configs" / "contracts.yaml")
 bridgehub = eco_contracts["core_ecosystem_contracts"]["bridgehub_proxy_addr"]
 bytecode_supplier = eco_contracts["zksync_os_ctm"]["l1_bytecodes_supplier_addr"]
 
 
 def nginx_prover_api_server_block(domain: str, prover_api_port: str) -> str:
-    domain = domain.strip()
-    if not domain:
-        raise SystemExit("missing prover API nginx domain")
+    domain = normalize_dns_name(domain, "prover API nginx domain")
     return f"""server {{
     listen 80;
     listen [::]:80;
@@ -510,9 +960,20 @@ def materialize_chain(
     uses_syscoin_da_refs = pubdata_mode in ("Blobs", "RelayedL2Calldata")
     source_dir = gateway_dir / "chains" / chain_name / "configs"
     if not source_dir.exists():
-        return
+        raise FileNotFoundError(f"missing selected chain config directory: {source_dir}")
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise SystemExit(f"selected chain config directory is unsafe: {source_dir}")
     out_dir = output_root / chain_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if check_only:
+        if not out_dir.is_dir() or out_dir.is_symlink():
+            raise SystemExit(f"materialized chain config directory is missing or unsafe: {out_dir}")
+    else:
+        require_safe_output_directory(output_root)
+        output_root.mkdir(parents=True, exist_ok=True)
+        require_safe_output_directory(output_root)
+        require_safe_output_directory(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        require_safe_output_directory(out_dir)
 
     wallets_yaml = source_dir / "wallets.yaml"
     genesis_json = source_dir / "genesis.json"
@@ -581,9 +1042,9 @@ def materialize_chain(
             else []
         ),
         "l1_provider:",
-        f"  rpc_url: '{runtime_l1_rpc_url}'",
+        f"  rpc_url: {json.dumps(runtime_l1_rpc_url)}",
         "l1_archive_provider:",
-        f"  rpc_url: '{archive_l1_rpc_url}'",
+        f"  rpc_url: {json.dumps(archive_l1_rpc_url)}",
     ]
     config_lines.extend(
         [
@@ -741,12 +1202,11 @@ def materialize_chain(
 
     write_secret_text(out_dir / "config.yaml", "\n".join(config_lines))
 
-    shutil.copy2(contracts_source, out_dir / "contracts.yaml")
-    shutil.copy2(wallets_yaml, out_dir / "wallets.yaml")
+    copy_materialized(contracts_source, out_dir / "contracts.yaml")
+    copy_materialized(wallets_yaml, out_dir / "wallets.yaml", mode=0o600)
     # SYSCOIN: wallets.yaml is copied for operator convenience but still carries
     # private keys, so force the generated copy to owner-only permissions.
-    (out_dir / "wallets.yaml").chmod(0o600)
-    shutil.copy2(genesis_json, out_dir / "genesis.json")
+    copy_materialized(genesis_json, out_dir / "genesis.json")
 
     config_path = out_dir / "config.yaml"
     start_config_args = f'--config "{config_path}"'
@@ -820,6 +1280,24 @@ else
 fi
 """
 
+    operator_lock_block = ""
+    if chain_name != os.environ["GATEWAY_CHAIN_NAME"]:
+        operator_lock_block = f"""
+# SYSCOIN: The L1 sender owns the execute-operator nonce stream. Hold the same
+# advisory lock used by settlement-fee provisioning for the node lifetime.
+# shellcheck source=/dev/null
+source "{server_root / 'scripts/gateway-launch/_execute_operator_lock.sh'}"
+gateway_acquire_execute_operator_lock "{chain_name}" "{config_path}"
+"""
+
+    # SYSCOIN: The launcher binds Gateway RPC identity to the exact process it
+    # starts. Only Gateway is prebuilt by that lifecycle; edge startup retains
+    # its existing Cargo path until its own deployment publishes a binary.
+    runner_mode = (
+        "exec-prebuilt --"
+        if chain_name == os.environ["GATEWAY_CHAIN_NAME"]
+        else "run --release --"
+    )
     start_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 # SYSCOIN: do not source HOME-relative Cargo env files in generated node
@@ -845,11 +1323,12 @@ cd "{server_root}"
 export GATEWAY_DIR="{gateway_dir}"
 export GATEWAY_CHAIN_NAME="{os.environ["GATEWAY_CHAIN_NAME"]}"
 export EDGE_CHAIN_NAME="{os.environ["EDGE_CHAIN_NAME"]}"
-export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}
-exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- run --release -- {start_config_args}
+export EDGE_CHAIN_ID="{os.environ["EDGE_CHAIN_ID"]}"
+export PROTOCOL_VERSION="{os.environ["PROTOCOL_VERSION"]}"{refresh_cookie_block}{operator_lock_block}
+exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zksync-os.sh'}" "{chain_name}" -- {runner_mode} {start_config_args}
 """
     write_text(out_dir / "start-node.sh", start_script)
-    (out_dir / "start-node.sh").chmod(0o755)
+    ensure_mode(out_dir / "start-node.sh", 0o755)
 
     if prover_api_nginx_enabled:
         write_text(
@@ -860,20 +1339,21 @@ exec bash "{server_root / 'scripts/gateway-launch/run-os-server-with-patched-zks
         remove_if_exists(out_dir / "prover-api.nginx.conf")
     stale_proxy_helper = out_dir / "start-prover-api-proxy.sh"
     if stale_proxy_helper.exists():
-        stale_proxy_helper.unlink()
+        remove_if_exists(stale_proxy_helper)
 
-materialize_chain(
-    chain_name=os.environ["GATEWAY_CHAIN_NAME"],
-    chain_id=os.environ["GATEWAY_CHAIN_ID"],
-    pubdata_mode="Blobs",
-    rpc_port=os.environ["GATEWAY_OS_RPC_PORT"],
-    prover_api_port=os.environ["GATEWAY_PROVER_API_PORT"],
-    status_port=os.environ["GATEWAY_STATUS_PORT"],
-    prometheus_port=os.environ["GATEWAY_PROMETHEUS_PORT"],
-    block_pubdata_limit_bytes=os.environ["GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES"],
-    gateway_rpc_url=None,
-    prover_api_domain=os.environ["GATEWAY_PROVER_API_DOMAIN"],
-)
+if not edge_only:
+    materialize_chain(
+        chain_name=os.environ["GATEWAY_CHAIN_NAME"],
+        chain_id=os.environ["GATEWAY_CHAIN_ID"],
+        pubdata_mode="Blobs",
+        rpc_port=os.environ["GATEWAY_OS_RPC_PORT"],
+        prover_api_port=os.environ["GATEWAY_PROVER_API_PORT"],
+        status_port=os.environ["GATEWAY_STATUS_PORT"],
+        prometheus_port=os.environ["GATEWAY_PROMETHEUS_PORT"],
+        block_pubdata_limit_bytes=os.environ["GATEWAY_BLOCK_PUBDATA_LIMIT_BYTES"],
+        gateway_rpc_url=None,
+        prover_api_domain=os.environ["GATEWAY_PROVER_API_DOMAIN"],
+    )
 
 if materialize_edge_config == "true":
     materialize_chain(
@@ -888,20 +1368,43 @@ if materialize_edge_config == "true":
         gateway_rpc_url=f"http://127.0.0.1:{os.environ['GATEWAY_OS_RPC_PORT']}",
         prover_api_domain=os.environ["EDGE_PROVER_API_DOMAIN"],
     )
-    if prover_api_nginx_enabled:
-        combined_nginx = (
-            nginx_prover_api_server_block(
-                os.environ["GATEWAY_PROVER_API_DOMAIN"],
-                os.environ["GATEWAY_PROVER_API_PORT"],
+else:
+    print("gateway-launch: skipping edge OS-server config materialization for this phase")
+
+# SYSCOIN: Rebuild the aggregate from every final fragment even during the
+# Gateway-only phase; preserved additional edges must never be stranded behind
+# a stale root nginx file.
+if prover_api_nginx_enabled:
+    fragments = []
+    for chain_dir in sorted(path for path in output_root.iterdir() if path.is_dir()):
+        if chain_dir.is_symlink():
+            raise SystemExit(
+                f"materialized chain config directory is unsafe: {chain_dir}"
             )
-            + "\n"
-            + nginx_prover_api_server_block(
-                os.environ["EDGE_PROVER_API_DOMAIN"],
-                os.environ["EDGE_PROVER_API_PORT"],
-            )
+        config_path = chain_dir / "config.yaml"
+        if not config_path.exists():
+            continue
+        config = load_yaml(config_path)
+        prover_api = config.get("prover_api") if isinstance(config, dict) else None
+        has_auth = (
+            isinstance(prover_api, dict)
+            and bool(prover_api.get("auth_user"))
+            and bool(prover_api.get("auth_password"))
         )
-        write_text(output_root / "prover-api.nginx.conf", combined_nginx)
-        install_script = f"""#!/usr/bin/env bash
+        fragment = chain_dir / "prover-api.nginx.conf"
+        fragment_present = fragment.exists() or fragment.is_symlink()
+        if has_auth != fragment_present:
+            raise SystemExit(
+                f"prover API auth/nginx fragment mismatch: {fragment}"
+            )
+        if fragment_present:
+            require_regular_file(fragment)
+            fragments.append(fragment.read_text(encoding="utf-8"))
+    if not fragments:
+        raise SystemExit("no prover API nginx fragments were materialized")
+    combined_nginx = "\n".join(fragments)
+    write_text(output_root / "prover-api.nginx.conf", combined_nginx)
+    install_script = f"""#!/usr/bin/env bash
 set -euo pipefail
 conf_src="{output_root / 'prover-api.nginx.conf'}"
 if [ -n "${{NGINX_PROVER_API_CONF:-}}" ]; then
@@ -937,23 +1440,22 @@ fi
 sudo nginx -t
 sudo systemctl reload nginx
 """
-        write_text(output_root / "install-prover-api-nginx.sh", install_script)
-        (output_root / "install-prover-api-nginx.sh").chmod(0o755)
-    else:
-        remove_if_exists(output_root / "prover-api.nginx.conf")
-        remove_if_exists(output_root / "install-prover-api-nginx.sh")
+    write_text(output_root / "install-prover-api-nginx.sh", install_script)
+    ensure_mode(output_root / "install-prover-api-nginx.sh", 0o755)
 else:
-    print("gateway-launch: skipping edge OS-server config materialization for this phase")
+    remove_if_exists(output_root / "prover-api.nginx.conf")
+    remove_if_exists(output_root / "install-prover-api-nginx.sh")
 
-patch_zkstack_gateway_chain_rpc_files(
-    gateway_dir,
-    os.environ["GATEWAY_CHAIN_NAME"],
-    int(os.environ["GATEWAY_OS_RPC_PORT"]),
-)
+if not edge_only:
+    patch_zkstack_gateway_chain_rpc_files(
+        gateway_dir,
+        os.environ["GATEWAY_CHAIN_NAME"],
+        int(os.environ["GATEWAY_OS_RPC_PORT"]),
+    )
 
 print(output_root)
 PY
 
-if [ -n "${BITCOIN_DA_RPC_URL}" ]; then
+if [ "${CONFIG_CHECK_ONLY}" != true ] && [ "${EDGE_ONLY_CONFIG}" != true ] && [ -n "${BITCOIN_DA_RPC_URL}" ]; then
   gl_prepare_bitcoin_da_wallet
 fi

@@ -1,269 +1,2098 @@
 diff --git a/core/lib/basic_types/src/network.rs b/core/lib/basic_types/src/network.rs
-index 3403ec404..ab790d38d 100644
+index 3403ec404..d55f8e1d5 100644
 --- a/core/lib/basic_types/src/network.rs
 +++ b/core/lib/basic_types/src/network.rs
-@@ -28,6 +28,8 @@ pub enum Network {
-     Sepolia,
-     /// Ethereum Holešky testnet.
-     Holesky,
-+    /// Syscoin Tanenbaum testnet.
+@@ -19 +19 @@ pub enum Network {
+-    /// Ethereum Mainnet.
++    /// SYSCOIN: Syscoin mainnet.
+@@ -30,0 +31,2 @@ pub enum Network {
++    /// SYSCOIN: Syscoin Tanenbaum testnet.
 +    Tanenbaum,
-     /// Self-hosted Ethereum network.
-     Localhost,
-     /// Self-hosted L2 network.
-@@ -51,6 +53,7 @@ impl FromStr for Network {
-             "localhostL2" => Self::LocalhostL2,
-             "sepolia" => Self::Sepolia,
-             "holesky" => Self::Holesky,
+@@ -53,0 +56,2 @@ impl FromStr for Network {
++            // SYSCOIN: recognize Tanenbaum in downstream network configs.
 +            "tanenbaum" => Self::Tanenbaum,
-             "test" => Self::Test,
-             another => return Err(another.to_owned()),
-         })
-@@ -68,6 +71,7 @@ impl fmt::Display for Network {
-             Self::LocalhostL2 => write!(f, "localhostL2"),
-             Self::Sepolia => write!(f, "sepolia"),
-             Self::Holesky => write!(f, "holesky"),
+@@ -70,0 +75,2 @@ impl fmt::Display for Network {
++            // SYSCOIN: serialize Tanenbaum consistently in generated configs.
 +            Self::Tanenbaum => write!(f, "tanenbaum"),
-             Self::Unknown => write!(f, "unknown"),
-             Self::Test => write!(f, "test"),
-         }
-@@ -78,13 +82,14 @@ impl Network {
-     /// Returns the network chain ID on the Ethereum side.
-     pub fn from_chain_id(chain_id: SLChainId) -> Self {
-         match *chain_id {
+@@ -78 +84 @@ impl Network {
+-    /// Returns the network chain ID on the Ethereum side.
++    /// SYSCOIN: Returns the network selected by the settlement-layer chain ID.
+@@ -81 +87,2 @@ impl Network {
 -            1 => Self::Mainnet,
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum L1 chain IDs.
 +            57 => Self::Mainnet,
-             3 => Self::Ropsten,
-             4 => Self::Rinkeby,
-             5 => Self::Goerli,
-             9 => Self::Localhost,
-             11155111 => Self::Sepolia,
-             17000 => Self::Holesky,
+@@ -87,0 +95 @@ impl Network {
 +            5700 => Self::Tanenbaum,
-             270 => Self::LocalhostL2,
-             _ => Self::Unknown,
-         }
-@@ -93,13 +98,14 @@ impl Network {
-     /// Returns the network chain ID on the Ethereum side.
-     pub fn chain_id(self) -> SLChainId {
-         match self {
+@@ -93 +101 @@ impl Network {
+-    /// Returns the network chain ID on the Ethereum side.
++    /// SYSCOIN: Returns the settlement-layer chain ID.
+@@ -96 +104,2 @@ impl Network {
 -            Self::Mainnet => SLChainId(1),
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum L1 chain IDs.
 +            Self::Mainnet => SLChainId(57),
-             Self::Ropsten => SLChainId(3),
-             Self::Rinkeby => SLChainId(4),
-             Self::Goerli => SLChainId(5),
-             Self::Localhost => SLChainId(9),
-             Self::Sepolia => SLChainId(11155111),
-             Self::Holesky => SLChainId(17000),
+@@ -102,0 +112 @@ impl Network {
 +            Self::Tanenbaum => SLChainId(5700),
-             Self::LocalhostL2 => SLChainId(270),
-             Self::Unknown => panic!("Unknown chain ID"),
-             Self::Test => panic!("Test chain ID"),
-diff --git a/zkstack_cli/crates/types/src/l1_network.rs b/zkstack_cli/crates/types/src/l1_network.rs
-index 1d6300f12..b6de9c8a2 100644
---- a/zkstack_cli/crates/types/src/l1_network.rs
-+++ b/zkstack_cli/crates/types/src/l1_network.rs
-@@ -1,4 +1,4 @@
--use std::str::FromStr;
-+use std::{env, str::FromStr};
-
- use clap::ValueEnum;
- use ethers::types::{Address, H256};
-@@ -25,6 +25,7 @@ pub enum L1Network {
-     Localhost,
-     Sepolia,
-     Holesky,
-+    Tanenbaum,
-     Mainnet,
- }
-
-@@ -35,7 +36,8 @@ impl L1Network {
-             L1Network::Localhost => 9,
-             L1Network::Sepolia => 11_155_111,
-             L1Network::Holesky => 17000,
--            L1Network::Mainnet => 1,
-+            L1Network::Tanenbaum => 5700,
-+            L1Network::Mainnet => 57,
-         }
-     }
-
-@@ -45,6 +47,7 @@ impl L1Network {
-             L1Network::Sepolia | L1Network::Holesky => {
-                 Some(Address::from_str("0x73d59fe232fce421d1365d6a5beec49acde3d0d9").unwrap())
-             }
-+            L1Network::Tanenbaum => None,
-             L1Network::Mainnet => None, // TODO: add mainnet address after it is known
-         }
-     }
-@@ -52,6 +55,14 @@ impl L1Network {
-
-     pub fn zk_token_asset_id(&self) -> H256 {
-+        if let Ok(value) = env::var("ZKSYS_ZK_TOKEN_ASSET_ID")
-+            .or_else(|_| env::var("ZK_TOKEN_ASSET_ID"))
+diff --git a/zkstack_cli/Cargo.lock b/zkstack_cli/Cargo.lock
+index d0fb63d75..6ef950351 100644
+--- a/zkstack_cli/Cargo.lock
++++ b/zkstack_cli/Cargo.lock
+@@ -8048,0 +8049 @@ dependencies = [
++ "tempfile",
+diff --git a/zkstack_cli/Cargo.toml b/zkstack_cli/Cargo.toml
+index 7e97b5661..f8fff6390 100644
+--- a/zkstack_cli/Cargo.toml
++++ b/zkstack_cli/Cargo.toml
+@@ -74,0 +75,2 @@ walkdir = "2.4.0"
++# SYSCOIN: Materialize generated Forge signers as private ephemeral keystores.
++tempfile = "3.14.0"
+diff --git a/zkstack_cli/crates/common/Cargo.toml b/zkstack_cli/crates/common/Cargo.toml
+index 7af8fab92..c4fd1b456 100644
+--- a/zkstack_cli/crates/common/Cargo.toml
++++ b/zkstack_cli/crates/common/Cargo.toml
+@@ -36,0 +37,2 @@ zksync_web3_decl.workspace = true
++# SYSCOIN: Keep generated signer material out of Forge argv and command logs.
++tempfile.workspace = true
+diff --git a/zkstack_cli/crates/common/src/forge.rs b/zkstack_cli/crates/common/src/forge.rs
+index dbc8fd84c..6c8fa8b0d 100644
+--- a/zkstack_cli/crates/common/src/forge.rs
++++ b/zkstack_cli/crates/common/src/forge.rs
+@@ -0,0 +1,2 @@
++// SYSCOIN: ephemeral Forge signers require private file handling and random
++// keystore credentials without placing secret material in process arguments.
+@@ -1,0 +4,2 @@ use std::{
++    fs::{self, OpenOptions},
++    io::Write,
+@@ -3 +6,0 @@ use std::{
+-    str::FromStr,
+@@ -5,0 +9,3 @@ use std::{
++#[cfg(unix)]
++use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
++
+@@ -8 +14,4 @@ use ethers::{
+-    core::types::Bytes,
++    core::{
++        rand::{thread_rng, RngCore},
++        types::Bytes,
++    },
+@@ -12 +21 @@ use ethers::{
+-    utils::{hex, hex::ToHexExt},
++    utils::hex,
+@@ -15,0 +25 @@ use strum::Display;
++use tempfile::TempDir;
+@@ -22,0 +33,3 @@ use crate::{
++// SYSCOIN: Syscoin's 2.5-minute target can exceed Forge's 120-second default.
++const SYSCOIN_BROADCAST_TIMEOUT_SECONDS: u64 = 1_800;
++
+@@ -44,0 +58 @@ impl Forge {
++            private_key: None,
+@@ -48,0 +63,58 @@ impl Forge {
++// SYSCOIN: Generated zkstack signers must never enter Forge argv or command
++// logs. Give Forge a short-lived encrypted keystore through child-only env.
++struct EphemeralForgeSigner {
++    _directory: TempDir,
++    keystore_path: PathBuf,
++    password_path: PathBuf,
++}
++
++impl EphemeralForgeSigner {
++    fn new(private_key: &H256) -> anyhow::Result<Self> {
++        let directory = tempfile::Builder::new()
++            .prefix("zkstack-forge-signer-")
++            .tempdir()?;
++        #[cfg(unix)]
++        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))?;
++
++        let mut rng = thread_rng();
++        let mut random_password = [0_u8; 32];
++        rng.fill_bytes(&mut random_password);
++        let password = hex::encode(random_password);
++        let keystore_name = "signer.json";
++        LocalWallet::encrypt_keystore(
++            directory.path(),
++            &mut rng,
++            private_key.as_bytes(),
++            password.as_bytes(),
++            Some(keystore_name),
++        )?;
++        let keystore_path = directory.path().join(keystore_name);
++
++        let password_path = directory.path().join("password");
++        let mut options = OpenOptions::new();
++        options.write(true).create_new(true);
++        #[cfg(unix)]
++        options.mode(0o600);
++        options
++            .open(&password_path)?
++            .write_all(password.as_bytes())?;
++
++        #[cfg(unix)]
 +        {
-+            return H256::from_str(&value)
-+                .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32");
++            fs::set_permissions(&keystore_path, fs::Permissions::from_mode(0o600))?;
++            fs::set_permissions(&password_path, fs::Permissions::from_mode(0o600))?;
 +        }
 +
-         match self {
-             L1Network::Localhost => {
-                 // When testing locally, we deploy the ZK token inside interop tests, so we need to derive its asset id
-@@ -68,8 +79,7 @@ impl L1Network {
-             L1Network::Mainnet => {
++        Ok(Self {
++            _directory: directory,
++            keystore_path,
++            password_path,
++        })
++    }
++
++    fn apply<'a>(&self, cmd: Cmd<'a>) -> Cmd<'a> {
++        cmd.env("ETH_KEYSTORE", &self.keystore_path)
++            .env("ETH_PASSWORD", &self.password_path)
++    }
++}
++
+@@ -53,0 +126 @@ pub struct ForgeScript {
++    private_key: Option<H256>,
+@@ -56,0 +130,28 @@ impl ForgeScript {
++    // SYSCOIN: Forge does not infer tx.origin from an encrypted keystore. Bind
++    // the final generated key's public address after all builder calls while
++    // keeping the key itself out of argv and command logs.
++    fn bind_private_key_sender(&mut self) {
++        let Some(address) = self.private_key.as_ref().map(|private_key| {
++            LocalWallet::from_bytes(private_key.as_bytes())
++                .unwrap()
++                .address()
++        }) else {
++            return;
++        };
++        let has_sender = self
++            .args
++            .args
++            .iter()
++            .any(|arg| matches!(arg, ForgeScriptArg::Sender { .. }))
++            || self
++                .args
++                .additional_args
++                .iter()
++                .any(|argument| argument_uses_flag(argument, "--sender"));
++        if !has_sender {
++            self.args.add_arg(ForgeScriptArg::Sender {
++                address: format!("{address:#x}"),
++            });
++        }
++    }
++
+@@ -58,0 +160,4 @@ impl ForgeScript {
++        // SYSCOIN: Reject caller-supplied raw credentials before building,
++        // printing, or spawning a Forge command.
++        self.args.reject_raw_secret_args()?;
++        self.bind_private_key_sender();
+@@ -67,0 +173,6 @@ impl ForgeScript {
++        // SYSCOIN: one ephemeral signer spans the resume attempt and fallback run.
++        let ephemeral_signer = self
++            .private_key
++            .as_ref()
++            .map(EphemeralForgeSigner::new)
++            .transpose()?;
+@@ -71,3 +182,7 @@ impl ForgeScript {
+-            let res = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
+-                .with_piped_std_err()
+-                .run();
++            let mut cmd = Cmd::new(cmd!(shell, "forge script {script_path} --legacy {args...}"))
++                .with_piped_std_err();
++            // SYSCOIN: inject only private child-process keystore paths.
++            if let Some(signer) = &ephemeral_signer {
++                cmd = signer.apply(cmd);
++            }
++            let res = cmd.run();
+@@ -93,0 +209,5 @@ impl ForgeScript {
++        // SYSCOIN: preserve the same private signer when resume falls back.
++        if let Some(signer) = &ephemeral_signer {
++            cmd = signer.apply(cmd);
++        }
++
+@@ -107 +227,2 @@ impl ForgeScript {
+-        self.args.wallet_args_passed()
++        // SYSCOIN: an in-memory signer satisfies the wallet requirement.
++        self.private_key.is_some() || self.args.wallet_args_passed()
+@@ -130,0 +252,6 @@ impl ForgeScript {
++        // SYSCOIN: deployment journals are safety evidence; serialize every
++        // broadcast so a predecessor must confirm successfully before its successor.
++        self.args.add_arg(ForgeScriptArg::Slow);
++        self.args.add_arg(ForgeScriptArg::Timeout {
++            timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
++        });
+@@ -172,3 +299,3 @@ impl ForgeScript {
+-        self.args.add_arg(ForgeScriptArg::PrivateKey {
+-            private_key: private_key.encode_hex(),
+-        });
++        // SYSCOIN: retain signer identity in memory and materialize it only as
++        // a private ephemeral keystore when Forge is spawned.
++        self.private_key = Some(private_key);
+@@ -180,9 +307,3 @@ impl ForgeScript {
+-        self.args.args.iter().find_map(|a| {
+-            if let ForgeScriptArg::PrivateKey { private_key } = a {
+-                let key = H256::from_str(private_key).unwrap();
+-                let key = LocalWallet::from_bytes(key.as_bytes()).unwrap();
+-                Some(key)
+-            } else {
+-                None
+-            }
+-        })
++        self.private_key
++            .as_ref()
++            .map(|key| LocalWallet::from_bytes(key.as_bytes()).unwrap())
+@@ -231 +352,2 @@ const PROHIBITED_ARGS: [&str; 10] = [
+-const WALLET_ARGS: [&str; 18] = [
++// SYSCOIN: recognize every supported noninteractive Forge wallet selector.
++const WALLET_ARGS: [&str; 22] = [
+@@ -237,0 +360 @@ const WALLET_ARGS: [&str; 18] = [
++    "--mnemonic-passphrases",
+@@ -241,0 +365 @@ const WALLET_ARGS: [&str; 18] = [
++    "--keystores",
+@@ -242,0 +367 @@ const WALLET_ARGS: [&str; 18] = [
++    "--accounts",
+@@ -249,0 +375,12 @@ const WALLET_ARGS: [&str; 18] = [
++    "--gcp",
++];
++
++// SYSCOIN: These Forge selectors carry raw credentials. Passing them through
++// additional_args would expose secrets in process argv and command/error logs.
++const RAW_SECRET_ARGS: [&str; 6] = [
++    "--private-key",
++    "--private-keys",
++    "--mnemonics",
++    "--mnemonic-passphrases",
++    "--mnenomic-passphrases",
++    "--password",
+@@ -251,0 +389,9 @@ const WALLET_ARGS: [&str; 18] = [
++// SYSCOIN: Match exact, equals, or legacy single-token whitespace forms while
++// avoiding prefix matches such as --password-file.
++fn argument_uses_flag(argument: &str, flag: &str) -> bool {
++    argument == flag
++        || argument.strip_prefix(flag).is_some_and(|suffix| {
++            suffix.starts_with('=') || suffix.starts_with(' ') || suffix.starts_with('\t')
++        })
++}
++
+@@ -262,4 +408 @@ pub enum ForgeScriptArg {
+-    #[strum(to_string = "private-key={private_key}")]
+-    PrivateKey {
+-        private_key: String,
+-    },
++    // SYSCOIN: raw private keys live only in memory, never in rendered Forge arguments.
+@@ -274,0 +418,5 @@ pub enum ForgeScriptArg {
++    // SYSCOIN: typed timeout for serialized deployment broadcasts.
++    #[strum(to_string = "timeout={timeout}")]
++    Timeout {
++        timeout: u64,
++    },
+@@ -329 +477 @@ pub struct ForgeScriptArgs {
+-    /// e.g.: `zkstack init -a --private-key=<PRIVATE_KEY>`
++    /// e.g.: `zkstack init -a --keystore=<PATH> --password-file=<PATH>`
+@@ -335,0 +484,17 @@ impl ForgeScriptArgs {
++    // SYSCOIN: Fail closed without ever formatting the rejected value. The
++    // returned error names only the canonical flag, so the secret cannot leak.
++    fn reject_raw_secret_args(&self) -> anyhow::Result<()> {
++        for argument in &self.additional_args {
++            if let Some(flag) = RAW_SECRET_ARGS
++                .iter()
++                .copied()
++                .find(|flag| argument_uses_flag(argument, flag))
++            {
++                anyhow::bail!(
++                    "raw secret Forge argument {flag} is forbidden; use an account, keystore, hardware wallet, or KMS signer"
++                );
++            }
++        }
++        Ok(())
++    }
++
+@@ -434,3 +599,6 @@ impl ForgeScriptArgs {
+-        self.additional_args
+-            .iter()
+-            .any(|arg| WALLET_ARGS.contains(&arg.as_ref()))
++        // SYSCOIN: accept both `--flag value` and `--flag=value` selector forms.
++        self.additional_args.iter().any(|argument| {
++            WALLET_ARGS
++                .iter()
++                .any(|flag| argument_uses_flag(argument, flag))
++        })
+@@ -484,0 +653,139 @@ fn check_error(cmd_result: &CmdResult<()>, error_text: &str) -> bool {
++
++// SYSCOIN: Exercise the complete raw-credential boundary without invoking
++// Forge, and ensure diagnostics never echo the supplied secret value.
++#[cfg(test)]
++mod syscoin_tests {
++    use super::*;
++
++    fn forge_args(arguments: &[&str]) -> ForgeScriptArgs {
++        ForgeScriptArgs {
++            additional_args: arguments
++                .iter()
++                .map(|argument| argument.to_string())
++                .collect(),
++            ..ForgeScriptArgs::default()
++        }
++    }
++
++    #[test]
++    fn broadcasts_are_serialized() {
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_broadcast();
++        assert_eq!(
++            script.args.build(),
++            vec![
++                ForgeScriptArg::Broadcast.to_string(),
++                ForgeScriptArg::Slow.to_string(),
++                ForgeScriptArg::Timeout {
++                    timeout: SYSCOIN_BROADCAST_TIMEOUT_SECONDS,
++                }
++                .to_string(),
++            ],
++        );
++    }
++
++    #[test]
++    fn generated_private_key_binds_only_its_public_sender() {
++        let private_key = H256::from_slice(&[7_u8; 32]);
++        let expected_sender = format!(
++            "--sender={:#x}",
++            LocalWallet::from_bytes(private_key.as_bytes())
++                .unwrap()
++                .address()
++        );
++        let secret = hex::encode(private_key.as_bytes());
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(private_key);
++
++        assert_eq!(script.private_key, Some(private_key));
++        script.bind_private_key_sender();
++        script.bind_private_key_sender();
++        let arguments = script.args.build();
++        assert_eq!(
++            arguments
++                .iter()
++                .filter(|argument| *argument == &expected_sender)
++                .count(),
++            1
++        );
++        assert!(!arguments.iter().any(|argument| argument.contains(&secret)));
++    }
++
++    #[test]
++    fn generated_private_key_preserves_explicit_sender() {
++        let private_key = H256::from_slice(&[8_u8; 32]);
++        let explicit_sender = "0x1111111111111111111111111111111111111111";
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(private_key)
++            .with_sender(explicit_sender.to_string());
++        script.bind_private_key_sender();
++        let arguments = script.args.build();
++
++        assert_eq!(
++            arguments
++                .iter()
++                .filter(|argument| argument.starts_with("--sender="))
++                .count(),
++            1
++        );
++        assert_eq!(arguments[0], format!("--sender={explicit_sender}"));
++    }
++
++    #[test]
++    fn replacing_generated_private_key_rebinds_sender() {
++        let first_private_key = H256::from_slice(&[7_u8; 32]);
++        let final_private_key = H256::from_slice(&[8_u8; 32]);
++        let expected_sender = format!(
++            "--sender={:#x}",
++            LocalWallet::from_bytes(final_private_key.as_bytes())
++                .unwrap()
++                .address()
++        );
++        let mut script = Forge::new(Path::new("."))
++            .script(Path::new("test.s.sol"), ForgeScriptArgs::default())
++            .with_private_key(first_private_key)
++            .with_private_key(final_private_key);
++
++        script.bind_private_key_sender();
++        assert_eq!(script.private_key, Some(final_private_key));
++        assert_eq!(script.args.build(), vec![expected_sender]);
++    }
++
++    #[test]
++    fn rejects_raw_secret_arguments_without_echoing_values() {
++        const SECRET: &str = "syscoin-secret-sentinel";
++        for flag in RAW_SECRET_ARGS {
++            let equals_argument = format!("{flag}={SECRET}");
++            for arguments in [vec![flag, SECRET], vec![equals_argument.as_str()]] {
++                let error = forge_args(&arguments)
++                    .reject_raw_secret_args()
++                    .expect_err("raw secret argument must be rejected")
++                    .to_string();
++                assert!(error.contains(flag));
++                assert!(!error.contains(SECRET));
++            }
++        }
++    }
++
++    #[test]
++    fn allows_non_secret_wallet_selectors() {
++        for arguments in [
++            vec!["--keystore", "/safe/signer.json"],
++            vec!["--keystore=/safe/signer.json"],
++            vec!["--account", "gateway"],
++            vec!["--password-file", "/safe/password"],
++            vec!["--ledger"],
++            vec!["--trezor"],
++            vec!["--aws"],
++            vec!["--gcp"],
++        ] {
++            forge_args(&arguments)
++                .reject_raw_secret_args()
++                .expect("non-secret selector must remain allowed");
++            assert!(forge_args(&arguments).wallet_args_passed());
++        }
++    }
++}
+diff --git a/zkstack_cli/crates/types/src/l1_network.rs b/zkstack_cli/crates/types/src/l1_network.rs
+index 67e80c6a7..d0c83b94f 100644
+--- a/zkstack_cli/crates/types/src/l1_network.rs
++++ b/zkstack_cli/crates/types/src/l1_network.rs
+@@ -1 +1,2 @@
+-use std::str::FromStr;
++// SYSCOIN: read the deployment-specific zkSYS asset ID from the environment.
++use std::{env, str::FromStr};
+@@ -27,0 +29,2 @@ pub enum L1Network {
++    // SYSCOIN: expose Tanenbaum as a supported L1 network.
++    Tanenbaum,
+@@ -38 +41,3 @@ impl L1Network {
+-            L1Network::Mainnet => 1,
++            // SYSCOIN: use Syscoin mainnet and Tanenbaum chain IDs.
++            L1Network::Tanenbaum => 5700,
++            L1Network::Mainnet => 57,
+@@ -47,0 +53,2 @@ impl L1Network {
++            // SYSCOIN: Tanenbaum does not use the upstream Avail validator.
++            L1Network::Tanenbaum => None,
+@@ -65,4 +72,8 @@ impl L1Network {
+-            L1Network::Mainnet => {
 -                // https://etherscan.io/address/0x66A5cFB2e9c529f14FE6364Ad1075dF3a649C0A5#readProxyContract#F3
 -                H256::from_str("0x83e2fbc0a739b3c765de4c2b4bf8072a71ea8fbb09c8cf579c71425d8bc8804a")
 -                    .unwrap()
-+                panic!("ZKSYS_ZK_TOKEN_ASSET_ID must be set for Syscoin mainnet CTM deployment")
-             }
--            L1Network::Holesky => H256::zero(),
-+            L1Network::Tanenbaum | L1Network::Holesky => H256::zero(),
-         }
-     }
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-index 707872ea0..9ae443887 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
-@@ -246,7 +246,7 @@ async fn return_ecosystem_contracts(
-             L1Network::Localhost => {
-                 ContractsConfig::get_path_with_base_path(&ecosystem_config.config)
-             }
--            L1Network::Sepolia | L1Network::Holesky | L1Network::Mainnet => {
-+            L1Network::Sepolia | L1Network::Holesky | L1Network::Tanenbaum | L1Network::Mainnet => {
-                 ecosystem_preexisting_configs_path
-             }
-         });
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-index 37cad6768..0ae9fd838 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
-@@ -21,7 +21,7 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     ContractsConfigForDeployERC20, CoreContractsConfig, EcosystemConfig,
- };
--use zkstack_cli_types::VMOption;
-+use zkstack_cli_types::{L1Network, VMOption};
-
- use super::args::init::EcosystemInitArgsFinal;
- use crate::{
-@@ -75,6 +75,9 @@ pub async fn deploy_l1_core_contracts(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
++            // SYSCOIN: bind Syscoin CTM deployment to the derived zkSYS asset ID,
++            // without overriding upstream Localhost/Sepolia/Holesky identities.
++            L1Network::Tanenbaum | L1Network::Mainnet => {
++                let value = env::var("ZKSYS_ZK_TOKEN_ASSET_ID")
++                    .or_else(|_| env::var("ZK_TOKEN_ASSET_ID"))
++                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID must be set for Syscoin CTM deployment");
++                H256::from_str(&value)
++                    .expect("ZKSYS_ZK_TOKEN_ASSET_ID / ZK_TOKEN_ASSET_ID must be bytes32")
+diff --git a/zkstack_cli/crates/zkstack/src/admin_functions.rs b/zkstack_cli/crates/zkstack/src/admin_functions.rs
+index 0ffe0e96f..aab4fc375 100644
+--- a/zkstack_cli/crates/zkstack/src/admin_functions.rs
++++ b/zkstack_cli/crates/zkstack/src/admin_functions.rs
+@@ -3 +3,2 @@ use std::path::{Path, PathBuf};
+-use anyhow::Context;
++// SYSCOIN: state-aware retries query ownership and fail on ambiguous state.
++use anyhow::{bail, Context};
+@@ -5,2 +6,2 @@ use ethers::{
+-    abi::Token,
+-    contract::BaseContract,
++    abi::{encode, Token},
++    contract::{abigen, BaseContract},
+@@ -13,0 +15 @@ use zkstack_cli_common::{
++    ethereum::get_ethers_provider,
+@@ -27,2 +29,3 @@ use crate::{
+-    abi::ADMINFUNCTIONSABI_ABI,
+-    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall},
++    // SYSCOIN: Reuse pinned generated bindings for ownership address discovery.
++    abi::{BridgehubAbi, IL1NativeTokenVaultAbi, ADMINFUNCTIONSABI_ABI},
++    commands::chain::admin_call_builder::{decode_admin_calls, AdminCall as DecodedAdminCall},
+@@ -37 +40,173 @@ lazy_static! {
+-pub async fn accept_admin(
++// SYSCOIN: Exact OZ Ownable2Step acceptOwnership selector used inside the
++// ChainAdmin-wrapped call payload.
++const SYSCOIN_ACCEPT_OWNERSHIP_SELECTOR: [u8; 4] = [0x79, 0xba, 0x50, 0x97];
++// SYSCOIN: An already-correct admin must still atomically overwrite and clear
++// any latent pending admin through its authenticated ChainAdmin.
++const SYSCOIN_SET_PENDING_ADMIN_SELECTOR: [u8; 4] = [0x4d, 0xd1, 0x8b, 0xf5];
++const SYSCOIN_ACCEPT_ADMIN_SELECTOR: [u8; 4] = [0x0e, 0x18, 0xb6, 0x81];
++
++// SYSCOIN: Forge resume is deliberately disabled for governance acceptance
++// calls. Query their live state before broadcasting so a whole-command retry is
++// idempotent without changing the pinned Era contract deployment artifacts.
++abigen!(
++    SyscoinOwnable2StepQuery,
++    r"[
++        function owner() external view returns (address)
++        function pendingOwner() external view returns (address)
++    ]"
++);
++abigen!(
++    SyscoinDiamondAdminQuery,
++    r"[function getAdmin() external view returns (address)]"
++);
++abigen!(
++    SyscoinDirectAdminQuery,
++    r"[function admin() external view returns (address)]"
++);
++fn owner_acceptance_required(
++    current_owner: Address,
++    pending_owner: Address,
++    expected_owner: Address,
++) -> anyhow::Result<bool> {
++    if current_owner == expected_owner {
++        if pending_owner == Address::zero() {
++            return Ok(false);
 +        }
-         check_the_balance(&forge).await?;
-     }
-
-@@ -121,6 +124,10 @@ pub async fn deploy_erc20(
-         .with_rpc_url(l1_rpc_url)
-         .with_broadcast();
-
-+    if ecosystem_config.l1_network == L1Network::Localhost {
-+        forge = forge.with_slow();
++        bail!("target is already owned by the expected owner but still has a pending owner");
++    }
++    if pending_owner != expected_owner {
++        bail!("expected owner is not the target's pending owner");
++    }
++    Ok(true)
++}
++
++// SYSCOIN: Permit only the clean terminal state, an already-pending retry, or
++// the one pristine deployer-owned state that still needs transfer initiation.
++fn owner_transfer_required(
++    current_owner: Address,
++    pending_owner: Address,
++    deployer: Address,
++    expected_owner: Address,
++) -> anyhow::Result<bool> {
++    if current_owner == expected_owner {
++        if pending_owner == Address::zero() {
++            return Ok(false);
++        }
++        bail!("target is already owned by the expected owner but still has a pending owner");
++    }
++    if current_owner != deployer {
++        bail!("target has an unexpected current owner");
++    }
++    if pending_owner == expected_owner {
++        return Ok(false);
++    }
++    if pending_owner != Address::zero() {
++        bail!("target has an unexpected pending owner");
++    }
++    Ok(true)
++}
++
++// SYSCOIN: Share one exact owner-state query across Governance, direct EOA,
++// and ChainAdmin-wrapped acceptance paths.
++async fn owner_state(
++    target_address: Address,
++    l1_rpc_url: &str,
++) -> anyhow::Result<(Address, Address)> {
++    let ownership = SyscoinOwnable2StepQuery::new(target_address, get_ethers_provider(l1_rpc_url)?);
++    let current_owner = ownership
++        .owner()
++        .call()
++        .await
++        .context("failed to query target owner")?;
++    let pending_owner = ownership
++        .pending_owner()
++        .call()
++        .await
++        .context("failed to query target pending owner")?;
++    Ok((current_owner, pending_owner))
++}
++
++// SYSCOIN: Every acceptance path verifies the clean terminal state before it
++// returns; a successful receipt alone is not a sufficient deployment gate.
++pub async fn ensure_owner_handoff_complete(
++    target_address: Address,
++    expected_owner: Address,
++    l1_rpc_url: &str,
++) -> anyhow::Result<()> {
++    let (current_owner, pending_owner) = owner_state(target_address, l1_rpc_url).await?;
++    if current_owner != expected_owner || pending_owner != Address::zero() {
++        bail!("ownership handoff did not reach the expected clean state");
++    }
++    Ok(())
++}
++
++// SYSCOIN: Resolve AssetTracker from the already-wired vault instead of adding
++// a duplicate address to zkstack's persisted contract schema.
++pub async fn native_token_vault_asset_tracker(
++    native_token_vault: Address,
++    l1_rpc_url: &str,
++) -> anyhow::Result<Address> {
++    let asset_tracker =
++        IL1NativeTokenVaultAbi::new(native_token_vault, get_ethers_provider(l1_rpc_url)?)
++            .l_1_asset_tracker()
++            .call()
++            .await
++            .context("failed to query L1NativeTokenVault asset tracker")?;
++    if asset_tracker == Address::zero() {
++        bail!("L1NativeTokenVault returned a zero asset tracker");
++    }
++    Ok(asset_tracker)
++}
++
++// SYSCOIN: ChainRegistrationSender is discoverable from BridgeHub; keep it out
++// of the persisted schema while still enforcing its ownership handoff.
++pub async fn bridgehub_chain_registration_sender(
++    bridgehub: Address,
++    l1_rpc_url: &str,
++) -> anyhow::Result<Address> {
++    let sender = BridgehubAbi::new(bridgehub, get_ethers_provider(l1_rpc_url)?)
++        .chain_registration_sender()
++        .call()
++        .await
++        .context("failed to query BridgeHub chain registration sender")?;
++    if sender == Address::zero() {
++        bail!("BridgeHub returned a zero chain registration sender");
++    }
++    Ok(sender)
++}
++
++// SYSCOIN: AdminFunctions expects ABI-encoded Call[] and performs the
++// ChainAdmin.multicall itself, preserving Forge keystore / ledger / KMS args.
++fn chain_admin_accept_owner_calls(target_address: Address) -> Bytes {
++    Bytes::from(encode(&[Token::Array(vec![Token::Tuple(vec![
++        Token::Address(target_address),
++        Token::Uint(U256::zero()),
++        Token::Bytes(SYSCOIN_ACCEPT_OWNERSHIP_SELECTOR.to_vec()),
++    ])])]))
++}
++
++// SYSCOIN: BridgeHub intentionally exposes no pending-admin getter. When its
++// current admin is already ChainAdmin, make the only safe check constructive:
++// atomically replace any pending admin with ChainAdmin and accept it, which
++// leaves the current admin unchanged and clears the takeover slot.
++fn chain_admin_clear_pending_admin_calls(target_address: Address, admin: Address) -> Bytes {
++    let mut set_pending_admin = SYSCOIN_SET_PENDING_ADMIN_SELECTOR.to_vec();
++    set_pending_admin.extend(encode(&[Token::Address(admin)]));
++    Bytes::from(encode(&[Token::Array(vec![
++        Token::Tuple(vec![
++            Token::Address(target_address),
++            Token::Uint(U256::zero()),
++            Token::Bytes(set_pending_admin),
++        ]),
++        Token::Tuple(vec![
++            Token::Address(target_address),
++            Token::Uint(U256::zero()),
++            Token::Bytes(SYSCOIN_ACCEPT_ADMIN_SELECTOR.to_vec()),
++        ]),
++    ])]))
++}
++
++// SYSCOIN: Keep every new direct/deployer ownership mutation on one Forge
++// path so resume disabling and external wallet arguments cannot diverge.
++#[allow(clippy::too_many_arguments)]
++async fn execute_owner_calldata(
+@@ -40,3 +215,2 @@ pub async fn accept_admin(
+-    admin: Address,
+-    governor: &Wallet,
+-    target_address: Address,
++    wallet: &Wallet,
++    wallet_owner: WalletOwner,
+@@ -44 +218,2 @@ pub async fn accept_admin(
+-    l1_rpc_url: String,
++    l1_rpc_url: &str,
++    calldata: Bytes,
+@@ -46,3 +220,0 @@ pub async fn accept_admin(
+-    // Resume for accept admin doesn't work properly. Foundry assumes that if signature of the function is the same,
+-    // than it's the same call, but because we are calling this function multiple times during the init process,
+-    // code assumes that doing only once is enough, but actually we need to accept admin multiple times
+@@ -51,4 +222,0 @@ pub async fn accept_admin(
+-
+-    let calldata = ADMIN_FUNCTIONS
+-        .encode("chainAdminAcceptAdmin", (admin, target_address))
+-        .unwrap();
+@@ -61 +229 @@ pub async fn accept_admin(
+-        .with_rpc_url(l1_rpc_url)
++        .with_rpc_url(l1_rpc_url.to_owned())
+@@ -64 +232,69 @@ pub async fn accept_admin(
+-    accept_ownership(shell, governor, forge).await
++    execute_ownership_as(shell, wallet, wallet_owner, forge).await
++}
++
++async fn current_admin(target_address: Address, l1_rpc_url: &str) -> anyhow::Result<Address> {
++    let provider = get_ethers_provider(l1_rpc_url)?;
++    match SyscoinDiamondAdminQuery::new(target_address, provider.clone())
++        .get_admin()
++        .call()
++        .await
++    {
++        Ok(admin) => Ok(admin),
++        Err(get_admin_error) => SyscoinDirectAdminQuery::new(target_address, provider)
++            .admin()
++            .call()
++            .await
++            .with_context(|| {
++                format!(
++                    "target exposes neither getAdmin() nor admin(); getAdmin() failed: {get_admin_error:#}"
++                )
++            }),
++    }
++}
++
++pub async fn accept_admin(
++    shell: &Shell,
++    foundry_contracts_path: PathBuf,
++    admin: Address,
++    governor: &Wallet,
++    target_address: Address,
++    forge_args: &ForgeScriptArgs,
++    l1_rpc_url: String,
++) -> anyhow::Result<()> {
++    let current = current_admin(target_address, &l1_rpc_url).await?;
++    if current == admin {
++        // SYSCOIN: A current-admin match alone is not terminal because a
++        // different pending admin may still accept later. The two calls run in
++        // one reverting ChainAdmin multicall, so partial cleanup is impossible.
++        ecosystem_admin_execute_calls(
++            shell,
++            governor,
++            admin,
++            foundry_contracts_path,
++            chain_admin_clear_pending_admin_calls(target_address, admin).to_vec(),
++            forge_args,
++            l1_rpc_url.clone(),
++        )
++        .await?;
++    } else {
++        // SYSCOIN: A successful acceptance proves that ChainAdmin was the
++        // pending admin and the target atomically cleared that pending slot.
++        let calldata = ADMIN_FUNCTIONS
++            .encode("chainAdminAcceptAdmin", (admin, target_address))
++            .context("failed to encode admin acceptance")?;
++        execute_owner_calldata(
++            shell,
++            foundry_contracts_path,
++            governor,
++            WalletOwner::Governor,
++            forge_args,
++            &l1_rpc_url,
++            calldata,
++        )
++        .await?;
 +    }
 +
-     forge = fill_forge_private_key(
-         forge,
-         ecosystem_config.get_wallets()?.deployer.as_ref(),
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-index 03451dd9e..d751d24f8 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
-@@ -16,7 +16,7 @@ use zkstack_cli_config::{
-     traits::{ReadConfig, SaveConfig, SaveConfigWithBasePath},
-     CoreContractsConfig, EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::{ProverMode, VMOption};
-+use zkstack_cli_types::{L1Network, ProverMode, VMOption};
-
- use crate::{
-     abi::IDEPLOYCTMABI_ABI,
-@@ -203,6 +203,9 @@ pub async fn deploy_new_ctm(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
-
-diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-index e667c383d..f7f70b107 100644
---- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/register_ctm.rs
-@@ -9,7 +9,7 @@ use zkstack_cli_config::{
-     forge_interface::script_params::REGISTER_CTM_SCRIPT_PARAMS, traits::ReadConfig,
-     EcosystemConfig, ZkStackConfig,
- };
--use zkstack_cli_types::VMOption;
-+use zkstack_cli_types::{L1Network, VMOption};
- use zksync_types::H160;
-
- use crate::{
-@@ -112,4 +112,7 @@ pub async fn register_ctm_on_existing_bh(
-
-     if !only_save_calldata {
-         forge = forge.with_broadcast();
-+        if config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-         check_the_balance(&forge).await?;
-     }
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-index de2718561..f8bb298b7 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/register_chain.rs
-@@ -16,6 +16,7 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, CoreContractsConfig, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+use zkstack_cli_types::L1Network;
-
- use crate::{
-     abi::{IREGISTERONALLCHAINSABI_ABI, IREGISTERZKCHAINABI_ABI},
-@@ -104,6 +105,9 @@ pub async fn register_chain(
-
-     if broadcast {
-         forge = forge.with_broadcast();
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
-
-     if let Some(address) = sender {
-diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-index bec070eeb..3efce4fda 100644
---- a/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-+++ b/zkstack_cli/crates/zkstack/src/commands/chain/deploy_l2_contracts.rs
-@@ -20,6 +20,7 @@ use zkstack_cli_config::{
-     ChainConfig, ContractsConfig, DAValidatorType, EcosystemConfig, ZkStackConfig,
-     ZkStackConfigTrait,
- };
-+use zkstack_cli_types::L1Network;
- use zksync_basic_types::commitment::L1BatchCommitmentMode;
-
- use crate::{
-@@ -354,6 +355,9 @@ async fn call_forge(
-
-     if with_broadcast {
-         forge = forge.with_broadcast();
-+        if chain_config.l1_network == L1Network::Localhost {
-+            forge = forge.with_slow();
-+        }
-     }
-
-     if let Some(signature) = signature {
++    if current_admin(target_address, &l1_rpc_url).await? != admin {
++        bail!("admin handoff did not reach the expected state");
++    }
++    Ok(())
+@@ -75,0 +312,7 @@ pub async fn accept_owner(
++    // SYSCOIN: Fail closed unless ownership is either already complete or is
++    // still in the exact state required for the intended acceptance.
++    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
++    if !owner_acceptance_required(current_owner, pending_owner, governor_contract)? {
++        return Ok(());
++    }
++
+@@ -89 +332 @@ pub async fn accept_owner(
+-        .with_rpc_url(l1_rpc_url)
++        .with_rpc_url(l1_rpc_url.clone())
+@@ -92 +335,113 @@ pub async fn accept_owner(
+-    accept_ownership(shell, governor, forge).await
++    accept_ownership(shell, governor, forge).await?;
++    ensure_owner_handoff_complete(target_address, governor_contract, &l1_rpc_url).await
++}
++
++// SYSCOIN: The pinned fresh-deploy script omitted only the initial
++// ChainRegistrationSender transfer. Initiate it through the authenticated
++// deployer on the one exact pre-state, or accept the already-pending retry.
++pub async fn ensure_pending_owner_from_deployer(
++    shell: &Shell,
++    foundry_contracts_path: PathBuf,
++    deployer: &Wallet,
++    expected_owner: Address,
++    target_address: Address,
++    forge_args: &ForgeScriptArgs,
++    l1_rpc_url: String,
++) -> anyhow::Result<()> {
++    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
++    if !owner_transfer_required(
++        current_owner,
++        pending_owner,
++        deployer.address,
++        expected_owner,
++    )? {
++        return Ok(());
++    }
++
++    let calldata = ADMIN_FUNCTIONS
++        .encode("transferOwnerConditional", (target_address, expected_owner))
++        .context("failed to encode ownership transfer")?;
++    execute_owner_calldata(
++        shell,
++        foundry_contracts_path,
++        deployer,
++        WalletOwner::Deployer,
++        forge_args,
++        &l1_rpc_url,
++        calldata,
++    )
++    .await?;
++
++    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
++    if current_owner != deployer.address || pending_owner != expected_owner {
++        bail!("ownership transfer did not reach the expected pending state");
++    }
++    Ok(())
++}
++
++// SYSCOIN: Some pinned V32 contracts intentionally transfer directly to the
++// governor EOA rather than Governance. Complete those handoffs with the
++// authenticated wallet, not through a Governance wrapper.
++pub async fn accept_direct_owner(
++    shell: &Shell,
++    foundry_contracts_path: PathBuf,
++    governor: &Wallet,
++    target_address: Address,
++    forge_args: &ForgeScriptArgs,
++    l1_rpc_url: String,
++) -> anyhow::Result<()> {
++    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
++    if !owner_acceptance_required(current_owner, pending_owner, governor.address)? {
++        return Ok(());
++    }
++    let calldata = ADMIN_FUNCTIONS
++        .encode(
++            "governanceAcceptOwnerConditional",
++            (governor.address, target_address),
++        )
++        .context("failed to encode direct ownership acceptance")?;
++    execute_owner_calldata(
++        shell,
++        foundry_contracts_path,
++        governor,
++        WalletOwner::Governor,
++        forge_args,
++        &l1_rpc_url,
++        calldata,
++    )
++    .await?;
++    ensure_owner_handoff_complete(target_address, governor.address, &l1_rpc_url).await
++}
++
++// SYSCOIN: ServerNotifier's pending owner is ChainAdmin. Authenticate the
++// ChainAdmin owner and route exactly one acceptOwnership call through its
++// multicall instead of impersonating the contract or leaving deployer control.
++pub async fn accept_owner_via_chain_admin(
++    shell: &Shell,
++    foundry_contracts_path: PathBuf,
++    governor: &Wallet,
++    chain_admin: Address,
++    target_address: Address,
++    forge_args: &ForgeScriptArgs,
++    l1_rpc_url: String,
++) -> anyhow::Result<()> {
++    // SYSCOIN: Authenticate the controller even when the target itself is
++    // already in its terminal state.
++    ensure_owner_handoff_complete(chain_admin, governor.address, &l1_rpc_url)
++        .await
++        .context("ChainAdmin is not cleanly owned by the authenticated governor")?;
++    let (current_owner, pending_owner) = owner_state(target_address, &l1_rpc_url).await?;
++    if !owner_acceptance_required(current_owner, pending_owner, chain_admin)? {
++        return Ok(());
++    }
++    ecosystem_admin_execute_calls(
++        shell,
++        governor,
++        chain_admin,
++        foundry_contracts_path,
++        chain_admin_accept_owner_calls(target_address).to_vec(),
++        forge_args,
++        l1_rpc_url.clone(),
++    )
++    .await?;
++    ensure_owner_handoff_complete(target_address, chain_admin, &l1_rpc_url).await
+@@ -348,0 +704,11 @@ async fn accept_ownership(
++    forge: ForgeScript,
++) -> anyhow::Result<()> {
++    execute_ownership_as(shell, governor, WalletOwner::Governor, forge).await
++}
++
++// SYSCOIN: Reuse the same Forge wallet-argument path for the one deployer
++// transfer needed to close ChainRegistrationSender ownership.
++async fn execute_ownership_as(
++    shell: &Shell,
++    wallet: &Wallet,
++    wallet_owner: WalletOwner,
+@@ -351 +717 @@ async fn accept_ownership(
+-    forge = fill_forge_private_key(forge, Some(governor), WalletOwner::Governor)?;
++    forge = fill_forge_private_key(forge, Some(wallet), wallet_owner)?;
+@@ -382 +748,2 @@ pub struct AdminScriptOutput {
+-    pub calls: Vec<AdminCall>,
++    // SYSCOIN: retain the upstream decoded-call type beside generated query bindings.
++    pub calls: Vec<DecodedAdminCall>,
+@@ -535,0 +903,2 @@ pub async fn set_da_validator_pair(
++    // SYSCOIN: backport upstream 10d3bd2d's V32 AdminFunctions ABI.
++    access_control_restriction: Address,
+@@ -544,0 +914 @@ pub async fn set_da_validator_pair(
++                access_control_restriction,
+@@ -811 +1181,2 @@ pub(crate) async fn finalize_migrate_to_gateway(
+-            "migrateChainToGateway",
++            // SYSCOIN: backport upstream b8e4dbdc8's paired V32 cut-data selector fix.
++            "migrateChainToGatewayWithCutData",
+@@ -998,0 +1370,103 @@ pub async fn start_migrate_chain_from_gateway(
++
++// SYSCOIN: lock the state-aware ownership retry invariants.
++#[cfg(test)]
++mod syscoin_tests {
++    use super::*;
++    use ethers::abi::{decode, ParamType};
++
++    #[test]
++    fn completed_owner_acceptance_is_a_noop_only_in_the_clean_state() {
++        let governor = Address::from_low_u64_be(1);
++
++        assert!(!owner_acceptance_required(governor, Address::zero(), governor).unwrap());
++        assert!(
++            owner_acceptance_required(governor, Address::from_low_u64_be(2), governor).is_err()
++        );
++    }
++
++    #[test]
++    fn pending_owner_must_be_the_intended_governor() {
++        let current = Address::from_low_u64_be(1);
++        let governor = Address::from_low_u64_be(2);
++
++        assert!(owner_acceptance_required(current, governor, governor).unwrap());
++        assert!(owner_acceptance_required(current, Address::zero(), governor).is_err());
++        assert!(owner_acceptance_required(current, Address::from_low_u64_be(3), governor).is_err());
++    }
++
++    #[test]
++    fn deployer_transfer_only_runs_from_the_one_pristine_state() {
++        let deployer = Address::from_low_u64_be(1);
++        let expected = Address::from_low_u64_be(2);
++        let other = Address::from_low_u64_be(3);
++
++        assert!(owner_transfer_required(deployer, Address::zero(), deployer, expected).unwrap());
++        assert!(!owner_transfer_required(deployer, expected, deployer, expected).unwrap());
++        assert!(!owner_transfer_required(expected, Address::zero(), deployer, expected).unwrap());
++        assert!(owner_transfer_required(expected, other, deployer, expected).is_err());
++        assert!(owner_transfer_required(deployer, other, deployer, expected).is_err());
++        assert!(owner_transfer_required(other, Address::zero(), deployer, expected).is_err());
++        assert!(owner_transfer_required(other, expected, deployer, expected).is_err());
++    }
++
++    #[test]
++    fn chain_admin_payload_is_exactly_one_zero_value_accept_call() {
++        let target = Address::from_low_u64_be(7);
++        let payload = chain_admin_accept_owner_calls(target);
++        let call_type = ParamType::Array(Box::new(ParamType::Tuple(vec![
++            ParamType::Address,
++            ParamType::Uint(256),
++            ParamType::Bytes,
++        ])));
++        let decoded = decode(&[call_type], &payload).unwrap();
++        let Token::Array(calls) = &decoded[0] else {
++            panic!("expected Call[]");
++        };
++        assert_eq!(calls.len(), 1);
++        let Token::Tuple(call) = &calls[0] else {
++            panic!("expected Call tuple");
++        };
++        assert_eq!(call[0], Token::Address(target));
++        assert_eq!(call[1], Token::Uint(U256::zero()));
++        assert_eq!(
++            call[2],
++            Token::Bytes(ethers::utils::id("acceptOwnership()")[..4].to_vec())
++        );
++    }
++
++    #[test]
++    fn chain_admin_pending_admin_cleanup_is_atomic_and_exact() {
++        let target = Address::from_low_u64_be(7);
++        let admin = Address::from_low_u64_be(8);
++        let payload = chain_admin_clear_pending_admin_calls(target, admin);
++        let call_type = ParamType::Array(Box::new(ParamType::Tuple(vec![
++            ParamType::Address,
++            ParamType::Uint(256),
++            ParamType::Bytes,
++        ])));
++        let decoded = decode(&[call_type], &payload).unwrap();
++        let Token::Array(calls) = &decoded[0] else {
++            panic!("expected Call[]");
++        };
++        assert_eq!(calls.len(), 2);
++
++        let Token::Tuple(set_pending) = &calls[0] else {
++            panic!("expected setPendingAdmin Call tuple");
++        };
++        let mut expected_set_pending = ethers::utils::id("setPendingAdmin(address)")[..4].to_vec();
++        expected_set_pending.extend(encode(&[Token::Address(admin)]));
++        assert_eq!(set_pending[0], Token::Address(target));
++        assert_eq!(set_pending[1], Token::Uint(U256::zero()));
++        assert_eq!(set_pending[2], Token::Bytes(expected_set_pending));
++
++        let Token::Tuple(accept) = &calls[1] else {
++            panic!("expected acceptAdmin Call tuple");
++        };
++        assert_eq!(accept[0], Token::Address(target));
++        assert_eq!(accept[1], Token::Uint(U256::zero()));
++        assert_eq!(
++            accept[2],
++            Token::Bytes(ethers::utils::id("acceptAdmin()")[..4].to_vec())
++        );
++    }
++}
 diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-index 3a65c7110..5d4d6a1cb 100644
+index 1a573180c..b0e0b9ce8 100644
 --- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
 +++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_to_gateway.rs
-@@ -182,6 +182,6 @@ pub(crate) async fn get_migrate_to_gateway_context(
-         validator: chain_secrets_config.operator.address,
-         prove_operator: chain_secrets_config.prove_operator.map(|o| o.address),
-         execute_operator: chain_secrets_config.execute_operator.map(|o| o.address),
+@@ -9 +9,2 @@ use zkstack_cli_config::{ChainConfig, GatewayChainConfigPatch, ZkStackConfig, Zk
+-use zkstack_cli_types::L1BatchCommitmentMode;
++// SYSCOIN: scope the lower validator float to Syscoin settlement networks.
++use zkstack_cli_types::{L1BatchCommitmentMode, L1Network};
+@@ -170,0 +172,7 @@ pub(crate) async fn get_migrate_to_gateway_context(
++    // SYSCOIN: require a 1 SYS validator float while preserving upstream
++    // minimums for Localhost and Ethereum test networks.
++    let min_validator_balance = match chain_config.l1_network {
++        L1Network::Tanenbaum | L1Network::Mainnet => U256::from(10).pow(18.into()),
++        _ => U256::from(10).pow(19.into()),
++    };
++
+@@ -185 +193,2 @@ pub(crate) async fn get_migrate_to_gateway_context(
 -        min_validator_balance: U256::from(10).pow(19.into()),
-+        min_validator_balance: U256::from(10).pow(18.into()),
-         refund_recipient: None,
-     };
++        // SYSCOIN: apply the network-scoped validator float selected above.
++        min_validator_balance,
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
+index 4e0d62275..6df354b4d 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init.rs
+@@ -3 +2,0 @@ use std::{path::PathBuf, str::FromStr};
+-use anyhow::Context;
+@@ -22 +20,0 @@ use crate::{
+-    admin_functions::{accept_admin, accept_owner},
+@@ -26 +24 @@ use crate::{
+-            common::{deploy_erc20, deploy_l1_core_contracts},
++            common::{complete_core_owner_handoffs, deploy_erc20, deploy_l1_core_contracts},
+@@ -246 +244,2 @@ async fn return_ecosystem_contracts(
+-            L1Network::Sepolia | L1Network::Holesky | L1Network::Mainnet => {
++            // SYSCOIN: Tanenbaum consumes remote-network preexisting contract configs.
++            L1Network::Sepolia | L1Network::Holesky | L1Network::Tanenbaum | L1Network::Mainnet => {
+@@ -280 +279,3 @@ async fn deploy_ecosystem(
+-    accept_owner(
++    // SYSCOIN: Converge full and core-only init on the same complete V32
++    // ownership postcondition, including the deployer-owned sender repair.
++    complete_core_owner_handoffs(
+@@ -282,6 +282,0 @@ async fn deploy_ecosystem(
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .bridgehub_proxy_addr,
+@@ -289,40 +284,4 @@ async fn deploy_ecosystem(
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-    accept_admin(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.chain_admin_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .bridgehub_proxy_addr,
+-        &forge_args,
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-
+-    // Note, that there is no admin in L1 asset router, so we do
+-    // need to accept it
+-    accept_owner(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config.bridges.shared.l1_address,
+-        &forge_args,
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-
+-    accept_owner(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .stm_deployment_tracker_proxy_addr
+-            .context("stm_deployment_tracker_proxy_addr")?,
+-        &forge_args,
+-        l1_rpc_url.clone(),
++        ecosystem_config,
++        &contracts_config,
++        &l1_rpc_url,
++        vm_option,
+@@ -332,16 +290,0 @@ async fn deploy_ecosystem(
+-    if let Some(chain_asset_handler_addr) = contracts_config
+-        .core_ecosystem_contracts
+-        .chain_asset_handler_proxy_addr
+-    {
+-        accept_owner(
+-            shell,
+-            ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-            contracts_config.l1.governance_addr,
+-            &ecosystem_config.get_wallets()?.governor,
+-            chain_asset_handler_addr,
+-            &forge_args,
+-            l1_rpc_url.clone(),
+-        )
+-        .await?;
+-    }
+-
+diff --git a/yarn.lock b/yarn.lock
+index 7426ba1b6..8cc3ad676 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -14,0 +15,5 @@
++"@adraffy/ens-normalize@^1.11.0":
++  version "1.11.1"
++  resolved "https://registry.yarnpkg.com/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz#6c2d657d4b2dfb37f8ea811dcb3e60843d4ac24a"
++  integrity sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==
++
+@@ -453,0 +459,5 @@
++"@bytecodealliance/preview2-shim@^0.17.2":
++  version "0.17.9"
++  resolved "https://registry.yarnpkg.com/@bytecodealliance/preview2-shim/-/preview2-shim-0.17.9.tgz#cf9eebec5b69696d4c2e4e87ef02c5f64b38d5cd"
++  integrity sha512-i0R3eQBe6PA/o/1EFE3Owe4In2rcccb6QxnjpntM/lPe3/duJ0bRQTVZM2Ufpo99X4eofGeltQUkape1C91FFA==
++
+@@ -2073,0 +2084,7 @@
++"@matterlabs/zksync-js@0.0.17":
++  version "0.0.17"
++  resolved "https://registry.yarnpkg.com/@matterlabs/zksync-js/-/zksync-js-0.0.17.tgz#9a8a80cb843bfd7e1a7b3e6f019c39664c175dd1"
++  integrity sha512-fZckXoxO56u6pwdHXuDTUgYddFgyoKdjDmqhjUStDyJ3uk5vzkDTxubcREo5RvLLhbwq9XqKxog9QXr/qsXOQw==
++  dependencies:
++    "@noble/hashes" "^1.8.0"
++
+@@ -2094,0 +2112,5 @@
++"@noble/ciphers@^1.3.0":
++  version "1.3.0"
++  resolved "https://registry.yarnpkg.com/@noble/ciphers/-/ciphers-1.3.0.tgz#f64b8ff886c240e644e5573c097f86e5b43676dc"
++  integrity sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==
++
+@@ -2108,0 +2131,14 @@
++"@noble/curves@1.9.1":
++  version "1.9.1"
++  resolved "https://registry.yarnpkg.com/@noble/curves/-/curves-1.9.1.tgz#9654a0bc6c13420ae252ddcf975eaf0f58f0a35c"
++  integrity sha512-k11yZxZg+t+gWvBbIswW0yoJlu8cHOC7dhunwOzoWH/mXGBiYyR4YY6hAEK/3EUs4UpB8la1RfdRpeGsFHkWsA==
++  dependencies:
++    "@noble/hashes" "1.8.0"
++
++"@noble/curves@~1.9.0":
++  version "1.9.7"
++  resolved "https://registry.yarnpkg.com/@noble/curves/-/curves-1.9.7.tgz#79d04b4758a43e4bca2cbdc62e7771352fa6b951"
++  integrity sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw==
++  dependencies:
++    "@noble/hashes" "1.8.0"
++
+@@ -2123,0 +2160,5 @@
++"@noble/hashes@1.8.0", "@noble/hashes@^1.8.0", "@noble/hashes@~1.8.0":
++  version "1.8.0"
++  resolved "https://registry.yarnpkg.com/@noble/hashes/-/hashes-1.8.0.tgz#cee43d801fcef9644b11b8194857695acd5f815a"
++  integrity sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==
++
+@@ -2389,0 +2431,7 @@
++"@nomicfoundation/slang@1.3.4":
++  version "1.3.4"
++  resolved "https://registry.yarnpkg.com/@nomicfoundation/slang/-/slang-1.3.4.tgz#a10033ae96508a7a41eeb9cb62a4c5454158e930"
++  integrity sha512-ghzrPSYH1sZO65id6+Bq2Ood87HT54QP3RGC8EkmpcrJ6tT9Ky0RtaJfrzV5G4jpDsnNua6+YEDpzOMori04hQ==
++  dependencies:
++    "@bytecodealliance/preview2-shim" "^0.17.2"
++
+@@ -2828 +2876,2 @@
+-"@openzeppelin/contracts-upgradeable-v4@npm:@openzeppelin/contracts-upgradeable@4.9.5":
++"@openzeppelin/contracts-upgradeable-v4@npm:@openzeppelin/contracts-upgradeable@4.9.5", "@openzeppelin/contracts-upgradeable@4.9.5":
++  name "@openzeppelin/contracts-upgradeable-v4"
+@@ -2833,11 +2882,2 @@
+-"@openzeppelin/contracts-upgradeable@4.9.5":
+-  version "4.9.5"
+-  resolved "https://registry.yarnpkg.com/@openzeppelin/contracts-upgradeable/-/contracts-upgradeable-4.9.5.tgz#572b5da102fc9be1d73f34968e0ca56765969812"
+-  integrity sha512-f7L1//4sLlflAN7fVzJLoRedrf5Na3Oal5PZfIq55NFcVZ90EpV1q5xOvL4lFvg3MNICSDr2hH0JUBxwlxcoPg==
+-
+-"@openzeppelin/contracts-v4@npm:@openzeppelin/contracts@4.9.5":
+-  version "4.9.5"
+-  resolved "https://registry.yarnpkg.com/@openzeppelin/contracts/-/contracts-4.9.5.tgz#1eed23d4844c861a1835b5d33507c1017fa98de8"
+-  integrity sha512-ZK+W5mVhRppff9BE6YdR8CC52C8zAvsVAiWhEtQ5+oNxFE6h1WdeWo+FJSF8KKvtxxVYZ7MTP/5KoVpAU3aSWg==
+-
+-"@openzeppelin/contracts@4.9.5":
++"@openzeppelin/contracts-v4@npm:@openzeppelin/contracts@4.9.5", "@openzeppelin/contracts@4.9.5":
++  name "@openzeppelin/contracts-v4"
+@@ -3087,0 +3128,5 @@
++"@scure/base@~1.2.5":
++  version "1.2.6"
++  resolved "https://registry.yarnpkg.com/@scure/base/-/base-1.2.6.tgz#ca917184b8231394dd8847509c67a0be522e59f6"
++  integrity sha512-g/nm5FgUa//MCj1gV09zTJTaM6KBAHqLN907YVQqf7zC49+DcO4B1so4ZX07Ef10Twr6nuqYEH9GEggFXA4Fmg==
++
+@@ -3105,0 +3151,9 @@
++"@scure/bip32@1.7.0", "@scure/bip32@^1.7.0":
++  version "1.7.0"
++  resolved "https://registry.yarnpkg.com/@scure/bip32/-/bip32-1.7.0.tgz#b8683bab172369f988f1589640e53c4606984219"
++  integrity sha512-E4FFX/N3f4B80AKWp5dP6ow+flD1LQZo/w8UnLGYZO674jS6YnYeepycOOksv+vLPSpgN35wgKgy+ybfTb2SMw==
++  dependencies:
++    "@noble/curves" "~1.9.0"
++    "@noble/hashes" "~1.8.0"
++    "@scure/base" "~1.2.5"
++
+@@ -3121,0 +3176,8 @@
++"@scure/bip39@1.6.0", "@scure/bip39@^1.6.0":
++  version "1.6.0"
++  resolved "https://registry.yarnpkg.com/@scure/bip39/-/bip39-1.6.0.tgz#475970ace440d7be87a6086cbee77cb8f1a684f9"
++  integrity sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A==
++  dependencies:
++    "@noble/hashes" "~1.8.0"
++    "@scure/base" "~1.2.5"
++
+@@ -3309,5 +3370,0 @@
+-"@solidity-parser/parser@^0.17.0":
+-  version "0.17.0"
+-  resolved "https://registry.yarnpkg.com/@solidity-parser/parser/-/parser-0.17.0.tgz#52a2fcc97ff609f72011014e4c5b485ec52243ef"
+-  integrity sha512-Nko8R0/kUo391jsEHHxrGM07QFdnPGvlmox4rmH0kNiNAashItAilhy4Mv4pK5gQmW5f4sXAF58fwJbmlkGcVw==
+-
+@@ -3986,0 +4044,10 @@ abbrev@1.0.x:
++abitype@1.2.3:
++  version "1.2.3"
++  resolved "https://registry.yarnpkg.com/abitype/-/abitype-1.2.3.tgz#bec3e09dea97d99ef6c719140bee663a329ad1f4"
++  integrity sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==
++
++abitype@^1.2.3:
++  version "1.2.4"
++  resolved "https://registry.yarnpkg.com/abitype/-/abitype-1.2.4.tgz#8aab72949bcad4107031862ae998e5bd20eec76e"
++  integrity sha512-dpKH+N27vRjarMVTFFkeY445VTKftzGWpL0FiT7xmVmzQRKazZexzC5uHG0f6XKsVLAuUlndnbGau6lRejClxg==
++
+@@ -4117,0 +4185,10 @@ ajv@^8.0.1:
++ajv@^8.18.0:
++  version "8.20.0"
++  resolved "https://registry.yarnpkg.com/ajv/-/ajv-8.20.0.tgz#304b3636add88ba7d936760dd50ece006dea95f9"
++  integrity sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==
++  dependencies:
++    fast-deep-equal "^3.1.3"
++    fast-uri "^3.0.1"
++    json-schema-traverse "^1.0.0"
++    require-from-string "^2.0.2"
++
+@@ -4539,0 +4617,5 @@ balanced-match@^1.0.0:
++balanced-match@^4.0.2:
++  version "4.0.4"
++  resolved "https://registry.yarnpkg.com/balanced-match/-/balanced-match-4.0.4.tgz#bfb10662feed8196a2c62e7c68e17720c274179a"
++  integrity sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==
++
+@@ -4660,0 +4743,7 @@ brace-expansion@^2.0.1:
++brace-expansion@^5.0.5:
++  version "5.0.7"
++  resolved "https://registry.yarnpkg.com/brace-expansion/-/brace-expansion-5.0.7.tgz#1b0e46965b479dad65af737b4a02790a05498337"
++  integrity sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA==
++  dependencies:
++    balanced-match "^4.0.2"
++
+@@ -6552,0 +6642,5 @@ ethjs@^0.4.0:
++eventemitter3@5.0.1:
++  version "5.0.1"
++  resolved "https://registry.yarnpkg.com/eventemitter3/-/eventemitter3-5.0.1.tgz#53f5ffd0a492ac800721bb42c66b841de96423c4"
++  integrity sha512-GWkBvjiSZK87ELrYOSESUYeVIc9mvLLf/nXalMOS5dYrgZq9o5OVkbZAVM06CVxYsCwH9BDZFPlQTlPA1j4ahA==
++
+@@ -6661,0 +6756,5 @@ fast-levenshtein@^2.0.6, fast-levenshtein@~2.0.6:
++fast-uri@^3.0.1:
++  version "3.1.3"
++  resolved "https://registry.yarnpkg.com/fast-uri/-/fast-uri-3.1.3.tgz#f695a40f006aba505631573a0021ddb21194ad11"
++  integrity sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg==
++
+@@ -7107,0 +7207,9 @@ glob@^10.4.1:
++glob@^13.0.6:
++  version "13.0.6"
++  resolved "https://registry.yarnpkg.com/glob/-/glob-13.0.6.tgz#078666566a425147ccacfbd2e332deb66a2be71d"
++  integrity sha512-Wjlyrolmm8uDpm/ogGyXZXb1Z+Ca2B8NbJwqBVg0axK9GbBeoS7yGV6vjXnYdGm6X53iehEuxxbyiKp8QmN4Vw==
++  dependencies:
++    minimatch "^10.2.2"
++    minipass "^7.1.3"
++    path-scurry "^2.0.2"
++
+@@ -7993,0 +8102,5 @@ isexe@^2.0.0:
++isows@1.0.7:
++  version "1.0.7"
++  resolved "https://registry.yarnpkg.com/isows/-/isows-1.0.7.tgz#1c06400b7eed216fbba3bcbd68f12490fc342915"
++  integrity sha512-I1fSfDCZL5P0v33sVqeTDSpcstAg/N+wF5HS033mogOVIp4B+oHC7oOCsA3axAbBSGTJ8QubbNmnIRN/h8U7hg==
++
+@@ -8996,0 +9110,5 @@ lru-cache@^10.2.0:
++lru-cache@^11.0.0:
++  version "11.5.1"
++  resolved "https://registry.yarnpkg.com/lru-cache/-/lru-cache-11.5.1.tgz#f3daa3540847b9737ebc02499ddb36765e54db4a"
++  integrity sha512-RPimw/7aMdv2oqRrxKwvZXcPfwBrn/JZ2xYcY9Hus/6LaS3VOAKVWKWgNLCFSiOm1ESXinjsDlidVU7JlnCN2A==
++
+@@ -9297,0 +9416,7 @@ minimatch@9.0.3:
++minimatch@^10.2.2:
++  version "10.2.5"
++  resolved "https://registry.yarnpkg.com/minimatch/-/minimatch-10.2.5.tgz#bd48687a0be38ed2961399105600f832095861d1"
++  integrity sha512-MULkVLfKGYDFYejP07QOurDLLQpcjk7Fw+7jXS2R2czRQzR56yHRveU5NDJEOviH+hETZKSkIk5c+T23GjFUMg==
++  dependencies:
++    brace-expansion "^5.0.5"
++
+@@ -9335,0 +9461,5 @@ minimist@^1.2.0, minimist@^1.2.5, minimist@^1.2.6, minimist@^1.2.8, minimist@~1.
++minipass@^7.1.3:
++  version "7.1.3"
++  resolved "https://registry.yarnpkg.com/minipass/-/minipass-7.1.3.tgz#79389b4eb1bb2d003a9bba87d492f2bd37bdc65b"
++  integrity sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==
++
+@@ -9785,0 +9916,14 @@ os-tmpdir@~1.0.2:
++ox@0.14.20:
++  version "0.14.20"
++  resolved "https://registry.yarnpkg.com/ox/-/ox-0.14.20.tgz#b9ff923c88976508b63648fa7a01b6106cf71ff4"
++  integrity sha512-rby38C3nDn8eQkf29Zgw4hkCZJ64Qqi0zRPWL8ENUQ7JVuoITqrVtwWQgM/He19SCMUEc7hS/Sjw0jIOSLJhOw==
++  dependencies:
++    "@adraffy/ens-normalize" "^1.11.0"
++    "@noble/ciphers" "^1.3.0"
++    "@noble/curves" "1.9.1"
++    "@noble/hashes" "^1.8.0"
++    "@scure/bip32" "^1.7.0"
++    "@scure/bip39" "^1.6.0"
++    abitype "^1.2.3"
++    eventemitter3 "5.0.1"
++
+@@ -9956,0 +10101,8 @@ path-scurry@^1.11.1:
++path-scurry@^2.0.2:
++  version "2.0.2"
++  resolved "https://registry.yarnpkg.com/path-scurry/-/path-scurry-2.0.2.tgz#6be0d0ee02a10d9e0de7a98bae65e182c9061f85"
++  integrity sha512-3O/iVVsJAPsOnpwWIeD+d6z/7PmqApyQePUtCndjatj/9I5LylHvt5qluFaBT3I5h3r1ejfR056c+FCv+NnNXg==
++  dependencies:
++    lru-cache "^11.0.0"
++    minipass "^7.1.2"
++
+@@ -10219,4 +10371,4 @@ prettier-plugin-solidity@=1.0.0-dev.22:
+-prettier-plugin-solidity@^1.1.3:
+-  version "1.3.1"
+-  resolved "https://registry.yarnpkg.com/prettier-plugin-solidity/-/prettier-plugin-solidity-1.3.1.tgz#59944d3155b249f7f234dee29f433524b9a4abcf"
+-  integrity sha512-MN4OP5I2gHAzHZG1wcuJl0FsLS3c4Cc5494bbg+6oQWBPuEamjwDvmGfFMZ6NFzsh3Efd9UUxeT7ImgjNH4ozA==
++prettier-plugin-solidity@^2.2.1:
++  version "2.3.1"
++  resolved "https://registry.yarnpkg.com/prettier-plugin-solidity/-/prettier-plugin-solidity-2.3.1.tgz#8a9e045f004ad2a923de81b1d9bf3515d3e65775"
++  integrity sha512-71sZM5oqgq6pnTlf+RH23U6Ej710APfCiMWO2Z/pHNjrXyvn9Nr0vTS1AUVaSf4GRW0V6hj6Djt0MyWudJUJbQ==
+@@ -10224,3 +10376,3 @@ prettier-plugin-solidity@^1.1.3:
+-    "@solidity-parser/parser" "^0.17.0"
+-    semver "^7.5.4"
+-    solidity-comments-extractor "^0.0.8"
++    "@nomicfoundation/slang" "1.3.4"
++    "@solidity-parser/parser" "^0.20.2"
++    semver "^7.7.4"
+@@ -10233,4 +10385,4 @@ prettier@^2.1.2, prettier@^2.3.1, prettier@^2.3.2, prettier@^2.8.3:
+-prettier@^3.0.3:
+-  version "3.2.5"
+-  resolved "https://registry.yarnpkg.com/prettier/-/prettier-3.2.5.tgz#e52bc3090586e824964a8813b09aba6233b28368"
+-  integrity sha512-3/GWa9aOC0YeD7LUfvOG2NiDyhOWRvt1k+rcKhOuYnMY24iiCphgneUfJDyFXd6rZCAnuLBv6UeAULtrhT/F4A==
++prettier@^3.0.0, prettier@^3.8.1:
++  version "3.9.4"
++  resolved "https://registry.yarnpkg.com/prettier/-/prettier-3.9.4.tgz#a9c477cf1614376bd1f6bbc593d8c0d414bcec87"
++  integrity sha512-yWG/o/4oJfo036EKAfK6ACAoDOfHeRHx4tuxkfBZiauURiaSmYwlpOr5LQqKtIkRD2z1PLteme2WoxEnj4tHTg==
+@@ -10919,0 +11072,5 @@ semver@^7.7.2:
++semver@^7.7.4:
++  version "7.8.5"
++  resolved "https://registry.yarnpkg.com/semver/-/semver-7.8.5.tgz#39b646037dd50c14fb451e7e4cac58ed8b863f69"
++  integrity sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==
++
+@@ -11211,4 +11368,4 @@ solhint@^5.1.0:
+-solhint@^6.0.1:
+-  version "6.0.1"
+-  resolved "https://registry.yarnpkg.com/solhint/-/solhint-6.0.1.tgz#aecf21f114ad060674f6e761e8971c35fd140944"
+-  integrity sha512-Lew5nhmkXqHPybzBzkMzvvWkpOJSSLTkfTZwRriWvfR2naS4YW2PsjVGaoX9tZFmHh7SuS+e2GEGo5FPYYmJ8g==
++solhint@^6.0.3:
++  version "6.2.3"
++  resolved "https://registry.yarnpkg.com/solhint/-/solhint-6.2.3.tgz#deb96dc01e86dad69eb482d848b4e25dd1fca080"
++  integrity sha512-w8prJP3kaf3G9hkmH5RmkCanvTULHWpdn+t4MieMEMZDhC2gFoUbRjS0TmslgxzGIItoOtP/J5PvU0FrvC08wA==
+@@ -11217,3 +11374 @@ solhint@^6.0.1:
+-    ajv "^6.12.6"
+-    ajv-errors "^1.0.1"
+-    antlr4 "^4.13.1-patch-1"
++    ajv "^8.18.0"
+@@ -11226 +11381 @@ solhint@^6.0.1:
+-    glob "^8.0.3"
++    glob "^13.0.6"
+@@ -11236 +11391 @@ solhint@^6.0.1:
+-    prettier "^2.8.3"
++    prettier "^3.0.0"
+@@ -11243,5 +11397,0 @@ solidity-comments-extractor@^0.0.7:
+-solidity-comments-extractor@^0.0.8:
+-  version "0.0.8"
+-  resolved "https://registry.yarnpkg.com/solidity-comments-extractor/-/solidity-comments-extractor-0.0.8.tgz#f6e148ab0c49f30c1abcbecb8b8df01ed8e879f8"
+-  integrity sha512-htM7Vn6LhHreR+EglVMd2s+sZhcXAirB1Zlyrv5zBuTxieCvjfnRpd7iZk75m/u6NOlEyQ94C6TWbBn2cY7w8g==
+-
+@@ -11419 +11569 @@ string-length@^4.0.1:
+-"string-width-cjs@npm:string-width@^4.2.0":
++"string-width-cjs@npm:string-width@^4.2.0", string-width@^4.0.0, string-width@^4.1.0, string-width@^4.2.0, string-width@^4.2.2, string-width@^4.2.3:
+@@ -11436,9 +11585,0 @@ string-width@^2.1.0, string-width@^2.1.1:
+-string-width@^4.0.0, string-width@^4.1.0, string-width@^4.2.0, string-width@^4.2.2, string-width@^4.2.3:
+-  version "4.2.3"
+-  resolved "https://registry.yarnpkg.com/string-width/-/string-width-4.2.3.tgz#269c7117d27b05ad2e536830a8ec895ef9c6d010"
+-  integrity sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==
+-  dependencies:
+-    emoji-regex "^8.0.0"
+-    is-fullwidth-code-point "^3.0.0"
+-    strip-ansi "^6.0.1"
+-
+@@ -11511 +11652 @@ string_decoder@~1.1.1:
+-"strip-ansi-cjs@npm:strip-ansi@^6.0.1":
++"strip-ansi-cjs@npm:strip-ansi@^6.0.1", strip-ansi@^6.0.0, strip-ansi@^6.0.1:
+@@ -11532,7 +11672,0 @@ strip-ansi@^5.1.0:
+-strip-ansi@^6.0.0, strip-ansi@^6.0.1:
+-  version "6.0.1"
+-  resolved "https://registry.yarnpkg.com/strip-ansi/-/strip-ansi-6.0.1.tgz#9e26c63d30f53443e9489495b2105d37b67a85d9"
+-  integrity sha512-Y38VPSHcqkFrCpFnQ9vuSXmquuv5oXOKpGeT6aGrr3o3Gc9AlVa6JBfUSOCnbxGGZF+/0ooI7KrPuUSztUdU5A==
+-  dependencies:
+-    ansi-regex "^5.0.1"
+-
+@@ -12342,0 +12477,14 @@ verror@1.10.0:
++viem@2.48.4:
++  version "2.48.4"
++  resolved "https://registry.yarnpkg.com/viem/-/viem-2.48.4.tgz#4de30b8564d26a7409559d812e9367213b2ec769"
++  integrity sha512-mReP/rgY2P+WeeRSG4sUvccCLKfyAW1C73Y3KkobAqgzYmVna9qyUMNE44xIUkDtfvRuC33r24UhF4baBYovsg==
++  dependencies:
++    "@noble/curves" "1.9.1"
++    "@noble/hashes" "1.8.0"
++    "@scure/bip32" "1.7.0"
++    "@scure/bip39" "1.6.0"
++    abitype "1.2.3"
++    isows "1.0.7"
++    ox "0.14.20"
++    ws "8.18.3"
++
+@@ -12509,10 +12657 @@ workerpool@6.2.1:
+-"wrap-ansi-cjs@npm:wrap-ansi@^7.0.0":
+-  version "7.0.0"
+-  resolved "https://registry.yarnpkg.com/wrap-ansi/-/wrap-ansi-7.0.0.tgz#67e145cff510a6a6984bdf1152911d69d2eb9e43"
+-  integrity sha512-YVGIj2kamLSTxw6NsZjoBxfSwsn0ycdesmc4p+Q21c5zPuZ1pl+NfxVdxPtdHvmNVOQ6XSYG4AUtyt/Fi7D16Q==
+-  dependencies:
+-    ansi-styles "^4.0.0"
+-    string-width "^4.1.0"
+-    strip-ansi "^6.0.0"
+-
+-wrap-ansi@^7.0.0:
++"wrap-ansi-cjs@npm:wrap-ansi@^7.0.0", wrap-ansi@^7.0.0:
+@@ -12558,0 +12698,5 @@ ws@8.17.1:
++ws@8.18.3:
++  version "8.18.3"
++  resolved "https://registry.yarnpkg.com/ws/-/ws-8.18.3.tgz#b56b88abffde62791c639170400c93dcb0c95472"
++  integrity sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg==
++
+diff --git a/zkstack_cli/crates/zkstack/build.rs b/zkstack_cli/crates/zkstack/build.rs
+index 5d077b77f..ca6b2f735 100644
+--- a/zkstack_cli/crates/zkstack/build.rs
++++ b/zkstack_cli/crates/zkstack/build.rs
+@@ -18,4 +18,3 @@ fn main() -> anyhow::Result<()> {
+-    if let Err(e) = build_dependencies() {
+-        println!("cargo:error=It was not possible to install projects dependencies");
+-        println!("cargo:error={}", e);
+-    }
++    // SYSCOIN: A failed dependency install must abort the build; the legacy
++    // single-colon `cargo:error` directive is non-fatal under the pinned Cargo.
++    build_dependencies().context("It was not possible to install project dependencies")?;
+@@ -144 +143,13 @@ fn build_dependencies() -> anyhow::Result<()> {
+-    cmd!(shell, "yarn install")
++    // SYSCOIN: This zkstack revision is paired with newer V32 contracts.
++    // Keep the reviewed combined workspace lock immutable. Prove dependency
++    // closure with lifecycle scripts disabled before allowing them to run.
++    cmd!(shell, "yarn install --frozen-lockfile --ignore-scripts")
++        .run()
++        .context("Failed to preflight dependencies")?;
++    cmd!(shell, "yarn check --integrity --ignore-scripts")
++        .run()
++        .context("Failed to verify dependency closure")?;
++    cmd!(shell, "yarn install --frozen-lockfile")
++        .run()
++        .context("Failed to install dependencies")?;
++    cmd!(shell, "yarn check --integrity")
+@@ -146 +157 @@ fn build_dependencies() -> anyhow::Result<()> {
+-        .context("Failed to install dependencies")
++        .context("Failed to verify installed dependencies")
+diff --git a/core/lib/basic_types/src/commitment.rs b/core/lib/basic_types/src/commitment.rs
+index 3b9aff781..a15b29e5d 100644
+--- a/core/lib/basic_types/src/commitment.rs
++++ b/core/lib/basic_types/src/commitment.rs
+@@ -140 +140,4 @@ impl FromStr for L2DACommitmentScheme {
+-            _ => Err("Incorrect L2 DA commitment scheme; expected one of `None`, `EmptyNoDA`, `PubdataKeccak256`, `BlobsAndPubdataKeccak256`"),
++            // SYSCOIN: scheme 4 is the canonical zkOS batch encoding and must
++            // be accepted by zkstack's standalone DA-pair recovery command.
++            "BlobsZksyncOS" | "BlobsZKsyncOS" => Ok(Self::BlobsZksyncOS),
++            _ => Err("Incorrect L2 DA commitment scheme; expected one of `None`, `EmptyNoDA`, `PubdataKeccak256`, `BlobsAndPubdataKeccak256`, `BlobsZksyncOS`"),
+@@ -144,0 +148,18 @@ impl FromStr for L2DACommitmentScheme {
++#[cfg(test)]
++mod tests {
++    use super::L2DACommitmentScheme;
++
++    #[test]
++    fn parses_zksync_os_da_commitment_scheme() {
++        // SYSCOIN: bind both zkstack's enum spelling and the persisted server alias to scheme 4.
++        for value in ["BlobsZksyncOS", "BlobsZKsyncOS"] {
++            assert_eq!(value.parse(), Ok(L2DACommitmentScheme::BlobsZksyncOS));
++        }
++        assert_eq!(
++            L2DACommitmentScheme::try_from(4),
++            Ok(L2DACommitmentScheme::BlobsZksyncOS)
++        );
++        assert!("blobszksyncos".parse::<L2DACommitmentScheme>().is_err());
++    }
++}
++
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
+index b982f3e5d..dd5bcb352 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/init/mod.rs
+@@ -287,0 +288,5 @@ pub async fn send_priority_txs(
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?,
+@@ -338 +343,3 @@ pub(crate) async fn get_l1_da_validator(
+-            VMOption::ZKSyncOsVM => contracts_config.l1.blobs_zksync_os_l1_da_validator_addr,
++            // SYSCOIN: zkOS uses the canonical compact-rollup validator; the
++            // unsupported EIP-4844/blob validator schema slot remains zero.
++            VMOption::ZKSyncOsVM => contracts_config.l1.rollup_l1_da_validator_addr,
+diff --git a/zkstack_cli/crates/config/src/contracts.rs b/zkstack_cli/crates/config/src/contracts.rs
+index e031e5e1f..70ae01fec 100644
+--- a/zkstack_cli/crates/config/src/contracts.rs
++++ b/zkstack_cli/crates/config/src/contracts.rs
+@@ -59,0 +60,4 @@ impl CoreContractsConfig {
++        // SYSCOIN: zkOS chains use only the compact rollup validator. Persist
++        // exact zero sentinels for unsupported chain-local DA alternatives so
++        // a fresh post-registration config is safe for restart validation.
++        let compact_da_only = chain_config.vm_option.is_zksync_os();
+@@ -91 +95,5 @@ impl CoreContractsConfig {
+-                blobs_zksync_os_l1_da_validator_addr: ctm.blobs_zksync_os_l1_da_validator_addr,
++                blobs_zksync_os_l1_da_validator_addr: if compact_da_only {
++                    Some(Address::zero())
++                } else {
++                    ctm.blobs_zksync_os_l1_da_validator_addr
++                },
+@@ -100,2 +108,10 @@ impl CoreContractsConfig {
+-                avail_l1_da_validator_addr: Some(ctm.avail_l1_da_validator_addr),
+-                no_da_validium_l1_validator_addr: Some(ctm.no_da_validium_l1_validator_addr),
++                avail_l1_da_validator_addr: Some(if compact_da_only {
++                    Address::zero()
++                } else {
++                    ctm.avail_l1_da_validator_addr
++                }),
++                no_da_validium_l1_validator_addr: Some(if compact_da_only {
++                    Address::zero()
++                } else {
++                    ctm.no_da_validium_l1_validator_addr
++                }),
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
+index fdcee99f1..b1db1baef 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair.rs
+@@ -48,4 +47,0 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+-    let l2_da_validator_address = contracts_config
+-        .l2
+-        .da_validator_addr
+-        .context("da_validator_addr")?;
+@@ -124,0 +121,5 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        let access_control_restriction = contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?;
+@@ -132,0 +134 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
++            access_control_restriction,
+@@ -147 +149,3 @@ pub async fn run(args: SetDAValidatorPairArgs, shell: &Shell) -> anyhow::Result<
+-            hex::encode(l2_da_validator_address)
++            // SYSCOIN: zkOS selects its L2 validator by commitment scheme and
++            // therefore does not require an address in contracts.yaml.
++            args.l2_da_commitment_scheme
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
+index d3b181751..046707bbf 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/gateway/migrate_from_gateway.rs
+@@ -242,0 +243,5 @@ pub async fn run(args: MigrateFromGatewayArgs, shell: &Shell) -> anyhow::Result<
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        chain_contracts_config
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?,
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
+index 8da742ce3..1ea7a6328 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/set_da_validator_pair_calldata.rs
+@@ -83,0 +84,6 @@ pub async fn run(shell: &Shell, args: SetDAValidatorPairCalldataArgs) -> anyhow:
++        // SYSCOIN: backport upstream 10d3bd2d's configured V32 admin wrapper.
++        let access_control_restriction = chain_config
++            .get_contracts_config()?
++            .l1
++            .access_control_restriction_addr
++            .context("no access_control_restriction_addr")?;
+@@ -90,0 +97 @@ pub async fn run(shell: &Shell, args: SetDAValidatorPairCalldataArgs) -> anyhow:
++            access_control_restriction,
+diff --git a/zkstack_cli/crates/git_version_macro/src/lib.rs b/zkstack_cli/crates/git_version_macro/src/lib.rs
+index 86d0cbfeb..56045770d 100644
+--- a/zkstack_cli/crates/git_version_macro/src/lib.rs
++++ b/zkstack_cli/crates/git_version_macro/src/lib.rs
+@@ -10 +10,13 @@ pub fn build_timestamp(_item: TokenStream) -> TokenStream {
+-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
++    // SYSCOIN: Honor the standard reproducible-build epoch when the sealed
++    // production builder supplies it; keep upstream's wall clock for ordinary
++    // developer builds where SOURCE_DATE_EPOCH is absent.
++    let now = match std::env::var("SOURCE_DATE_EPOCH") {
++        Ok(epoch) => source_date_epoch_timestamp(&epoch)
++            .unwrap_or_else(|err| panic!("Invalid SOURCE_DATE_EPOCH: {err}")),
++        Err(std::env::VarError::NotPresent) => {
++            chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
++        }
++        Err(std::env::VarError::NotUnicode(_)) => {
++            panic!("SOURCE_DATE_EPOCH is not valid Unicode")
++        }
++    };
+@@ -13,0 +26,9 @@ pub fn build_timestamp(_item: TokenStream) -> TokenStream {
++fn source_date_epoch_timestamp(epoch: &str) -> Result<String, String> {
++    let seconds = epoch
++        .parse::<i64>()
++        .map_err(|err| format!("{epoch:?} is not an integer: {err}"))?;
++    let timestamp = chrono::DateTime::from_timestamp(seconds, 0)
++        .ok_or_else(|| format!("{seconds} is outside chrono's supported range"))?;
++    Ok(timestamp.format("%Y-%m-%d %H:%M:%S").to_string())
++}
++
+@@ -81,0 +103,19 @@ fn encode_as_str(s: &str) -> TokenStream {
++
++#[cfg(test)]
++mod tests {
++    use super::source_date_epoch_timestamp;
++
++    #[test]
++    fn source_date_epoch_is_formatted_in_utc() {
++        assert_eq!(
++            source_date_epoch_timestamp("1769904000").unwrap(),
++            "2026-02-01 00:00:00"
++        );
++    }
++
++    #[test]
++    fn invalid_source_date_epoch_is_rejected() {
++        assert!(source_date_epoch_timestamp("not-an-epoch").is_err());
++        assert!(source_date_epoch_timestamp("9223372036854775807").is_err());
++    }
++}
+diff --git a/zkstack_cli/crates/common/src/contracts.rs b/zkstack_cli/crates/common/src/contracts.rs
+index a2565b99a..a59845929 100644
+--- a/zkstack_cli/crates/common/src/contracts.rs
++++ b/zkstack_cli/crates/common/src/contracts.rs
+@@ -35 +35,2 @@ pub fn install_yarn_dependencies(shell: &Shell, link_to_code: &Path) -> anyhow::
+-    Ok(Cmd::new(cmd!(shell, "yarn install")).run()?)
++    // SYSCOIN: Keep the pinned contracts lock immutable during settlement builds.
++    Ok(Cmd::new(cmd!(shell, "yarn install --frozen-lockfile")).run()?)
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+index 03451dd9e..a6b3a6346 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ctm/commands/init_new_ctm.rs
+@@ -23 +23,4 @@ use crate::{
+-    admin_functions::{accept_admin, accept_owner},
++    admin_functions::{
++        accept_admin, accept_direct_owner, accept_owner, accept_owner_via_chain_admin,
++        ensure_owner_handoff_complete,
++    },
+@@ -127,0 +131,25 @@ pub async fn deploy_new_ctm_and_accept_admin(
++    // SYSCOIN: Fresh deployment converges through the same postconditioned
++    // state machine used by ownership-only recovery.
++    complete_ctm_owner_handoffs(
++        shell,
++        forge_args,
++        ecosystem_config,
++        &contracts_config,
++        &l1_rpc_url,
++        vm_option,
++    )
++    .await?;
++
++    Ok(contracts_config)
++}
++
++// SYSCOIN: Fresh CTM initialization and ownership-only recovery share the
++// same state-gated, CTM-local control-plane convergence.
++pub async fn complete_ctm_owner_handoffs(
++    shell: &Shell,
++    forge_args: &ForgeScriptArgs,
++    ecosystem_config: &EcosystemConfig,
++    contracts_config: &CoreContractsConfig,
++    l1_rpc_url: &str,
++    vm_option: VMOption,
++) -> anyhow::Result<()> {
+@@ -128,0 +157,10 @@ pub async fn deploy_new_ctm_and_accept_admin(
++    let governor = &ecosystem_config.get_wallets()?.governor;
++    let foundry_path = ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option);
++    if vm_option.is_zksync_os() {
++        // SYSCOIN: Authenticate distinct CTM control contracts before any
++        // target no-op can be accepted as completion.
++        ensure_owner_handoff_complete(ctm.governance, governor.address, l1_rpc_url).await?;
++        ensure_owner_handoff_complete(ctm.chain_admin, governor.address, l1_rpc_url).await?;
++    }
++    // SYSCOIN: Standalone CTM deployment may create distinct governance/admin
++    // contracts, so bind every handoff to the CTM-local addresses.
+@@ -131,3 +169,3 @@ pub async fn deploy_new_ctm_and_accept_admin(
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
++        foundry_path.clone(),
++        ctm.governance,
++        governor,
+@@ -136 +174 @@ pub async fn deploy_new_ctm_and_accept_admin(
+-        l1_rpc_url.clone(),
++        l1_rpc_url.to_owned(),
+@@ -142,3 +180,3 @@ pub async fn deploy_new_ctm_and_accept_admin(
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.chain_admin_addr,
+-        &ecosystem_config.get_wallets()?.governor,
++        foundry_path.clone(),
++        ctm.chain_admin,
++        governor,
+@@ -147 +185 @@ pub async fn deploy_new_ctm_and_accept_admin(
+-        l1_rpc_url.clone(),
++        l1_rpc_url.to_owned(),
+@@ -151 +189,35 @@ pub async fn deploy_new_ctm_and_accept_admin(
+-    Ok(contracts_config)
++    if vm_option.is_zksync_os() {
++        // SYSCOIN: Complete every remaining pinned V32 CTM handoff before the
++        // initializer can persist a successful result.
++        accept_direct_owner(
++            shell,
++            foundry_path.clone(),
++            governor,
++            ctm.validator_timelock_addr,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++        accept_owner(
++            shell,
++            foundry_path.clone(),
++            ctm.governance,
++            governor,
++            ctm.l1_rollup_da_manager,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++        accept_owner_via_chain_admin(
++            shell,
++            foundry_path,
++            governor,
++            ctm.chain_admin,
++            ctm.server_notifier_proxy_addr,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++    }
++
++    Ok(())
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
+index 944aa4cc7..fb64b9a9d 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/args/init.rs
+@@ -196,0 +197,4 @@ pub struct InitCoreContractsArgs {
++    /// Reconcile only persisted core/CTM ownership; never replay deployment.
++    // SYSCOIN: Lost Forge journals must have a narrow recovery path.
++    #[clap(long, default_value_t = false)]
++    pub ownership_only: bool,
+@@ -209,0 +214 @@ impl InitCoreContractsArgs {
++            ownership_only,
+@@ -212 +217,5 @@ impl InitCoreContractsArgs {
+-        let deploy_erc20 = if self.dev {
++        // SYSCOIN: Ownership recovery cannot prompt for or deploy unrelated
++        // ERC20 contracts; force the one permissible value before prompting.
++        let deploy_erc20 = if ownership_only {
++            false
++        } else if self.dev {
+@@ -229,0 +239 @@ impl InitCoreContractsArgs {
++            ownership_only,
+@@ -240,0 +251,2 @@ pub struct InitCoreContractsArgsFinal {
++    // SYSCOIN: Preserve the narrow recovery policy through command dispatch.
++    pub ownership_only: bool,
+@@ -250,0 +263,2 @@ impl From<EcosystemInitArgsFinal> for InitCoreContractsArgsFinal {
++            // SYSCOIN: Full ecosystem init is never implicitly narrowed.
++            ownership_only: false,
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+index 37cad6768..05c96b070 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/common.rs
+@@ -27,0 +28,7 @@ use crate::{
++    // SYSCOIN: Complete every V32 core ownership handoff through one shared
++    // path used by both ecosystem-init entry points.
++    admin_functions::{
++        accept_admin, accept_direct_owner, accept_owner, bridgehub_chain_registration_sender,
++        ensure_owner_handoff_complete, ensure_pending_owner_from_deployer,
++        native_token_vault_asset_tracker,
++    },
+@@ -93,0 +101,135 @@ pub async fn deploy_l1_core_contracts(
++// SYSCOIN: Converge fresh deployment and ownership-only recovery on one exact
++// V32 core control plane. Every helper is state-gated and postcondition-checked.
++pub async fn complete_core_owner_handoffs(
++    shell: &Shell,
++    forge_args: &ForgeScriptArgs,
++    ecosystem_config: &EcosystemConfig,
++    contracts_config: &CoreContractsConfig,
++    l1_rpc_url: &str,
++    vm_option: VMOption,
++) -> anyhow::Result<()> {
++    let wallets = ecosystem_config.get_wallets()?;
++    let governor = &wallets.governor;
++    let foundry_path = ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option);
++    let governance = contracts_config.l1.governance_addr;
++    let chain_admin = contracts_config.l1.chain_admin_addr;
++    let bridgehub = contracts_config
++        .core_ecosystem_contracts
++        .bridgehub_proxy_addr;
++    let chain_asset_handler = contracts_config
++        .core_ecosystem_contracts
++        .chain_asset_handler_proxy_addr;
++
++    if vm_option.is_zksync_os() {
++        // SYSCOIN: A clean target is insufficient if its controlling
++        // Governance or ChainAdmin has drifted.
++        ensure_owner_handoff_complete(governance, governor.address, l1_rpc_url).await?;
++        ensure_owner_handoff_complete(chain_admin, governor.address, l1_rpc_url).await?;
++    }
++
++    accept_owner(
++        shell,
++        foundry_path.clone(),
++        governance,
++        governor,
++        bridgehub,
++        forge_args,
++        l1_rpc_url.to_owned(),
++    )
++    .await?;
++    accept_admin(
++        shell,
++        foundry_path.clone(),
++        chain_admin,
++        governor,
++        bridgehub,
++        forge_args,
++        l1_rpc_url.to_owned(),
++    )
++    .await?;
++    for target in [
++        contracts_config.bridges.shared.l1_address,
++        contracts_config
++            .core_ecosystem_contracts
++            .stm_deployment_tracker_proxy_addr
++            .context("stm_deployment_tracker_proxy_addr")?,
++    ] {
++        accept_owner(
++            shell,
++            foundry_path.clone(),
++            governance,
++            governor,
++            target,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++    }
++    if let Some(target) = chain_asset_handler {
++        accept_owner(
++            shell,
++            foundry_path.clone(),
++            governance,
++            governor,
++            target,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++    }
++
++    if !vm_option.is_zksync_os() {
++        return Ok(());
++    }
++
++    let deployer = wallets
++        .deployer
++        .as_ref()
++        .context("deployer wallet is required to complete core ownership")?;
++    let native_token_vault = contracts_config
++        .core_ecosystem_contracts
++        .native_token_vault_addr
++        .context("native_token_vault_addr")?;
++    let asset_tracker = native_token_vault_asset_tracker(native_token_vault, l1_rpc_url).await?;
++    let l1_nullifier = contracts_config
++        .bridges
++        .l1_nullifier_addr
++        .context("l1_nullifier_addr")?;
++    chain_asset_handler.context("chain_asset_handler_proxy_addr")?;
++    let chain_registration_sender =
++        bridgehub_chain_registration_sender(bridgehub, l1_rpc_url).await?;
++
++    ensure_pending_owner_from_deployer(
++        shell,
++        foundry_path.clone(),
++        deployer,
++        governance,
++        chain_registration_sender,
++        forge_args,
++        l1_rpc_url.to_owned(),
++    )
++    .await?;
++
++    for target in [asset_tracker, l1_nullifier, chain_registration_sender] {
++        accept_owner(
++            shell,
++            foundry_path.clone(),
++            governance,
++            governor,
++            target,
++            forge_args,
++            l1_rpc_url.to_owned(),
++        )
++        .await?;
++    }
++    accept_direct_owner(
++        shell,
++        foundry_path,
++        governor,
++        native_token_vault,
++        forge_args,
++        l1_rpc_url.to_owned(),
++    )
++    .await
++}
++
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
+index 3b83dd97f..7bbee21f0 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/init_core_contracts.rs
+@@ -1 +0,0 @@
+-use anyhow::Context;
+@@ -11,5 +10,7 @@ use crate::{
+-    admin_functions::{accept_admin, accept_owner},
+-    commands::ecosystem::{
+-        args::init::{InitCoreContractsArgs, InitCoreContractsArgsFinal},
+-        common::{deploy_erc20, deploy_l1_core_contracts},
+-        create_configs::{create_erc20_deployment_config, create_initial_deployments_config},
++    commands::{
++        ctm::commands::init_new_ctm::complete_ctm_owner_handoffs,
++        ecosystem::{
++            args::init::{InitCoreContractsArgs, InitCoreContractsArgsFinal},
++            common::{complete_core_owner_handoffs, deploy_erc20, deploy_l1_core_contracts},
++            create_configs::{create_erc20_deployment_config, create_initial_deployments_config},
++        },
+@@ -27,5 +27,0 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
+-    let initial_deployment_config = match ecosystem_config.get_initial_deployment_config() {
+-        Ok(config) => config,
+-        Err(_) => create_initial_deployments_config(shell, &ecosystem_config.config)?,
+-    };
+-
+@@ -37,0 +34,29 @@ pub async fn run(args: InitCoreContractsArgs, shell: &Shell) -> anyhow::Result<(
++    if final_ecosystem_args.ownership_only {
++        // SYSCOIN: Authenticate persisted deployment state and execute only
++        // state-gated ownership/admin handoffs. No deploy script is reachable.
++        let contracts_config = ecosystem_config.get_contracts_config()?;
++        complete_core_owner_handoffs(
++            shell,
++            &final_ecosystem_args.forge_args,
++            &ecosystem_config,
++            &contracts_config,
++            &final_ecosystem_args.l1_rpc_url,
++            vm_option,
++        )
++        .await?;
++        complete_ctm_owner_handoffs(
++            shell,
++            &final_ecosystem_args.forge_args,
++            &ecosystem_config,
++            &contracts_config,
++            &final_ecosystem_args.l1_rpc_url,
++            vm_option,
++        )
++        .await?;
++        return Ok(());
++    }
++
++    let initial_deployment_config = match ecosystem_config.get_initial_deployment_config() {
++        Ok(config) => config,
++        Err(_) => create_initial_deployments_config(shell, &ecosystem_config.config)?,
++    };
+@@ -116,28 +141,3 @@ pub async fn deploy_ecosystem(
+-    accept_owner(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .bridgehub_proxy_addr,
+-        &forge_args,
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-    accept_admin(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.chain_admin_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .bridgehub_proxy_addr,
+-        &forge_args,
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-
+-    // Note, that there is no admin in L1 asset router, so we do
+-    // need to accept it
+-    accept_owner(
++    // SYSCOIN: Core-only init must reach the same complete V32 ownership state
++    // as full ecosystem init before it reports success.
++    complete_core_owner_handoffs(
+@@ -145,4 +144,0 @@ pub async fn deploy_ecosystem(
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config.bridges.shared.l1_address,
+@@ -150,15 +146,4 @@ pub async fn deploy_ecosystem(
+-        l1_rpc_url.clone(),
+-    )
+-    .await?;
+-
+-    accept_owner(
+-        shell,
+-        ecosystem_config.path_to_foundry_scripts_for_ctm(vm_option),
+-        contracts_config.l1.governance_addr,
+-        &ecosystem_config.get_wallets()?.governor,
+-        contracts_config
+-            .core_ecosystem_contracts
+-            .stm_deployment_tracker_proxy_addr
+-            .context("stm_deployment_tracker_proxy_addr")?,
+-        &forge_args,
+-        l1_rpc_url,
++        ecosystem_config,
++        &contracts_config,
++        &l1_rpc_url,
++        vm_option,
+diff --git a/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs b/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
+index 1e9d41c4e..f4fb83c74 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/ecosystem/mod.rs
+@@ -89 +89,4 @@ impl EcosystemCommands {
+-            EcosystemCommands::InitCoreContracts(args) => args.common.update_submodules,
++            // SYSCOIN: Ownership-only recovery must not mutate source state.
++            EcosystemCommands::InitCoreContracts(args) => {
++                !args.ownership_only && args.common.update_submodules
++            }
+@@ -104 +107,3 @@ impl EcosystemCommands {
+-                !args.common.skip_contract_compilation_override
++                // SYSCOIN: Ownership-only recovery consumes the already
++                // attested deployment scripts and never rebuilds artifacts.
++                !args.ownership_only && !args.common.skip_contract_compilation_override
+diff --git a/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs b/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs
+index 906491168..261790e70 100644
+--- a/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs
++++ b/zkstack_cli/crates/zkstack/src/commands/chain/init/configs.rs
+@@ -1,0 +2,2 @@
++#[cfg(unix)]
++use std::os::unix::fs::PermissionsExt;
+@@ -55,0 +58,9 @@ pub async fn init_configs(
++    // SYSCOIN: Restrict the copied template before generated consensus secrets
++    // are written into it.
++    #[cfg(unix)]
++    std::fs::set_permissions(
++        chain_config.path_to_secrets_config(),
++        std::fs::Permissions::from_mode(0o600),
++    )
++    .context("failed securing generated secrets before key creation")?;
++

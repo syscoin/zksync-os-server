@@ -4,22 +4,193 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/_common.sh"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/_execute_operator_lock.sh"
+MIGRATION_CHECK_ONLY=false
+MIGRATION_PREFLIGHT_ONLY=false
+if [ "${1:-}" = "--check-only" ]; then
+  MIGRATION_CHECK_ONLY=true
+  shift
+elif [ "${1:-}" = "--preflight" ]; then
+  MIGRATION_PREFLIGHT_ONLY=true
+  shift
+fi
+[ "$#" -eq 0 ] || gl_die "usage: edge-chain-migrate-to-gateway.sh [--check-only|--preflight]"
+MIGRATION_READ_ONLY=false
+if [ "${MIGRATION_CHECK_ONLY}" = true ] || [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  MIGRATION_READ_ONLY=true
+fi
 gl_require ZKSYNC_ERA_PATH
 # SYSCOIN: Migrations target the single canonical fresh V32 lane.
 : "${PROTOCOL_VERSION:=v32.0}"
-export REQUIRED_ZKSTACK_CLI_SHA="${REQUIRED_ZKSTACK_CLI_SHA:-$(gl_zkstack_cli_sha_from_versions)}"
+export PROTOCOL_VERSION
+gl_resolve_required_source_pins
 gl_assert_zksync_era_sha
+gl_ensure_zkstack_cli_release_current
 gl_path_for_zkstack
 : "${GATEWAY_DIR:=${HOME}/gateway}"
 : "${L1_RPC_URL:?L1_RPC_URL is required}"
+gl_require L1_CHAIN_ID
+gl_require L1_NETWORK
 cd "${GATEWAY_DIR}"
 
 : "${EDGE_CHAIN_NAME:=zksys}"
 : "${GATEWAY_CHAIN_NAME:=gateway}"
-: "${GATEWAY_RPC_URL:=http://127.0.0.1:3052}"
+: "${GATEWAY_RPC_URL:=http://127.0.0.1:${GATEWAY_OS_RPC_PORT:-3052}}"
 : "${GATEWAY_MAX_L1_GAS_PRICE:=1000000000}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME:=BlobsZKsyncOS}"
 : "${GATEWAY_L2_DA_COMMITMENT_SCHEME_VALUE:=4}"
+gl_normalize_canonical_deployment_inputs
+gl_validate_l1_network_pair
+
+gateway_governor_signer() {
+  # SYSCOIN: fresh zkstack deployments generate a distinct Gateway governor
+  # and persist it in the authenticated edge wallet. Use that signer unless an
+  # operator explicitly selects an external account, keystore, hardware wallet,
+  # or KMS identity.
+  gl_to_lower "${EDGE_GATEWAY_GOVERNOR_SIGNER:-generated}"
+}
+
+validate_gateway_governor_signer_config() {
+  local governor_signer account_name keystore_path password_file
+  governor_signer="$(gateway_governor_signer)" || return $?
+
+  if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
+    echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
+    return 1
+  fi
+
+  case "${governor_signer}" in
+  generated | generated-wallet | wallet)
+    password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+    if [ -z "${password_file}" ]; then
+      command -v openssl >/dev/null 2>&1 || {
+        echo "gateway-launch: openssl is required to protect the temporary generated-governor keystore" >&2
+        return 1
+      }
+    fi
+    command -v expect >/dev/null 2>&1 || {
+      echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
+      return 1
+    }
+    command -v cast >/dev/null 2>&1 || {
+      echo "gateway-launch: cast is required to import the generated governor key" >&2
+      return 1
+    }
+    ;;
+  account)
+    account_name="${EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME:-${FUNDER_ACCOUNT_NAME:-funder}}"
+    [ -n "${account_name}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME must not be empty" >&2
+      return 1
+    }
+    gl_validate_foundry_account_keystore \
+      "${account_name}" "EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME"
+    ;;
+  keystore)
+    keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
+    [ -n "${keystore_path}" ] || {
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore" >&2
+      return 1
+    }
+    gl_validate_secret_file "${keystore_path}" "governor keystore"
+    ;;
+  ledger | trezor | aws | gcp) ;;
+  private-key)
+    if gl_l1_network_requires_external_signer && ! gl_allow_insecure_private_key_argv; then
+      echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_SIGNER=private-key is not allowed on ${L1_NETWORK}; use a Foundry account/keystore, hardware wallet, or KMS signer" >&2
+      return 1
+    fi
+    if [ -z "${FUNDER_PRIVATE_KEY:-}" ] && gl_l1_network_requires_external_signer; then
+      echo "gateway-launch: FUNDER_PRIVATE_KEY is required when inheriting EDGE_GATEWAY_GOVERNOR_SIGNER=private-key from FUNDER_SIGNER=private-key" >&2
+      return 1
+    fi
+    ;;
+  *)
+    echo "gateway-launch: unsupported EDGE_GATEWAY_GOVERNOR_SIGNER=${governor_signer}; expected generated, account, keystore, ledger, trezor, aws, gcp, or private-key" >&2
+    return 1
+    ;;
+  esac
+
+  case "${governor_signer}" in
+  generated | generated-wallet | wallet | account | keystore)
+    password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
+    if [ -n "${password_file}" ]; then
+      gl_validate_secret_file "${password_file}" "governor password file"
+    fi
+    ;;
+  esac
+}
+
+validate_migration_config_inputs() {
+  local sender_min_balance
+  sender_min_balance="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
+  # SYSCOIN: Parse every config-only value before gl.migration can advance.
+  # Later repair/finalization paths consume only these already-validated shapes.
+  python3 - \
+    "${GATEWAY_MAX_L1_GAS_PRICE}" \
+    "${GATEWAY_FUND_GOVERNOR_BALANCE_WEI:-11000000000000000000}" \
+    "${sender_min_balance}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY:-5}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY:-5}" \
+    "${GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS:-4}" \
+    "${GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY:-2}" \
+    "${GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS:-120}" \
+    "${GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY:-5}" <<'PY' || return $?
+import sys
+
+UINT256_MAX = 2**256 - 1
+
+def uint(raw: str, label: str, maximum: int) -> int:
+    raw = raw.strip()
+    try:
+        value = int(raw, 16 if raw.lower().startswith("0x") else 10)
+    except ValueError:
+        raise SystemExit(f"invalid {label}: {raw!r}") from None
+    if not 0 < value <= maximum:
+        raise SystemExit(f"{label} must be between 1 and {maximum}")
+    return value
+
+for raw, label in zip(
+    sys.argv[1:4],
+    (
+        "GATEWAY_MAX_L1_GAS_PRICE",
+        "GATEWAY_FUND_GOVERNOR_BALANCE_WEI",
+        "GATEWAY_SENDER_MIN_BALANCE_WEI",
+    ),
+):
+    uint(raw, label, UINT256_MAX)
+waits = (
+    ("GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_COMMITTER_ROLE_REPAIR_WAIT_DELAY", 86_400),
+    ("GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_COMMITTER_BALANCE_REPAIR_WAIT_DELAY", 86_400),
+    ("GATEWAY_DA_PAIR_INITIAL_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_DA_PAIR_INITIAL_WAIT_DELAY", 86_400),
+    ("GATEWAY_DA_PAIR_REPAIR_WAIT_ATTEMPTS", 1_000_000),
+    ("GATEWAY_DA_PAIR_REPAIR_WAIT_DELAY", 86_400),
+)
+for raw, (label, maximum) in zip(sys.argv[4:], waits):
+    uint(raw, label, maximum)
+PY
+  "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --validate-config-only || return $?
+  if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+    gl_validate_funder_signer_config || return $?
+    validate_gateway_governor_signer_config || return $?
+    command -v expect >/dev/null 2>&1 || {
+      echo "gateway-launch: expect is required for settlement-fee payer provisioning" >&2
+      return 1
+    }
+    command -v openssl >/dev/null 2>&1 || {
+      echo "gateway-launch: openssl is required for settlement-fee payer provisioning" >&2
+      return 1
+    }
+  fi
+}
+
+validate_migration_config_inputs
 
 # SYSCOIN: These identities are compiled into the current guest and native server. A production
 # deployment with different governance or salts must regenerate and repin all three atomically.
@@ -39,27 +210,110 @@ if [ -n "${L2_BRIDGEHUB_ADDRESS:-}" ]; then
 fi
 readonly L2_BRIDGEHUB_ADDRESS="${GATEWAY_SYSTEM_BRIDGEHUB_ADDRESS}"
 
+# SYSCOIN: Direct migration entry points bind the exact edge context before
+# acquiring its shared nonce lock or mutating state. Read-only validation only
+# asserts the existing canonical fingerprint and zkstack edge index.
+if [ "${MIGRATION_READ_ONLY}" = true ]; then
+  gl_assert_edge_launch_context
+else
+  gl_bind_edge_launch_context
+fi
+gl_assert_gateway_runtime_identity
+gl_assert_gateway_wrapped_base_token_pin "${GATEWAY_RPC_URL}"
+gl_assert_edge_chain_config_matches_expected
+
+# SYSCOIN: V32 nodes do not support live settlement-layer migration. Take the
+# execute-operator/Gateway nonce lock before any migration/admin work and retain
+# it through fee-payer provisioning and deposit unpause.
+if [ "${MIGRATION_READ_ONLY}" != true ]; then
+  gateway_acquire_execute_operator_lock "${EDGE_CHAIN_NAME}"
+fi
+
 gl_l1_broadcast_preflight
 
-gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
-gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
+if [ "${MIGRATION_READ_ONLY}" = true ]; then
+  gl_probe_chain_contracts_schema_ready "${EDGE_CHAIN_NAME}" ||
+    gl_die "edge contracts config is not ready for read-only migration validation"
+  gl_probe_chain_contracts_schema_ready "${GATEWAY_CHAIN_NAME}" ||
+    gl_die "Gateway contracts config is not ready for read-only migration validation"
+else
+  gl_ensure_chain_contracts_yaml_schema "${EDGE_CHAIN_NAME}"
+  gl_ensure_chain_contracts_yaml_schema "${GATEWAY_CHAIN_NAME}"
+fi
 
-ensure_gateway_rpc_url_in_chain_secrets() {
+# SYSCOIN: Direct invocation and repair must enforce the same L1 registration,
+# owner, persisted-diamond, and operator-key bindings as the main launcher.
+gl_assert_edge_chain_admin_owned_by_configured_governor
+gl_authenticate_chain_wallet_roles \
+  "${EDGE_CHAIN_NAME}" \
+  "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" \
+  prove_operator \
+  execute_operator
+
+configure_gateway_rpc_url_in_chain_secrets() {
   local chain_name="${1:?chain name required}"
   local gateway_rpc_url="${2:?gateway rpc url required}"
-  python3 - "${GATEWAY_DIR}/chains/${chain_name}/configs/secrets.yaml" "${gateway_rpc_url}" <<'PY'
+  local policy="${3:?secrets policy required}"
+  local secrets_path="${GATEWAY_DIR}/chains/${chain_name}/configs/secrets.yaml"
+  case "${policy}" in
+  preflight | write | exact) ;;
+  *) gl_die "invalid Gateway RPC secrets policy: ${policy}" ;;
+  esac
+  python3 - "${secrets_path}" "${gateway_rpc_url}" "${policy}" <<'PY'
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 import yaml
 
 secrets_path = Path(sys.argv[1])
-gateway_rpc_url = sys.argv[2].strip()
-if gateway_rpc_url == "":
+gateway_rpc_url = sys.argv[2]
+policy = sys.argv[3]
+if gateway_rpc_url == "" or gateway_rpc_url != gateway_rpc_url.strip():
     raise SystemExit("empty gateway rpc url")
-if not secrets_path.exists():
+try:
+    parent_info = secrets_path.parent.lstat()
+except FileNotFoundError:
+    raise SystemExit(f"missing secrets config directory: {secrets_path.parent}")
+if (
+    stat.S_ISLNK(parent_info.st_mode)
+    or not stat.S_ISDIR(parent_info.st_mode)
+    or parent_info.st_uid != os.geteuid()
+    or stat.S_IMODE(parent_info.st_mode) & 0o022
+    or stat.S_IMODE(parent_info.st_mode) & 0o300 != 0o300
+):
+    raise SystemExit(f"unsafe secrets config directory ownership/mode: {secrets_path.parent}")
+try:
+    info = secrets_path.lstat()
+except FileNotFoundError:
     raise SystemExit(f"missing secrets config: {secrets_path}")
+if (
+    stat.S_ISLNK(info.st_mode)
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or info.st_nlink != 1
+    or stat.S_IMODE(info.st_mode) & 0o077
+):
+    raise SystemExit(f"unsafe secrets config ownership/mode: {secrets_path}")
 
-data = yaml.safe_load(secrets_path.read_text(encoding="utf-8"))
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+try:
+    fd = os.open(secrets_path, flags)
+except OSError as exc:
+    raise SystemExit(f"cannot safely read secrets config {secrets_path}: {exc}") from exc
+try:
+    opened = os.fstat(fd)
+    if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+        raise SystemExit(f"secrets config identity changed while opening: {secrets_path}")
+    with os.fdopen(fd, "rb", closefd=True) as stream:
+        raw = stream.read()
+    fd = -1
+finally:
+    if fd >= 0:
+        os.close(fd)
+
+data = yaml.safe_load(raw.decode("utf-8"))
 if not isinstance(data, dict):
     raise SystemExit(f"invalid YAML object in {secrets_path}")
 
@@ -71,20 +325,82 @@ if not isinstance(l1, dict):
     raise SystemExit(f"invalid l1 section in {secrets_path}")
 
 current = l1.get("gateway_rpc_url")
-if not isinstance(current, str) or current.strip() == "":
-    l1["gateway_rpc_url"] = gateway_rpc_url
-    secrets_path.write_text(
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
-    print(
-        f"gateway-launch: patched {secrets_path} "
-        "(set l1.gateway_rpc_url=<redacted>)"
+if not isinstance(current, str) or current == "":
+    if policy == "write":
+        l1["gateway_rpc_url"] = gateway_rpc_url
+        payload = yaml.safe_dump(
+            data, sort_keys=False, allow_unicode=True
+        ).encode("utf-8")
+        temp_fd = -1
+        temp_name = ""
+        try:
+            temp_fd, temp_name = tempfile.mkstemp(
+                prefix=f".{secrets_path.name}.", dir=secrets_path.parent
+            )
+            os.fchmod(temp_fd, 0o600)
+            with os.fdopen(temp_fd, "wb", closefd=True) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temp_fd = -1
+            current_parent = secrets_path.parent.lstat()
+            current_info = secrets_path.lstat()
+            if (current_parent.st_dev, current_parent.st_ino) != (
+                parent_info.st_dev,
+                parent_info.st_ino,
+            ):
+                raise SystemExit(
+                    f"secrets config directory identity changed: {secrets_path.parent}"
+                )
+            if (current_info.st_dev, current_info.st_ino) != (
+                info.st_dev,
+                info.st_ino,
+            ):
+                raise SystemExit(f"secrets config identity changed: {secrets_path}")
+            os.replace(temp_name, secrets_path)
+            temp_name = ""
+            dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            dir_fd = os.open(secrets_path.parent, dir_flags)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if temp_fd >= 0:
+                os.close(temp_fd)
+            if temp_name:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+        print(
+            f"gateway-launch: patched {secrets_path} "
+            "(set l1.gateway_rpc_url=<redacted>)"
+        )
+    elif policy == "preflight":
+        # Write mode uses an atomic sibling + replace, so patchability is the
+        # authenticated parent's owner write/execute permission checked above;
+        # the existing secret itself deliberately remains read-only here.
+        pass
+    else:
+        raise SystemExit(f"missing l1.gateway_rpc_url in {secrets_path}")
+elif current != gateway_rpc_url:
+    raise SystemExit(
+        f"Gateway RPC URL mismatch in {secrets_path}; "
+        "refusing to migrate through a different Gateway"
     )
 PY
 }
 
-ensure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}"
+if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  # SYSCOIN: Parse and authenticate existing secret inputs without patching
+  # files while gl.migration is still pending.
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" preflight
+elif [ "${MIGRATION_CHECK_ONLY}" = true ]; then
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" exact
+else
+  configure_gateway_rpc_url_in_chain_secrets "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" write
+fi
 
 get_chain_id_from_zkstack_yaml() {
   local chain_name="${1:?chain name required}"
@@ -273,6 +589,7 @@ cleanup_generated_gateway_governor_keystore() {
     rm -rf "${GATEWAY_GOVERNOR_TEMP_DIR}"
     GATEWAY_GOVERNOR_TEMP_DIR=""
   fi
+  gateway_release_execute_operator_lock
 }
 trap cleanup_generated_gateway_governor_keystore EXIT
 
@@ -282,14 +599,9 @@ prepare_generated_gateway_governor_keystore() {
   local account_name="gateway-launch-generated-governor"
   local expected_addr imported_addr
 
-  [ -n "${password_file}" ] || {
-    echo "gateway-launch: FUNDER_PASSWORD_FILE is required to encrypt the temporary generated-governor keystore" >&2
-    return 1
-  }
-  [ -f "${password_file}" ] || {
-    echo "gateway-launch: generated-governor password file does not exist: ${password_file}" >&2
-    return 1
-  }
+  if [ -n "${password_file}" ]; then
+    gl_validate_secret_file "${password_file}" "generated-governor password file"
+  fi
   command -v expect >/dev/null 2>&1 || {
     echo "gateway-launch: expect is required to import the generated governor key without exposing it in argv" >&2
     return 1
@@ -298,7 +610,14 @@ prepare_generated_gateway_governor_keystore() {
   if [ -z "${GATEWAY_GOVERNOR_TEMP_DIR}" ]; then
     GATEWAY_GOVERNOR_TEMP_DIR="$(mktemp -d)"
     chmod 700 "${GATEWAY_GOVERNOR_TEMP_DIR}"
-    install -m 600 "${password_file}" "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    if [ -n "${password_file}" ]; then
+      install -m 600 "${password_file}" "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    else
+      # SYSCOIN: this keystore is process-local and short-lived; do not require
+      # an unrelated funder credential merely to encrypt its generated key.
+      openssl rand -hex -out "${GATEWAY_GOVERNOR_TEMP_DIR}/password" 32
+      chmod 600 "${GATEWAY_GOVERNOR_TEMP_DIR}/password"
+    fi
 
     GATEWAY_DIR="${GATEWAY_DIR}" \
       CHAIN_NAME="${chain_name}" \
@@ -361,7 +680,7 @@ EXPECT
   fi
 
   expected_addr="$(get_chain_governor_from_wallets "${chain_name}" | tr '[:upper:]' '[:lower:]')"
-  imported_addr="$(cast wallet address --keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password" | tr '[:upper:]' '[:lower:]')"
+  imported_addr="$(gl_non_l1_cast wallet address --keystore "${GATEWAY_GOVERNOR_TEMP_DIR}/${account_name}" --password-file "${GATEWAY_GOVERNOR_TEMP_DIR}/password" | tr '[:upper:]' '[:lower:]')"
   if [ "${expected_addr}" != "${imported_addr}" ]; then
     echo "gateway-launch: generated-governor keystore mismatch: expected ${expected_addr}, got ${imported_addr}" >&2
     return 1
@@ -372,19 +691,16 @@ EXPECT
 
 prepare_gateway_governor_forge_wallet_args() {
   GATEWAY_GOVERNOR_FORGE_WALLET_ARGS=()
-  local governor_signer
+  local governor_signer password_file
 
   if [ -n "${EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY:-}" ]; then
     echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_PRIVATE_KEY is intentionally unsupported; use a Foundry keystore account, keystore file, hardware wallet, or KMS signer" >&2
     return 1
   fi
 
-  if [ -n "${EDGE_GATEWAY_GOVERNOR_SIGNER:-}" ]; then
-    governor_signer="${EDGE_GATEWAY_GOVERNOR_SIGNER}"
-  else
-    governor_signer="generated"
-  fi
-  governor_signer="$(gl_to_lower "${governor_signer}")"
+  validate_gateway_governor_signer_config || return $?
+  governor_signer="$(gateway_governor_signer)" || return $?
+  password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
 
   case "${governor_signer}" in
   generated | generated-wallet | wallet)
@@ -397,7 +713,12 @@ prepare_gateway_governor_forge_wallet_args() {
       echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME must not be empty" >&2
       return 1
     }
+    gl_validate_foundry_account_keystore \
+      "${account_name}" "EDGE_GATEWAY_GOVERNOR_ACCOUNT_NAME"
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--account "${account_name}")
+    if [ -n "${password_file}" ]; then
+      GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
+    fi
     ;;
   keystore)
     local keystore_path="${EDGE_GATEWAY_GOVERNOR_KEYSTORE:-${FUNDER_KEYSTORE:-}}"
@@ -405,11 +726,11 @@ prepare_gateway_governor_forge_wallet_args() {
       echo "gateway-launch: EDGE_GATEWAY_GOVERNOR_KEYSTORE is required when EDGE_GATEWAY_GOVERNOR_SIGNER=keystore" >&2
       return 1
     }
-    [ -f "${keystore_path}" ] || {
-      echo "gateway-launch: governor keystore does not exist: ${keystore_path}" >&2
-      return 1
-    }
+    gl_validate_secret_file "${keystore_path}" "governor keystore"
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--keystore "${keystore_path}")
+    if [ -n "${password_file}" ]; then
+      GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
+    fi
     ;;
   ledger)
     GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--ledger)
@@ -444,14 +765,22 @@ prepare_gateway_governor_forge_wallet_args() {
     ;;
   esac
 
-  local password_file="${EDGE_GATEWAY_GOVERNOR_PASSWORD_FILE:-${FUNDER_PASSWORD_FILE:-}}"
-  if [ -n "${password_file}" ]; then
-    [ -f "${password_file}" ] || {
-      echo "gateway-launch: governor password file does not exist: ${password_file}" >&2
-      return 1
-    }
-    GATEWAY_GOVERNOR_FORGE_WALLET_ARGS+=(--password-file "${password_file}")
-  fi
+}
+
+assert_gateway_governor_signer_identity() {
+  local expected_addr actual_addr
+  prepare_gateway_governor_forge_wallet_args || return $?
+  expected_addr="$(get_chain_governor_from_wallets "${EDGE_CHAIN_NAME}")" || return $?
+  actual_addr="$(gl_non_l1_cast wallet address "${GATEWAY_GOVERNOR_FORGE_WALLET_ARGS[@]}")" || {
+    echo "gateway-launch: failed to resolve the configured Gateway governor signer address" >&2
+    return 1
+  }
+  expected_addr="$(gl_to_lower "${expected_addr}")"
+  actual_addr="$(gl_to_lower "${actual_addr}")"
+  [ "${actual_addr}" = "${expected_addr}" ] || {
+    echo "gateway-launch: Gateway governor signer mismatch: expected ${expected_addr}, got ${actual_addr}" >&2
+    return 1
+  }
 }
 
 get_l1_bridgehub_proxy_addr() {
@@ -507,17 +836,15 @@ gateway_cast_call_with_fallback() {
     # SYSCOIN: read-only Gateway calls must not inherit L1 broadcast fee env.
     # Gateway can have a different base fee, and cast applies ETH_GAS_PRICE to
     # eth_call transactions even though no transaction is broadcast.
-    if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-      -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
-      cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
+    if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
+      --rpc-url "${rpc_url}" --from "${call_from}" 2>&1)"; then
       printf '%s\n' "${out}"
       return 0
     fi
     last_error="${out}"
   fi
-  if out="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    -u ETH_GAS_PRICE -u ETH_PRIORITY_GAS_PRICE -u ETH_MAX_FEE_PER_GAS -u ETH_MAX_PRIORITY_FEE_PER_GAS \
-    cast call "${target}" "${sig}" "$@" --rpc-url "${rpc_url}" 2>&1)"; then
+  if out="$(gl_non_l1_cast call "${target}" "${sig}" "$@" \
+    --rpc-url "${rpc_url}" 2>&1)"; then
     printf '%s\n' "${out}"
     return 0
   fi
@@ -531,8 +858,7 @@ gateway_address_has_code() {
   local addr="${2:?address required}"
 
   local code
-  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+  if ! code="$(gl_non_l1_cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
     return 1
   fi
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
@@ -546,8 +872,7 @@ gateway_address_has_exact_runtime() {
   local expected_hash="${3:?runtime hash required}"
   local code actual_hash
 
-  if ! code="$(env -u FOUNDRY_CHAIN_ID -u ETH_CHAIN_ID -u CHAIN_ID -u DAPP_CHAIN_ID \
-    cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
+  if ! code="$(gl_non_l1_cast code "${addr}" --rpc-url "${rpc_url}" 2>/dev/null)"; then
     return 1
   fi
   code="$(printf '%s' "${code}" | tr -d '[:space:]')"
@@ -556,20 +881,21 @@ gateway_address_has_exact_runtime() {
   [ "$(gl_to_lower "${actual_hash}")" = "$(gl_to_lower "${expected_hash}")" ]
 }
 
-gateway_committer_role_set() {
+gateway_validator_role_set() {
   local chain_name="${1:?chain name required}"
-  local committer_addr="${2:?committer address required}"
-  local chain_id validator_timelock committer_role call_from result
+  local validator_addr="${2:?validator address required}"
+  local role_name="${3:?role name required}"
+  local chain_id validator_timelock role call_from result
   chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")"
   validator_timelock="$(get_gateway_validator_timelock_addr "${GATEWAY_CHAIN_NAME}")"
   call_from="$(get_chain_governor_from_wallets "${chain_name}")"
 
-  committer_role="$(gateway_cast_call_with_fallback \
+  role="$(gateway_cast_call_with_fallback \
     "${validator_timelock}" \
-    "COMMITTER_ROLE()(bytes32)" \
+    "${role_name}()(bytes32)" \
     "${GATEWAY_RPC_URL}" \
     "${call_from}" | awk '{print $1}')"
-  [ -n "${committer_role}" ] || return 1
+  [ -n "${role}" ] || return 1
 
   result="$(gateway_cast_call_with_fallback \
     "${validator_timelock}" \
@@ -577,9 +903,26 @@ gateway_committer_role_set() {
     "${GATEWAY_RPC_URL}" \
     "${call_from}" \
     "${chain_id}" \
-    "${committer_role}" \
-    "${committer_addr}" | awk '{print $1}')" || return 1
+    "${role}" \
+    "${validator_addr}" | awk '{print $1}')" || return 1
   [ "${result}" = "true" ]
+}
+
+gateway_committer_role_set() {
+  gateway_validator_role_set \
+    "${1:?chain name required}" "${2:?committer address required}" COMMITTER_ROLE
+}
+
+gateway_required_validator_roles_ready() {
+  local chain_name="${1:?chain name required}" spec wallet_name role_name validator_addr
+  for spec in \
+    "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}:COMMITTER_ROLE" \
+    "prove_operator:PROVER_ROLE" \
+    "execute_operator:EXECUTOR_ROLE"; do
+    IFS=':' read -r wallet_name role_name <<<"${spec}"
+    validator_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")" || return $?
+    gateway_validator_role_set "${chain_name}" "${validator_addr}" "${role_name}" || return $?
+  done
 }
 
 wait_for_gateway_committer_role() {
@@ -601,7 +944,7 @@ wait_for_gateway_committer_role() {
 gateway_commit_sender_balance_wei() {
   local committer_addr="${1:?committer address required}"
 
-  cast balance "${committer_addr}" --rpc-url "${GATEWAY_RPC_URL}"
+  gl_non_l1_cast balance "${committer_addr}" --rpc-url "${GATEWAY_RPC_URL}"
 }
 
 gateway_commit_sender_funded() {
@@ -810,6 +1153,58 @@ PY
   done
 }
 
+provision_gateway_settlement_fee_payer() {
+  local chain_name="${1:?chain name required}"
+
+  # SYSCOIN: An edge execute operator pays interop settlement fees in wrapped
+  # Gateway base token. Provision and authenticate that opt-in before deposits
+  # reopen, including on idempotent migration resumes.
+    GATEWAY_DIR="${GATEWAY_DIR}" \
+    GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME}" \
+    GATEWAY_RPC_URL="${GATEWAY_RPC_URL}" \
+    GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}" \
+    GATEWAY_EXECUTE_OPERATOR_LOCK_INHERIT_FD="${GATEWAY_EXECUTE_OPERATOR_LOCK_FD}" \
+    EDGE_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" "${chain_name}"
+}
+
+gateway_commit_sender_balances_ready() {
+  local chain_name="${1:?chain name required}" wallet_name sender_addr current_balance_wei
+  local min_balance_wei
+  min_balance_wei="${GATEWAY_SENDER_MIN_BALANCE_WEI:-${GATEWAY_COMMITTER_MIN_BALANCE_WEI:-100000000000000000000}}"
+  for wallet_name in "${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}" prove_operator execute_operator; do
+    sender_addr="$(get_wallet_address_from_wallets "${chain_name}" "${wallet_name}")" || return $?
+    current_balance_wei="$(gateway_commit_sender_balance_wei "${sender_addr}")" || return $?
+    python3 - "${current_balance_wei}" "${min_balance_wei}" <<'PY' || return $?
+import sys
+
+current, minimum = map(int, sys.argv[1:])
+raise SystemExit(0 if current >= minimum else 1)
+PY
+  done
+}
+
+gateway_settlement_fee_payer_ready() {
+  local chain_name="${1:?chain name required}"
+  GATEWAY_DIR="${GATEWAY_DIR}" \
+    GATEWAY_CHAIN_NAME="${GATEWAY_CHAIN_NAME}" \
+    GATEWAY_RPC_URL="${GATEWAY_RPC_URL}" \
+    GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS="${GATEWAY_WRAPPED_BASE_TOKEN_ADDRESS}" \
+    EDGE_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --check-only "${chain_name}"
+}
+
+l1_deposits_are_unpaused() {
+  local chain_name="${1:?chain name required}" bridgehub chain_id chain_proxy paused
+  bridgehub="$(get_l1_bridgehub_proxy_addr "${chain_name}")" || return $?
+  chain_id="$(get_chain_id_from_zkstack_yaml "${chain_name}")" || return $?
+  chain_proxy="$(cast call "${bridgehub}" "getZKChain(uint256)(address)" "${chain_id}" --rpc-url "${L1_RPC_URL}" | awk 'NF { print $1; exit }')" || return $?
+  [[ "${chain_proxy}" =~ ^0x[0-9a-fA-F]{40}$ ]] || return 1
+  [ "$(gl_to_lower "${chain_proxy}")" != "0x0000000000000000000000000000000000000000" ] || return 1
+  paused="$(cast call "${chain_proxy}" "depositsPaused()(bool)" --rpc-url "${L1_RPC_URL}" | awk 'NF { print tolower($1); exit }')" || return $?
+  [ "${paused}" = "false" ]
+}
+
 repair_da_pair_on_gateway() {
   local chain_name="${1:?chain name required}"
   local l1_da_validator_addr="${2:?L1 DA validator address required}"
@@ -994,7 +1389,10 @@ ensure_deposits_unpaused() {
 
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${chain_name}"
-  if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits --chain "${chain_name}" -v 2>&1)"; then
+  if ! unpause_output="$(gl_zkstack_pty zkstack chain unpause-deposits \
+    --chain "${chain_name}" \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    -v 2>&1)"; then
     echo "${unpause_output}"
     unpause_output_lc="$(gl_to_lower "${unpause_output}")"
     case "${unpause_output_lc}" in
@@ -1018,33 +1416,70 @@ refresh_l1_admin_wallet_funding() {
   # even when the transaction would succeed. Migration can spend down wallets
   # after the earlier funding checkpoint, so refresh the chain wallet targets
   # immediately before zkstack admin broadcasts.
-  GATEWAY_CHAIN_NAME="${chain_name}" "${SCRIPT_DIR}/fund-wallets.sh"
+  GATEWAY_FUND_EDGE_CONTEXT=true \
+    GATEWAY_FUND_TARGET_CHAIN_NAME="${chain_name}" \
+    "${SCRIPT_DIR}/fund-wallets.sh"
 }
 
 gateway_chain_id="$(get_chain_id_from_zkstack_yaml "${GATEWAY_CHAIN_NAME}")"
 current_settlement_layer="$(get_settlement_layer_chain_id "${EDGE_CHAIN_NAME}")"
 edge_committer_wallet_name="${EDGE_GATEWAY_COMMITTER_WALLET_NAME:-blob_operator}"
 edge_committer_addr="$(get_wallet_address_from_wallets "${EDGE_CHAIN_NAME}" "${edge_committer_wallet_name}")"
+
+# SYSCOIN: Authenticate the guest-bound relay and its exact runtime before the
+# launcher changes gl.migration from pending. Normal migration reuses this
+# attested address for later DA-pair repair.
+l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
+if [ "${MIGRATION_CHECK_ONLY}" != true ]; then
+  # SYSCOIN: Reject a zero, overflowing, or cap-incompatible live settlement
+  # fee before gl.migration can advance or a direct migration can broadcast;
+  # edge registration is not needed for this read-only check.
+  "${SCRIPT_DIR}/provision-edge-settlement-fee-payer.sh" --preflight-fee-target
+  # SYSCOIN: Prove the selected external signer resolves to the authenticated
+  # edge governor while gl.migration is still pending. Hardware/KMS signers may
+  # require their normal read-only interaction here.
+  assert_gateway_governor_signer_identity
+fi
+
+if [ "${MIGRATION_PREFLIGHT_ONLY}" = true ]; then
+  echo "gateway-launch: read-only migration prerequisites are ready for ${EDGE_CHAIN_NAME}"
+  exit 0
+fi
+if [ "${MIGRATION_CHECK_ONLY}" = true ]; then
+  [ "${current_settlement_layer}" = "${gateway_chain_id}" ] ||
+    gl_die "edge settlement layer does not match Gateway"
+  is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" ||
+    gl_die "edge Gateway DA pair is not ready"
+  gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
+    gl_die "edge Gateway validator roles are not ready"
+  gateway_commit_sender_balances_ready "${EDGE_CHAIN_NAME}" ||
+    gl_die "edge Gateway sender balances are below their required reserve"
+  gateway_settlement_fee_payer_ready "${EDGE_CHAIN_NAME}" ||
+    gl_die "edge Gateway settlement fee payer is not ready"
+  l1_deposits_are_unpaused "${EDGE_CHAIN_NAME}" ||
+    gl_die "edge L1 deposits remain paused"
+  echo "gateway-launch: migration postconditions are ready for ${EDGE_CHAIN_NAME}"
+  exit 0
+fi
 if [ "${current_settlement_layer}" = "${gateway_chain_id}" ] &&
   is_da_pair_set_on_gateway "${EDGE_CHAIN_NAME}" "${GATEWAY_RPC_URL}" &&
-  gateway_committer_role_set "${EDGE_CHAIN_NAME}" "${edge_committer_addr}"; then
-  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and committer role set; ensuring committer balance and deposits are unpaused"
+  gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}"; then
+  echo "gateway-launch: ${EDGE_CHAIN_NAME} already settles on Gateway chain ${gateway_chain_id} with DA pair and validator roles set; ensuring sender balances and deposits are unpaused"
   ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
+  provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
   ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"
   exit 0
 fi
-
-# SYSCOIN: Authenticate the guest-bound relay and its exact runtime before the first migration
-# broadcast. Reuse this attested address for any later DA-pair repair so a stale or malicious
-# Gateway configuration cannot pause, migrate, or finalize an edge chain before failing closed.
-l1_da_validator_addr="$(get_l1_da_validator_for_edge "${EDGE_CHAIN_NAME}" "${GATEWAY_CHAIN_NAME}" "${GATEWAY_RPC_URL}")"
 
 if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   pause_output=""
   pause_output_lc=""
   gl_l1_broadcast_preflight
   refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
-  if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits --chain "${EDGE_CHAIN_NAME}" -v 2>&1)"; then
+  if ! pause_output="$(gl_zkstack_pty zkstack chain pause-deposits \
+    --chain "${EDGE_CHAIN_NAME}" \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    -v 2>&1)"; then
     echo "${pause_output}"
     pause_output_lc="$(gl_to_lower "${pause_output}")"
     case "${pause_output_lc}" in
@@ -1066,6 +1501,8 @@ if [ "${current_settlement_layer}" != "${gateway_chain_id}" ]; then
   if ! migrate_output="$(gl_zkstack_pty zkstack chain gateway migrate-to-gateway \
     --chain "${EDGE_CHAIN_NAME}" \
     --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
+    --l1-rpc-url "${L1_RPC_URL}" \
+    --gateway-rpc-url "${GATEWAY_RPC_URL}" \
     -v 2>&1)"; then
     echo "${migrate_output}"
     migrate_output_lc="$(gl_to_lower "${migrate_output}")"
@@ -1091,6 +1528,8 @@ refresh_l1_admin_wallet_funding "${EDGE_CHAIN_NAME}"
 if ! finalize_output="$(gl_zkstack_pty zkstack chain gateway finalize-chain-migration-to-gateway \
   --chain "${EDGE_CHAIN_NAME}" \
   --gateway-chain-name "${GATEWAY_CHAIN_NAME}" \
+  --l1-rpc-url "${L1_RPC_URL}" \
+  --gateway-rpc-url "${GATEWAY_RPC_URL}" \
   --deploy-paymaster false 2>&1)"; then
   echo "${finalize_output}"
   finalize_output_lc="$(gl_to_lower "${finalize_output}")"
@@ -1136,5 +1575,8 @@ if ! wait_for_da_pair_on_gateway \
 fi
 
 ensure_gateway_commit_sender_validator "${EDGE_CHAIN_NAME}"
+gateway_required_validator_roles_ready "${EDGE_CHAIN_NAME}" ||
+  gl_die "edge Gateway prove/execute validator roles are incomplete; refusing to mark migration ready"
 ensure_gateway_commit_sender_balance "${EDGE_CHAIN_NAME}"
+provision_gateway_settlement_fee_payer "${EDGE_CHAIN_NAME}"
 ensure_deposits_unpaused "${EDGE_CHAIN_NAME}"

@@ -19,9 +19,12 @@ rewritten server workspace. Do not use plain Cargo for commands that compile
 ### Local Development Setup
 
 The canonical v32.0/V8 local-chain fixture is pending atomic regeneration. The
-historical files were removed; do not bypass the gate under `local-chains/v32.0` while
-`CANONICAL_V8_REGENERATION_REQUIRED` exists. Runnable setup commands will be
-restored with the regenerated fixture.
+historical files were removed; do not populate or consume a canonical fixture under
+`local-chains/v32.0` while `CANONICAL_V8_REGENERATION_REQUIRED` exists. The sole
+pre-regeneration launch path is the explicitly gated no-proofs localhost/Tanenbaum
+flow described by that marker: it may materialize only the reviewed source pins and
+must not publish, authorize, or run the absent canonical/GPU artifacts. Canonical
+setup commands will be restored with the regenerated fixture.
 
 ## Submitting a PR
 

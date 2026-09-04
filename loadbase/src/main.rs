@@ -34,6 +34,8 @@ struct Args {
     #[arg(long, default_value_t = 10)] wallets: u32,
     #[arg(long)] duration: humantime::Duration,
     #[arg(long, default_value_t = 1000)] max_in_flight: u32,
+    // SYSCOIN: Deliberately throttled sequencer tests can exceed the old fixed 5s wait.
+    #[arg(long, default_value = "30s")] receipt_timeout: humantime::Duration,
     #[arg(long, default_value = "100000000000000")] amount_fund: String,
     #[arg(long)] estimate_gas: bool,
     #[arg(long, value_enum, default_value_t = DestMode::Wallet)] dest: DestMode,
@@ -46,6 +48,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     //-------------------------------- env ----------------------------------//
     let args = Args::parse();
+    anyhow::ensure!(*args.receipt_timeout > Duration::ZERO, "--receipt-timeout must be positive");
     let provider = Provider::<Http>::try_from(&args.rpc_url)?
         .interval(Duration::from_millis(100));
     let chain_id = provider.get_chainid().await?.as_u64();
@@ -117,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         rpc_url:     args.rpc_url.clone(),
         all_addrs:   wallets.iter().map(|w| w.address()).collect(),
         rng:         Arc::new(RwLock::new(StdRng::from_entropy())),
+        receipt_timeout: *args.receipt_timeout,
     };
     spawn_erc20_workers(
         provider.clone(), wallets.clone(), metrics.clone(),
